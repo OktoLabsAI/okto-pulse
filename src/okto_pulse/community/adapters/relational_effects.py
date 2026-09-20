@@ -10,6 +10,8 @@ from typing import Any
 from sqlalchemy import JSON, case, exists, func, literal, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from okto_pulse.core.ports.work_retirement import SUPERSEDED_WORK_STATUS
+from okto_pulse.community.adapters.work_retirement_sql import retired_work_origin_exists
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
     ArtifactDeletionTombstone,
@@ -185,6 +187,7 @@ class CommunitySqlAlchemyRelationalEffects(RelationalEffectsPort):
             literal("pending"),
             literal(0),
         ).where(
+            ~retired_work_origin_exists(upsert.board_id, upsert.artifact_type, upsert.artifact_id),
             ~exists(
                 select(1).where(
                     ArtifactDeletionTombstone.board_id == upsert.board_id,
@@ -254,10 +257,12 @@ class CommunitySqlAlchemyRelationalEffects(RelationalEffectsPort):
                 # ACK then either abort before graph commit or compensate its
                 # deferred graph mutation after losing the ACK CAS.
                 where=(
+                    (ConsolidationQueue.status != SUPERSEDED_WORK_STATUS) & (
                     (ConsolidationQueue.status.not_in(("pending", "claimed", "paused")))
                     & ~rebuild_source
                     if upsert.coalesce_active
                     else or_(ConsolidationQueue.status != "pending", rebuild_source)
+                    )
                 ),
             )
             .returning(ConsolidationQueue.id)

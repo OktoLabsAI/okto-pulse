@@ -1,6 +1,7 @@
 """Community SQLAlchemy KG health read adapter."""
 
 from __future__ import annotations
+from okto_pulse.community.adapters.work_retirement_sql import retired_work_origin_exists
 
 from datetime import datetime, timezone
 from typing import Any, Sequence
@@ -47,7 +48,8 @@ class CommunitySqlAlchemyKGHealthReader:
             select(func.min(ConsolidationQueue.triggered_at)).where(*active)
         )
         dead_letters = await context.scalar(
-            select(func.count()).where(ConsolidationDeadLetter.board_id == board_id)
+            select(func.count()).where(ConsolidationDeadLetter.board_id == board_id,
+                ~retired_work_origin_exists(ConsolidationDeadLetter.board_id, ConsolidationDeadLetter.artifact_type, ConsolidationDeadLetter.artifact_id))
         )
         execution = DomainEventHandlerExecution
         event = DomainEventRow

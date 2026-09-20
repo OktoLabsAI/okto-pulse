@@ -228,14 +228,14 @@ describe('TS1 — mount inicial dispara 1 fetch e renderiza cards principais', (
     });
   });
 
-  it('mantém consolidation DLQ e global outbox terminal em linhas separadas', async () => {
+  it.each([0, 2])('mostra %s falhas operacionais de consolidação sem somar o histórico de outras filas', async (activeFailures) => {
     mockBoard('b1');
     mockApi(() => Promise.resolve({
       ...baseHealth,
-      dead_letter_count: 2,
+      dead_letter_count: activeFailures,
       global_outbox_dead_letter_count: 99,
       operational_domains: {
-        dead_letter: { count: 2 },
+        dead_letter: { count: activeFailures },
         global_outbox_dead_letter: { count: 7 },
       },
     }));
@@ -246,7 +246,8 @@ describe('TS1 — mount inicial dispara 1 fetch e renderiza cards principais', (
       'Consolidation dead letter',
     );
     const globalOutboxLabel = screen.getByText('Global outbox terminal');
-    expect(consolidationLabel.parentElement).toHaveTextContent('2');
+    expect(consolidationLabel.parentElement).toHaveTextContent(String(activeFailures));
+    expect(consolidationLabel.parentElement).not.toHaveTextContent('99');
     expect(globalOutboxLabel.parentElement).toHaveTextContent('7');
     expect(globalOutboxLabel.parentElement).not.toHaveTextContent('99');
   });

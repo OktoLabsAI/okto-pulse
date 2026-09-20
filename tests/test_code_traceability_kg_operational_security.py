@@ -25,6 +25,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     ConsolidationAudit,
     ConsolidationDeadLetter,
     ConsolidationQueue,
+    DomainEventRow,
     GlobalUpdateOutbox,
 )
 from okto_pulse.community.adapters.sqlalchemy_queue_health import (
@@ -47,6 +48,7 @@ async def _database(tmp_path):
             ConsolidationAudit,
             ConsolidationDeadLetter,
             ConsolidationQueue,
+            DomainEventRow,
             GlobalUpdateOutbox,
         ):
             await connection.run_sync(table.__table__.create)

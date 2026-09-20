@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import update
+from okto_pulse.core.ports.work_retirement import SUPERSEDED_WORK_STATUS
 
 from okto_pulse.community.adapters.coordination import (
     CommunitySqlAlchemyClaimRepository,
@@ -148,8 +149,9 @@ class CommunitySqlAlchemyDomainEventDeliveryStore:
             execution = await session.get(
                 DomainEventHandlerExecution,
                 execution_id,
+                populate_existing=True,
             )
-            if execution is None:
+            if execution is None or execution.status == SUPERSEDED_WORK_STATUS:
                 return
             execution.status = "dlq"
             execution.last_error = "event row missing"
@@ -165,8 +167,9 @@ class CommunitySqlAlchemyDomainEventDeliveryStore:
             execution = await session.get(
                 DomainEventHandlerExecution,
                 execution_id,
+                populate_existing=True,
             )
-            if execution is None:
+            if execution is None or execution.status == SUPERSEDED_WORK_STATUS:
                 return
             execution.last_error = failure.error
             execution.status = "dlq" if failure.terminal else "pending"

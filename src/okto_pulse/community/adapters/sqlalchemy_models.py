@@ -7551,7 +7551,7 @@ class ConsolidationQueue(Base):
         nullable=False,
         default="pending",
         index=True,
-    )  # pending | claimed | done | paused | failed
+    )  # pending | claimed | done | paused | failed | superseded (archived migration)
     triggered_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -8321,7 +8321,7 @@ class DomainEventHandlerExecution(Base):
         String(20),
         nullable=False,
         server_default=text("'pending'"),
-    )  # pending | processing | done | failed | dlq
+    )  # pending | processing | done | failed | dlq | superseded (never processed)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
     processed_at: Mapped[datetime | None] = mapped_column(

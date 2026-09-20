@@ -6,6 +6,7 @@ from sqlalchemy import update
 from okto_pulse.core.ports.historical_archive import ArchiveSection
 from okto_pulse.community.adapters.permission_retirement_checkpoint import capture_permission_retirement_checkpoint
 from okto_pulse.community.adapters.permission_retirement_cleanup import retire_permission_documents
+from okto_pulse.community.adapters.sprint_work_retirement import supersede_archived_sprint_work
 from okto_pulse.community.adapters.sqlalchemy_models import Board
 from test_card_validation_retirement import prepare, raw_cards, run
 from test_historical_archive_read import read
@@ -35,6 +36,8 @@ async def test_archive_grants_then_card_policy_then_permission_cleanup(database,
         assert await raw_cards(engine) == before
         return
     card_receipt = await run(engine, storage, references)
+    work_receipt = await supersede_archived_sprint_work(engine, storage, references, card_receipt=card_receipt)
+    assert work_receipt.origins == 3
     permission_receipt = await retire_permission_documents(engine, checkpoint, retired_flags=RETIRED)
     assert card_receipt.card_count == 3 and permission_receipt.changed_documents == 1
     content = (await read(engine, storage)).records()
@@ -43,9 +46,11 @@ async def test_archive_grants_then_card_policy_then_permission_cleanup(database,
     assert (await read(engine, storage, section=ArchiveSection.EVALUATIONS)).records() == []
     detached = await raw_cards(engine)
     assert all(detached[identity]["sprint_id"] is None for identity in ("c1", "c2", "c3"))
-    # Both completed stages verify their retained evidence instead of attempting
+    # Completed stages verify their retained evidence instead of attempting
     # to recapture the old source from the transformed live policy or Card rows.
     assert await run(engine, storage, references, expected_receipt=card_receipt) == card_receipt
+    assert await supersede_archived_sprint_work(engine, storage, references,
+        card_receipt=card_receipt, expected_receipt=work_receipt) == work_receipt
     assert await retire_permission_documents(engine, checkpoint, retired_flags=RETIRED,
         expected_receipt=permission_receipt) == permission_receipt
     assert await raw_cards(engine) == detached
