@@ -9,33 +9,36 @@ from okto_pulse.community.adapters.relational_schema_migrator import build_commu
 
 
 @pytest.mark.asyncio
-async def test_upgrade_preserves_legacy_rows_and_is_idempotent(tmp_path, monkeypatch):
+@pytest.mark.parametrize("column", ["architecture_adoption", "execution_contract"])
+async def test_upgrade_preserves_legacy_rows_and_is_idempotent(tmp_path, monkeypatch, column):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'upgrade.sqlite'}")
     monkeypatch.setattr(steps, "get_engine", lambda: engine)
     try:
         async with engine.begin() as conn:
             await conn.execute(text("CREATE TABLE specs (id TEXT PRIMARY KEY, status TEXT, version INTEGER)"))
             await conn.execute(text("INSERT INTO specs VALUES ('a', 'draft', 3), ('b', 'in_progress', 7), ('c', 'done', 9)"))
-        await steps._migrate_add_spec_architecture_adoption()
-        await steps._migrate_add_spec_architecture_adoption()
+        migrate = getattr(steps, f"_migrate_add_spec_{column}")
+        await migrate()
+        await migrate()
         async with engine.connect() as conn:
-            assert list((await conn.execute(text("SELECT id,status,version,architecture_adoption FROM specs ORDER BY id"))).tuples()) == [
+            assert list((await conn.execute(text(f"SELECT id,status,version,{column} FROM specs ORDER BY id"))).tuples()) == [
                 ("a", "draft", 3, None), ("b", "in_progress", 7, None), ("c", "done", 9, None),
             ]
-        step = next(item for item in build_community_migration_ledger() if item.step_id == "_migrate_add_spec_architecture_adoption")
+        step = next(item for item in build_community_migration_ledger() if item.step_id == f"_migrate_add_spec_{column}")
         assert step.phase == "pre_create_all" and step.idempotent and not step.destructive
     finally:
         await engine.dispose()
 
 
 @pytest.mark.asyncio
-async def test_upgrade_does_not_hide_incompatible_existing_column(tmp_path, monkeypatch):
+@pytest.mark.parametrize("column", ["architecture_adoption", "execution_contract"])
+async def test_upgrade_does_not_hide_incompatible_existing_column(tmp_path, monkeypatch, column):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'drift.sqlite'}")
     monkeypatch.setattr(steps, "get_engine", lambda: engine)
     try:
         async with engine.begin() as conn:
-            await conn.execute(text("CREATE TABLE specs (id TEXT PRIMARY KEY, architecture_adoption INTEGER NOT NULL)"))
-        with pytest.raises(RuntimeError, match="spec_architecture_adoption_schema_drift"):
-            await steps._migrate_add_spec_architecture_adoption()
+            await conn.execute(text(f"CREATE TABLE specs (id TEXT PRIMARY KEY, {column} INTEGER NOT NULL)"))
+        with pytest.raises(RuntimeError, match=f"spec_{column}_schema_drift"):
+            await getattr(steps, f"_migrate_add_spec_{column}")()
     finally:
         await engine.dispose()

@@ -59,6 +59,32 @@ it('marks implementation and test coverage per obligation', async () => {
   expect(pending.length).toBe(1); // test row 2
 });
 
+it('shows missing Card contributions and exact criterion gaps despite some accepted proof', async () => {
+  const data = projection();
+  data.rows[0] = { ...data.rows[0], implementation_satisfied: false, test_satisfied: false,
+    required_card_ids: ['ui', 'authorization'], missing_card_ids: ['authorization'],
+    missing_criteria: [['impl-ui', 'ac-latency']] };
+  api.getDeliveryEvidence.mockResolvedValue(data);
+  render(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  expect(await screen.findByText('2 planned implementation Card(s)')).toBeInTheDocument();
+  expect(screen.getByText('Pending implementation Cards: authorization')).toBeInTheDocument();
+  expect(screen.getByText('Implementation impl-ui: missing verification of ac-latency')).toBeInTheDocument();
+  expect(screen.getAllByText('◌')).toHaveLength(3);
+});
+
+it('bounds large gap lists without declaring the omitted work complete', async () => {
+  const data = projection();
+  data.rows[0] = { ...data.rows[0], implementation_satisfied: false, test_satisfied: false,
+    missing_card_ids: Array.from({ length: 21 }, (_, i) => `card-${i}`),
+    missing_criteria: Array.from({ length: 21 }, (_, i) => ['impl', `criterion-${i}`]) };
+  api.getDeliveryEvidence.mockResolvedValue(data);
+  render(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  expect(await screen.findByText(/additional Cards omitted/)).toBeInTheDocument();
+  expect(screen.getAllByText(/Implementation impl: missing verification/)).toHaveLength(20);
+  expect(screen.getByText(/Additional criterion gaps are omitted/)).toBeInTheDocument();
+  expect(screen.queryByText(/criterion-20/)).not.toBeInTheDocument();
+});
+
 it('renders per-card grouping with proof counts and DoD statuses', async () => {
   render(<DeliveryEvidencePanel boardId="b" specId="s" />);
   expect(await screen.findByText('TASK-142 — Re-anchor delivery bindings')).toBeTruthy();

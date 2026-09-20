@@ -161,6 +161,12 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
         "Add nullable prospective architecture adoption; leave legacy scopes unchanged.",
     ),
     (
+        "_migrate_add_spec_execution_contract",
+        "pre_create_all",
+        False,
+        "Add nullable joint execution contract; never adopt legacy Specs through migration.",
+    ),
+    (
         "_migrate_add_spec_validation_gate_columns",
         "pre_create_all",
         False,

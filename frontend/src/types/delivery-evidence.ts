@@ -44,6 +44,9 @@ export interface DeliveryEvidenceProjection {
     implementation_ids: string[]; test_ids: string[];
     implementation_waiver_ids: string[]; test_waiver_ids: string[];
     implementation_satisfied: boolean; test_satisfied: boolean;
+    required_card_ids?: string[];
+    missing_card_ids?: string[];
+    missing_criteria?: Array<[string, string]>;
   }>;
   implementations: Array<{ id: string; card_id: string; relative_path: string; result_revision: string; current_accepted_execution: boolean; source_ref?: string; symbol?: string; explanation?: string; bindings?: Array<{ obligation_ref: string; semantic_sha256?: string }>; contributions?: Array<{ binding: { obligation_ref: string; semantic_sha256: string }; contribution: 'partial' | 'complete'; execution_ids?: string[] }> | null; admitted_obligation_refs?: string[]; ready_obligation_refs?: string[]; executions?: Array<{ execution_id: string; target_id: string; relative_path: string; result_revision: string; current_accepted_execution: boolean }> | null }>;
   tests?: Array<{ id: string; card_id: string; scenario_id: string; result: string; current_verified_run?: boolean }>;

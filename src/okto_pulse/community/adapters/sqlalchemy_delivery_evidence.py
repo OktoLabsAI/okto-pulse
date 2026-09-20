@@ -1,6 +1,6 @@
 """Relational delivery ledger. No source execution or graph-provider dependency."""
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 import re
 import uuid
@@ -25,6 +25,7 @@ from okto_pulse.core.domain.delivery_evidence import (
     DeliveryScope,
     DeliveryPhase,
     DeliveryEvidenceSnapshot,
+    DeliveryObligation,
     ImplementationDeliveryFact,
     ImplementationExecutionProof,
     TestDeliveryFact,
@@ -40,6 +41,10 @@ from okto_pulse.core.domain.delivery_evidence import (
     implementation_binding_ready,
 )
 from okto_pulse.core.domain.enums import CardType, CardStatus, TestScenarioStatus
+from okto_pulse.core.domain.execution_contract import execution_contract
+from okto_pulse.core.domain.effective_delivery_coverage import (
+    EffectiveDeliveryContext, ScopedTestFact, read_scoped_implementation, implementation_scope_current,
+)
 from okto_pulse.core.domain.delivery_progress import DeliveryProgress, progress_blocks_execution, progress_change_scope, require_delivery_progress_mutable
 from okto_pulse.core.domain.delivery_selection import current_delivery_selection, seal_delivery_selection, current_delivery_report, report_reuses_impact, submitted_report_receipt
 from okto_pulse.core.domain.delivery_impact import DeliveryImpactClaim, compose_delivery_impact, DeliveryImpactObservation, progress_affects_impact_source, require_impact_observation, reusable_impact_block
@@ -53,7 +58,7 @@ from okto_pulse.core.models.delivery_evidence import (
 )
 from okto_pulse.core.models.code_traceability import ImplementationTargetExecutionSubmission
 from okto_pulse.core.ports.delivery_evidence import DeliveryExecutionSubmitter
-from okto_pulse.core.ports.test_evidence import resolve_test_evidence_write_verifier, require_supported_test_verification_method
+from okto_pulse.core.ports.test_evidence import resolve_test_evidence_write_verifier, require_supported_test_verification_method, supported_test_verification_methods
 from okto_pulse.core.ports.delivery_inventory import (
     DeliveryInventoryPolicy,
     default_delivery_inventory_policy,
@@ -68,6 +73,49 @@ class CommunityDeliveryEvidenceStore:
         self.session = session
         self.inventory = inventory if inventory is not None else default_delivery_inventory_policy()
         self._locked = False
+
+    async def _execution_plan(self, spec):
+        if execution_contract(spec) is None:
+            return None
+        cards = list((await self.session.scalars(select(Card).where(
+            Card.board_id == spec.board_id, Card.spec_id == spec.id,
+        ).limit(5001))).all())
+        fields = ('id', 'board_id', 'spec_id', 'card_type', 'status', 'archived',
+                  'test_scenario_ids', 'title', 'description', 'details')
+        return self.inventory.execution_plan(spec=spec,
+            cards=[{field: getattr(card, field, None) for field in fields} for card in cards],
+            admitted_methods=supported_test_verification_methods())
+
+    def _planned_obligations(self, spec, plan, card=None):
+        rows = plan.inventory.rows if card is None or card.card_type == CardType.TEST else plan.inventory.card_obligations(card.id)
+        names = {item.binding.obligation_ref: item.title for item in self.inventory.spec_obligations(spec)}
+        return tuple(DeliveryObligation(row.binding, names.get(row.binding.obligation_ref,
+            card.title if card is not None else row.binding.obligation_ref)) for row in rows)
+
+    def _with_effective_context(self, snapshot, plan, records, spec, card=None):
+        if plan is None:
+            return snapshot
+        by_id = {record.id: record for record in records}
+        inventory = plan.inventory
+        if card is not None and card.card_type != CardType.TEST:
+            inventory = replace(inventory, rows=tuple(replace(row,
+                contributions=tuple(c for c in row.contributions if c.card_id == card.id))
+                for row in inventory.card_obligations(card.id)))
+        scenarios = {scenario.get('id'): scenario for scenario in (spec.test_scenarios or []) if isinstance(scenario, dict)}
+        try:
+            scoped = tuple(read_scoped_implementation(fact, by_id[fact.id].payload) for fact in snapshot.implementations)
+        except (KeyError, ValueError, TypeError):
+            return replace(snapshot, complete=False, effective_context=False)
+        for fact in snapshot.tests:
+            criteria = scenarios.get(fact.scenario_id, {}).get('linked_criteria')
+            if (not isinstance(criteria, (tuple, list))
+                or any(not isinstance(value, str) or not value for value in criteria)):
+                return replace(snapshot, complete=False, effective_context=False)
+        tests = tuple(ScopedTestFact(fact,
+            tuple(scenarios.get(fact.scenario_id, {}).get('linked_criteria') or ()),
+            scenarios.get(fact.scenario_id, {}).get('verification_method') or '') for fact in snapshot.tests)
+        return replace(snapshot, complete=snapshot.complete and plan.complete,
+            effective_context=EffectiveDeliveryContext(inventory, scoped, tests, supported_test_verification_methods()))
 
     async def _get(self, model, identity):
         if identity is None:
@@ -364,6 +412,10 @@ class CommunityDeliveryEvidenceStore:
 
     async def load_snapshot(self, scope):
         spec = await self._spec(scope.board_id, scope.spec_id)
+        if execution_contract(spec) is not None:
+            if int(spec.edition) != scope.edition:
+                raise ValueError("delivery_edition_conflict")
+            return (await self.load_rollup_snapshot(scope.board_id, scope.spec_id))[0]
         if int(spec.edition) != scope.edition:
             raise ValueError("delivery_edition_conflict")
         records = await self._records(scope)
@@ -527,8 +579,8 @@ class CommunityDeliveryEvidenceStore:
             ],
             "implementations": [{
                 **asdict(fact),
-                "admitted_obligation_refs": [binding.obligation_ref for binding in fact.bindings if implementation_binding_proof_current(fact, binding)],
-                "ready_obligation_refs": [binding.obligation_ref for binding in fact.bindings if implementation_binding_ready(fact, binding)],
+                "admitted_obligation_refs": [binding.obligation_ref for binding in fact.bindings if implementation_binding_proof_current(fact, binding) and implementation_scope_current(snapshot, fact, binding)],
+                "ready_obligation_refs": [binding.obligation_ref for binding in fact.bindings if implementation_binding_ready(fact, binding) and implementation_scope_current(snapshot, fact, binding)],
             } for fact in snapshot.implementations],
             "tests": [asdict(fact) for fact in snapshot.tests],
             "candidates": candidates,
@@ -577,8 +629,10 @@ class CommunityDeliveryEvidenceStore:
         spec = await self._spec(scope.board_id, scope.spec_id)
         if spec.version != command.expected_version:
             raise ValueError("delivery_version_conflict")
+        plan = await self._execution_plan(spec)
         inventory = {
-            o.binding.obligation_ref: o.binding for o in self.inventory.spec_obligations(spec)
+            o.binding.obligation_ref: o.binding for o in (
+                self._planned_obligations(spec, plan) if plan is not None else self.inventory.spec_obligations(spec))
         }
         if any(ref not in inventory for ref in command.obligation_refs):
             raise ValueError("delivery_obligation_not_found")
@@ -659,7 +713,7 @@ class CommunityDeliveryEvidenceStore:
             ).all()
         )
 
-    async def load_card_snapshot(self, scope: CardDeliveryScope):
+    async def load_card_snapshot(self, scope: CardDeliveryScope, *, plan=None):
         card, spec, spec_scope = await self._card_scope_guard(scope)
         records = await self._card_records(scope)
         revoked = {
@@ -667,7 +721,8 @@ class CommunityDeliveryEvidenceStore:
             for r in records
             if r.kind == "revoke" and r.actor_kind in {"human", "user"}
         }
-        obligations = self._snapshot_obligations(spec, card)
+        plan = plan if plan is not None else await self._execution_plan(spec)
+        obligations = await self._snapshot_obligations(spec, card, plan=plan)
         selection_valid = True
         try:
             selected = current_delivery_selection(card, scope, obligations=obligations,
@@ -691,13 +746,14 @@ class CommunityDeliveryEvidenceStore:
                 fact = await self._test(record, spec_scope, bindings, spec)
                 if fact is not None:
                     tests.append(fact)
-        return DeliveryEvidenceSnapshot(
+        snapshot = DeliveryEvidenceSnapshot(
             spec_scope,
             obligations,
             tuple(implementations),
             tuple(tests),
             complete=selection_valid,
         )
+        return self._with_effective_context(snapshot, plan, records, spec, card)
 
     def _selection_record_hash(self, record):
         # payload_sha256 is the request digest (possibly the whole batch), not
@@ -733,7 +789,7 @@ class CommunityDeliveryEvidenceStore:
         if bool(selection.reuse_impact) != (impact_basis is not None):
             raise ValueError("delivery_selection_impact_basis_required")
         return seal_delivery_selection(scope=scope, card_version=card.policy_version,
-            revision=len(records), obligations=self._snapshot_obligations(spec, card), impact=impact, impact_basis=impact_basis,
+            revision=len(records), obligations=await self._snapshot_obligations(spec, card), impact=impact, impact_basis=impact_basis,
             records=[dict(id=row.id, kind=row.kind, sha256=self._selection_record_hash(row)) for row in selected])
 
     async def _observed_impact_basis(self, scope, source, *, original=None, fence=False):
@@ -843,7 +899,7 @@ class CommunityDeliveryEvidenceStore:
                    if row.kind == "revoke" and row.actor_kind in {"human", "user"}}
         return compose_delivery_impact(self._impact_claims([row for row in records if row.id not in revoked]))
 
-    def _snapshot_obligations(self, spec, card):
+    async def _snapshot_obligations(self, spec, card, *, plan=None):
         """Obligation universe for one card's snapshot.
 
         Normal/bug cards derive obligations from their own links (the task
@@ -851,19 +907,18 @@ class CommunityDeliveryEvidenceStore:
         scenario links are not ``linked_task_ids`` on spec entities — so
         their snapshot resolves the spec inventory (the rollup universe).
         """
+        plan = plan if plan is not None else await self._execution_plan(spec)
+        if plan is not None:
+            return self._planned_obligations(spec, plan, card)
         raw_type = getattr(card, "card_type", None)
         card_type = str(getattr(raw_type, "value", raw_type or "normal"))
         if card_type == "test":
             return self.inventory.spec_obligations(spec)
         return self.inventory.card_obligations(spec, card)
 
-    def _record_inventory(self, spec, card):
+    async def _record_inventory(self, spec, card):
         """Binding-resolution inventory for record_card (same rule)."""
-        raw_type = getattr(card, "card_type", None)
-        card_type = str(getattr(raw_type, "value", raw_type or "normal"))
-        if card_type == "test":
-            return self.inventory.spec_obligations(spec)
-        return self.inventory.card_obligations(spec, card)
+        return await self._snapshot_obligations(spec, card)
 
     async def record_card(
         self, command: CardDeliveryEvidenceWriteCommand, *, actor_id, actor_kind,
@@ -1092,11 +1147,11 @@ class CommunityDeliveryEvidenceStore:
                 ).limit(1)
             ):
                 raise ValueError("delivery_progress_source_unavailable")
+        refs = command.selected_obligation_refs
         inventory = {
             o.binding.obligation_ref: o.binding
-            for o in self._record_inventory(spec, card)
-        }
-        refs = command.selected_obligation_refs
+            for o in await self._record_inventory(spec, card)
+        } if refs else {}
         if any(ref not in inventory for ref in refs):
             raise ValueError("delivery_obligation_not_found")
         payload = command.model_dump(
@@ -1132,6 +1187,20 @@ class CommunityDeliveryEvidenceStore:
         payload["bindings"] = [
             asdict(inventory[ref]) for ref in refs
         ]
+        plan = await self._execution_plan(spec) if command.kind in {"implementation", "test"} else None
+        if plan is not None and command.kind == "implementation":
+            if command.bindings is None:
+                raise ValueError("delivery_contribution_declaration_required")
+            rows = {row.binding.obligation_ref: row for row in plan.inventory.rows}
+            scopes = []
+            for ref in refs:
+                row = rows[ref]
+                contributions = [item for item in row.contributions if item.card_id == card.id]
+                if row.blockers or len(contributions) != 1:
+                    raise ValueError("delivery_contribution_allocation_unresolved")
+                scopes.append(dict(obligation_ref=ref, scope_sha256=contributions[0].scope_sha256))
+            payload["scope_contract_version"] = "card-contribution-scope/v1"
+            payload["contribution_scopes"] = scopes
         if command.kind == "test":
             scenarios = [
                 s
@@ -1206,11 +1275,17 @@ class CommunityDeliveryEvidenceStore:
             )
             candidate = DeliveryEvidenceSnapshot(
                 spec_scope,
-                self.inventory.spec_obligations(spec),
+                rollup_snapshot.obligations,
                 selected_implementations,
                 (fact,) if fact else (),
                 complete=rollup_snapshot.complete,
             )
+            if plan is not None:
+                selected_records = list((await self.session.scalars(select(CardRecord).where(
+                    CardRecord.board_id == scope.board_id, CardRecord.spec_id == scope.spec_id,
+                    CardRecord.spec_edition == scope.spec_edition, CardRecord.id.in_(command.implementation_ids),
+                ))).all())
+                candidate = self._with_effective_context(candidate, plan, [*selected_records, record], spec)
             require_test_result_admission(candidate, fact)
         self.session.add(record)
         await self.session.flush()
@@ -1336,14 +1411,15 @@ class CommunityDeliveryEvidenceStore:
         """
         spec = await self._spec(board_id, spec_id)
         scope = DeliveryScope(board_id, spec_id, int(spec.edition))
-        obligations = self.inventory.spec_obligations(spec)
+        plan = await self._execution_plan(spec)
+        obligations = self._planned_obligations(spec, plan) if plan is not None else self.inventory.spec_obligations(spec)
         implementations, tests, per_card = [], [], []
         complete = True
         for card in await self._linked_cards(board_id, spec_id):
             card_scope = CardDeliveryScope(
                 board_id, card.id, spec_id, int(spec.edition)
             )
-            snapshot = await self.load_card_snapshot(card_scope)
+            snapshot = await self.load_card_snapshot(card_scope, plan=plan)
             complete = complete and snapshot.complete is True
             implementations.extend(snapshot.implementations)
             tests.extend(snapshot.tests)
@@ -1386,4 +1462,11 @@ class CommunityDeliveryEvidenceStore:
             tuple(waivers),
             complete=complete,
         )
+        if plan is not None:
+            identities = [item.id for item in (*implementations, *tests)]
+            records = list((await self.session.scalars(select(CardRecord).where(
+                CardRecord.board_id == board_id, CardRecord.spec_id == spec_id,
+                CardRecord.spec_edition == scope.edition, CardRecord.id.in_(identities),
+            ))).all())
+            snapshot = self._with_effective_context(snapshot, plan, records, spec)
         return snapshot, per_card

@@ -151,7 +151,8 @@ async def test_full_inventory_includes_supplemental_obligations_and_unlinked_car
     assert summary["population_complete"] and not summary["plan_complete"]
     assert summary["families"]["api"] == summary["families"]["decision"] == summary["families"]["card"] == 1
     assert summary["unassigned_count"] > 0 and len(summary["snapshot_sha256"]) == 64
-    assert not summary["adoption_evaluated"] and not summary["delivery_evaluated"]
+    assert summary["adoption_evaluated"] and not summary["contract_adopted"] and not summary["delivery_evaluated"]
+    assert result["execution_contract"] is None
 
 
 @pytest.mark.asyncio

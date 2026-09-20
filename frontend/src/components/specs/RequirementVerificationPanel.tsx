@@ -162,16 +162,55 @@ function QualificationEditor({ scope, row, options, criterionLabels, onSaved }: 
 
 type PanelProps = {
   scope: Scope; canRead: boolean; canEdit: (type: VerificationRequirementType) => boolean;
+  canAdoptContract?: boolean;
   canReadPlanning?: boolean;
   options: VerificationRequirementOption[]; criteria: unknown[]; onSaved: () => Promise<void>;
 };
 
 export function RequirementVerificationPanel(props: PanelProps) {
-  const key = JSON.stringify([props.scope, props.canRead, props.canReadPlanning, ...(['functional_requirement', 'technical_requirement', 'integration_requirement', 'observability_requirement', 'business_rule'] as const).map(props.canEdit)]);
+  const key = JSON.stringify([props.scope, props.canRead, props.canReadPlanning, props.canAdoptContract, ...(['functional_requirement', 'technical_requirement', 'integration_requirement', 'observability_requirement', 'business_rule'] as const).map(props.canEdit)]);
   return <RequirementVerificationContent key={key} {...props} />;
 }
 
-function RequirementVerificationContent({ scope, canRead, canReadPlanning = false, canEdit, options, criteria, onSaved }: PanelProps) {
+function ExecutionContractAdoption({ scope, data, canAdopt, onSaved }: {
+  scope: Scope; data: RequirementVerificationResponse; canAdopt: boolean; onSaved: () => Promise<void>;
+}) {
+  const api = useDashboardApi();
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState('');
+  const writing = useRef(false);
+  const live = useRef(true);
+  useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
+  async function refresh() {
+    try { await onSaved(); }
+    catch { if (live.current) setError('Contract adopted. Refresh failed; reload the Spec to see its current contract.'); }
+  }
+  async function adopt() {
+    if (writing.current || saved) return;
+    writing.current = true; setBusy(true); setError('');
+    try {
+      await api.updateSpec(scope.specId, { adopt_execution_contract: {
+        contract_version: 'spec-execution-contract/v1', expected_spec_version: scope.version, expected_spec_edition: scope.edition,
+      } });
+      if (live.current) { setSaved(true); await refresh(); }
+    } catch (cause) {
+      if (live.current) setError(cause instanceof Error ? cause.message : 'Adoption was refused. Reload the Spec before retrying.');
+    } finally { writing.current = false; if (live.current) setBusy(false); }
+  }
+  if (data.execution_contract === undefined) return <p>Execution contract status is unavailable. Reload the Spec.</p>;
+  return <div className="space-y-2 text-sm">
+    {data.execution_contract || saved ? <p>Joint architecture and verification contract adopted.</p> : <>
+      <p>Legacy execution contract. Explicit adoption is required before first start. Work already in progress keeps its approved contract until an authorized revision.</p>
+      <p>Adoption requires complete architecture classification and verification planning before start. Existing evidence gains no new credit automatically.</p>
+      {canAdopt && data.spec_status === 'draft' && !data.archived && <button type="button" disabled={busy} onClick={() => void adopt()}>{busy ? 'Adopting…' : 'Adopt architecture and verification contract'}</button>}
+    </>}
+    {error && <p role="alert">{error}</p>}
+    {saved && <button type="button" onClick={() => void refresh()}>Reload adopted contract</button>}
+  </div>;
+}
+
+function RequirementVerificationContent({ scope, canRead, canReadPlanning = false, canAdoptContract = false, canEdit, options, criteria, onSaved }: PanelProps) {
   const api = useDashboardApi();
   const [open, setOpen] = useState(false);
   const [offset, setOffset] = useState(0);
@@ -207,6 +246,7 @@ function RequirementVerificationContent({ scope, canRead, canReadPlanning = fals
       {!current && <p role="status">Loading qualification…</p>}
       {current?.error && <p role="alert">{current.error}</p>}
       {current?.data && <>
+        <ExecutionContractAdoption scope={scope} data={current.data} canAdopt={canAdoptContract} onSaved={onSaved} />
         <p>{current.data.resolved_count} with resolved criterion paths · {current.data.population_total ?? 'unknown'} requirements in scope · {current.data.issue_count} criterion/population issue(s)</p>
         {!current.data.population_complete && <p role="alert">The requirement population is incomplete. Counts describe only observed requirements.</p>}
         {canReadPlanning && current.data.methods_evaluated ? <>

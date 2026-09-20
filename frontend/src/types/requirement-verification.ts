@@ -58,6 +58,7 @@ export interface RequirementVerificationRow extends VerificationRequirementRef {
   paths_unavailable: boolean;
 }
 export interface RequirementVerificationResponse {
+  execution_contract?: import('./execution-contract').SpecExecutionContract | null;
   contract_version: 'requirement-verification/v1';
   board_id: string; spec_id: string; spec_version: number; spec_edition: number;
   spec_status: string; archived: boolean;
@@ -79,7 +80,7 @@ export interface RequirementVerificationResponse {
     population_complete: boolean; plan_complete: boolean;
     total: number | null; pending_count: number | null; unassigned_count: number | null;
     families: Record<string, number>; snapshot_sha256: string; issues: string[];
-    adoption_evaluated: false; delivery_evaluated: false;
+    adoption_evaluated: boolean; contract_adopted?: boolean; delivery_evaluated: false;
   };
   verification_work_evaluated?: boolean;
   method_plan_complete?: boolean; verification_work_complete?: boolean;

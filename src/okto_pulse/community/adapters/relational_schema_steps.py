@@ -8872,6 +8872,28 @@ async def _migrate_add_spec_architecture_adoption() -> str | None:
         await conn.execute(sa_text("ALTER TABLE specs ADD COLUMN architecture_adoption JSON"))
 
 
+async def _migrate_add_spec_execution_contract() -> str | None:
+    """Add storage only. Existing approved/history rows retain a NULL contract."""
+    from sqlalchemy import JSON, inspect, text as sa_text
+
+    def observed(connection):
+        inspector = inspect(connection)
+        if not inspector.has_table('specs'):
+            return None
+        return {column['name']: column for column in inspector.get_columns('specs')}
+
+    async with get_engine().begin() as conn:
+        columns = await conn.run_sync(observed)
+        if columns is None:
+            return 'skipped'
+        existing = columns.get('execution_contract')
+        if existing is not None:
+            if not isinstance(existing['type'], JSON) or not existing['nullable']:
+                raise RuntimeError('spec_execution_contract_schema_drift')
+            return 'skipped'
+        await conn.execute(sa_text('ALTER TABLE specs ADD COLUMN execution_contract JSON'))
+
+
 async def _migrate_architecture_classification_storage() -> str:
     """Validate additive classification tables created at create_all_boundary.
 
@@ -25262,6 +25284,7 @@ SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
     ),
     "_migrate_add_ir_or_columns": _migrate_add_ir_or_columns,
     "_migrate_add_spec_architecture_adoption": _migrate_add_spec_architecture_adoption,
+    "_migrate_add_spec_execution_contract": _migrate_add_spec_execution_contract,
     "_migrate_add_spec_validation_gate_columns": _migrate_add_spec_validation_gate_columns,
     "_migrate_add_ideation_skip_ambiguity_gate": _migrate_add_ideation_skip_ambiguity_gate,
     "_migrate_add_refinement_skip_ambiguity_gate": _migrate_add_refinement_skip_ambiguity_gate,

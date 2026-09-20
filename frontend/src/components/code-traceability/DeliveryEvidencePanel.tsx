@@ -114,6 +114,10 @@ export function DeliveryEvidencePanel({ boardId, specId, skipDeliveryEvidence = 
                   <td className="min-w-0 py-1.5 pr-4 text-gray-700 dark:text-gray-200">
                     <span className="block">{row.obligation.title}</span>
                     <ObligationRefText value={ref} />
+                    {row.required_card_ids && <p className="text-xs">{row.required_card_ids.length} planned implementation Card(s)</p>}
+                    {Boolean(row.missing_card_ids?.length) && <p className="text-xs text-amber-600 dark:text-amber-400">Pending implementation Cards: {row.missing_card_ids!.slice(0, 20).join(', ')}{row.missing_card_ids!.length > 20 ? ' (additional Cards omitted)' : ''}</p>}
+                    {row.missing_criteria?.slice(0, 20).map(([implementation, criterion]) => <p key={JSON.stringify([implementation, criterion])} className="text-xs text-amber-600 dark:text-amber-400">Implementation {implementation}: missing verification of {criterion}</p>)}
+                    {(row.missing_criteria?.length ?? 0) > 20 && <p className="text-xs">Additional criterion gaps are omitted from this summary.</p>}
                   </td>
                   <td className="px-2 text-green-600 dark:text-green-400" title={waivedImpl ? 'Explicitly waived — human authorization' : row.implementation_satisfied ? 'Accepted proof recorded' : 'No accepted proof'}>
                     {row.implementation_satisfied || waivedImpl ? '✓' : <span className="text-amber-500">◌</span>}

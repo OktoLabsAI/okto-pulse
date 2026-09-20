@@ -88,6 +88,9 @@ async def test_new_derive_persists_selection_for_candidates_coverage_and_card_co
             f"architecture:{root}" for root in expected_roots
         )
         assert spec.architecture_adoption["actor_id"] == ACTOR_ID
+        assert spec.execution_contract["origin"] == "new_spec"
+        assert spec.execution_contract["actor_id"] == ACTOR_ID
+        assert spec.execution_contract["adopted_in_edition"] == 1
         assert not spec.integration_requirements
         assert await db.scalar(select(func.count()).select_from(Card)) == 0
         copies = (await db.scalars(select(ArchitectureDesign).where(
