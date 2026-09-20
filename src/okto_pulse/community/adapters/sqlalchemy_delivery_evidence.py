@@ -41,9 +41,9 @@ from okto_pulse.core.domain.delivery_evidence import (
 )
 from okto_pulse.core.domain.enums import CardType, CardStatus, TestScenarioStatus
 from okto_pulse.core.domain.delivery_progress import DeliveryProgress, progress_blocks_execution, progress_change_scope, require_delivery_progress_mutable
-from okto_pulse.core.domain.delivery_selection import current_delivery_selection, seal_delivery_selection, current_delivery_report, report_reuses_impact
+from okto_pulse.core.domain.delivery_selection import current_delivery_selection, seal_delivery_selection, current_delivery_report, report_reuses_impact, submitted_report_receipt
 from okto_pulse.core.domain.delivery_impact import DeliveryImpactClaim, compose_delivery_impact, DeliveryImpactObservation, progress_affects_impact_source, require_impact_observation, reusable_impact_block
-from okto_pulse.core.models.delivery_selection import DeliveryImpactBasis, DeliverySelectionManifest
+from okto_pulse.core.models.delivery_selection import DeliveryImpactBasis, DeliverySelectionManifest, DeliverySelectionInput
 from okto_pulse.core.models.delivery_evidence import (
     CardDeliveryEvidenceCommand,
     CardDeliveryEvidenceBatchCommand,
@@ -886,13 +886,35 @@ class CommunityDeliveryEvidenceStore:
             CardRecord.spec_id == scope.spec_id, CardRecord.spec_edition == scope.spec_edition,
         )))
 
-    async def _record_card_batch(self, command, *, actor_id, actor_kind, execution_submitter=None):
+    async def record_card_report(self, command, *, actor_id, actor_kind, report_submitter, execution_submitter=None):
+        batch = command.batch_command()
+        scope = CardDeliveryScope(command.board_id, command.card_id, command.spec_id, batch.expected_spec_edition)
+        await self.lock_scope(DeliveryScope(scope.board_id, scope.spec_id, scope.spec_edition))
+        async with self.session.begin_nested():
+            result = await self._record_card_batch(batch, actor_id=actor_id, actor_kind=actor_kind,
+                execution_submitter=execution_submitter, submission_digest=self.inventory.payload_digest(command.model_dump()),
+                expected_status=command.expected_card_status)
+            ids = {row["id"] for row in result["entries"]}
+            if not result["replayed"]:
+                selection = DeliverySelectionInput(expected_card_version=batch.expected_card_version,
+                    expected_spec_edition=batch.expected_spec_edition, expected_delivery_revision=result["delivery_revision"],
+                    record_ids=sorted(ids | set(command.existing_record_ids)), reuse_impact=command.reuse_impact)
+                await report_submitter(selection)
+                await self.session.flush()
+            card, _, _ = await self._card_scope_guard(scope)
+            receipt = submitted_report_receipt(card, scope, ids, command.report.status.value)
+            return {**result, "report": receipt}
+
+    async def _record_card_batch(self, command, *, actor_id, actor_kind, execution_submitter=None,
+                                 submission_digest=None, expected_status=None):
         if not actor_id or actor_kind not in {"human", "user", "agent"}:
             raise ValueError("delivery_authenticated_actor_required")
         scope = CardDeliveryScope(command.board_id, command.card_id, command.spec_id, command.expected_spec_edition)
         await self.lock_scope(DeliveryScope(scope.board_id, scope.spec_id, scope.spec_edition))
         card, _, _ = await self._card_scope_guard(scope)
         request_digest = self.inventory.payload_digest(command.model_dump())
+        if submission_digest is not None:
+            request_digest = self.inventory.payload_digest({"batch": request_digest, "report": submission_digest})
         filters = (
             CardRecord.board_id == scope.board_id, CardRecord.card_id == scope.card_id,
             CardRecord.actor_id == actor_id,
@@ -924,6 +946,8 @@ class CommunityDeliveryEvidenceStore:
             return {"entries": response_entries, "delivery_revision": receipt["delivery_revision"], "replayed": True}
         if card.policy_version != command.expected_card_version:
             raise ValueError("delivery_version_conflict")
+        if expected_status is not None and card.status != expected_status:
+            raise ValueError("delivery_report_status_conflict")
         require_delivery_batch_state(card)
         revision = await self._delivery_revision(scope)
         if revision != command.expected_delivery_revision:
