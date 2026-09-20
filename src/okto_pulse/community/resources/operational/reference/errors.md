@@ -145,7 +145,7 @@ Accepted shapes, the `detail` messages, and the structured `*_json` field rules 
 
 | Error code | Cause | Fix |
 |---|---|---|
-| `missing_required_filter` | `okto_pulse_list_by_board` called with `entity_type="refinement"` without `filters.ideation_id`, or `entity_type="sprint"` without `filters.spec_id` | Pass the required filter: refinements require `filters={"ideation_id": "..."}`; sprints require `filters={"spec_id": "..."}`. |
+| `missing_required_filter` | `okto_pulse_list_by_board` called with `entity_type="refinement"` without `filters.ideation_id` | Pass the required filter: refinements require `filters={"ideation_id": "..."}`. |
 | `invalid_filter` | An unknown filter key for that `entity_type`, or a malformed `filters` JSON string, was passed to `okto_pulse_list_by_board`/`list_qa`/`list_knowledge` | Use only the keys in the response's `supported` field (`invalid_keys` echoes the rejected ones) — the per-`entity_type` filter table lives in `okto-pulse://reference/list_tools`. |
 | `unsupported_projection` | The requested `profile` is not supported by this tool (e.g. `detail` on the `copy_*_to_card` family) | Pick a profile from the returned `supported_profiles` list. Profile semantics and per-family variance: `okto-pulse://reference/projection-profiles`. |
 | `resource_lineage_resolution_failed` | The Resource Gate could not resolve the entity's resource lineage (broken/missing parent chain) — fail-closed, not a coverage verdict | Inspect `lineage_error_code`/`lineage_error_details` in the payload and repair the lineage (e.g. the card's spec or the spec's parent is missing/deleted); do not mark resources N/A to bypass. |
