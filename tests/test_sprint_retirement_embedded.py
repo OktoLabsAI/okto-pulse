@@ -44,7 +44,7 @@ async def test_nested_cognitive_evidence_is_found_and_archived_without_rewriting
     storage = CommunityFileSystemStorage(str(tmp_path / "storage"))
     archive, = await capture_sprint_retirement_archive(engine, storage, migration_id="embedded")
     document = await verify_historical_archive(storage, archive)
-    assert document["format"] == "historical-relational-archive/v3"
+    assert document["format"] == "historical-relational-archive/v4"
     assert decoded_rows(document, "kg_cognitive_sources")[0]["payload"] == ["text", payload]
     assert document["reference_roles"][0]["roles"][0]["path"] == ["evidence_refs", 0, "source_id"]
     assert await capture_sprint_retirement_archive(engine, storage, migration_id="embedded") == (archive,)

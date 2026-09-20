@@ -41,7 +41,7 @@ def captured(tmp_path):
         INSERT INTO cards VALUES ('card','a');
     """)
     connection.execute("INSERT INTO attachments VALUES ('attachment','card',?,?)", (attachment, Path(attachment).stat().st_size))
-    payload = {"format": "historical-relational-archive/v3", "migration_id": "migration", "storage_path": archive,
+    payload = {"format": "historical-relational-archive/v4", "migration_id": "migration", "storage_path": archive,
         "size": Path(archive).stat().st_size, "sha256": hashlib.sha256(Path(archive).read_bytes()).hexdigest(), "counts": [["sprints", 1]]}
     connection.execute("INSERT INTO domain_events VALUES ('archive','b','historical_archive.created',?)", (json.dumps(payload),))
     connection.commit()

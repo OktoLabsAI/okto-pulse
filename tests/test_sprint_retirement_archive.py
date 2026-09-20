@@ -207,7 +207,7 @@ async def test_receipt_and_composite_children_preserved_once_without_other_subje
     storage = CommunityFileSystemStorage(str(tmp_path / "storage"))
     reference, = await capture_sprint_retirement_archive(engine, storage, migration_id="receipts")
     document = await verify_historical_archive(storage, reference)
-    assert document["format"] == "historical-relational-archive/v3"
+    assert document["format"] == "historical-relational-archive/v4"
     assert [row["receipt_id"] for row in decoded_rows(document, "policy_compliance_receipts")] == [["text", "receipt"]]
     child, = decoded_rows(document, "policy_compliance_adopted_revisions")
     assert child["receipt_id"] == ["text", "receipt"] and child["revision_digest"] == ["text", "b" * 64]

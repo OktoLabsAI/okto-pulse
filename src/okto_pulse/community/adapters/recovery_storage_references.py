@@ -67,7 +67,7 @@ def _archive_payload(raw):
     if (type(payload) is not dict
         or set(payload) != {"format", "migration_id", "storage_path", "sha256", "size", "counts"}
         or type(payload["format"]) is not str
-        or payload["format"] not in {f"historical-relational-archive/v{i}" for i in (1, 2, 3)}
+        or payload["format"] not in {f"historical-relational-archive/v{i}" for i in (1, 2, 3, 4)}
         or type(payload["migration_id"]) is not str or not payload["migration_id"].strip()
         or len(payload["migration_id"]) > 128
         or type(payload["sha256"]) is not str or not re.fullmatch(r"[0-9a-f]{64}", payload["sha256"])

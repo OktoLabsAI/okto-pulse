@@ -19,13 +19,16 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from okto_pulse.core import StorageProvider
+from okto_pulse.core.ports.historical_archive import parse_archive_read_grant
 from okto_pulse.community.adapters.sqlalchemy_models import DomainEventRow
 from okto_pulse.community.adapters.sprint_retirement_inventory import _inspect_snapshot
+from okto_pulse.community.adapters.sprint_retirement_access import capture_archive_access
 
 
 _LEGACY_FORMAT = "historical-relational-archive/v1"
 _RELATED_FORMAT = "historical-relational-archive/v2"
-_FORMAT = "historical-relational-archive/v3"
+_REFERENCE_FORMAT = "historical-relational-archive/v3"
+_FORMAT = "historical-relational-archive/v4"
 _EVENT = "historical_archive.created"
 _NAMESPACE = uuid.UUID("9ad371f4-024e-5cbe-a550-b112926cf66a")
 _TABLES = ("sprints", "sprint_history", "sprint_qa_items", "sprint_activation_baselines")
@@ -73,6 +76,8 @@ def _counts(document):
     result += (("card_links", len(document["card_links"])),)
     if document["format"] != _LEGACY_FORMAT:
         result += (("reference_roles", len(document["reference_roles"])),)
+    if document["format"] == _FORMAT:
+        result += (("access_grants", len(document.get("access", {}).get("grants", []))),)
     return result
 
 
@@ -230,6 +235,55 @@ def _capture(connection: Connection, *, migration_id: str, max_rows: int, max_by
     return result
 
 
+def _origin_ids(document):
+    source = document["tables"]["sprints"]
+    index = next(i for i, column in enumerate(source["columns"]) if column["name"] == "id")
+    return tuple(row[index][1] for row in source["rows"])
+
+
+def _verify_access(document):
+    access = document.get("access")
+    if (not isinstance(access, dict) or set(access) != {"format", "source_sha256", "grants"}
+            or access["format"] != "historical-archive-access/v1"
+            or not isinstance(access["grants"], list)
+            or not isinstance(access["source_sha256"], str)
+            or len(access["source_sha256"]) != 64
+            or any(c not in "0123456789abcdef" for c in access["source_sha256"])):
+        raise ValueError("historical_archive_access_invalid")
+    origins = set(_origin_ids(document))
+    seen = set()
+    for value in access["grants"]:
+        grant = parse_archive_read_grant(value)
+        identity = (grant.scope, grant.actor_kind, grant.actor_id)
+        if (grant.scope.board_id != document["board_id"] or grant.scope.realm_id != "local"
+                or grant.scope.origin_kind != document["origin_kind"]
+                or grant.scope.origin_id not in origins or identity in seen):
+            raise ValueError("historical_archive_access_scope_invalid")
+        seen.add(identity)
+
+
+async def _attach_access(connection, captures, *, max_rows, max_bytes):
+    if not captures:
+        return captures
+    documents = {board: json.loads(content) for _, board, content, _ in captures}
+    access = await capture_archive_access(connection,
+        origins={board: _origin_ids(document) for board, document in documents.items()},
+        max_rows=max_rows, max_bytes=max_bytes)
+    result, rows, size = [], 0, 0
+    for identity, board, _, _ in captures:
+        document = documents[board]
+        document["access"] = access[board]
+        _verify_access(document)
+        content = _encode(document)
+        counts = _counts(document)
+        rows += sum(count for _, count in counts)
+        size += len(content)
+        if rows > max_rows or size > max_bytes:
+            raise ValueError("historical_archive_capture_limit")
+        result.append((identity, board, content, counts))
+    return result
+
+
 async def verify_historical_archive(storage: StorageProvider, reference: HistoricalArchiveReference) -> dict:
     """Privileged migration verification only; not an ACL-aware product read."""
     if not 0 < reference.size <= _MAX_BYTES:
@@ -245,12 +299,14 @@ async def verify_historical_archive(storage: StorageProvider, reference: Histori
     if len(content) != reference.size or hashlib.sha256(content).hexdigest() != reference.sha256:
         raise ValueError("historical_archive_hash_mismatch")
     document = json.loads(content)
-    if (document.get("format") not in {_LEGACY_FORMAT, _RELATED_FORMAT, _FORMAT} or document.get("board_id") != reference.board_id
+    if (document.get("format") not in {_LEGACY_FORMAT, _RELATED_FORMAT, _REFERENCE_FORMAT, _FORMAT} or document.get("board_id") != reference.board_id
             or document.get("migration_id") != reference.migration_id):
         raise ValueError("historical_archive_scope_mismatch")
     counts = _counts(document)
     if counts != reference.counts:
         raise ValueError("historical_archive_counts_mismatch")
+    if document["format"] == _FORMAT:
+        _verify_access(document)
     return document
 
 
@@ -279,6 +335,7 @@ async def capture_sprint_retirement_archive(
         try:
             await connection.exec_driver_sql("BEGIN IMMEDIATE")
             captures = await connection.run_sync(lambda sync: _capture(sync, migration_id=migration_id, max_rows=max_rows, max_bytes=max_bytes))
+            captures = await _attach_access(connection, captures, max_rows=max_rows, max_bytes=max_bytes)
             existing = (await connection.execute(select(DomainEventRow.id).where(
                 DomainEventRow.event_type == _EVENT,
                 DomainEventRow.payload_json["migration_id"].as_string() == migration_id,
