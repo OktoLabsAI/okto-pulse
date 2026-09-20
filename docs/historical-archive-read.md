@@ -44,6 +44,29 @@ consultar suas tabelas vivas. Formatos anteriores continuam verificáveis pelo
 mecanismo de migração, mas não recebem grants inventados pelo leitor. O bootstrap
 normal não instala grants: essa publicação pertence ao coordenador de migração.
 
-A administração pública dos grants, descoberta/listagem, MCP, UI histórica e
-leitura das seções sujeitas a permissões próprias de Card/Spec fazem parte da
-integração restante. Esta rota não executa migração, restauração ou manutenção.
+A aba **Archives** do Board descobre origens e abre as seções autorizadas sob
+demanda. IDs antigos são apresentados como proveniência, sem links operacionais
+ou ações de Sprint. Texto e HTML históricos são exibidos como texto inerte. A
+interface cancela leituras e limpa resultados anteriores ao trocar Board,
+seção ou página; uma falha não é apresentada como ausência de registros.
+
+```text
+GET /api/v1/boards/{board_id}/historical-archives?offset=0&limit=50
+```
+
+A descoberta retorna `historical-archive-discovery/v1`, `board_id`, `items` e
+`next_offset`; cada item contém `origin`, `archive_id` e `sections`. Aplica a
+mesma autoridade atual e capturada antes de ordenar por tipo/ID e paginar,
+sem contagem de origens ocultas. Não lê blobs nem copia títulos do conteúdo:
+é um índice de autoridade instalada, não comprovação de disponibilidade do
+arquivo. A verificação da fonte ocorre ao abrir uma seção. O limite padrão
+é 50, máximo 200; a leitura de autoridade falha fechada acima de 100 mil
+candidatos ou 64 MiB. Nenhum dado é devolvido parcialmente em erro.
+
+A listagem pode mudar quando grants são revogados. Atualizar ou voltar à lista
+revalida a autoridade; para repetir uma enumeração completa após uma mudança,
+reinicie na primeira página. Um offset antigo nunca concede acesso revogado.
+
+A administração pública dos grants, MCP e leitura das seções sujeitas a
+permissões próprias de Card/Spec fazem parte da integração restante. Estas rotas
+não executam migração, restauração ou manutenção.

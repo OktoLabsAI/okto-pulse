@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from okto_pulse.core import StorageProvider, get_storage_provider
 from okto_pulse.core.domain.realm import LOCAL_REALM_ID
 from okto_pulse.core.ports.historical_archive import ArchiveGrantState, ArchiveSourceScope, archive_section_is_readable
-from okto_pulse.core.ports.historical_archive_read import ArchiveReadRequest, ArchiveReadUnavailable, ArchiveSectionPage
+from okto_pulse.core.ports.historical_archive_read import ArchiveBoardScope, ArchiveReadRequest, ArchiveReadUnavailable, ArchiveSectionPage
 from okto_pulse.core.ports.permission_policy import board_membership_allows_read
 from okto_pulse.community.adapters.historical_archive_grants import CommunityHistoricalArchiveGrants
 from okto_pulse.community.adapters.historical_archive_projection import project_historical_archive_section
@@ -28,7 +28,7 @@ class CommunityHistoricalArchiveReader:
         ):
             raise ArchiveReadUnavailable("historical_archive_snapshot_required")
 
-    async def has_current_board_access(self, *, scope: ArchiveSourceScope, actor_kind: str, actor_id: str) -> bool:
+    async def has_current_board_access(self, *, scope: ArchiveSourceScope | ArchiveBoardScope, actor_kind: str, actor_id: str) -> bool:
         await self._require_snapshot()
         if scope.realm_id != LOCAL_REALM_ID:
             return False
@@ -54,6 +54,13 @@ class CommunityHistoricalArchiveReader:
             BoardShare.user_id == actor_id,
         ))).scalar_one_or_none()
         return board_membership_allows_read(owner_id=board.owner_id, actor_id=actor_id, share_permission=share)
+
+    async def list_grants(self, *, scope: ArchiveBoardScope, actor_kind: str, actor_id: str) -> tuple[ArchiveGrantState, ...]:
+        await self._require_snapshot()
+        if not await self.has_current_board_access(scope=scope, actor_kind=actor_kind, actor_id=actor_id):
+            raise ArchiveReadUnavailable("historical_archive_authority_changed")
+        return await CommunityHistoricalArchiveGrants(self._session).list_for_board(
+            scope=scope, actor_kind=actor_kind, actor_id=actor_id)
 
     async def read_section(self, *, request: ArchiveReadRequest, grant: ArchiveGrantState) -> ArchiveSectionPage:
         await self._require_snapshot()

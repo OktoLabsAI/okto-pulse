@@ -1,5 +1,5 @@
 import { type ReactNode, useEffect, useState } from 'react';
-import { Quote, Lightbulb, Microscope, FileCheck2, CalendarRange, Rocket } from 'lucide-react';
+import { Quote, Lightbulb, Microscope, FileCheck2, CalendarRange, Rocket, Archive } from 'lucide-react';
 import { authAdapter, portalAdapter } from '@/adapters';
 import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
@@ -156,6 +156,15 @@ const STAGE_TABS: StageTab[] = [
     iconInactive: 'text-emerald-500/70 dark:text-emerald-400/60',
     labelActive: 'text-emerald-700 dark:text-emerald-300',
     pillActiveRing: 'ring-1 ring-emerald-200 dark:ring-emerald-500/30',
+  },
+  {
+    id: 'archives',
+    label: 'Archives',
+    Icon: Archive,
+    iconActive: 'text-slate-600 dark:text-slate-300',
+    iconInactive: 'text-slate-400 dark:text-slate-500',
+    labelActive: 'text-slate-700 dark:text-slate-200',
+    pillActiveRing: 'ring-1 ring-slate-200 dark:ring-slate-600/40',
   },
 ];
 
@@ -546,8 +555,10 @@ function App() {
             <>
               {/* Tab switcher */}
               <div
-                className="flex items-center gap-1 mb-4 bg-surface-200/60 dark:bg-surface-800/60 backdrop-blur-sm rounded-xl p-0.5 w-fit border border-surface-200/40 dark:border-surface-700/30"
+                className="flex max-w-full shrink-0 items-center gap-1 mb-4 overflow-x-auto bg-surface-200/60 dark:bg-surface-800/60 backdrop-blur-sm rounded-xl p-0.5 w-fit border border-surface-200/40 dark:border-surface-700/30"
                 data-tour-id="board.tabs"
+                role="group"
+                aria-label="Board views"
               >
                 {STAGE_TABS.map((tab) => {
                   const isActive = activeTab === tab.id;
@@ -557,7 +568,8 @@ function App() {
                       key={tab.id}
                       onClick={() => setActiveTab(tab.id)}
                       title={tab.label}
-                      className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 ${
+                      aria-pressed={isActive}
+                      className={`flex shrink-0 items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 ${
                         isActive
                           ? `bg-white dark:bg-surface-700 shadow-sm ${tab.pillActiveRing} ${tab.labelActive}`
                           : 'text-surface-500 dark:text-surface-400 hover:text-surface-900 dark:hover:text-white'

@@ -42,6 +42,9 @@ vi.mock('@/components/sprints', () => ({
 vi.mock('@/components/kanban', () => ({
   KanbanBoard: (props: ProbeProps) => <PanelProbe {...props} name="tasks" />,
 }));
+vi.mock('../HistoricalArchivesPanel', () => ({
+  HistoricalArchivesPanel: (props: ProbeProps) => <PanelProbe {...props} name="archives" />,
+}));
 
 function mountId(tab: StageTabId): string {
   return screen.getByTestId(`${tab}-probe`).textContent?.split(':')[0] ?? '';
@@ -65,7 +68,7 @@ describe('BoardStageContent', () => {
     },
   );
 
-  it.each(['ideations', 'refinements', 'specs', 'sprints'] as const)(
+  it.each(['ideations', 'refinements', 'specs', 'sprints', 'archives'] as const)(
     'remounts %s on both refresh and board change',
     (activeTab) => {
       const { rerender } = render(

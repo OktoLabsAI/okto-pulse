@@ -7,6 +7,7 @@ the caller's transaction; replay must never reconstruct a deleted/revoked grant.
 
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
+import json
 import uuid
 
 from sqlalchemy import insert, select, update
@@ -23,6 +24,7 @@ from okto_pulse.core.ports.historical_archive import (
     revoke_archive_sections,
 )
 from okto_pulse.community.adapters.sqlalchemy_models import DomainEventRow, HistoricalArchiveGrant
+from okto_pulse.core.ports.historical_archive_read import ArchiveBoardScope, ArchiveReadLimitExceeded
 
 _REVOKE_EVENT = "historical_archive.sections_revoked"
 _TABLE = HistoricalArchiveGrant.__table__
@@ -64,6 +66,25 @@ class CommunityHistoricalArchiveGrants:
             *_where(_key(scope, actor_kind, actor_id)),
         ))).mappings().one_or_none()
         return None if row is None else _decode(row)
+
+    async def list_for_board(self, *, scope: ArchiveBoardScope, actor_kind: str, actor_id: str) -> tuple[ArchiveGrantState, ...]:
+        if (not isinstance(scope, ArchiveBoardScope) or actor_kind not in ("human", "agent")
+                or type(actor_id) is not str or not actor_id.strip() or len(actor_id) > 255):
+            raise ValueError("archive_discovery_identity_invalid")
+        result = await self._session.stream(select(_TABLE).where(
+            _TABLE.c.realm_id == scope.realm_id, _TABLE.c.board_id == scope.board_id,
+            _TABLE.c.actor_kind == actor_kind, _TABLE.c.actor_id == actor_id,
+        ).order_by(_TABLE.c.origin_kind, _TABLE.c.origin_id).limit(100_001))
+        states, size = [], 0
+        try:
+            async for row in result.mappings():
+                size += len(json.dumps(dict(row), ensure_ascii=False, allow_nan=False).encode("utf-8"))
+                if len(states) >= 100_000 or size > 64 * 1024 * 1024:
+                    raise ArchiveReadLimitExceeded("historical_archive_discovery_limit")
+                states.append(_decode(row))
+        finally:
+            await result.close()
+        return tuple(states)
 
     async def revoke(
         self, *, scope: ArchiveSourceScope, actor_kind: str, actor_id: str,
