@@ -44,6 +44,18 @@ consultar suas tabelas vivas. Formatos anteriores continuam verificáveis pelo
 mecanismo de migração, mas não recebem grants inventados pelo leitor. O bootstrap
 normal não instala grants: essa publicação pertence ao coordenador de migração.
 
+A captura e a primeira instalação avaliam os documentos de autoridade pela
+policy congelada da base local `v0.3.4` (Core `20707250`). O Core mantém essa
+avaliação pura atrás de uma porta pública; o Community carrega fatos e aplica
+os limites de transação e armazenamento. Retirar folhas do registro vivo não
+transforma um documento antigo parcial em Full Control nem modifica decisões
+arquivadas. Snapshots completos reconhecidos continuam utilizáveis; negações,
+dados malformados e documentos ambíguos preservam a revisão/negação anterior.
+
+O replay não reinterpreta nem amplia grants já instalados. Uma divergência de
+autoridade bloqueia a operação e exige reconciliação explícita. Esta leitura
+não executa a limpeza operacional das permissões antigas nem a migração F3.
+
 A aba **Archives** do Board descobre origens e abre as seções autorizadas sob
 demanda. IDs antigos são apresentados como proveniência, sem links operacionais
 ou ações de Sprint. Texto e HTML históricos são exibidos como texto inerte. A

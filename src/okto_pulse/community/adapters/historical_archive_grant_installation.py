@@ -1,7 +1,7 @@
 """Internal installation of captured F2A authority; never a product endpoint.
 
-This migration still depends on the previous authority evaluator. Coordinate
-its historical policy path with F3 before removing the live source registry.
+Capture and installation use Core's frozen v0.3.4 authority evaluator. Removing
+the live source registry must not change historical access or its replay check.
 """
 
 from dataclasses import asdict

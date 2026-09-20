@@ -17,21 +17,14 @@ from okto_pulse.core.ports.historical_archive import (
     ArchiveReadGrant,
     ArchiveReadSections,
     ArchiveSourceScope,
-    capture_archive_read_sections,
 )
-from okto_pulse.core.ports.permission_policy import PermissionSet, board_membership_allows_read
-from okto_pulse.community.adapters.relational_application import CommunityAgentAuthenticationGateway
-from okto_pulse.community.adapters.sqlalchemy_models import AgentBoard, Board, BoardShare
+from okto_pulse.core.ports.historical_archive_authority import HistoricalArchivePresetFacts, capture_authenticated_human_sections_v034, resolve_historical_archive_sections_v034
+from okto_pulse.core.ports.permission_policy import board_membership_allows_read
+from okto_pulse.community.adapters.sqlalchemy_models import Agent, AgentBoard, Board, BoardShare, PermissionPreset
 from okto_pulse.community.auth import LocalAuthProvider
 
 
 _DENIED = ArchiveReadSections(False, False, False, False)
-_AUTHORITIES = {
-    "content_permission": "sprint.entity.read",
-    "qa_permission": "sprint.qa.read",
-    "evaluations_permission": "sprint.evaluations.read",
-    "history_permission": "sprint.history_read",
-}
 
 
 async def _bound_authority_sources(connection: AsyncConnection, max_rows: int, max_bytes: int) -> str:
@@ -79,10 +72,11 @@ async def capture_archive_access(
     local_flags = principal.claims.get("permissions")
     if not isinstance(local_flags, dict) or principal.realm_id != LOCAL_REALM_ID:
         raise ValueError("historical_archive_local_authority_invalid")
-    local_sections = capture_archive_read_sections(PermissionSet(local_flags), **_AUTHORITIES)
+    local_sections = capture_authenticated_human_sections_v034(local_flags)
     result, grant_count = {}, 0
     async with AsyncSession(bind=connection, join_transaction_mode="rollback_only", expire_on_commit=False) as session:
-        gateway = CommunityAgentAuthenticationGateway(session)
+        preset_rows = (await session.execute(select(PermissionPreset).order_by(PermissionPreset.id))).scalars().all()
+        presets = tuple(HistoricalArchivePresetFacts(row.id, row.flags, row.base_preset_id) for row in preset_rows)
         for board_id, origin_ids in sorted(origins.items()):
             board = await session.get(Board, board_id)
             # Canonical Board access treats a legacy NULL realm as local only.
@@ -95,14 +89,16 @@ async def capture_archive_access(
             subjects = [("human", principal.subject, local_sections
                 if board_membership_allows_read(owner_id=board.owner_id, actor_id=principal.subject,
                     share_permission=share) else _DENIED)]
-            agent_ids = (await session.execute(select(AgentBoard.agent_id).where(
+            bindings = (await session.execute(select(AgentBoard).where(
                 AgentBoard.board_id == board_id,
             ).order_by(AgentBoard.agent_id))).scalars().all()
-            for agent_id in agent_ids:
-                resolved = await gateway.resolve_agent_permission_context(agent_id, board_id=board_id)
-                sections = (_DENIED if resolved is None else
-                    capture_archive_read_sections(resolved.permissions, **_AUTHORITIES))
-                subjects.append(("agent", agent_id, sections))
+            for binding in bindings:
+                agent = await session.get(Agent, binding.agent_id)
+                sections = (_DENIED if agent is None or not bool(getattr(agent, "is_active", True)) else
+                    resolve_historical_archive_sections_v034(agent_flags=agent.permission_flags,
+                        legacy_permissions=agent.permissions, preset_id=agent.preset_id, presets=presets,
+                        board_overrides=binding.permission_overrides))
+                subjects.append(("agent", binding.agent_id, sections))
             grants = []
             for origin in sorted(origin_ids):
                 for kind, actor_id, sections in subjects:
