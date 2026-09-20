@@ -137,6 +137,9 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
     {data && <>
       {mine && <CardProgressPanel key={`${boardId}:${card.id}:${data.edition}:${canProgress}`} boardId={boardId} specId={card.spec_id} edition={data.edition} card={mine} canWrite={canProgress} onSaved={() => { setReload(v => v + 1); onChanged?.(); }} />}
       {mine?.accumulated_impact && <DeliveryNetImpactPanel value={mine.accumulated_impact} />}
+      {mine?.report_impact?.source === 'accumulated' && <p role="status" className="text-sm">
+        {mine.report_impact.current ? 'Submitted impact matches the known source bases.' : 'Submitted impact needs a new current basis before required impact validation can pass.'}
+      </p>}
       <div className="rounded-md border border-gray-200 p-4 dark:border-gray-800">
         <div className="mb-3 flex items-center justify-between gap-3">
           <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200">Delivery Evidence (Definition of Done)</h3>

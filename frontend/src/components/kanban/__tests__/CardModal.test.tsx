@@ -2475,6 +2475,7 @@ describe('conclusion prompt keeps state on impact_evidence_required (TS-16)', ()
       fireEvent.click(screen.getByLabelText('Seal recorded evidence with this report'));
       expect(submit).toBeDisabled();
       await screen.findByText('Delivery revision 3 · 1 selected');
+      fireEvent.click(screen.getByLabelText('Use accumulated impact from the selected records'));
     }
     fireEvent.click(submit);
 
@@ -2496,7 +2497,7 @@ describe('conclusion prompt keeps state on impact_evidence_required (TS-16)', ()
     );
     expect(apiMock.moveCard).toHaveBeenCalledTimes(2);
     if (seal) expect(apiMock.moveCard.mock.calls[1][1].delivery_selection).toEqual({
-      expected_card_version: 2, expected_spec_edition: 1, expected_delivery_revision: 3, record_ids: ['saved-proof'],
+      expected_card_version: 2, expected_spec_edition: 1, expected_delivery_revision: 3, record_ids: ['saved-proof'], reuse_impact: true,
     });
   });
 });

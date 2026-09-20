@@ -36,6 +36,11 @@ export function DeliverySelectionEditor({ boardId, cardId, specId, onChange, onP
     const value = { ...input, record_ids: checked ? [...input.record_ids, identity] : input.record_ids.filter(id => id !== identity) };
     setInput(value); onChange(value);
   }
+  function reuseImpact(checked: boolean) {
+    if (!input) return;
+    const value = { ...input, reuse_impact: checked };
+    setInput(value); onChange(value);
+  }
   return <section className="mt-3 space-y-2 rounded border p-3 text-sm" aria-label="Report evidence selection">
     <label><input type="checkbox" checked={enabled} onChange={event => { onPending(event.target.checked); setEnabled(event.target.checked); }} /> Seal recorded evidence with this report</label>
     {enabled && <>
@@ -44,6 +49,8 @@ export function DeliverySelectionEditor({ boardId, cardId, specId, onChange, onP
       <button type="button" onClick={() => setReload(value => value + 1)}>Refresh evidence selection</button>
       {recordSet?.truncated && <p>The list is limited to 200 of {recordSet.total} records. No records were selected automatically.</p>}
       {input && <p>Delivery revision {input.expected_delivery_revision} · {input.record_ids.length} selected</p>}
+      {input && <label className="block"><input type="checkbox" checked={input.reuse_impact ?? false} onChange={event => reuseImpact(event.target.checked)} /> Use accumulated impact from the selected records</label>}
+      {input?.reuse_impact && <p>The server composes the selected declarations and checks their source bases before submitting. Unresolved or stale declarations require reconciliation; no manual impact block is needed for a valid selection.</p>}
       <div className="max-h-48 overflow-auto">{recordSet?.records.map(record => <label key={record.id} className="block">
         <input type="checkbox" checked={input?.record_ids.includes(record.id) ?? false} onChange={event => toggle(record.id, event.target.checked)} /> {record.kind}: {record.summary}
       </label>)}</div>

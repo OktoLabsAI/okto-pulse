@@ -18,6 +18,10 @@ it('loads exact IDs and revisions and permits a narrower explicit selection', as
   fireEvent.click(screen.getByLabelText('progress: Review notes'));
   expect(p.onChange).toHaveBeenLastCalledWith({ expected_card_version: 4, expected_spec_edition: 3, expected_delivery_revision: 2, record_ids: ['proof'] });
   expect(p.onPending).toHaveBeenLastCalledWith(false);
+  fireEvent.click(screen.getByLabelText('Use accumulated impact from the selected records'));
+  expect(p.onChange).toHaveBeenLastCalledWith(expect.objectContaining({ record_ids: ['proof'], reuse_impact: true }));
+  fireEvent.click(screen.getByLabelText('progress: Review notes'));
+  expect(p.onChange).toHaveBeenLastCalledWith(expect.objectContaining({ record_ids: ['proof', 'note'], reuse_impact: true }));
 });
 
 it('keeps submission pending on read failure and refreshes before retry', async () => {

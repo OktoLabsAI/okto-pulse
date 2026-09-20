@@ -46,6 +46,15 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
+it.each([true, false])('shows submitted impact currentness=%s independently of delivery credit', async current => {
+  const result = projection();
+  result.per_card![0].report_impact = { source: 'accumulated', current, reason: current ? null : 'known_source_changed' };
+  api.getDeliveryEvidence.mockResolvedValue(result);
+  render(<CardDeliveryDoDPanel boardId="b" card={CARD} />);
+  expect(await screen.findByText(current ? 'Submitted impact matches the known source bases.' : 'Submitted impact needs a new current basis before required impact validation can pass.')).toBeInTheDocument();
+  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
+});
+
 it('loads accumulated impact for this card without changing its delivery verdict', async () => {
   const result = projection();
   result.per_card![0].accumulated_impact = {

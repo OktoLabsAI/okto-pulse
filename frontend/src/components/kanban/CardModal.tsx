@@ -2553,10 +2553,10 @@ export function CardModal({
                 </div>
               </div>
             </div>
-            <ImpactEvidenceEditor
+            {!conclusionDeliverySelection?.reuse_impact && <ImpactEvidenceEditor
               draft={conclusionImpactDraft}
               onChange={setConclusionImpactDraft}
-            />
+            />}
             {card?.spec_id && <DeliverySelectionEditor key={card.id} boardId={card.board_id} cardId={card.id} specId={card.spec_id} onChange={setConclusionDeliverySelection} onPending={setConclusionSelectionPending} />}
             {conclusionGateError && (
               <p
@@ -2576,7 +2576,7 @@ export function CardModal({
                     completeness_justification: conclusionCompletenessJustification.trim(),
                     drift: conclusionDrift,
                     drift_justification: conclusionDriftJustification.trim(),
-                  }, undefined, buildImpactEvidencePayload(conclusionImpactDraft), conclusionDeliverySelection);
+                  }, undefined, conclusionDeliverySelection?.reuse_impact ? undefined : buildImpactEvidencePayload(conclusionImpactDraft), conclusionDeliverySelection);
                   // AC-16: only a successful move closes the prompt — a gate
                   // rejection keeps every typed row intact.
                   if (ok) setShowConclusionPrompt(false);
@@ -2880,6 +2880,7 @@ export function ExecutionReportsPanel({ card }: { card: Card }) {
 
           {report.delivery_manifest && <div className="mt-3 rounded border p-3 text-sm">
             <p>Sealed delivery revision {report.delivery_manifest.delivery_revision} · {report.delivery_manifest.records.length} selected records</p>
+            {report.delivery_manifest.impact_basis && <p>Impact reused from recorded declarations · {report.delivery_manifest.impact_basis.length} source bases</p>}
             <code className="break-all text-xs">{report.delivery_manifest.sha256}</code>
             <p>This is the evidence presented with the report; current eligibility is evaluated separately.</p>
           </div>}

@@ -3,6 +3,7 @@ export interface DeliverySelectionInput {
   expected_spec_edition: number;
   expected_delivery_revision: number;
   record_ids: string[];
+  reuse_impact?: boolean;
 }
 export interface DeliveryNetImpact {
   contract_version: 'delivery-net-impact/v1';
@@ -17,11 +18,13 @@ export interface DeliveryNetImpact {
   issues_truncated: boolean;
 }
 export interface DeliverySelectionManifest {
-  contract_version: 'card-delivery-selection/v1';
+  contract_version: 'card-delivery-selection/v1' | 'card-delivery-selection/v2';
   board_id: string; card_id: string; spec_id: string; spec_edition: number;
   card_version: number; delivery_revision: number; sha256: string;
   scope_sha256: string; impact_sha256: string;
   records: Array<{ id: string; kind: 'progress' | 'implementation' | 'test'; sha256: string }>;
+  impact_basis?: Array<{ source_ref: string; source_identity_sha256: string; base_revision: string;
+    result_revision: string; observation_receipt_id: string; record_ids: string[] }>;
 }
 export interface DeliveryEvidenceInput {
   expected_edition: number;
@@ -104,6 +107,7 @@ export interface DeliveryPerCard {
   card_version?: number;
   delivery_revision?: number;
   accumulated_impact?: DeliveryNetImpact;
+  report_impact?: { source: 'manual_or_absent' | 'accumulated'; current: boolean | null; reason: string | null };
   selection?: { total: number; truncated: boolean; records: Array<{ id: string; kind: string; summary: string }> };
   progress?: {
     total: number; truncated: boolean; recovery_verified: false;

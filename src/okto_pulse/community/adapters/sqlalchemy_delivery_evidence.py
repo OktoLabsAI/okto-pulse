@@ -17,6 +17,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     ImplementationTargetRow as Target,
     CodeInvestigationReceiptRow as Receipt,
     CodeInvestigationReceiptRevocationRow as Revocation,
+    CodeInvestigationHeadRow as SourceHead,
 )
 from okto_pulse.core.domain.delivery_evidence import (
     CardDeliveryScope,
@@ -39,8 +40,9 @@ from okto_pulse.core.domain.delivery_evidence import (
 )
 from okto_pulse.core.domain.enums import CardType, CardStatus, TestScenarioStatus
 from okto_pulse.core.domain.delivery_progress import DeliveryProgress, progress_blocks_execution, progress_change_scope, require_delivery_progress_mutable
-from okto_pulse.core.domain.delivery_selection import current_delivery_selection, seal_delivery_selection
-from okto_pulse.core.domain.delivery_impact import DeliveryImpactClaim, compose_delivery_impact
+from okto_pulse.core.domain.delivery_selection import current_delivery_selection, seal_delivery_selection, current_delivery_report, report_reuses_impact
+from okto_pulse.core.domain.delivery_impact import DeliveryImpactClaim, compose_delivery_impact, DeliveryImpactObservation, progress_affects_impact_source, require_impact_observation, reusable_impact_block
+from okto_pulse.core.models.delivery_selection import DeliveryImpactBasis, DeliverySelectionManifest
 from okto_pulse.core.models.delivery_evidence import (
     CardDeliveryEvidenceCommand,
     CardDeliveryEvidenceBatchCommand,
@@ -702,7 +704,7 @@ class CommunityDeliveryEvidenceStore:
             payload=record.payload,
         ))
 
-    async def seal_selection(self, scope, selection, *, expected_status, impact):
+    async def _fenced_selection(self, scope, selection, *, expected_status):
         if selection.expected_spec_edition != scope.spec_edition:
             raise ValueError("delivery_edition_conflict")
         await self.lock_scope(DeliveryScope(scope.board_id, scope.spec_id, scope.spec_edition))
@@ -719,9 +721,91 @@ class CommunityDeliveryEvidenceStore:
                     and row.kind in {"implementation", "test", "progress"}]
         if {row.id for row in selected} != wanted:
             raise ValueError("delivery_selection_record_unavailable")
+        return card, spec, records, selected
+
+    async def seal_selection(self, scope, selection, *, expected_status, impact, impact_basis=None):
+        card, spec, records, selected = await self._fenced_selection(scope, selection, expected_status=expected_status)
+        if bool(selection.reuse_impact) != (impact_basis is not None):
+            raise ValueError("delivery_selection_impact_basis_required")
         return seal_delivery_selection(scope=scope, card_version=card.policy_version,
-            revision=len(records), obligations=self._snapshot_obligations(spec, card), impact=impact,
+            revision=len(records), obligations=self._snapshot_obligations(spec, card), impact=impact, impact_basis=impact_basis,
             records=[dict(id=row.id, kind=row.kind, sha256=self._selection_record_hash(row)) for row in selected])
+
+    async def _observed_impact_basis(self, scope, source, *, original=None, fence=False):
+        statement = select(SourceHead).where(SourceHead.board_id == scope.board_id, SourceHead.source_ref == source["source_ref"])
+        head = (await self.session.scalars((statement.with_for_update() if fence else statement).execution_options(populate_existing=True))).one_or_none()
+        receipt = None
+        if head is not None and head.current_receipt_id:
+            statement = select(Receipt).where(Receipt.id == head.current_receipt_id,
+                Receipt.board_id == scope.board_id, Receipt.source_ref == source["source_ref"])
+            if original is None:
+                statement = statement.where(Receipt.subject_type == "card", Receipt.subject_id == scope.card_id)
+            receipt = (await self.session.scalars((statement.with_for_update() if fence else statement).execution_options(populate_existing=True))).one_or_none()
+        if original is not None:
+            statement = select(Receipt).where(
+                Receipt.id == original.observation_receipt_id, Receipt.board_id == scope.board_id,
+                Receipt.source_ref == original.source_ref, Receipt.subject_type == "card", Receipt.subject_id == scope.card_id,
+            )
+            original_row = (await self.session.scalars((statement.with_for_update() if fence else statement).execution_options(populate_existing=True))).one_or_none()
+            if (original_row is None
+                or original_row.source_identity_digest != original.source_identity_sha256
+                or (original_row.declared_revision or "").lower() != original.result_revision):
+                raise ValueError("delivery_impact_observation_revoked_or_unavailable")
+        # Read revocations after taking receipt locks; a concurrent revoker must
+        # precede this read or wait for the report/completion transaction.
+        revoked_ids = set((await self.session.scalars(select(Revocation.receipt_id).where(
+            Revocation.board_id == scope.board_id,
+            Revocation.receipt_id.in_([identity for identity in (
+                receipt.id if receipt else None, original.observation_receipt_id if original else None) if identity]),
+        ))).all())
+        if original is not None and original.observation_receipt_id in revoked_ids:
+            raise ValueError("delivery_impact_observation_revoked_or_unavailable")
+        observation = DeliveryImpactObservation(receipt.id, receipt.source_ref, receipt.source_identity_digest,
+            receipt.declared_revision, receipt.observed_at, bool(head.state == "current"
+                and receipt.acceptance_status == "accepted" and receipt.declared_dirty is False and receipt.id not in revoked_ids)) if receipt else None
+        progress = await self._active_material_progress(DeliveryScope(scope.board_id, scope.spec_id, scope.spec_edition), scope.card_id)
+        target_ids = {identity for _, declaration in progress for identity in declaration.target_ids}
+        target_sources = dict((await self.session.execute(select(Target.id, Target.source_ref).where(
+            Target.board_id == scope.board_id, Target.card_id == scope.card_id, Target.id.in_(target_ids),
+        ))).all()) if target_ids else {}
+        checkpoints = tuple(row.created_at for row, declaration in progress
+                            if progress_affects_impact_source(declaration, source["source_ref"], target_sources))
+        require_impact_observation(source, observation, checkpoints,
+                                  expected_identity=original.source_identity_sha256 if original else source["source_identity_sha256"])
+        return DeliveryImpactBasis(source_ref=source["source_ref"], source_identity_sha256=observation.source_identity_sha256,
+            base_revision=source["base_revision"], result_revision=source["result_revision"],
+            observation_receipt_id=observation.receipt_id, record_ids=source["record_ids"]).model_dump(mode="json")
+
+    async def resolve_selection_impact(self, scope, selection, *, expected_status):
+        _, _, _, selected = await self._fenced_selection(scope, selection, expected_status=expected_status)
+        projection = compose_delivery_impact(self._impact_claims(selected))
+        impact = reusable_impact_block(projection)
+        by_id = {row.id: row for row in selected}
+        for source in projection["sources"]:
+            identities = {by_id[identity].payload.get("_impact_source_identity_sha256") for identity in source["record_ids"]}
+            if None in identities or len(identities) != 1:
+                raise ValueError("delivery_impact_source_identity_unestablished")
+            source["source_identity_sha256"] = next(iter(identities))
+        basis = [await self._observed_impact_basis(scope, source, fence=True) for source in projection["sources"]]
+        return dict(impact_evidence=impact.model_dump(mode="json", exclude_none=True), impact_basis=basis)
+
+    async def report_impact_status(self, scope, *, for_update=False):
+        if for_update:
+            await self.lock_scope(DeliveryScope(scope.board_id, scope.spec_id, scope.spec_edition))
+        card, spec, _ = await self._card_scope_guard(scope)
+        report = current_delivery_report(card)
+        if report is None or not report_reuses_impact(report):
+            return dict(source="manual_or_absent", current=None, reason=None)
+        try:
+            records = await self._card_records(scope)
+            current_delivery_selection(card, scope, obligations=self._snapshot_obligations(spec, card),
+                record_hashes={row.id: self._selection_record_hash(row) for row in records})
+            manifest = DeliverySelectionManifest.model_validate(report["delivery_manifest"])
+            for basis in manifest.impact_basis or ():
+                await self._observed_impact_basis(scope, basis.model_dump(), original=basis, fence=for_update)
+            return dict(source="accumulated", current=True, reason=None)
+        except ValueError as exc:
+            return dict(source="accumulated", current=False, reason=str(exc).split(":", 1)[0][:128])
 
     async def _selection_summary(self, scope):
         records = await self._card_records(scope)
@@ -732,6 +816,17 @@ class CommunityDeliveryEvidenceStore:
             records=[dict(id=row.id, kind=row.kind, summary=row.payload.get("justification", "")[:160])
                      for row in selectable[-200:]])
 
+    def _impact_claims(self, records):
+        claims = []
+        for row in records:
+            if row.kind != "progress":
+                continue
+            progress = DeliveryProgress.model_validate(row.payload["progress"])
+            if progress.impact_delta is not None:
+                claims.append(DeliveryImpactClaim(row.id, progress.source_state.source_ref,
+                    progress.impact_base_revision, progress.source_state.declared_revision, progress.impact_delta))
+        return tuple(claims)
+
     async def _accumulated_impact(self, scope):
         """All active declared deltas, independently of a frozen report selection.
 
@@ -741,16 +836,7 @@ class CommunityDeliveryEvidenceStore:
         records = await self._card_records(scope)
         revoked = {row.payload.get("record_id") for row in records
                    if row.kind == "revoke" and row.actor_kind in {"human", "user"}}
-        claims = []
-        for row in records:
-            if row.kind != "progress" or row.id in revoked:
-                continue
-            progress = DeliveryProgress.model_validate(row.payload["progress"])
-            if progress.impact_delta is not None:
-                claims.append(DeliveryImpactClaim(row.id, progress.source_state.source_ref,
-                    progress.impact_base_revision, progress.source_state.declared_revision,
-                    progress.impact_delta))
-        return compose_delivery_impact(tuple(claims))
+        return compose_delivery_impact(self._impact_claims([row for row in records if row.id not in revoked]))
 
     def _snapshot_obligations(self, spec, card):
         """Obligation universe for one card's snapshot.
@@ -997,6 +1083,17 @@ class CommunityDeliveryEvidenceStore:
         payload["card_id"] = card.id
         if batch_context is not None:
             payload["_batch"] = batch_context
+        if command.kind == "progress" and command.progress.impact_delta is not None and command.progress.source_state.source_ref:
+            # Server provenance only: request schemas cannot author this value.
+            # Unestablished/conflicted identity stays unknown, never blocks the
+            # checkpoint and never becomes reusable impact through inference.
+            payload["_impact_source_identity_sha256"] = await self.session.scalar(
+                select(Receipt.source_identity_digest).join(SourceHead, SourceHead.current_receipt_id == Receipt.id).where(
+                    SourceHead.board_id == scope.board_id, SourceHead.source_ref == command.progress.source_state.source_ref,
+                    SourceHead.state == "current", Receipt.board_id == scope.board_id,
+                    Receipt.source_ref == command.progress.source_state.source_ref, Receipt.acceptance_status == "accepted",
+                ).with_for_update()
+            )
         if command.bindings is not None:
             payload["contribution_contract_version"] = "card-binding-contribution/v2" if command.composite_execution else "card-binding-contribution/v1"
             payload["contributions"] = [{
@@ -1248,6 +1345,7 @@ class CommunityDeliveryEvidenceStore:
                     "delivery_revision": await self._delivery_revision(card_scope),
                     "selection": await self._selection_summary(card_scope),
                     "accumulated_impact": await self._accumulated_impact(card_scope),
+                    "report_impact": await self.report_impact_status(card_scope),
                     "progress": await self._progress_summary(card_scope),
                     "card_type": str(
                         getattr(card.card_type, "value", card.card_type)
