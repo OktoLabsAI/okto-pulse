@@ -1,7 +1,8 @@
 # CLI issue closeout — September 13, 2026
 
 Historical checkpoint. The v0.4.0 simplification removes the `reset` command
-and its exclusive implementation/tests; the reset section below records prior
+and the `kg` group, including their exclusive CLI implementations/tests. The
+reset and schema-migration sections below record prior
 behavior and qualification, not a supported operation. Current commands are
 listed in the [README](../README.md).
 

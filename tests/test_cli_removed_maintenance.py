@@ -21,6 +21,26 @@ RETIRED_ARGUMENTS = (
     ("verify-pipeline", "board-fixture"),
     ("verify-pipeline", "board-fixture", "--json"),
     ("verify-pipeline", "--help"),
+    ("kg",),
+    ("kg", "--help"),
+    ("kg", "migrate-schema", "--all-boards"),
+    ("kg", "migrate-schema", "--board", "board-fixture"),
+    ("kg", "backfill", "board-fixture"),
+    ("kg", "backfill", "board-fixture", "--apply"),
+    ("kg", "dedup-entities", "board-fixture", "--propose"),
+    ("kg", "dedup-entities", "board-fixture", "--confirm"),
+    ("kg", "dedup-entities", "board-fixture", "--approve", "proposal-fixture"),
+    ("kg", "proposals", "board-fixture"),
+    ("kg", "unmerge", "board-fixture", "record-fixture"),
+    ("kg", "export", "board-fixture", "--output", "export.jsonld"),
+    ("kg", "subtype"),
+    ("kg", "subtype", "declare", "Entity", "custom"),
+    ("kg", "restore", "quarantine-fixture"),
+    ("kg", "restore", "quarantine-fixture", "--apply"),
+    *(("kg", command, "--help") for command in (
+        "migrate-schema", "backfill", "dedup-entities", "proposals", "unmerge",
+        "export", "subtype", "restore",
+    )),
 )
 
 
@@ -51,6 +71,14 @@ def test_retired_handlers_and_exclusive_reset_module_are_absent():
     assert importlib.util.find_spec(
         "okto_pulse.community.commands.reset_graphs"
     ) is None
+    assert not [name for name in vars(cli) if name.startswith("cmd_kg_")]
+    for helper in ("_apply_backfill", "_spec_to_dict", "_card_to_dict", "_sprint_to_dict",
+                   "_json_field", "_configure_kg_restore_cold_registry"):
+        assert not hasattr(cli, helper)
+    assert importlib.util.find_spec(
+        "okto_pulse.community.commands.kg_migrate_schema"
+    ) is None
+    assert importlib.util.find_spec("okto_pulse.core.kg.dedup_migration") is None
 
 
 def test_help_retains_product_setup_and_observation(monkeypatch, capsys):
@@ -61,6 +89,7 @@ def test_help_retains_product_setup_and_observation(monkeypatch, capsys):
     help_text = capsys.readouterr().out
     assert "reset" not in help_text
     assert "verify-pipeline" not in help_text
+    assert "Knowledge graph operations" not in help_text
     for command in ("init", "serve", "status", "code-traceability", "metrics", "api-key"):
         assert command in help_text
 
@@ -119,5 +148,5 @@ def test_current_guides_do_not_offer_retired_commands():
     root = Path(__file__).resolve().parents[1]
     for relative in ("README.md", "CLAUDE.md", "docs/kg-health.md"):
         text = (root / relative).read_text(encoding="utf-8")
-        for command in ("okto-pulse reset", "okto-pulse verify-pipeline"):
+        for command in ("okto-pulse reset", "okto-pulse verify-pipeline", "okto-pulse kg "):
             assert command not in text, (relative, command)

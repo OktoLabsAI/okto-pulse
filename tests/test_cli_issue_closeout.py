@@ -9,8 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from okto_pulse.community import cli, config, serve_lock
-from okto_pulse.community.commands import status, kg_migrate_schema
+from okto_pulse.community import cli, config
+from okto_pulse.community.commands import status
 
 
 @pytest.fixture
@@ -146,21 +146,3 @@ def test_rest_and_cli_share_window_bounds():
     assert metrics.MIN_WINDOW_DAYS == metrics_limits.MIN_WINDOW_DAYS == 1
     assert metrics.MAX_WINDOW_DAYS == metrics_limits.MAX_WINDOW_DAYS == 400
     assert metrics.DEFAULT_WINDOW_DAYS == cli.DEFAULT_WINDOW_DAYS == 30
-
-
-def test_migration_refuses_real_live_lock_before_composition(
-    local_settings, monkeypatch, capsys
-):
-    monkeypatch.setattr(
-        kg_migrate_schema,
-        "_compose_and_list_boards",
-        lambda **_: pytest.fail("must not compose"),
-    )
-    lock = serve_lock.ServeInstanceLock(local_settings.data_dir).acquire()
-    try:
-        with pytest.raises(SystemExit) as error:
-            cli.cmd_kg_migrate_schema(SimpleNamespace(all_boards=True, board_id=None))
-    finally:
-        lock.release()
-    assert error.value.code == 2
-    assert "ERROR [serve-lock]: refusing 'kg migrate-schema'" in capsys.readouterr().err

@@ -1,5 +1,9 @@
 # Issues #84–#88: CLI, configuration and cognitive badge refresh
 
+Historical qualification: the v0.4.0 simplification removes the public `kg` CLI
+group, including migration/export/subtype commands described below. These results
+record the earlier version; see the README for current commands.
+
 Reviewed against the Community 0.3.3 development source on 2026-09-14.
 All five reports were applicable; none was closed as obsolete.
 

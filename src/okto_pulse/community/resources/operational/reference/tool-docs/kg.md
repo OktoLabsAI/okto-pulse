@@ -1389,8 +1389,7 @@ always serializes to the same bytes.
 Paged by a stable `node_id` cursor: pass `next_cursor` until
 `last_page=true`; the concatenation of pages is the full export. An
 unreadable graph returns `kg_export_failed` and never a partial document.
-The CLI twin (`okto-pulse kg export --output`) writes the full document
-atomically offline. REST is deliberately absent (spec decision D7).
+The former CLI graph export is removed. REST is absent.
 
 ## `okto_pulse_kg_provenance_drift`
 

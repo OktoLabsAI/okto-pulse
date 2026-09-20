@@ -43,14 +43,6 @@ def test_readme_documents_every_supported_cli_command_path() -> None:
         "okto-pulse metrics export",
         "okto-pulse metrics purge-local",
         "okto-pulse api-key",
-        "okto-pulse kg migrate-schema",
-        "okto-pulse kg backfill",
-        "okto-pulse kg dedup-entities",
-        "okto-pulse kg proposals",
-        "okto-pulse kg unmerge",
-        "okto-pulse kg export",
-        "okto-pulse kg subtype declare",
-        "okto-pulse kg restore",
     )
 
     assert not [command for command in commands if f"`{command}" not in readme]

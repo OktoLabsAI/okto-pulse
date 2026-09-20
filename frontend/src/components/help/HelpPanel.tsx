@@ -1555,15 +1555,11 @@ When a consolidation entry exhausts its retries (5 attempts), it lands in the DL
 
 Boards can also enable \`dlq_auto_drain_enabled\` to re-queue dead letters automatically. Use the inspector to diagnose extractor regressions, connectivity-guard rejections, embedder timeouts, or schema mismatches without tailing server logs.
 
-### Schema migration self-heal
+### Schema availability
 
-KG schema evolves across releases (e.g. v0.3.2 added \`human_curated\`, \`last_recomputed_at\`). The hot path **auto-migrates** on first read, so most users never notice. For boards stuck or pre-v0.3.2 graphs, a triplet is exposed:
+A schema incompatibility makes the affected graph operation unavailable. Health observations are not authority to migrate or repair storage. Schema changes belong to the compatible release process; do not delete graph files to bypass an incompatibility.
 
-- **CLI** — \`okto-pulse kg migrate-schema\`
-- **MCP tool** — \`kg_migrate_schema\` (gemellar)
-- **REST** — \`POST /api/v1/kg/migrate-schema\`
-
-> **Important:** Never delete local graph database files manually — the migration preserves all nodes/edges. Deleting forces a full re-consolidation.
+The public KG maintenance CLI has been removed. Project knowledge queries and semantic consolidation retain their existing authorization.
 
 ### Cognitive consolidation (KG-03)
 

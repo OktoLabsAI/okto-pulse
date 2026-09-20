@@ -22,7 +22,8 @@ updates, lock deletion or direct worker invocation are not supported procedures.
 The former `verify-pipeline` command is removed: its execution initialized the
 relational schema and composed graph access, so it could not provide a passive
 health observation. `reset` and its physical deletion implementation are also
-removed. Both names, including old options and help invocations, produce the
+removed. The entire `kg` maintenance command group is also removed. These names,
+including old options and help invocations, produce the
 standard unknown-command error (exit 2) before dispatch. There is no replacement
 alias or callable handler for either command.
 
@@ -31,8 +32,7 @@ Health is not permission to repair storage, bypass a gate, or manufacture missin
 evidence. Corruption requiring human intervention belongs to an authorized
 external support/release procedure with a verified backup and compatible binaries.
 
-The v0.4.0 maintenance removal is incremental on the feature branch. Other KG
-commands and existing UI/MCP/REST maintenance surfaces still require removal and
+The v0.4.0 maintenance removal is incremental on the feature branch. The dedicated recovery executor and existing UI/MCP/REST maintenance surfaces still require removal and
 qualification; this CLI change does not establish that every health provider is
 free of lazy initialization or writes. The consolidated implementation ledger
 tracks those remaining requirements and their evidence.
