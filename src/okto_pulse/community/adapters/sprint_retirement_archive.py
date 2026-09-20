@@ -23,7 +23,8 @@ from okto_pulse.community.adapters.sqlalchemy_models import DomainEventRow
 from okto_pulse.community.adapters.sprint_retirement_inventory import _inspect_snapshot
 
 
-_FORMAT = "historical-relational-archive/v1"
+_LEGACY_FORMAT = "historical-relational-archive/v1"
+_FORMAT = "historical-relational-archive/v2"
 _EVENT = "historical_archive.created"
 _NAMESPACE = uuid.UUID("9ad371f4-024e-5cbe-a550-b112926cf66a")
 _TABLES = ("sprints", "sprint_history", "sprint_qa_items", "sprint_activation_baselines")
@@ -65,6 +66,86 @@ def _quoted(name):
     return '"' + name.replace('"', '""') + '"'
 
 
+def _counts(document):
+    tables = _TABLES if document["format"] == _LEGACY_FORMAT else sorted(document["tables"])
+    result = tuple((name, len(document["tables"][name]["rows"])) for name in tables)
+    result += (("card_links", len(document["card_links"])),)
+    if document["format"] == _FORMAT:
+        result += (("reference_roles", len(document["reference_roles"])),)
+    return result
+
+
+def _related_plan(inventory):
+    """Deduplicate physical rows while retaining every observed reference role."""
+    plan = {}
+
+    def add(table, key, board, role):
+        identity = (table, key)
+        if identity not in plan:
+            plan[identity] = (board, [])
+        if not board or plan[identity][0] != board:
+            raise ValueError("historical_archive_reference_owner_conflict")
+        plan[identity][1].append(role)
+
+    for reference in inventory.historical_references.references:
+        add(reference.table, reference.key, reference.owner_board_id, {
+            "role": reference.role, "origin_id": reference.sprint_id,
+            "reference_board_id": reference.reference_board_id, "scope_state": reference.scope_state,
+        })
+    for item in inventory.work.items:
+        add(item.table, (("id", item.row_id),), item.board_id, {
+            "role": "durable_work", "origin_ids": list(item.sprint_ids),
+            "disposition": item.action, "reason": item.reason,
+        })
+    return plan
+
+
+def _append_related(connection, schema, plan, documents, consume, remaining_bytes):
+    by_table = {}
+    for (table, key), value in plan.items():
+        by_table.setdefault(table, {})[key] = value
+    for table, wanted in sorted(by_table.items()):
+        columns = schema.get_columns(table)
+        names = [column["name"] for column in columns]
+        primary_key = tuple(schema.get_pk_constraint(table)["constrained_columns"])
+        if not primary_key or any(tuple(name for name, _ in key) != primary_key for key in wanted):
+            raise ValueError("historical_archive_reference_key_mismatch")
+        descriptor = {"columns": [{"name": c["name"], "type": str(c["type"]), "nullable": c["nullable"]} for c in columns],
+            "primary_key": list(primary_key)}
+        ordered = sorted(wanted, key=lambda key: _encode([[_cell(v) for _, v in key]]))
+        # Parameterized batches cover composite keys too, without N+1 reads or
+        # type-aware ORM decoding that could normalize the stored JSON evidence.
+        for start in range(0, len(ordered), 16):
+            batch = ordered[start:start + 16]
+            predicates, parameters = [], {}
+            for index, key in enumerate(batch):
+                predicates.append("(" + " AND ".join(f"{_quoted(name)}=:k{index}_{part}" for part, (name, _) in enumerate(key)) + ")")
+                parameters.update({f"k{index}_{part}": value for part, (_, value) in enumerate(key)})
+            predicate = " OR ".join(predicates)
+            size = "+".join(f"coalesce(length(CAST({_quoted(name)} AS BLOB)),0)" for name in names)
+            if connection.execute(text(f"SELECT 1 FROM {_quoted(table)} WHERE ({predicate}) AND ({size}) > :byte_limit LIMIT 1"),
+                    {**parameters, "byte_limit": remaining_bytes()}).first() is not None:
+                raise ValueError("historical_archive_capture_limit")
+            query = f"SELECT * FROM {_quoted(table)} WHERE {predicate} ORDER BY " + ",".join(map(_quoted, primary_key))
+            observed = set()
+            with connection.execute(text(query).execution_options(stream_results=True, yield_per=16), parameters) as rows:
+                for row in rows.mappings():
+                    key = tuple((name, row[name]) for name in primary_key)
+                    board, roles = wanted[key]
+                    if "board_id" in row and row["board_id"] != board:
+                        raise ValueError("historical_archive_reference_owner_conflict")
+                    cells = [_cell(row[name]) for name in names]
+                    evidence = {"table": table, "key": [[name, _cell(value)] for name, value in key], "roles": roles}
+                    consume([cells, evidence])
+                    document = documents[board]
+                    section = document["tables"].setdefault(table, {**descriptor, "rows": []})
+                    section["rows"].append(cells)
+                    document["reference_roles"].append(evidence)
+                    observed.add(key)
+            if observed != set(batch):
+                raise ValueError("historical_archive_reference_row_missing")
+
+
 def _capture(connection: Connection, *, migration_id: str, max_rows: int, max_bytes: int):
     inventory = _inspect_snapshot(connection, max_rows=max_rows)
     inventory.require_valid_relations()
@@ -73,8 +154,18 @@ def _capture(connection: Connection, *, migration_id: str, max_rows: int, max_by
     # prevent cutover through require_classified_work(), which is a separate gate.
     schema = inspect(connection)
     boards = dict(connection.execute(text("SELECT id, board_id FROM sprints ORDER BY id")).all())
+    plan = _related_plan(inventory)
+    owner_boards = set(boards.values()) | {owner for owner, _ in plan.values()}
+    existing_boards = set()
+    ordered_boards = sorted(owner_boards)
+    for start in range(0, len(ordered_boards), 16):
+        parameters = {f"b{index}": board for index, board in enumerate(ordered_boards[start:start + 16])}
+        placeholders = ",".join(f":{name}" for name in parameters)
+        existing_boards.update(connection.execute(text(f"SELECT id FROM boards WHERE id IN ({placeholders})"), parameters).scalars())
+    if not owner_boards <= existing_boards:
+        raise ValueError("historical_archive_reference_owner_missing")
     documents = {board: {"format": _FORMAT, "board_id": board, "migration_id": migration_id,
-        "origin_kind": "sprint", "tables": {}, "card_links": []} for board in sorted(set(boards.values()))}
+        "origin_kind": "sprint", "tables": {}, "card_links": [], "reference_roles": []} for board in sorted(owner_boards)}
     consumed = 0
     encoded_size = 0
 
@@ -114,6 +205,7 @@ def _capture(connection: Connection, *, migration_id: str, max_rows: int, max_by
             link = dict(row)
             consume(link)
             documents[row["board_id"]]["card_links"].append(link)
+    _append_related(connection, schema, plan, documents, consume, lambda: max_bytes - encoded_size)
     result = []
     total = 0
     for board, document in documents.items():
@@ -121,7 +213,7 @@ def _capture(connection: Connection, *, migration_id: str, max_rows: int, max_by
         total += len(encoded)
         if total > max_bytes:
             raise ValueError("historical_archive_capture_limit")
-        counts = tuple((name, len(document["tables"][name]["rows"])) for name in _TABLES) + (("card_links", len(document["card_links"])),)
+        counts = _counts(document)
         identity = str(uuid.uuid5(_NAMESPACE, _encode([migration_id, board]).decode("utf-8")))
         result.append((identity, board, encoded, counts))
     return result
@@ -142,10 +234,10 @@ async def verify_historical_archive(storage: StorageProvider, reference: Histori
     if len(content) != reference.size or hashlib.sha256(content).hexdigest() != reference.sha256:
         raise ValueError("historical_archive_hash_mismatch")
     document = json.loads(content)
-    if (document.get("format") != _FORMAT or document.get("board_id") != reference.board_id
+    if (document.get("format") not in {_LEGACY_FORMAT, _FORMAT} or document.get("board_id") != reference.board_id
             or document.get("migration_id") != reference.migration_id):
         raise ValueError("historical_archive_scope_mismatch")
-    counts = tuple((name, len(document["tables"][name]["rows"])) for name in _TABLES) + (("card_links", len(document["card_links"])),)
+    counts = _counts(document)
     if counts != reference.counts:
         raise ValueError("historical_archive_counts_mismatch")
     return document

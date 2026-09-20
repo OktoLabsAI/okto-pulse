@@ -2,6 +2,8 @@
 
 import hashlib
 import base64
+import json
+from dataclasses import replace
 from pathlib import Path
 import sqlite3
 
@@ -15,6 +17,7 @@ from okto_pulse.community.adapters.sprint_retirement_archive import (
 from okto_pulse.community.adapters.sqlalchemy_models import Base, Sprint
 from okto_pulse.community.adapters.storage import CommunityFileSystemStorage
 import test_sprint_retirement_inventory as relational
+import test_sprint_retirement_references as historical
 
 database = relational.database
 
@@ -189,3 +192,132 @@ async def test_audit_insert_failure_rolls_back_database_and_cleans_staged_blobs(
     async with engine.connect() as connection:
         assert (await connection.execute(text("SELECT count(*) FROM domain_events"))).scalar_one() == 0
     assert list((tmp_path / "storage").glob("board-*/*.json")) == []
+
+
+@pytest.mark.asyncio
+async def test_receipt_and_composite_children_preserved_once_without_other_subjects(database, tmp_path):
+    engine, _ = database
+    await historical.receipt(engine)
+    await historical.receipt(engine, "unrelated", entity_type="spec", subject_id="spec-a")
+    async with engine.begin() as connection:
+        for parent in ("receipt", "unrelated"):
+            await connection.execute(insert(Base.metadata.tables["policy_compliance_adopted_revisions"]).values(
+                receipt_id=parent, guideline_id="guideline", binding_id="binding", binding_revision=1,
+                revision_id="revision", semantic_version="1", revision_digest="b" * 64))
+    storage = CommunityFileSystemStorage(str(tmp_path / "storage"))
+    reference, = await capture_sprint_retirement_archive(engine, storage, migration_id="receipts")
+    document = await verify_historical_archive(storage, reference)
+    assert document["format"] == "historical-relational-archive/v2"
+    assert [row["receipt_id"] for row in decoded_rows(document, "policy_compliance_receipts")] == [["text", "receipt"]]
+    child, = decoded_rows(document, "policy_compliance_adopted_revisions")
+    assert child["receipt_id"] == ["text", "receipt"] and child["revision_digest"] == ["text", "b" * 64]
+    assert document["tables"]["policy_compliance_adopted_revisions"]["primary_key"] == ["receipt_id", "guideline_id"]
+    assert len(document["reference_roles"]) == 2
+    assert await capture_sprint_retirement_archive(engine, storage, migration_id="receipts") == (reference,)
+
+
+@pytest.mark.asyncio
+async def test_queue_multiple_roles_and_mixed_event_executions_are_not_processed_or_duplicated(database, tmp_path):
+    engine, _ = database
+    async with engine.begin() as connection:
+        await connection.execute(insert(Base.metadata.tables["consolidation_queue"]).values(
+            id="queue", board_id="board-a", artifact_type="sprint", artifact_id="sprint",
+            work_kind="consolidate", status="pending", attempts=0, payload={}))
+        await connection.execute(text("""INSERT INTO domain_events
+            (id,event_type,board_id,actor_type,payload_json,occurred_at)
+            VALUES ('mixed','card.created','board-a','user',:payload,CURRENT_TIMESTAMP)"""),
+            {"payload": '{ "card_id":"card", "sprint_id":"sprint" }'})
+        await connection.execute(text("""INSERT INTO domain_event_handler_executions
+            (id,event_id,handler_name,status,attempts) VALUES ('execution','mixed','SomeSurvivingHandler','pending',0)"""))
+    storage = CommunityFileSystemStorage(str(tmp_path / "storage"))
+    reference, = await capture_sprint_retirement_archive(engine, storage, migration_id="work")
+    document = await verify_historical_archive(storage, reference)
+    assert len(decoded_rows(document, "consolidation_queue")) == 1
+    queue = next(r for r in document["reference_roles"] if r["table"] == "consolidation_queue")
+    assert {role["role"] for role in queue["roles"]} == {"artifact_type", "durable_work"}
+    assert decoded_rows(document, "domain_events")[0]["payload_json"] == ["text", '{ "card_id":"card", "sprint_id":"sprint" }']
+    assert decoded_rows(document, "domain_event_handler_executions")[0]["status"] == ["text", "pending"]
+    async with engine.connect() as connection:
+        assert (await connection.execute(text("SELECT status FROM consolidation_queue"))).scalar_one() == "pending"
+        assert (await connection.execute(text("SELECT status FROM domain_event_handler_executions"))).scalar_one() == "pending"
+    assert await capture_sprint_retirement_archive(engine, storage, migration_id="work") == (reference,)
+
+
+@pytest.mark.asyncio
+async def test_historical_references_on_board_without_sprints_stay_with_owner(database, tmp_path):
+    engine, _ = database
+    await historical.receipt(engine, "past", board_id="board-b", subject_id="removed-source")
+    storage = CommunityFileSystemStorage(str(tmp_path / "storage"))
+    references = await capture_sprint_retirement_archive(engine, storage, migration_id="past")
+    documents = {r.board_id: await verify_historical_archive(storage, r) for r in references}
+    assert set(documents) == {"board-a", "board-b"}
+    assert "policy_compliance_receipts" not in documents["board-a"]["tables"]
+    assert decoded_rows(documents["board-b"], "sprints") == []
+    assert decoded_rows(documents["board-b"], "policy_compliance_receipts")[0]["subject_id"] == ["text", "removed-source"]
+    assert documents["board-b"]["reference_roles"][0]["roles"][0]["scope_state"] == "historical_source_absent"
+
+
+@pytest.mark.asyncio
+async def test_related_row_mutation_invalidates_replay_and_limit_covers_related_payload(database, tmp_path):
+    engine, _ = database
+    await historical.receipt(engine)
+    storage = CommunityFileSystemStorage(str(tmp_path / "storage"))
+    reference, = await capture_sprint_retirement_archive(engine, storage, migration_id="unchanged")
+    async with engine.begin() as connection:
+        await connection.execute(text("UPDATE policy_compliance_receipts SET evaluated_by='different-author'"))
+    with pytest.raises(ValueError, match="replay_mismatch"):
+        await capture_sprint_retirement_archive(engine, storage, migration_id="unchanged")
+    original = await verify_historical_archive(storage, reference)
+    assert decoded_rows(original, "policy_compliance_receipts")[0]["evaluated_by"] == ["text", "owner"]
+    with pytest.raises(ValueError, match="capture_limit"):
+        await capture_sprint_retirement_archive(engine, storage, migration_id="too-big", max_bytes=reference.size - 1)
+
+
+@pytest.mark.asyncio
+async def test_v1_archive_remains_readable_but_does_not_claim_v2_reference_coverage(database, tmp_path):
+    engine, _ = database
+    storage = CommunityFileSystemStorage(str(tmp_path / "storage"))
+    reference, = await capture_sprint_retirement_archive(engine, storage, migration_id="legacy")
+    document = await verify_historical_archive(storage, reference)
+    document["format"] = "historical-relational-archive/v1"
+    document.pop("reference_roles")
+    encoded = json.dumps(document, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    path = await storage.save("board-a", "legacy.json", encoded)
+    counts = tuple((table, len(document["tables"][table]["rows"])) for table in (
+        "sprints", "sprint_history", "sprint_qa_items", "sprint_activation_baselines")) + (("card_links", 0),)
+    legacy = replace(reference, storage_path=path, sha256=hashlib.sha256(encoded).hexdigest(), size=len(encoded), counts=counts)
+    restored = await verify_historical_archive(storage, legacy)
+    assert restored["format"].endswith("/v1") and "reference_roles" not in restored
+
+
+@pytest.mark.asyncio
+async def test_reference_batches_are_complete_and_parent_scoped_kb_keeps_raw_content(database, tmp_path):
+    engine, _ = database
+    for index in range(19):
+        await historical.receipt(engine, f"receipt-{index:02}")
+    async with engine.begin() as connection:
+        await connection.execute(insert(Base.metadata.tables["spec_knowledge_bases"]).values(
+            id="kb", spec_id="spec-a", source_type="sprint", source_id="sprint", title="History",
+            content="  Original e\u0301\r\nbody  ", created_by="kb-author"))
+    storage = CommunityFileSystemStorage(str(tmp_path / "storage"))
+    reference, = await capture_sprint_retirement_archive(engine, storage, migration_id="batches")
+    document = await verify_historical_archive(storage, reference)
+    assert {tuple(row["receipt_id"]) for row in decoded_rows(document, "policy_compliance_receipts")} == {
+        ("text", f"receipt-{index:02}") for index in range(19)}
+    assert dict(reference.counts)["policy_compliance_receipts"] == 19
+    assert dict(reference.counts)["reference_roles"] == 20
+    kb, = decoded_rows(document, "spec_knowledge_bases")
+    assert kb["content"] == ["text", "  Original e\u0301\r\nbody  "] and kb["created_by"] == ["text", "kb-author"]
+    assert await capture_sprint_retirement_archive(engine, storage, migration_id="batches") == (reference,)
+
+
+@pytest.mark.asyncio
+async def test_invalid_cross_board_reference_is_not_archived_under_the_source_board(database, tmp_path):
+    engine, _ = database
+    await historical.receipt(engine, board_id="board-b", subject_id="sprint")
+    storage = CommunityFileSystemStorage(str(tmp_path / "storage"))
+    with pytest.raises(RuntimeError, match="scope_review"):
+        await capture_sprint_retirement_archive(engine, storage, migration_id="cross-board")
+    assert not (tmp_path / "storage").exists()
+    async with engine.connect() as connection:
+        assert (await connection.execute(text("SELECT count(*) FROM domain_events"))).scalar_one() == 0
