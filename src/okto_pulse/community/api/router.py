@@ -75,7 +75,6 @@ from okto_pulse.community.api.kg_cognitive_candidate_commands import (
 from okto_pulse.community.api.kg_cognitive_badges import (
     router as kg_cognitive_badges_router,
 )
-from okto_pulse.community.api.kg_tick import router as kg_tick_router
 from okto_pulse.community.api.traceability import router as traceability_router
 from okto_pulse.community.api.code_traceability import (
     router as code_traceability_router,
@@ -157,7 +156,6 @@ api_router.include_router(
     kg_cognitive_candidate_commands_router, tags=["kg-cognitive-pending"]
 )
 api_router.include_router(kg_cognitive_badges_router, tags=["kg-cognitive-badges"])
-api_router.include_router(kg_tick_router, tags=["kg-tick"])
 api_router.include_router(traceability_router, tags=["traceability"])
 api_router.include_router(code_traceability_router)
 api_router.include_router(resource_gate_router, tags=["resource-gate"])

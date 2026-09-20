@@ -743,34 +743,6 @@ Returns:
     ad-hoc/universal property. There is no `name` property — use `title`/`content`.
     Use this map to write schema-safe Cypher (okto_pulse_kg_query_cypher).
 
-## `okto_pulse_kg_tick_run_now`
-
-Trigger the KG decay tick manually — gemelar do REST POST /api/v1/kg/tick/run-now.
-
-Dispara um tick imediato sem esperar o cron periódico. Operador agente
-chama esta ferramenta quando: (a) acabou de reescalar nodes em massa
-e quer scoring fresh imediato, (b) detectou que `default_score_ratio`
-está acima de 0.7 e suspeita de stale ranking, (c) está debugando
-scoring de um board específico (passe `board_id`).
-
-Use `force_full_rebuild=true` para zerar `last_recomputed_at` antes
-do tick (ignora staleness threshold) — útil para boards 0.3.x cujos
-nodes herdaram defaults sem benefício do tick. SOMENTE per-trigger;
-NUNCA é setting persistido para evitar full-rebuild noturno acidental.
-
-Concurrent calls (cron + manual OU duas chamadas manuais) recebem
-erro `tick_already_running` — primeiro a chegar ganha o advisory lock.
-
-Args:
-    board_id: Optional board UUID. Empty string = global tick (all boards).
-    force_full_rebuild: When true, resets last_recomputed_at to NULL
-        for all nodes in scope before the tick — ignores staleness.
-
-Returns:
-    JSON with `{tick_id, status: "running", scheduled_at}` on 202 success.
-    On 409 (lock held), `{error: "tick_already_running", message: "..."}`.
-    On auth failure, `{error: "..."}`.
-
 ## `okto_pulse_kg_update_cognitive_pending_item`
 
 KG-03.3 — Mutate exactly one cognitive consolidation item.

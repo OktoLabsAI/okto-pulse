@@ -9,10 +9,14 @@ import { fireEvent, render, screen, waitFor, act } from '@testing-library/react'
 
 import { RuntimeSettingsPanel } from './RuntimeSettingsPanel';
 import * as runtimeApi from '@/services/runtime-settings-api';
-import * as kgTickApi from '@/services/kg-tick-api';
 
 const permissionMock = vi.hoisted(() => ({
   has: vi.fn((_flag: string) => true),
+}));
+
+vi.mock('@/store/dashboard', () => ({
+  useDashboardStore: (selector: (state: { currentBoard: { id: string } }) => unknown) =>
+    selector({ currentBoard: { id: 'board-tick-retired' } }),
 }));
 
 vi.mock('@/hooks/usePermissions', () => ({
@@ -298,25 +302,19 @@ describe('Decay Tick tab — f9732afc', () => {
     expect(screen.getByTestId('input-tick-max-age-days')).toBeInTheDocument();
   });
 
-  test('Save and run now button so aparece no Decay Tick tab e dispara triggerKGTick', async () => {
-    const tickSpy = vi
-      .spyOn(kgTickApi, 'triggerKGTick')
-      .mockResolvedValue({ tick_id: 't-123', status: 'started' } as any);
-    const putSpy = vi.mocked(runtimeApi.putRuntimeSettings);
-
-    render(<RuntimeSettingsPanel onClose={() => {}} />);
-    await waitFor(() => screen.getByTestId('input-grafx-page-size'));
-
-    // Initially on graphdb tab — Save and run now should not exist.
+  test('does not offer manual tick or poll health on the saved Decay Tick tab', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('unexpected request'));
+    const { unmount } = render(<RuntimeSettingsPanel onClose={() => {}} initialTab="decaytick" />);
+    await waitFor(() => screen.getByTestId('input-tick-interval-minutes'));
     expect(screen.queryByTestId('save-and-run-now')).not.toBeInTheDocument();
-
+    expect(screen.queryByText(/run tick now|save & run now/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('tab-graphdb'));
     fireEvent.click(screen.getByTestId('tab-decaytick'));
-    await waitFor(() => screen.getByTestId('save-and-run-now'));
-
-    fireEvent.click(screen.getByTestId('save-and-run-now'));
-
-    await waitFor(() => expect(putSpy).toHaveBeenCalled());
-    await waitFor(() => expect(tickSpy).toHaveBeenCalledTimes(1));
+    await act(async () => { await vi.advanceTimersByTimeAsync(45000); });
+    expect(runtimeApi.putRuntimeSettings).not.toHaveBeenCalled();
+    unmount();
+    await act(async () => { await vi.advanceTimersByTimeAsync(15000); });
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
 

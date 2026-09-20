@@ -35,6 +35,7 @@ RETIRED = (
         "preflight", "confirm", "run", "status", "cancel", "resume",
     )),
     "okto_pulse_kg_quarantine_restore",
+    "okto_pulse_kg_tick_run_now",
     *(f"okto_pulse_kg_{suffix}" for suffix in (
         "dead_letter_list", "dead_letter_reprocess", "queue_drilldown",
         "connectivity_dlq_diagnose", "connectivity_dlq_reprocess", "connectivity_dlq_verify",
@@ -45,7 +46,7 @@ RETIRED = (
 
 
 def test_removed_modules_and_console_entrypoint_are_not_distributed():
-    for name in ("kg_recovery_only", "api.kg_rebuild", "api.dead_letter", "api.queue_health"):
+    for name in ("kg_recovery_only", "api.kg_rebuild", "api.dead_letter", "api.queue_health", "api.kg_tick"):
         assert importlib.util.find_spec(f"okto_pulse.community.{name}") is None
     for name in ("dlq_reprocess", "list_dead_letter_rows", "queue_health"):
         assert importlib.util.find_spec(f"okto_pulse.core.application.use_cases.{name}") is None
@@ -83,6 +84,7 @@ def test_registered_rest_app_returns_uniform_absence_without_authorization_or_da
 @pytest.mark.parametrize(("method", "path"), [
     ("GET", "/api/v1/kg/queue/dead-letter"),
     ("POST", "/api/v1/kg/queue/dead-letter/redrive"),
+    ("POST", "/api/v1/kg/tick/run-now"),
     ("GET", "/api/v1/kg/queue/health"),
     ("GET", "/api/v1/kg/queue/drilldown"),
 ])
@@ -100,6 +102,7 @@ def test_retired_queue_rest_routes_are_absent_before_storage(method, path, board
         assert path not in client.get("/openapi.json").json()["paths"]
         response = client.request(method, path, params={"board_id": board}, json={
             "board_id": board, "redrive_all": True, "process_now": True,
+            "force_full_rebuild": True,
             "scope": "code_traceability", "dead_letter_ids": ["historical-row"],
         })
     assert response.status_code == 404
@@ -115,8 +118,10 @@ async def test_materialized_mcp_transport_rejects_removed_tools_before_handlers(
     monkeypatch.setattr(server, "_get_global_agent_ctx", forbidden)
     monkeypatch.setattr(server, "get_unit_of_work_factory_for_mcp", forbidden)
     from okto_pulse.core.kg import interfaces
+    from okto_pulse.core.ports import coordination
 
     monkeypatch.setattr(interfaces, "get_kg_registry", forbidden)
+    monkeypatch.setattr(coordination, "get_lease_provider", forbidden)
     frozen = freeze_mcp_resource_catalog(StaticMcpResourceCatalog("absence", (), precedence=1))
     host = CommunityMcpHostProvider().materialize_catalog(
         server.mcp, resource_catalog=frozen, projection_identity=frozen.identity,
@@ -132,6 +137,7 @@ async def test_materialized_mcp_transport_rejects_removed_tools_before_handlers(
                 "confirmation_id": "historical-confirmation", "manifest_ref": "historical-manifest",
                 "preflight_hash": "a" * 64, "reason": "must not resume maintenance",
                 "dead_letter_ids": ["historical-row"], "process_now": True,
+                "force_full_rebuild": True,
                 "scope": "code_traceability",
             }):
                 result = await client.call_tool(name, arguments, raise_on_error=False)
@@ -142,12 +148,12 @@ async def test_materialized_mcp_transport_rejects_removed_tools_before_handlers(
 def test_removed_permissions_are_absent_from_registry_and_presets():
     assert not any(flag.startswith((
         "kg.operations.rebuild.", "kg.operations.global_recovery.", "kg.operations.quarantine.",
-        "kg.operations.global_outbox.",
+        "kg.operations.global_outbox.", "kg.operations.tick.",
     )) for flag in ALL_FLAGS)
     assert {policy.tool_name for policy in MCP_TOOL_PERMISSION_POLICIES}.isdisjoint(RETIRED)
     for preset in get_builtin_presets():
         operations = preset["flags"].get("kg", {}).get("operations", {})
-        assert {"rebuild", "global_recovery", "quarantine", "global_outbox"}.isdisjoint(operations)
+        assert {"rebuild", "global_recovery", "quarantine", "global_outbox", "tick"}.isdisjoint(operations)
 
 
 def test_distributed_instructions_do_not_advertise_retired_recovery_tools():

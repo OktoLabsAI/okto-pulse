@@ -14,7 +14,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Clock, Play, Settings, X, Zap } from 'lucide-react';
+import { Clock, Settings, X, Zap } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 import {
@@ -25,8 +25,6 @@ import {
   type RuntimeSettingsValues,
   type GrafxSettingDescriptor,
 } from '@/services/runtime-settings-api';
-import { triggerKGTick } from '@/services/kg-tick-api';
-import { getKGHealth } from '@/services/kg-health-api';
 import { useDashboardStore } from '@/store/dashboard';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import { usePermissions } from '@/hooks/usePermissions';
@@ -132,7 +130,6 @@ export function RuntimeSettingsPanel({
   // key (graph database startup-time). Event Queue mutations never set this.
   const [restartRequired, setRestartRequired] = useState(false);
   const [activeTab, setActiveTab] = useState<ActiveTab>(initialTab);
-  // Spec ed17b1fe (Wave 2 NC 1ede3471) — DLQ Inspector modal state.
   const currentBoard = useDashboardStore((s) => s.currentBoard);
   const permissions = usePermissions(currentBoard?.id);
   const policyReady = (
@@ -142,14 +139,6 @@ export function RuntimeSettingsPanel({
   );
   const canReadRuntime = policyReady && permissions.has('runtime.settings.read');
   const canWriteRuntime = policyReady && permissions.has('runtime.settings.write');
-  const canReadKGHealth = policyReady && permissions.has('kg.operations.health.read');
-  const canRunKGTick = policyReady && permissions.has('kg.operations.tick.run');
-  // Bug fix — true quando o advisory lock global ``kg_daily_tick`` está
-  // acquired no backend. Polled enquanto o usuário está no Decay Tick tab
-  // para que "Save & run now" fique disabled mesmo se o usuário tiver
-  // acabado de chegar (cron, MCP ou outro tab podem ter disparado o tick).
-  const [tickInProgress, setTickInProgress] = useState(false);
-
   useEffect(() => {
     if (permissions.isLoading) return;
     if (!canReadRuntime) {
@@ -184,37 +173,6 @@ export function RuntimeSettingsPanel({
       active = false;
     };
   }, [canReadRuntime, permissions.isLoading]);
-
-  // Bug fix — poll do tick_in_progress só enquanto o Decay Tick tab está
-  // ativo (a única superfície onde o "Save & run now" aparece). Intervalo
-  // 15 s é um trade-off entre responsividade e pressão no DB pool — o
-  // ``getKGHealth`` faz queries SQL pesadas (queue_depth aggregation) e
-  // queremos evitar saturar o pool junto com SSE streams + workers. O
-  // ``inFlightRef`` cooldown de 3 s + advisory lock no backend cobre o
-  // gap de detecção em cliques rápidos.
-  useEffect(() => {
-    if (activeTab !== 'decaytick' || !currentBoard || !canReadKGHealth) {
-      setTickInProgress(false);
-      return;
-    }
-    let cancelled = false;
-    const controller = new AbortController();
-    const fetchOnce = async () => {
-      try {
-        const h = await getKGHealth(currentBoard.id, controller.signal);
-        if (!cancelled) setTickInProgress(Boolean(h.tick_in_progress));
-      } catch {
-        // Health degrades gracefully — botão fica habilitado se polling falha.
-      }
-    };
-    fetchOnce();
-    const id = window.setInterval(fetchOnce, 15000);
-    return () => {
-      cancelled = true;
-      controller.abort();
-      window.clearInterval(id);
-    };
-  }, [activeTab, currentBoard, canReadKGHealth]);
 
   const outOfRange = useMemo(() => {
     if (Object.entries(draft.kg_grafx_options).some(([key, value]) => {
@@ -262,15 +220,6 @@ export function RuntimeSettingsPanel({
     setDraft({ ...values });
   };
 
-  // Bug fix (Playwright E2E reproduzido):
-  //
-  // 1. `useRef` síncrono bloqueia rajada de cliques antes do re-render React.
-  // 2. Unlock do ref é DEFERRED por 3s no caminho que dispara o tick — o
-  //    endpoint retorna 202 quase imediatamente, sem cooldown o ref
-  //    liberaria antes do próximo click humano (>100ms). Para o `onSave`
-  //    puro (PUT), o unlock no finally já basta porque a request leva mais.
-  // 3. `tickInProgress` vindo do polling do `/kg/health` cobre cross-mount /
-  //    cross-tab (avaliado no `disabled` do botão e no entry guard).
   const inFlightRef = useRef(false);
 
   const onSave = async () => {
@@ -292,53 +241,6 @@ export function RuntimeSettingsPanel({
       toast.error(err?.message ?? 'Failed to save runtime settings');
     } finally {
       inFlightRef.current = false;
-      setSaving(false);
-    }
-  };
-
-  // Spec 54399628 (Wave 2 NC f9732afc) — "Save & run now" button:
-  // persists settings AND immediately triggers a tick. Available on the
-  // Decay Tick tab; surfaces 409 (tick_already_running) as an amber toast
-  // so the operator knows settings were still saved.
-  const onSaveAndRunNow = async () => {
-    // tickInProgress vem do polling KG health (5s) e cobre cross-mount/
-    // cross-tab. inFlightRef cobre clique-rápido na mesma sessão.
-    if (
-      !canWriteRuntime
-      || !canRunKGTick
-      || outOfRange
-      || inFlightRef.current
-      || tickInProgress
-    ) return;
-    inFlightRef.current = true;
-    setSaving(true);
-    // Cooldown lock — mantém o guard por 3s além do fetch para cobrir o
-    // gap entre o 202 do tick e o próximo poll do health (5s).
-    setTimeout(() => { inFlightRef.current = false; }, 3000);
-    try {
-      const resp = await putRuntimeSettings(buildPatch());
-      const editableValues = snapshotDraft(resp);
-      setValues(editableValues);
-      setDraft(editableValues);
-      setRestartRequired(resp.restart_required);
-      try {
-        await triggerKGTick();
-        toast.success('Settings saved. Tick started.');
-      } catch (tickErr: any) {
-        if (tickErr?.code === 'tick_already_running') {
-          toast(
-            'Tick already running — settings still saved.',
-            { icon: '⚠️' },
-          );
-        } else {
-          toast.error(
-            `Settings saved, but tick failed: ${tickErr?.message ?? 'unknown error'}`,
-          );
-        }
-      }
-    } catch (err: any) {
-      toast.error(err?.message ?? 'Failed to save runtime settings');
-    } finally {
       setSaving(false);
     }
   };
@@ -450,30 +352,6 @@ export function RuntimeSettingsPanel({
           >
             {saving ? 'Saving…' : 'Save'}
           </button>
-          {activeTab === 'decaytick' && (
-            <button
-              onClick={onSaveAndRunNow}
-              disabled={loading || saving || !canWriteRuntime || !canRunKGTick || outOfRange || tickInProgress}
-              className="px-3 py-1.5 text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg disabled:opacity-50 inline-flex items-center gap-1"
-              data-testid="save-and-run-now"
-              title={
-                !canWriteRuntime
-                  ? 'Requires runtime.settings.write'
-                  : !canRunKGTick
-                    ? 'Requires kg.operations.tick.run'
-                  : tickInProgress && !saving
-                    ? 'Tick is already running globally (cron, MCP or another tab)'
-                    : undefined
-              }
-            >
-              <Play size={11} />
-              {saving
-                ? 'Saving…'
-                : tickInProgress
-                  ? 'Tick in progress…'
-                  : 'Save & run now'}
-            </button>
-          )}
         </div>
       </div>
 
@@ -550,10 +428,7 @@ interface DecayTickTabProps {
  *
  * Three persisted settings with hot-reload via APScheduler.reschedule_job:
  * Tick interval (5min-7d), Staleness threshold (1-365d), and the optional
- * Max age cap (0=no cap, useful for legacy boards). Companion endpoint
- * POST /api/v1/kg/tick/run-now is reachable via the "Save & run now"
- * button on the save bar AND via the dedicated button on the
- * KGHealthView SchemaTickCard.
+ * Max age cap (0=no cap, useful for legacy boards).
  */
 function DecayTickTab({ draft, onChange }: DecayTickTabProps) {
   return (
@@ -566,11 +441,6 @@ function DecayTickTab({ draft, onChange }: DecayTickTabProps) {
           <strong>Hot-reload.</strong> Changing the interval triggers
           APScheduler.reschedule_job — the next tick honours the new value
           without a server restart.
-        </div>
-        <div className="text-[10px] opacity-90">
-          <strong>Save & run now</strong> on the bar below persists settings AND
-          immediately fires a tick (HTTP 202 with tick_id; HTTP 409 when one
-          is already running — settings still saved in either case).
         </div>
       </div>
 

@@ -56,8 +56,6 @@ from okto_pulse.community.api.kg_stale_canonical_parity import (
     router as stale_canonical_parity_router,
 )
 from okto_pulse.community.api.settings import router as settings_router
-import okto_pulse.community.api.kg_tick as kg_tick_api
-from okto_pulse.community.api.kg_tick import router as kg_tick_router
 from okto_pulse.core.domain.realm import LOCAL_REALM_ID
 from okto_pulse.core.ports.authentication import Principal
 
@@ -186,7 +184,6 @@ def _client(uow: _Uow, *, claims=None) -> TestClient:
         cognitive_candidates_router,
         cognitive_pending_router,
         kg_routes_router,
-        kg_tick_router,
         settings_router,
     ):
         app.include_router(router, prefix="/api/v1")
@@ -276,11 +273,6 @@ BOARD_SURFACES = [
     ),
     (
         "POST",
-        "/api/v1/kg/tick/run-now",
-        {"board_id": "board-b", "force_full_rebuild": True},
-    ),
-    (
-        "POST",
         "/api/v1/kg/boards/board-b/historical-consolidation/start",
         None,
     ),
@@ -341,11 +333,6 @@ WRITE_SURFACES = [
     ),
     (
         "POST",
-        "/api/v1/kg/tick/run-now",
-        {"board_id": "board-b", "force_full_rebuild": True},
-    ),
-    (
-        "POST",
         "/api/v1/kg/boards/board-b/historical-consolidation/start",
         None,
     ),
@@ -393,7 +380,6 @@ WRITE_SURFACES = [
         "cognitive-badges",
         "cognitive-pending",
         "candidate-command",
-        "board-tick",
         "historical-start",
         "historical-cancel",
         "delete-board-kg",
@@ -535,7 +521,6 @@ def test_canonical_debt_valid_filters_preserve_rest_pagination() -> None:
         "canonical-debt-retry",
         "orphan-backfill",
         "candidate-command",
-        "board-tick-force",
         "historical-start",
         "historical-cancel",
         "delete-board-kg",
@@ -639,62 +624,6 @@ def test_direct_cognitive_readers_require_exact_permission_before_store(
     assert detail["error"] == "permission_denied"
     assert detail["required_permission"] == "kg.operations.cognitive.read"
     assert uow.events == ["board:board-b"]
-
-
-def test_global_tick_viewer_is_denied_before_lease_or_store() -> None:
-    uow = _Uow(board=None)
-
-    response = _client(uow, claims={"roles": ["viewer"]}).post(
-        "/api/v1/kg/tick/run-now",
-        json={"force_full_rebuild": True},
-    )
-
-    assert response.status_code == 403
-    detail = json.loads(response.json()["detail"])
-    assert detail["error"] == "permission_denied"
-    assert detail["required_permission"] == "kg.operations.tick.run"
-    assert uow.events == []
-
-
-@pytest.mark.parametrize(
-    "permissions",
-    [
-        {
-            "kg": {
-                "operations": {"tick": {"run": True}},
-                "admin": {"settings_write": True},
-            }
-        },
-        ["kg.admin.settings_write"],
-    ],
-    ids=["canonical-with-historical-ceiling", "legacy-flat-compatibility"],
-)
-def test_global_tick_authorized_actor_reaches_lease(
-    permissions, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    lease_events: list[tuple[str, int]] = []
-
-    class _HeldLeaseProvider:
-        async def try_acquire(self, key: str, *, ttl_seconds: int):
-            lease_events.append((key, ttl_seconds))
-            return None
-
-    monkeypatch.setattr(
-        kg_tick_api,
-        "get_lease_provider",
-        lambda: _HeldLeaseProvider(),
-    )
-    uow = _Uow(board=None)
-
-    response = _client(uow, claims={"permissions": permissions}).post(
-        "/api/v1/kg/tick/run-now",
-        json={"force_full_rebuild": True},
-    )
-
-    assert response.status_code == 409
-    assert response.json()["detail"]["error"] == "tick_already_running"
-    assert lease_events == [("kg_daily_tick", 300)]
-    assert uow.events == []
 
 
 def test_runtime_settings_viewer_gets_403_before_writer() -> None:

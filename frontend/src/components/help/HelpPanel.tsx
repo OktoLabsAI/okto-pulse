@@ -1534,12 +1534,6 @@ The **KG Health** sub-view exposes runtime diagnostics:
 
 Health reports the component, reason and limitation. An unavailable Global Discovery cache can coexist with a healthy Board graph. Affected operations remain blocked by their integrity checks. Health offers no rebuild or quarantine restore control and no alternate repair command.
 
-#### Run tick now
-
-The **"Run tick now"** button forces a decay/recompute pass without waiting for the scheduler. The button is disabled while a tick is already running (cross-mount/cross-tab safe — backed by the advisory lock + 3s cooldown). Use it after major changes to recompute relevance scores immediately.
-
-The same control surfaces in **Settings → Decay Tick** as **"Save & run now"**, which persists the 3 hot-reload settings (\`interval_minutes\`, \`staleness_days\`, \`max_age_days\`) and triggers a tick in one shot.
-
 ### Delivery failures
 
 KG Health reports failed delivery separately from active queue depth. A technical failure remains visible and cannot be waived through cognitive consolidation. There is no public dead-letter inspector or redrive control.
@@ -1576,7 +1570,7 @@ MCP agents can query **and curate** the Knowledge Graph via 25+ tools:
 
 **Cognitive ledger** — \`kg_list_cognitive_pending_items\`, \`kg_update_cognitive_pending_item\`
 
-**Operate** — \`kg_health\`, \`kg_tick_run_now\`, \`kg_migrate_schema\` / \`kg_orphan_report\` / \`kg_orphan_backfill\`, \`kg_schema_info\`
+**Operate** — \`kg_health\`, \`kg_migrate_schema\` / \`kg_orphan_report\` / \`kg_orphan_backfill\`, \`kg_schema_info\`
 `,
     },
     {
@@ -1638,7 +1632,7 @@ Beyond the static board settings above, the **Runtime Settings Panel** (Menu →
 |-----|----------|
 | **GraphDB** | Grafx buffer budget, independent read participants, descriptor validation and advanced options |
 | **Event Queue** | \`kg_queue_min_interval_ms\` (0–1000), batch size, retry policy |
-| **Decay Tick** | \`interval_minutes\` (5–10080), \`staleness_days\` (1–365), \`max_age_days\` (0–365) — plus the **"Save & run now"** action that persists + triggers a tick atomically |
+| **Decay Tick** | \`interval_minutes\` (5–10080), \`staleness_days\` (1–365), \`max_age_days\` (0–365) |
 
 Changes apply without restarting the server. The Decay Tick tab also polls \`/kg/health\` every 5s while open to surface \`tick_in_progress\` and disable conflicting buttons.
 
