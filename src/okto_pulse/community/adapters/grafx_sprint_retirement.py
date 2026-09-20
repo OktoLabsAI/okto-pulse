@@ -40,8 +40,8 @@ class _TransactionSnapshot:
     second view includes our uncommitted deletes. No graph is reconstructed.
     """
 
-    def __init__(self, database, transaction):
-        contract = logical_transfer_scope("board")
+    def __init__(self, database, transaction, *, scope="board"):
+        contract = logical_transfer_scope(scope)
         self._schema = contract.schema
         catalog = database.catalog.catalog
         _validate_physical_schema(catalog, contract.schema, contract.relationship_tables)
