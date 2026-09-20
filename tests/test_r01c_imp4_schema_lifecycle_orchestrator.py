@@ -406,8 +406,10 @@ def test_migrate_agent_permissions_precedes_reconcile():
     assert _COMPOSED_ORDER.index("_migrate_agent_permissions") < _COMPOSED_ORDER.index(
         "_reconcile_agent_permission_flags"
     )
-    # It is the LAST schema-region step (tail of the migrator plan).
-    assert _SCHEMA_IDS[-1] == "_migrate_agent_permissions"
+    # Subsequent schema-only migrations are allowed; permission migration must
+    # still precede every data-bootstrap step, not just reconciliation.
+    assert all(_COMPOSED_ORDER.index("_migrate_agent_permissions") < _COMPOSED_ORDER.index(step)
+        for step in _DATA_IDS)
 
 
 def test_core_init_db_has_no_inline_lifecycle_order():

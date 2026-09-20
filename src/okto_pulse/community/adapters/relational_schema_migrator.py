@@ -21,7 +21,7 @@ Ledger scope (br_e16ff5a1):
     are DATA bootstrap (``data_bootstrap_boundary``) and are deliberately
     EXCLUDED — a schema plan must never silently absorb data seeding.
   * Nuance: ``_migrate_agent_permissions`` is an ``async def _migrate_*`` that
-    runs at the tail of the schema region. It remains classified
+    runs in the schema region before data bootstrap. It remains classified
     ``post_create_all`` so permission-flag schema migration precedes data
     reconciliation.
 
@@ -605,9 +605,10 @@ def build_community_migration_ledger() -> tuple[MigrationStep, ...]:
             "source": "okto_pulse.community.adapters.relational_schema_steps"
         }
         if step_id == "_migrate_agent_permissions":
-            metadata["runs_at_schema_tail"] = True
+            metadata["runs_at_schema_tail"] = order == len(_LEDGER)
+            metadata["runs_before_data_bootstrap"] = True
             metadata["nuance"] = (
-                "executes at the tail of the schema ledger before data-bootstrap "
+                "executes in the schema ledger before data-bootstrap "
                 "permission reconciliation."
             )
         if step_id == CREATE_ALL_BOUNDARY_STEP_ID:

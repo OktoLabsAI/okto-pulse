@@ -762,10 +762,11 @@ def test_ts_7aacc71a_destructive_steps_are_explicitly_allowlisted():
         "_migrate_drop_spec_skills",
         "_migrate_repair_known_fixture_fk_orphans",
     }
-    # _migrate_agent_permissions carries the documented schema-tail nuance.
+    # Report the actual schema position and preserve the bootstrap dependency.
     perms = next(s for s in ledger if s.step_id == "_migrate_agent_permissions")
     assert perms.phase == "post_create_all"
-    assert perms.metadata.get("runs_at_schema_tail") is True
+    assert perms.metadata.get("runs_at_schema_tail") is False
+    assert perms.metadata.get("runs_before_data_bootstrap") is True
 
 
 # ===========================================================================

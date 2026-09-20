@@ -10,7 +10,7 @@ lifecycle here. Core has no inline fallback; unregistered startup fails closed.
 
 Ordering: the orchestrator runs the schema plan FULLY
 (``pre_create_all`` -> ``create_all_boundary`` -> ``post_create_all``, including
-``_migrate_agent_permissions`` at the tail of the schema region) and THEN the
+``_migrate_agent_permissions`` in the schema region) and THEN the
 data-bootstrap plan (presets -> permissions reconcile -> discovery intents).
 The historical adjacent reorder of ``_migrate_agent_permissions`` and
 ``_seed_builtin_presets`` was proven behavior-preserving and remains encoded in
@@ -35,6 +35,8 @@ imported lazily from Community step modules, so ``core`` never imports ``communi
 """
 
 from __future__ import annotations
+
+from collections.abc import Awaitable, Callable
 
 from okto_pulse.core.ports import (
     DataBootstrapError,
@@ -74,17 +76,21 @@ class CommunityRelationalSchemaLifecycleOrchestrator:
         migrator: CommunityRelationalSchemaMigrator,
         bootstrapper: CommunityDataBootstrapper,
         target: str = "community-sqlite",
+        runtime_admission: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._migrator = migrator
         self._bootstrapper = bootstrapper
         self._target = target
+        self._runtime_admission = runtime_admission
 
     async def initialize_schema(self) -> None:
         """Run the full relational schema lifecycle (FR3): schema region first,
         then data bootstrap. Fail-closed — a non-success result is re-raised as the
         port's structured error so ``init_db`` never proceeds on a partial run."""
+        if self._runtime_admission is not None:
+            await self._runtime_admission()
         # 1) Schema region: pre_create_all -> create_all_boundary -> post_create_all
-        #    (incl _migrate_agent_permissions at the tail of the schema region).
+        #    (including _migrate_agent_permissions before any data bootstrap).
         schema_plan = self._migrator.plan(target=self._target)
         schema_result = await self._migrator.aexecute(schema_plan)
         if not schema_result.is_success:
@@ -115,10 +121,20 @@ def make_community_relational_schema_lifecycle_orchestrator(
     """Composition factory — binds the R16-B migrator + R16-C bootstrapper (each
     wired to Community-owned concrete callables) into the lifecycle
     orchestrator."""
+    async def runtime_admission() -> None:
+        # Resolve the actual engine at initialization, not factory creation:
+        # composition can precede database configuration. The same check covers
+        # registered init_db and callers of this concrete factory directly.
+        from .retirement_runtime_admission import require_retirement_runtime_admission
+        from .sqlalchemy_database import get_engine
+
+        await require_retirement_runtime_admission(get_engine())
+
     return CommunityRelationalSchemaLifecycleOrchestrator(
         migrator=make_community_relational_schema_migrator(target=target),
         bootstrapper=make_community_data_bootstrapper(target=target),
         target=target,
+        runtime_admission=runtime_admission,
     )
 
 

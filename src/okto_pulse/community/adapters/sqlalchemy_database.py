@@ -630,9 +630,11 @@ async def init_db() -> None:
     """Run the composed schema lifecycle through the Core lifecycle port."""
 
     from okto_pulse.core.ports.relational_runtime import init_db as initialize_schema
+    from .retirement_runtime_admission import require_retirement_runtime_admission
 
     runtime = resolve_community_database_runtime()
     async with _serialized_schema_lifecycle(runtime):
+        await require_retirement_runtime_admission(runtime.engine)
         await initialize_schema()
 
 
