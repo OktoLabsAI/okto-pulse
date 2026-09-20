@@ -2421,12 +2421,12 @@ describe('ExecutionReportsPanel impact evidence (TS-11)', () => {
 // submit succeeds after the gate clears.
 describe('conclusion prompt keeps state on impact_evidence_required (TS-16)', () => {
   beforeEach(() => { vi.clearAllMocks(); permissionsMock.has.mockImplementation(() => true); });
-  async function prepareAtomicReport() {
+  async function prepareAtomicReport(target: 'validation' | 'done' = 'validation') {
     const normalCard = { ...cardForType('normal'), status: 'in_progress', spec_id: 'spec-1' } as Card;
     storeMock.selectedCardId = normalCard.id;
     apiMock.getCard.mockResolvedValue(normalCard);
     apiMock.getBoard.mockResolvedValue({ settings: { delivery_evidence_gate: 'blocking' } });
-    apiMock.getAllowedTransitions.mockResolvedValue(transitionEnvelope(normalCard.id, 'in_progress', [allowedTransition('validation')]));
+    apiMock.getAllowedTransitions.mockResolvedValue(transitionEnvelope(normalCard.id, 'in_progress', [allowedTransition(target)]));
     apiMock.getDeliveryEvidence.mockResolvedValue({ board_id: 'board-1', spec_id: 'spec-1', edition: 1,
       rows: [], implementations: [], candidates: [], records: [], rejected_record_ids: [],
       per_card: [{ card_id: normalCard.id, status: 'in_progress', card_version: 2, delivery_revision: 3, obligations: [],
@@ -2434,7 +2434,7 @@ describe('conclusion prompt keeps state on impact_evidence_required (TS-16)', ()
     render(<CardModal boardId="board-1" />);
     const status = await screen.findByRole('combobox', { name: 'Card status' });
     await waitFor(() => expect(status).not.toBeDisabled());
-    fireEvent.change(status, { target: { value: 'validation' } });
+    fireEvent.change(status, { target: { value: target } });
     await screen.findByText('Execution Report Required');
     fireEvent.change(screen.getByPlaceholderText(/## Implementation Summary/), { target: { value: 'Final review summary' } });
     fireEvent.change(screen.getByPlaceholderText('Justify the completeness score...'), { target: { value: 'complete' } });
@@ -2454,6 +2454,20 @@ describe('conclusion prompt keeps state on impact_evidence_required (TS-16)', ()
     fireEvent.change(screen.getByLabelText('Code change in this checkpoint'), { target: { value: 'none' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add progress to report draft' }));
   }
+
+  it('keeps the Done report, selection and unsent batch when delivery proof blocks completion', async () => {
+    const { submit } = await prepareAtomicReport('done');
+    apiMock.recordCardDeliveryEvidence.mockReset().mockRejectedValueOnce(new Error('delivery_evidence_incomplete: obligations=fr:fr'));
+    stageReportProgress();
+    fireEvent.click(submit);
+    await screen.findByText('delivery_evidence_incomplete: obligations=fr:fr');
+    expect(screen.getByPlaceholderText(/## Implementation Summary/)).toHaveValue('Final review summary');
+    expect(screen.getByRole('list', { name: 'Unsent delivery entries' })).toHaveTextContent('Review notes');
+    expect(screen.getByText('Delivery revision 3 · 1 selected')).toBeInTheDocument();
+    expect(submit).not.toBeDisabled();
+    expect(apiMock.moveCard).not.toHaveBeenCalled();
+    expect(apiMock.recordCardDeliveryEvidence.mock.calls[0][3].report.status).toBe('done');
+  });
 
   it.each([false, true])('submits the last batch once and preserves retry content, edit=%s', async edit => {
     const { submit } = await prepareAtomicReport();

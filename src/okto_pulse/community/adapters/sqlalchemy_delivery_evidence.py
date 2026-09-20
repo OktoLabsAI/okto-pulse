@@ -713,7 +713,7 @@ class CommunityDeliveryEvidenceStore:
             ).all()
         )
 
-    async def load_card_snapshot(self, scope: CardDeliveryScope, *, plan=None):
+    async def load_card_snapshot(self, scope: CardDeliveryScope, *, plan=None, prospective_report=None):
         card, spec, spec_scope = await self._card_scope_guard(scope)
         records = await self._card_records(scope)
         revoked = {
@@ -726,7 +726,8 @@ class CommunityDeliveryEvidenceStore:
         selection_valid = True
         try:
             selected = current_delivery_selection(card, scope, obligations=obligations,
-                record_hashes={record.id: self._selection_record_hash(record) for record in records})
+                record_hashes={record.id: self._selection_record_hash(record) for record in records},
+                prospective_report=prospective_report)
         except ValueError:
             selected, selection_valid = set(), False
         implementations, tests = [], []
@@ -859,7 +860,7 @@ class CommunityDeliveryEvidenceStore:
             return dict(source="manual_or_absent", current=None, reason=None)
         try:
             records = await self._card_records(scope)
-            current_delivery_selection(card, scope, obligations=self._snapshot_obligations(spec, card),
+            current_delivery_selection(card, scope, obligations=await self._snapshot_obligations(spec, card),
                 record_hashes={row.id: self._selection_record_hash(row) for row in records})
             manifest = DeliverySelectionManifest.model_validate(report["delivery_manifest"])
             for basis in manifest.impact_basis or ():
