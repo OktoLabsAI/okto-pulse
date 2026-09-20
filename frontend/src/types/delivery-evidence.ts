@@ -1,3 +1,16 @@
+export interface DeliverySelectionInput {
+  expected_card_version: number;
+  expected_spec_edition: number;
+  expected_delivery_revision: number;
+  record_ids: string[];
+}
+export interface DeliverySelectionManifest {
+  contract_version: 'card-delivery-selection/v1';
+  board_id: string; card_id: string; spec_id: string; spec_edition: number;
+  card_version: number; delivery_revision: number; sha256: string;
+  scope_sha256: string; impact_sha256: string;
+  records: Array<{ id: string; kind: 'progress' | 'implementation' | 'test'; sha256: string }>;
+}
 export interface DeliveryEvidenceInput {
   expected_edition: number;
   expected_version: number;
@@ -76,6 +89,7 @@ export interface DeliveryPerCard {
   satisfied: boolean;
   card_version?: number;
   delivery_revision?: number;
+  selection?: { total: number; truncated: boolean; records: Array<{ id: string; kind: string; summary: string }> };
   progress?: {
     total: number; truncated: boolean; recovery_verified: false;
     target_options?: Array<{ id: string; source_ref: string; label: string }>;

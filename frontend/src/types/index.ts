@@ -3884,6 +3884,7 @@ export interface ImpactEvidence {
 }
 
 export interface ConclusionEntry {
+  delivery_manifest?: import('./delivery-evidence').DeliverySelectionManifest | null;
   text: string;
   author_id: string;
   created_at: string;
@@ -3897,6 +3898,7 @@ export interface ConclusionEntry {
 }
 
 export interface MoveCardRequest {
+  delivery_selection?: import('./delivery-evidence').DeliverySelectionInput;
   status: CardStatus;
   position?: number | null;
   before_id?: string | null;

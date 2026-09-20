@@ -14,6 +14,7 @@ import { AuthenticatedFetchError } from '@/lib/authFetch';
 
 const apiMock = vi.hoisted(() => ({
   getCard: vi.fn(),
+  getDeliveryEvidence: vi.fn(),
   getSpec: vi.fn(),
   getSprint: vi.fn(),
   getSpecKnowledge: vi.fn(),
@@ -2417,10 +2418,12 @@ describe('ExecutionReportsPanel impact evidence (TS-11)', () => {
 // remediation renders IN-PLACE and the prompt keeps its state; the same
 // submit succeeds after the gate clears.
 describe('conclusion prompt keeps state on impact_evidence_required (TS-16)', () => {
-  it('shows the remediation without closing and retries successfully', async () => {
+  it.each([false, true])('shows the remediation and retries with sealed selection=%s', async seal => {
+    apiMock.moveCard.mockReset();
     const normalCard = {
       ...cardForType('normal'),
       status: 'in_progress',
+      spec_id: 'spec-1',
     } as Card;
     storeMock.selectedCardId = normalCard.id;
     apiMock.getCard.mockResolvedValue(normalCard);
@@ -2466,6 +2469,13 @@ describe('conclusion prompt keeps state on impact_evidence_required (TS-16)', ()
     const submit = screen.getByRole('button', {
       name: /Complete & Move to/,
     });
+    if (seal) {
+      apiMock.getDeliveryEvidence.mockResolvedValue({ edition: 1, per_card: [{ card_id: normalCard.id, card_version: 2, delivery_revision: 3,
+        selection: { total: 1, truncated: false, records: [{ id: 'saved-proof', kind: 'implementation', summary: 'Delivered parser' }] } }] });
+      fireEvent.click(screen.getByLabelText('Seal recorded evidence with this report'));
+      expect(submit).toBeDisabled();
+      await screen.findByText('Delivery revision 3 · 1 selected');
+    }
     fireEvent.click(submit);
 
     // Gate rejection: remediation in-place, prompt still open, state intact.
@@ -2485,5 +2495,8 @@ describe('conclusion prompt keeps state on impact_evidence_required (TS-16)', ()
       ).not.toBeInTheDocument(),
     );
     expect(apiMock.moveCard).toHaveBeenCalledTimes(2);
+    if (seal) expect(apiMock.moveCard.mock.calls[1][1].delivery_selection).toEqual({
+      expected_card_version: 2, expected_spec_edition: 1, expected_delivery_revision: 3, record_ids: ['saved-proof'],
+    });
   });
 });

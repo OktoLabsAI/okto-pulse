@@ -3,6 +3,8 @@
  */
 
 import React, { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { DeliverySelectionEditor } from '@/components/code-traceability/DeliverySelectionEditor';
+import type { DeliverySelectionInput } from '@/types/delivery-evidence';
 import { v4 as uuidv4 } from 'uuid';
 import { X, HelpCircle, Trash2, Clock, Link, Unlink, RefreshCw, FileText, FlaskConical, Maximize2, Minimize2, Bug, AlertCircle, Check, Scale, Shield, ShieldCheck, ShieldX, ChevronDown, ChevronUp, CheckCircle, XCircle, GitBranch, Network, Gauge, History, Layers, MessageCircleQuestion, MessageSquare, ListChecks, Target, FolderTree } from 'lucide-react';
 import toast from 'react-hot-toast';
@@ -402,6 +404,8 @@ export function CardModal({
   // AC-16: the 409 impact_evidence_required remediation renders inline and
   // the prompt stays open with its state preserved.
   const [conclusionGateError, setConclusionGateError] = useState<string | null>(null);
+  const [conclusionDeliverySelection, setConclusionDeliverySelection] = useState<DeliverySelectionInput>();
+  const [conclusionSelectionPending, setConclusionSelectionPending] = useState(false);
   const taskValidationThresholdsReady = Boolean(
     card
     && currentBoard?.id === card.board_id
@@ -584,6 +588,8 @@ export function CardModal({
     setConclusionDrift(0);
     setConclusionDriftJustification('');
     setConclusionImpactDraft(emptyImpactEvidenceDraft());
+    setConclusionDeliverySelection(undefined);
+    setConclusionSelectionPending(false);
     setConclusionGateError(null);
   };
 
@@ -1081,7 +1087,7 @@ export function CardModal({
     },
   );
 
-  const handleStatusChange = async (status: CardStatus, conclusion?: string, metrics?: { completeness: number; completeness_justification: string; drift: number; drift_justification: string }, cancellationReason?: string, impactEvidence?: ImpactEvidence): Promise<boolean> => {
+  const handleStatusChange = async (status: CardStatus, conclusion?: string, metrics?: { completeness: number; completeness_justification: string; drift: number; drift_justification: string }, cancellationReason?: string, impactEvidence?: ImpactEvidence, deliverySelection?: DeliverySelectionInput): Promise<boolean> => {
     if (!card || status === card.status) return false;
     // Rejected is consequence-only. Even if a rolling-upgrade server were to
     // project a stale manual edge, the client must never invoke it.
@@ -1115,6 +1121,7 @@ export function CardModal({
         drift_justification: metrics?.drift_justification,
         ...(cancellationReason ? { cancellation_reason: cancellationReason } : {}),
         ...(impactEvidence ? { impact_evidence: impactEvidence } : {}),
+        ...(deliverySelection ? { delivery_selection: deliverySelection } : {}),
       });
       applyCardUpdate(updated);
       if (updated.status === 'cancelled') {
@@ -2550,6 +2557,7 @@ export function CardModal({
               draft={conclusionImpactDraft}
               onChange={setConclusionImpactDraft}
             />
+            {card?.spec_id && <DeliverySelectionEditor key={card.id} boardId={card.board_id} cardId={card.id} specId={card.spec_id} onChange={setConclusionDeliverySelection} onPending={setConclusionSelectionPending} />}
             {conclusionGateError && (
               <p
                 className="mt-2 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300"
@@ -2568,12 +2576,12 @@ export function CardModal({
                     completeness_justification: conclusionCompletenessJustification.trim(),
                     drift: conclusionDrift,
                     drift_justification: conclusionDriftJustification.trim(),
-                  }, undefined, buildImpactEvidencePayload(conclusionImpactDraft));
+                  }, undefined, buildImpactEvidencePayload(conclusionImpactDraft), conclusionDeliverySelection);
                   // AC-16: only a successful move closes the prompt — a gate
                   // rejection keeps every typed row intact.
                   if (ok) setShowConclusionPrompt(false);
                 }}
-                disabled={!conclusionDraft.trim() || !conclusionCompletenessJustification.trim() || !conclusionDriftJustification.trim()}
+                disabled={conclusionSelectionPending || !conclusionDraft.trim() || !conclusionCompletenessJustification.trim() || !conclusionDriftJustification.trim()}
                 className={`btn text-xs ${conclusionDraft.trim() && conclusionCompletenessJustification.trim() && conclusionDriftJustification.trim() ? 'btn-primary' : 'btn-secondary opacity-50'}`}
               >
                 Complete & Move to {conclusionTargetLabel}
@@ -2870,6 +2878,11 @@ export function ExecutionReportsPanel({ card }: { card: Card }) {
             <Md>{report.text}</Md>
           </div>
 
+          {report.delivery_manifest && <div className="mt-3 rounded border p-3 text-sm">
+            <p>Sealed delivery revision {report.delivery_manifest.delivery_revision} · {report.delivery_manifest.records.length} selected records</p>
+            <code className="break-all text-xs">{report.delivery_manifest.sha256}</code>
+            <p>This is the evidence presented with the report; current eligibility is evaluated separately.</p>
+          </div>}
           {report.impact_evidence && (
             <div
               className="mt-4 rounded-lg border border-gray-200 bg-gray-50/60 p-3 dark:border-gray-700 dark:bg-gray-900/20"

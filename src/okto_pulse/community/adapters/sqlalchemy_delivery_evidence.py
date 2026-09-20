@@ -39,6 +39,7 @@ from okto_pulse.core.domain.delivery_evidence import (
 )
 from okto_pulse.core.domain.enums import CardType, CardStatus, TestScenarioStatus
 from okto_pulse.core.domain.delivery_progress import DeliveryProgress, progress_blocks_execution, progress_change_scope, require_delivery_progress_mutable
+from okto_pulse.core.domain.delivery_selection import current_delivery_selection, seal_delivery_selection
 from okto_pulse.core.models.delivery_evidence import (
     CardDeliveryEvidenceCommand,
     CardDeliveryEvidenceBatchCommand,
@@ -658,9 +659,18 @@ class CommunityDeliveryEvidenceStore:
             for r in records
             if r.kind == "revoke" and r.actor_kind in {"human", "user"}
         }
+        obligations = self._snapshot_obligations(spec, card)
+        selection_valid = True
+        try:
+            selected = current_delivery_selection(card, scope, obligations=obligations,
+                record_hashes={record.id: self._selection_record_hash(record) for record in records})
+        except ValueError:
+            selected, selection_valid = set(), False
         implementations, tests = [], []
         for record in records:
             if record.id in revoked or record.kind == "revoke":
+                continue
+            if selected is not None and record.id not in selected:
                 continue
             bindings = tuple(
                 DeliveryBinding(**b) for b in record.payload.get("bindings", [])
@@ -675,11 +685,51 @@ class CommunityDeliveryEvidenceStore:
                     tests.append(fact)
         return DeliveryEvidenceSnapshot(
             spec_scope,
-            self._snapshot_obligations(spec, card),
+            obligations,
             tuple(implementations),
             tuple(tests),
-            complete=True,
+            complete=selection_valid,
         )
+
+    def _selection_record_hash(self, record):
+        # payload_sha256 is the request digest (possibly the whole batch), not
+        # the fingerprint of its persisted, canonically resolved record.
+        return self.inventory.payload_digest(dict(
+            id=record.id, kind=record.kind, actor_id=record.actor_id, actor_kind=record.actor_kind,
+            created_at=record.created_at.isoformat(), board_id=record.board_id,
+            card_id=record.card_id, spec_id=record.spec_id, spec_edition=record.spec_edition,
+            payload=record.payload,
+        ))
+
+    async def seal_selection(self, scope, selection, *, expected_status, impact):
+        if selection.expected_spec_edition != scope.spec_edition:
+            raise ValueError("delivery_edition_conflict")
+        await self.lock_scope(DeliveryScope(scope.board_id, scope.spec_id, scope.spec_edition))
+        card, spec, _ = await self._card_scope_guard(scope)
+        if card.policy_version != selection.expected_card_version or card.status != expected_status:
+            raise ValueError("delivery_version_conflict")
+        records = await self._card_records(scope)
+        if len(records) != selection.expected_delivery_revision:
+            raise ValueError("delivery_revision_conflict")
+        revoked = {row.payload.get("record_id") for row in records
+                   if row.kind == "revoke" and row.actor_kind in {"human", "user"}}
+        wanted = set(selection.record_ids)
+        selected = [row for row in records if row.id in wanted and row.id not in revoked
+                    and row.kind in {"implementation", "test", "progress"}]
+        if {row.id for row in selected} != wanted:
+            raise ValueError("delivery_selection_record_unavailable")
+        return seal_delivery_selection(scope=scope, card_version=card.policy_version,
+            revision=len(records), obligations=self._snapshot_obligations(spec, card), impact=impact,
+            records=[dict(id=row.id, kind=row.kind, sha256=self._selection_record_hash(row)) for row in selected])
+
+    async def _selection_summary(self, scope):
+        records = await self._card_records(scope)
+        revoked = {row.payload.get("record_id") for row in records
+                   if row.kind == "revoke" and row.actor_kind in {"human", "user"}}
+        selectable = [row for row in records if row.kind != "revoke" and row.id not in revoked]
+        return dict(total=len(selectable), truncated=len(selectable) > 200,
+            records=[dict(id=row.id, kind=row.kind, summary=row.payload.get("justification", "")[:160])
+                     for row in selectable[-200:]])
 
     def _snapshot_obligations(self, spec, card):
         """Obligation universe for one card's snapshot.
@@ -1158,20 +1208,24 @@ class CommunityDeliveryEvidenceStore:
         scope = DeliveryScope(board_id, spec_id, int(spec.edition))
         obligations = self.inventory.spec_obligations(spec)
         implementations, tests, per_card = [], [], []
+        complete = True
         for card in await self._linked_cards(board_id, spec_id):
             card_scope = CardDeliveryScope(
                 board_id, card.id, spec_id, int(spec.edition)
             )
             snapshot = await self.load_card_snapshot(card_scope)
+            complete = complete and snapshot.complete is True
             implementations.extend(snapshot.implementations)
             tests.extend(snapshot.tests)
             evaluation = evaluate_delivery_coverage(snapshot)
             per_card.append(
                 {
                     "card_id": card.id,
+                    "complete": snapshot.complete,
                     "title": card.title,
                     "card_version": card.policy_version,
                     "delivery_revision": await self._delivery_revision(card_scope),
+                    "selection": await self._selection_summary(card_scope),
                     "progress": await self._progress_summary(card_scope),
                     "card_type": str(
                         getattr(card.card_type, "value", card.card_type)
@@ -1187,7 +1241,7 @@ class CommunityDeliveryEvidenceStore:
                         }
                         for row in evaluation.rows
                     ],
-                    "satisfied": bool(evaluation.rows)
+                    "satisfied": snapshot.complete is True and bool(evaluation.rows)
                     and all(row.implementation_satisfied for row in evaluation.rows),
                 }
             )
@@ -1198,6 +1252,6 @@ class CommunityDeliveryEvidenceStore:
             tuple(implementations),
             tuple(tests),
             tuple(waivers),
-            complete=True,
+            complete=complete,
         )
         return snapshot, per_card
