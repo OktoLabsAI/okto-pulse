@@ -15,6 +15,11 @@ from sqlalchemy import inspect, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from okto_pulse.community.adapters.sprint_retirement_work import (
+    SprintWorkInventory,
+    inspect_sprint_retirement_work,
+)
+
 
 _OWNED = frozenset({"sprints", "sprint_history", "sprint_qa_items", "sprint_activation_baselines"})
 _REQUIRED = {
@@ -57,6 +62,7 @@ class SprintRelationalInventory:
 
     counts: tuple[tuple[str, int], ...]
     violations: tuple[SprintRelationViolation, ...]
+    work: SprintWorkInventory
 
     def require_valid_relations(self) -> None:
         if self.violations:
@@ -101,12 +107,14 @@ def _inspect_snapshot(connection: Connection, *, max_rows: int) -> SprintRelatio
 
     counts: dict[str, int] = {}
     violations: list[SprintRelationViolation] = []
+    sprint_boards: dict[str, str] = {}
     consumed = 0
 
     def rows(name: str, query: str):
         nonlocal consumed
         counts[name] = 0
-        with connection.execute(text(query)) as result:
+        statement = text(query + " LIMIT :inventory_limit").execution_options(stream_results=True, yield_per=16)
+        with connection.execute(statement, {"inventory_limit": max_rows - consumed + 1}) as result:
             for row in result.mappings():
                 consumed += 1
                 if consumed > max_rows:
@@ -130,6 +138,7 @@ def _inspect_snapshot(connection: Connection, *, max_rows: int) -> SprintRelatio
         LEFT JOIN sprints origin ON origin.id = s.origin_sprint_id
         LEFT JOIN cards bug ON bug.id = s.origin_bug_id ORDER BY s.id
     """):
+        sprint_boards[row["id"]] = row["board_id"]
         check(row, relation="sprints.board_id", target_id=row["board_id"], actual_id=row["board_row"])
         check(row, relation="sprints.spec_id", target_id=row["spec_id"], actual_id=row["spec_row"],
               board_id=row["board_id"], actual_board=row["spec_board"])
@@ -170,7 +179,8 @@ def _inspect_snapshot(connection: Connection, *, max_rows: int) -> SprintRelatio
                   board_id=row["board_id"] if baseline else None, actual_board=row["sprint_board"])
             if baseline and row["sprint_row"] is not None and row["spec_id"] != row["sprint_spec"]:
                 violations.append(SprintRelationViolation(f"{table}.spec_id", row["id"], row["spec_id"], "scope_mismatch"))
-    return SprintRelationalInventory(tuple(sorted(counts.items())), tuple(violations))
+    work = inspect_sprint_retirement_work(connection, remaining_rows=max_rows - consumed, sprint_boards=sprint_boards)
+    return SprintRelationalInventory(tuple(sorted(counts.items())), tuple(violations), work)
 
 
 async def read_sprint_retirement_inventory(
