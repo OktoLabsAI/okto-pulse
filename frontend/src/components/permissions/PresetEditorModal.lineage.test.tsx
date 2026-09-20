@@ -58,6 +58,35 @@ describe('PresetEditorModal lineage', () => {
     apiMock.updatePreset.mockResolvedValue({});
   });
 
+  it.each([false, true])('saves text without resubmitting policy (owner review: %s)', async (ownerReview) => {
+    const custom = preset('custom', 'Custom', { board: { read: false } }, {
+      is_builtin: false, owner_review_required: ownerReview,
+      review_reason: ownerReview ? 'invalid_preset_flags' : null,
+    });
+    render(<PresetEditorModal preset={custom} presets={[custom]} onClose={() => {}} onSaved={() => {}} />);
+    fireEvent.change(screen.getByPlaceholderText('Preset name...'), { target: { value: 'Renamed' } });
+    fireEvent.change(screen.getByPlaceholderText('What this preset is for...'), { target: { value: 'Description only' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Preset' }));
+    await waitFor(() => expect(apiMock.updatePreset).toHaveBeenCalledWith('custom', {
+      name: 'Renamed', description: 'Description only',
+    }));
+    expect(apiMock.updatePreset.mock.calls[0][1]).not.toHaveProperty('flags');
+  });
+
+  it('submits an explicit flag edit while review remains visible until the owner saves', async () => {
+    const custom = preset('custom', 'Custom', { board: { read: false } }, {
+      is_builtin: false, owner_review_required: true, review_reason: 'invalid_preset_flags',
+    });
+    render(<PresetEditorModal preset={custom} presets={[custom]} onClose={() => {}} onSaved={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Enable All' }));
+    expect(screen.getByTestId('preset-lineage-custom')).toHaveTextContent('owner review required');
+    expect(apiMock.updatePreset).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Save Preset' }));
+    await waitFor(() => expect(apiMock.updatePreset).toHaveBeenCalledWith('custom', {
+      name: 'Custom', description: undefined, flags: { board: { read: true } },
+    }));
+  });
+
   it('resets to base_preset_id, not the first built-in, when order is shuffled', async () => {
     const fullControl = preset(
       'full',
@@ -106,11 +135,30 @@ describe('PresetEditorModal lineage', () => {
 
   it.each([
     {
+      id: 'migration-review',
+      name: 'Migrated custom',
+      base_preset_id: 'valid-base',
+      review_reason: 'invalid_preset_flags',
+      expected: 'owner review',
+      canReset: true,
+      catalog: [preset('valid-base', 'Valid base', {})],
+    },
+    {
+      id: 'damaged-review',
+      name: 'Damaged provenance',
+      base_preset_id: 'valid-base',
+      review_reason: 'invalid_permission_migration_review',
+      expected: 'owner review',
+      canReset: true,
+      catalog: [preset('valid-base', 'Valid base', {})],
+    },
+    {
       id: 'dangling',
       name: 'Dangling',
       base_preset_id: 'missing',
       review_reason: 'dangling_base_preset',
       expected: 'dangling base',
+      canReset: false,
       catalog: [] as PermissionPreset[],
     },
     {
@@ -119,6 +167,7 @@ describe('PresetEditorModal lineage', () => {
       base_preset_id: 'cycle-b',
       review_reason: 'preset_lineage_cycle',
       expected: 'lineage cycle',
+      canReset: false,
       catalog: [
         preset(
           'cycle-b',
@@ -134,13 +183,14 @@ describe('PresetEditorModal lineage', () => {
       ],
     },
   ])(
-    'shows $expected and disables unsafe reset',
+    'shows $expected without silently clearing review',
     ({
       id,
       name,
       base_preset_id,
       review_reason,
       expected,
+      canReset,
       catalog,
     }) => {
       const custom = preset(
@@ -167,9 +217,13 @@ describe('PresetEditorModal lineage', () => {
       const lineage = screen.getByTestId(`preset-lineage-${id}`);
       expect(lineage).toHaveTextContent(expected);
       expect(lineage).toHaveTextContent('owner review required');
-      expect(
-        screen.queryByRole('button', { name: 'Reset to Base' }),
-      ).not.toBeInTheDocument();
+      if (canReset) {
+        fireEvent.click(screen.getByRole('button', { name: 'Reset to Base' }));
+        expect(lineage).toHaveTextContent('owner review required');
+        expect(apiMock.updatePreset).not.toHaveBeenCalled();
+      } else {
+        expect(screen.queryByRole('button', { name: 'Reset to Base' })).not.toBeInTheDocument();
+      }
     },
   );
 });

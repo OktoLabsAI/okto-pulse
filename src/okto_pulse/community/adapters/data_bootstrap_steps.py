@@ -148,7 +148,7 @@ async def _reconcile_agent_permission_flags() -> None:
             canonical, _ = merge_permission_registry_defaults({})
             result = await session.execute(
                 sa_text(
-                    "SELECT id, permission_flags, preset_id FROM agents "
+                    "SELECT id, permission_flags, preset_id, permission_migration_review FROM agents "
                     "WHERE permission_flags IS NOT NULL"
                 )
             )
@@ -157,7 +157,7 @@ async def _reconcile_agent_permission_flags() -> None:
             if any(agent.get("preset_id") for agent in agents):
                 preset_result = await session.execute(
                     sa_text(
-                        "SELECT id, base_preset_id, flags "
+                        "SELECT id, base_preset_id, flags, permission_migration_review "
                         "FROM permission_presets ORDER BY id"
                     )
                 )
@@ -166,6 +166,7 @@ async def _reconcile_agent_permission_flags() -> None:
                         id=row["id"],
                         base_preset_id=row["base_preset_id"],
                         flags=_copy.deepcopy(_json_value(row["flags"])),
+                        migration_review=_json_value(row["permission_migration_review"]),
                     )
                     for row in preset_result.mappings().all()
                 )
@@ -179,6 +180,10 @@ async def _reconcile_agent_permission_flags() -> None:
             review_required_count = 0
             audit_digests: list[tuple[str, str]] = []
             for agent in agents:
+                # A migration review is resolved only by an explicit policy
+                # writer. Bootstrap must neither normalize nor clear that layer.
+                if _json_value(agent["permission_migration_review"]) is not None:
+                    continue
                 stored_dict = _permission_flags_document(
                     agent["permission_flags"],
                     agent_id=agent["id"],

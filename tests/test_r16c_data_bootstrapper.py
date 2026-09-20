@@ -831,7 +831,7 @@ def test_permission_flag_reconcile_rejects_invalid_documents_and_rolls_back(
             return self
 
         def all(self):
-            return [{"id": "invalid-agent", "permission_flags": stored_value}]
+            return [{"id": "invalid-agent", "permission_flags": stored_value, "permission_migration_review": None}]
 
     class _Session:
         def __init__(self):

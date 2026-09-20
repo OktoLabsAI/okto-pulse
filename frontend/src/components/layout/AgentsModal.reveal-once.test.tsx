@@ -408,7 +408,8 @@ describe('AgentsModal reveal-once credentials', () => {
     });
   });
 
-  it('keeps selected preset owner-review visible while using its fail-closed base', async () => {
+  it.each(['dangling_base_preset', 'invalid_preset_flags', 'invalid_permission_migration_review'])(
+    'keeps selected preset owner-review %s visible while using its fail-closed base', async (reviewReason) => {
     const dangerous = {
       ...preset(
         'preset-danger',
@@ -418,7 +419,7 @@ describe('AgentsModal reveal-once credentials', () => {
       is_builtin: false,
       base_preset_id: 'missing-base',
       owner_review_required: true,
-      review_reason: 'dangling_base_preset',
+      review_reason: reviewReason,
     } satisfies PermissionPreset;
     const presetAgent = {
       ...agent('agent-danger', 'Danger Agent'),
@@ -439,7 +440,7 @@ describe('AgentsModal reveal-once credentials', () => {
 
     fireEvent.click(await screen.findByText('Danger Agent'));
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      'Owner review required for Dangling Custom · dangling_base_preset',
+      `Owner review required for Dangling Custom · ${reviewReason}`,
     );
     fireEvent.click(
       await screen.findByRole('button', { name: 'Edit Board permissions' }),

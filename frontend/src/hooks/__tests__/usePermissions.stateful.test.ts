@@ -62,6 +62,22 @@ function permissionChecker(flags: Record<string, unknown>) {
 
 describe('state-aware UI permission composition', () => {
   it.each([
+    'unrecognized_direct_permissions',
+    'invalid_agent_flags',
+    'invalid_preset_flags',
+    'invalid_board_overrides',
+    'invalid_permission_migration_review',
+  ])('keeps migration review %s denied even when reduced flags look permissive', (reviewReason) => {
+    const data = response({ board: { read: true }, card: { entity: { edit_fields: true }, interact_in: { started: true } } });
+    data.owner_review_required = true;
+    data.review_reason = reviewReason;
+    const has = (flag: string) => hasEffectivePermission(data, flag);
+    expect(has('board.read')).toBe(false);
+    expect(hasPermissionWithState(has, 'card.entity.edit_fields', 'card', 'started')).toBe(false);
+    expect(has('unknown.extension')).toBe(false);
+  });
+
+  it.each([
     ...CARD_ACTIONS.map((action) => [action, 'card', 'in_progress'] as const),
     ...SPRINT_ACTIONS.map((action) => [action, 'sprint', 'active'] as const),
   ])('denies %s when its granular action leaf is false', (action, entity, status) => {

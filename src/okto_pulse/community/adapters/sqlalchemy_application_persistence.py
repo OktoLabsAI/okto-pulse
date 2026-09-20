@@ -13,9 +13,6 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import selectinload
 
 from okto_pulse.community.adapters import sqlalchemy_models as models
-from okto_pulse.community.adapters.permission_policy import (
-    direct_permission_review,
-)
 from okto_pulse.community.adapters.sqlalchemy_knowledge_propagation import (
     is_knowledge_creation_race_error,
 )
@@ -33,9 +30,8 @@ from okto_pulse.core.ports.application_persistence import (
 )
 from okto_pulse.core.ports.permission_policy import (
     PermissionPresetLineageNode,
-    legacy_permissions_to_flags,
     resolve_effective_permissions,
-    resolve_preset_lineage,
+    resolve_agent_permission_facts,
 )
 from okto_pulse.core.domain.ownership import aggregate_ownership
 from okto_pulse.core.domain.realm import (
@@ -783,74 +779,27 @@ class CommunitySqlAlchemyApplicationPersistence:
     async def resolve_user_permissions(
         self, context: Any, *, user_id: str, board_id: str
     ) -> Any:
-        """Resolve direct flags, preset lineage and the board ceiling."""
-        result = await context.execute(
-            select(
-                models.Agent.permission_flags,
-                models.Agent.permissions,
-                models.Agent.preset_id,
-                models.AgentBoard.permission_overrides,
-            )
-            .outerjoin(
-                models.AgentBoard,
-                and_(
-                    models.AgentBoard.agent_id == models.Agent.id,
-                    models.AgentBoard.board_id == board_id,
-                ),
-            )
-            .where(models.Agent.created_by == user_id)
-            .limit(1)
-        )
-        row = result.first()
+        """Load policy facts within the existing compact relational query budget."""
+        row = (await context.execute(select(
+            models.Agent.permission_flags, models.Agent.permissions, models.Agent.preset_id,
+            models.AgentBoard.permission_overrides, models.Agent.permission_migration_review,
+            models.AgentBoard.permission_migration_review,
+        ).outerjoin(models.AgentBoard, and_(models.AgentBoard.agent_id == models.Agent.id,
+            models.AgentBoard.board_id == board_id))
+        .where(models.Agent.created_by == user_id).limit(1))).first()
         if row is None:
             return resolve_effective_permissions(None, None, None)
-        permission_flags, legacy_permissions, preset_id, board_overrides = row
-        agent_flags = (
-            copy.deepcopy(permission_flags) if permission_flags is not None else None
-        )
-        owner_review_required, review_reason = direct_permission_review(
-            agent_flags,
-            preset_id=preset_id,
-        )
-        if agent_flags is None and isinstance(legacy_permissions, list):
-            agent_flags = legacy_permissions_to_flags(legacy_permissions)
-
-        preset_flags = None
+        flags, legacy, preset_id, overrides, agent_review, board_review = row
+        presets = ()
         if preset_id:
-            preset_rows = list(
-                (
-                    await context.execute(
-                        select(
-                            models.PermissionPreset.id,
-                            models.PermissionPreset.base_preset_id,
-                            models.PermissionPreset.flags,
-                        ).order_by(models.PermissionPreset.id)
-                    )
-                ).all()
-            )
-            lineage = resolve_preset_lineage(
-                preset_id,
-                tuple(
-                    PermissionPresetLineageNode(
-                        id=preset_row.id,
-                        base_preset_id=preset_row.base_preset_id,
-                        # Preserve malformed top-level JSON so the canonical
-                        # lineage resolver can fail closed and request review.
-                        flags=copy.deepcopy(preset_row.flags),
-                    )
-                    for preset_row in preset_rows
-                ),
-            )
-            preset_flags = lineage.flags
-            owner_review_required = lineage.owner_review_required
-            review_reason = lineage.review_reason
-        return resolve_effective_permissions(
-            agent_flags,
-            preset_flags,
-            board_overrides,
-            owner_review_required=owner_review_required,
-            review_reason=review_reason,
-        )
+            rows = (await context.execute(select(models.PermissionPreset.id,
+                models.PermissionPreset.base_preset_id, models.PermissionPreset.flags,
+                models.PermissionPreset.permission_migration_review).order_by(models.PermissionPreset.id))).all()
+            presets = tuple(PermissionPresetLineageNode(item.id, item.flags, item.base_preset_id,
+                migration_review=item.permission_migration_review) for item in rows)
+        return resolve_agent_permission_facts(agent_flags=flags, legacy_permissions=legacy,
+            preset_id=preset_id, presets=presets, board_overrides=overrides,
+            agent_migration_review=agent_review, board_migration_review=board_review)
 
     async def list(
         self, context: Any, query: ApplicationQuery

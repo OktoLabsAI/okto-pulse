@@ -174,10 +174,11 @@ def test_ts_7aacc71a_ledger_covers_all_migrate_functions():
     # nullable Project structure, Delivery Evidence skip, and prospective
     # architecture selection without a legacy adoption backfill.
     # Joint execution contract + deprecated migration-only Card policy storage.
-    assert len(migrate_names) == 77, (
-        f"expected 77 _migrate_*, found {len(migrate_names)}"
+    # Internal permission-review provenance precedes data reconciliation.
+    assert len(migrate_names) == 78, (
+        f"expected 78 _migrate_*, found {len(migrate_names)}"
     )
-    assert len(ledger_migrate_ids) == 77
+    assert len(ledger_migrate_ids) == 78
     ordered_ids = [step.step_id for step in ledger]
     assert ordered_ids.index(
         "_migrate_guideline_policy_lifecycle_substrate"
@@ -1090,7 +1091,11 @@ def test_v030_installed_schema_upgrades_to_exact_semantic_v2_and_replays(
     # migration-owned objects are part of the current terminal schema and the
     # replay assertion above proves they are idempotent over the v0.3.0 file.
     # Classification adds two tables and one explicitly named lookup index.
-    assert len(schema_objects) == 876
+    # F2A also owns the historical grant table and its archive lookup index.
+    assert {(kind, name) for kind, name, table, _ in schema_objects if table == "historical_archive_grants"} == {
+        ("table", "historical_archive_grants"), ("index", "ix_historical_archive_grants_archive_id"),
+    }
+    assert len(schema_objects) == 878
     assert exact_ack_columns[10:13] == (
         ("membership_content_hash", "VARCHAR(64)", 1),
         ("audit_content_hash", "VARCHAR(64)", 1),

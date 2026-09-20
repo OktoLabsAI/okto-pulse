@@ -118,7 +118,7 @@ export function hasEffectivePermission(
 ): boolean {
   const introduced = isIntroducedPermissionLeaf(flag);
   if (!data) return !introduced;
-  if (introduced && data.owner_review_required) return false;
+  if (data.owner_review_required) return false;
   const value = getNested(data.flags, flag);
   if (value === undefined) return !introduced;
   if (value !== true) return false;

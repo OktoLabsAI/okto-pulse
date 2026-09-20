@@ -24,6 +24,24 @@ StepCallable = Callable[[], "Awaitable[object] | object"]
 logger = logging.getLogger(__name__)
 
 
+async def _migrate_permission_migration_reviews() -> None:
+    """Add nullable review provenance before any bootstrap can normalize flags."""
+    from sqlalchemy import inspect
+
+    async with get_engine().begin() as connection:
+        if connection.dialect.name == "sqlite":
+            await connection.exec_driver_sql("BEGIN IMMEDIATE")
+        for table in ("agents", "agent_boards", "permission_presets"):
+            def columns(sync_connection, table_name=table):
+                inspector = inspect(sync_connection)
+                return ({column["name"] for column in inspector.get_columns(table_name)}
+                    if inspector.has_table(table_name) else None)
+            names = await connection.run_sync(columns)
+            if names is not None and "permission_migration_review" not in names:
+                await connection.exec_driver_sql(
+                    f'ALTER TABLE "{table}" ADD COLUMN permission_migration_review JSON NULL')
+
+
 def _normalize_legacy_code_traceability_settings_payload(
     raw: object,
 ) -> tuple[object, bool]:
@@ -25290,6 +25308,7 @@ async def _migrate_delivery_progress() -> str:
 
 
 SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
+    "_migrate_permission_migration_reviews": _migrate_permission_migration_reviews,
     "_migrate_card_statuses": _migrate_card_statuses,
     "_migrate_add_priority_column": _migrate_add_priority_column,
     "_migrate_add_realm_id": _migrate_add_realm_id,

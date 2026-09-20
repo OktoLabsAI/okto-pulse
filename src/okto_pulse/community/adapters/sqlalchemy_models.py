@@ -3150,6 +3150,8 @@ class Agent(Base):
     permissions: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     # Granular permission flags (new system) — JSON dict with nested flags
     permission_flags: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Internal migration provenance, never accepted in AgentCreate/AgentUpdate.
+    permission_migration_review: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # Preset ID — FK to permission_presets (nullable, agent may have custom flags without preset)
     preset_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_by: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -3193,6 +3195,7 @@ class AgentBoard(Base):
     )
     # Board-scoped permission overrides (AND with agent flags — can only restrict)
     permission_overrides: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    permission_migration_review: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     # Relationships
     agent: Mapped["Agent"] = relationship("Agent", back_populates="board_grants")
@@ -3213,6 +3216,7 @@ class PermissionPreset(Base):
     is_builtin: Mapped[bool] = mapped_column(default=False)
     base_preset_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     flags: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    permission_migration_review: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

@@ -71,6 +71,12 @@ StepCallable = Callable[[], "Awaitable[object] | object"]
 # alter safe; ``create_all`` is checkfirst-idempotent.
 # ---------------------------------------------------------------------------
 _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
+    (
+        "_migrate_permission_migration_reviews",
+        "pre_create_all",
+        False,
+        "Add internal permission review provenance before policy normalization.",
+    ),
     # --- pre_create_all: schema ALTERs applied BEFORE create_all ---
     (
         "_migrate_card_statuses",
