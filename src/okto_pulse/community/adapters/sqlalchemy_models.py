@@ -8258,6 +8258,37 @@ class DomainEventRow(Base):
     )
 
 
+class HistoricalArchiveGrant(Base):
+    """Scoped read authority for an opaque archived origin, never a live entity.
+
+    Captured decisions and the source digest are migration evidence. Only the
+    current sections/revision change on revocation, with a domain audit event.
+    There is deliberately no FK to the retired source or an operational lane.
+    """
+
+    __tablename__ = "historical_archive_grants"
+    __table_args__ = (
+        CheckConstraint("revision >= 1", name="ck_archive_grant_revision"),
+        CheckConstraint("actor_kind IN ('human', 'agent')", name="ck_archive_grant_actor"),
+    )
+
+    realm_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    board_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("boards.id", ondelete="CASCADE"), primary_key=True,
+    )
+    origin_kind: Mapped[str] = mapped_column(String(255), primary_key=True)
+    origin_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    actor_kind: Mapped[str] = mapped_column(String(20), primary_key=True)
+    actor_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    archive_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("domain_events.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    archive_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    captured_sections: Mapped[dict] = mapped_column(JSON, nullable=False)
+    sections: Mapped[dict] = mapped_column(JSON, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
 class DomainEventHandlerExecution(Base):
     """One row per (event, handler) pair. Tracks retry state for the
     async dispatcher; events with multiple handlers get multiple executions.

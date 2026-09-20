@@ -112,10 +112,14 @@ LEGACY_CORE_SCHEMA_SHA256 = (
 # fail-closed per-Spec Code Evidence Matrix coverage skip and the nullable
 # delivery/source-context overlay on Refinement snapshots and Specs, plus the
 # per-Spec Delivery Evidence skip added by the card-delivery release.
+# v0.4 adds the nullable Card migrated_validation_policy and the Spec
+# architecture_adoption/execution_contract JSON columns. Removing exactly those
+# three additions reproduces the preceding 8b43b7a2... contract; the inherited
+# population remains 65 tables. Additive authority/architecture tables are below.
 # Keep the pre-extraction hash above immutable so migration provenance remains
 # independently verifiable.
 CURRENT_COMMUNITY_INHERITED_SCHEMA_SHA256 = (
-    "8b43b7a24b81e783d6601ecf25bbaec41165f81dddd93bce46ef0b792340c09d"
+    "6ca27edf72476258f107e4411466efe6aed99769f3406a14804d680e80bb1c9d"
 )
 
 # Additive Community-owned tables introduced after the F01 extraction. They
@@ -124,6 +128,9 @@ CURRENT_COMMUNITY_INHERITED_SCHEMA_SHA256 = (
 COMMUNITY_SCHEMA_EXTENSION_TABLES = frozenset(
     {
         "card_delivery_evidence_records",
+        "architecture_candidate_decisions",
+        "architecture_classification_receipts",
+        "historical_archive_grants",
         "artifact_deletion_tombstones",
         "global_discovery_delivery_ledger",
         "global_discovery_delivery_redrive_control",

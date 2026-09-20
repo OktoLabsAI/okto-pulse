@@ -246,6 +246,11 @@ class CommunityUnitOfWork:
         )
 
         self.entity_exports = CommunitySqlAlchemyEntityExportReader(session)
+        from okto_pulse.community.adapters.historical_archive_grants import (
+            CommunityHistoricalArchiveGrants,
+        )
+
+        self.historical_archive_grants = CommunityHistoricalArchiveGrants(session)
 
     async def __aenter__(self) -> "CommunityUnitOfWork":
         return self
