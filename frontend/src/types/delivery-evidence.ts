@@ -4,6 +4,18 @@ export interface DeliverySelectionInput {
   expected_delivery_revision: number;
   record_ids: string[];
 }
+export interface DeliveryNetImpact {
+  contract_version: 'delivery-net-impact/v1';
+  status: 'empty' | 'composed' | 'needs_reconciliation';
+  claim_only: true;
+  history_count: number;
+  sources: Array<{ source_ref: string; base_revision: string; result_revision: string;
+    record_ids: string[]; impact_evidence: import('./index').ImpactEvidence }>;
+  issues: Array<{ source_ref: string | null; code: string; record_ids: string[];
+    record_count?: number; records_truncated?: boolean }>;
+  issue_count: number;
+  issues_truncated: boolean;
+}
 export interface DeliverySelectionManifest {
   contract_version: 'card-delivery-selection/v1';
   board_id: string; card_id: string; spec_id: string; spec_edition: number;
@@ -56,6 +68,8 @@ export interface CardDeliveryEvidenceInput {
     target_ids?: string[];
     source_state: { workspace_state: 'unknown' | 'dirty' | 'clean'; recoverability: 'unknown' | 'external_workspace' | 'declared_commit'; source_ref?: string | null; declared_revision?: string | null };
     remaining: string;
+    impact_delta?: import('./index').ImpactEvidence;
+    impact_base_revision?: string;
   };
 }
 
@@ -89,6 +103,7 @@ export interface DeliveryPerCard {
   satisfied: boolean;
   card_version?: number;
   delivery_revision?: number;
+  accumulated_impact?: DeliveryNetImpact;
   selection?: { total: number; truncated: boolean; records: Array<{ id: string; kind: string; summary: string }> };
   progress?: {
     total: number; truncated: boolean; recovery_verified: false;

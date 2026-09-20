@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useDashboardApi } from '@/services/api';
 import { ObligationRefText } from './obligationPresentation';
 import { CardProgressPanel } from './CardProgressPanel';
+import { DeliveryNetImpactPanel } from './DeliveryNetImpactPanel';
 import type {
   CardDeliveryEvidenceInput,
   DeliveryEvidenceInput,
@@ -135,6 +136,7 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
     {!data && !error && <p role="status" className="text-sm text-gray-500">Loading card delivery obligations…</p>}
     {data && <>
       {mine && <CardProgressPanel key={`${boardId}:${card.id}:${data.edition}:${canProgress}`} boardId={boardId} specId={card.spec_id} edition={data.edition} card={mine} canWrite={canProgress} onSaved={() => { setReload(v => v + 1); onChanged?.(); }} />}
+      {mine?.accumulated_impact && <DeliveryNetImpactPanel value={mine.accumulated_impact} />}
       <div className="rounded-md border border-gray-200 p-4 dark:border-gray-800">
         <div className="mb-3 flex items-center justify-between gap-3">
           <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200">Delivery Evidence (Definition of Done)</h3>

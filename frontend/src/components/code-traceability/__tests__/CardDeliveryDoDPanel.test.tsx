@@ -46,6 +46,20 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
+it('loads accumulated impact for this card without changing its delivery verdict', async () => {
+  const result = projection();
+  result.per_card![0].accumulated_impact = {
+    contract_version: 'delivery-net-impact/v1', status: 'needs_reconciliation', claim_only: true,
+    history_count: 1, sources: [], issues: [{ source_ref: null, code: 'source_unknown', record_ids: ['progress'] }],
+    issue_count: 1, issues_truncated: false,
+  };
+  api.getDeliveryEvidence.mockResolvedValue(result);
+  render(<CardDeliveryDoDPanel boardId="b" card={CARD} />);
+  expect(await screen.findByRole('region', { name: 'Accumulated impact claims' })).toBeInTheDocument();
+  expect(screen.getByText('Identify the source of this declaration.')).toBeInTheDocument();
+  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
+});
+
 it('renders the DoD obligations name-first with per-obligation proof state', async () => {
   render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord />);
   expect(await screen.findByText('Bindings live on the card ledger')).toBeTruthy();

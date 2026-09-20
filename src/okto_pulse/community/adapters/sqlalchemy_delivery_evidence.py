@@ -40,6 +40,7 @@ from okto_pulse.core.domain.delivery_evidence import (
 from okto_pulse.core.domain.enums import CardType, CardStatus, TestScenarioStatus
 from okto_pulse.core.domain.delivery_progress import DeliveryProgress, progress_blocks_execution, progress_change_scope, require_delivery_progress_mutable
 from okto_pulse.core.domain.delivery_selection import current_delivery_selection, seal_delivery_selection
+from okto_pulse.core.domain.delivery_impact import DeliveryImpactClaim, compose_delivery_impact
 from okto_pulse.core.models.delivery_evidence import (
     CardDeliveryEvidenceCommand,
     CardDeliveryEvidenceBatchCommand,
@@ -731,6 +732,26 @@ class CommunityDeliveryEvidenceStore:
             records=[dict(id=row.id, kind=row.kind, summary=row.payload.get("justification", "")[:160])
                      for row in selectable[-200:]])
 
+    async def _accumulated_impact(self, scope):
+        """All active declared deltas, independently of a frozen report selection.
+
+        This read-only preview does not authenticate source bases, change the
+        report's impact claim or decide readiness. Revoked entries remain history.
+        """
+        records = await self._card_records(scope)
+        revoked = {row.payload.get("record_id") for row in records
+                   if row.kind == "revoke" and row.actor_kind in {"human", "user"}}
+        claims = []
+        for row in records:
+            if row.kind != "progress" or row.id in revoked:
+                continue
+            progress = DeliveryProgress.model_validate(row.payload["progress"])
+            if progress.impact_delta is not None:
+                claims.append(DeliveryImpactClaim(row.id, progress.source_state.source_ref,
+                    progress.impact_base_revision, progress.source_state.declared_revision,
+                    progress.impact_delta))
+        return compose_delivery_impact(tuple(claims))
+
     def _snapshot_obligations(self, spec, card):
         """Obligation universe for one card's snapshot.
 
@@ -1226,6 +1247,7 @@ class CommunityDeliveryEvidenceStore:
                     "card_version": card.policy_version,
                     "delivery_revision": await self._delivery_revision(card_scope),
                     "selection": await self._selection_summary(card_scope),
+                    "accumulated_impact": await self._accumulated_impact(card_scope),
                     "progress": await self._progress_summary(card_scope),
                     "card_type": str(
                         getattr(card.card_type, "value", card.card_type)
