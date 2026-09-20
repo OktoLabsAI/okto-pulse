@@ -36,13 +36,6 @@ vi.mock("@/services/api", () => ({ useDashboardApi: () => entityApi }));
 vi.mock("@/contexts/ModalStackContext", () => ({
   useModalStack: () => ({ push: navigation }),
 }));
-vi.mock("./DeadLetterInspectorModal", () => ({
-  DeadLetterInspectorModal: ({ onClose }: { onClose: () => void }) => (
-    <div role="dialog" aria-label="Failed processing">
-      <button onClick={onClose}>Close inspector</button>
-    </div>
-  ),
-}));
 vi.mock("@/hooks/usePermissions", () => ({
   usePermissions: () => ({
     preset: "Full Control",
@@ -220,16 +213,14 @@ describe("CognitiveActionCenterView", () => {
     expect(screen.queryByTestId("cac-clear")).toBeNull();
   });
 
-  test("opens the real failed-processing entry point without performing a write", async () => {
+  test("reports failed processing without a repair entry point or write", async () => {
     mockList([DLQ]);
     const write = vi.spyOn(api, "recordCognitiveSkip");
     render(<CognitiveActionCenterView boardId="b" onClose={vi.fn()} />);
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Inspect failed processing" }),
-    );
-    expect(
-      screen.getByRole("dialog", { name: "Failed processing" }),
-    ).toBeInTheDocument();
+    await screen.findByTestId("cac-table");
+    expect(screen.queryByRole("button", { name: "Inspect failed processing" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Failed processing" })).toBeNull();
+    expect(screen.getByText(/Processing is unavailable for this artifact/)).toBeInTheDocument();
     expect(write).not.toHaveBeenCalled();
   });
 
@@ -448,6 +439,10 @@ describe("CognitiveActionCenterView", () => {
     ).toBeInTheDocument();
     expect(within(row).queryByTestId("cac-skip-toggle")).toBeNull();
     expect(within(row).getByTestId("cac-would-block-done")).toBeInTheDocument();
+    expect(within(row).queryByRole('button', { name: /inspect failed processing/i })).toBeNull();
+    expect(row).toHaveTextContent('Processing is unavailable for this artifact');
+    expect(row).not.toHaveTextContent('queue access');
+
     // error_cause técnico exibido, reason_code cognitivo ausente
     expect(within(row).getByTestId("cac-error-cause")).toHaveTextContent(
       "technical_dlq",

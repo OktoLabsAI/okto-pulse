@@ -33,7 +33,6 @@ from okto_pulse.community.api.kg_projection_repair import router as kg_projectio
 from okto_pulse.community.api.me import router as me_router
 from okto_pulse.community.api.discovery import router as discovery_router
 from okto_pulse.community.api.settings import router as settings_router
-from okto_pulse.community.api.queue_health import router as queue_health_router
 from okto_pulse.community.api.kg_health import router as kg_health_router
 from okto_pulse.community.api.kg_canonical_debt import (
     router as kg_canonical_debt_router,
@@ -77,7 +76,6 @@ from okto_pulse.community.api.kg_cognitive_badges import (
     router as kg_cognitive_badges_router,
 )
 from okto_pulse.community.api.kg_tick import router as kg_tick_router
-from okto_pulse.community.api.dead_letter import router as dead_letter_router
 from okto_pulse.community.api.traceability import router as traceability_router
 from okto_pulse.community.api.code_traceability import (
     router as code_traceability_router,
@@ -128,7 +126,6 @@ api_router.include_router(kg_exploration_router)
 api_router.include_router(me_router, tags=["me"])
 api_router.include_router(discovery_router, tags=["discovery"])
 api_router.include_router(settings_router, tags=["settings"])
-api_router.include_router(queue_health_router, tags=["queue-health"])
 api_router.include_router(kg_health_router, tags=["kg-health"])
 api_router.include_router(kg_canonical_debt_router, tags=["kg-canonical-debt"])
 api_router.include_router(kg_projection_repair_router, tags=["kg-projection-repair"])
@@ -161,7 +158,6 @@ api_router.include_router(
 )
 api_router.include_router(kg_cognitive_badges_router, tags=["kg-cognitive-badges"])
 api_router.include_router(kg_tick_router, tags=["kg-tick"])
-api_router.include_router(dead_letter_router, tags=["dead-letter"])
 api_router.include_router(traceability_router, tags=["traceability"])
 api_router.include_router(code_traceability_router)
 api_router.include_router(resource_gate_router, tags=["resource-gate"])

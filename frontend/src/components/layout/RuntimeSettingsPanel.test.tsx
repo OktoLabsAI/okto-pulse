@@ -9,7 +9,6 @@ import { fireEvent, render, screen, waitFor, act } from '@testing-library/react'
 
 import { RuntimeSettingsPanel } from './RuntimeSettingsPanel';
 import * as runtimeApi from '@/services/runtime-settings-api';
-import * as healthApi from '@/services/queue-health-api';
 import * as kgTickApi from '@/services/kg-tick-api';
 
 const permissionMock = vi.hoisted(() => ({
@@ -43,23 +42,6 @@ const FRESH_SETTINGS: runtimeApi.RuntimeSettings = {
   restart_required: false,
 };
 
-const FRESH_HEALTH: healthApi.QueueHealth = {
-  queue_depth: 47,
-  oldest_pending_age_s: 3.2,
-  claimed_count: 3,
-  claimed_boards: ['board-a', 'board-b'],
-  dead_letter_count: 0,
-  global_outbox_dead_letter_count: 17,
-  claims_per_min_1m: 124,
-  claims_per_min_5m: 98,
-  alert_threshold: 5000,
-  alert_active: false,
-  alert_fired_total: 0,
-  workers_active: 3,
-  workers_idle: 1,
-  workers_draining_count: 0,
-  kuzu_lock_retries_5m: 2,
-};
 
 beforeEach(() => {
   permissionMock.has.mockReset();
@@ -69,7 +51,6 @@ beforeEach(() => {
   vi.spyOn(runtimeApi, 'putRuntimeSettings').mockImplementation(async (patch) => {
     return { ...FRESH_SETTINGS, ...patch, restart_required: false };
   });
-  vi.spyOn(healthApi, 'getQueueHealth').mockResolvedValue({ ...FRESH_HEALTH });
 });
 
 afterEach(() => {
@@ -284,82 +265,19 @@ describe('AC11 — Tabs preserve drafts on switch', () => {
 // AC12 — Live Health polling lifecycle (every 2s while Event Queue active)
 // ----------------------------------------------------------------------
 
-describe('AC12 — Live Queue Health polling lifecycle', () => {
-  test('Event Queue tab faz fetch inicial + polling 2s', async () => {
-    const healthSpy = vi.mocked(healthApi.getQueueHealth);
-    render(<RuntimeSettingsPanel onClose={() => {}} />);
-    await waitFor(() => screen.getByTestId('input-grafx-page-size'));
-
-    expect(healthSpy).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByTestId('tab-eventqueue'));
-    await waitFor(() => screen.getByTestId('live-queue-health-panel'));
-    await waitFor(() => expect(healthSpy).toHaveBeenCalledTimes(1));
-
-    // Tick 2s twice — should fire 2 more requests.
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(2000);
-    });
-    expect(healthSpy).toHaveBeenCalledTimes(2);
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(2000);
-    });
-    expect(healthSpy).toHaveBeenCalledTimes(3);
-  });
-
-  test('Switching para Graph DB para o polling imediatamente', async () => {
-    const healthSpy = vi.mocked(healthApi.getQueueHealth);
-    render(<RuntimeSettingsPanel onClose={() => {}} />);
-    await waitFor(() => screen.getByTestId('input-grafx-page-size'));
-
-    fireEvent.click(screen.getByTestId('tab-eventqueue'));
-    await waitFor(() => expect(healthSpy).toHaveBeenCalledTimes(1));
-
+describe('F4 — retired queue inspection', () => {
+  test('has no inspector or queue polling on entry, tab switch or timer ticks', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('unexpected request'));
+    const { unmount } = render(<RuntimeSettingsPanel onClose={() => {}} initialTab="eventqueue" />);
+    await waitFor(() => screen.getByTestId('input-max-workers'));
+    expect(screen.queryByTestId('live-queue-health-panel')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('dead-letter-inspector-link')).not.toBeInTheDocument();
     fireEvent.click(screen.getByTestId('tab-graphdb'));
-    const baseline = healthSpy.mock.calls.length;
-
-    // Avançar 10s — não deve aumentar contador.
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(10000);
-    });
-    expect(healthSpy.mock.calls.length).toBe(baseline);
-  });
-
-  test('Close modal (unmount) cancela polling sem network leak', async () => {
-    const healthSpy = vi.mocked(healthApi.getQueueHealth);
-    const { unmount } = render(<RuntimeSettingsPanel onClose={() => {}} />);
-    await waitFor(() => screen.getByTestId('input-grafx-page-size'));
-
     fireEvent.click(screen.getByTestId('tab-eventqueue'));
-    await waitFor(() => expect(healthSpy).toHaveBeenCalledTimes(1));
-
+    await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
     unmount();
-    const baseline = healthSpy.mock.calls.length;
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(10000);
-    });
-    expect(healthSpy.mock.calls.length).toBe(baseline);
-  });
-
-  test('Live Health panel exibe métricas do health response', async () => {
-    render(<RuntimeSettingsPanel onClose={() => {}} />);
-    await waitFor(() => screen.getByTestId('input-grafx-page-size'));
-
-    fireEvent.click(screen.getByTestId('tab-eventqueue'));
-    await waitFor(() => screen.getByTestId('live-queue-health-panel'));
-    await waitFor(() => expect(screen.queryByText('47')).toBeInTheDocument());
-
-    // 14 fields exposed in the response → at least the headline metrics
-    // are visible (queue_depth=47, claims_per_min_1m=124, lock retries=2).
-    expect(screen.getByText('47')).toBeInTheDocument();
-    expect(screen.getByText('124')).toBeInTheDocument();
-    expect(screen.getByText('2')).toBeInTheDocument(); // kuzu_lock_retries_5m
-    const globalOutboxLabel = screen.getByText('Global outbox terminal');
-    expect(globalOutboxLabel.parentElement).toHaveTextContent('17');
-    expect(screen.getByText('Consolidation DLQ').parentElement).toHaveTextContent(
-      '0',
-    );
+    await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
 

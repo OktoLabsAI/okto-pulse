@@ -35,12 +35,20 @@ RETIRED = (
         "preflight", "confirm", "run", "status", "cancel", "resume",
     )),
     "okto_pulse_kg_quarantine_restore",
+    *(f"okto_pulse_kg_{suffix}" for suffix in (
+        "dead_letter_list", "dead_letter_reprocess", "queue_drilldown",
+        "connectivity_dlq_diagnose", "connectivity_dlq_reprocess", "connectivity_dlq_verify",
+        "global_outbox_dead_letter_list", "global_outbox_dead_letter_reprocess",
+        "global_outbox_dead_letter_verify",
+    )),
 )
 
 
 def test_removed_modules_and_console_entrypoint_are_not_distributed():
-    for name in ("kg_recovery_only", "api.kg_rebuild"):
+    for name in ("kg_recovery_only", "api.kg_rebuild", "api.dead_letter", "api.queue_health"):
         assert importlib.util.find_spec(f"okto_pulse.community.{name}") is None
+    for name in ("dlq_reprocess", "list_dead_letter_rows", "queue_health"):
+        assert importlib.util.find_spec(f"okto_pulse.core.application.use_cases.{name}") is None
     assert "okto-pulse-kg-recovery-only" not in {
         entry.name for entry in importlib.metadata.distribution("okto-pulse").entry_points
     }
@@ -72,6 +80,32 @@ def test_registered_rest_app_returns_uniform_absence_without_authorization_or_da
     assert response.json() == {"detail": "Not Found"}
 
 
+@pytest.mark.parametrize(("method", "path"), [
+    ("GET", "/api/v1/kg/queue/dead-letter"),
+    ("POST", "/api/v1/kg/queue/dead-letter/redrive"),
+    ("GET", "/api/v1/kg/queue/health"),
+    ("GET", "/api/v1/kg/queue/drilldown"),
+])
+@pytest.mark.parametrize("board", ["missing", "foreign", "owned"])
+def test_retired_queue_rest_routes_are_absent_before_storage(method, path, board):
+    app = FastAPI()
+    app.include_router(api_router)
+
+    async def forbidden_uow():
+        pytest.fail("retired queue route resolved storage")
+        yield  # pragma: no cover
+
+    app.dependency_overrides[get_unit_of_work] = forbidden_uow
+    with TestClient(app) as client:
+        assert path not in client.get("/openapi.json").json()["paths"]
+        response = client.request(method, path, params={"board_id": board}, json={
+            "board_id": board, "redrive_all": True, "process_now": True,
+            "scope": "code_traceability", "dead_letter_ids": ["historical-row"],
+        })
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Not Found"}
+
+
 @pytest.mark.asyncio
 async def test_materialized_mcp_transport_rejects_removed_tools_before_handlers(monkeypatch):
     def forbidden(*_args, **_kwargs):
@@ -97,6 +131,8 @@ async def test_materialized_mcp_transport_rejects_removed_tools_before_handlers(
                 "run_id": "historical-run", "expected_epoch": 1,
                 "confirmation_id": "historical-confirmation", "manifest_ref": "historical-manifest",
                 "preflight_hash": "a" * 64, "reason": "must not resume maintenance",
+                "dead_letter_ids": ["historical-row"], "process_now": True,
+                "scope": "code_traceability",
             }):
                 result = await client.call_tool(name, arguments, raise_on_error=False)
                 assert result.is_error
@@ -106,11 +142,12 @@ async def test_materialized_mcp_transport_rejects_removed_tools_before_handlers(
 def test_removed_permissions_are_absent_from_registry_and_presets():
     assert not any(flag.startswith((
         "kg.operations.rebuild.", "kg.operations.global_recovery.", "kg.operations.quarantine.",
+        "kg.operations.global_outbox.",
     )) for flag in ALL_FLAGS)
     assert {policy.tool_name for policy in MCP_TOOL_PERMISSION_POLICIES}.isdisjoint(RETIRED)
     for preset in get_builtin_presets():
         operations = preset["flags"].get("kg", {}).get("operations", {})
-        assert {"rebuild", "global_recovery", "quarantine"}.isdisjoint(operations)
+        assert {"rebuild", "global_recovery", "quarantine", "global_outbox"}.isdisjoint(operations)
 
 
 def test_distributed_instructions_do_not_advertise_retired_recovery_tools():

@@ -1540,14 +1540,9 @@ The **"Run tick now"** button forces a decay/recompute pass without waiting for 
 
 The same control surfaces in **Settings → Decay Tick** as **"Save & run now"**, which persists the 3 hot-reload settings (\`interval_minutes\`, \`staleness_days\`, \`max_age_days\`) and triggers a tick in one shot.
 
-### Dead Letter Queue (DLQ) Inspector
+### Delivery failures
 
-When a consolidation entry exhausts its retries (5 attempts), it lands in the DLQ. The **DLQ Inspector** modal (accessible from the Pending Queue view) lets you:
-- List DLQ rows with full error history (one entry per attempt: timestamp, exception class, message)
-- Inspect the original payload that triggered the failure
-- **Reprocess** selected rows (or via the MCP tool \`kg_dead_letter_reprocess\`) after the root cause is fixed — idempotent: existing pending rows are reset instead of duplicated, and \`process_now\` runs an immediate batch
-
-Boards can also enable \`dlq_auto_drain_enabled\` to re-queue dead letters automatically. Use the inspector to diagnose extractor regressions, connectivity-guard rejections, embedder timeouts, or schema mismatches without tailing server logs.
+KG Health reports failed delivery separately from active queue depth. A technical failure remains visible and cannot be waived through cognitive consolidation. There is no public dead-letter inspector or redrive control.
 
 ### Schema availability
 
@@ -1581,7 +1576,7 @@ MCP agents can query **and curate** the Knowledge Graph via 25+ tools:
 
 **Cognitive ledger** — \`kg_list_cognitive_pending_items\`, \`kg_update_cognitive_pending_item\`
 
-**Operate** — \`kg_health\`, \`kg_tick_run_now\`, \`kg_migrate_schema\`, \`kg_dead_letter_list\` / \`kg_dead_letter_reprocess\`, \`kg_orphan_report\` / \`kg_orphan_backfill\`, \`kg_schema_info\`
+**Operate** — \`kg_health\`, \`kg_tick_run_now\`, \`kg_migrate_schema\` / \`kg_orphan_report\` / \`kg_orphan_backfill\`, \`kg_schema_info\`
 `,
     },
     {

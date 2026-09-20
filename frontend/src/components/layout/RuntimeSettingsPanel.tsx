@@ -6,8 +6,7 @@
  *     Changes are constructor-time and therefore require a restart.
  *   * **Event Queue** (new in v0.2.0): consolidation queue throughput
  *     knobs (max workers, throttle, claim timeout, max attempts, alert
- *     threshold) + Live Queue Health panel polling /api/v1/kg/queue/health
- *     every 2000ms. Banner azul reforça que hot-reload é a semântica.
+ *     threshold). Queue health is observed in consolidated KG Health.
  *
  * Both tabs share the same draft buffer so a single Save persists
  * partial PUTs across both tab states. Switching tabs preserves the
@@ -15,7 +14,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Clock, Database, Play, Settings, X, Zap } from 'lucide-react';
+import { Clock, Play, Settings, X, Zap } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 import {
@@ -26,13 +25,8 @@ import {
   type RuntimeSettingsValues,
   type GrafxSettingDescriptor,
 } from '@/services/runtime-settings-api';
-import {
-  getQueueHealth,
-  type QueueHealth,
-} from '@/services/queue-health-api';
 import { triggerKGTick } from '@/services/kg-tick-api';
 import { getKGHealth } from '@/services/kg-health-api';
-import { DeadLetterInspectorModal } from '@/components/knowledge/DeadLetterInspectorModal';
 import { useDashboardStore } from '@/store/dashboard';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import { usePermissions } from '@/hooks/usePermissions';
@@ -74,7 +68,6 @@ const RANGES: Record<NumericSettingKey, { min: number; max: number }> = {
   kg_decay_tick_max_age_days: { min: 0, max: 365 },
 };
 
-const HEALTH_POLL_INTERVAL_MS = 2000;
 
 type DraftState = Required<RuntimeSettingsValues>;
 
@@ -140,7 +133,6 @@ export function RuntimeSettingsPanel({
   const [restartRequired, setRestartRequired] = useState(false);
   const [activeTab, setActiveTab] = useState<ActiveTab>(initialTab);
   // Spec ed17b1fe (Wave 2 NC 1ede3471) — DLQ Inspector modal state.
-  const [showDeadLetter, setShowDeadLetter] = useState(false);
   const currentBoard = useDashboardStore((s) => s.currentBoard);
   const permissions = usePermissions(currentBoard?.id);
   const policyReady = (
@@ -152,7 +144,6 @@ export function RuntimeSettingsPanel({
   const canWriteRuntime = policyReady && permissions.has('runtime.settings.write');
   const canReadKGHealth = policyReady && permissions.has('kg.operations.health.read');
   const canRunKGTick = policyReady && permissions.has('kg.operations.tick.run');
-  const canReadKGQueue = policyReady && permissions.has('kg.operations.queue.read');
   // Bug fix — true quando o advisory lock global ``kg_daily_tick`` está
   // acquired no backend. Polled enquanto o usuário está no Decay Tick tab
   // para que "Save & run now" fique disabled mesmo se o usuário tiver
@@ -433,9 +424,6 @@ export function RuntimeSettingsPanel({
           <EventQueueTab
             draft={draft}
             onChange={onInputChange}
-            isActive={activeTab === 'eventqueue'}
-            onOpenDeadLetterInspector={() => setShowDeadLetter(true)}
-            canReadQueue={canReadKGQueue}
           />
         ) : (
           <DecayTickTab draft={draft} onChange={onInputChange} />
@@ -489,12 +477,7 @@ export function RuntimeSettingsPanel({
         </div>
       </div>
 
-      {showDeadLetter && currentBoard && canReadKGQueue && (
-        <DeadLetterInspectorModal
-          boardId={currentBoard.id}
-          onClose={() => setShowDeadLetter(false)}
-        />
-      )}
+
     </div>
   );
 }
@@ -690,19 +673,12 @@ function GraphDBTab({
 interface EventQueueTabProps {
   draft: DraftState;
   onChange: (key: NumericSettingKey, raw: string) => void;
-  isActive: boolean;
-  onOpenDeadLetterInspector: () => void;
-  canReadQueue: boolean;
 }
 
 function EventQueueTab({
   draft,
   onChange,
-  isActive,
-  onOpenDeadLetterInspector,
-  canReadQueue,
 }: EventQueueTabProps) {
-  const health = useQueueHealth(isActive && canReadQueue);
   return (
     <>
       <div className="px-6 py-5 grid grid-cols-2 gap-x-6 gap-y-4">
@@ -750,204 +726,9 @@ function EventQueueTab({
         </div>
       </div>
 
-      <LiveQueueHealthPanel health={health} />
 
-      {canReadQueue && <div className="px-6 pb-3">
-        <button
-          type="button"
-          onClick={onOpenDeadLetterInspector}
-          className="text-[10px] text-blue-600 dark:text-blue-400 hover:underline inline-flex items-center gap-1"
-          data-testid="dead-letter-inspector-link"
-        >
-          <Database size={10} />
-          Open dead-letter inspector
-        </button>
-      </div>}
     </>
   );
-}
-
-interface LiveQueueHealthPanelProps {
-  health: QueueHealth | null;
-}
-
-function LiveQueueHealthPanel({ health }: LiveQueueHealthPanelProps) {
-  const utilization = health
-    ? Math.min(
-        100,
-        (health.queue_depth / Math.max(1, health.alert_threshold)) * 100,
-      )
-    : 0;
-  return (
-    <div
-      className="mx-6 mb-3 p-3 bg-gray-50 dark:bg-gray-800/60 rounded-lg border border-gray-200 dark:border-gray-700"
-      data-testid="live-queue-health-panel"
-    >
-      <div className="flex items-center justify-between mb-2">
-        <h3 className="text-xs font-semibold text-gray-700 dark:text-gray-200">
-          Live queue health
-        </h3>
-        <span className="text-[9px] text-gray-400">
-          refresh {HEALTH_POLL_INTERVAL_MS / 1000}s · /api/v1/kg/queue/health
-        </span>
-      </div>
-      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-        <Metric label="Depth" value={health?.queue_depth ?? '—'} />
-        <Metric
-          label="Oldest pending"
-          value={health ? `${health.oldest_pending_age_s.toFixed(1)}s` : '—'}
-        />
-        <Metric
-          label="Consolidation DLQ"
-          value={health?.dead_letter_count ?? '—'}
-          tone={
-            health && health.dead_letter_count > 0 ? 'amber' : 'emerald'
-          }
-        />
-        <Metric
-          label="Global outbox terminal"
-          value={health?.global_outbox_dead_letter_count ?? '—'}
-          tone={
-            health && (health.global_outbox_dead_letter_count ?? 0) > 0
-              ? 'amber'
-              : 'emerald'
-          }
-        />
-        <Metric label="Claims / min" value={health?.claims_per_min_1m ?? '—'} />
-      </div>
-      <div className="mt-3 grid grid-cols-3 gap-3 pt-3 border-t border-gray-200 dark:border-gray-700">
-        <div>
-          <div className="text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-wide">
-            Workers active
-          </div>
-          <div className="text-sm font-semibold text-blue-600 dark:text-blue-400">
-            {health?.workers_active ?? '—'}
-            {health && health.workers_idle > 0 && (
-              <span className="text-gray-400 text-[10px] font-normal">
-                {' '}/ {health.workers_active + health.workers_idle}
-              </span>
-            )}
-          </div>
-          {health && health.claimed_boards.length > 0 && (
-            <div className="text-[9px] text-gray-400 mt-0.5">
-              across {health.claimed_boards.length} distinct{' '}
-              {health.claimed_boards.length === 1 ? 'board' : 'boards'}
-            </div>
-          )}
-        </div>
-        <div>
-          <div className="text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-wide">
-            Graph DB lock retries (5m)
-          </div>
-          <div
-            className={`text-sm font-semibold ${
-              health && health.kuzu_lock_retries_5m > 0
-                ? 'text-amber-600 dark:text-amber-400'
-                : 'text-gray-700 dark:text-gray-300'
-            }`}
-          >
-            {health?.kuzu_lock_retries_5m ?? '—'}
-          </div>
-          {health && health.kuzu_lock_retries_5m > 0 && (
-            <div className="text-[9px] text-gray-400 mt-0.5">
-              cross-process contention
-            </div>
-          )}
-        </div>
-        <div>
-          <div className="text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-wide">
-            Queue utilization
-          </div>
-          <div className="flex items-center gap-2 mt-1">
-            <div className="flex-1 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-              <div
-                className={
-                  health?.alert_active
-                    ? 'h-full bg-amber-500'
-                    : 'h-full bg-emerald-500'
-                }
-                style={{ width: `${utilization.toFixed(2)}%` }}
-              />
-            </div>
-            <span className="text-[10px] text-gray-500 tabular-nums">
-              {utilization.toFixed(1)}%
-            </span>
-          </div>
-          <div className="text-[9px] text-gray-400 mt-0.5">
-            vs alert threshold
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-interface MetricProps {
-  label: string;
-  value: number | string;
-  tone?: 'emerald' | 'amber' | 'default';
-}
-
-function Metric({ label, value, tone = 'default' }: MetricProps) {
-  const valueClass =
-    tone === 'emerald'
-      ? 'text-emerald-600 dark:text-emerald-400'
-      : tone === 'amber'
-        ? 'text-amber-600 dark:text-amber-400'
-        : 'text-gray-900 dark:text-white';
-  return (
-    <div>
-      <div className="text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-wide">
-        {label}
-      </div>
-      <div className={`text-base font-semibold ${valueClass}`}>{value}</div>
-    </div>
-  );
-}
-
-/**
- * Polls /api/v1/kg/queue/health every 2000ms while the EventQueueTab is
- * active. Cleanup runs on unmount AND when the tab becomes inactive — so
- * switching to Graph DB tab stops the polling immediately (TR10 + AC12).
- */
-function useQueueHealth(active: boolean): QueueHealth | null {
-  const [health, setHealth] = useState<QueueHealth | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
-
-  useEffect(() => {
-    if (!active) {
-      // Cancel any in-flight request so React doesn't get a setState after
-      // unmount/blur.
-      abortRef.current?.abort();
-      abortRef.current = null;
-      return;
-    }
-
-    let cancelled = false;
-    const tick = async () => {
-      const controller = new AbortController();
-      abortRef.current = controller;
-      try {
-        const data = await getQueueHealth(controller.signal);
-        if (!cancelled) setHealth(data);
-      } catch (err: any) {
-        if (err?.name === 'AbortError') return;
-        // Tolerar erros transitórios — UI mostra "—" e tenta de novo no próximo tick.
-      }
-    };
-
-    void tick();
-    const interval = setInterval(tick, HEALTH_POLL_INTERVAL_MS);
-
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-      abortRef.current?.abort();
-      abortRef.current = null;
-    };
-  }, [active]);
-
-  return health;
 }
 
 interface GrafxPageSizeFieldProps {

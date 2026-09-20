@@ -204,38 +204,12 @@ def test_related_context_contract_survives_community_replacement(
     assert "<formalized_node_or_artifact_id>" not in workflow
 
 
-def test_global_recovery_and_outbox_contracts_survive_community_replacement(
-    active_runtime_registry,
-):
-    """Effective same-URI resources must not mask the current Core contract."""
-
+def test_retired_recovery_and_outbox_are_absent_from_effective_community_resources(active_runtime_registry):
     register_and_freeze_community_resource_catalog(active_runtime_registry)
     specs = _effective_specs()
     workflow = specs["okto-pulse://workflows/kg"].read()
     tool_docs = specs["okto-pulse://reference/tool-docs/kg"].read()
-
-    assert "KG Health surfaces four **distinct** operational signals" in workflow
-    assert "`global_outbox_dead_letter_backlog`" in workflow
-    assert "`okto_pulse_kg_global_outbox_dead_letter_list`" in workflow
-    assert "Never interpret an empty selection as all" in workflow
-    assert "after commit" in workflow
-
-    for tool_name in (
-        "okto_pulse_kg_global_outbox_dead_letter_list",
-        "okto_pulse_kg_global_outbox_dead_letter_reprocess",
-        "okto_pulse_kg_global_outbox_dead_letter_verify",
-    ):
-        assert f"## `{tool_name}`" in tool_docs
-    assert "required native list of 1-100 unique immutable IDs" in tool_docs
-    assert "required bounded operator audit reason" in tool_docs
-    assert "selection_changed" in tool_docs
-    assert "supersedence_target_absent" in tool_docs
-
-    assert "closed, empty input schema" in tool_docs
-    assert "it never scans boards" in tool_docs
-    assert "fails closed with `manifest_stale`" in tool_docs
-    assert "`reason` (1-512 characters)" in tool_docs
-    assert "`cancel_requested_by_actor_id`" in tool_docs
-    assert "the original admitting actor never changes" in tool_docs
-    assert "Any authorized global admin may inspect the global run" in tool_docs
-    assert "Runs owned by another actor are not disclosed" not in tool_docs
+    assert "Health reports terminal delivery failures separately" in workflow
+    for family in ("global_outbox_dead_letter", "global_discovery_recovery", "quarantine_restore"):
+        assert f"okto_pulse_kg_{family}" not in workflow
+        assert f"okto_pulse_kg_{family}" not in tool_docs

@@ -8,7 +8,6 @@ from fastapi.testclient import TestClient
 
 from okto_pulse.community.api.architecture import router as architecture_router
 from okto_pulse.community.api.auth_deps import require_user
-from okto_pulse.community.api.dead_letter import router as dead_letter_router
 from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.community.api.guidelines import router as guidelines_router
 from okto_pulse.community.api.kg_canonical_debt import router as canonical_debt_router
@@ -20,7 +19,6 @@ from okto_pulse.core.ports.application_persistence import PAGE_OFFSET_MAX
 #: 2026-07-25 E2E regression, reproduced independently on two boards.
 BOUNDED_LIST_PATHS = (
     "/api/v1/architecture/propagation-legacy-report",
-    "/api/v1/kg/queue/dead-letter",
     "/api/v1/kg/canonical-debt",
     "/api/v1/guidelines",
 )
@@ -30,7 +28,6 @@ BOUNDED_LIST_PATHS = (
 def client() -> TestClient:
     app = FastAPI()
     app.include_router(architecture_router, prefix="/api/v1")
-    app.include_router(dead_letter_router, prefix="/api/v1")
     app.include_router(canonical_debt_router, prefix="/api/v1")
     app.include_router(guidelines_router, prefix="/api/v1")
 

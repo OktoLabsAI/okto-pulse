@@ -80,35 +80,12 @@ is unavailable, affected operations fail closed; health does not authorize
 repair or expose a recovery executor. Board knowledge and semantic consolidation
 retain their own integrity checks and authorization.
 
-### Terminal Global Discovery outbox recovery
+### Delivery availability
 
-Use the global-outbox dead-letter family only after the delivery root cause is
-fixed; it is distinct from the board consolidation DLQ family:
-
-1. Page `okto_pulse_kg_global_outbox_dead_letter_list` with `limit<=100` and
-   retain the returned immutable IDs. With `classification`, an empty page may
-   still carry `next_cursor`; follow it until null.
-2. For legacy rows, call `okto_pulse_kg_global_outbox_dead_letter_reprocess`
-   with 1-100 explicit, unique IDs and an audit reason.
-   Never interpret an empty selection as all. Governed
-   `gd_parity:...:attempt:n` rows are immutable
-   delivery history: do not rearm them. `kg.tick.daily` starts the automatic
-   recovery chain; each `kg.tick.delivery_redrive` event runs one globally
-   bounded page, serves one oldest due item per board before repeating a board,
-   and advances the persisted round-robin checkpoint in the same transaction
-   as fresh `attempt:n+1` rows. Due backlog schedules the next bounded event in
-   that transaction. A governed or mixed manual selection fails closed with
-   `governed_delivery_attempt_tick_owned`.
-   The orphan watchdog is independently board-bounded and resumes from a
-   persisted rotating cursor, so an active prefix cannot starve a later
-   missing, malformed, terminal, or already-processed attempt.
-3. Call `okto_pulse_kg_global_outbox_dead_letter_verify` with those exact IDs.
-   Treat `still_dead_lettered`, dangling/cyclic lineage reason codes, or a busy
-   response as unresolved; queued/applied are idempotent replay outcomes.
-
-Each operation owns a dedicated relational transaction. Selection validation
-and guarded requeue are atomic; `process_now=true` wakes the outbox worker only
-after commit.
+Health reports terminal delivery failures separately from active queue depth and
+cognitive work. These signals remain visible and do not grant a maintenance
+command or a waiver of product gates. Automatic delivery processing retains its
+own retry limits and integrity checks.
 
 ## Durable stale-canonical catch-up
 
@@ -326,11 +303,11 @@ KG Health surfaces four **distinct** operational signals — never merged into o
 | Signal (`health_issues[].code`) | Domain | Drill-down tool |
 |---|---|---|
 | `cognitive_consolidation_pending` | Cognitive items awaiting agent action (pending/in_progress/failed) | `okto_pulse_kg_list_cognitive_pending_items` |
-| `dead_letter_backlog` | Consolidation rows that exhausted retries | `okto_pulse_kg_dead_letter_list` → `okto_pulse_kg_dead_letter_reprocess` after fixing the root cause |
-| `global_outbox_dead_letter_backlog` | Terminal Global Discovery outbox deliveries | `okto_pulse_kg_global_outbox_dead_letter_list` → explicit reprocess → verify after fixing the delivery root cause |
+| `dead_letter_backlog` | Consolidation rows that exhausted retries | Health reports the affected component; unavailable delivery remains a technical limitation. |
+| `global_outbox_dead_letter_backlog` | Terminal Global Discovery outbox deliveries | Health reports the cause and affected delivery remains unavailable; no public repair action |
 | `canonical_debt_open` | Artifacts still outside canonical consolidation | `okto_pulse_kg_canonical_debt_list` |
 
-Each tool lists ONLY its own domain — do NOT infer one signal's backlog from another's counters, and do not reprocess the wrong queue. `okto_pulse_kg_dead_letter_list` exposes both `rows`/`id` (legacy) and the additive `items`/`dead_letter_id` + `last_error`/`error_text` (full `errors[]` history preserved). The global-outbox row always names `okto_pulse_kg_global_outbox_dead_letter_list`, never a readiness helper or the board-consolidation DLQ family. The listings emit bounded inspection counters so the **absence** of operational drill-down is itself diagnosable.
+The signals have separate counters. Do not infer cognitive readiness from active queue depth or treat a technical failure as completed work.
 
 ### Consolidation Hygiene Checklist
 

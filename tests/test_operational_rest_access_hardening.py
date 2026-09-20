@@ -19,7 +19,6 @@ from okto_pulse.community.api.cognitive_action_center import (
     router as cognitive_action_center_router,
 )
 from okto_pulse.community.api.deps import get_unit_of_work
-from okto_pulse.community.api.dead_letter import router as dead_letter_router
 import okto_pulse.community.api.kg_cognitive_badges as cognitive_badges_api
 import okto_pulse.community.api.kg_cognitive_candidates as cognitive_candidates_api
 import okto_pulse.community.api.kg_cognitive_pending as cognitive_pending_api
@@ -56,7 +55,6 @@ from okto_pulse.community.api.kg_routes import (
 from okto_pulse.community.api.kg_stale_canonical_parity import (
     router as stale_canonical_parity_router,
 )
-from okto_pulse.community.api.queue_health import router as queue_health_router
 from okto_pulse.community.api.settings import router as settings_router
 import okto_pulse.community.api.kg_tick as kg_tick_api
 from okto_pulse.community.api.kg_tick import router as kg_tick_router
@@ -183,8 +181,6 @@ def _client(uow: _Uow, *, claims=None) -> TestClient:
         digest_layer_mismatch_router,
         stale_canonical_parity_router,
         orphan_integrity_router,
-        queue_health_router,
-        dead_letter_router,
         cognitive_badges_router,
         cognitive_candidate_commands_router,
         cognitive_candidates_router,
@@ -258,17 +254,6 @@ BOARD_SURFACES = [
         "/api/v1/kg/orphan-integrity/backfill",
         {"board_id": "board-b"},
     ),
-    ("GET", "/api/v1/kg/queue/drilldown?board_id=board-b", None),
-    ("GET", "/api/v1/kg/queue/dead-letter?board_id=board-b", None),
-    (
-        "POST",
-        "/api/v1/kg/queue/dead-letter/redrive",
-        {
-            "board_id": "board-b",
-            "dead_letter_ids": ["dlq-1"],
-            "process_now": False,
-        },
-    ),
     (
         "GET",
         "/api/v1/kg/cognitive-pending/candidate-decisions?board_id=board-b",
@@ -321,11 +306,6 @@ BOARD_SURFACES = [
 ]
 
 WRITE_SURFACES = [
-    (
-        "POST",
-        "/api/v1/kg/queue/dead-letter/redrive",
-        {"board_id": "board-b", "dead_letter_ids": ["dlq-1"], "process_now": False},
-    ),
     (
         "POST",
         "/api/v1/kg/board-b/cognitive-readiness/skip",
@@ -409,9 +389,6 @@ WRITE_SURFACES = [
         "stale-canonical-parity",
         "orphan-report",
         "orphan-backfill",
-        "queue-drilldown",
-        "dead-letter",
-        "dead-letter-redrive",
         "cognitive-candidates",
         "cognitive-badges",
         "cognitive-pending",
@@ -553,7 +530,6 @@ def test_canonical_debt_valid_filters_preserve_rest_pagination() -> None:
     ("method", "path", "payload"),
     WRITE_SURFACES,
     ids=[
-        "dead-letter-redrive",
         "cognitive-skip",
         "cognitive-clear",
         "canonical-debt-retry",
@@ -761,54 +737,3 @@ def test_runtime_settings_authorized_principal_reaches_writer(claims) -> None:
     assert response.status_code == 200
     assert response.json()["kg_queue_max_attempts"] == 5
     assert uow.events == ["put-runtime:user-a"]
-
-
-@pytest.mark.parametrize(
-    "path",
-    [
-        "/api/v1/kg/queue/health",
-        "/api/v1/kg/queue/drilldown",
-    ],
-    ids=["health", "drilldown"],
-)
-def test_global_queue_viewer_gets_403_before_reader(path) -> None:
-    uow = _Uow(board=None)
-
-    response = _client(uow, claims={"roles": ["viewer"]}).get(path)
-
-    assert response.status_code == 403
-    detail = json.loads(response.json()["detail"])
-    assert detail["error"] == "permission_denied"
-    assert detail["required_permission"] == "kg.operations.queue.read"
-    assert uow.events == []
-
-
-@pytest.mark.parametrize(
-    "claims",
-    [
-        {"roles": ["admin"]},
-        {"roles": ["operator"]},
-        {
-            "permissions": {
-                "kg": {
-                    "operations": {"queue": {"read": True}},
-                    "admin": {"settings_read": True},
-                }
-            }
-        },
-    ],
-    ids=["admin", "operator", "capability"],
-)
-def test_global_queue_authorized_principal_reaches_readers(claims) -> None:
-    uow = _Uow(board=None)
-    client = _client(uow, claims=claims)
-
-    health = client.get("/api/v1/kg/queue/health")
-    drilldown = client.get("/api/v1/kg/queue/drilldown")
-
-    assert health.status_code == 200
-    assert health.json()["claimed_boards"] == []
-    assert health.json()["global_outbox_dead_letter_count"] == 0
-    assert drilldown.status_code == 200
-    assert drilldown.json()["total_active_depth"] == 0
-    assert uow.events == ["queue-health", "queue-drilldown:None"]
