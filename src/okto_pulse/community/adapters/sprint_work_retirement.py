@@ -19,6 +19,7 @@ from okto_pulse.core.ports.work_retirement import (
 from okto_pulse.community.adapters.card_validation_retirement import (
     CardValidationRetirementReceipt, _read_events as _read_card_events, _verify_events as _verify_card_events,
 )
+from okto_pulse.community.adapters.retirement_data_journal import require_retirement_stage, record_retirement_stage
 from okto_pulse.community.adapters.historical_archive_grant_installation import _install_historical_archive_grants
 from okto_pulse.community.adapters.permission_retirement_checkpoint import _digest
 from okto_pulse.community.adapters.sprint_retirement_archive import _cell, _encode, verify_historical_archive
@@ -194,7 +195,7 @@ async def _require_work_population(connection, documents, sources, *, replay):
 
 
 async def supersede_archived_sprint_work(engine, storage, references, *,
-    card_receipt: CardValidationRetirementReceipt, expected_receipt: WorkRetirementReceipt | None = None,
+    card_receipt: CardValidationRetirementReceipt, expected_receipt: WorkRetirementReceipt | None = None, checkpoint_run=None,
 ) -> WorkRetirementReceipt:
     """Supersede only the archived exclusive population after Card preservation."""
     if engine.dialect.name != "sqlite":
@@ -208,6 +209,7 @@ async def supersede_archived_sprint_work(engine, storage, references, *,
     async with engine.connect() as connection:
         try:
             await connection.exec_driver_sql("BEGIN IMMEDIATE")
+            await require_retirement_stage(connection, checkpoint_run, "work", references, dependency=card_receipt)
             documents = {}
             for reference in references:
                 await _install_historical_archive_grants(connection, storage, reference, require_existing=True)
@@ -227,6 +229,7 @@ async def supersede_archived_sprint_work(engine, storage, references, *,
                 # cannot resurrect, disappear or acquire fabricated processing.
                 await _require_rows(connection, {key: value for key, value in after.items() if plans[key][0] == "supersede"})
                 await _require_work_population(connection, documents, sources, replay=True)
+                await record_retirement_stage(connection, checkpoint_run, "work", receipt, replay=True)
                 await connection.commit()
                 return receipt
             inventory = await connection.run_sync(lambda sync: _inspect_snapshot(sync, max_rows=100_000))
@@ -242,6 +245,7 @@ async def supersede_archived_sprint_work(engine, storage, references, *,
                         {"status": SUPERSEDED_WORK_STATUS, "id": identity})
             if expected:
                 await connection.execute(insert(_AUDIT), [{**row, "occurred_at": datetime.now(timezone.utc)} for row in expected])
+            await record_retirement_stage(connection, checkpoint_run, "work", receipt, replay=False)
             await _require_rows(connection, after)
             await _require_work_population(connection, documents, sources, replay=False)
             if sorted(await _stored_journal(connection, migration_id), key=lambda row: row["id"]) != sorted(expected, key=lambda row: row["id"]):

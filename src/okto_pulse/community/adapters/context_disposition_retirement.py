@@ -15,6 +15,7 @@ import uuid
 from sqlalchemy import LargeBinary, cast, func, insert, select, text
 
 from okto_pulse.core.ports.context_disposition import ContextDispositionPlan, require_context_target_scope
+from okto_pulse.community.adapters.retirement_data_journal import require_retirement_stage, record_retirement_stage
 from okto_pulse.community.adapters.historical_archive_grant_installation import _install_historical_archive_grants
 from okto_pulse.community.adapters.sprint_retirement_archive import _attach_access, _capture, _cell, _encode, verify_historical_archive
 from okto_pulse.community.adapters.sprint_retirement_preflight import SprintContextCandidate, SprintContextDispositionRequired, inspect_sprint_pretransform
@@ -285,7 +286,7 @@ async def require_context_dispositions(connection, storage, references, candidat
     return receipt
 
 
-async def install_context_dispositions(engine, storage, references, *, plan: ContextDispositionPlan, expected_receipt=None):
+async def install_context_dispositions(engine, storage, references, *, plan: ContextDispositionPlan, expected_receipt=None, checkpoint_run=None):
     if engine.dialect.name != "sqlite" or not isinstance(plan, ContextDispositionPlan):
         raise ValueError("context_disposition_input_invalid")
     references = tuple(sorted(references, key=lambda reference: reference.board_id))
@@ -295,11 +296,13 @@ async def install_context_dispositions(engine, storage, references, *, plan: Con
         created_paths, commit_started = [], False
         try:
             await connection.exec_driver_sql("BEGIN IMMEDIATE")
+            await require_retirement_stage(connection, checkpoint_run, "context", references, plan=plan)
             documents = await _documents(connection, storage, references)
             previous = await _journal(connection, plan.migration_id)
             if previous:
                 receipt = await require_context_dispositions(connection, storage, references,
                     expected_plan=plan, expected_receipt=expected_receipt, check_targets=False)
+                await record_retirement_stage(connection, checkpoint_run, "context", receipt, replay=True)
                 await connection.commit()
                 return receipt
             if expected_receipt is not None:
@@ -327,7 +330,8 @@ async def install_context_dispositions(engine, storage, references, *, plan: Con
             if len(journal) > 100_000 or len(_encode(journal)) > _MAX_BYTES:
                 raise ValueError("context_disposition_limit")
             await connection.execute(insert(_TABLE), [{**row, "occurred_at": datetime.now(timezone.utc)} for row in journal])
-            # Triggers on the journal must not change the classified sources.
+            await record_retirement_stage(connection, checkpoint_run, "context", receipt, replay=False)
+            # Triggers on either journal must not change the classified sources.
             after = await connection.run_sync(inspect_sprint_pretransform)
             if (after.context_candidates != inventory.context_candidates or after.relational.counts != inventory.relational.counts
                     or after.relational.work.items != inventory.relational.work.items

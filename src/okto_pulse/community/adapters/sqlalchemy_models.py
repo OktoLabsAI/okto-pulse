@@ -8262,6 +8262,18 @@ class DomainEventRow(Base):
     )
 
 
+class RetirementDataCheckpoint(Base):
+    """Internal cross-Board migration evidence; never an event or live entity."""
+
+    __tablename__ = "retirement_data_checkpoints"
+    __table_args__ = (CheckConstraint("ordinal >= 0 AND ordinal <= 3", name="ck_retirement_checkpoint_ordinal"),)
+
+    migration_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
+    record_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
 class HistoricalArchiveGrant(Base):
     """Scoped read authority for an opaque archived origin, never a live entity.
 

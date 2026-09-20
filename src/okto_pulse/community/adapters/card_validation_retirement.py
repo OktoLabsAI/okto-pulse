@@ -23,6 +23,7 @@ from okto_pulse.core.ports.card_validation_migration import (
 from okto_pulse.community.adapters.context_disposition_retirement import (
     ContextDispositionReceipt, require_context_dispositions, verify_context_disposition_snapshot,
 )
+from okto_pulse.community.adapters.retirement_data_journal import require_retirement_stage, record_retirement_stage
 from okto_pulse.community.adapters.historical_archive_grant_installation import _install_historical_archive_grants
 from okto_pulse.community.adapters.sprint_retirement_archive import (
     HistoricalArchiveReference, _attach_access, _capture, _cell, _encode,
@@ -261,7 +262,7 @@ async def _require_context_fence(connection, storage, references, before, receip
 async def materialize_archived_card_policies(
     engine: AsyncEngine, storage: StorageProvider, references: tuple[HistoricalArchiveReference, ...], *,
     migration_id: str, expected_receipt: CardValidationRetirementReceipt | None = None,
-    context_receipt: ContextDispositionReceipt | None = None,
+    context_receipt: ContextDispositionReceipt | None = None, checkpoint_run=None,
 ) -> CardValidationRetirementReceipt:
     """Atomically preserve policy and detach Cards; never rebase on a replay.
 
@@ -283,6 +284,7 @@ async def materialize_archived_card_policies(
         created_paths, commit_started = [], False
         try:
             await connection.exec_driver_sql("BEGIN IMMEDIATE")
+            await require_retirement_stage(connection, checkpoint_run, "cards", references, dependency=context_receipt)
             for reference in references:
                 await _install_historical_archive_grants(connection, storage, reference, require_existing=True)
             previous = await _read_events(connection, migration_id)
@@ -291,6 +293,7 @@ async def materialize_archived_card_policies(
                     connection=connection, context_receipt=context_receipt)
                 if expected_receipt is not None and expected_receipt != receipt:
                     raise ValueError("card_validation_retirement_replay_mismatch")
+                await record_retirement_stage(connection, checkpoint_run, "cards", receipt, replay=True)
                 await connection.commit()
                 return receipt
             if expected_receipt is not None and references:
@@ -365,6 +368,7 @@ async def materialize_archived_card_policies(
                     "override_count": sum(entry["policy"] is not None for entry in payload["cards"])}
                 await connection.execute(insert(_EVENTS).values(id=_identity(migration_id, board), board_id=board,
                     event_type=_EVENT, actor_type="system", actor_id=None, occurred_at=datetime.now(timezone.utc), payload_json=manifest))
+            await record_retirement_stage(connection, checkpoint_run, "cards", receipt, replay=False)
             if await _verify_events(await _read_events(connection, migration_id), references, migration_id, storage,
                     connection=connection, context_receipt=context_receipt) != receipt:
                 raise ValueError("card_validation_retirement_evidence_mismatch")
