@@ -2,21 +2,12 @@
  * API client for the KG health snapshot endpoint (spec d754d004).
  *
  * Polled by KGHealthView every 30s while the overlay is mounted and the
- * tab is visible. Backend mirror: core/api/kg_health.py (KGHealthResponse).
+ * tab is visible. Backend mirror: community/api/kg_health.py (KGHealthResponse).
  *
  * Mirror do padrão de queue-health-api.ts — interface tipada + função
  * fetch com AbortSignal. Sem libs novas; usa fetch nativo + cookie do
  * Clerk injetado pelo authAdapter.
  */
-
-// KG Health presents the historical recovery controls, while the transport
-// remains the shared KG API contract used by the empty-state workflow.
-export {
-  cancelHistorical,
-  getHistoricalProgress,
-  startHistorical,
-  type HistoricalProgress,
-} from './kg-api';
 
 export interface TopDisconnectedNode {
   id: string;
@@ -162,123 +153,6 @@ export interface KGHealth {
   canonical_debt?: CanonicalDebtSummary;
   rebuild_diagnostics?: RebuildDiagnostics;
   graph_storage?: KGGraphStorageSnapshot;
-}
-
-// ---- KG-02 rebuild lifecycle (spec e7360ffe, mockup sm_a30278ad) -------
-
-export interface RebuildPreflightResult {
-  board_id: string;
-  outcome: 'ready' | 'confirmation_required' | 'blocked' | string;
-  action_required: string;
-  reason: string | null;
-  base_state: string;
-  metric_status: string;
-  current_kg_generation_id: string | null;
-  eligible_source_count: number;
-  skipped_cancelled_count: number;
-  has_non_deterministic_inputs: boolean;
-  canonical_source_count?: number;
-  working_source_count?: number;
-  skipped_by_maturity_count?: number;
-  skipped_expired_working_count?: number;
-  legacy_unknown_count?: number;
-  layer_counts?: Record<string, number>;
-  source_partition_counts?: Record<string, number>;
-  preflight_hash: string;
-  generated_at: string;
-  rebuild_status?: string;
-  operational_substatus?: string;
-  manifest_ref: string | null;
-  source_set_hash: string | null;
-  execution_mode?: string;
-  operator_action?: string;
-  remediation?: string;
-}
-
-export interface RebuildConfirmResult {
-  confirmation_id: string;
-  manifest_ref: string | null;
-  source_set_hash: string;
-  expires_at: string;
-}
-
-export interface RebuildRunResult {
-  run_id: string;
-  outcome: 'completed' | 'failed' | 'rebuild_failed' | 'report_persist_failed'
-    | 'confirmation_required' | 'manifest_drift' | 'lock_contention'
-    | 'unsupported_operation' | string;
-  reason: string;
-  audit_ref: string;
-  previous_kg_generation_id: string | null;
-  current_kg_generation_id: string | null;
-  started_at: string;
-  finished_at: string;
-  affected_files: string[];
-  report_ref?: string | null;
-  report_id?: string | null;
-  publishable_status?: string | null;
-  promotion_outcome?: string | null;
-  operator_action?: string | null;
-  event_emitted?: boolean;
-}
-
-async function postJSON<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
-  const resp = await fetch(`${BASE}${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal,
-  });
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({ detail: resp.statusText }));
-    const msg =
-      typeof err.detail === 'string'
-        ? err.detail
-        : err.detail?.reason || err.detail?.error || err.message || `HTTP ${resp.status}`;
-    throw new Error(msg);
-  }
-  return resp.json();
-}
-
-export async function runRebuildPreflight(
-  boardId: string,
-  signal?: AbortSignal,
-): Promise<RebuildPreflightResult> {
-  const resp = await fetch(
-    `${BASE}/kg/rebuild/preflight?board_id=${encodeURIComponent(boardId)}`,
-    { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal },
-  );
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({ detail: resp.statusText }));
-    throw new Error(err.detail || err.message || `HTTP ${resp.status}`);
-  }
-  return resp.json();
-}
-
-export interface RebuildConfirmRequest {
-  board_id: string;
-  operation: string;
-  preflight_hash: string;
-  manifest_ref: string;
-}
-
-export function runRebuildConfirm(
-  body: RebuildConfirmRequest,
-  signal?: AbortSignal,
-): Promise<RebuildConfirmResult> {
-  return postJSON<RebuildConfirmResult>('/kg/rebuild/confirm', body, signal);
-}
-
-export interface RebuildRunRequest extends RebuildConfirmRequest {
-  confirmation_id: string;
-  reason: string;
-}
-
-export function runRebuildRun(
-  body: RebuildRunRequest,
-  signal?: AbortSignal,
-): Promise<RebuildRunResult> {
-  return postJSON<RebuildRunResult>('/kg/rebuild/run', body, signal);
 }
 
 const BASE = '/api/v1';

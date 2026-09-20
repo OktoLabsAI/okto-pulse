@@ -10,7 +10,7 @@ export function KGHealthOverview({ health, stale }: { health: KGHealth; stale: b
   const atRisk = state === 'at_risk' || state === 'backpressure';
   const label = stale ? 'Snapshot needs a refresh'
     : healthy ? 'Operational'
-    : needsRecovery ? 'Review recovery'
+    : needsRecovery ? 'Component unavailable'
     : atRisk ? 'Needs attention' : 'Status unknown';
   const metricsAvailable = health.metric_status === 'available';
   const statusColor = healthy && !stale
@@ -21,7 +21,7 @@ export function KGHealthOverview({ health, stale }: { health: KGHealth; stale: b
     : healthy
       ? 'No recovery is indicated by the reported health state. Review processing queues separately: a healthy database can still have pending knowledge work.'
       : needsRecovery
-        ? 'Review the diagnostics and recovery preflight before taking action. A rebuild changes the graph generation and is not a routine refresh.'
+        ? 'The reported component state limits the affected operations. Read the component and reason in diagnostics; this view cannot repair the graph.'
         : atRisk
           ? 'Inspect the reported issues and processing queues first. A warning does not by itself mean the database needs rebuilding.'
           : 'The backend has not supplied a recognized health state. Check diagnostics; missing observations are not proof of a healthy or a corrupt graph.';
@@ -38,8 +38,8 @@ export function KGHealthOverview({ health, stale }: { health: KGHealth; stale: b
             <h2 id="kg-health-overview-title" className="text-2xl font-semibold tracking-tight text-slate-900 dark:text-white">{label}</h2>
             <p className="mt-2 max-w-3xl text-sm leading-relaxed text-slate-600 dark:text-slate-300">{guidance}</p>
           </div>
-          <a href={needsRecovery && !stale ? '#kg-health-recovery' : '#kg-health-diagnostics'} className="inline-flex shrink-0 items-center gap-2 self-start rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">
-            {needsRecovery && !stale ? 'Review recovery' : 'View diagnostics'} <ArrowDown className="h-4 w-4" aria-hidden />
+          <a href="#kg-health-diagnostics" className="inline-flex shrink-0 items-center gap-2 self-start rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">
+            View diagnostics <ArrowDown className="h-4 w-4" aria-hidden />
           </a>
         </div>
         <div className="grid divide-y divide-slate-200 border-t border-slate-200 dark:divide-slate-800 dark:border-slate-800 sm:grid-cols-3 sm:divide-x sm:divide-y-0">
@@ -60,7 +60,7 @@ export function KGHealthOverview({ health, stale }: { health: KGHealth; stale: b
         <ol className="mt-3 grid gap-4 text-slate-600 dark:text-slate-300 md:grid-cols-3">
           <li><strong className="block text-slate-900 dark:text-white">1. Check the current state</strong>Read health and processing separately. Missing telemetry is not a confirmed database failure.</li>
           <li><strong className="block text-slate-900 dark:text-white">2. Resolve knowledge work</strong>Use the Cognitive Action Center to inspect supported actions and their impact. Refresh here only reloads observations.</li>
-          <li><strong className="block text-slate-900 dark:text-white">3. Recover only when needed</strong>Review preflight and record an audit reason. Recovery is distinct from a relevance tick or a queue retry.</li>
+          <li><strong className="block text-slate-900 dark:text-white">3. Understand limitations</strong>Read the affected component and reason. Missing or unavailable observations do not establish a healthy graph.</li>
         </ol>
       </details>
     </section>

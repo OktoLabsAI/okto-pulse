@@ -26,39 +26,22 @@ import {
   Database,
   HardDrive,
   Inbox,
-  Loader2,
-  Play,
   RefreshCw,
-  SlidersHorizontal,
   XCircle,
 } from 'lucide-react';
-import toast from 'react-hot-toast';
 
 import { useDashboardStore } from '@/store/dashboard';
 import { EXPECTED_KG_HEALTH_SCHEMA_VERSION } from '@/constants/kg';
 import { CanonicalPartitionIntegrityInspectorModal } from './CanonicalPartitionIntegrityInspectorModal';
 import {
-  getKGCognitivePendingItems,
   getKGHealth,
-  cancelHistorical,
-  getHistoricalProgress,
-  runRebuildConfirm,
-  runRebuildPreflight,
-  runRebuildRun,
   type KGHealth,
-  type KGGraphStorageRoute,
-  type KGGraphStorageSnapshot,
-  type KGCognitivePendingCounts,
   type CanonicalDebtSummary,
   type DecaySchedulerDiagnostics,
   type KGLayerCounts,
-  type RebuildPreflightResult,
   type RebuildDiagnostics,
-  type RebuildRunResult,
   type StorageFootprintProxy,
-  type HistoricalProgress,
 } from '@/services/kg-health-api';
-import { triggerKGTick } from '@/services/kg-tick-api';
 import { KGHealthCognitivePendingPanel } from './KGHealthCognitivePendingPanel';
 import { CandidateDecisionPanel } from './CandidateDecisionPanel';
 import { usePermissions } from '@/hooks/usePermissions';
@@ -88,13 +71,6 @@ export function KGHealthView({
   );
   const canReadHealth = policyReady && permissions.has('kg.operations.health.read');
   const canReadCognitive = policyReady && permissions.has('kg.operations.cognitive.read');
-  const canRunTick = policyReady && permissions.has('kg.operations.tick.run');
-  const canRunRebuildPreflight = policyReady && permissions.has('kg.operations.rebuild.preflight');
-  const canRunRebuildConfirm = policyReady && permissions.has('kg.operations.rebuild.confirm');
-  const canRunRebuild = policyReady && permissions.has('kg.operations.rebuild.run');
-  const canReadHistorical = policyReady && permissions.has('kg.operations.historical.read');
-  const canCancelHistorical = policyReady && permissions.has('kg.operations.historical.cancel');
-  const canReadRuntime = policyReady && permissions.has('runtime.settings.read');
 
   const [data, setData] = useState<KGHealth | null>(null);
   const [error, setError] = useState<Error | null>(null);
@@ -173,13 +149,6 @@ export function KGHealthView({
     void tick();
   }, [tick]);
 
-  const handleOpenDecayTickSettings = useCallback(() => {
-    window.dispatchEvent(new CustomEvent('okto:open-runtime-settings', {
-      detail: { initialTab: 'decaytick' },
-    }));
-    onClose();
-  }, [onClose]);
-
   const tickInfo = useMemo(
     () => computeTickInfo(
       data?.decay_scheduler_diagnostics ?? null,
@@ -240,7 +209,7 @@ export function KGHealthView({
             <nav aria-label="KG Health sections" className="sticky top-0 z-20 flex flex-wrap gap-1 rounded-xl border border-slate-200 bg-white/95 p-1.5 shadow-sm backdrop-blur dark:border-slate-800 dark:bg-slate-900/95">
               {[
                 ['overview', 'Overview'], ['processing', 'Processing & knowledge'],
-                ['diagnostics', 'Diagnostics'], ['recovery', 'Recovery'],
+                ['diagnostics', 'Diagnostics'],
               ].map(([id, label]) => (
                 <a key={id} href={`#kg-health-${id}`} className="rounded-lg px-3 py-2 text-sm font-medium text-slate-600 hover:bg-sky-50 hover:text-sky-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-sky-300">{label}</a>
               ))}
@@ -273,8 +242,8 @@ export function KGHealthView({
               )}
             </section>
             <section id="kg-health-diagnostics" aria-labelledby="kg-health-diagnostics-title" className="scroll-mt-28">
-              <KGHealthSectionHeading id="kg-health-diagnostics-title" eyebrow="02 · Inspect & maintain" title="Diagnostics & maintenance"
-                description="Inspect integrity signals, storage usage and relevance scheduling. Running a tick recalculates relevance; it does not rebuild the graph." />
+              <KGHealthSectionHeading id="kg-health-diagnostics-title" eyebrow="02 · Observations" title="Diagnostics"
+                description="Inspect integrity signals, storage usage and relevance scheduling. Refresh reloads the reported observations." />
               <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
                 <div className="min-w-0 space-y-4">
                   <KGHealthCard
@@ -299,40 +268,8 @@ export function KGHealthView({
                 lastTickStatus={data.last_tick_status ?? null}
                 lastTickError={data.last_tick_error ?? null}
                 nodesRecomputed={data.nodes_recomputed_in_last_tick}
-                boardId={boardId}
-                onTickStarted={handleRefresh}
-                onOpenDecayTickSettings={handleOpenDecayTickSettings}
-                tickInProgress={data.tick_in_progress ?? false}
-                canRunTick={canRunTick}
-                canOpenDecayTickSettings={canReadRuntime}
               />
               </div>
-            </section>
-            <section id="kg-health-recovery" aria-labelledby="kg-health-recovery-title" className="scroll-mt-28 rounded-2xl border border-amber-200 bg-amber-50/40 p-4 dark:border-amber-900/60 dark:bg-amber-950/10 sm:p-6">
-              <KGHealthSectionHeading id="kg-health-recovery-title" eyebrow="03 · Exceptional operation" title="Recovery & rebuild"
-                description="Use only after reviewing the diagnosis. Stopping historical recovery, resolving cognitive debt and rebuilding storage are different actions." />
-              <div className="mb-5 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm leading-relaxed text-amber-900 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-200">
-                <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" aria-hidden />
-                <p><strong>Review before rebuilding.</strong> Preflight checks eligible sources; it does not start a rebuild. An actual rebuild promotes a new graph generation and can leave cognitive work pending. An absent rebuild generation alone is not a failure.</p>
-              </div>
-              <RecoveryPanel
-                boardId={boardId}
-                graphState={data.graph_state ?? null}
-                discoveryState={data.discovery_state ?? null}
-                overallState={data.overall_state ?? null}
-                currentGenerationId={data.current_kg_generation_id ?? null}
-                classificationReason={data.classification_reason ?? null}
-                totalNodes={data.total_nodes}
-                graphStorage={data.graph_storage ?? null}
-                pollIntervalMs={pollIntervalMs}
-                onCompleted={handleRefresh}
-                canPreflight={canRunRebuildPreflight}
-                canConfirm={canRunRebuildConfirm}
-                canRun={canRunRebuild}
-                canReadCognitive={canReadCognitive}
-                canReadHistorical={canReadHistorical}
-                canCancelHistorical={canCancelHistorical}
-              />
             </section>
           </>
         )}
@@ -348,7 +285,6 @@ interface TickInfo {
   label: string;
   ariaLabel: string;
   reason: string | null;
-  recommendedAction: string | null;
   nextScheduledAt: string | null;
   staleToleranceSeconds: number | null;
   source: 'backend' | 'legacy';
@@ -368,7 +304,6 @@ function computeTickInfo(
       label,
       ariaLabel: label,
       reason: diagnostics.reason,
-      recommendedAction: diagnostics.recommended_action,
       nextScheduledAt: diagnostics.next_scheduled_at,
       staleToleranceSeconds: diagnostics.stale_tolerance_seconds,
       source: 'backend',
@@ -381,7 +316,6 @@ function computeTickInfo(
       label: 'Tick has never run',
       ariaLabel: 'Tick has never run',
       reason: 'legacy_no_tick',
-      recommendedAction: null,
       nextScheduledAt: null,
       staleToleranceSeconds: null,
       source: 'legacy',
@@ -397,7 +331,6 @@ function computeTickInfo(
       label: `Stale tick: ${ageHours}h ago`,
       ariaLabel: `Stale tick: ${ageHours} hours ago`,
       reason: 'legacy_stale_threshold',
-      recommendedAction: null,
       nextScheduledAt: null,
       staleToleranceSeconds: 24 * 60 * 60,
       source: 'legacy',
@@ -409,7 +342,6 @@ function computeTickInfo(
     label: `Last tick: ${ageHours}h ago`,
     ariaLabel: `Last tick: ${ageHours} hours ago`,
     reason: 'legacy_recent_tick',
-    recommendedAction: null,
     nextScheduledAt: null,
     staleToleranceSeconds: 24 * 60 * 60,
     source: 'legacy',
@@ -558,19 +490,7 @@ interface SchemaTickCardProps {
   lastTickStatus: string | null;
   lastTickError: string | null;
   nodesRecomputed: number;
-  /** Spec 54399628 — board scope para `triggerKGTick`. */
-  boardId: string;
-  /** Callback chamado após tick disparar com sucesso (para refresh natural). */
-  onTickStarted: () => void;
-  onOpenDecayTickSettings: () => void;
-  /** Bug fix — true quando o advisory lock global ``kg_daily_tick`` está
-   *  acquired no backend. Vem de KGHealth.tick_in_progress, atualizado a
-   *  cada poll (30s). Garante que o botão fica desabilitado mesmo se o
-   *  usuário fechar o modal e voltar — ou se outra origem (cron/MCP)
-   *  estiver rodando o tick agora. */
-  tickInProgress: boolean;
-  canRunTick: boolean;
-  canOpenDecayTickSettings: boolean;
+
 }
 
 function SchemaTickCard({
@@ -583,59 +503,7 @@ function SchemaTickCard({
   lastTickStatus,
   lastTickError,
   nodesRecomputed,
-  boardId,
-  onTickStarted,
-  onOpenDecayTickSettings,
-  tickInProgress,
-  canRunTick,
-  canOpenDecayTickSettings,
 }: SchemaTickCardProps) {
-  // Spec 54399628 (Wave 2 NC f9732afc) — botão "Run tick now" com 4 estados:
-  // idle / running / success (toast + handleRefresh) / error (toast).
-  // Usamos `running` como estado local; idle é o default. Success/error são
-  // transições efêmeras representadas por toasts; o botão volta para idle
-  // após o callback async resolver.
-  const [tickRunning, setTickRunning] = useState(false);
-
-  // Bug fix (Playwright E2E reproduzido):
-  //
-  // 1. `useRef` síncrono garante que cliques no mesmo macro-tick (antes do
-  //    React re-render) sejam bloqueados — o guard via state-only falhava
-  //    em rajadas de 10ms entre cliques.
-  // 2. A unlock do ref é DEFERRED por 3s mesmo após o `triggerKGTick`
-  //    resolver: o endpoint retorna 202 quase imediatamente, então sem o
-  //    cooldown o ref liberaria antes do próximo click humano (>100ms).
-  //    3s cobre o gap até o próximo poll do health (que verá
-  //    `tick_in_progress=true` via advisory lock e mantém o botão disabled).
-  // 3. `tickInProgress` vindo do health é a defesa cross-mount/cross-tab
-  //    (avaliado no botão `disabled` + entry guard).
-  const inFlightRef = useRef(false);
-
-  const handleRunTickNow = useCallback(async () => {
-    if (!canRunTick || inFlightRef.current || tickRunning || tickInProgress) return;
-    inFlightRef.current = true;
-    setTickRunning(true);
-    // Cooldown lock — mantém o guard por 3s além do fetch para cobrir o
-    // gap entre o 202 e o próximo poll do health.
-    setTimeout(() => { inFlightRef.current = false; }, 3000);
-    try {
-      await triggerKGTick(boardId);
-      toast.success('Tick started — graph will update on next poll');
-      onTickStarted();
-    } catch (err: any) {
-      if (err?.code === 'tick_already_running') {
-        toast(
-          'Tick already running, retry shortly',
-          { icon: '⚠️' },
-        );
-      } else {
-        toast.error(err?.message ?? 'Failed to start tick');
-      }
-    } finally {
-      setTickRunning(false);
-    }
-  }, [boardId, onTickStarted, tickRunning, tickInProgress, canRunTick]);
-
   const tickClasses =
     tickInfo.status === 'never'
       ? 'bg-rose-100 dark:bg-rose-900/30 text-rose-700 dark:text-rose-300'
@@ -655,11 +523,6 @@ function SchemaTickCard({
   const toleranceLabel = tickInfo.staleToleranceSeconds
     ? formatDurationSeconds(tickInfo.staleToleranceSeconds)
     : 'unavailable';
-  const recommendedAction = tickInfo.recommendedAction
-    ? formatActionLabel(tickInfo.recommendedAction)
-    : tickInfo.source === 'legacy'
-    ? 'Legacy tick fields only'
-    : 'Inspect scheduler';
   return (
     <Card title="Decay Scheduler" testId="kg-health-card" icon={<Database className="w-4 h-4" aria-hidden />}>
       <Row label="Schema version">
@@ -706,17 +569,6 @@ function SchemaTickCard({
           {toleranceLabel}
         </span>
       </Row>
-      <Row label="Recommended action">
-        <span className="text-sm font-medium text-blue-700 dark:text-blue-300">
-          {recommendedAction}
-        </span>
-      </Row>
-      <div className="rounded bg-blue-50 dark:bg-blue-950/40 px-3 py-2 text-xs text-blue-900 dark:text-blue-200">
-        <div className="font-semibold">Cadence is edited in Settings.</div>
-        <div className="mt-1 text-blue-800 dark:text-blue-300">
-          KG Health reflects the active tolerance and next run from backend diagnostics; use Runtime Settings &gt; Decay Tick to change interval, staleness threshold, or max-age cap.
-        </div>
-      </div>
       {lastFailureLabel && (
         <Row label="Last failure">
           <span className="text-sm text-amber-700 dark:text-amber-300">
@@ -753,51 +605,6 @@ function SchemaTickCard({
           {nodesRecomputed.toLocaleString()}
         </span>
       </Row>
-      <div className="pt-2 mt-2 border-t border-surface-200 dark:border-surface-700">
-        <button
-          type="button"
-          onClick={handleRunTickNow}
-          disabled={!canRunTick || tickRunning || tickInProgress}
-          className={`w-full inline-flex items-center justify-center gap-2 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
-            !canRunTick || tickRunning || tickInProgress
-              ? 'bg-surface-200 dark:bg-surface-700 text-surface-500 dark:text-surface-400 cursor-not-allowed'
-              : 'bg-blue-600 hover:bg-blue-700 text-white'
-          }`}
-          data-testid="kg-tick-run-now"
-          aria-label="Run KG decay tick now"
-          title={
-            !canRunTick
-              ? 'Requires kg.operations.tick.run'
-              : tickInProgress && !tickRunning
-                ? 'Tick is already running globally (cron, MCP or another tab)'
-                : undefined
-          }
-        >
-          {tickRunning || tickInProgress ? (
-            <>
-              <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden />
-              {tickInProgress && !tickRunning ? 'Tick in progress…' : 'Running…'}
-            </>
-          ) : (
-            <>
-              <Play className="w-3.5 h-3.5" aria-hidden />
-              Run tick now
-            </>
-          )}
-        </button>
-        {canOpenDecayTickSettings && (
-          <button
-            type="button"
-            onClick={onOpenDecayTickSettings}
-            className="mt-2 w-full inline-flex items-center justify-center gap-2 px-3 py-1.5 text-xs font-medium rounded-lg border border-surface-300 dark:border-surface-600 text-surface-700 dark:text-surface-200 hover:bg-surface-50 dark:hover:bg-surface-700"
-            data-testid="kg-open-decay-settings"
-            aria-label="Open Runtime Settings Decay Tick tab"
-          >
-            <SlidersHorizontal className="w-3.5 h-3.5" aria-hidden />
-            Open Decay Tick settings
-          </button>
-        )}
-      </div>
     </Card>
   );
 }
@@ -1188,11 +995,11 @@ interface CardProps {
 const CARD_GUIDANCE: Record<string, { description: string; help: string }> = {
   'Decay Scheduler': {
     description: 'Keep relevance scores current.',
-    help: 'A tick recomputes relevance using the configured decay policy. It writes scores; it does not rebuild storage or retry consolidation. Scheduling settings and manual execution require their own permissions.',
+    help: 'The internal scheduler recomputes relevance using the configured decay policy. These observations describe its last reported execution and next scheduled run. Reading health does not start a tick.',
   },
   'Queue & Dead Letter': {
     description: 'Follow queued work and failures that need review.',
-    help: 'Consolidation and global outbox dead letters are different queues. Review the failure cause before redriving through the appropriate workflow. Refreshing this dashboard does not retry any item.',
+    help: 'Consolidation and global outbox dead letters are different queues. Counts describe outstanding failures and may overlap other processing signals. Refreshing this dashboard does not retry any item.',
   },
   'KG Health': {
     description: 'Read integrity signals and graph telemetry.',
@@ -1200,7 +1007,7 @@ const CARD_GUIDANCE: Record<string, { description: string; help: string }> = {
   },
   'Canonical Debt': {
     description: 'Identify updates still waiting for canonical materialization.',
-    help: 'Canonical debt tracks materialization obligations. It is separate from cognitive pending work and may refer to the same sources. Retryable and blocked entries require different handling; a rebuild does not automatically settle every obligation.',
+    help: 'Canonical debt tracks materialization obligations. It is separate from cognitive pending work and may refer to the same sources. The counts describe outstanding obligations; reading health does not settle them.',
   },
   'Storage Footprint Proxy': {
     description: 'Monitor disk usage, not process memory.',
@@ -1286,1002 +1093,4 @@ function formatBytes(value: number): string {
     unitIndex += 1;
   }
   return `${size.toFixed(size >= 10 ? 1 : 2)} ${units[unitIndex]}`;
-}
-
-// ---------------------------------------------------------------------------
-// Recovery panel — KG-02 sm_a30278ad mockup
-// ---------------------------------------------------------------------------
-//
-// Single-page flow per the mockup: diagnostic preflight summary + rebuild
-// report aside, inline reason input and one explicit preparation action. The
-// Community runtime never starts destructive rebuild work online; the action
-// refreshes diagnostics and exposes the governed offline executor contract.
-//
-//   POST /kg/rebuild/preflight  ──▶  diagnostics + offline remediation
-//   confirm/run                  ──▶  never called in recovery_only_offline
-
-interface RecoveryPanelProps {
-  boardId: string;
-  graphState: string | null;
-  discoveryState: string | null;
-  overallState: string | null;
-  currentGenerationId: string | null;
-  classificationReason: string | null;
-  totalNodes: number;
-  graphStorage: KGGraphStorageSnapshot | null;
-  pollIntervalMs: number;
-  onCompleted: () => void;
-  canPreflight: boolean;
-  canConfirm: boolean;
-  canRun: boolean;
-  canReadCognitive: boolean;
-  canReadHistorical: boolean;
-  canCancelHistorical: boolean;
-}
-
-interface RecoveryStatusView {
-  label: string;
-  className: string;
-}
-
-function recoveryStatusView(overallState: string | null): RecoveryStatusView {
-  if (overallState === 'healthy' || overallState === 'fresh') {
-    return {
-      label: 'Healthy',
-      className:
-        'rounded-full bg-emerald-100 dark:bg-emerald-900/40 px-3 py-1 text-xs font-medium text-emerald-700 dark:text-emerald-300',
-    };
-  }
-  if (overallState === 'at_risk' || overallState === 'backpressure') {
-    return {
-      label: 'At risk',
-      className:
-        'rounded-full bg-amber-100 dark:bg-amber-900/40 px-3 py-1 text-xs font-medium text-amber-700 dark:text-amber-300',
-    };
-  }
-  if (
-    overallState === 'recovery_needed' ||
-    overallState === 'quarantined' ||
-    overallState === 'corrupted' ||
-    overallState === 'failed'
-  ) {
-    return {
-      label: 'Recovery needed',
-      className:
-        'rounded-full bg-rose-100 dark:bg-rose-900/40 px-3 py-1 text-xs font-medium text-rose-700 dark:text-rose-300',
-    };
-  }
-  return {
-    label: 'Unknown',
-    className:
-      'rounded-full bg-surface-100 dark:bg-surface-800 px-3 py-1 text-xs font-medium text-surface-700 dark:text-surface-300',
-  };
-}
-
-interface CognitiveStateView {
-  value: string;
-  state: string | null;
-  subtitle: string;
-  reportValue: string;
-  reportTone: 'success' | 'warning' | 'default';
-}
-
-function cognitiveStateView(
-  currentGenerationId: string | null,
-  counts: KGCognitivePendingCounts | null,
-  error: string | null,
-): CognitiveStateView {
-  if (!currentGenerationId) {
-    return {
-      value: 'no generation',
-      state: null,
-      subtitle: 'no rebuild-linked generation',
-      reportValue: 'not available',
-      reportTone: 'default',
-    };
-  }
-  if (error) {
-    return {
-      value: 'unavailable',
-      state: 'at_risk',
-      subtitle: 'could not load markers',
-      reportValue: 'unavailable',
-      reportTone: 'warning',
-    };
-  }
-  if (!counts) {
-    return {
-      value: 'checking',
-      state: null,
-      subtitle: 'loading markers',
-      reportValue: 'checking',
-      reportTone: 'default',
-    };
-  }
-
-  const active = counts.pending + counts.in_progress;
-  if (counts.failed > 0) {
-    return {
-      value: `${counts.failed} failed`,
-      state: 'failed',
-      subtitle: `${active} pending`,
-      reportValue: 'failed',
-      reportTone: 'warning',
-    };
-  }
-  if (active > 0) {
-    return {
-      value: `${active} pending`,
-      state: 'at_risk',
-      subtitle: `${counts.consolidated} consolidated`,
-      reportValue: 'pending',
-      reportTone: 'warning',
-    };
-  }
-  if (counts.total === 0) {
-    return {
-      value: 'no pending items',
-      state: 'fresh',
-      subtitle: 'no markers for generation',
-      reportValue: 'none',
-      reportTone: 'success',
-    };
-  }
-  return {
-    value: 'consolidated after rebuild',
-    state: 'fresh',
-    subtitle: `${counts.consolidated + counts.skipped}/${counts.total} terminal`,
-    reportValue: 'consolidated',
-    reportTone: 'success',
-  };
-}
-
-function stateBadgeClass(state: string | null): string {
-  if (state === 'healthy' || state === 'fresh') {
-    return 'text-emerald-700 dark:text-emerald-400';
-  }
-  if (state === 'at_risk' || state === 'recovery_needed' || state === 'empty') {
-    return 'text-amber-700 dark:text-amber-400';
-  }
-  if (state === 'quarantined' || state === 'corrupted' || state === 'failed') {
-    return 'text-rose-700 dark:text-rose-400';
-  }
-  return 'text-surface-600 dark:text-surface-400';
-}
-
-function shortGenerationId(value: string | null): string {
-  if (!value) return '—';
-  if (value.length <= 12) return value;
-  return `${value.slice(0, 8)}…`;
-}
-
-function explainRecoveryState(state: string | null, reason: string | null): string {
-  const reasonText = reason ? ` Reason: ${reason}.` : '';
-  if (state === 'healthy' || state === 'fresh') {
-    return `State is healthy because the latest health check found no blocking risk signals.${reasonText}`;
-  }
-  if (state === 'at_risk') {
-    return `State is at_risk because the KG has a preventive warning, such as unavailable telemetry, scheduler debt, dead-letter backlog, or recent storage warnings. It is not the same as recovery_needed.${reasonText}`;
-  }
-  if (state === 'backpressure') {
-    return `State is backpressure because writes are being throttled or an administrative lane holds the KG lock.${reasonText}`;
-  }
-  if (state === 'recovery_needed') {
-    return `State is recovery_needed because the health classifier saw a storage degradation signal such as WAL or commit errors.${reasonText}`;
-  }
-  if (state === 'quarantined') {
-    return `State is quarantined because a graph file has been isolated after a corruption signal.${reasonText}`;
-  }
-  if (state === 'corrupted' || state === 'failed') {
-    return `State is ${state} because the graph could not be safely used by the current health check.${reasonText}`;
-  }
-  return `State is unknown because the health payload did not include a known KG state.${reasonText}`;
-}
-
-function graphBackendLabel(route: KGGraphStorageRoute | null): string {
-  if (route?.backend === 'grafx') return 'Okto Grafx';
-  if (route?.backend === 'ladybug') return 'Retired graph backend';
-  if (route?.binding_status === 'missing') return 'Not bound';
-  return 'Backend unavailable';
-}
-
-function graphStorageTooltip(
-  route: KGGraphStorageRoute | null,
-  role: 'board-local graph' | 'global discovery graph',
-): string {
-  if (!route || route.binding_status === 'unavailable') {
-    return `The ${role} backend is unavailable because KG Health could not authenticate its persisted route binding.`;
-  }
-  if (route.binding_status === 'missing') {
-    return `The ${role} has no persisted route binding yet. KG Health will not guess whether LadybugDB or Okto Grafx owns it.`;
-  }
-
-  const backend = graphBackendLabel(route);
-  const path = route.physical_path ? ` Active storage: ${route.physical_path}.` : '';
-  const pageSize = route.backend === 'grafx' && route.page_size
-    ? ` Page size: ${route.page_size} bytes.`
-    : '';
-  return `${backend} is the active ${role} backend.${path}${pageSize}`;
-}
-
-function RecoveryPanel({
-  boardId,
-  graphState,
-  discoveryState,
-  overallState,
-  currentGenerationId,
-  classificationReason,
-  totalNodes,
-  graphStorage,
-  pollIntervalMs,
-  onCompleted,
-  canPreflight,
-  canConfirm,
-  canRun,
-  canReadCognitive,
-  canReadHistorical,
-  canCancelHistorical,
-}: RecoveryPanelProps) {
-  const [preflight, setPreflight] = useState<RebuildPreflightResult | null>(null);
-  const [preflightError, setPreflightError] = useState<string | null>(null);
-  const [preflightLoading, setPreflightLoading] = useState(false);
-  const [reason, setReason] = useState('');
-  const [running, setRunning] = useState(false);
-  const [runPhase, setRunPhase] = useState<
-    'idle' | 'preparing' | 'running' | 'completed' | 'failed' | 'offline_required'
-  >('idle');
-  const [lastResult, setLastResult] = useState<RebuildRunResult | null>(null);
-  const [runError, setRunError] = useState<string | null>(null);
-  const [cognitiveCounts, setCognitiveCounts] =
-    useState<KGCognitivePendingCounts | null>(null);
-  const [cognitiveError, setCognitiveError] = useState<string | null>(null);
-
-  const refreshPreflight = useCallback(async () => {
-    if (!canPreflight) {
-      setPreflight(null);
-      setPreflightError('Requires kg.operations.rebuild.preflight');
-      setPreflightLoading(false);
-      return;
-    }
-    setPreflightLoading(true);
-    setPreflightError(null);
-    try {
-      const result = await runRebuildPreflight(boardId);
-      setPreflight(result);
-    } catch (err) {
-      setPreflightError((err as Error).message);
-    } finally {
-      setPreflightLoading(false);
-    }
-  }, [boardId, canPreflight]);
-
-  useEffect(() => {
-    void refreshPreflight();
-  }, [refreshPreflight]);
-
-  useEffect(() => {
-    if (!currentGenerationId || !canReadCognitive) {
-      setCognitiveCounts(null);
-      setCognitiveError(null);
-      return;
-    }
-
-    let cancelled = false;
-    let controller: AbortController | null = null;
-
-    const load = async () => {
-      controller?.abort();
-      controller = new AbortController();
-      try {
-        const result = await getKGCognitivePendingItems(
-          boardId,
-          { kgGenerationId: currentGenerationId, limit: 1 },
-          controller.signal,
-        );
-        if (cancelled) return;
-        setCognitiveCounts(result.counts);
-        setCognitiveError(null);
-      } catch (err) {
-        if ((err as Error).name === 'AbortError') return;
-        if (cancelled) return;
-        setCognitiveCounts(null);
-        setCognitiveError((err as Error).message);
-      }
-    };
-
-    void load();
-    const intervalId = setInterval(load, pollIntervalMs);
-    return () => {
-      cancelled = true;
-      controller?.abort();
-      clearInterval(intervalId);
-    };
-  }, [boardId, currentGenerationId, pollIntervalMs, canReadCognitive]);
-
-  const confirmRebuild = useCallback(async () => {
-    if (!canPreflight || !canConfirm || !canRun) return;
-    if (!preflight) return;
-    if (reason.trim().length === 0) {
-      setRunError('Reason is required for the audit trail.');
-      return;
-    }
-    setRunning(true);
-    setRunPhase('preparing');
-    setRunError(null);
-    setLastResult(null);
-    try {
-      // Refresh preflight just before consuming so the manifest_ref is
-      // current (KG-02.2 lifecycle: single-use TTL-bound confirmation).
-      const fresh = await runRebuildPreflight(boardId);
-      setPreflight(fresh);
-      if (fresh.execution_mode === 'recovery_only_offline' || !fresh.manifest_ref) {
-        setRunPhase('offline_required');
-        setRunError(
-          fresh.remediation
-            ?? 'Stop Pulse and run the installed local one-shot KG recovery executor.',
-        );
-        return;
-      }
-      const confirmResult = await runRebuildConfirm({
-        board_id: boardId,
-        operation: 'rebuild',
-        preflight_hash: fresh.preflight_hash,
-        manifest_ref: fresh.manifest_ref,
-      });
-      setRunPhase('running');
-      const runResult = await runRebuildRun({
-        confirmation_id: confirmResult.confirmation_id,
-        board_id: boardId,
-        operation: 'rebuild',
-        preflight_hash: fresh.preflight_hash,
-        manifest_ref: fresh.manifest_ref,
-        reason: reason.trim(),
-      });
-      setLastResult(runResult);
-      setRunPhase(runResult.outcome === 'completed' ? 'completed' : 'failed');
-      if (runResult.outcome === 'completed') {
-        toast.success('Rebuild completed — new generation promoted.');
-        setReason('');
-      } else {
-        toast.error(`Rebuild ${runResult.outcome}: ${runResult.reason}`);
-      }
-      onCompleted();
-    } catch (err) {
-      setRunError((err as Error).message);
-      setRunPhase('failed');
-    } finally {
-      setRunning(false);
-    }
-  }, [preflight, reason, boardId, onCompleted, canPreflight, canConfirm, canRun]);
-
-  const recoveryStatus = recoveryStatusView(overallState);
-  const cognitiveStatus = cognitiveStateView(
-    currentGenerationId,
-    cognitiveCounts,
-    cognitiveError,
-  );
-  const graphDisplayState = totalNodes === 0 ? 'empty' : graphState;
-  const boardStorage = graphStorage?.board ?? null;
-  const globalStorage = graphStorage?.global_graph ?? null;
-  const emptyGraphExplanation = totalNodes === 0
-    ? ' The graph is empty because KG Health counted total_nodes=0 and the graph endpoint will return no nodes until the board is indexed again.'
-    : '';
-  const graphTooltip = `${graphStorageTooltip(boardStorage, 'board-local graph')}${emptyGraphExplanation} ${explainRecoveryState(graphState, classificationReason)}`;
-  const discoveryTooltip = `${graphStorageTooltip(globalStorage, 'global discovery graph')} ${explainRecoveryState(discoveryState, classificationReason)}`;
-  const generationTooltip = currentGenerationId
-    ? `Current KG generation is ${currentGenerationId}. It is fresh because a UUID v4 generation is selected as the active rebuild output.`
-    : 'No current KG generation is selected yet, so rebuild-derived status cannot be tied to a generation.';
-  const cognitiveTooltip = `Cognitive consolidation tracks items marked during rebuild for semantic agent review. Current status: ${cognitiveStatus.reportValue}. ${cognitiveStatus.subtitle}.`;
-  const legacyFallback = preflight?.has_non_deterministic_inputs ?? false;
-  const eligibleCount = preflight?.eligible_source_count ?? 0;
-  const canonicalCount = preflight?.canonical_source_count ?? eligibleCount;
-  const workingCount = preflight?.working_source_count ?? 0;
-  const skippedByMaturity = preflight?.skipped_by_maturity_count ?? 0;
-  const expiredWorking = preflight?.skipped_expired_working_count ?? 0;
-  const legacyUnknown = preflight?.legacy_unknown_count ?? 0;
-  const skipped = preflight?.skipped_cancelled_count ?? 0;
-  const reasonInvalid = reason.trim().length === 0;
-  const canExecuteRebuild = canPreflight && canConfirm && canRun;
-  const isCompleted = lastResult?.outcome === 'completed';
-
-  return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h3 className="text-base font-semibold text-surface-900 dark:text-white">
-            KG Recovery
-          </h3>
-          <p className="text-xs text-surface-500 dark:text-surface-400">
-            Storage identity, historical recovery controls and audited rebuild preparation.
-          </p>
-        </div>
-        <span className={recoveryStatus.className}>
-          {recoveryStatus.label}
-        </span>
-      </div>
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
-        <RecoveryMetricCard
-          label="Board graph"
-          value={graphBackendLabel(boardStorage)}
-          state={graphDisplayState}
-          subtitle={totalNodes === 0 ? '0 nodes indexed' : undefined}
-          tooltip={graphTooltip}
-        />
-        <RecoveryMetricCard
-          label="Global discovery"
-          value={graphBackendLabel(globalStorage)}
-          state={discoveryState}
-          tooltip={discoveryTooltip}
-        />
-        <RecoveryMetricCard
-          label="Generation"
-          value={shortGenerationId(currentGenerationId)}
-          state={currentGenerationId ? 'fresh' : null}
-          subtitle={currentGenerationId ? 'current UUID v4' : 'no generation yet'}
-          tooltip={generationTooltip}
-        />
-        <RecoveryMetricCard
-          label="Cognitive"
-          value={cognitiveStatus.value}
-          state={cognitiveStatus.state}
-          subtitle={cognitiveStatus.subtitle}
-          tooltip={cognitiveTooltip}
-        />
-      </div>
-
-      <HistoricalRecoveryControl
-        boardId={boardId}
-        pollIntervalMs={pollIntervalMs}
-        canRead={canReadHistorical}
-        canCancel={canCancelHistorical}
-        onChanged={onCompleted}
-      />
-
-      <div className="grid grid-cols-1 lg:grid-cols-[1.2fr_0.8fr] gap-4">
-        <section className="min-w-0 rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
-          <div className="border-b border-surface-200 dark:border-surface-700 px-4 py-3">
-            <h3 className="text-sm font-semibold text-surface-900 dark:text-white">
-              Preflight
-            </h3>
-            <p className="text-[11px] text-surface-500 dark:text-surface-400">
-              Step 1 · Review source eligibility. Read-only — the offline executor creates the authoritative manifest.
-            </p>
-          </div>
-          <div className="space-y-2 px-4 py-3 text-sm">
-            {preflightLoading && !preflight && (
-              <div className="text-surface-500 dark:text-surface-400">
-                Loading preflight…
-              </div>
-            )}
-            {preflightError && (
-              <div className="text-rose-600 dark:text-rose-400 text-xs">
-                {preflightError}
-              </div>
-            )}
-            {preflight && (
-              <>
-                <PreflightRow label="Canonical sources">
-                  <strong>
-                    {canonicalCount} eligible · {skipped} cancelled
-                  </strong>
-                </PreflightRow>
-                <PreflightRow label="Working/debt">
-                  <span className="text-xs text-right text-surface-600 dark:text-surface-400">
-                    {workingCount} working · {skippedByMaturity} immature · {expiredWorking} expired
-                  </span>
-                </PreflightRow>
-                <PreflightRow label="Legacy unknown">
-                  <strong className={legacyUnknown > 0 ? 'text-amber-700' : ''}>
-                    {legacyUnknown}
-                  </strong>
-                </PreflightRow>
-                <PreflightRow label="Legacy fallback">
-                  <strong className={legacyFallback ? 'text-amber-700' : ''}>
-                    {legacyFallback ? 'confirmation required' : 'none'}
-                  </strong>
-                </PreflightRow>
-                <PreflightRow label="Outcome">
-                  <strong className={preflight.outcome === 'ready' ? 'text-emerald-700' : 'text-amber-700'}>
-                    {preflight.outcome}
-                  </strong>
-                </PreflightRow>
-                <PreflightRow label="Preflight hash">
-                  <span className="font-mono text-[11px] text-surface-600 dark:text-surface-400">
-                    {preflight.preflight_hash.slice(0, 16)}…
-                  </span>
-                </PreflightRow>
-                <PreflightRow label="Manifest">
-                  <span className="font-mono text-[11px] text-surface-600 dark:text-surface-400">
-                    {preflight.manifest_ref ?? 'created by offline executor'}
-                  </span>
-                </PreflightRow>
-              </>
-            )}
-          </div>
-        </section>
-
-        <aside className="min-w-0 rounded-xl border border-slate-200 bg-white p-4 flex flex-col dark:border-slate-800 dark:bg-slate-900">
-          <h3 className="text-sm font-semibold text-surface-900 dark:text-white">
-            Rebuild report
-          </h3>
-          <p className="mt-1 mb-3 text-xs leading-relaxed text-slate-500 dark:text-slate-400">Step 2 · Record why recovery is needed and review the execution requirements. The result appears here; preparation is not a completed rebuild.</p>
-          {runPhase !== 'idle' && (
-            <div
-              className={`mt-2 rounded-md px-3 py-2 text-xs ${
-                runPhase === 'failed'
-                  ? 'bg-rose-50 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300'
-                  : runPhase === 'offline_required'
-                  ? 'bg-amber-50 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
-                  : 'bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
-              }`}
-              role="status"
-              aria-live="polite"
-              data-testid="rebuild-live-status"
-            >
-              {runPhase === 'preparing' && (
-                preflight?.execution_mode === 'recovery_only_offline'
-                  ? 'Refreshing diagnostics for the governed offline rebuild…'
-                  : 'Starting rebuild — refreshing and validating preflight…'
-              )}
-              {runPhase === 'running' && 'Rebuild started — waiting for the terminal report…'}
-              {runPhase === 'completed' && 'Rebuild completed — the terminal report is available below.'}
-              {runPhase === 'failed' && 'Rebuild did not start or did not complete. Review the error below.'}
-              {runPhase === 'offline_required' && 'Online preflight completed — rebuild must run with Pulse offline.'}
-            </div>
-          )}
-          <div className="mt-3 space-y-2 text-sm flex-1">
-            {!lastResult && (
-              <>
-                <ReportRow label="Status" value={preflight?.outcome ?? '—'} />
-                <ReportRow label="Expected result" value="new UUID v4" />
-                <ReportRow
-                  label="Cognitive state"
-                  value={cognitiveStatus.reportValue}
-                  tone={cognitiveStatus.reportTone}
-                />
-              </>
-            )}
-            {lastResult && (
-              <>
-                <ReportRow
-                  label="Outcome"
-                  value={lastResult.outcome}
-                  tone={isCompleted ? 'success' : 'warning'}
-                />
-                <ReportRow
-                  label="Run id"
-                  value={lastResult.run_id}
-                  mono
-                />
-                {lastResult.current_kg_generation_id && (
-                  <ReportRow
-                    label="New generation"
-                    value={lastResult.current_kg_generation_id}
-                    mono
-                  />
-                )}
-                {lastResult.previous_kg_generation_id && (
-                  <ReportRow
-                    label="Previous generation"
-                    value={lastResult.previous_kg_generation_id}
-                    mono
-                  />
-                )}
-                {lastResult.report_id && (
-                  <ReportRow
-                    label="Report"
-                    value={lastResult.report_id}
-                    mono
-                  />
-                )}
-                {lastResult.publishable_status && (
-                  <ReportRow
-                    label="Publishable status"
-                    value={lastResult.publishable_status}
-                  />
-                )}
-                {lastResult.promotion_outcome && (
-                  <ReportRow
-                    label="Promotion"
-                    value={lastResult.promotion_outcome}
-                    tone={
-                      lastResult.promotion_outcome === 'promoted'
-                        ? 'success'
-                        : 'warning'
-                    }
-                  />
-                )}
-                {lastResult.operator_action && (
-                  <ReportRow
-                    label="Operator action"
-                    value={lastResult.operator_action}
-                    tone="warning"
-                  />
-                )}
-                <ReportRow
-                  label="kg.rebuilt emitted"
-                  value={lastResult.event_emitted ? 'yes' : 'no'}
-                  tone={lastResult.event_emitted ? 'success' : 'warning'}
-                />
-              </>
-            )}
-          </div>
-
-          <div className="mt-4 space-y-2">
-            <label
-              htmlFor="rebuild-reason"
-              className="text-xs text-surface-600 dark:text-surface-400 block"
-            >
-              Reason (audit) *
-            </label>
-            <textarea
-              id="rebuild-reason"
-              value={reason}
-              onChange={(e) => {
-                setReason(e.target.value);
-                setRunError(null);
-              }}
-              rows={2}
-              className="w-full rounded-md border border-surface-300 dark:border-surface-600 bg-white dark:bg-surface-900 px-3 py-2 text-sm text-surface-900 dark:text-white"
-              placeholder="e.g. WAL corruption after restart"
-              disabled={running}
-            />
-            {runError && (
-              <div
-                className={`rounded-md px-3 py-2 text-xs border ${
-                  runPhase === 'offline_required'
-                    ? 'bg-amber-50 dark:bg-amber-900/40 border-amber-200 dark:border-amber-700 text-amber-700 dark:text-amber-300'
-                    : 'bg-rose-50 dark:bg-rose-900/40 border-rose-200 dark:border-rose-700 text-rose-700 dark:text-rose-300'
-                }`}
-              >
-                {runError}
-              </div>
-            )}
-            <button
-              type="button"
-              onClick={confirmRebuild}
-              disabled={!canExecuteRebuild || preflightLoading || running || reasonInvalid || !preflight}
-              className="w-full rounded-md bg-rose-600 hover:bg-rose-700 disabled:opacity-60 disabled:cursor-not-allowed px-3 py-2 text-sm font-medium text-white flex items-center justify-center gap-2"
-              title={
-                !canExecuteRebuild
-                  ? 'Requires kg.operations.rebuild.preflight, .confirm and .run'
-                  : reasonInvalid
-                  ? 'Type a reason first'
-                  : preflight?.execution_mode === 'recovery_only_offline'
-                  ? 'Refresh diagnostics and show the governed offline rebuild steps'
-                  : 'Run destructive rebuild now'
-              }
-            >
-              {running && <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden />}
-              {running
-                ? 'Preparing…'
-                : preflight?.execution_mode === 'recovery_only_offline'
-                ? 'Prepare offline rebuild'
-                : 'Confirm rebuild'}
-            </button>
-            <p className="text-[11px] text-surface-500 dark:text-surface-400 text-center">
-              {preflight?.execution_mode === 'recovery_only_offline'
-                ? 'Pulse must be stopped before the recovery executor can promote a new UUID v4 generation.'
-                : 'Destructive — promotes a new UUID v4 generation.'}
-            </p>
-          </div>
-        </aside>
-      </div>
-    </div>
-  );
-}
-
-interface HistoricalRecoveryControlProps {
-  boardId: string;
-  pollIntervalMs: number;
-  canRead: boolean;
-  canCancel: boolean;
-  onChanged: () => void;
-}
-
-function HistoricalRecoveryControl({
-  boardId,
-  pollIntervalMs,
-  canRead,
-  canCancel,
-  onChanged,
-}: HistoricalRecoveryControlProps) {
-  const [progress, setProgress] = useState<HistoricalProgress | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [action, setAction] = useState<'cancel' | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [confirmingStop, setConfirmingStop] = useState(false);
-  const [lastActionMessage, setLastActionMessage] = useState<string | null>(null);
-  // Polls may overlap a user cancellation or a newer poll. Only the most
-  // recent request may publish state, otherwise a late pre-cancellation
-  // response can make a cancelled recovery look active again.
-  const refreshGeneration = useRef(0);
-
-  const refresh = useCallback(async () => {
-    const generation = ++refreshGeneration.current;
-    if (!canRead) {
-      if (generation === refreshGeneration.current) {
-        setProgress(null);
-        setLoading(false);
-      }
-      return;
-    }
-    try {
-      const next = await getHistoricalProgress(boardId);
-      if (generation === refreshGeneration.current) {
-        setProgress(next);
-        setError(null);
-      }
-    } catch (err) {
-      if (generation === refreshGeneration.current) {
-        setError((err as Error).message);
-      }
-    } finally {
-      if (generation === refreshGeneration.current) {
-        setLoading(false);
-      }
-    }
-  }, [boardId, canRead]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const poll = async () => {
-      if (cancelled) return;
-      await refresh();
-    };
-    void poll();
-    const intervalId = setInterval(poll, pollIntervalMs);
-    return () => {
-      cancelled = true;
-      refreshGeneration.current += 1;
-      clearInterval(intervalId);
-    };
-  }, [pollIntervalMs, refresh]);
-
-  const active = Boolean(
-    progress
-    && (
-      progress.status === 'in_progress'
-      || progress.status === 'paused'
-      || (progress.pending ?? 0) > 0
-      || (progress.claimed ?? 0) > 0
-      || (progress.paused ?? 0) > 0
-    )
-  );
-
-  const handleCancel = useCallback(async () => {
-    if (!canCancel || action) return;
-    // Fence every outstanding progress request before publishing the durable
-    // cancellation state below.
-    refreshGeneration.current += 1;
-    setAction('cancel');
-    setError(null);
-    try {
-      const result = await cancelHistorical(boardId);
-      setProgress({
-        enabled: false,
-        status: 'cancelled',
-        total: 0,
-        progress: 0,
-        pending: 0,
-        claimed: 0,
-        paused: 0,
-        failed: 0,
-      });
-      setLastActionMessage(
-        `Recovery cancelled. ${result.removed ?? 0} live queue entries were fenced and removed.`,
-      );
-      toast.success(
-        `Historical recovery stopped: ${result.removed ?? 0} live queue entries removed.`,
-      );
-      setConfirmingStop(false);
-      await refresh();
-      onChanged();
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setAction(null);
-    }
-  }, [action, boardId, canCancel, onChanged, refresh]);
-
-  const statusLabel = loading
-    ? 'Checking…'
-    : error && !progress
-    ? 'Unavailable'
-    : active
-    ? 'Running'
-    : progress?.status === 'cancelled'
-    ? 'Stopped'
-    : progress?.status === 'completed_with_errors'
-    ? 'Completed with errors'
-    : progress?.status === 'completed'
-    ? 'Completed'
-    : 'Ready';
-
-  return (
-    <section
-      className="min-w-0 rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900"
-      data-testid="historical-recovery-control"
-    >
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h3 className="text-sm font-semibold text-surface-900 dark:text-white">
-            Historical graph recovery
-          </h3>
-          <p className="mt-1 text-[11px] text-surface-500 dark:text-surface-400">
-            Controls the legacy backfill queue only. Stopping fences pending and claimed work;
-            graph data already committed remains intact.
-          </p>
-          <p className="mt-1 text-[11px] text-surface-500 dark:text-surface-400">
-            Cognitive pending items from already committed artifacts are audit debt, not active
-            recovery work, and are not deleted by this cancellation.
-          </p>
-        </div>
-        <span
-          className={`rounded-full px-3 py-1 text-xs font-medium ${
-            active
-              ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
-              : 'bg-surface-100 text-surface-700 dark:bg-surface-900 dark:text-surface-300'
-          }`}
-          data-testid="historical-recovery-status"
-        >
-          {statusLabel}
-        </span>
-      </div>
-
-      {canRead && progress && (
-        <div className="mt-3 grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs">
-          <ReportRow label="Processed" value={`${progress.progress}/${progress.total}`} />
-          <ReportRow label="Pending" value={String(progress.pending ?? 0)} />
-          <ReportRow label="Claimed" value={String(progress.claimed ?? 0)} />
-          <ReportRow label="Paused" value={String(progress.paused ?? 0)} />
-          <ReportRow label="Failed" value={String(progress.failed ?? 0)} />
-        </div>
-      )}
-
-      {!canRead && (
-        <p className="mt-3 text-xs text-amber-700 dark:text-amber-300">
-          Requires kg.operations.historical.read to inspect this recovery.
-        </p>
-      )}
-      {error && (
-        <p className="mt-3 text-xs text-rose-600 dark:text-rose-400" role="alert">
-          {error}
-        </p>
-      )}
-      {lastActionMessage && (
-        <p
-          className="mt-3 text-xs text-emerald-700 dark:text-emerald-300"
-          role="status"
-          aria-live="polite"
-          data-testid="historical-recovery-action-status"
-        >
-          {lastActionMessage}
-        </p>
-      )}
-
-      <div className="mt-3 flex flex-wrap justify-end gap-2">
-        {active && !confirmingStop && (
-          <button
-            type="button"
-            onClick={() => setConfirmingStop(true)}
-            disabled={!canCancel || action !== null}
-            className="rounded-md bg-rose-600 hover:bg-rose-700 disabled:opacity-60 disabled:cursor-not-allowed px-3 py-2 text-xs font-medium text-white inline-flex items-center gap-2"
-            title={!canCancel ? 'Requires kg.operations.historical.cancel' : undefined}
-          >
-            <XCircle className="w-3.5 h-3.5" aria-hidden />
-            Stop recovery
-          </button>
-        )}
-        {active && confirmingStop && (
-          <div className="flex flex-wrap items-center justify-end gap-2" role="group" aria-label="Confirm stop historical recovery">
-            <span className="text-xs text-rose-700 dark:text-rose-300">
-              Stop all live historical queue work for this board?
-            </span>
-            <button
-              type="button"
-              onClick={() => void handleCancel()}
-              disabled={action !== null}
-              className="rounded-md bg-rose-600 hover:bg-rose-700 disabled:opacity-60 px-3 py-2 text-xs font-medium text-white inline-flex items-center gap-2"
-            >
-              {action === 'cancel' && <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden />}
-              Confirm stop
-            </button>
-            <button
-              type="button"
-              onClick={() => setConfirmingStop(false)}
-              disabled={action !== null}
-              className="rounded-md border border-surface-300 dark:border-surface-600 px-3 py-2 text-xs font-medium text-surface-700 dark:text-surface-200"
-            >
-              Keep running
-            </button>
-          </div>
-        )}
-        {!active && !loading && (
-          <p className="max-w-xl text-right text-xs text-surface-500 dark:text-surface-400">
-            No legacy recovery is active. Prepare a new rebuild only from the audited
-            {' '}<strong className="text-surface-700 dark:text-surface-200">Prepare offline rebuild</strong>
-            {' '}action below after entering its reason.
-          </p>
-        )}
-      </div>
-    </section>
-  );
-}
-
-function PreflightRow({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex justify-between gap-3">
-      <span className="text-surface-600 dark:text-surface-400">{label}</span>
-      <span className="text-right">{children}</span>
-    </div>
-  );
-}
-
-interface ReportRowProps {
-  label: string;
-  value: string;
-  mono?: boolean;
-  tone?: 'success' | 'warning' | 'default';
-}
-
-function ReportRow({ label, value, mono, tone = 'default' }: ReportRowProps) {
-  const toneClass =
-    tone === 'success'
-      ? 'bg-emerald-50 dark:bg-emerald-900/40 text-emerald-800 dark:text-emerald-200'
-      : tone === 'warning'
-      ? 'bg-amber-50 dark:bg-amber-900/40 text-amber-800 dark:text-amber-200'
-      : 'bg-surface-50 dark:bg-surface-900';
-  return (
-    <div className={`flex justify-between rounded-md px-3 py-2 gap-2 ${toneClass}`}>
-      <span>{label}</span>
-      <span
-        className={`text-right truncate ${mono ? 'font-mono text-[11px]' : ''}`}
-        title={value}
-      >
-        {value}
-      </span>
-    </div>
-  );
-}
-
-interface RecoveryMetricCardProps {
-  label: string;
-  value: string;
-  state: string | null;
-  subtitle?: string;
-  tooltip: string;
-}
-
-function RecoveryMetricCard({
-  label,
-  value,
-  state,
-  subtitle,
-  tooltip,
-}: RecoveryMetricCardProps) {
-  return (
-    <div
-      className="min-w-0 break-words rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900"
-      title={tooltip}
-      aria-label={`${label}: ${tooltip}`}
-      data-testid={`kg-recovery-metric-${label.toLowerCase().replace(/\s+/g, '-')}`}
-    >
-      <div className="text-[11px] uppercase tracking-wide text-surface-500 dark:text-surface-400">
-        {label}
-      </div>
-      <div className="mt-2 text-base font-semibold text-surface-900 dark:text-white">
-        {value}
-      </div>
-      <div className={`text-xs ${stateBadgeClass(state)}`}>
-        {state ?? subtitle ?? 'unknown'}
-      </div>
-      {subtitle && state && (
-        <div className="text-[11px] text-surface-500 dark:text-surface-400 mt-1">
-          {subtitle}
-        </div>
-      )}
-    </div>
-  );
 }
