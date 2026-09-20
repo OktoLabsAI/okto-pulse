@@ -346,6 +346,15 @@ async def test_purge_authorizes_only_target_board_and_proves_zero_residuals(
                     plan={"secret": "erase"},
                     proposal_hash=digest,
                 ),
+                KGCurationProposal(
+                    proposal_id="proposal-keep",
+                    board_id=OTHER_BOARD_ID,
+                    operation="merge",
+                    plan={"historical": "keep unchanged"},
+                    proposal_hash=digest,
+                    created_by="original-author",
+                    status="pending",
+                ),
                 DesignSystemGateAudit(
                     id="gate-erase",
                     board_id=BOARD_ID,
@@ -594,6 +603,12 @@ async def test_purge_authorizes_only_target_board_and_proves_zero_residuals(
         )
 
         # The permit is narrow: unrelated board records remain byte-for-byte.
+        proposal = await session.get(KGCurationProposal, "proposal-keep")
+        assert proposal is not None
+        assert proposal.plan == {"historical": "keep unchanged"}
+        assert proposal.proposal_hash == digest
+        assert proposal.created_by == "original-author"
+        assert proposal.status == "pending"
         assert (
             await _count(
                 session,

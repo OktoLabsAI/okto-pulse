@@ -8691,10 +8691,12 @@ class KGEquivalenceLedger(Base):
 
 
 class KGCurationProposal(Base):
-    """Persisted curation proposal (spec MKG-C-S1 FR7): canonical plan +
-    deterministic proposal_hash; approval re-validates the hash against the
-    current state before any write (same contract as the rebuild
-    preflight_hash)."""
+    """Historical curation proposals retained after the maintenance CLI retirement.
+
+    Keep the schema and stored plans/hashes intact. Governed Board erasure still
+    includes these records; runtime composition no longer provides a proposal
+    writer or approval command.
+    """
 
     __tablename__ = "kg_curation_proposals"
     __table_args__ = (Index("idx_kg_curation_proposals_board", "board_id"),)

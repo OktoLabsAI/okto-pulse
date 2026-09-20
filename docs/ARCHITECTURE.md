@@ -279,8 +279,7 @@ core `adapter_readiness_inventory` when a port is added or retired.
 
 The source map above answers *"where does this file live?"*. This matrix answers the complementary
 question: **which core port does each adapter implement?** Core declares the `Protocol`; Community
-provides the only production implementation. **156 adapter modules** currently fill core's
-~100 port protocols and 30 KG interfaces.
+provides its production implementations through the adapter modules below.
 
 Anything core needs that is not in this table is either supplied by another edition or an unfilled
 slot — and unfilled slots **fail closed** (`R-P2-03A-D`), never silently default.
@@ -296,7 +295,7 @@ slot — and unfilled slots **fail closed** (`R-P2-03A-D`), never silently defau
 | `RelationalSchemaMigrator` · `RelationalSchemaLifecycleOrchestrator` | `CommunityRelationalSchemaMigrator` · `CommunityRelationalSchemaLifecycleOrchestrator` |
 | `ResourceGateRelationalAdapter` | `CommunitySqlAlchemyResourceGateAdapter` |
 | `CardRepositoryPort` and the board/ideation/spec repositories | `CommunityBoardRepository` · `CommunityIdeationRepository` · `CommunitySpecRepository` |
-| `StructuredSpecStore` · `SpecMaterializationStore` · `SpecResourcePropagationStore` | `CommunitySqlAlchemyStructuredSpecStore` · `…SpecMaterializationStore` · `…SpecResourcePropagationStore` |
+| `StructuredSpecStore` · `SpecResourcePropagationStore` | `CommunitySqlAlchemyStructuredSpecStore` · `…SpecResourcePropagationStore` |
 | `ArchitecturePersistencePort` · `ArchitectureLegacySnapshotReadPort` | `CommunitySqlAlchemyArchitecturePersistence` · `…ArchitectureLegacySnapshotReader` |
 | `AmendmentRevisionStore` | `CommunitySqlAlchemyAmendmentRevisionStore` (+ `CommunityAmendmentRevisionApiBackend`) |
 | `DefaultBoardConfigurationStore` · `DesignSystemStore` | `CommunitySqlAlchemyDefaultBoardConfigurationStore` · `…DesignSystemStore` |
@@ -339,7 +338,7 @@ data preservation and removed legacy entry points.
 | `ConsolidationPersistencePort` | `CommunitySqlAlchemyConsolidationPersistence` |
 | `KGOperationalReadModelPort` · `KGWorkerQueuePort` · `KGWorkerAuditPort` | `CommunitySqlAlchemyKGOperationalReadModel` · `…KGWorkerQueue` · `…KGWorkerAudit` (`CommunityKGOperationalPorts`) |
 | `CognitiveSourceStore` (MKG-A) | `CommunitySqlAlchemyCognitiveSourceStore` |
-| `EquivalenceLedger` (MKG-C) · `CurationProposalStore` | `CommunitySqlAlchemyEquivalenceLedger` · `…CurationProposalStore` |
+| `EquivalenceLedger` (MKG-C) | `CommunitySqlAlchemyEquivalenceLedger` (historical recall) |
 | `NodeSubtypeRegistry` (MKG-E) | `CommunitySqlAlchemyNodeSubtypeRegistry` |
 | `CanonicalDebtStore` | `CommunitySqlAlchemyCanonicalDebtStore` |
 | `KGHealthReadPort` · `KGEventsReaderPort` | `CommunitySqlAlchemyKGHealthReader` · `CommunityKGEventsReader` |

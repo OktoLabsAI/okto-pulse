@@ -339,9 +339,9 @@ def configure_community_kg_registry(
 ) -> None:
     """Configure the core KG registry with the Community base registry +
     reranker. Replaces ``configure_kg_registry(session_factory=...)`` at the
-    Community call sites. (R05-C) Also supplies the six #06 graph slots from the
-    Community Kùzu adapters so the KG runtime is registered behind the ports
-    (register-before-remove; the core embedded stays as a ledgered exception).
+    Community call sites. Graph slots are supplied by Community Grafx adapters
+    behind the Core ports; no embedded runtime or transitional allowance lives
+    in Core.
 
     R06/R08-B: when ``auth_context_factory`` is provided, the composition root
     registers it on the registry's ``auth_context_factory`` slot. The factory is
@@ -387,9 +387,8 @@ def configure_community_kg_registry(
     register_cognitive_source_store(
         CommunitySqlAlchemyCognitiveSourceStore(session_factory)
     )
-    # MKG-C-S1 (FR1): off-graph equivalence ledger — registered here so BOTH
-    # the server wiring and offline CLI curation commands resolve the same
-    # fail-closed port.
+    # Historical equivalence records still participate in query-time recall.
+    # Preserve their reader after retiring the maintenance CLI.
     from okto_pulse.community.adapters.sqlalchemy_kg_equivalence_ledger import (
         CommunitySqlAlchemyEquivalenceLedger,
     )
@@ -398,16 +397,6 @@ def configure_community_kg_registry(
     )
 
     register_equivalence_ledger(CommunitySqlAlchemyEquivalenceLedger(session_factory))
-    from okto_pulse.community.adapters.sqlalchemy_kg_curation_proposals import (
-        CommunitySqlAlchemyCurationProposalStore,
-    )
-    from okto_pulse.core.ports.kg_curation_proposals import (
-        register_curation_proposal_store,
-    )
-
-    register_curation_proposal_store(
-        CommunitySqlAlchemyCurationProposalStore(session_factory)
-    )
     # MKG-E-S1 (FR3): declarative subtype vocabulary.
     from okto_pulse.community.adapters.sqlalchemy_kg_subtype_registry import (
         CommunitySqlAlchemyNodeSubtypeRegistry,
