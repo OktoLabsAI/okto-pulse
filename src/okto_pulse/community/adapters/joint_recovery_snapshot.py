@@ -13,8 +13,8 @@ Board history: the relational database can contain credentials and many Boards.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-from contextlib import ExitStack, closing, contextmanager
+from collections.abc import AsyncIterator, Iterator
+from contextlib import ExitStack, asynccontextmanager, closing, contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -182,6 +182,38 @@ def joint_recovery_window(
             storage_root=storage_root)
         verify_joint_recovery_snapshot(snapshot, max_seconds=max_seconds)
         yield snapshot
+
+
+@asynccontextmanager
+async def joint_recovery_lifecycle_window(
+    runtime, graphs: tuple[RecoveryGraph, ...], recovery_directory: Path,
+    *, snapshot_id: str, builds: RecoveryBuildPair, runtime_directories: tuple[Path, ...],
+    kg_base_dir: Path, storage_root: Path, max_seconds: float = 60, batch_size: int = 500,
+) -> AsyncIterator[JointRecoverySnapshot]:
+    """Hold schema initialization and cooperating startup through offline work.
+
+    Derive the SQL source from the supplied Community runtime so the backup and
+    schema mutex cover the same file. Acquire schema exclusion before capture;
+    retain it and the startup mutexes until the body exits. Requires the full
+    routing/storage capture contract. Graph handles remain caller-owned.
+
+    This is not a raw SQL/native Grafx writer fence or a cutover coordinator.
+    It does not supply terminal admission or reconstruct missing run receipts.
+    """
+    from .sqlalchemy_database import CommunityDatabaseRuntime, _serialized_schema_lifecycle
+
+    if not isinstance(runtime, CommunityDatabaseRuntime):
+        raise ValueError("joint_snapshot_community_runtime_required")
+    source = runtime.local_database_path()
+    if source is None:
+        raise ValueError("joint_snapshot_local_database_required")
+    if kg_base_dir is None or storage_root is None:
+        raise ValueError("joint_snapshot_complete_storage_roots_required")
+    async with _serialized_schema_lifecycle(runtime):
+        with joint_recovery_window(source, graphs, recovery_directory, snapshot_id=snapshot_id,
+                builds=builds, runtime_directories=runtime_directories, kg_base_dir=kg_base_dir,
+                storage_root=storage_root, max_seconds=max_seconds, batch_size=batch_size) as snapshot:
+            yield snapshot
 
 
 def _capture_joint_recovery_snapshot(

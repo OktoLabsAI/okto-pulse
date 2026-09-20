@@ -52,6 +52,20 @@ class CommunitySchemaLifecycleLockTimeout(RuntimeError):
     """The bounded cross-process SQLite lifecycle lock could not be acquired."""
 
 
+@dataclass
+class _SchemaLifecycleLease:
+    path: str
+    pid: int
+    task: asyncio.Task[Any]
+    lock: AsyncFileLock
+    active: bool = True
+
+
+_schema_lifecycle_leases: ContextVar[tuple[_SchemaLifecycleLease, ...]] = ContextVar(
+    "community_schema_lifecycle_leases", default=(),
+)
+
+
 def _schema_process_lock_path(runtime: CommunityDatabaseRuntime) -> Path | None:
     database_path = runtime.local_database_path()
     if database_path is None:
@@ -69,6 +83,19 @@ async def _serialized_schema_lifecycle(
         yield
         return
 
+    identity = os.path.normcase(str(lock_path.resolve()))
+    owner = asyncio.current_task()
+    if owner is None:
+        raise RuntimeError("community_schema_lifecycle_task_required")
+    leases = _schema_lifecycle_leases.get()
+    for lease in leases:
+        # ContextVars propagate to child tasks and copied contexts. Inheriting
+        # a value is not owning the task/process/OS lock, nor extending its life.
+        if (lease.path == identity and lease.pid == os.getpid() and lease.task is owner
+                and lease.active and lease.lock.is_locked):
+            yield
+            return
+
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     process_lock = AsyncFileLock(
         str(lock_path),
@@ -81,9 +108,13 @@ async def _serialized_schema_lifecycle(
             "community SQLite schema lifecycle lock timed out "
             f"after {_SCHEMA_PROCESS_LOCK_TIMEOUT_S:.1f}s: {lock_path}"
         ) from exc
+    lease = _SchemaLifecycleLease(identity, os.getpid(), owner, process_lock)
+    token = _schema_lifecycle_leases.set((*leases, lease))
     try:
         yield
     finally:
+        lease.active = False
+        _schema_lifecycle_leases.reset(token)
         await asyncio.shield(process_lock.release())
 
 

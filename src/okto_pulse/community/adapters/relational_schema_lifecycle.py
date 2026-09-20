@@ -37,6 +37,7 @@ imported lazily from Community step modules, so ``core`` never imports ``communi
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 
 from okto_pulse.core.ports import (
     DataBootstrapError,
@@ -77,16 +78,25 @@ class CommunityRelationalSchemaLifecycleOrchestrator:
         bootstrapper: CommunityDataBootstrapper,
         target: str = "community-sqlite",
         runtime_admission: Callable[[], Awaitable[None]] | None = None,
+        runtime_window: Callable[[], AbstractAsyncContextManager[None]] | None = None,
     ) -> None:
         self._migrator = migrator
         self._bootstrapper = bootstrapper
         self._target = target
         self._runtime_admission = runtime_admission
+        self._runtime_window = runtime_window
 
     async def initialize_schema(self) -> None:
         """Run the full relational schema lifecycle (FR3): schema region first,
         then data bootstrap. Fail-closed — a non-success result is re-raised as the
         port's structured error so ``init_db`` never proceeds on a partial run."""
+        if self._runtime_window is None:
+            await self._initialize_schema()
+        else:
+            async with self._runtime_window():
+                await self._initialize_schema()
+
+    async def _initialize_schema(self) -> None:
         if self._runtime_admission is not None:
             await self._runtime_admission()
         # 1) Schema region: pre_create_all -> create_all_boundary -> post_create_all
@@ -121,6 +131,13 @@ def make_community_relational_schema_lifecycle_orchestrator(
     """Composition factory — binds the R16-B migrator + R16-C bootstrapper (each
     wired to Community-owned concrete callables) into the lifecycle
     orchestrator."""
+    @asynccontextmanager
+    async def runtime_window():
+        from .sqlalchemy_database import _serialized_schema_lifecycle, resolve_community_database_runtime
+
+        async with _serialized_schema_lifecycle(resolve_community_database_runtime()):
+            yield
+
     async def runtime_admission() -> None:
         # Resolve the actual engine at initialization, not factory creation:
         # composition can precede database configuration. The same check covers
@@ -135,6 +152,7 @@ def make_community_relational_schema_lifecycle_orchestrator(
         bootstrapper=make_community_data_bootstrapper(target=target),
         target=target,
         runtime_admission=runtime_admission,
+        runtime_window=runtime_window,
     )
 
 
