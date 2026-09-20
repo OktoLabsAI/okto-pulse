@@ -998,87 +998,6 @@ Broken lineage never invents authority: a missing successor yields
 `authoritative_id=null` and `supersedence_target_absent`; cycles and the bounded
 chain ceiling likewise return typed reason codes.
 
-## `okto_pulse_kg_global_discovery_recovery_preflight`
-
-Global-admin admission for an unreadable Global Discovery cache. The request
-has a closed, empty input schema. It atomically reserves the single global
-recovery slot and durably dispatches preparation; it never scans boards, opens
-graph files, or materializes the candidate inside the MCP request. Replaying
-the incumbent prepared reservation returns that same run. Another active run
-is refused with the typed global-slot conflict.
-
-Returns within the bounded control-plane window with `run_id`, `state`,
-`phase`, `preparation_state`, monotonic `progress_seq`, and `action_required`.
-Poll the status tool while `phase=preparing`. When `phase=prepared`, status
-also exposes the immutable `manifest_ref` and `preflight_hash` required by
-confirm. A prepared run remains `state=pending` and is not worker-adoptable
-until it is confirmed.
-
-## `okto_pulse_kg_global_discovery_recovery_confirm`
-
-Issue a TTL-bound, single-use token for the exact prepared run, manifest and
-preflight hash. The call rechecks preparation expiry and the persisted source
-fingerprint and fails closed with `manifest_stale` if either changed. It never
-rescans all boards or performs graph/filesystem mutation.
-
-Args: `run_id`, `manifest_ref`, and `preflight_hash` from the prepared status.
-Returns `outcome=confirmation_issued`, `action_required`, `confirmation_id`,
-and `expires_at`.
-
-## `okto_pulse_kg_global_discovery_recovery_run`
-
-Consume the exact confirmation binding, recheck the prepared manifest's TTL
-and fingerprint, and durably dispatch the already-prepared run. It performs no
-all-board inventory, health, source, or candidate-seed scan in the MCP request.
-The call returns without waiting for native work, cutover, or delivery drain.
-Use the status tool to follow monotonic checkpoints and the closed terminal
-state. A stale binding fails closed with `manifest_stale` and requires a new
-preflight.
-
-Args: `confirmation_id`, `manifest_ref`, `preflight_hash`, and bounded audit
-`reason` (1-512 characters). The accepted response contains `run_id`,
-`attempt_id`, epoch, current state, `preparation_state`, progress/heartbeat
-fields, `idempotent_replay=false|true`, `status_tool`, and
-`action_required=call_okto_pulse_kg_global_discovery_recovery_status`. Replaying
-the exact immutable binding returns the existing run and never dispatches a
-second attempt; a different manifest/hash/reason for that run id fails closed.
-
-## `okto_pulse_kg_global_discovery_recovery_status`
-
-Return the authoritative durable control-plane projection for one explicit
-`run_id`. The response includes the current epoch, closed lifecycle state,
-`attempt_id`, `preparation_state`, monotonic `progress_seq`, phase, progress
-counts, heartbeat/deadline timestamps, active and cumulative budget
-consumption, cancellation time, `terminal_outcome`, reason code, retryability,
-and `status_tool`. Any authorized global admin may inspect the global run;
-admitting, confirming, cancelling, and resuming actors remain immutable audit
-facts on their respective transitions.
-
-## `okto_pulse_kg_global_discovery_recovery_cancel`
-
-Request durable cancellation for one explicit `run_id` and its current
-`expected_epoch`. A stale epoch returns `recovery_epoch_conflict` with the
-expected/actual epoch and progress sequence and performs no mutation. The
-bounded request acknowledges the durable intent; the fenced worker reports the
-terminal `cancelled` state only after native work drains safely. `reason` is
-optional and, when supplied, is limited to 512 characters. Cancelling a
-prepared run terminalizes it and releases the global slot without dispatching
-physical work. The authenticated caller is persisted separately as
-`cancel_requested_by_actor_id`; the original admitting actor never changes.
-Prepared manifests and staged inputs remain immutable audit evidence and are
-revoked by append-only evidence rather than deletion.
-
-## `okto_pulse_kg_global_discovery_recovery_resume`
-
-Explicitly resume a resumable terminal attempt or take over an expired worker
-lease for one `run_id` and `expected_epoch`. Admission preserves the same run
-identity, increments the epoch exactly once and enqueues owned work off-request.
-Typed denials include active lease, non-retryable terminal outcome and exhausted
-attempt/cumulative budgets; timeout and success are never resumable. `reason`
-is optional and, when supplied, is limited to 512 characters. Successful
-admission persists `resume_requested_at`, `resume_requested_by_actor_id`, and
-the optional resume reason without changing the original actor binding.
-
 ## `okto_pulse_kg_verify_grounding`
 
 Verify that an agent answer is grounded in the retrieved KG nodes.
@@ -1141,7 +1060,6 @@ Required permission by affected family:
 | orphan backfill | `board.read` for `dry_run=true`; `kg.admin.historical_consolidation` for apply |
 | manual KG tick | `kg.admin.historical_consolidation` (board-effective for one board; global effective context for all boards) |
 | rebuild preflight / confirm / run | `kg.admin.wipe_board` |
-| quarantine restore plan / apply | global `kg.admin.wipe_board`, then the resolved destination board's effective `kg.admin.wipe_board` |
 
 Board overrides are honored because checks use the resolved board context, not
 the global agent object. Explicit legacy flat principals retain their historical
@@ -1238,34 +1156,6 @@ Returns:
     MCP Outcome V2 success with board_id, event_id, session_id, normalized
     reason, enqueued=true and effect_idempotent=true. Authentication, permission,
     board-scope and validation failures use structured error outcomes.
-
-## `okto_pulse_kg_quarantine_restore`
-
-KG quarantine restore — dry-run/apply with backup-swap (KGD-01 FR4/BR4).
-Both plan and apply require `kg.admin.wipe_board`. Because `quarantine_id`
-does not reveal its owning board, the handler first checks the global effective
-admin context, resolves the minimum plan, and then re-checks the destination
-board's effective override before returning any plan path or applying files.
-
-`apply=false` (default) returns the auditable plan (files, destinations,
-conflicts, sizes) with NO mutation. `apply=true` moves the board's live files
-into a NEW quarantine with manifest (`backup_quarantine_id` in the result),
-copies the snapshot back, validates the board open, and emits
-`kg.quarantine.restore_dry_run` / `kg.quarantine.restored`.
-
-Args:
-    quarantine_id: Quarantine ID to restore from.
-    apply: false (default) = dry-run plan only; true = execute the restore
-        with backup-swap.
-
-Returns:
-    JSON `{plan, applied, backup_quarantine_id?}`.
-
-Errors:
-    `quarantine_not_found` — quarantine id does not exist.
-    `board_locked` — require a maintenance window before applying.
-    `partial_restore` — the manifest records the exact state for rollback;
-    never a silent half-restored board.
 
 ## `okto_pulse_kg_export_jsonld`
 

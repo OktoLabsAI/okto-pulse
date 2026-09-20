@@ -13,6 +13,11 @@ describe('HelpPanel after maintenance CLI retirement', () => {
     expect(dialog).toHaveTextContent(/project knowledge queries and semantic consolidation retain their existing authorization/i);
     expect(dialog).not.toHaveTextContent(/okto-pulse kg\b/);
     expect(dialog).not.toHaveTextContent(/a triplet is exposed/i);
+    expect(screen.getByRole('heading', { name: 'Component availability' })).toBeInTheDocument();
+    expect(dialog).toHaveTextContent(/unavailable Global Discovery cache can coexist with a healthy Board graph/i);
+    expect(dialog).toHaveTextContent(/health offers no rebuild or quarantine restore control/i);
+    expect(dialog).not.toHaveTextContent(/ceremonial rebuild|single-use, TTL-bound confirmation|explicit recovery flow below/i);
+    expect(screen.queryByRole('heading', { name: 'Recovery & deterministic rebuild' })).not.toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Cognitive consolidation (KG-03)' })).toBeInTheDocument();
   });
 });

@@ -72,22 +72,13 @@ This mechanism never rebuilds, purges, replaces a generation or falls back to
 another graph backend. Operator recovery remains the path for every failure
 outside this bounded automatic case.
 
-## Global Discovery recovery (component-scoped)
+## Global Discovery availability
 
-Do not choose recovery from generic `overall_state`. When the board
-`graph_state` is healthy and Global Discovery reports
-`discovery_state=recovery_needed` plus `discovery_recovery_required=true`, use
-the global preflight → confirm → run trio. Board rebuild refuses this
-discovery-only case. Global preflight requires every board graph healthy and
-does not admit healthy/quarantined discovery.
-
-`run` persists integrity-bound worker inputs, creates the durable control row,
-dispatches owned background work, and returns `accepted` without waiting for
-the native candidate/cutover. Poll
-`okto_pulse_kg_global_discovery_recovery_status` for authoritative progress and
-the terminal outcome. Retrying the exact confirmation/run binding returns the
-existing run; never start a second recovery while it remains `pending` or
-`running`.
+Health identifies the affected component and its concrete reason. A healthy
+Board graph does not imply that Global Discovery is available. When discovery
+is unavailable, affected operations fail closed; health does not authorize
+repair or expose a recovery executor. Board knowledge and semantic consolidation
+retain their own integrity checks and authorization.
 
 ### Terminal Global Discovery outbox recovery
 

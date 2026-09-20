@@ -1518,11 +1518,11 @@ Clicking a node reveals:
 - **Find Similar** — Semantic search for related decisions
 - **Show History** — Supersedence chain showing what replaced what (Decision nodes)
 
-### KG Health & Manual Tick
+### KG Health
 
 The **KG Health** sub-view exposes runtime diagnostics:
 
-- **Overall state** — \`healthy\`, \`at_risk\`, or \`recovery_needed\`. **\`at_risk\` is a preventive warning** (scheduler debt, dead-letter backlog, unavailable telemetry) — it is *not* corruption. \`recovery_needed\` means the graph needs the explicit recovery flow below.
+- **Overall state** — \`healthy\`, \`at_risk\`, or \`recovery_needed\`. **\`at_risk\` is a preventive warning** (scheduler debt, dead-letter backlog, unavailable telemetry) — it is *not* corruption. \`recovery_needed\` identifies an unavailable component; it does not authorize repair.
 - **Provider / model** — embedder backend (sentence-transformers or stub fallback)
 - **Schema version** — current graph schema (auto-migrated on hot path)
 - **Queue depth / dead letters** — pending consolidation entries and DLQ count
@@ -1530,15 +1530,9 @@ The **KG Health** sub-view exposes runtime diagnostics:
 - **Dedup snapshot** — entity counts and recent dedup actions
 - **Orphan integrity** — zero-orphan projection (orphan count by type, samples); additive observability that never masks hard recovery signals
 
-### Recovery & deterministic rebuild
+### Component availability
 
-When a graph is degraded (or you want a clean re-materialization from the source of truth), the **Recovery panel** inside KG Health runs the ceremonial rebuild:
-
-1. **Preflight** — read-only: enumerates every source artifact and produces a \`preflight_hash\` + \`manifest_ref\`
-2. **Confirm** — issues a **single-use, TTL-bound confirmation token** (audit-trailed)
-3. **Run** — quarantines the old graph files (never deletes), re-enqueues all sources, and waits for the worker to drain. The wait is **progress-aware**: it only fails if the queue stalls, so large boards complete instead of timing out.
-
-A completed rebuild promotes a new **KG generation**, publishes \`kg.rebuilt\`, and marks every consolidable artifact as **pending cognitive consolidation** (see below). The rebuild report and audit row record outcomes, hashes, and affected files.
+Health reports the component, reason and limitation. An unavailable Global Discovery cache can coexist with a healthy Board graph. Affected operations remain blocked by their integrity checks. Health offers no rebuild or quarantine restore control and no alternate repair command.
 
 #### Run tick now
 

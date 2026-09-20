@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.metadata
+import importlib.resources
 import importlib.util
 import json
 import os
@@ -28,7 +29,13 @@ from okto_pulse.core.ports.mcp_resources import (
 )
 
 
-RETIRED = tuple(f"okto_pulse_kg_rebuild_{action}" for action in ("preflight", "confirm", "run"))
+RETIRED = (
+    *(f"okto_pulse_kg_rebuild_{action}" for action in ("preflight", "confirm", "run")),
+    *(f"okto_pulse_kg_global_discovery_recovery_{action}" for action in (
+        "preflight", "confirm", "run", "status", "cancel", "resume",
+    )),
+    "okto_pulse_kg_quarantine_restore",
+)
 
 
 def test_removed_modules_and_console_entrypoint_are_not_distributed():
@@ -71,7 +78,11 @@ async def test_materialized_mcp_transport_rejects_removed_tools_before_handlers(
         pytest.fail("removed tool resolved authority or storage")
 
     monkeypatch.setattr(server, "_get_agent_ctx", forbidden)
+    monkeypatch.setattr(server, "_get_global_agent_ctx", forbidden)
     monkeypatch.setattr(server, "get_unit_of_work_factory_for_mcp", forbidden)
+    from okto_pulse.core.kg import interfaces
+
+    monkeypatch.setattr(interfaces, "get_kg_registry", forbidden)
     frozen = freeze_mcp_resource_catalog(StaticMcpResourceCatalog("absence", (), precedence=1))
     host = CommunityMcpHostProvider().materialize_catalog(
         server.mcp, resource_catalog=frozen, projection_identity=frozen.identity,
@@ -81,16 +92,36 @@ async def test_materialized_mcp_transport_rejects_removed_tools_before_handlers(
         assert names.isdisjoint(RETIRED)
         for name in RETIRED:
             assert not hasattr(server, name)
-            result = await client.call_tool(name, {"board_id": "owned"}, raise_on_error=False)
-            assert result.is_error
-            assert "Unknown tool" in result.content[0].text
+            for arguments in ({}, {
+                "board_id": "owned", "quarantine_id": "historical-quarantine", "apply": True,
+                "run_id": "historical-run", "expected_epoch": 1,
+                "confirmation_id": "historical-confirmation", "manifest_ref": "historical-manifest",
+                "preflight_hash": "a" * 64, "reason": "must not resume maintenance",
+            }):
+                result = await client.call_tool(name, arguments, raise_on_error=False)
+                assert result.is_error
+                assert "Unknown tool" in result.content[0].text
 
 
 def test_removed_permissions_are_absent_from_registry_and_presets():
-    assert not any(flag.startswith("kg.operations.rebuild.") for flag in ALL_FLAGS)
+    assert not any(flag.startswith((
+        "kg.operations.rebuild.", "kg.operations.global_recovery.", "kg.operations.quarantine.",
+    )) for flag in ALL_FLAGS)
     assert {policy.tool_name for policy in MCP_TOOL_PERMISSION_POLICIES}.isdisjoint(RETIRED)
     for preset in get_builtin_presets():
-        assert "rebuild" not in preset["flags"].get("kg", {}).get("operations", {})
+        operations = preset["flags"].get("kg", {}).get("operations", {})
+        assert {"rebuild", "global_recovery", "quarantine"}.isdisjoint(operations)
+
+
+def test_distributed_instructions_do_not_advertise_retired_recovery_tools():
+    for package, prefix in (
+        ("okto_pulse.core", "mcp/resources"),
+        ("okto_pulse.community", "resources/operational"),
+    ):
+        resources = importlib.resources.files(package).joinpath(prefix)
+        for relative in ("workflows/kg.md", "reference/tool-docs/kg.md"):
+            content = resources.joinpath(relative).read_text(encoding="utf-8")
+            assert all(name not in content for name in RETIRED)
 
 
 @pytest.mark.parametrize("arguments", [
