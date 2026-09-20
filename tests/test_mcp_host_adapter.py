@@ -331,11 +331,11 @@ async def test_community_host_narrows_live_policy_board_schema_only_locally() ->
 
     # Code Traceability adds twenty-one governed closed-schema commands to the
     # original policy surface, plus two Delivery Evidence commands and one
-    # architecture classification command. Keep the
+    # architecture classification command and one historical-context read. Keep the
     # inventory assertion explicit so a
     # schema silently falling back to FastMCP inference is still detected.
-    assert len(opted_in) == 46
-    assert {"okto_pulse_get_delivery_evidence", "okto_pulse_record_delivery_evidence", "okto_pulse_classify_architecture_candidates"} <= {
+    assert len(opted_in) == 47
+    assert {"okto_pulse_get_delivery_evidence", "okto_pulse_record_delivery_evidence", "okto_pulse_classify_architecture_candidates", "okto_pulse_get_historical_context"} <= {
         tool.name for tool in opted_in
     }
 

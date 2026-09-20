@@ -43,12 +43,7 @@ async def read_historical_context(
     try:
         async with factory(realm_scope=factory.resolve_realm_scope(), actor=actor) as uow:
             page = await ReadHistoricalContextUseCase().execute(request, actor=actor, uow=uow)
-        return {"format": "historical-context/v1", "board_id": board_id, "target": {"kind": target_kind, "id": target_id},
-            "items": [{"binding_id": item.binding.identity,
-                "origin": {"kind": item.binding.scope.origin_kind, "id": item.binding.scope.origin_id},
-                "archive_id": item.binding.archive_id, "section": item.binding.section.value,
-                "field": item.binding.field, "record": item.source.records()[0]} for item in page.items],
-            "next_offset": page.next_offset}
+        return page.to_payload()
     except EntityNotFoundError as exc:
         raise HTTPException(404, detail="Historical context not found", headers={"Cache-Control": "no-store"}) from exc
     except ArchiveReadLimitExceeded as exc:
