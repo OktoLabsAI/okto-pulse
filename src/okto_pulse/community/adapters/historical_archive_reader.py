@@ -63,6 +63,14 @@ class CommunityHistoricalArchiveReader:
             scope=scope, actor_kind=actor_kind, actor_id=actor_id)
 
     async def read_section(self, *, request: ArchiveReadRequest, grant: ArchiveGrantState) -> ArchiveSectionPage:
+        _, document = await self._authorized_document(request=request, grant=grant)
+        try:
+            return project_historical_archive_section(document, request, grant.archive_id)
+        except (KeyError, ValueError, TypeError, IndexError, RecursionError) as exc:
+            raise ArchiveReadUnavailable("historical_archive_source_unavailable") from exc
+
+    async def _authorized_document(self, *, request: ArchiveReadRequest, grant: ArchiveGrantState):
+        """Adapter-local verified source, never part of the Core public port."""
         await self._require_snapshot()
         # Defense in depth for composed server callers: a detached old state or
         # forged grant cannot bypass current scoped authority through this port.
@@ -96,7 +104,7 @@ class CommunityHistoricalArchiveReader:
             captured = [parse_archive_read_grant(value) for value in document["access"]["grants"]]
             if subject not in captured:
                 raise ValueError("historical_archive_grant_source_mismatch")
-            return project_historical_archive_section(document, request, grant.archive_id)
+            return reference, document
         except (KeyError, ValueError, TypeError, IndexError, OSError, RecursionError) as exc:
             # No path, raw SQL, permission manifest or content in transport errors.
             raise ArchiveReadUnavailable("historical_archive_source_unavailable") from exc

@@ -63,7 +63,7 @@ def _rows(document, table, owner_column, origin, fields):
     return records
 
 
-def project_historical_archive_section(document, request: ArchiveReadRequest, archive_id: str) -> ArchiveSectionPage:
+def _section_records(document, request: ArchiveReadRequest):
     """Interpret a verified historical format using explicit field allowlists.
 
     Format v4 stores Sprint history as opaque migration evidence. No live Sprint
@@ -97,7 +97,33 @@ def project_historical_archive_section(document, request: ArchiveReadRequest, ar
         # Embedded arrays are not physical SQL rows. Bound the entire section
         # before page one, rather than emitting a cursor the contract cannot read.
         raise ArchiveReadLimitExceeded("historical_archive_section_record_limit")
+    return records
+
+
+def project_historical_archive_section(document, request: ArchiveReadRequest, archive_id: str) -> ArchiveSectionPage:
+    records = _section_records(document, request)
     end = request.offset + request.limit
     page = tuple(json.dumps(record, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
         for record in records[request.offset:end])
     return ArchiveSectionPage(request, archive_id, page, end if end < len(records) else None)
+
+
+def project_historical_context_record(document, request: ArchiveReadRequest, archive_id: str, selection) -> ArchiveSectionPage:
+    """Select only a verified binding's record through the same closed allowlists."""
+    records = _section_records(document, request)
+    index = selection["record_index"]
+    if index is not None:
+        if type(index) is not int or not 0 <= index < len(records):
+            raise ValueError("historical_context_record_missing")
+        selected = [records[index]]
+    else:
+        selected = [record for record in records if record.get("id") == selection["record_identity"]]
+    if len(selected) != 1:
+        raise ValueError("historical_context_record_missing")
+    record = selected[0]
+    field = selection["field"]
+    if field is not None:
+        # Preserve original attribution, not unrelated source prose or live policy.
+        record = {key: record[key] for key in ("id", "title", "created_by", "created_at", "updated_at", field)}
+    encoded = json.dumps(record, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    return ArchiveSectionPage(request, archive_id, (encoded,), None)

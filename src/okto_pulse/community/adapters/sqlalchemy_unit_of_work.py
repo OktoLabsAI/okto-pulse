@@ -256,6 +256,11 @@ class CommunityUnitOfWork:
         )
 
         self.historical_archive_reader = CommunityHistoricalArchiveReader(session)
+        from okto_pulse.community.adapters.historical_context_reader import (
+            CommunityHistoricalContextReader,
+        )
+
+        self.historical_context_reader = CommunityHistoricalContextReader(session)
 
     async def __aenter__(self) -> "CommunityUnitOfWork":
         return self
