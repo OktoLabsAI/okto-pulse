@@ -82,6 +82,8 @@ const permissionsMock = vi.hoisted(() => ({
 const policyComplianceMock = vi.hoisted(() => ({
   panelProps: vi.fn(),
 }));
+const historicalContextApi = vi.hoisted(() => ({ read: vi.fn() }));
+vi.mock('@/services/historical-context-api', () => ({ useHistoricalContextApi: () => historicalContextApi }));
 
 vi.mock('@/services/api', () => ({
   useDashboardApi: () => apiMock,
@@ -455,8 +457,24 @@ function policyRejection(
 }
 
 describe('CardModal', () => {
+  it.each(['normal', 'bug', 'test'] as const)('reads historical context for the selected %s Card without mutation', async cardType => {
+    const selected = cardForType(cardType);
+    storeMock.selectedCardId = selected.id;
+    apiMock.getCard.mockResolvedValue(selected);
+    render(<CardModal boardId="board-1" />);
+    await screen.findByText(selected.title);
+    expect(historicalContextApi.read).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('tab', { name: 'Historical context' }));
+    expect(await screen.findByText('Original Card question')).toBeInTheDocument();
+    expect(historicalContextApi.read.mock.calls[0].slice(0, 4)).toEqual(['board-1', 'card', selected.id, 0]);
+    expect(apiMock.updateCard).not.toHaveBeenCalled();
+    expect(apiMock.moveCard).not.toHaveBeenCalled();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
+    historicalContextApi.read.mockReset().mockResolvedValue({ items: [{ binding_id: 'binding', origin: { kind: 'sprint', id: 'original' },
+      archive_id: 'archive', section: 'qa', field: null, record: { question: 'Original Card question', asked_by: 'original-author', answer: null } }], next_offset: null });
     permissionsMock.has.mockImplementation((_permission: string) => true);
     storeMock.selectedCardId = 'bug-1';
     storeMock.isCardModalOpen = true;

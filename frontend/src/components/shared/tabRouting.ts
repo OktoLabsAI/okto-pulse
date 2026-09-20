@@ -63,6 +63,7 @@ export type RefinementModalSubtab =
   | 'policy-compliance';
 
 export type SpecModalTab =
+  | 'historical-context'
   | 'details'
   | 'evidence-matrix'
   | 'project-structure'
@@ -94,6 +95,7 @@ export type SpecModalSubtab =
   | 'policy-compliance';
 
 export type CardModalTab =
+  | 'historical-context'
   | 'details'
   | 'implementation-targets'
   | 'delivery'

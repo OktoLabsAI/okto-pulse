@@ -25,6 +25,8 @@ const apiMock = vi.hoisted(() => ({
   updateScenarioVerificationMethod: vi.fn(),
 }));
 const methodDeniedPermissions = vi.hoisted(() => new Set<string>());
+const historicalContextApi = vi.hoisted(() => ({ read: vi.fn() }));
+vi.mock('@/services/historical-context-api', () => ({ useHistoricalContextApi: () => historicalContextApi }));
 const validationGateOverrideSpy = vi.hoisted(() => vi.fn());
 const evidenceMatrixPropsSpy = vi.hoisted(() => vi.fn());
 const currentBoardState = vi.hoisted(() => ({
@@ -224,6 +226,8 @@ function sprintSummary(overrides: Partial<SprintSummary> = {}): SprintSummary {
 describe('SpecModal Activity tab', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    historicalContextApi.read.mockReset().mockResolvedValue({ items: [{ binding_id: 'binding', origin: { kind: 'sprint', id: 'original' },
+      archive_id: 'archive', section: 'content', field: 'objective', record: { objective: 'Original Spec constraint', created_by: 'original-author' } }], next_offset: null });
     methodDeniedPermissions.clear();
     currentBoardState.skipCodeEvidenceCoverageGlobal = false;
     apiMock.getSpec.mockResolvedValue(spec);
@@ -242,6 +246,18 @@ describe('SpecModal Activity tab', () => {
       next_cursor: null,
       resources: { architecture: [], mockup: [], knowledge_base: [] },
     });
+  });
+
+  it('loads historical context only when selected and scopes it to the current Spec', async () => {
+    render(<SpecModal specId={spec.id} boardId={spec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    await screen.findByText(spec.title);
+    expect(historicalContextApi.read).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('tab', { name: 'Historical context' }));
+    expect(await screen.findByText('Original Spec constraint')).toBeInTheDocument();
+    expect(historicalContextApi.read.mock.calls[0].slice(0, 4)).toEqual([spec.board_id, 'spec', spec.id, 0]);
+    fireEvent.click(screen.getByRole('tab', { name: 'Details' }));
+    expect(screen.queryByText('Original Spec constraint')).not.toBeInTheDocument();
+    expect(apiMock.updateSpec).not.toHaveBeenCalled();
   });
 
   it('edits the scenario method through the scoped writer without replacing the scenario list', async () => {
@@ -391,6 +407,7 @@ describe('SpecModal Activity tab', () => {
       'KG Graph',
       'Validation',
       'Activity',
+      'Historical context',
     ]);
     expect(
       within(tabList).queryByRole('tab', { name: 'Versions' }),

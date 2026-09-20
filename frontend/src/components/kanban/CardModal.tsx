@@ -34,6 +34,7 @@ import { SpecModal } from '@/components/specs/SpecModal';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
 import { CancellationDetails, CancellationReasonDialog } from '@/components/shared/CancellationReasonDialog';
 import { ActivityLogList } from '@/components/shared/ActivityLogList';
+import { HistoricalContextPanel } from '@/components/shared/HistoricalContextPanel';
 import { EvidenceBadge } from '@/components/specs/EvidenceBadge';
 import { ScenarioTypeBadge } from '@/components/specs/ScenarioTypeBadge';
 import { EditableField } from '@/components/shared/EditableField';
@@ -1375,6 +1376,7 @@ export function CardModal({
           label: 'References',
           icon: <Link size={14} />,
         },
+        { id: 'historical-context', label: 'Historical context', icon: <History size={14} /> },
         ...(
           hasVisibleValidation
             ? [{
@@ -2491,6 +2493,11 @@ export function CardModal({
               )}
 
               {/* Activity Tab */}
+              <AccessibleTabPanel idBase={`${tabIdBase}-card-${card.id}`} tabId="historical-context" value={activeTab}>
+                {card.id === selectedCardId && card.board_id === boardId && (
+                  <HistoricalContextPanel boardId={boardId} targetKind="card" targetId={card.id} />
+                )}
+              </AccessibleTabPanel>
               {canReadActivity && (
                 <AccessibleTabPanel
                   idBase={`${tabIdBase}-card-${card.id}`}
