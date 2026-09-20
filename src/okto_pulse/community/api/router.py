@@ -10,6 +10,7 @@ from okto_pulse.community.api.quality_assessments import (
 )
 from okto_pulse.community.api.agents import router as agents_router
 from okto_pulse.community.api.attachments import router as attachments_router
+from okto_pulse.community.api.historical_archives import router as historical_archives_router
 from okto_pulse.community.api.qa import router as qa_router
 from okto_pulse.community.api.comments import router as comments_router
 from okto_pulse.community.api.ideations import router as ideations_router
@@ -159,3 +160,4 @@ api_router.include_router(kg_cognitive_badges_router, tags=["kg-cognitive-badges
 api_router.include_router(traceability_router, tags=["traceability"])
 api_router.include_router(code_traceability_router)
 api_router.include_router(resource_gate_router, tags=["resource-gate"])
+api_router.include_router(historical_archives_router, tags=["historical-archives"])

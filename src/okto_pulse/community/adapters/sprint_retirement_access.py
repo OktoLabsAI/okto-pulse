@@ -19,7 +19,7 @@ from okto_pulse.core.ports.historical_archive import (
     ArchiveSourceScope,
     capture_archive_read_sections,
 )
-from okto_pulse.core.ports.permission_policy import PermissionSet
+from okto_pulse.core.ports.permission_policy import PermissionSet, board_membership_allows_read
 from okto_pulse.community.adapters.relational_application import CommunityAgentAuthenticationGateway
 from okto_pulse.community.adapters.sqlalchemy_models import AgentBoard, Board, BoardShare
 from okto_pulse.community.auth import LocalAuthProvider
@@ -88,12 +88,13 @@ async def capture_archive_access(
             # Canonical Board access treats a legacy NULL realm as local only.
             if board is None or (board.realm_id or LOCAL_REALM_ID) != LOCAL_REALM_ID:
                 raise ValueError("historical_archive_authority_board_scope_invalid")
-            share = (await session.execute(select(BoardShare.id).where(
+            share = (await session.execute(select(BoardShare.permission).where(
                 BoardShare.board_id == board_id, BoardShare.user_id == principal.subject,
                 BoardShare.realm_id == LOCAL_REALM_ID,
             ))).scalar_one_or_none()
             subjects = [("human", principal.subject, local_sections
-                if board.owner_id == principal.subject or share is not None else _DENIED)]
+                if board_membership_allows_read(owner_id=board.owner_id, actor_id=principal.subject,
+                    share_permission=share) else _DENIED)]
             agent_ids = (await session.execute(select(AgentBoard.agent_id).where(
                 AgentBoard.board_id == board_id,
             ).order_by(AgentBoard.agent_id))).scalars().all()

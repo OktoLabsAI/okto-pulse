@@ -251,6 +251,11 @@ class CommunityUnitOfWork:
         )
 
         self.historical_archive_grants = CommunityHistoricalArchiveGrants(session)
+        from okto_pulse.community.adapters.historical_archive_reader import (
+            CommunityHistoricalArchiveReader,
+        )
+
+        self.historical_archive_reader = CommunityHistoricalArchiveReader(session)
 
     async def __aenter__(self) -> "CommunityUnitOfWork":
         return self
