@@ -34,6 +34,10 @@ from okto_pulse.community.adapters.logical_transfer_factories import (
     make_grafx_logical_sink, make_grafx_logical_source,
 )
 from okto_pulse.community.adapters.migration_runtime_fence import offline_migration_window
+from okto_pulse.community.adapters.recovery_graph_inventory import (
+    read_recovery_graph_inventory, recovery_graph_inventory_from_manifest,
+    require_recovery_graph_selection,
+)
 from okto_pulse.community.adapters.relational_recovery_snapshot import (
     SqliteRecoverySnapshot, _check_time, _deadline, _digest, _encode, _path,
     create_sqlite_recovery_snapshot, restore_sqlite_recovery_snapshot,
@@ -122,7 +126,7 @@ def _publish(stage: Path, final: Path) -> None:
 def create_joint_recovery_snapshot(
     source_database: Path, graphs: tuple[RecoveryGraph, ...], recovery_directory: Path,
     *, snapshot_id: str, builds: RecoveryBuildPair, runtime_directories: tuple[Path, ...],
-    max_seconds: float = 60, batch_size: int = 500,
+    max_seconds: float = 60, batch_size: int = 500, kg_base_dir: Path | None = None,
 ) -> JointRecoverySnapshot:
     """Capture explicitly selected stores; publish only after stable-state proof.
 
@@ -130,6 +134,10 @@ def create_joint_recovery_snapshot(
     closes them. A graph commit at any point between the two LSN collections
     refuses publication, even when that commit later restores the old values.
     No automatic retry can turn an unstable capture into a reported success.
+
+    With an explicit KG root, v2 also records authenticated routing inventory
+    and requires the exact active selection before and after capture. This is
+    drift detection, not exclusion of external binding/directory replacement.
     """
     deadline = _deadline(max_seconds)
     if type(snapshot_id) is not str or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,95}", snapshot_id):
@@ -151,6 +159,9 @@ def create_joint_recovery_snapshot(
     graph_paths = [_explicit_path(Path(g.database.path)) for g in graphs]
     if len(set(graph_paths)) != len(graph_paths):
         raise ValueError("joint_snapshot_duplicate_database")
+    kg_root = _explicit_path(kg_base_dir) if kg_base_dir is not None else None
+    if kg_root is not None and kg_root not in {_explicit_path(path) for path in runtime_directories}:
+        raise ValueError("joint_snapshot_kg_root_requires_startup_fence")
     final = _explicit_path(root / snapshot_id)
     stage = root / f".{snapshot_id}.{secrets.token_hex(12)}.partial"
     lock_path = _explicit_path(root / ".joint-recovery.lock")
@@ -162,6 +173,13 @@ def create_joint_recovery_snapshot(
             # mode=rw refuses a missing source instead of creating an empty DB.
             with closing(sqlite3.connect(source.as_uri() + "?mode=rw", uri=True, timeout=max_seconds)) as reserved:
                 reserved.execute("BEGIN IMMEDIATE")
+                inventory = None
+                if kg_root is not None:
+                    inventory = read_recovery_graph_inventory(reserved, kg_root)
+                    require_recovery_graph_selection(inventory, tuple(
+                        (graph.scope, graph.board_id, str(path), graph.database.identity.page_size)
+                        for graph, path in zip(graphs, graph_paths, strict=True)
+                    ))
                 before = [_stamp(g) for g in graphs]
                 if len({item["database_uuid"] for item in before}) != len(before):
                     raise ValueError("joint_snapshot_duplicate_database_uuid")
@@ -180,6 +198,8 @@ def create_joint_recovery_snapshot(
                         "certificate": asdict(certificate)})
                 if [_stamp(g) for g in graphs] != before:
                     raise ValueError("joint_snapshot_graph_changed_during_capture")
+                if inventory is not None and read_recovery_graph_inventory(reserved, kg_root) != inventory:
+                    raise ValueError("joint_snapshot_routing_changed_during_capture")
                 _check_time(deadline)
                 # No write is performed through the reservation connection.
                 reserved.rollback()
@@ -188,6 +208,9 @@ def create_joint_recovery_snapshot(
                 "builds": asdict(builds), "grafx_version": version("okto-grafx"),
                 "relational": {"manifest_sha256": relational.manifest_sha256, "database_sha256": relational.database_sha256},
                 "graphs": records}
+            if inventory is not None:
+                manifest["format"] = "joint-recovery-snapshot/v2"
+                manifest["routing_inventory"] = inventory.as_manifest()
             encoded = _encode(manifest)
             if len(encoded) > _MAX_MANIFEST:
                 raise ValueError("joint_snapshot_manifest_limit")
@@ -217,9 +240,12 @@ def verify_joint_recovery_snapshot(snapshot: JointRecoverySnapshot, *, max_secon
     if hashlib.sha256(encoded).hexdigest() != snapshot.manifest_sha256:
         raise ValueError("joint_snapshot_manifest_hash_mismatch")
     manifest = json.loads(encoded)
+    keys = {"format", "snapshot_id", "capture_contract", "created_at", "builds", "grafx_version", "relational", "graphs"}
+    if isinstance(manifest, dict) and manifest.get("format") == "joint-recovery-snapshot/v2":
+        keys.add("routing_inventory")
     if (not isinstance(manifest, dict)
-        or set(manifest) != {"format", "snapshot_id", "capture_contract", "created_at", "builds", "grafx_version", "relational", "graphs"}
-        or manifest["format"] != _FORMAT or manifest["capture_contract"] != _CAPTURE
+        or set(manifest) != keys
+        or manifest["format"] not in {_FORMAT, "joint-recovery-snapshot/v2"} or manifest["capture_contract"] != _CAPTURE
         or manifest["snapshot_id"] != root.name or type(manifest["graphs"]) is not list
         or len(manifest["graphs"]) > 256):
         raise ValueError("joint_snapshot_manifest_invalid")
@@ -246,6 +272,15 @@ def verify_joint_recovery_snapshot(snapshot: JointRecoverySnapshot, *, max_secon
         certificate = verify_logical_graph_file(artifact)
         if asdict(certificate) != record["certificate"] or certificate.scope != record["scope"]:
             raise ValueError("joint_snapshot_graph_certificate_mismatch")
+    if "routing_inventory" in manifest:
+        inventory = recovery_graph_inventory_from_manifest(manifest["routing_inventory"])
+        # page_size belongs to the authenticated binding; graph record paths
+        # and owners must still cover that inventory exactly on offline verify.
+        sizes = {(route.scope, route.board_id): route.page_size for route in inventory.routes}
+        require_recovery_graph_selection(inventory, tuple(
+            (record["scope"], record["board_id"], record["source_path"], sizes.get((record["scope"], record["board_id"])))
+            for record in manifest["graphs"]
+        ))
     return manifest
 
 

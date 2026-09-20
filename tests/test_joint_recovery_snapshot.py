@@ -15,6 +15,8 @@ from logical_transfer_matrix_support import (
     export_generation, one_node_corpus, open_generation_database, seed_generation,
 )
 from okto_pulse.community.adapters import joint_recovery_snapshot as joint
+from okto_pulse.community.adapters import recovery_graph_inventory as routing_inventory
+from okto_pulse.community.adapters.graph_backend_binding import CommunityGraphBackendBindingStore
 
 
 BUILDS = joint.RecoveryBuildPair("a" * 40, "b" * 40, "c" * 64, "d" * 64)
@@ -26,12 +28,17 @@ def sources(tmp_path):
     recovery = tmp_path / "recovery"
     data.mkdir()
     recovery.mkdir()
+    kg = data / "kg"
+    kg.mkdir()
+    bindings = CommunityGraphBackendBindingStore(kg)
     sql = data / "source.sqlite3"
     with ExitStack() as stack:
         writer = sqlite3.connect(sql)
         stack.callback(writer.close)
         writer.execute("PRAGMA journal_mode=WAL")
         writer.execute("CREATE TABLE history(id TEXT PRIMARY KEY, payload BLOB)")
+        writer.execute("CREATE TABLE boards(id TEXT PRIMARY KEY)")
+        writer.executemany("INSERT INTO boards VALUES (?)", [("board-one",), ("empty-board",)])
         writer.execute("INSERT INTO history VALUES ('sprint-opaque', X'000AFF')")
         writer.commit()
         assert Path(str(sql) + "-wal").stat().st_size > 0
@@ -43,10 +50,17 @@ def sources(tmp_path):
                 corpus = replace(corpus, nodes=(replace(node, properties={
                     **node.properties, "source_artifact_ref": "sprint:opaque:v1",
                 }),))
-            path = data / scope
+            path = (bindings.board_grafx_path("board-one", "g1") if scope == "board"
+                    else bindings.global_grafx_path("g1"))
+            path.parent.mkdir(parents=True, exist_ok=True)
             seed_generation("grafx", path, corpus)
             database = open_generation_database("grafx", path, scope, read_only=False)
             stack.callback(database.close)
+            options = dict(backend="grafx", generation="g1", physical_path=path, page_size=8192, database=database)
+            if scope == "board":
+                bindings.initialize_board_binding(board_id="board-one", **options)
+            else:
+                bindings.initialize_global_binding(**options)
             graphs.append(joint.RecoveryGraph(database, scope, "board-one" if scope == "board" else None))
             corpora.append(corpus)
         yield sql, tuple(graphs), recovery, data, corpora
@@ -56,7 +70,7 @@ def capture(sources, *, snapshot_id="capture", **kwargs):
     sql, graphs, recovery, data, _ = sources
     return joint.create_joint_recovery_snapshot(
         sql, graphs, recovery, snapshot_id=snapshot_id, builds=BUILDS,
-        runtime_directories=(data,), max_seconds=120, batch_size=1, **kwargs,
+        runtime_directories=(data, data / "kg"), max_seconds=120, batch_size=1, **kwargs,
     )
 
 
@@ -227,3 +241,61 @@ def test_restore_requires_the_recorded_build_pair(sources, tmp_path):
         )
     assert not target.exists()
     assert not list(tmp_path.glob("*.restore"))
+
+
+def test_bound_capture_records_exact_inventory_and_absent_board(sources, tmp_path):
+    artifact = capture(sources, kg_base_dir=sources[3] / "kg")
+    manifest = joint.verify_joint_recovery_snapshot(artifact)
+    assert manifest["format"] == "joint-recovery-snapshot/v2"
+    inventory = manifest["routing_inventory"]
+    assert inventory["board_ids"] == ["board-one", "empty-board"]
+    assert [route["state"] for route in inventory["routes"]] == ["bound", "binding_absent_storage_absent", "bound"]
+    assert inventory["issues"] == []
+    assert not (sources[3] / "kg" / "boards" / "empty-board").exists()
+    restored = joint.restore_joint_recovery_snapshot(artifact, tmp_path / "restored", builds=BUILDS, max_seconds=120)
+    assert (restored / "database.sqlite3").exists()
+
+
+def test_bound_capture_rejects_omitted_active_graph(sources):
+    sql, graphs, recovery, data, corpora = sources
+    with pytest.raises(ValueError, match="selection_mismatch"):
+        capture((sql, (graphs[0],), recovery, data, corpora), kg_base_dir=data / "kg")
+    assert not (recovery / "capture").exists()
+
+
+@pytest.mark.parametrize("change", ["binding", "new_storage", "identity"])
+def test_bound_capture_rejects_observed_routing_drift(sources, monkeypatch, change):
+    kg = sources[3] / "kg"
+    bindings = CommunityGraphBackendBindingStore(kg)
+    before = bindings.inspect_board_binding("board-one")
+    real_backup = joint.backup_logical_graph_file
+    calls = 0
+    def change_after_first(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        result = real_backup(*args, **kwargs)
+        if calls == 1:
+            if change == "binding":
+                # An admitted alternate generation, never selected by this
+                # capture, models an independent routed publication.
+                candidate = bindings.board_grafx_path("board-one", "g2")
+                seed_generation("grafx", candidate, one_node_corpus("board"))
+                database = open_generation_database("grafx", candidate, "board", read_only=False)
+                try:
+                    bindings.compare_and_swap_board_binding(board_id="board-one", expected_binding_sha256=before.binding_sha256,
+                        backend="grafx", generation="g2", physical_path=candidate, page_size=8192, database=database)
+                finally:
+                    database.close()
+            elif change == "new_storage":
+                (kg / "boards" / "empty-board" / "grafx" / "unbound").mkdir(parents=True)
+            else:
+                # Mutate only the census observation, not an active engine's
+                # identity bytes; corruption of a live DB is not needed here.
+                real_digest = routing_inventory._digest
+                monkeypatch.setattr(routing_inventory, "_digest",
+                    lambda path: "0" * 64 if path == before.physical_path / "grafx.meta" else real_digest(path))
+        return result
+    monkeypatch.setattr(joint, "backup_logical_graph_file", change_after_first)
+    with pytest.raises(ValueError, match="routing_changed_during_capture"):
+        capture(sources, kg_base_dir=kg)
+    assert not (sources[2] / "capture").exists()
