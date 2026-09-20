@@ -425,6 +425,7 @@ export function CardModal({
         boardSettings: currentBoard?.settings,
         spec: taskValidationHierarchy?.spec,
         sprint: taskValidationHierarchy?.sprint,
+        migratedPolicy: card?.migrated_validation_policy,
       })
     : null;
   const originTask = card?.origin_task_id
@@ -3746,7 +3747,7 @@ function ValidationMetricInput({
           className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-violet-500 dark:text-violet-300"
           data-testid={`${id}-threshold-source`}
         >
-          Threshold source: {thresholdSource}
+          Threshold source: {thresholdSource === 'card_compatibility' ? 'preserved Card policy' : thresholdSource}
         </p>
         <label
           htmlFor={id}
@@ -3818,7 +3819,7 @@ function ValidationHistoryMetric({
       >
         {thresholdSource && (
           <p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">
-            Threshold source: {thresholdSource}
+            Threshold source: {thresholdSource === 'card_compatibility' ? 'preserved Card policy' : thresholdSource}
           </p>
         )}
         <p className="text-xs font-semibold text-gray-600 dark:text-gray-300">

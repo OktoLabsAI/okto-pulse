@@ -8894,6 +8894,31 @@ async def _migrate_add_spec_execution_contract() -> str | None:
         await conn.execute(sa_text('ALTER TABLE specs ADD COLUMN execution_contract JSON'))
 
 
+async def _migrate_add_card_validation_compatibility() -> str | None:
+    """Deprecated F2B storage only; data cutover requires archived Sprint history.
+
+    Never freeze current policies or remove links as an implicit schema upgrade.
+    """
+    from sqlalchemy import JSON, inspect, text as sa_text
+
+    def observed(connection):
+        inspector = inspect(connection)
+        if not inspector.has_table('cards'):
+            return None
+        return {column['name']: column for column in inspector.get_columns('cards')}
+
+    async with get_engine().begin() as conn:
+        columns = await conn.run_sync(observed)
+        if columns is None:
+            return 'skipped'
+        existing = columns.get('migrated_validation_policy')
+        if existing is not None:
+            if not isinstance(existing['type'], JSON) or not existing['nullable']:
+                raise RuntimeError('card_validation_compatibility_schema_drift')
+            return 'skipped'
+        await conn.execute(sa_text('ALTER TABLE cards ADD COLUMN migrated_validation_policy JSON'))
+
+
 async def _migrate_architecture_classification_storage() -> str:
     """Validate additive classification tables created at create_all_boundary.
 
@@ -25285,6 +25310,7 @@ SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
     "_migrate_add_ir_or_columns": _migrate_add_ir_or_columns,
     "_migrate_add_spec_architecture_adoption": _migrate_add_spec_architecture_adoption,
     "_migrate_add_spec_execution_contract": _migrate_add_spec_execution_contract,
+    "_migrate_add_card_validation_compatibility": _migrate_add_card_validation_compatibility,
     "_migrate_add_spec_validation_gate_columns": _migrate_add_spec_validation_gate_columns,
     "_migrate_add_ideation_skip_ambiguity_gate": _migrate_add_ideation_skip_ambiguity_gate,
     "_migrate_add_refinement_skip_ambiguity_gate": _migrate_add_refinement_skip_ambiguity_gate,

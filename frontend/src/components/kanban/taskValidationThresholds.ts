@@ -1,9 +1,11 @@
 import type {
   BoardSettings,
   TaskValidationGateOverride,
+  MigratedTaskValidationPolicy,
 } from '@/types';
 
 export type TaskValidationThresholdSource =
+  | 'card_compatibility'
   | 'sprint'
   | 'spec'
   | 'board'
@@ -26,11 +28,13 @@ type BoardTaskValidationThresholds = Pick<
 >;
 
 function resolveThreshold(
+  migratedValue: number | null | undefined,
   sprintValue: number | null | undefined,
   specValue: number | null | undefined,
   boardValue: number | null | undefined,
   defaultValue: number,
 ): [number, TaskValidationThresholdSource] {
+  if (migratedValue != null) return [migratedValue, 'card_compatibility'];
   if (sprintValue != null) return [sprintValue, 'sprint'];
   if (specValue != null) return [specValue, 'spec'];
   if (boardValue != null) return [boardValue, 'board'];
@@ -42,24 +46,29 @@ export function resolveTaskValidationThresholds({
   boardSettings,
   spec,
   sprint,
+  migratedPolicy,
 }: {
   boardSettings?: BoardTaskValidationThresholds | null;
   spec?: TaskValidationGateOverride | null;
   sprint?: TaskValidationGateOverride | null;
+  migratedPolicy?: MigratedTaskValidationPolicy | null;
 }): ResolvedTaskValidationThresholds {
   const [minConfidence, minConfidenceSource] = resolveThreshold(
+    migratedPolicy?.overrides.min_confidence,
     sprint?.validation_min_confidence,
     spec?.validation_min_confidence,
     boardSettings?.min_confidence,
     70,
   );
   const [minCompleteness, minCompletenessSource] = resolveThreshold(
+    migratedPolicy?.overrides.min_completeness,
     sprint?.validation_min_completeness,
     spec?.validation_min_completeness,
     boardSettings?.min_completeness,
     80,
   );
   const [maxDrift, maxDriftSource] = resolveThreshold(
+    migratedPolicy?.overrides.max_drift,
     sprint?.validation_max_drift,
     spec?.validation_max_drift,
     boardSettings?.max_drift,

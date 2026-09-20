@@ -174,10 +174,11 @@ def test_ts_7aacc71a_ledger_covers_all_migrate_functions():
     # of Spec validation pointers lost by historical Code Traceability effects,
     # nullable Project structure, Delivery Evidence skip, and prospective
     # architecture selection without a legacy adoption backfill.
-    assert len(migrate_names) == 75, (
-        f"expected 75 _migrate_*, found {len(migrate_names)}"
+    # Joint execution contract + deprecated migration-only Card policy storage.
+    assert len(migrate_names) == 77, (
+        f"expected 77 _migrate_*, found {len(migrate_names)}"
     )
-    assert len(ledger_migrate_ids) == 75
+    assert len(ledger_migrate_ids) == 77
     ordered_ids = [step.step_id for step in ledger]
     assert ordered_ids.index(
         "_migrate_guideline_policy_lifecycle_substrate"
@@ -856,6 +857,8 @@ def test_ts_7d52dffc_idempotent_replay_no_drift(tmp_path, _isolate_engine):
     human_lifecycle_convergence_step = "_migrate_add_human_lifecycle_editions"
     validation_cycle_convergence_step = "_migrate_validation_cycle_editions"
     first_run_skip_steps = {
+        "_migrate_add_spec_execution_contract",
+        "_migrate_add_card_validation_compatibility",
         "_migrate_delivery_progress",
         repair_step,
         "_migrate_add_skip_delivery_evidence",
@@ -890,6 +893,8 @@ def test_ts_7d52dffc_idempotent_replay_no_drift(tmp_path, _isolate_engine):
         # observe that receipt and skip without touching fingerprints.
     }
     replay_skip_steps = {
+        "_migrate_add_spec_execution_contract",
+        "_migrate_add_card_validation_compatibility",
         "_migrate_delivery_progress",
         repair_step,
         "_migrate_add_skip_delivery_evidence",

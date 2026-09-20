@@ -167,6 +167,12 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
         "Add nullable joint execution contract; never adopt legacy Specs through migration.",
     ),
     (
+        "_migrate_add_card_validation_compatibility",
+        "pre_create_all",
+        False,
+        "Add deprecated migration-only Card policy storage; preserve legacy data and links.",
+    ),
+    (
         "_migrate_add_spec_validation_gate_columns",
         "pre_create_all",
         False,

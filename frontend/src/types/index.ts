@@ -2460,6 +2460,8 @@ export interface RefinementAmbiguityGateSkipReceipt {
 
 // Card
 export interface Card {
+  /** Deprecated migration-only compatibility. Never send this in Card writes. */
+  migrated_validation_policy?: MigratedTaskValidationPolicy | null;
   id: string;
   board_id: string;
   subject_version?: number;
@@ -2556,18 +2558,34 @@ export interface TaskValidationResolvedThresholds {
   min_confidence: number;
   min_completeness: number;
   max_drift: number;
-  resolved_from?: 'sprint' | 'spec' | 'board' | 'default';
+  resolved_from?: 'card_compatibility' | 'sprint' | 'spec' | 'board' | 'default';
   resolved_sources?: {
-    required: 'sprint' | 'spec' | 'board' | 'default';
-    min_confidence: 'sprint' | 'spec' | 'board' | 'default';
-    min_completeness: 'sprint' | 'spec' | 'board' | 'default';
-    max_drift: 'sprint' | 'spec' | 'board' | 'default';
+    required: 'card_compatibility' | 'sprint' | 'spec' | 'board' | 'default';
+    min_confidence: 'card_compatibility' | 'sprint' | 'spec' | 'board' | 'default';
+    min_completeness: 'card_compatibility' | 'sprint' | 'spec' | 'board' | 'default';
+    max_drift: 'card_compatibility' | 'sprint' | 'spec' | 'board' | 'default';
   };
   /**
    * The submit response can contain the complete resolved board gate config.
    * Keep additional settings readable without weakening the canonical scores.
    */
   [key: string]: unknown;
+}
+
+/** Deprecated preservation of migrated policy; provenance IDs are historical. */
+export interface MigratedTaskValidationPolicy {
+  contract_version: 'card-validation-compatibility/v1';
+  board_id: string;
+  card_id: string;
+  source_sprint_id: string;
+  source_spec_id?: string | null;
+  migration_id: string;
+  overrides: {
+    required?: boolean | null;
+    min_confidence?: number | null;
+    min_completeness?: number | null;
+    max_drift?: number | null;
+  };
 }
 
 export interface TaskValidationReviewerSeparation {

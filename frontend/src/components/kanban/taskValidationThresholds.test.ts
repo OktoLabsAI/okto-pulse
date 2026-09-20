@@ -3,6 +3,16 @@ import { describe, expect, it } from 'vitest';
 import { resolveTaskValidationThresholds } from './taskValidationThresholds';
 
 describe('resolveTaskValidationThresholds', () => {
+  it('preserves only migrated values while other fields keep inheriting', () => {
+    const thresholds = resolveTaskValidationThresholds({
+      boardSettings: { min_confidence: 99, min_completeness: 80, max_drift: 50 },
+      spec: { validation_min_completeness: 93 },
+      migratedPolicy: { contract_version: 'card-validation-compatibility/v1', board_id: 'b', card_id: 'c',
+        source_sprint_id: 'historical', migration_id: 'migration', overrides: { min_confidence: 60, max_drift: 0 } },
+    });
+    expect(thresholds).toEqual({ min_confidence: 60, min_completeness: 93, max_drift: 0,
+      resolved_sources: { min_confidence: 'card_compatibility', min_completeness: 'spec', max_drift: 'card_compatibility' } });
+  });
   it('resolves each field independently through sprint, spec, and board', () => {
     expect(resolveTaskValidationThresholds({
       boardSettings: {

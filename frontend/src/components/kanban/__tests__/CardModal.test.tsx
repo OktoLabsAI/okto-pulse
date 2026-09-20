@@ -1641,6 +1641,28 @@ describe('CardModal', () => {
     expect(apiMock.getSprint).toHaveBeenCalledWith('sprint-1');
   });
 
+  it.each([60, 90])('shows the preserved Card threshold %s without a live Sprint', async confidence => {
+    const validationCard: Card = { ...cardForType('normal'), status: 'validation', sprint_id: null,
+      migrated_validation_policy: { contract_version: 'card-validation-compatibility/v1', board_id: 'board-1',
+        card_id: cardForType('normal').id, source_sprint_id: 'historical-sprint', migration_id: 'migration-1',
+        overrides: { min_confidence: confidence, max_drift: 0 } } };
+    storeMock.selectedCardId = validationCard.id;
+    storeMock.currentBoard.settings = { min_confidence: 70, min_completeness: 80, max_drift: 50 };
+    apiMock.getCard.mockResolvedValue(validationCard);
+    apiMock.getSpec.mockResolvedValue({ id: 'spec-1', title: 'Spec', validation_min_completeness: 92,
+      test_scenarios: [], business_rules: [], api_contracts: [], technical_requirements: [], knowledge_bases: [] });
+    render(<CardModal boardId="board-1" />);
+    fireEvent.click(await screen.findByRole('tab', { name: /^Validation/ }));
+    fireEvent.click(await screen.findByRole('tab', { name: /^Task validation/ }));
+    expect(await screen.findByRole('img', { name: new RegExp(`Confidence score 80 out of 100.*Minimum ${confidence}`, 'i') })).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: /Completeness score 80 out of 100.*Minimum 92/i })).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: /Drift score 20 out of 100.*Maximum 0/i })).toBeInTheDocument();
+    expect(screen.getByTestId('task-validation-confidence-threshold-source')).toHaveTextContent('preserved Card policy');
+    expect(screen.getByTestId('task-validation-completeness-threshold-source')).toHaveTextContent('Threshold source: spec');
+    expect(apiMock.getSprint).not.toHaveBeenCalled();
+    expect(apiMock.updateCard).not.toHaveBeenCalled();
+  });
+
   it('fails closed when threshold authority cannot load and retries explicitly', async () => {
     const validationCard: Card = {
       ...cardForType('normal'),
