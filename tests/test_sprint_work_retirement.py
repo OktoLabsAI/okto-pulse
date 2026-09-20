@@ -24,13 +24,15 @@ from okto_pulse.community.adapters.sqlalchemy_kg_health import CommunitySqlAlche
 from okto_pulse.community.adapters.sqlalchemy_models import (
     ConsolidationDeadLetter, ConsolidationQueue, DomainEventHandlerExecution, DomainEventRow,
 )
+from okto_pulse.community.adapters.sprint_retirement_work import SprintRetirementWorkError
 from test_card_validation_retirement import prepare as prepare_cards, run as preserve_cards
+from test_card_validation_retirement import raw_cards
 import test_sprint_retirement_inventory as relational
 
 database = relational.database
 
 
-async def prepare(engine, tmp_path, *, status="pending", handler="ConsolidationEnqueuer", queue_status="pending"):
+async def prepare(engine, tmp_path, *, status="pending", handler="ConsolidationEnqueuer", queue_status="pending", materialize=True):
     async with engine.begin() as connection:
         for identity, model in (("event", SprintClosed(board_id="board-a", sprint_id="sprint")),
                 ("done-event", SprintClosed(board_id="board-a", sprint_id="sprint")),
@@ -47,7 +49,7 @@ async def prepare(engine, tmp_path, *, status="pending", handler="ConsolidationE
             await connection.execute(insert(ConsolidationQueue).values(id=identity, board_id="board-a", artifact_type="sprint",
                 artifact_id=origin, status=state, attempts=4, last_error="original queue error"))
     storage, references = await prepare_cards(engine, tmp_path)
-    card_receipt = await preserve_cards(engine, storage, references)
+    card_receipt = await preserve_cards(engine, storage, references) if materialize else None
     return storage, references, card_receipt
 
 
@@ -91,9 +93,24 @@ async def test_supersession_preserves_mixed_events_completed_history_and_origina
 @pytest.mark.parametrize("arguments", [{"status": "processing"}, {"handler": "UnknownHandler"}, {"queue_status": "claimed"}])
 async def test_inflight_or_unknown_effects_block_without_changing_any_work(database, tmp_path, arguments):
     engine, _ = database
-    prepared = await prepare(engine, tmp_path, **arguments)
+    prepared = await prepare(engine, tmp_path, **arguments, materialize=False)
     before = await snapshot(engine)
-    with pytest.raises(ValueError, match="requires_review"):
+    cards_before = await raw_cards(engine)
+    with pytest.raises(SprintRetirementWorkError, match="requires_review"):
+        await preserve_cards(engine, *prepared[:2])
+    assert await snapshot(engine) == before
+    assert await raw_cards(engine) == cards_before
+
+
+@pytest.mark.asyncio
+async def test_work_becoming_inflight_after_card_step_still_blocks_retirement(database, tmp_path):
+    engine, _ = database
+    prepared = await prepare(engine, tmp_path)
+    async with engine.begin() as connection:
+        await connection.execute(update(DomainEventHandlerExecution).where(
+            DomainEventHandlerExecution.id == "execution").values(status="processing"))
+    before = await snapshot(engine)
+    with pytest.raises(SprintRetirementWorkError, match="requires_review"):
         await run(engine, prepared)
     assert await snapshot(engine) == before
 

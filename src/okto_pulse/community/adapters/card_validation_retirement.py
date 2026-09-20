@@ -25,6 +25,7 @@ from okto_pulse.community.adapters.sprint_retirement_archive import (
     HistoricalArchiveReference, _attach_access, _capture, _cell, _encode,
 )
 from okto_pulse.community.adapters.sqlalchemy_models import Board, DomainEventRow, Spec, Sprint
+from okto_pulse.community.adapters.sprint_retirement_preflight import inspect_sprint_pretransform
 
 _EVENT = "migration.card_validation_preserved"
 _FORMAT = "card-validation-retirement/v1"
@@ -210,6 +211,8 @@ async def materialize_archived_card_policies(
                 return receipt
             if expected_receipt is not None and references:
                 raise ValueError("card_validation_retirement_replay_mismatch")
+            preflight = await connection.run_sync(inspect_sprint_pretransform)
+            preflight.require_resolved_pretransform()
             # Exact recapture makes stale archive content or missing/extra origins
             # a closed failure. The archive must precede permission cleanup too.
             captures = await connection.run_sync(lambda sync: _capture(sync,
