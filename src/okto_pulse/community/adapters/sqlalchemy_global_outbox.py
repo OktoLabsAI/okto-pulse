@@ -17,6 +17,7 @@ from okto_pulse.community.adapters.code_traceability_kg_sql import (
 from okto_pulse.core.ports.global_outbox import (
     GLOBAL_OUTBOX_DEAD_LETTER_SENTINEL,
     GLOBAL_OUTBOX_MAX_RETRIES,
+    GLOBAL_OUTBOX_RETIRED_SENTINEL,
     GlobalOutboxDeadLetterCursor,
     GlobalOutboxEventRecord,
     GlobalOutboxMutationConflict,
@@ -190,6 +191,8 @@ class CommunitySqlAlchemyGlobalOutboxStore:
 
         try:
             for event in events:
+                if event.retry_count == GLOBAL_OUTBOX_RETIRED_SENTINEL:
+                    raise GlobalOutboxMutationConflict("global_outbox_retirement_requires_migration")
                 result = await context.execute(
                     update(GlobalUpdateOutbox)
                     .where(
@@ -254,14 +257,26 @@ class CommunitySqlAlchemyGlobalOutboxStore:
     async def save_events(
         self, context: Any, events: Sequence[GlobalOutboxEventRecord]
     ) -> None:
-        for event in events:
-            row = await context.get(GlobalUpdateOutbox, event.id)
-            if row is None:
-                continue
-            row.retry_count = event.retry_count
-            row.last_error = event.last_error
-            row.processed_at = event.processed_at
-        await context.flush()
+        try:
+            for event in events:
+                if event.retry_count == GLOBAL_OUTBOX_RETIRED_SENTINEL:
+                    raise GlobalOutboxMutationConflict("global_outbox_retirement_requires_migration")
+                # SQL guard also protects against a claim held before the
+                # migration. An ORM identity-map read is not a current fence.
+                result = await context.execute(update(GlobalUpdateOutbox).where(
+                    GlobalUpdateOutbox.id == event.id,
+                    GlobalUpdateOutbox.retry_count != GLOBAL_OUTBOX_RETIRED_SENTINEL,
+                ).values(retry_count=event.retry_count, last_error=event.last_error,
+                    processed_at=event.processed_at).execution_options(synchronize_session="fetch"))
+                if result.rowcount != 1 and await context.scalar(select(GlobalUpdateOutbox.id).where(
+                    GlobalUpdateOutbox.id == event.id,
+                    GlobalUpdateOutbox.retry_count == GLOBAL_OUTBOX_RETIRED_SENTINEL,
+                )) is not None:
+                    raise GlobalOutboxMutationConflict("global_outbox_save_selection_changed")
+            await context.flush()
+        except Exception:
+            await context.rollback()
+            raise
 
     async def commit(self, context: Any) -> None:
         await context.commit()
