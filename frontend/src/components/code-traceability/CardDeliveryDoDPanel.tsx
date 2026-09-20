@@ -168,10 +168,20 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
         </ul>
         <p className="mt-3 text-xs text-gray-400 dark:text-gray-500">
           {isTest
-            ? 'This test card authenticates via passed scenarios; its records verify implementations recorded on other cards.'
+            ? 'Save authenticated passed or failed results during execution. Delivery credit still requires a current passing run and completed cards.'
             : "Test-phase verification is aggregated at the Spec rollup; this card's DoD requires implementation proof only."}
         </p>
       </div>
+
+      {isTest && (data.tests ?? []).some(row => row.card_id === card.id) && <section aria-label="Recorded test outcomes" className="space-y-2 text-sm">
+        <h3>Recorded test outcomes</h3>
+        <p className="text-xs">Saving a result does not approve delivery. Earlier outcomes remain visible when a newer run replaces them.</p>
+        {(data.tests ?? []).filter(row => row.card_id === card.id).slice(-20).map(row => <div key={row.id}>
+          <span>{row.scenario_id} · {row.result}</span>
+          <span className="block text-xs">{row.current_verified_run ? 'Current authenticated run' : 'Outside the current authenticated run'}</span>
+        </div>)}
+        {(data.tests ?? []).filter(row => row.card_id === card.id).length > 20 && <p className="text-xs">Showing the latest 20 of {(data.tests ?? []).filter(row => row.card_id === card.id).length} recorded results in this view.</p>}
+      </section>}
 
       {gateMode === 'blocking' && mine && !mine.satisfied && obligations.length > 0 && (
         <div className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 p-3 dark:border-red-900/70 dark:bg-red-950/25" data-testid="dod-blocked-banner">
@@ -252,7 +262,7 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
             </label>
           )}
           <label className="block text-sm">Explanation / audit reason
-            <textarea required maxLength={20000} className={`${field} mt-1`} value={reason} onChange={e => setReason(e.target.value)} placeholder={isTest ? 'Explain how this passing run verifies the selected obligations.' : 'Explain how this execution receipt covers the selected obligations.'} />
+            <textarea required maxLength={20000} className={`${field} mt-1`} value={reason} onChange={e => setReason(e.target.value)} placeholder={isTest ? 'Explain what this run observed for the selected obligations, including failures.' : 'Explain how this execution receipt covers the selected obligations.'} />
           </label>
           <button type="submit" disabled={busy || !refs.length || !reason.trim() || (canRecordKind && (compose ? !setsReady : !choice || (isTest && !testedIds.length)))} className="rounded bg-cyan-700 px-3 py-2 text-sm text-white disabled:opacity-50">
             {busy ? 'Saving…' : canWaiver && !canRecordKind ? 'Record waiver (spec rollup)' : 'Record delivery evidence'}

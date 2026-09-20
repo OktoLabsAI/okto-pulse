@@ -28,6 +28,7 @@ from okto_pulse.core.domain.delivery_evidence import (
     ImplementationDeliveryFact,
     ImplementationExecutionProof,
     TestDeliveryFact,
+    require_test_result_admission,
     DeliveryWaiverFact,
     evaluate_delivery_coverage,
     require_delivery_entry_card_type,
@@ -259,6 +260,9 @@ class CommunityDeliveryEvidenceStore:
         if len(matches) != 1:
             return None
         scenario = matches[0]
+        # New records retain the authenticated outcome even when the live
+        # scenario later changes. Legacy records keep their historical reader.
+        recorded_result = payload.get("test_result", scenario.get("status"))
         evidence = scenario.get("evidence") or {}
         verifier = resolve_test_evidence_write_verifier()
         valid = (
@@ -267,7 +271,8 @@ class CommunityDeliveryEvidenceStore:
             and not card.archived
             and card.card_type == CardType.TEST
             and scenario["id"] in (card.test_scenario_ids or [])
-            and scenario.get("status") == "passed"
+            and recorded_result in {"passed", "failed"}
+            and scenario.get("status") == recorded_result
             and isinstance(evidence, dict)
             and evidence.get("execution_receipt") == payload.get("test_receipt")
             and bool(payload.get("test_receipt"))
@@ -288,7 +293,7 @@ class CommunityDeliveryEvidenceStore:
             valid = verifier.verify(
                 board_id=scope.board_id,
                 spec_id=scope.spec_id,
-                status="passed",
+                status=recorded_result,
                 scenario_id=scenario["id"],
                 scenario_sha256=digest,
                 actor_id=None,
@@ -339,7 +344,7 @@ class CommunityDeliveryEvidenceStore:
             except (KeyError, TypeError, ValueError):
                 valid = False
         try:
-            status = TestScenarioStatus(scenario.get("status", "draft"))
+            status = TestScenarioStatus(recorded_result or "draft")
         except ValueError:
             status = TestScenarioStatus.DRAFT
         return TestDeliveryFact(
@@ -471,7 +476,7 @@ class CommunityDeliveryEvidenceStore:
                     Card.board_id == board_id,
                     Card.spec_id == spec_id,
                     Card.card_type == CardType.TEST,
-                    Card.status == CardStatus.DONE,
+                    Card.status.in_((CardStatus.STARTED, CardStatus.IN_PROGRESS, CardStatus.DONE)),
                     Card.archived.is_(False),
                 )
             )
@@ -499,7 +504,7 @@ class CommunityDeliveryEvidenceStore:
                             "id": scenario["id"],
                             "card_id": card.id,
                             "card_version": int(card.policy_version or 1),
-                            "label": f"{card.title}: {scenario.get('title', scenario['id'])}",
+                            "label": f"{card.title}: {scenario.get('title', scenario['id'])} · {fact.result.value}",
                         }
                     )
         return {
@@ -1114,6 +1119,7 @@ class CommunityDeliveryEvidenceStore:
             payload["test_receipt"] = (scenarios[0].get("evidence") or {}).get(
                 "execution_receipt"
             )
+            payload["test_result"] = scenarios[0].get("status")
         if command.kind == "revoke":
             target = await self.session.get(CardRecord, command.record_id)
             if (
@@ -1164,10 +1170,8 @@ class CommunityDeliveryEvidenceStore:
                     raise ValueError(issue)
         elif command.kind == "test":
             fact = await self._test(record, spec_scope, bindings, spec)
-            # The test-phase join is cross-card by design (BR-5): a test card
-            # verifies implementations recorded on OTHER cards, so the
-            # candidate is evaluated against the spec ROLLUP implementations,
-            # mirroring the legacy spec-ledger validation exactly.
+            # Authenticate and bind the result now; final delivery credit is a
+            # separate read predicate and still requires passing + Done.
             rollup_snapshot, _ = await self.load_rollup_snapshot(
                 command.board_id, command.spec_id
             )
@@ -1181,25 +1185,9 @@ class CommunityDeliveryEvidenceStore:
                 self.inventory.spec_obligations(spec),
                 selected_implementations,
                 (fact,) if fact else (),
-                complete=True,
+                complete=rollup_snapshot.complete,
             )
-            result = evaluate_delivery_coverage(candidate)
-            matching = {
-                r.obligation.binding.obligation_ref
-                for r in result.rows
-                if record.id in r.test_ids
-            }
-            if matching != set(command.obligation_refs):
-                raise ValueError(
-                    "delivery_current_verified_test_and_implementation_required"
-                )
-            valid_ids = {
-                f.id
-                for f in rollup_snapshot.implementations
-                if any(implementation_binding_proof_current(f, binding) for binding in f.bindings)
-            }
-            if not set(command.implementation_ids) <= valid_ids:
-                raise ValueError("delivery_implementation_scope_invalid")
+            require_test_result_admission(candidate, fact)
         self.session.add(record)
         await self.session.flush()
         response = {"id": record.id, "replayed": False}

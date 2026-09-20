@@ -46,6 +46,24 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
+it('keeps failed outcomes visible alongside the current run without adding delivery credit', async () => {
+  const value = projection();
+  value.tests = [
+    { id: 'failed', card_id: 'test-card', scenario_id: 'scenario', result: 'failed', current_verified_run: false },
+    { id: 'passed', card_id: 'test-card', scenario_id: 'scenario', result: 'passed', current_verified_run: true },
+    { id: 'foreign', card_id: 'another', scenario_id: 'other-card-scenario', result: 'failed', current_verified_run: true },
+  ];
+  api.getDeliveryEvidence.mockResolvedValue(value);
+  render(<CardDeliveryDoDPanel boardId="b" card={{ id: 'test-card', card_type: 'test', spec_id: 's' }} />);
+  expect(await screen.findByRole('region', { name: 'Recorded test outcomes' })).toBeInTheDocument();
+  expect(screen.getByText('scenario · failed')).toBeInTheDocument();
+  expect(screen.getByText('scenario · passed')).toBeInTheDocument();
+  expect(screen.getByText('Outside the current authenticated run')).toBeInTheDocument();
+  expect(screen.getByText('Current authenticated run')).toBeInTheDocument();
+  expect(screen.queryByText(/other-card-scenario/)).not.toBeInTheDocument();
+  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
+});
+
 it.each([true, false])('shows submitted impact currentness=%s independently of delivery credit', async current => {
   const result = projection();
   result.per_card![0].report_impact = { source: 'accumulated', current, reason: current ? null : 'known_source_changed' };
@@ -219,21 +237,22 @@ it('hides recording controls when the actor lacks the permissions', async () => 
   expect(screen.queryByText('Request Waiver (human)')).toBeNull();
 });
 
-it('test cards record authenticated scenario runs verifying other cards implementations', async () => {
+it.each(['passed', 'failed'])('test cards record authenticated %s runs during execution', async result => {
   const p = projection();
-  p.per_card = [{ card_id: 'task-1', title: 'TEST-21', card_type: 'test', status: 'done', satisfied: false, obligations: [] }];
+  p.per_card = [{ card_id: 'task-1', title: 'TEST-21', card_type: 'test', status: 'in_progress', satisfied: false, obligations: [] }];
   p.rows = [{ obligation: { title: 'Done is rejected without proof', binding: { obligation_ref: 'ac:ac_77ce', semantic_sha256: 'c'.repeat(64) } }, implementation_ids: [], test_ids: [], implementation_waiver_ids: [], test_waiver_ids: [], implementation_satisfied: true, test_satisfied: false }];
-  p.candidates = [{ kind: 'test', id: 'scenario-9', card_id: 'task-1', card_version: 2, label: 'DoD rejection scenario' }];
+  p.candidates = [{ kind: 'test', id: 'scenario-9', card_id: 'task-1', card_version: 2, label: `DoD rejection scenario · ${result}` }];
   api.getDeliveryEvidence.mockResolvedValue(p);
   render(<CardDeliveryDoDPanel boardId="b" card={{ id: 'task-1', card_type: 'test', spec_id: 's' }} canTest />);
   fireEvent.click(await screen.findByTestId('dod-record-button'));
   fireEvent.click(screen.getByLabelText('Select ac:ac_77ce'));
   fireEvent.change(screen.getByRole('combobox'), { target: { value: 'task-1:scenario-9' } });
   fireEvent.click(screen.getByRole('checkbox', { name: /card_delivery_abc111/ }));
-  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Verified passing run.' } });
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: `Authenticated ${result} run.` } });
   fireEvent.click(screen.getByRole('button', { name: /Record delivery evidence/ }));
   await waitFor(() => expect(api.recordCardDeliveryEvidence).toHaveBeenCalledTimes(1));
   expect(api.recordCardDeliveryEvidence.mock.calls[0][3]).toMatchObject({
     kind: 'test', scenario_id: 'scenario-9', implementation_ids: ['card_delivery_abc111'],
   });
+  expect(api.recordCardDeliveryEvidence.mock.calls[0][3]).not.toHaveProperty('test_result');
 });

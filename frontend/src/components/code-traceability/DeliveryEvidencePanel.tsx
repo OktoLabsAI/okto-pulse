@@ -140,7 +140,7 @@ export function DeliveryEvidencePanel({ boardId, specId, skipDeliveryEvidence = 
                   <div className="truncate text-sm font-medium text-gray-700 dark:text-gray-200">{card.title}</div>
                   <div className="text-xs text-gray-400 dark:text-gray-500">
                     {isTest
-                      ? 'Test card · authenticates via passed scenario'
+                      ? 'Test card · records authenticated outcomes; delivery requires a current passing run'
                       : card.obligations.length === 0
                         ? 'No derived obligations'
                         : proven === card.obligations.length
