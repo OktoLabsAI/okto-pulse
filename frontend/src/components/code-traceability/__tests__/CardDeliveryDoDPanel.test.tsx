@@ -110,6 +110,24 @@ it('shows the blocked banner naming the unproven obligation', async () => {
   expect(banner.textContent).toContain('Done is rejected without proof');
 });
 
+it('stages a complete contribution without persisting proof or a waiver', async () => {
+  const value = projection(); Object.assign(value.per_card![0], { card_version: 4, delivery_revision: 3 });
+  api.getDeliveryEvidence.mockResolvedValue(value);
+  const onStage = vi.fn();
+  render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord canWaiver onStage={onStage} />);
+  expect(screen.queryByText('Request Waiver (human)')).not.toBeInTheDocument();
+  fireEvent.click(await screen.findByTestId('dod-record-button'));
+  fireEvent.click(screen.getByLabelText('Select ac:ac_77ce'));
+  fireEvent.click(screen.getByLabelText('Complete contribution for ac:ac_77ce'));
+  fireEvent.change(screen.getByRole('combobox'), { target: { value: 'task-1:execution-1' } });
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Gate implementation completed.' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Add evidence to report draft' }));
+  await waitFor(() => expect(onStage).toHaveBeenCalledOnce());
+  expect(onStage.mock.calls[0][0]).toMatchObject({ expected_card_version: 4, expected_spec_edition: 2, expected_delivery_revision: 3,
+    entries: [{ kind: 'implementation', execution_id: 'execution-1', bindings: [{ obligation_ref: 'ac:ac_77ce', contribution: 'complete' }] }] });
+  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled(); expect(api.recordDeliveryEvidence).not.toHaveBeenCalled();
+});
+
 it('records implementation proof through the card-scoped surface with the card CAS', async () => {
   render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord />);
   fireEvent.click(await screen.findByTestId('dod-record-button'));
@@ -237,22 +255,25 @@ it('hides recording controls when the actor lacks the permissions', async () => 
   expect(screen.queryByText('Request Waiver (human)')).toBeNull();
 });
 
-it.each(['passed', 'failed'])('test cards record authenticated %s runs during execution', async result => {
+it.each([['passed', false], ['failed', false], ['passed', true], ['failed', true]] as const)('test cards record authenticated %s runs during execution, staged=%s', async (result, staged) => {
   const p = projection();
-  p.per_card = [{ card_id: 'task-1', title: 'TEST-21', card_type: 'test', status: 'in_progress', satisfied: false, obligations: [] }];
+  p.per_card = [{ card_id: 'task-1', title: 'TEST-21', card_type: 'test', status: 'in_progress', card_version: 2, delivery_revision: 5, satisfied: false, obligations: [] }];
   p.rows = [{ obligation: { title: 'Done is rejected without proof', binding: { obligation_ref: 'ac:ac_77ce', semantic_sha256: 'c'.repeat(64) } }, implementation_ids: [], test_ids: [], implementation_waiver_ids: [], test_waiver_ids: [], implementation_satisfied: true, test_satisfied: false }];
   p.candidates = [{ kind: 'test', id: 'scenario-9', card_id: 'task-1', card_version: 2, label: `DoD rejection scenario · ${result}` }];
   api.getDeliveryEvidence.mockResolvedValue(p);
-  render(<CardDeliveryDoDPanel boardId="b" card={{ id: 'task-1', card_type: 'test', spec_id: 's' }} canTest />);
+  const onStage = vi.fn();
+  render(<CardDeliveryDoDPanel boardId="b" card={{ id: 'task-1', card_type: 'test', spec_id: 's' }} canTest onStage={staged ? onStage : undefined} />);
   fireEvent.click(await screen.findByTestId('dod-record-button'));
   fireEvent.click(screen.getByLabelText('Select ac:ac_77ce'));
   fireEvent.change(screen.getByRole('combobox'), { target: { value: 'task-1:scenario-9' } });
   fireEvent.click(screen.getByRole('checkbox', { name: /card_delivery_abc111/ }));
   fireEvent.change(screen.getByRole('textbox'), { target: { value: `Authenticated ${result} run.` } });
-  fireEvent.click(screen.getByRole('button', { name: /Record delivery evidence/ }));
-  await waitFor(() => expect(api.recordCardDeliveryEvidence).toHaveBeenCalledTimes(1));
-  expect(api.recordCardDeliveryEvidence.mock.calls[0][3]).toMatchObject({
+  fireEvent.click(screen.getByRole('button', { name: staged ? 'Add evidence to report draft' : 'Record delivery evidence' }));
+  await waitFor(() => expect(staged ? onStage : api.recordCardDeliveryEvidence).toHaveBeenCalledTimes(1));
+  const sent = staged ? onStage.mock.calls[0][0].entries[0] : api.recordCardDeliveryEvidence.mock.calls[0][3];
+  expect(sent).toMatchObject({
     kind: 'test', scenario_id: 'scenario-9', implementation_ids: ['card_delivery_abc111'],
   });
-  expect(api.recordCardDeliveryEvidence.mock.calls[0][3]).not.toHaveProperty('test_result');
+  expect(sent).not.toHaveProperty('test_result');
+  if (staged) expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
 });

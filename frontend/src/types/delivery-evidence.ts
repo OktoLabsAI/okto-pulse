@@ -89,7 +89,24 @@ export interface CardDeliveryBatchInput {
 
 export type CardDeliveryWriteResult = { id: string; replayed: boolean } | {
   entries: Array<{ client_ref: string; id: string }>; delivery_revision: number; replayed: boolean;
+  report?: { status: 'validation' | 'done'; manifest_sha256: string; delivery_revision: number };
 };
+
+export type CardDeliveryBatchDraft = Omit<CardDeliveryBatchInput, 'idempotency_key'>;
+
+export interface CardDeliveryReportInput {
+  contract_version: 'card-delivery-report/v1';
+  expected_card_status: 'started' | 'in_progress';
+  batch: CardDeliveryBatchInput;
+  report: {
+    status: 'validation' | 'done'; conclusion: string;
+    completeness: number; completeness_justification: string;
+    drift: number; drift_justification: string;
+    impact_evidence?: import('./index').ImpactEvidence;
+  };
+  existing_record_ids: string[];
+  reuse_impact: boolean;
+}
 
 export interface DeliveryPerCardObligation {
   ref: string;

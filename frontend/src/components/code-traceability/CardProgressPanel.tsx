@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { useDashboardApi } from '@/services/api';
-import type { CardDeliveryBatchInput, DeliveryPerCard } from '@/types/delivery-evidence';
+import type { CardDeliveryBatchInput, CardDeliveryBatchDraft, DeliveryPerCard } from '@/types/delivery-evidence';
 
-export function CardProgressPanel({ boardId, specId, edition, card, canWrite, onSaved }: {
+export function CardProgressPanel({ boardId, specId, edition, card, canWrite, onSaved, onStage }: {
   boardId: string; specId: string; edition: number; card: DeliveryPerCard;
   canWrite: boolean; onSaved: () => void;
+  onStage?: (draft: CardDeliveryBatchDraft) => void;
 }) {
   const api = useDashboardApi();
   const [summary, setSummary] = useState('');
@@ -35,9 +36,11 @@ export function CardProgressPanel({ boardId, specId, edition, card, canWrite, on
     input.idempotency_key = retry.current.key;
     pending.current = true; setBusy(true); setError('');
     try {
-      await api.recordCardDeliveryEvidence(boardId, card.card_id, specId, input);
+      if (onStage) onStage({ contract_version: input.contract_version, expected_card_version: input.expected_card_version,
+        expected_spec_edition: input.expected_spec_edition, expected_delivery_revision: input.expected_delivery_revision, entries: input.entries });
+      else await api.recordCardDeliveryEvidence(boardId, card.card_id, specId, input);
       if (!mounted.current) return;
-      retry.current = null; setSummary(''); setRemaining(''); setDirty(false); setChange(''); setTargets([]); onSaved();
+      retry.current = null; setSummary(''); setRemaining(''); setDirty(false); setChange(''); setTargets([]); if (!onStage) onSaved();
     } catch (err) {
       if (mounted.current) setError(err instanceof Error ? err.message : 'Progress could not be saved. Retry with the same content.');
     } finally { pending.current = false; if (mounted.current) setBusy(false); }
@@ -46,7 +49,7 @@ export function CardProgressPanel({ boardId, specId, edition, card, canWrite, on
   return <section aria-label="Recorded progress" className="space-y-2 rounded border p-3 text-sm">
     <h3>Recorded progress</h3>
     <p>Declared work does not complete this card or satisfy delivery gates. Recovery is limited to confirmed records and material you can access.</p>
-    {card.progress?.items.map(item => <article key={item.id} className="border-t py-2">
+    {!onStage && card.progress?.items.map(item => <article key={item.id} className="border-t py-2">
       <p>{item.summary}</p><p>Remaining: {item.remaining}</p>
       {item.revoked && <p>Revoked by an authorized reviewer; retained as history.</p>}
       <p className="text-xs">{item.actor_id} · {item.created_at} · {item.source_state.workspace_state} · {item.source_state.recoverability}</p>
@@ -73,7 +76,7 @@ export function CardProgressPanel({ boardId, specId, edition, card, canWrite, on
         {card.progress?.targets_truncated && <p>The Target list is shortened. Use the scoped API for other Targets.</p>}
       </fieldset>}
       {change && change !== 'none' && <p>Earlier observations of {change === 'targets' ? 'these Targets' : 'this card’s work'} stop proving the current result until a new accepted observation. Other notes do not restore proof.</p>}
-      <button type="button" onClick={save} disabled={busy || !summary.trim() || !remaining.trim() || !change || (change === 'targets' && !targets.length)}>Save progress</button>
+      <button type="button" onClick={save} disabled={busy || !summary.trim() || !remaining.trim() || !change || (change === 'targets' && !targets.length)}>{onStage ? 'Add progress to report draft' : 'Save progress'}</button>
     </div> : <p>Recording progress requires execution state and permission to write the card’s report.</p>}
   </section>;
 }

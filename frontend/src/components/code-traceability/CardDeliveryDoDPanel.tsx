@@ -5,6 +5,7 @@ import { CardProgressPanel } from './CardProgressPanel';
 import { DeliveryNetImpactPanel } from './DeliveryNetImpactPanel';
 import type {
   CardDeliveryEvidenceInput,
+  CardDeliveryBatchDraft,
   DeliveryEvidenceInput,
   DeliveryEvidenceProjection,
 } from '@/types/delivery-evidence';
@@ -17,6 +18,7 @@ interface Props {
   canWaiver?: boolean;
   canProgress?: boolean;
   onChanged?: () => void;
+  onStage?: (draft: CardDeliveryBatchDraft) => void;
 }
 
 const field = 'w-full rounded border border-gray-300 bg-white p-2 text-sm dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100';
@@ -27,7 +29,7 @@ const field = 'w-full rounded border border-gray-300 bg-white p-2 text-sm dark:b
 // authenticated passing runs verifying implementations on other cards.
 // Waivers stay spec-level and human-only (BR-3): the button routes an
 // authorized human to the legacy rollup surface.
-export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest = false, canWaiver = false, canProgress = false, onChanged }: Props) {
+export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest = false, canWaiver = false, canProgress = false, onChanged, onStage }: Props) {
   const api = useDashboardApi();
   const [data, setData] = useState<DeliveryEvidenceProjection | null>(null);
   const [gateMode, setGateMode] = useState<'advisory' | 'blocking'>('blocking');
@@ -105,10 +107,19 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
     setBusy(true); setError('');
     try {
       if (!isTest && (compose ? !setsReady : !selected)) throw new Error('Select the accepted execution receipts for each obligation first.');
-      if (isTest && (!selected || !testedIds.length)) throw new Error('Select the passing scenario and the implementation records it verified.');
-      await api.recordCardDeliveryEvidence(boardId, card.id, card.spec_id, input);
+      if (isTest && (!selected || !testedIds.length)) throw new Error('Select the authenticated run and the implementation records it observed.');
+      if (onStage) {
+        if (!mine?.card_version || mine.delivery_revision === undefined || !['started', 'in_progress'].includes(mine.status)) {
+          throw new Error('The current execution state and delivery revision are required. Reload before preparing this report.');
+        }
+        onStage({ contract_version: 'card-delivery-batch/v1', expected_card_version: mine.card_version,
+          expected_spec_edition: data.edition, expected_delivery_revision: mine.delivery_revision,
+          entries: [{ client_ref: 'proof', kind: isTest ? 'test' : 'implementation', obligation_refs: input.obligation_refs,
+            justification: input.justification, bindings: input.bindings, execution_id: input.execution_id,
+            scenario_id: input.scenario_id, implementation_ids: input.implementation_ids }] });
+      } else await api.recordCardDeliveryEvidence(boardId, card.id, card.spec_id, input);
       replayRef.current = null; setReason(''); setRefs([]); setChoice(''); setTestedIds([]);
-      setFormOpen(false); setReload(v => v + 1); onChanged?.();
+      setFormOpen(false); if (!onStage) { setReload(v => v + 1); onChanged?.(); }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Delivery evidence was not recorded.');
     } finally { setBusy(false); }
@@ -135,7 +146,8 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
     {error && <p role="alert" className="rounded-md border border-red-300 bg-red-50 p-3 text-xs text-red-700 dark:border-red-900/70 dark:bg-red-950/25 dark:text-red-300">{error}</p>}
     {!data && !error && <p role="status" className="text-sm text-gray-500">Loading card delivery obligations…</p>}
     {data && <>
-      {mine && <CardProgressPanel key={`${boardId}:${card.id}:${data.edition}:${canProgress}`} boardId={boardId} specId={card.spec_id} edition={data.edition} card={mine} canWrite={canProgress} onSaved={() => { setReload(v => v + 1); onChanged?.(); }} />}
+      {mine && <CardProgressPanel key={`${boardId}:${card.id}:${data.edition}:${canProgress}`} boardId={boardId} specId={card.spec_id} edition={data.edition} card={mine} canWrite={canProgress} onStage={onStage} onSaved={() => { setReload(v => v + 1); onChanged?.(); }} />}
+      {!onStage && <>
       {mine?.accumulated_impact && <DeliveryNetImpactPanel value={mine.accumulated_impact} />}
       {mine?.report_impact?.source === 'accumulated' && <p role="status" className="text-sm">
         {mine.report_impact.current ? 'Submitted impact matches the known source bases.' : 'Submitted impact needs a new current basis before required impact validation can pass.'}
@@ -193,11 +205,12 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
         </div>
       )}
 
+      </>}
       <div className="flex gap-2">
         {canRecordKind && <button type="button" onClick={() => { setFormOpen(v => !v); setError(''); }} className="rounded-md bg-gray-800 px-4 py-2 text-sm text-white dark:bg-gray-100 dark:text-gray-900" data-testid="dod-record-button">
-          {formOpen ? 'Close recording form' : 'Record Delivery Evidence'}
+          {formOpen ? 'Close recording form' : onStage ? 'Prepare delivery evidence for report' : 'Record Delivery Evidence'}
         </button>}
-        {canWaiver && <button type="button" onClick={() => { setFormOpen(true); setError(''); }} className="rounded-md border border-gray-300 px-4 py-2 text-sm text-gray-600 dark:border-gray-700 dark:text-gray-300">
+        {canWaiver && !onStage && <button type="button" onClick={() => { setFormOpen(true); setError(''); }} className="rounded-md border border-gray-300 px-4 py-2 text-sm text-gray-600 dark:border-gray-700 dark:text-gray-300">
           Request Waiver (human)
         </button>}
       </div>
@@ -235,12 +248,12 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
           {!isTest && canRecordKind && <p className="text-xs">Declare the contribution separately for each obligation. Partial records do not add up to completion. Complete still requires accepted proof and the existing review.</p>}
           {compose && <p className="text-xs">Each set must share the same observed source and immutable revision. A newer commit does not establish that it contains another receipt's changes.</p>}
           {canRecordKind ? <>
-            {!compose && <label className="block text-sm">{isTest ? 'Passing scenario on this test card' : 'Accepted execution receipt (this card)'}
+            {!compose && <label className="block text-sm">{isTest ? 'Authenticated run on this test card' : 'Accepted execution receipt (this card)'}
               <select required value={choice} onChange={e => setChoice(e.target.value)} className={`${field} mt-1`}>
                 <option value="">Select…</option>
                 {candidates.map(c => <option key={`${c.card_id}:${c.id}`} value={`${c.card_id}:${c.id}`}>{c.label}</option>)}
               </select>
-              {candidates.length === 0 && <span className="text-xs text-gray-400">No eligible receipts yet. {isTest ? 'Execute the linked scenarios with authenticated evidence and complete the test card.' : 'Submit an accepted execution receipt for the committed files in the Implementation Targets tab — it becomes pickable here immediately, before completion.'}</span>}
+              {candidates.length === 0 && <span className="text-xs text-gray-400">No eligible receipts yet. {isTest ? 'Execute the linked scenarios with authenticated evidence. Results can be recorded during execution.' : 'Submit an accepted execution receipt for the committed files in the Implementation Targets tab — it becomes pickable here immediately, before completion.'}</span>}
             </label>}
             {isTest && <fieldset>
               <legend className="text-sm font-medium">Implementation records verified by this run</legend>
@@ -265,7 +278,7 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
             <textarea required maxLength={20000} className={`${field} mt-1`} value={reason} onChange={e => setReason(e.target.value)} placeholder={isTest ? 'Explain what this run observed for the selected obligations, including failures.' : 'Explain how this execution receipt covers the selected obligations.'} />
           </label>
           <button type="submit" disabled={busy || !refs.length || !reason.trim() || (canRecordKind && (compose ? !setsReady : !choice || (isTest && !testedIds.length)))} className="rounded bg-cyan-700 px-3 py-2 text-sm text-white disabled:opacity-50">
-            {busy ? 'Saving…' : canWaiver && !canRecordKind ? 'Record waiver (spec rollup)' : 'Record delivery evidence'}
+            {busy ? 'Saving…' : onStage ? 'Add evidence to report draft' : canWaiver && !canRecordKind ? 'Record waiver (spec rollup)' : 'Record delivery evidence'}
           </button>
         </form>
       )}

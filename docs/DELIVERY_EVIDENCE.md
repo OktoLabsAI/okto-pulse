@@ -17,7 +17,9 @@ shows the immutable audit history. The existing context matrix is unchanged.
    association can cover several rows. Then submit/complete the card through the
    existing evaluation and transition gates; final rollup credit requires Done.
 3. Execute a scenario linked to a **test card**, using the existing authenticated
-   Test Evidence V2 runtime; record `passed` and complete the test card.
+   Test Evidence V2 runtime. Record authenticated passed or failed results during
+   execution; final verification credit still requires a current passing result
+   and completed cards.
 4. Associate that test with the obligations and the implementation association IDs
    it actually verified. The signed execution must not predate the source
    observation. Several test cards may jointly cover the current implementations.
@@ -28,6 +30,32 @@ Tasks do not provide verification merely by being Done. `automated`, assertions 
 free text, an unsigned receipt or a scenario unlinked to a test card do not count.
 An authenticated association is the actor's claim about what the test covered;
 Pulse validates the signed run but does not independently inspect source code.
+
+### Last batch and execution report
+
+In the execution report dialog, enable **Seal recorded evidence with this report**
+to select existing records and optionally reuse their accumulated impact. Enable
+**Save a last batch together with this report** to prepare progress entries or
+associations to accepted execution receipts/authenticated test runs using the
+existing forms. Each added entry appears in the unsent list and can be removed.
+These entries are local drafts until the final submit; closing the dialog discards
+them. Intermediate checkpoints can still be saved from the Delivery panel.
+
+The final submit uses the same card-scoped REST endpoint with
+`card-delivery-report/v1`. The server saves all new entries, seals them together
+with the selected existing records and submits the existing report in one
+transaction. Permissions, report scores, source verification and transition gates
+still apply. A rejection saves none of the batch and keeps the draft visible.
+An unchanged retry reuses the request key; changing the report creates a new
+request. Refresh and review conflicting versions instead of silently rebasing a
+draft. At most 50 new entries and 200 selected records are accepted; the report
+also has an aggregate size limit enforced by the server.
+
+This mode is available from started/in_progress for transitions requiring an
+execution report. Test Card→Validation continues through its existing flow without
+an execution report. The UI associates existing proofs; creating source execution
+receipts inline remains available through the canonical REST/MCP contract. None
+of these operations auto-approve evidence or relax independent review.
 
 ## Scope, currentness and exceptions
 

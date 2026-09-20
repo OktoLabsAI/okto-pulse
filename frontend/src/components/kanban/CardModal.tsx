@@ -4,7 +4,9 @@
 
 import React, { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { DeliverySelectionEditor } from '@/components/code-traceability/DeliverySelectionEditor';
-import type { DeliverySelectionInput } from '@/types/delivery-evidence';
+import { DeliveryReportBatchEditor } from '@/components/code-traceability/DeliveryReportBatchEditor';
+import { sameDeliveryBasis } from '@/components/code-traceability/deliveryReportDraft';
+import type { CardDeliveryBatchDraft, CardDeliveryReportInput, DeliverySelectionInput } from '@/types/delivery-evidence';
 import { v4 as uuidv4 } from 'uuid';
 import { X, HelpCircle, Trash2, Clock, Link, Unlink, RefreshCw, FileText, FlaskConical, Maximize2, Minimize2, Bug, AlertCircle, Check, Scale, Shield, ShieldCheck, ShieldX, ChevronDown, ChevronUp, CheckCircle, XCircle, GitBranch, Network, Gauge, History, Layers, MessageCircleQuestion, MessageSquare, ListChecks, Target, FolderTree } from 'lucide-react';
 import toast from 'react-hot-toast';
@@ -406,6 +408,11 @@ export function CardModal({
   const [conclusionGateError, setConclusionGateError] = useState<string | null>(null);
   const [conclusionDeliverySelection, setConclusionDeliverySelection] = useState<DeliverySelectionInput>();
   const [conclusionSelectionPending, setConclusionSelectionPending] = useState(false);
+  const [conclusionBatchMode, setConclusionBatchMode] = useState(false);
+  const [conclusionBatch, setConclusionBatch] = useState<CardDeliveryBatchDraft>();
+  const conclusionOrigin = useRef<{ cardId: string; status: CardStatus }>();
+  const conclusionReplay = useRef<{ body: string; key: string }>();
+  const conclusionSubmitting = useRef(false);
   const taskValidationThresholdsReady = Boolean(
     card
     && currentBoard?.id === card.board_id
@@ -590,6 +597,10 @@ export function CardModal({
     setConclusionImpactDraft(emptyImpactEvidenceDraft());
     setConclusionDeliverySelection(undefined);
     setConclusionSelectionPending(false);
+    setConclusionBatchMode(false);
+    setConclusionBatch(undefined);
+    conclusionOrigin.current = card ? { cardId: card.id, status: card.status } : undefined;
+    conclusionReplay.current = undefined;
     setConclusionGateError(null);
   };
 
@@ -1087,13 +1098,16 @@ export function CardModal({
     },
   );
 
-  const handleStatusChange = async (status: CardStatus, conclusion?: string, metrics?: { completeness: number; completeness_justification: string; drift: number; drift_justification: string }, cancellationReason?: string, impactEvidence?: ImpactEvidence, deliverySelection?: DeliverySelectionInput): Promise<boolean> => {
-    if (!card || status === card.status) return false;
+  const handleStatusChange = async (status: CardStatus, conclusion?: string, metrics?: { completeness: number; completeness_justification: string; drift: number; drift_justification: string }, cancellationReason?: string, impactEvidence?: ImpactEvidence, deliverySelection?: DeliverySelectionInput, batch?: CardDeliveryBatchDraft): Promise<boolean> => {
+    if (!card || conclusionSubmitting.current || (!batch && status === card.status)) return false;
     // Rejected is consequence-only. Even if a rolling-upgrade server were to
     // project a stale manual edge, the client must never invoke it.
     if (status === 'rejected') return false;
-    if (card.status === 'rejected' && status !== 'in_progress') return false;
-    if (!canMutateCard(`card.move.${card.status}_to_${status}`)) return false;
+    const fromStatus = batch ? conclusionOrigin.current?.status : card.status;
+    if (batch && conclusionOrigin.current?.cardId !== card.id) return false;
+    if (!batch && card.status === 'rejected' && status !== 'in_progress') return false;
+    if (batch ? !hasPermissionWithState(perms.has, `card.move.${fromStatus}_to_${status}`, 'card', fromStatus)
+      : !canMutateCard(`card.move.${card.status}_to_${status}`)) return false;
 
     // ITEM 17: cancelling requires a justification — intercept with the dialog.
     if (status === 'cancelled' && !cancellationReason) {
@@ -1110,8 +1124,35 @@ export function CardModal({
     }
 
     setMovingStatus(status);
+    conclusionSubmitting.current = true;
     policyTransitionAuthority.clearRejection();
     try {
+      if (batch) {
+        if (!card.spec_id || !deliverySelection || !sameDeliveryBasis(batch, deliverySelection)
+          || !batch.entries.length || !conclusion || !metrics
+          || !['started', 'in_progress'].includes(fromStatus ?? '') || !['validation', 'done'].includes(status)) {
+          throw new Error('Refresh and review the delivery selection before submitting this draft.');
+        }
+        const body: CardDeliveryReportInput = {
+          contract_version: 'card-delivery-report/v1', expected_card_status: fromStatus as 'started' | 'in_progress',
+          batch: { ...batch, idempotency_key: '' },
+          report: { status: status as 'validation' | 'done', conclusion, ...metrics,
+            ...(impactEvidence ? { impact_evidence: impactEvidence } : {}) },
+          existing_record_ids: deliverySelection.record_ids, reuse_impact: deliverySelection.reuse_impact ?? false,
+        };
+        if (batch.entries.length + body.existing_record_ids.length > 200 || new TextEncoder().encode(JSON.stringify(body)).length > 128 * 1024) {
+          throw new Error('The report exceeds the selected record or size limit. Reduce the draft before submitting.');
+        }
+        const fingerprint = JSON.stringify({ boardId: card.board_id, cardId: card.id, specId: card.spec_id, body });
+        if (conclusionReplay.current?.body !== fingerprint) conclusionReplay.current = { body: fingerprint, key: crypto.randomUUID() };
+        body.batch.idempotency_key = conclusionReplay.current.key;
+        await api.recordCardDeliveryEvidence(card.board_id, card.id, card.spec_id, body);
+        // A failed refresh cannot turn a confirmed commit into a failed submission.
+        try { applyCardUpdate(await api.getCard(card.id)); }
+        catch { toast.error('Report saved. Refresh the card to see its current state.'); }
+        toast.success('Evidence and report saved');
+        return true;
+      }
       const updated = await api.moveCard(card.id, {
         status,
         conclusion,
@@ -1163,6 +1204,7 @@ export function CardModal({
       );
       return false;
     } finally {
+      conclusionSubmitting.current = false;
       setMovingStatus(null);
     }
   };
@@ -2553,11 +2595,23 @@ export function CardModal({
                 </div>
               </div>
             </div>
+            <fieldset disabled={movingStatus !== null} className="min-w-0">
             {!conclusionDeliverySelection?.reuse_impact && <ImpactEvidenceEditor
               draft={conclusionImpactDraft}
               onChange={setConclusionImpactDraft}
             />}
             {card?.spec_id && <DeliverySelectionEditor key={card.id} boardId={card.board_id} cardId={card.id} specId={card.spec_id} onChange={setConclusionDeliverySelection} onPending={setConclusionSelectionPending} />}
+            {card?.spec_id && ['started', 'in_progress'].includes(conclusionOrigin.current?.status ?? '') && <div className="mt-3 space-y-2">
+              <label><input type="checkbox" checked={conclusionBatchMode} onChange={event => { setConclusionBatchMode(event.target.checked); if (!event.target.checked) setConclusionBatch(undefined); }} /> Save a last batch together with this report</label>
+              {conclusionBatchMode && (!conclusionDeliverySelection
+                ? <p>Enable evidence selection above to prepare the last batch.</p>
+                : <DeliveryReportBatchEditor key={`${card.id}:${card.spec_id}`} boardId={card.board_id}
+                  card={{ id: card.id, card_type: card.card_type || 'normal', spec_id: card.spec_id }}
+                  selection={conclusionDeliverySelection} draft={conclusionBatch} onChange={setConclusionBatch}
+                  canRecord={perms.has('code_traceability.target.execution_submit')} canTest={perms.has('spec.tests.execute')}
+                  canProgress={perms.has('card.conclusion.write')} />)}
+            </div>}
+            </fieldset>
             {conclusionGateError && (
               <p
                 className="mt-2 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300"
@@ -2567,7 +2621,7 @@ export function CardModal({
               </p>
             )}
             <div className="flex justify-end gap-2 mt-3">
-              <button onClick={() => setShowConclusionPrompt(false)} className="btn btn-secondary text-xs">Cancel</button>
+              <button disabled={movingStatus !== null} onClick={() => setShowConclusionPrompt(false)} className="btn btn-secondary text-xs">Cancel</button>
               <button
                 onClick={async () => {
                   setConclusionGateError(null);
@@ -2576,12 +2630,12 @@ export function CardModal({
                     completeness_justification: conclusionCompletenessJustification.trim(),
                     drift: conclusionDrift,
                     drift_justification: conclusionDriftJustification.trim(),
-                  }, undefined, conclusionDeliverySelection?.reuse_impact ? undefined : buildImpactEvidencePayload(conclusionImpactDraft), conclusionDeliverySelection);
+                  }, undefined, conclusionDeliverySelection?.reuse_impact ? undefined : buildImpactEvidencePayload(conclusionImpactDraft), conclusionDeliverySelection, conclusionBatchMode ? conclusionBatch : undefined);
                   // AC-16: only a successful move closes the prompt — a gate
                   // rejection keeps every typed row intact.
                   if (ok) setShowConclusionPrompt(false);
                 }}
-                disabled={conclusionSelectionPending || !conclusionDraft.trim() || !conclusionCompletenessJustification.trim() || !conclusionDriftJustification.trim()}
+                disabled={movingStatus !== null || conclusionSelectionPending || (conclusionBatchMode && (!conclusionBatch?.entries.length || !conclusionDeliverySelection || !sameDeliveryBasis(conclusionBatch, conclusionDeliverySelection))) || !conclusionDraft.trim() || !conclusionCompletenessJustification.trim() || !conclusionDriftJustification.trim()}
                 className={`btn text-xs ${conclusionDraft.trim() && conclusionCompletenessJustification.trim() && conclusionDriftJustification.trim() ? 'btn-primary' : 'btn-secondary opacity-50'}`}
               >
                 Complete & Move to {conclusionTargetLabel}
