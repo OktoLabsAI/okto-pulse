@@ -59,11 +59,14 @@ class SprintPretransformInventory:
     context_scanned_counts: tuple[tuple[str, int], ...]
     context_candidates: tuple[SprintContextCandidate, ...]
 
-    def require_resolved_pretransform(self):
+    def require_resolved_mechanics(self):
         self.relational.require_valid_relations()
         self.relational.work.require_classified_work()
         self.relational.historical_references.require_resolved_scopes()
         self.relational.embedded_references.require_resolved_scopes()
+
+    def require_resolved_pretransform(self):
+        self.require_resolved_mechanics()
         if self.context_candidates:
             raise SprintContextDispositionRequired(self.context_candidates)
 

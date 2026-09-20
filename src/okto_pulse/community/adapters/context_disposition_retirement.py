@@ -243,7 +243,7 @@ async def _evidence(storage, previous, references):
     return records, expected_manifests
 
 
-async def require_context_dispositions(connection, storage, references, candidates=None, *, expected_receipt=None,
+async def verify_context_disposition_snapshot(connection, storage, references, candidates=None, *, expected_receipt=None,
     expected_plan=None, check_targets=True):
     """Verify committed evidence under the Card step's existing transaction."""
     references = tuple(sorted(references, key=lambda reference: reference.board_id))
@@ -274,8 +274,14 @@ async def require_context_dispositions(connection, storage, references, candidat
             or sorted(previous, key=lambda row: row["id"]) != sorted(manifests + _bindings(expected), key=lambda row: row["id"])
             or expected_receipt is not None and expected_receipt != receipt):
         raise ValueError("context_disposition_evidence_mismatch")
-    if check_targets:
-        await _targets(connection, candidates, plan)
+    snapshots = await _targets(connection, candidates, plan) if check_targets else {}
+    return receipt, snapshots
+
+
+async def require_context_dispositions(connection, storage, references, candidates=None, *, expected_receipt=None,
+    expected_plan=None, check_targets=True):
+    receipt, _ = await verify_context_disposition_snapshot(connection, storage, references, candidates,
+        expected_receipt=expected_receipt, expected_plan=expected_plan, check_targets=check_targets)
     return receipt
 
 

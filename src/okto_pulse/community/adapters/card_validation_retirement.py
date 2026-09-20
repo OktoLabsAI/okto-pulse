@@ -6,7 +6,7 @@ is not registered in bootstrap: the full F2/F3 coordinator must also reconcile
 substantive context, work, graph references and schema before enabling runtime.
 """
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -20,6 +20,9 @@ from okto_pulse.core import StorageProvider
 from okto_pulse.core.ports.card_validation_migration import (
     plan_card_validation_migration, verify_card_validation_migration,
 )
+from okto_pulse.community.adapters.context_disposition_retirement import (
+    ContextDispositionReceipt, require_context_dispositions, verify_context_disposition_snapshot,
+)
 from okto_pulse.community.adapters.historical_archive_grant_installation import _install_historical_archive_grants
 from okto_pulse.community.adapters.sprint_retirement_archive import (
     HistoricalArchiveReference, _attach_access, _capture, _cell, _encode,
@@ -29,6 +32,9 @@ from okto_pulse.community.adapters.sprint_retirement_preflight import inspect_sp
 
 _EVENT = "migration.card_validation_preserved"
 _FORMAT = "card-validation-retirement/v1"
+# v1 remains readable for steps completed with no substantive context. v2 binds
+# the explicit disposition receipt; never retrofit or silently downgrade it.
+_CONTEXT_FORMAT = "card-validation-retirement/v2"
 _NAMESPACE = uuid.UUID("2ae6c2bd-a989-5dd6-ad61-59e01c4eae70")
 _MAX_BYTES = 64 * 1024 * 1024
 _ATTRIBUTES = ("require_task_validation", "validation_min_confidence", "validation_min_completeness", "validation_max_drift")
@@ -78,15 +84,18 @@ async def _read_events(connection, migration_id):
     return (await connection.execute(select(_EVENTS).where(*selection).order_by(_EVENTS.c.board_id))).mappings().all()
 
 
-async def _verify_events(events, references, migration_id, storage):
+async def _verify_events(events, references, migration_id, storage, *, connection=None, context_receipt=None):
     if len(events) != len(references):
         raise ValueError("card_validation_retirement_evidence_mismatch")
     payloads, seen, total_size = [], set(), 0
+    formats, context_receipts = set(), []
     for event, reference in zip(events, references, strict=True):
         manifest = event["payload_json"]
+        version = manifest.get("format") if type(manifest) is dict else None
+        extra = {"context_receipt"} if version == _CONTEXT_FORMAT else set()
         if (type(manifest) is not dict or set(manifest) != {"format", "migration_id", "archive", "storage_path",
-                "sha256", "size", "card_count", "override_count"}
-                or manifest["format"] != _FORMAT or manifest["migration_id"] != migration_id
+                "sha256", "size", "card_count", "override_count"} | extra
+                or version not in {_FORMAT, _CONTEXT_FORMAT} or manifest["migration_id"] != migration_id
                 or manifest["archive"] != _reference(reference)
                 or type(manifest["storage_path"]) is not str or not manifest["storage_path"]
                 or type(manifest["size"]) is not int or not 0 < manifest["size"] <= _MAX_BYTES
@@ -109,10 +118,20 @@ async def _verify_events(events, references, migration_id, storage):
         payload = json.loads(content)
         if (event["id"] != _identity(migration_id, reference.board_id) or event["board_id"] != reference.board_id
                 or event["event_type"] != _EVENT or event["actor_type"] != "system" or event["actor_id"] is not None
-                or type(payload) is not dict or set(payload) != {"format", "migration_id", "archive", "cards"}
-                or payload["format"] != _FORMAT or payload["migration_id"] != migration_id
+                or type(payload) is not dict or set(payload) != {"format", "migration_id", "archive", "cards"} | extra
+                or payload["format"] != version or payload["migration_id"] != migration_id
                 or payload["archive"] != _reference(reference) or type(payload["cards"]) is not list):
             raise ValueError("card_validation_retirement_evidence_mismatch")
+        formats.add(version)
+        if version == _CONTEXT_FORMAT:
+            bound = payload["context_receipt"]
+            if (type(bound) is not dict or set(bound) != {"migration_id", "evidence_sha256", "candidate_count", "binding_count"}
+                    or bound != manifest["context_receipt"]):
+                raise ValueError("card_validation_retirement_context_mismatch")
+            bound = ContextDispositionReceipt(**bound)
+            if bound.migration_id != migration_id:
+                raise ValueError("card_validation_retirement_context_mismatch")
+            context_receipts.append(bound)
         identities = []
         for entry in payload["cards"]:
             if (type(entry) is not dict or set(entry) != {"facts", "before", "after", "policy", "row_before", "row_after"}
@@ -135,6 +154,18 @@ async def _verify_events(events, references, migration_id, storage):
                 or manifest["override_count"] != sum(entry["policy"] is not None for entry in payload["cards"])):
             raise ValueError("card_validation_retirement_evidence_mismatch")
         payloads.append(payload)
+    if len(formats) > 1 or len(set(context_receipts)) > 1:
+        raise ValueError("card_validation_retirement_context_mismatch")
+    bound = context_receipts[0] if context_receipts else None
+    if context_receipt is not None and bound != context_receipt:
+        raise ValueError("card_validation_retirement_context_mismatch")
+    if bound is not None:
+        if connection is None:
+            raise ValueError("card_validation_retirement_context_snapshot_required")
+        # Replay uses the original archive and exact journal, never live sources
+        # or targets which may have legitimately changed after this step.
+        await require_context_dispositions(connection, storage, references,
+            expected_receipt=bound, check_targets=False)
     return _receipt(migration_id, payloads)
 
 
@@ -179,9 +210,58 @@ async def _read_raw_card(connection, identity, columns):
     return dict((await connection.execute(text("SELECT * FROM cards WHERE id=:id"), {"id": identity})).mappings().one())
 
 
+async def _require_context_fence(connection, storage, references, before, receipt, targets, expected_rows):
+    """Reject trigger drift, allowing only the two already-verified Card cells."""
+    _, current_targets = await verify_context_disposition_snapshot(connection, storage, references,
+        expected_receipt=receipt)
+    named_hashes = {identity: _digest([(name, _cell(value)) for name, value in row.items()])
+        for identity, row in expected_rows.items()}
+    expected_targets = {key: named_hashes[key[1]] if key[0] == "card" and key[1] in named_hashes else value
+        for key, value in targets.items()}
+    if current_targets != expected_targets:
+        raise ValueError("card_validation_retirement_context_target_changed")
+    after = await connection.run_sync(inspect_sprint_pretransform)
+    after.require_resolved_mechanics()
+    policies = {identity: json.loads(row["migrated_validation_policy"])
+        for identity, row in expected_rows.items() if row["migrated_validation_policy"] is not None}
+
+    def generated_reference(table, key, path, origin):
+        identity = dict(key).get("id")
+        return (table == "cards" and key == (("id", identity),)
+            and path == ("migrated_validation_policy", "source_sprint_id")
+            and identity in policies and origin == policies[identity]["source_sprint_id"])
+
+    original = {(item.table, item.key, item.path): item for item in before.context_candidates}
+    normalized = []
+    for candidate in after.context_candidates:
+        identity = dict(candidate.key).get("id")
+        # New provenance is mechanical only when the complete Card row equals
+        # the migration's exact output. Existing embedded context still needs
+        # its original disposition; no path/name-wide exception is introduced.
+        if candidate.table == "cards" and candidate.source_sha256 == named_hashes.get(identity):
+            if generated_reference(candidate.table, candidate.key, candidate.path, candidate.origin_id):
+                continue
+            prior = original.get((candidate.table, candidate.key, candidate.path))
+            if prior is not None:
+                candidate = replace(candidate, source_sha256=prior.source_sha256)
+        normalized.append(candidate)
+    expected_counts = {**dict(before.relational.counts), "linked_cards": 0}
+    embedded = tuple(reference for reference in after.relational.embedded_references.references
+        if not generated_reference(reference.table, reference.key,
+            (reference.column, *reference.path), reference.sprint_id))
+    if (sorted(_encode(asdict(item)) for item in normalized)
+            != sorted(_encode(asdict(item)) for item in before.context_candidates)
+            or dict(after.relational.counts) != expected_counts
+            or after.relational.work.items != before.relational.work.items
+            or after.relational.historical_references.references != before.relational.historical_references.references
+            or embedded != before.relational.embedded_references.references):
+        raise ValueError("card_validation_retirement_context_source_changed")
+
+
 async def materialize_archived_card_policies(
     engine: AsyncEngine, storage: StorageProvider, references: tuple[HistoricalArchiveReference, ...], *,
     migration_id: str, expected_receipt: CardValidationRetirementReceipt | None = None,
+    context_receipt: ContextDispositionReceipt | None = None,
 ) -> CardValidationRetirementReceipt:
     """Atomically preserve policy and detach Cards; never rebase on a replay.
 
@@ -191,6 +271,9 @@ async def materialize_archived_card_policies(
     if engine.dialect.name != "sqlite":
         raise ValueError("card_validation_retirement_backend_unsupported")
     _receipt(migration_id, [])  # Validate identity even for an empty population.
+    if context_receipt is not None and (not isinstance(context_receipt, ContextDispositionReceipt)
+            or context_receipt.migration_id != migration_id):
+        raise ValueError("card_validation_retirement_context_mismatch")
     references = tuple(sorted(references, key=lambda ref: ref.board_id))
     if (len({ref.board_id for ref in references}) != len(references)
             or any(ref.migration_id != migration_id for ref in references)
@@ -204,7 +287,8 @@ async def materialize_archived_card_policies(
                 await _install_historical_archive_grants(connection, storage, reference, require_existing=True)
             previous = await _read_events(connection, migration_id)
             if previous:
-                receipt = await _verify_events(previous, references, migration_id, storage)
+                receipt = await _verify_events(previous, references, migration_id, storage,
+                    connection=connection, context_receipt=context_receipt)
                 if expected_receipt is not None and expected_receipt != receipt:
                     raise ValueError("card_validation_retirement_replay_mismatch")
                 await connection.commit()
@@ -212,7 +296,13 @@ async def materialize_archived_card_policies(
             if expected_receipt is not None and references:
                 raise ValueError("card_validation_retirement_replay_mismatch")
             preflight = await connection.run_sync(inspect_sprint_pretransform)
-            preflight.require_resolved_pretransform()
+            preflight.require_resolved_mechanics()
+            target_snapshots = {}
+            if context_receipt is None:
+                preflight.require_resolved_pretransform()
+            else:
+                _, target_snapshots = await verify_context_disposition_snapshot(connection, storage, references,
+                    preflight.context_candidates, expected_receipt=context_receipt)
             # Exact recapture makes stale archive content or missing/extra origins
             # a closed failure. The archive must precede permission cleanup too.
             captures = await connection.run_sync(lambda sync: _capture(sync,
@@ -224,8 +314,11 @@ async def materialize_archived_card_policies(
                 raise ValueError("card_validation_retirement_archive_changed")
             cards = await _load_cards(connection)
             population = (await connection.execute(text("SELECT count(*) FROM cards"))).scalar_one()
-            payloads = {ref.board_id: {"format": _FORMAT, "migration_id": migration_id,
-                "archive": _reference(ref), "cards": []} for ref in references}
+            version = _CONTEXT_FORMAT if context_receipt is not None else _FORMAT
+            bound_context = {"context_receipt": asdict(context_receipt)} if context_receipt is not None else {}
+            payloads = {ref.board_id: {"format": version, "migration_id": migration_id,
+                "archive": _reference(ref), "cards": [], **bound_context} for ref in references}
+            expected_rows = {}
             audit_size = len(json.dumps(list(payloads.values()), allow_nan=False).encode("utf-8"))
             layers = await _load_policy_layers(connection)
             for row in cards:
@@ -237,6 +330,7 @@ async def materialize_archived_card_policies(
                 policy = plan.policy.model_dump(mode="json", exclude_none=True) if plan.policy else None
                 serialized = json.dumps(policy, ensure_ascii=False, allow_nan=False) if policy else None
                 expected = {**row, "sprint_id": None, "migrated_validation_policy": serialized}
+                expected_rows[row["id"]] = expected
                 # Raw SQL deliberately avoids ORM onupdate timestamps and events.
                 await connection.execute(text("UPDATE cards SET sprint_id=NULL,migrated_validation_policy=:policy WHERE id=:id"),
                     {"policy": serialized, "id": row["id"]})
@@ -265,13 +359,14 @@ async def materialize_archived_card_policies(
                 content = _encode(payload)
                 path = await storage.save(board, f"card-policy-history-{_identity(migration_id, board)}.json", content)
                 created_paths.append(path)
-                manifest = {"format": _FORMAT, "migration_id": migration_id, "archive": payload["archive"],
+                manifest = {"format": version, "migration_id": migration_id, "archive": payload["archive"], **bound_context,
                     "storage_path": path, "sha256": hashlib.sha256(content).hexdigest(), "size": len(content),
                     "card_count": len(payload["cards"]),
                     "override_count": sum(entry["policy"] is not None for entry in payload["cards"])}
                 await connection.execute(insert(_EVENTS).values(id=_identity(migration_id, board), board_id=board,
                     event_type=_EVENT, actor_type="system", actor_id=None, occurred_at=datetime.now(timezone.utc), payload_json=manifest))
-            if await _verify_events(await _read_events(connection, migration_id), references, migration_id, storage) != receipt:
+            if await _verify_events(await _read_events(connection, migration_id), references, migration_id, storage,
+                    connection=connection, context_receipt=context_receipt) != receipt:
                 raise ValueError("card_validation_retirement_evidence_mismatch")
             if _digest(await _load_policy_layers(connection)) != _digest(layers):
                 raise ValueError("card_validation_retirement_policy_changed")
@@ -284,6 +379,9 @@ async def materialize_archived_card_policies(
             if ((await connection.execute(text("SELECT count(*) FROM cards"))).scalar_one() != population
                     or (await connection.execute(text("SELECT 1 FROM cards WHERE sprint_id IS NOT NULL LIMIT 1"))).first()):
                 raise ValueError("card_validation_retirement_population_changed")
+            if context_receipt is not None:
+                await _require_context_fence(connection, storage, references, preflight,
+                    context_receipt, target_snapshots, expected_rows)
             commit_started = True
             await connection.commit()
             return receipt

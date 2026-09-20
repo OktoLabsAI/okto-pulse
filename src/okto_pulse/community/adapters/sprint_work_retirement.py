@@ -212,7 +212,7 @@ async def supersede_archived_sprint_work(engine, storage, references, *,
             for reference in references:
                 await _install_historical_archive_grants(connection, storage, reference, require_existing=True)
                 documents[reference.board_id] = await verify_historical_archive(storage, reference)
-            if await _verify_card_events(await _read_card_events(connection, migration_id), references, migration_id, storage) != card_receipt:
+            if await _verify_card_events(await _read_card_events(connection, migration_id), references, migration_id, storage, connection=connection) != card_receipt:
                 raise ValueError("work_retirement_card_receipt_mismatch")
             sources = _source_rows(documents)
             plans = _plans(sources)
@@ -246,6 +246,10 @@ async def supersede_archived_sprint_work(engine, storage, references, *,
             await _require_work_population(connection, documents, sources, replay=False)
             if sorted(await _stored_journal(connection, migration_id), key=lambda row: row["id"]) != sorted(expected, key=lambda row: row["id"]):
                 raise ValueError("work_retirement_evidence_mismatch")
+            # Journal-insert triggers must not invalidate the Card/context proof.
+            if await _verify_card_events(await _read_card_events(connection, migration_id), references,
+                    migration_id, storage, connection=connection) != card_receipt:
+                raise ValueError("work_retirement_card_receipt_mismatch")
             await connection.commit()
             return receipt
         except BaseException:
