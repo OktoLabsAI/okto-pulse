@@ -5,7 +5,8 @@ reservation, and every Grafx publication LSN is unchanged across *all* exports.
 This rejects concurrent graph commits instead of pretending a Grafx transaction
 excludes them. It does not certify scope completeness, graph routing bindings,
 cross-store business invariants or cutover writer exclusion. Version 3 includes
-the explicitly supplied Community upload namespace and current erasure guards.
+the explicitly supplied Community upload namespace and current erasure guards;
+version 4 also reconciles known attachment and historical-archive references.
 The installer must establish those separately. Never serve these artifacts as
 Board history: the relational database can contain credentials and many Boards.
 """
@@ -39,6 +40,7 @@ from okto_pulse.community.adapters.recovery_graph_inventory import (
     read_recovery_graph_inventory, recovery_graph_inventory_from_manifest,
     require_recovery_graph_selection,
 )
+from okto_pulse.community.adapters.recovery_storage_references import reconcile_recovery_storage_references
 from okto_pulse.community.adapters.relational_recovery_snapshot import (
     SqliteRecoverySnapshot, _check_time, _deadline, _digest, _encode, _path,
     create_sqlite_recovery_snapshot, restore_sqlite_recovery_snapshot,
@@ -148,8 +150,10 @@ def create_joint_recovery_snapshot(
     With an explicit KG root, v2 also records authenticated routing inventory
     and requires the exact active selection before and after capture. This is
     drift detection, not exclusion of external binding/directory replacement.
-    Supplying the upload root requires routing inventory and creates v3. Its
-    storage copy occurs inside the SQL reservation and the stable Grafx interval.
+    Supplying the upload root requires routing inventory and creates v4. Its
+    storage copy and relational reference reconciliation occur inside the SQL
+    reservation and the stable Grafx interval. v3 artifacts retain their older
+    physical-copy guarantee without a reference reconciliation certificate.
     """
     deadline = _deadline(max_seconds)
     if type(snapshot_id) is not str or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,95}", snapshot_id):
@@ -218,7 +222,9 @@ def create_joint_recovery_snapshot(
                         uploads, stage, snapshot_id="storage", board_ids=inventory.board_ids,
                         max_seconds=max_seconds,
                     )
-                    verify_storage_recovery_snapshot(storage_snapshot, max_seconds=max_seconds)
+                    storage_references = reconcile_recovery_storage_references(
+                        reserved, storage_snapshot, max_seconds=max_seconds,
+                    )
                 if [_stamp(g) for g in graphs] != before:
                     raise ValueError("joint_snapshot_graph_changed_during_capture")
                 if inventory is not None and read_recovery_graph_inventory(reserved, kg_root) != inventory:
@@ -235,8 +241,9 @@ def create_joint_recovery_snapshot(
                 manifest["format"] = "joint-recovery-snapshot/v2"
                 manifest["routing_inventory"] = inventory.as_manifest()
             if storage_snapshot is not None:
-                manifest["format"] = "joint-recovery-snapshot/v3"
+                manifest["format"] = "joint-recovery-snapshot/v4"
                 manifest["storage"] = {"manifest_sha256": storage_snapshot.manifest_sha256}
+                manifest["storage_references"] = storage_references
             encoded = _encode(manifest)
             if len(encoded) > _MAX_MANIFEST:
                 raise ValueError("joint_snapshot_manifest_limit")
@@ -267,13 +274,15 @@ def verify_joint_recovery_snapshot(snapshot: JointRecoverySnapshot, *, max_secon
         raise ValueError("joint_snapshot_manifest_hash_mismatch")
     manifest = json.loads(encoded)
     keys = {"format", "snapshot_id", "capture_contract", "created_at", "builds", "grafx_version", "relational", "graphs"}
-    if isinstance(manifest, dict) and manifest.get("format") in {"joint-recovery-snapshot/v2", "joint-recovery-snapshot/v3"}:
+    if isinstance(manifest, dict) and manifest.get("format") in {"joint-recovery-snapshot/v2", "joint-recovery-snapshot/v3", "joint-recovery-snapshot/v4"}:
         keys.add("routing_inventory")
-    if isinstance(manifest, dict) and manifest.get("format") == "joint-recovery-snapshot/v3":
+    if isinstance(manifest, dict) and manifest.get("format") in {"joint-recovery-snapshot/v3", "joint-recovery-snapshot/v4"}:
         keys.add("storage")
+    if isinstance(manifest, dict) and manifest.get("format") == "joint-recovery-snapshot/v4":
+        keys.add("storage_references")
     if (not isinstance(manifest, dict)
         or set(manifest) != keys
-        or manifest["format"] not in {_FORMAT, "joint-recovery-snapshot/v2", "joint-recovery-snapshot/v3"} or manifest["capture_contract"] != _CAPTURE
+        or manifest["format"] not in {_FORMAT, "joint-recovery-snapshot/v2", "joint-recovery-snapshot/v3", "joint-recovery-snapshot/v4"} or manifest["capture_contract"] != _CAPTURE
         or manifest["snapshot_id"] != root.name or type(manifest["graphs"]) is not list
         or len(manifest["graphs"]) > 256):
         raise ValueError("joint_snapshot_manifest_invalid")
@@ -313,6 +322,17 @@ def verify_joint_recovery_snapshot(snapshot: JointRecoverySnapshot, *, max_secon
         storage = verify_storage_recovery_snapshot(_storage_artifact(root, manifest), max_seconds=max_seconds)
         if storage["board_ids"] != manifest["routing_inventory"]["board_ids"]:
             raise ValueError("joint_snapshot_storage_board_population_mismatch")
+        if "storage_references" in manifest:
+            # Only the authenticated standalone SQL copy is opened; source paths
+            # are lexical references, never instructions to access live files.
+            sql = _explicit_path(root / "relational" / "database.sqlite3")
+            with closing(sqlite3.connect(sql.as_uri() + "?mode=ro&immutable=1", uri=True)) as connection:
+                connection.execute("BEGIN")
+                observed = reconcile_recovery_storage_references(
+                    connection, _storage_artifact(root, manifest), max_seconds=max_seconds,
+                )
+            if _encode(observed) != _encode(manifest["storage_references"]):
+                raise ValueError("joint_snapshot_storage_reference_certificate_mismatch")
     return manifest
 
 

@@ -312,6 +312,17 @@ def stored_sources(sources):
     attachment = Path(asyncio.run(storage.save("board-one", "original.bin", b"\x00attachment\xff")))
     archive = Path(asyncio.run(storage.save("empty-board", "historical-archive.json", b'{ "source": "sprint:opaque" }\r\n')))
     asyncio.run(storage.purge_board("previously-erased"))
+    with sqlite3.connect(sources[0]) as database:
+        database.executescript("""
+            CREATE TABLE cards(id TEXT PRIMARY KEY, board_id TEXT NOT NULL REFERENCES boards(id));
+            CREATE TABLE attachments(id TEXT PRIMARY KEY, card_id TEXT NOT NULL REFERENCES cards(id), path TEXT NOT NULL, size INTEGER NOT NULL);
+            CREATE TABLE domain_events(id TEXT PRIMARY KEY, board_id TEXT NOT NULL REFERENCES boards(id), event_type TEXT NOT NULL, payload_json TEXT NOT NULL);
+            INSERT INTO cards VALUES ('card-one', 'board-one');
+        """)
+        database.execute("INSERT INTO attachments VALUES (?,?,?,?)", ("attachment-one", "card-one", str(attachment), attachment.stat().st_size))
+        payload = {"format": "historical-relational-archive/v3", "migration_id": "m1", "storage_path": str(archive),
+            "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(), "size": archive.stat().st_size, "counts": []}
+        database.execute("INSERT INTO domain_events VALUES (?,?,?,?)", ("archive-one", "empty-board", "historical_archive.created", json.dumps(payload)))
     return sources, root, storage, (attachment, archive)
 
 
@@ -320,7 +331,7 @@ def capture_stored(stored_sources):
     return capture(sources, kg_base_dir=sources[3] / "kg", storage_root=uploads)
 
 
-def test_v3_roundtrip_keeps_privacy_fenced_through_final_joint_publish(stored_sources, tmp_path, monkeypatch):
+def test_v4_roundtrip_keeps_privacy_fenced_through_final_joint_publish(stored_sources, tmp_path, monkeypatch):
     sources, uploads, _, objects = stored_sources
     real_capture = joint.create_storage_recovery_snapshot
     def capture_under_sql_reservation(*args, **kwargs):
@@ -331,7 +342,10 @@ def test_v3_roundtrip_keeps_privacy_fenced_through_final_joint_publish(stored_so
     monkeypatch.setattr(joint, "create_storage_recovery_snapshot", capture_under_sql_reservation)
     snapshot = capture_stored(stored_sources)
     manifest = joint.verify_joint_recovery_snapshot(snapshot)
-    assert manifest["format"] == "joint-recovery-snapshot/v3"
+    assert manifest["format"] == "joint-recovery-snapshot/v4"
+    assert manifest["storage_references"]["attachment_count"] == 1
+    assert manifest["storage_references"]["historical_archive_count"] == 1
+    assert manifest["storage_references"]["unreferenced_object_count"] == 0
     with pytest.raises(ValueError, match="current_storage_root_required"):
         joint.restore_joint_recovery_snapshot(snapshot, tmp_path / "missing-guard", builds=BUILDS)
     real_publish, checked = joint._publish, []
@@ -369,9 +383,24 @@ except Timeout:
         assert (target / "uploads" / original.relative_to(uploads)).read_bytes() == original.read_bytes()
     with pytest.raises(RuntimeError, match="permanently erased"):
         asyncio.run(CommunityFileSystemStorage(str(target / "uploads")).save("previously-erased", "new", b"forbidden"))
+    # A caller-supplied outer digest cannot make a false reconciliation true.
+    for wrong_count in (2, True):
+        manifest["storage_references"]["attachment_count"] = wrong_count
+        encoded = json.dumps(manifest).encode()
+        (snapshot.directory / "manifest.json").write_bytes(encoded)
+        forged = replace(snapshot, manifest_sha256=hashlib.sha256(encoded).hexdigest())
+        with pytest.raises(ValueError, match="storage_reference_certificate_mismatch"):
+            joint.verify_joint_recovery_snapshot(forged)
+    # Old v3 remains readable with its original, explicitly narrower guarantee.
+    manifest.pop("storage_references")
+    manifest["format"] = "joint-recovery-snapshot/v3"
+    encoded = json.dumps(manifest).encode()
+    (snapshot.directory / "manifest.json").write_bytes(encoded)
+    legacy = replace(snapshot, manifest_sha256=hashlib.sha256(encoded).hexdigest())
+    assert "storage_references" not in joint.verify_joint_recovery_snapshot(legacy)
 
 
-def test_v3_later_erasure_refuses_before_any_sql_copy(stored_sources, tmp_path, monkeypatch):
+def test_v4_later_erasure_refuses_before_any_sql_copy(stored_sources, tmp_path, monkeypatch):
     snapshot = capture_stored(stored_sources)
     asyncio.run(stored_sources[2].purge_board("board-one"))
     monkeypatch.setattr(joint, "restore_sqlite_recovery_snapshot",
@@ -383,7 +412,7 @@ def test_v3_later_erasure_refuses_before_any_sql_copy(stored_sources, tmp_path, 
     assert not (tmp_path / "restored").exists()
 
 
-def test_v3_erasure_injected_after_payload_copy_refuses_whole_set(stored_sources, tmp_path, monkeypatch):
+def test_v4_erasure_injected_after_payload_copy_refuses_whole_set(stored_sources, tmp_path, monkeypatch):
     snapshot = capture_stored(stored_sources)
     real_copy = physical_storage._StorageRecoveryRestoreGuard.copy_into_new_root
     def changed_after_copy(guard, target):
@@ -398,7 +427,7 @@ def test_v3_erasure_injected_after_payload_copy_refuses_whole_set(stored_sources
     assert not list(tmp_path.glob("*.restore"))
 
 
-def test_v3_graph_commit_during_storage_capture_refuses_whole_backup(stored_sources, monkeypatch):
+def test_v4_graph_commit_during_storage_capture_refuses_whole_backup(stored_sources, monkeypatch):
     real_capture = joint.create_storage_recovery_snapshot
     def changed(*args, **kwargs):
         result = real_capture(*args, **kwargs)
@@ -411,7 +440,7 @@ def test_v3_graph_commit_during_storage_capture_refuses_whole_backup(stored_sour
     assert not (stored_sources[0][2] / "capture").exists()
 
 
-def test_v3_target_overlap_refused_before_touching_upload_namespace(stored_sources):
+def test_v4_target_overlap_refused_before_touching_upload_namespace(stored_sources):
     snapshot = capture_stored(stored_sources)
     uploads = stored_sources[1]
     before = {str(path.relative_to(uploads)): path.read_bytes() for path in uploads.rglob("*") if path.is_file()}
@@ -420,3 +449,17 @@ def test_v3_target_overlap_refused_before_touching_upload_namespace(stored_sourc
             current_storage_root=uploads)
     after = {str(path.relative_to(uploads)): path.read_bytes() for path in uploads.rglob("*") if path.is_file()}
     assert after == before
+
+
+@pytest.mark.parametrize("kind", ["missing", "cross_board"])
+def test_v4_reference_inconsistency_refuses_whole_capture(stored_sources, kind):
+    sources, _, _, objects = stored_sources
+    if kind == "missing":
+        objects[0].unlink()
+    else:
+        with sqlite3.connect(sources[0]) as connection:
+            connection.execute("UPDATE cards SET board_id='empty-board'")
+    with pytest.raises(ValueError, match="reference_object_missing|reference_board_path_mismatch"):
+        capture_stored(stored_sources)
+    assert not (sources[2] / "capture").exists()
+    assert not list(sources[2].glob("*.partial"))
