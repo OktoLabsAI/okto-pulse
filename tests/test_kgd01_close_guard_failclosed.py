@@ -20,7 +20,7 @@ Cenários do test card 97764bbf:
   (``kg_shutdown.close_all_graphs_on_shutdown``).
 
 * S10 (ts_733b4ac4) — serve-lock na CLI: com lock de heartbeat fresco e PID
-  vivo (o do próprio teste), os entrypoints ``init``, ``verify-pipeline``,
+  vivo (o do próprio teste), os entrypoints ``init``,
   ``kg backfill --apply`` e ``kg dedup-entities`` falham rápido (<5s, exit 2)
   com mensagem de serve-lock e NENHUM open de Database (fábrica
   instrumentada); heartbeat stale + PID morto → prossegue (takeover

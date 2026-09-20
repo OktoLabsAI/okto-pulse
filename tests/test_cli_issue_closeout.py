@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from okto_pulse.community import cli, config, serve_lock
-from okto_pulse.community.commands import status, kg_migrate_schema, reset_graphs
+from okto_pulse.community.commands import status, kg_migrate_schema
 
 
 @pytest.fixture
@@ -164,93 +164,3 @@ def test_migration_refuses_real_live_lock_before_composition(
         lock.release()
     assert error.value.code == 2
     assert "ERROR [serve-lock]: refusing 'kg migrate-schema'" in capsys.readouterr().err
-
-
-@pytest.mark.parametrize("custom", [False, True])
-def test_reset_removes_only_sqlite_owned_board_directories(
-    local_settings, tmp_path, monkeypatch, custom
-):
-    db = database(local_settings)
-    if custom:
-        local_settings.kg_base_dir = str(tmp_path / "custom-kg")
-    root = Path(local_settings.kg_base_dir)
-    owned = root / "boards/owned-board/graphs/grafx/g1"
-    foreign = root / "boards/another-installation"
-    backup = root / "quarantine/owned-board"
-    for path in (owned, foreign, backup):
-        path.mkdir(parents=True)
-        (path / "sentinel").write_text("private fixture", encoding="utf-8")
-
-    def init(args, *, owned_serve_lock):
-        assert not (root / "boards/owned-board").exists()
-        assert not db.exists()
-        assert owned_serve_lock.is_acquired
-
-    monkeypatch.setattr(cli, "cmd_init", init)
-    cli.cmd_reset(SimpleNamespace(yes=True))
-    assert foreign.exists() and backup.exists()
-
-
-@pytest.mark.parametrize("bad_id", ["../outside", "C:\\escape", "bad/name", "."])
-def test_reset_preflights_all_ids_before_any_deletion(
-    local_settings, monkeypatch, bad_id
-):
-    db = database(local_settings)
-    with closing(sqlite3.connect(db)) as conn:
-        conn.execute("INSERT INTO boards VALUES (?)", (bad_id,))
-        conn.commit()
-    board = Path(local_settings.kg_base_dir) / "boards/owned-board"
-    board.mkdir(parents=True)
-    monkeypatch.setattr(
-        cli, "cmd_init", lambda *args, **kwargs: pytest.fail("unsafe reset seeded")
-    )
-    with pytest.raises(ValueError, match="unsafe board ID"):
-        cli.cmd_reset(SimpleNamespace(yes=True))
-    assert board.exists() and db.exists()
-
-
-def test_reset_refuses_reparse_before_deleting_sqlite(local_settings, monkeypatch):
-    db = database(local_settings)
-    board = Path(local_settings.kg_base_dir) / "boards/owned-board"
-    board.mkdir(parents=True)
-    real_lstat = Path.lstat
-
-    def aliased(path, *args, **kwargs):
-        if path == board:
-            return SimpleNamespace(st_mode=0o40755, st_file_attributes=0x400)
-        return real_lstat(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "lstat", aliased)
-    with pytest.raises(ValueError, match="reparse"):
-        cli.cmd_reset(SimpleNamespace(yes=True))
-    assert db.exists() and board.exists()
-
-
-def test_reset_refuses_corrupt_catalog_if_graphs_exist(local_settings):
-    db = database(local_settings)
-    db.write_bytes(b"corrupt disposable SQLite")
-    boards = Path(local_settings.kg_base_dir) / "boards"
-    boards.mkdir()
-    with pytest.raises(sqlite3.DatabaseError):
-        cli.cmd_reset(SimpleNamespace(yes=True))
-    assert db.exists()
-
-
-def test_reset_revalidates_directory_identity_before_apply(local_settings):
-    db = database(local_settings)
-    board = Path(local_settings.kg_base_dir) / "boards/owned-board"
-    board.mkdir(parents=True)
-    plan = reset_graphs.plan_board_reset(local_settings, db)
-    board.rename(board.with_name("old-location"))
-    board.mkdir()
-    with pytest.raises(ValueError, match="changed after preflight"):
-        plan.apply()
-    assert board.exists() and db.exists()
-
-
-def test_custom_relational_database_refuses_reset_before_deletion(local_settings):
-    db = database(local_settings)
-    local_settings.database_url = "sqlite:///different.db"
-    with pytest.raises(ValueError, match="custom relational"):
-        cli.cmd_reset(SimpleNamespace(yes=True))
-    assert db.exists()

@@ -16,7 +16,6 @@ import copy
 import json
 import logging
 import os
-import shutil
 import socket
 import stat
 import sys
@@ -384,16 +383,10 @@ def _configure_community_relational_runtime(settings, *, echo: bool = False) -> 
 
 
 def _fail_fast_if_server_running(operation: str) -> None:
-    """KGD-01 C6 (S10) — serve-lock na CLI.
+    """Reject a live server before composing an offline operation.
 
-    Entrypoints que abrem grafos de board (``init``, ``kg backfill --apply``,
-    ``kg dedup-entities``, ``verify-pipeline``) falham rápido (<5s) com erro
-    claro quando um servidor vivo possui o serve-lock do data dir: dois
-    processos sobre o mesmo ``graph.lbug`` são o produtor do "escritor
-    stale" que corrompe o WAL (KB1/H3). Takeover implícito só acontece com
-    heartbeat stale E PID comprovadamente morto (ver ``serve_lock``).
-    ``kg restore --apply`` já é coberto pelo check de serve-lock do próprio
-    adapter (C4, erro estruturado ``board_locked``).
+    This is a point-in-time admission check, not a lock held for the caller's
+    entire operation. Long-lived exclusion requires an owned runtime fence.
     """
     from okto_pulse.community.config import CommunitySettings
     from okto_pulse.community.serve_lock import (
@@ -665,39 +658,13 @@ def _bootstrap_global_discovery_graph() -> str:
     return outcome
 
 
-def cmd_init(args, *, owned_serve_lock: object | None = None):
+def cmd_init(args):
     """Initialize ~/.okto-pulse/ directory and seed the database."""
     from okto_pulse.community.config import CommunitySettings
 
     settings = CommunitySettings()
 
-    # KGD-01 C6 (S10): init bootstrapa o grafo do board — nunca com o
-    # servidor vivo segurando o mesmo graph.lbug. Reset may reuse the exact
-    # authoritative lock capability that it already owns, but a boolean or a
-    # stale/different lock must never bypass this fence.
-    if owned_serve_lock is None:
-        _fail_fast_if_server_running("init")
-    else:
-        from okto_pulse.community.serve_lock import (
-            ServeInstanceLock,
-            get_active_lock,
-        )
-
-        expected_data_dir = Path(settings.data_dir).expanduser().resolve()
-        owns_expected_lock = (
-            isinstance(owned_serve_lock, ServeInstanceLock)
-            and get_active_lock() is owned_serve_lock
-            and owned_serve_lock.is_acquired
-            and owned_serve_lock.data_dir == expected_data_dir
-        )
-        if not owns_expected_lock:
-            # Preserve the user-facing live-server error when one exists, then
-            # fail closed for a forged, released, or wrong-directory capability.
-            _fail_fast_if_server_running("init")
-            raise RuntimeError(
-                "init requires the active serve-lock capability for "
-                f"{expected_data_dir}"
-            )
+    _fail_fast_if_server_running("init")
 
     handoff_argument = getattr(args, "bootstrap_key_handoff", None)
     handoff_path = (
@@ -1425,96 +1392,6 @@ def cmd_api_key(args):
         sys.exit(1)
 
     print(row[0])
-
-
-def cmd_verify_pipeline(args):
-    """Run the 5 pipeline health checks against a board.
-
-    Opens a short-lived DB session, calls the pure check functions in
-    ``okto_pulse.core.kg.health`` and renders either a compact table (default)
-    or JSON (``--json``). Exit code 0 iff every layer reports ``healthy=True``.
-    """
-    from okto_pulse.community.config import CommunitySettings
-    from okto_pulse.core import configure_settings
-    from okto_pulse.community.adapters.sqlalchemy_database import (
-        get_session_factory,
-        init_db,
-        close_db,
-    )
-    from okto_pulse.core.kg.health import (
-        check_global,
-        check_graph,
-        check_graph_node_refs,
-        check_outbox,
-        check_queue,
-    )
-    from okto_pulse.community.adapters.composition import (
-        configure_community_kg_registry,
-    )
-
-    board_id: str = args.board_id
-    emit_json: bool = bool(getattr(args, "json", False))
-
-    # KGD-01 C6 (S10): check_graph abre o grafo do board — falha rápida com
-    # servidor vivo.
-    _fail_fast_if_server_running("verify-pipeline")
-
-    settings = CommunitySettings()
-    configure_settings(settings)
-    _configure_community_relational_runtime(settings, echo=False)
-    # R01C REPLAN-IMP4: Community owns the schema lifecycle here too — register
-    # the orchestrator so this command's init_db delegates to the edition
-    # migrator+bootstrapper (idempotent; same lifecycle as serve/init).
-    from okto_pulse.community.adapters.relational_schema_lifecycle import (
-        register_community_relational_schema_lifecycle,
-    )
-
-    register_community_relational_schema_lifecycle()
-
-    async def _run() -> list:
-        await init_db()
-        factory = get_session_factory()
-        configure_community_kg_registry(factory)
-        try:
-            async with factory() as db:
-                queue_h = await check_queue(db, board_id)
-                kuzu_h = check_graph(board_id)
-                refs_h = await check_graph_node_refs(
-                    db, board_id, graph_total=kuzu_h.counts.get("total")
-                )
-                outbox_h = await check_outbox(db, board_id)
-                global_h = check_global(board_id)
-            return [queue_h, kuzu_h, refs_h, outbox_h, global_h]
-        finally:
-            await close_db()
-
-    layers = asyncio.run(_run())
-
-    if emit_json:
-        payload = {
-            "board_id": board_id,
-            "all_healthy": all(L.healthy for L in layers),
-            "layers": [
-                {
-                    "layer": L.layer,
-                    "healthy": L.healthy,
-                    "counts": L.counts,
-                    "details": L.details,
-                }
-                for L in layers
-            ],
-        }
-        print(json.dumps(payload, indent=2, default=str))
-    else:
-        print(f"Pipeline health for board {board_id}")
-        name_w = max(len(L.layer) for L in layers)
-        for L in layers:
-            mark = "OK " if L.healthy else "BAD"
-            print(f"  [{mark}] {L.layer.ljust(name_w)}  {L.details}")
-        ok_count = sum(1 for L in layers if L.healthy)
-        print(f"\n  {ok_count}/{len(layers)} layers healthy")
-
-    sys.exit(0 if all(L.healthy for L in layers) else 1)
 
 
 def cmd_kg_backfill(args):
@@ -2393,57 +2270,6 @@ def cmd_kg_restore(args):
     sys.exit(0 if report.open_validated else 3)
 
 
-def cmd_reset(args):
-    """Reset all data — delete DB and uploads, re-seed."""
-    from okto_pulse.community.config import CommunitySettings
-    from okto_pulse.community.commands.reset_graphs import plan_board_reset
-    from okto_pulse.community.serve_lock import (
-        ServeAlreadyRunningError,
-        ServeInstanceLock,
-    )
-
-    settings = CommunitySettings()
-    data_path = Path(settings.data_dir)
-    uploads_path = data_path / "uploads"
-
-    if not args.yes:
-        confirm = input(
-            f"This will DELETE all data in {data_path}. Are you sure? [y/N] "
-        )
-        if confirm.lower() != "y":
-            print("Aborted.")
-            return
-
-    # Check before the first destructive operation, then own the authoritative
-    # serve lock for the entire delete + seed transaction. The second fence
-    # closes the race where a server starts after the fast guard returns.
-    _fail_fast_if_server_running("reset")
-    try:
-        with ServeInstanceLock(data_path).acquire() as owned_serve_lock:
-            # Resolve every owned graph and reject aliased paths before the
-            # SQLite catalog (our ownership evidence) or uploads are deleted.
-            graph_plan = plan_board_reset(settings, data_path / "data" / "pulse.db")
-            graph_plan.apply()
-            for f in (data_path / "data").glob("pulse.db*"):
-                f.unlink()
-                print(f"  Deleted: {f}")
-
-            if uploads_path.exists():
-                shutil.rmtree(uploads_path)
-                uploads_path.mkdir(parents=True, exist_ok=True)
-                print(f"  Cleared: {uploads_path}")
-
-            print("  Data reset complete.\n")
-            cmd_init(args, owned_serve_lock=owned_serve_lock)
-    except ServeAlreadyRunningError as exc:
-        print(
-            "ERROR [serve-lock]: refusing 'reset' while an okto-pulse "
-            f"server is running.\n{exc}",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-
-
 def main():
     raw_argv = list(sys.argv[1:])
     metrics_legacy_local_only = (
@@ -2637,29 +2463,6 @@ def main():
         "legacy plaintext database keys remain exportable.",
     )
     sub_apikey.set_defaults(func=cmd_api_key)
-
-    # reset
-    sub_reset = subparsers.add_parser("reset", help="Delete all data and re-seed")
-    sub_reset.add_argument(
-        "-y", "--yes", action="store_true", help="Skip confirmation prompt"
-    )
-    sub_reset.set_defaults(func=cmd_reset)
-
-    # verify-pipeline
-    sub_verify = subparsers.add_parser(
-        "verify-pipeline",
-        help="Run health checks on all 5 Kanban-KG pipeline layers for a board",
-    )
-    sub_verify.add_argument(
-        "board_id",
-        help="Board ID to inspect (UUID string — see 'okto-pulse status')",
-    )
-    sub_verify.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit machine-readable JSON instead of the default table",
-    )
-    sub_verify.set_defaults(func=cmd_verify_pipeline)
 
     # kg — knowledge graph operations (backfill, migrate, metrics wire-up later)
     sub_kg = subparsers.add_parser(

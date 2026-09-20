@@ -43,8 +43,6 @@ def test_readme_documents_every_supported_cli_command_path() -> None:
         "okto-pulse metrics export",
         "okto-pulse metrics purge-local",
         "okto-pulse api-key",
-        "okto-pulse reset",
-        "okto-pulse verify-pipeline",
         "okto-pulse kg migrate-schema",
         "okto-pulse kg backfill",
         "okto-pulse kg dedup-entities",

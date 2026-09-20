@@ -557,7 +557,7 @@ def assert_no_live_server(data_dir: str | Path, *, operation: str = "cli") -> No
     """Fast-fail guard da CLI (KGD-01 C6/S10) — nunca bloqueia (<5s).
 
     Entrypoints que abrem grafos de board (``init``, ``kg backfill --apply``,
-    ``kg dedup-entities``, ``verify-pipeline``, scripts de operador) chamam
+    ``kg dedup-entities``, scripts de operador) chamam
     isto ANTES de tocar em qualquer Database. Levanta
     :class:`ServeAlreadyRunningError` quando o serve-lock de ``data_dir``
     tem heartbeat fresco OU um PID comprovadamente vivo. Prossegue apenas
