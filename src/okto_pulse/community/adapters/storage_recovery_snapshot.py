@@ -272,52 +272,110 @@ def verify_storage_recovery_snapshot(snapshot: StorageRecoverySnapshot, *, max_s
     return manifest
 
 
+class _StorageRecoveryRestoreGuard:
+    """Borrowed lifecycle exclusion, valid only inside its owning context.
+
+    It creates no output-root lockfile: a joint publisher can rename its staging
+    directory on Windows while the authoritative SOURCE locks remain held.
+    """
+
+    def __init__(self, snapshot, manifest, current, live, deadline):
+        self._snapshot = snapshot
+        self._manifest = manifest
+        self._current = current
+        self._live = live
+        self._deadline = deadline
+        self._active = True
+
+    def validate(self) -> None:
+        if not self._active:
+            raise ValueError("storage_recovery_restore_guard_expired")
+        _check_time(self._deadline)
+        now = _inventory(self._current, max_files=100_000, max_bytes=1024**4)
+        if now[3] != self._live[3] or not now[2] <= self._live[2]:
+            raise ValueError("storage_recovery_privacy_state_changed")
+
+    def require_separate_target(self, target_root: Path) -> Path:
+        self.validate()
+        target = _explicit(target_root)
+        if target.is_relative_to(self._current) or target.is_relative_to(_explicit(self._snapshot.directory)):
+            raise ValueError("storage_recovery_restore_root_overlap")
+        return target
+
+    def copy_into_new_root(self, target_root: Path) -> None:
+        """Write one private candidate; caller publishes under this same guard."""
+        target = self.require_separate_target(target_root)
+        if target.exists() or not target.parent.is_dir():
+            raise FileExistsError("storage_recovery_restore_requires_new_root")
+        target.mkdir(mode=0o700)
+        try:
+            for directory in self._manifest["directories"]:
+                (target / directory).mkdir(mode=0o700)
+            for record in self._manifest["files"]:
+                copied = target / record["path"]
+                result = _copy(_path(self._snapshot.directory / "payload" / record["path"]), copied,
+                    deadline=self._deadline, limit=record["size"])
+                if result != (record["size"], record["sha256"]):
+                    raise ValueError("storage_recovery_restore_hash_mismatch")
+                os.utime(copied, ns=(record["mtime_ns"], record["mtime_ns"]))
+            self.validate()
+            for directory in self._manifest["directories"]:
+                fsync_directory(target / directory)
+            fsync_directory(target)
+        except BaseException:
+            remove_contained_tree(target, base_dir=target.parent)
+            raise
+
+
+@contextmanager
+def storage_recovery_restore_window(
+    snapshot: StorageRecoverySnapshot, *, current_storage_root: Path, max_seconds: float = 60,
+):
+    """Refuse later erasure before yielding, retain lifecycle locks until exit.
+
+    Compose SQL/graph reconstruction and FINAL publication inside this window.
+    The yielded guard cannot be reused after its owner releases the locks.
+    """
+    deadline = _deadline(max_seconds)
+    manifest = verify_storage_recovery_snapshot(snapshot, max_seconds=max_seconds)
+    current = _explicit(current_storage_root)
+    if current != _explicit(manifest["source_root"]):
+        raise ValueError("storage_recovery_current_authority_root_mismatch")
+    if not current.is_dir():
+        raise FileNotFoundError("storage_recovery_current_authority_root_missing")
+    board_ids = _boards(tuple(sorted(set(manifest["board_ids"]) | {
+        name for name in manifest["directories"] if not _is_control(name)
+    })))
+    with _window(current, board_ids, max_files=100_000, max_bytes=1024**4, max_seconds=max_seconds, deadline=deadline) as live:
+        if not live[3] <= set(manifest["erased_hashes"]):
+            raise ValueError("storage_recovery_newer_erasure_refused")
+        guard = _StorageRecoveryRestoreGuard(snapshot, manifest, current, live, deadline)
+        try:
+            yield guard
+        finally:
+            guard._active = False
+
+
 def restore_storage_recovery_snapshot(
     snapshot: StorageRecoverySnapshot, target_root: Path, *, current_storage_root: Path,
     max_seconds: float = 60,
 ) -> Path:
-    """Restore only to a new isolated root, respecting current erasure state.
-
-    The caller must supply the authoritative CURRENT storage root. A snapshot
-    cannot authorize resurrection after any later erasure; newer markers refuse
-    the entire restore. Persisted absolute SQL paths are not rewritten here.
-    """
-    deadline = _deadline(max_seconds)
-    manifest = verify_storage_recovery_snapshot(snapshot, max_seconds=max_seconds)
-    current, target = _explicit(current_storage_root), _explicit(target_root)
-    if current != _explicit(manifest["source_root"]):
-        raise ValueError("storage_recovery_current_authority_root_mismatch")
-    if not current.is_dir() or not target.parent.is_dir() or target.exists():
+    """Restore to a new isolated root; never rewrite persisted SQL paths."""
+    target = _explicit(target_root)
+    if not target.parent.is_dir() or target.exists():
         raise FileExistsError("storage_recovery_restore_requires_new_root")
-    if target.is_relative_to(current) or target.is_relative_to(_explicit(snapshot.directory)):
+    # Reject before creating a publisher mutex inside live storage or backup.
+    if target.is_relative_to(_explicit(current_storage_root)) or target.is_relative_to(_explicit(snapshot.directory)):
         raise ValueError("storage_recovery_restore_root_overlap")
     stage = target.parent / f".{target.name}.{secrets.token_hex(12)}.restore"
-    board_ids = _boards(tuple(sorted(set(manifest["board_ids"]) | {
-        name for name in manifest["directories"] if not _is_control(name)
-    })))
     with FileLock(str(_path(target.parent / ".storage-recovery-restore.lock")), timeout=max_seconds):
         if target.exists():
             raise FileExistsError("storage_recovery_restore_requires_new_root")
-        with _window(current, board_ids, max_files=100_000, max_bytes=1024**4, max_seconds=max_seconds, deadline=deadline) as live:
-            if not live[3] <= set(manifest["erased_hashes"]):
-                raise ValueError("storage_recovery_newer_erasure_refused")
-            stage.mkdir(mode=0o700)
+        with storage_recovery_restore_window(snapshot, current_storage_root=current_storage_root, max_seconds=max_seconds) as guard:
+            guard.require_separate_target(target)
             try:
-                for directory in manifest["directories"]:
-                    (stage / directory).mkdir(mode=0o700)
-                for record in manifest["files"]:
-                    copied = stage / record["path"]
-                    result = _copy(_path(snapshot.directory / "payload" / record["path"]), copied, deadline=deadline, limit=record["size"])
-                    if result != (record["size"], record["sha256"]):
-                        raise ValueError("storage_recovery_restore_hash_mismatch")
-                    os.utime(copied, ns=(record["mtime_ns"], record["mtime_ns"]))
-                now = _inventory(current, max_files=100_000, max_bytes=1024**4)
-                if now[3] != live[3] or not now[2] <= live[2]:
-                    raise ValueError("storage_recovery_privacy_state_changed")
-                for directory in manifest["directories"]:
-                    fsync_directory(stage / directory)
-                fsync_directory(stage)
-                _check_time(deadline)
+                guard.copy_into_new_root(stage)
+                guard.validate()
                 _publish(stage, target)
                 return target
             finally:

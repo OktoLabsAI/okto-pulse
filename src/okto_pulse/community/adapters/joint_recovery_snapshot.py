@@ -4,14 +4,15 @@ The selected stores share a proven capture interval: SQLite holds a write
 reservation, and every Grafx publication LSN is unchanged across *all* exports.
 This rejects concurrent graph commits instead of pretending a Grafx transaction
 excludes them. It does not certify scope completeness, graph routing bindings,
-cross-store business invariants, file attachments, or cutover writer exclusion.
+cross-store business invariants or cutover writer exclusion. Version 3 includes
+the explicitly supplied Community upload namespace and current erasure guards.
 The installer must establish those separately. Never serve these artifacts as
 Board history: the relational database can contain credentials and many Boards.
 """
 
 from __future__ import annotations
 
-from contextlib import closing
+from contextlib import ExitStack, closing
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -42,6 +43,10 @@ from okto_pulse.community.adapters.relational_recovery_snapshot import (
     SqliteRecoverySnapshot, _check_time, _deadline, _digest, _encode, _path,
     create_sqlite_recovery_snapshot, restore_sqlite_recovery_snapshot,
     verify_sqlite_recovery_snapshot,
+)
+from okto_pulse.community.adapters.storage_recovery_snapshot import (
+    StorageRecoverySnapshot, create_storage_recovery_snapshot,
+    storage_recovery_restore_window, verify_storage_recovery_snapshot,
 )
 
 
@@ -115,6 +120,10 @@ def _sql_artifact(directory: Path, manifest: dict) -> SqliteRecoverySnapshot:
     return SqliteRecoverySnapshot(directory / "relational", **manifest["relational"])
 
 
+def _storage_artifact(directory: Path, manifest: dict) -> StorageRecoverySnapshot:
+    return StorageRecoverySnapshot(directory / "storage", **manifest["storage"])
+
+
 def _publish(stage: Path, final: Path) -> None:
     _explicit_path(final)
     if final.exists():
@@ -127,6 +136,7 @@ def create_joint_recovery_snapshot(
     source_database: Path, graphs: tuple[RecoveryGraph, ...], recovery_directory: Path,
     *, snapshot_id: str, builds: RecoveryBuildPair, runtime_directories: tuple[Path, ...],
     max_seconds: float = 60, batch_size: int = 500, kg_base_dir: Path | None = None,
+    storage_root: Path | None = None,
 ) -> JointRecoverySnapshot:
     """Capture explicitly selected stores; publish only after stable-state proof.
 
@@ -138,6 +148,8 @@ def create_joint_recovery_snapshot(
     With an explicit KG root, v2 also records authenticated routing inventory
     and requires the exact active selection before and after capture. This is
     drift detection, not exclusion of external binding/directory replacement.
+    Supplying the upload root requires routing inventory and creates v3. Its
+    storage copy occurs inside the SQL reservation and the stable Grafx interval.
     """
     deadline = _deadline(max_seconds)
     if type(snapshot_id) is not str or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,95}", snapshot_id):
@@ -160,6 +172,9 @@ def create_joint_recovery_snapshot(
     if len(set(graph_paths)) != len(graph_paths):
         raise ValueError("joint_snapshot_duplicate_database")
     kg_root = _explicit_path(kg_base_dir) if kg_base_dir is not None else None
+    uploads = _explicit_path(storage_root) if storage_root is not None else None
+    if uploads is not None and kg_root is None:
+        raise ValueError("joint_snapshot_storage_requires_routing_inventory")
     if kg_root is not None and kg_root not in {_explicit_path(path) for path in runtime_directories}:
         raise ValueError("joint_snapshot_kg_root_requires_startup_fence")
     final = _explicit_path(root / snapshot_id)
@@ -174,6 +189,7 @@ def create_joint_recovery_snapshot(
             with closing(sqlite3.connect(source.as_uri() + "?mode=rw", uri=True, timeout=max_seconds)) as reserved:
                 reserved.execute("BEGIN IMMEDIATE")
                 inventory = None
+                storage_snapshot = None
                 if kg_root is not None:
                     inventory = read_recovery_graph_inventory(reserved, kg_root)
                     require_recovery_graph_selection(inventory, tuple(
@@ -196,6 +212,13 @@ def create_joint_recovery_snapshot(
                     records.append({"file": filename, "scope": graph.scope, "board_id": graph.board_id,
                         "source_path": str(path), **stamp, "sha256": _digest(artifact),
                         "certificate": asdict(certificate)})
+                if uploads is not None:
+                    _check_time(deadline)
+                    storage_snapshot = create_storage_recovery_snapshot(
+                        uploads, stage, snapshot_id="storage", board_ids=inventory.board_ids,
+                        max_seconds=max_seconds,
+                    )
+                    verify_storage_recovery_snapshot(storage_snapshot, max_seconds=max_seconds)
                 if [_stamp(g) for g in graphs] != before:
                     raise ValueError("joint_snapshot_graph_changed_during_capture")
                 if inventory is not None and read_recovery_graph_inventory(reserved, kg_root) != inventory:
@@ -211,6 +234,9 @@ def create_joint_recovery_snapshot(
             if inventory is not None:
                 manifest["format"] = "joint-recovery-snapshot/v2"
                 manifest["routing_inventory"] = inventory.as_manifest()
+            if storage_snapshot is not None:
+                manifest["format"] = "joint-recovery-snapshot/v3"
+                manifest["storage"] = {"manifest_sha256": storage_snapshot.manifest_sha256}
             encoded = _encode(manifest)
             if len(encoded) > _MAX_MANIFEST:
                 raise ValueError("joint_snapshot_manifest_limit")
@@ -241,11 +267,13 @@ def verify_joint_recovery_snapshot(snapshot: JointRecoverySnapshot, *, max_secon
         raise ValueError("joint_snapshot_manifest_hash_mismatch")
     manifest = json.loads(encoded)
     keys = {"format", "snapshot_id", "capture_contract", "created_at", "builds", "grafx_version", "relational", "graphs"}
-    if isinstance(manifest, dict) and manifest.get("format") == "joint-recovery-snapshot/v2":
+    if isinstance(manifest, dict) and manifest.get("format") in {"joint-recovery-snapshot/v2", "joint-recovery-snapshot/v3"}:
         keys.add("routing_inventory")
+    if isinstance(manifest, dict) and manifest.get("format") == "joint-recovery-snapshot/v3":
+        keys.add("storage")
     if (not isinstance(manifest, dict)
         or set(manifest) != keys
-        or manifest["format"] not in {_FORMAT, "joint-recovery-snapshot/v2"} or manifest["capture_contract"] != _CAPTURE
+        or manifest["format"] not in {_FORMAT, "joint-recovery-snapshot/v2", "joint-recovery-snapshot/v3"} or manifest["capture_contract"] != _CAPTURE
         or manifest["snapshot_id"] != root.name or type(manifest["graphs"]) is not list
         or len(manifest["graphs"]) > 256):
         raise ValueError("joint_snapshot_manifest_invalid")
@@ -281,18 +309,24 @@ def verify_joint_recovery_snapshot(snapshot: JointRecoverySnapshot, *, max_secon
             (record["scope"], record["board_id"], record["source_path"], sizes.get((record["scope"], record["board_id"])))
             for record in manifest["graphs"]
         ))
+    if "storage" in manifest:
+        storage = verify_storage_recovery_snapshot(_storage_artifact(root, manifest), max_seconds=max_seconds)
+        if storage["board_ids"] != manifest["routing_inventory"]["board_ids"]:
+            raise ValueError("joint_snapshot_storage_board_population_mismatch")
     return manifest
 
 
 def restore_joint_recovery_snapshot(
     snapshot: JointRecoverySnapshot, target_directory: Path, *, builds: RecoveryBuildPair,
-    max_seconds: float = 60, batch_size: int = 500,
+    max_seconds: float = 60, batch_size: int = 500, current_storage_root: Path | None = None,
 ) -> Path:
     """Restore into an entirely new directory; never promote live bindings.
 
     Existing logical transfer cold-certifies every new Grafx database. Native
     UUIDs/LSNs are regenerated: this is logical recovery, not native commit-log
     transplantation. The installer must run the compatible recorded build pair.
+    Version 3 checks current erasure BEFORE reconstructing even the SQL copy,
+    and holds source lifecycle locks through publication of the WHOLE set.
     """
     deadline = _deadline(max_seconds)
     manifest = verify_joint_recovery_snapshot(snapshot, max_seconds=max_seconds)
@@ -300,14 +334,28 @@ def restore_joint_recovery_snapshot(
         raise ValueError("joint_snapshot_restore_build_pair_mismatch")
     if type(batch_size) is not int or not 1 <= batch_size <= 5000:
         raise ValueError("joint_snapshot_batch_size_invalid")
+    if "storage" in manifest and current_storage_root is None:
+        raise ValueError("joint_snapshot_current_storage_root_required")
     target = _explicit_path(target_directory)
     if target.exists() or not target.parent.is_dir():
         raise FileExistsError("joint_snapshot_restore_requires_new_directory")
+    # Refuse before creating the publisher's mutex: an output inside the upload
+    # namespace would itself introduce an invalid root-level storage object.
+    if (target.is_relative_to(_explicit_path(snapshot.directory))
+        or ("storage" in manifest and target.is_relative_to(_explicit_path(current_storage_root)))):
+        raise ValueError("joint_snapshot_restore_root_overlap")
     stage = target.parent / f".{target.name}.{secrets.token_hex(12)}.restore"
     lock_path = _explicit_path(target.parent / ".joint-recovery-restore.lock")
-    with FileLock(str(lock_path), timeout=max_seconds):
+    with FileLock(str(lock_path), timeout=max_seconds), ExitStack() as guards:
         if target.exists():
             raise FileExistsError("joint_snapshot_restore_requires_new_directory")
+        storage_guard = None
+        if "storage" in manifest:
+            storage_guard = guards.enter_context(storage_recovery_restore_window(
+                _storage_artifact(snapshot.directory, manifest), current_storage_root=current_storage_root,
+                max_seconds=max_seconds,
+            ))
+            storage_guard.require_separate_target(target)
         stage.mkdir(mode=0o700)
         try:
             restore_sqlite_recovery_snapshot(_sql_artifact(snapshot.directory, manifest), stage / "database.sqlite3", max_seconds=max_seconds)
@@ -321,8 +369,12 @@ def restore_joint_recovery_snapshot(
                 certificate = record["certificate"]
                 if any(asdict(report)[key] != certificate[key] for key in ("scope", "counts", "fingerprint", "schema_digest")):
                     raise ValueError("joint_snapshot_restore_certificate_mismatch")
+            if storage_guard is not None:
+                storage_guard.copy_into_new_root(stage / "uploads")
             _check_time(deadline)
             fsync_directory(stage)
+            if storage_guard is not None:
+                storage_guard.validate()
             _publish(stage, target)
             return target
         finally:

@@ -1,6 +1,7 @@
 """Real SQLite/WAL + Grafx recovery with interrupted or concurrent capture."""
 
 from contextlib import ExitStack
+import asyncio
 from dataclasses import replace
 import hashlib
 import json
@@ -17,6 +18,8 @@ from logical_transfer_matrix_support import (
 from okto_pulse.community.adapters import joint_recovery_snapshot as joint
 from okto_pulse.community.adapters import recovery_graph_inventory as routing_inventory
 from okto_pulse.community.adapters.graph_backend_binding import CommunityGraphBackendBindingStore
+from okto_pulse.community.adapters.storage import CommunityFileSystemStorage
+from okto_pulse.community.adapters import storage_recovery_snapshot as physical_storage
 
 
 BUILDS = joint.RecoveryBuildPair("a" * 40, "b" * 40, "c" * 64, "d" * 64)
@@ -299,3 +302,121 @@ def test_bound_capture_rejects_observed_routing_drift(sources, monkeypatch, chan
     with pytest.raises(ValueError, match="routing_changed_during_capture"):
         capture(sources, kg_base_dir=kg)
     assert not (sources[2] / "capture").exists()
+
+
+@pytest.fixture
+def stored_sources(sources):
+    root = sources[3] / "uploads"
+    root.mkdir()
+    storage = CommunityFileSystemStorage(str(root))
+    attachment = Path(asyncio.run(storage.save("board-one", "original.bin", b"\x00attachment\xff")))
+    archive = Path(asyncio.run(storage.save("empty-board", "historical-archive.json", b'{ "source": "sprint:opaque" }\r\n')))
+    asyncio.run(storage.purge_board("previously-erased"))
+    return sources, root, storage, (attachment, archive)
+
+
+def capture_stored(stored_sources):
+    sources, uploads, _, _ = stored_sources
+    return capture(sources, kg_base_dir=sources[3] / "kg", storage_root=uploads)
+
+
+def test_v3_roundtrip_keeps_privacy_fenced_through_final_joint_publish(stored_sources, tmp_path, monkeypatch):
+    sources, uploads, _, objects = stored_sources
+    real_capture = joint.create_storage_recovery_snapshot
+    def capture_under_sql_reservation(*args, **kwargs):
+        with sqlite3.connect(sources[0], timeout=0.01) as competing:
+            with pytest.raises(sqlite3.OperationalError, match="locked"):
+                competing.execute("INSERT INTO history VALUES ('raced', X'00')")
+        return real_capture(*args, **kwargs)
+    monkeypatch.setattr(joint, "create_storage_recovery_snapshot", capture_under_sql_reservation)
+    snapshot = capture_stored(stored_sources)
+    manifest = joint.verify_joint_recovery_snapshot(snapshot)
+    assert manifest["format"] == "joint-recovery-snapshot/v3"
+    with pytest.raises(ValueError, match="current_storage_root_required"):
+        joint.restore_joint_recovery_snapshot(snapshot, tmp_path / "missing-guard", builds=BUILDS)
+    real_publish, checked = joint._publish, []
+    def final_publish(stage, target):
+        # The callback runs at the final OUTER directory publication, after SQL,
+        # cold graph certification and upload copying have already succeeded.
+        assert (stage / "database.sqlite3").exists()
+        assert (stage / "graph-0000").is_dir()
+        assert (stage / "uploads").is_dir()
+        script = """
+import asyncio, sys
+from filelock import FileLock, Timeout
+from okto_pulse.community.adapters import storage as module
+module.FileLock = lambda path, timeout: FileLock(path, timeout=0.05)
+try:
+    asyncio.run(module.CommunityFileSystemStorage(sys.argv[1]).purge_board('board-one'))
+    print('erased')
+except Timeout:
+    print('blocked')
+"""
+        result = subprocess.run([sys.executable, "-c", script, str(uploads)],
+            capture_output=True, text=True, timeout=15, check=True)
+        assert result.stdout.strip() == "blocked"
+        checked.append(True)
+        real_publish(stage, target)  # Must work on Windows with SOURCE locks held.
+    monkeypatch.setattr(joint, "_publish", final_publish)
+    target = joint.restore_joint_recovery_snapshot(snapshot, tmp_path / "restored", builds=BUILDS,
+        current_storage_root=uploads, max_seconds=120)
+    assert checked == [True]
+    with sqlite3.connect(target / "database.sqlite3") as restored:
+        assert restored.execute("SELECT * FROM history").fetchall() == [("sprint-opaque", b"\x00\x0a\xff")]
+    for index, corpus in enumerate(sources[4]):
+        assert export_generation("grafx", target / f"graph-{index:04d}", scope=corpus.schema.scope).fingerprint == corpus.fingerprint
+    for original in objects:
+        assert (target / "uploads" / original.relative_to(uploads)).read_bytes() == original.read_bytes()
+    with pytest.raises(RuntimeError, match="permanently erased"):
+        asyncio.run(CommunityFileSystemStorage(str(target / "uploads")).save("previously-erased", "new", b"forbidden"))
+
+
+def test_v3_later_erasure_refuses_before_any_sql_copy(stored_sources, tmp_path, monkeypatch):
+    snapshot = capture_stored(stored_sources)
+    asyncio.run(stored_sources[2].purge_board("board-one"))
+    monkeypatch.setattr(joint, "restore_sqlite_recovery_snapshot",
+        lambda *a, **k: pytest.fail("privacy refusal must precede reconstruction of SQL"))
+    with pytest.raises(ValueError, match="newer_erasure_refused"):
+        joint.restore_joint_recovery_snapshot(snapshot, tmp_path / "restored", builds=BUILDS,
+            current_storage_root=stored_sources[1])
+    assert not list(tmp_path.glob("*.restore"))
+    assert not (tmp_path / "restored").exists()
+
+
+def test_v3_erasure_injected_after_payload_copy_refuses_whole_set(stored_sources, tmp_path, monkeypatch):
+    snapshot = capture_stored(stored_sources)
+    real_copy = physical_storage._StorageRecoveryRestoreGuard.copy_into_new_root
+    def changed_after_copy(guard, target):
+        real_copy(guard, target)
+        digest = hashlib.sha256(b"uncooperative-erasure").hexdigest()
+        (stored_sources[1] / ".board_lifecycle" / f"{digest}.erased").write_bytes(b"erased\n")
+    monkeypatch.setattr(physical_storage._StorageRecoveryRestoreGuard, "copy_into_new_root", changed_after_copy)
+    with pytest.raises(ValueError, match="privacy_state_changed"):
+        joint.restore_joint_recovery_snapshot(snapshot, tmp_path / "restored", builds=BUILDS,
+            current_storage_root=stored_sources[1], max_seconds=120)
+    assert not (tmp_path / "restored").exists()
+    assert not list(tmp_path.glob("*.restore"))
+
+
+def test_v3_graph_commit_during_storage_capture_refuses_whole_backup(stored_sources, monkeypatch):
+    real_capture = joint.create_storage_recovery_snapshot
+    def changed(*args, **kwargs):
+        result = real_capture(*args, **kwargs)
+        with stored_sources[0][1][1].database.begin("write") as writer:
+            writer.execute("MATCH (n:Topic {id: 'baseline'}) SET n.name = 'during-storage'")
+        return result
+    monkeypatch.setattr(joint, "create_storage_recovery_snapshot", changed)
+    with pytest.raises(ValueError, match="graph_changed_during_capture"):
+        capture_stored(stored_sources)
+    assert not (stored_sources[0][2] / "capture").exists()
+
+
+def test_v3_target_overlap_refused_before_touching_upload_namespace(stored_sources):
+    snapshot = capture_stored(stored_sources)
+    uploads = stored_sources[1]
+    before = {str(path.relative_to(uploads)): path.read_bytes() for path in uploads.rglob("*") if path.is_file()}
+    with pytest.raises(ValueError, match="restore_root_overlap"):
+        joint.restore_joint_recovery_snapshot(snapshot, uploads / "invalid-target", builds=BUILDS,
+            current_storage_root=uploads)
+    after = {str(path.relative_to(uploads)): path.read_bytes() for path in uploads.rglob("*") if path.is_file()}
+    assert after == before

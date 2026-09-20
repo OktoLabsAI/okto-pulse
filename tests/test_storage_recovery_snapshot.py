@@ -252,3 +252,26 @@ def test_case_aliased_board_identity_is_not_inferred(source, case):
         with pytest.raises(ValueError, match="namespace_case_alias"):
             capture(source)
     assert not (source[1] / "s1").exists()
+
+
+def test_borrowed_restore_guard_expires_without_open_output_lockfiles(source, tmp_path):
+    snapshot = capture(source)
+    with recovery.storage_recovery_restore_window(snapshot, current_storage_root=source[0]) as guard:
+        guard.copy_into_new_root(tmp_path / "private-candidate")
+        guard.validate()
+        assert not (tmp_path / ".storage-recovery-restore.lock").exists()
+    with pytest.raises(ValueError, match="guard_expired"):
+        guard.copy_into_new_root(tmp_path / "after-exit")
+    assert not (tmp_path / "after-exit").exists()
+
+
+@pytest.mark.parametrize("destination", ["uploads", "snapshot"])
+def test_restore_overlap_is_refused_before_creating_any_sidecar(source, destination):
+    snapshot = capture(source)
+    root = source[0] if destination == "uploads" else snapshot.directory
+    before = {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+    with pytest.raises(ValueError, match="restore_root_overlap"):
+        recovery.restore_storage_recovery_snapshot(snapshot, root / "invalid-restore", current_storage_root=source[0])
+    after = {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+    assert after == before
+    assert not (root / "invalid-restore").exists()
