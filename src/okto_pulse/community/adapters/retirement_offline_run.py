@@ -20,6 +20,8 @@ from okto_pulse.core.ports.context_disposition import ContextDispositionPlan
 from .context_disposition_retirement import _documents, _records, _require_original_archive, _targets
 from .filesystem_erasure import fsync_directory, remove_contained_tree
 from .historical_archive_grant_installation import install_historical_archive_grants
+from .graph_backend_binding import CommunityGraphBackendBindingStore
+from .global_outbox_retirement import _sha as _outbox_sha, _snapshot as _outbox_snapshot
 from .joint_recovery_snapshot import (
     JointRecoverySnapshot, RecoveryBuildPair, _explicit_path, _publish,
     joint_recovery_lifecycle_window, verify_joint_recovery_snapshot,
@@ -32,12 +34,17 @@ from .retirement_data_journal import (
     RetirementDataRun, prepare_retirement_data_run, read_retirement_data_journal, resume_retirement_data_run,
 )
 from .retirement_runtime_admission import require_retirement_runtime_admission
+from .retirement_materialization import resume_retirement_materialization
+from .retirement_materialization_plan import (
+    decode_materialization_plan, prepare_materialization_plan, require_materialization_bindings, require_materialization_states,
+)
 from .sprint_retirement_archive import _encode, capture_sprint_retirement_archive
 from .sprint_retirement_preflight import inspect_sprint_pretransform
 from .sqlalchemy_database import CommunityDatabaseRuntime, _serialized_schema_lifecycle
 from .storage import CommunityFileSystemStorage
 
-_FORMAT = "retirement-offline-run/v1"
+_FORMAT = "retirement-offline-run/v2"
+_LEGACY_FORMAT = "retirement-offline-run/v1"
 _MAX_BYTES = 64 * 1024 * 1024
 _KEYS = {"format", "migration_id", "source_database", "storage_root", "kg_base_dir", "runtime_directories",
     "source_builds", "migration_builds", "backup", "plan", "permission_checkpoint", "data_run"}
@@ -100,8 +107,11 @@ def read_offline_retirement_run(run: OfflineRetirementRun):
         raise ValueError("offline_retirement_manifest_mismatch")
     try:
         document = json.loads(encoded)
-        if type(document) is not dict or set(document) != _KEYS or document["format"] != _FORMAT:
+        if (type(document) is not dict or document.get("format") not in {_FORMAT, _LEGACY_FORMAT}
+                or set(document) != (_KEYS | {"materialization"} if document["format"] == _FORMAT else _KEYS)):
             raise ValueError
+        if document["format"] == _FORMAT:
+            decode_materialization_plan(document["materialization"])
         # JSON arrays represent the strict contract's tuples. Use its JSON
         # boundary rather than weakening Python-side validation/coercions.
         plan = ContextDispositionPlan.model_validate_json(_encode(document["plan"]))
@@ -182,16 +192,28 @@ async def prepare_offline_retirement_run(
                 for reference in references:
                     await install_historical_archive_grants(runtime.engine, storage, reference)
                 await _validate_plan(runtime.engine, storage, references, plan)
-                data = await prepare_retirement_data_run(runtime.engine, storage, references, plan=plan)
-                await _verify_retained_receipts(runtime.engine, permission, data)
-                document = {"format": _FORMAT, "migration_id": plan.migration_id, "source_database": str(source),
-                    "storage_root": str(uploads), "kg_base_dir": str(kg), "runtime_directories": list(map(str, roots)),
-                    "source_builds": asdict(source_builds), "migration_builds": asdict(migration_builds),
-                    "backup": {"directory": str(backup.directory), "manifest_sha256": backup.manifest_sha256},
-                    "plan": plan.model_dump(mode="json"), "permission_checkpoint": asdict(permission), "data_run": asdict(data)}
-                run = _seal(directory, document)
-                read_offline_retirement_run(run)
-                return run
+                with CommunityGraphBackendBindingStore(kg, lock_timeout_seconds=max_seconds).publication_window():
+                    manifest = verify_joint_recovery_snapshot(backup)
+                    require_materialization_bindings(source, kg, graphs, manifest)
+                    materialization = await prepare_materialization_plan(runtime.engine, storage, references, graphs, backup, manifest)
+                    data = await prepare_retirement_data_run(runtime.engine, storage, references, plan=plan)
+                    await _verify_retained_receipts(runtime.engine, permission, data)
+                    require_materialization_bindings(source, kg, graphs, manifest)
+                    require_materialization_states(decode_materialization_plan(materialization), graphs, original=True)
+                    # Detect even an ABA native commit between the backup and
+                    # sealing. A WRITE handle alone is not a writer fence.
+                    stamps = {(item["scope"], item["board_id"]): item["published_lsn"] for item in manifest["graphs"]}
+                    if any(graph.database.transactions.published_lsn() != stamps[graph.scope, graph.board_id] for graph in graphs):
+                        raise ValueError("offline_retirement_graph_changed_before_seal")
+                    document = {"format": _FORMAT, "migration_id": plan.migration_id, "source_database": str(source),
+                        "storage_root": str(uploads), "kg_base_dir": str(kg), "runtime_directories": list(map(str, roots)),
+                        "source_builds": asdict(source_builds), "migration_builds": asdict(migration_builds),
+                        "backup": {"directory": str(backup.directory), "manifest_sha256": backup.manifest_sha256},
+                        "plan": plan.model_dump(mode="json"), "permission_checkpoint": asdict(permission), "data_run": asdict(data),
+                        "materialization": materialization}
+                    run = _seal(directory, document)
+                    read_offline_retirement_run(run)
+                    return run
 
 
 async def resume_offline_retirement_data(runtime, storage, run: OfflineRetirementRun, *, migration_builds: RecoveryBuildPair):
@@ -216,3 +238,43 @@ async def resume_offline_retirement_data(runtime, storage, run: OfflineRetiremen
             # authority anchor. Failure remains blocked; never recapture it.
             await _verify_retained_receipts(runtime.engine, permission, data)
             return {**result, "offline_run": run, "backup": backup, "permission_checkpoint": permission}
+
+
+async def resume_offline_retirement_materialization(runtime, storage, graphs, run: OfflineRetirementRun, *, migration_builds: RecoveryBuildPair):
+    """Resume data -> Board graphs -> Global Discovery -> outbox/checkpoint.
+
+    Schema and permission cleanup remain mandatory before runtime admission.
+    The supplied handles are matched to the original active routes and UUIDs;
+    absent stores stay absent. No plan or backup is recaptured on this path.
+    """
+    source, uploads = _binding(runtime, storage)
+    document, plan, permission, data, backup, roots = read_offline_retirement_run(run)
+    if document["format"] != _FORMAT:
+        raise ValueError("offline_retirement_materialization_plan_missing")
+    if (document["source_database"] != str(source) or document["storage_root"] != str(uploads)
+            or not isinstance(migration_builds, RecoveryBuildPair) or document["migration_builds"] != asdict(migration_builds)):
+        raise ValueError("offline_retirement_runtime_binding_mismatch")
+    kg = Path(document["kg_base_dir"])
+    retained = decode_materialization_plan(document["materialization"])
+    async with _serialized_schema_lifecycle(runtime):
+        with offline_migration_window(roots), CommunityGraphBackendBindingStore(kg).publication_window():
+            manifest = verify_joint_recovery_snapshot(backup)
+            if manifest["format"] != "joint-recovery-snapshot/v4" or manifest["builds"] != document["source_builds"]:
+                raise ValueError("offline_retirement_backup_mismatch")
+            await _verify_retained_receipts(runtime.engine, permission, data)
+            require_materialization_bindings(source, kg, graphs, manifest)
+            async with runtime.engine.connect() as connection:
+                await connection.exec_driver_sql("BEGIN")
+                records = await read_retirement_data_journal(connection, data)
+                all_retired = require_materialization_states(retained, graphs, original=len(records) < 5, retired=len(records) == 6)
+                raw = await connection.run_sync(_outbox_snapshot)
+                if (len(records) < 5 and raw != retained.original
+                        or raw != retained.original and (_outbox_sha(raw) != retained.after_sha256 or not all_retired)
+                        or len(records) == 6 and _outbox_sha(raw) != retained.after_sha256):
+                    raise ValueError("offline_retirement_outbox_state_mismatch")
+            result = await resume_retirement_data_run(runtime.engine, storage, data, plan=plan)
+            receipt = await resume_retirement_materialization(runtime, data, permission, document["materialization"],
+                backup, manifest, graphs, kg)
+            await _verify_retained_receipts(runtime.engine, permission, data)
+            return {**result, "state": "materialization_retired", "materialization": receipt,
+                "offline_run": run, "backup": backup, "permission_checkpoint": permission}

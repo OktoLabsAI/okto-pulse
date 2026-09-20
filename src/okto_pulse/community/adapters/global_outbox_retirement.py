@@ -14,8 +14,8 @@ from sqlalchemy import inspect, text
 from okto_pulse.core.ports.global_outbox import GLOBAL_OUTBOX_RETIRED_SENTINEL
 from okto_pulse.core.ports.global_retirement_graph import GlobalGraphRetirementPlan
 from okto_pulse.core.ports.outbox_retirement import classify_outbox_retirement
-from okto_pulse.core.ports.retirement_graph import graph_retirement_fingerprint
-from .grafx_global_retirement import _require_retired_boards
+from okto_pulse.core.ports.retirement_graph import GraphRetirementPlan, graph_retirement_fingerprint
+from .grafx_global_retirement import _require_retired_board_plans
 from .logical_transfer_factories import make_grafx_logical_source
 from .sprint_retirement_archive import _cell, _encode
 from .sprint_retirement_embedded import _constant, _object
@@ -29,11 +29,12 @@ _MAX_ROW_BYTES = 1024 * 1024
 
 @dataclass(frozen=True, slots=True)
 class OutboxRetirementPlan:
-    graph_plan: GlobalGraphRetirementPlan
+    graph_plan: GlobalGraphRetirementPlan | None
     archived_origins: tuple[tuple[str, tuple[str, ...]], ...]
     original: bytes
     selected_ids: tuple[str, ...]
     after_sha256: str
+    board_plans: tuple[GraphRetirementPlan, ...]
 
 
 def _sha(raw):
@@ -83,10 +84,21 @@ def _rows(section):
             for key, (kind, value) in zip(section["columns"], cells, strict=True)}
 
 
-def _derive(graph_plan, archived_origins, original):
-    if not isinstance(graph_plan, GlobalGraphRetirementPlan):
+def _derive(graph_plan, archived_origins, original, board_plans=None):
+    if graph_plan is not None and not isinstance(graph_plan, GlobalGraphRetirementPlan):
         raise ValueError("outbox_retirement_graph_plan_invalid")
-    boards = tuple(item.board_plan.board_id for item in graph_plan.sources)
+    if graph_plan is not None:
+        derived = tuple(item.board_plan for item in graph_plan.sources)
+        if board_plans is not None and board_plans != derived:
+            raise ValueError("outbox_retirement_graph_plan_invalid")
+        board_plans = derived
+    if (type(board_plans) is not tuple or len(board_plans) > 256
+            or any(not isinstance(item, GraphRetirementPlan) for item in board_plans)
+            or sum(len(item.node_keys) for item in board_plans) > _MAX_ROWS):
+        raise ValueError("outbox_retirement_graph_plan_invalid")
+    boards = tuple(item.board_id for item in board_plans)
+    if boards != tuple(sorted(set(boards))):
+        raise ValueError("outbox_retirement_graph_plan_invalid")
     if (type(archived_origins) is not tuple
             or tuple(owner for owner, _ in archived_origins) != boards
             or sum(len(ids) for _, ids in archived_origins) > _MAX_ROWS
@@ -99,7 +111,7 @@ def _derive(graph_plan, archived_origins, original):
     refs = {}
     for row in _rows(document["kuzu_node_refs"]):
         refs.setdefault(row["session_id"], []).append(row)
-    plans = {item.board_plan.board_id: item.board_plan for item in graph_plan.sources}
+    plans = {item.board_id: item for item in board_plans}
     origins = {owner: frozenset(ids) for owner, ids in archived_origins}
     selected = []
     section = document["global_update_outbox"]
@@ -116,25 +128,31 @@ def _derive(graph_plan, archived_origins, original):
         if disposition.action == "supersede":
             selected.append(event["id"])
             cells[retry_index] = ["integer", str(GLOBAL_OUTBOX_RETIRED_SENTINEL)]
-    return OutboxRetirementPlan(graph_plan, archived_origins, original, tuple(sorted(selected)), _sha(_encode(document)))
+    return OutboxRetirementPlan(graph_plan, archived_origins, original, tuple(sorted(selected)), _sha(_encode(document)), board_plans)
 
 
-async def prepare_outbox_retirement(engine, *, graph_plan, archived_origins):
+async def prepare_outbox_retirement(engine, *, graph_plan, archived_origins, board_plans=None):
     # Validate scope before constructing SQL and retain the original, never
     # recapture after a partially completed migration.
-    if not isinstance(graph_plan, GlobalGraphRetirementPlan):
+    if graph_plan is not None and not isinstance(graph_plan, GlobalGraphRetirementPlan):
         raise ValueError("outbox_retirement_graph_plan_invalid")
     async with engine.connect() as connection:
         await connection.execute(text("BEGIN"))
         try:
             original = await connection.run_sync(_snapshot)
-            return _derive(graph_plan, archived_origins, original)
+            return _derive(graph_plan, archived_origins, original, board_plans)
         finally:
             await connection.rollback()
 
 
 def _graphs_retired(plan, database, board_databases):
-    _require_retired_boards(plan.graph_plan, board_databases)
+    _require_retired_board_plans(plan.board_plans, board_databases)
+    if plan.graph_plan is None:
+        # The coordinator proves persisted routing absence. Do not initialize
+        # a previously absent global graph merely to retire pending work.
+        if database is not None:
+            raise ValueError("outbox_retirement_global_scope_mismatch")
+        return
     snapshot = make_grafx_logical_source(database, scope="global_discovery").open_snapshot()
     try:
         if graph_retirement_fingerprint(snapshot, scope="global_discovery") != plan.graph_plan.after_sha256:
@@ -143,24 +161,35 @@ def _graphs_retired(plan, database, board_databases):
         snapshot.close()
 
 
-async def apply_outbox_retirement(engine, plan, *, global_database, board_databases):
-    if not isinstance(plan, OutboxRetirementPlan) or _derive(plan.graph_plan, plan.archived_origins, plan.original) != plan:
+def _validate_plan(plan):
+    if not isinstance(plan, OutboxRetirementPlan) or _derive(plan.graph_plan, plan.archived_origins, plan.original, plan.board_plans) != plan:
         raise ValueError("outbox_retirement_plan_mismatch")
+
+
+async def _apply_outbox_in_transaction(connection, plan):
+    """Caller owns BEGIN IMMEDIATE, graph fences, final verification and commit."""
+    _validate_plan(plan)
+    if not connection.in_transaction():
+        raise ValueError("outbox_retirement_transaction_required")
+    current = await connection.run_sync(_snapshot)
+    if _sha(current) == plan.after_sha256:
+        return
+    if current != plan.original:
+        raise ValueError("outbox_retirement_before_mismatch")
+    for identity in plan.selected_ids:
+        await connection.execute(text("UPDATE global_update_outbox SET retry_count=:retired WHERE id=:identity"),
+            {"retired": GLOBAL_OUTBOX_RETIRED_SENTINEL, "identity": identity})
+    if _sha(await connection.run_sync(_snapshot)) != plan.after_sha256:
+        raise ValueError("outbox_retirement_after_mismatch")
+
+
+async def apply_outbox_retirement(engine, plan, *, global_database, board_databases):
+    _validate_plan(plan)
     _graphs_retired(plan, global_database, board_databases)
     async with engine.connect() as connection:
         await connection.execute(text("BEGIN IMMEDIATE"))
         try:
-            current = await connection.run_sync(_snapshot)
-            if _sha(current) == plan.after_sha256:
-                return plan
-            if current != plan.original:
-                raise ValueError("outbox_retirement_before_mismatch")
-            for identity in plan.selected_ids:
-                await connection.execute(text("UPDATE global_update_outbox SET retry_count=:retired WHERE id=:identity"),
-                    {"retired": GLOBAL_OUTBOX_RETIRED_SENTINEL, "identity": identity})
-            after = await connection.run_sync(_snapshot)
-            if _sha(after) != plan.after_sha256:
-                raise ValueError("outbox_retirement_after_mismatch")
+            await _apply_outbox_in_transaction(connection, plan)
             _graphs_retired(plan, global_database, board_databases)
             await connection.commit()
             return plan

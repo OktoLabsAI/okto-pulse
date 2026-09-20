@@ -1,7 +1,7 @@
 """Refuse runtime schema initialization over an unfinished retirement cutover.
 
 The existing data journal is durable evidence of an installer-owned run. None
-of its four checkpoints proves schema/graph/permission completion. In particular
+of its checkpoints proves schema/graph/permission completion. In particular
 `work` means data_preserved, not runtime_ready. A future full cutover must provide
 and verify its terminal contract before this gate can admit that schema.
 """

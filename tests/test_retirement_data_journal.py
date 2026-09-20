@@ -76,7 +76,9 @@ async def test_restart_after_committed_step_never_recaptures_transformed_sources
         assert await journal.resume_retirement_data_run(resumed_engine, storage, run, plan=plan) == result
         assert await journal.prepare_retirement_data_run(resumed_engine, storage, references, plan=plan) == run
         assert dump(path) == before
-        assert [record["stage"] for record in await records(resumed_engine, run)] == list(journal._STAGES)
+        # This entry point completes data preservation only. Graph intent and
+        # acknowledgement belong to the enclosing offline coordinator.
+        assert [record["stage"] for record in await records(resumed_engine, run)] == ["prepared", "context", "cards", "work"]
     finally:
         await resumed_engine.dispose()
 

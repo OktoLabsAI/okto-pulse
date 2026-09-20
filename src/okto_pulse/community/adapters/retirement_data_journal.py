@@ -19,7 +19,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import DomainEventRow, Reti
 
 _TABLE = RetirementDataCheckpoint.__table__
 _FORMAT = "retirement-data-journal/v1"
-_STAGES = ("prepared", "context", "cards", "work")
+_STAGES = ("prepared", "context", "cards", "work", "graph_intent", "graphs")
 _MAX_BYTES = 64 * 1024 * 1024
 
 
@@ -61,6 +61,8 @@ async def ensure_retirement_data_journal(connection):
     if connection.dialect.name != "sqlite" or not connection.in_transaction():
         raise ValueError("retirement_data_sqlite_transaction_required")
     await connection.run_sync(lambda sync: _TABLE.create(sync, checkfirst=True))
+    from .retirement_journal_schema import expand_retirement_checkpoint_schema
+    await expand_retirement_checkpoint_schema(connection)
     for operation in ("UPDATE", "DELETE"):
         await connection.exec_driver_sql(f"""CREATE TRIGGER IF NOT EXISTS retirement_data_no_{operation.lower()}
             BEFORE {operation} ON retirement_data_checkpoints
@@ -83,7 +85,9 @@ def _receipt(stage, payload):
     from okto_pulse.community.adapters.context_disposition_retirement import ContextDispositionReceipt
     from okto_pulse.community.adapters.card_validation_retirement import CardValidationRetirementReceipt
     from okto_pulse.community.adapters.sprint_work_retirement import WorkRetirementReceipt
-    contract = {"context": ContextDispositionReceipt, "cards": CardValidationRetirementReceipt, "work": WorkRetirementReceipt}[stage]
+    from okto_pulse.community.adapters.retirement_materialization import MaterializationCheckpoint
+    contract = {"context": ContextDispositionReceipt, "cards": CardValidationRetirementReceipt, "work": WorkRetirementReceipt,
+        "graph_intent": MaterializationCheckpoint, "graphs": MaterializationCheckpoint}[stage]
     try:
         result = contract(**payload)
     except (TypeError, ValueError) as exc:

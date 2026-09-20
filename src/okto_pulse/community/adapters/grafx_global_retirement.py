@@ -40,12 +40,16 @@ def prepare_global_graph_retirement(database, board_sources):
 
 
 def _require_retired_boards(plan, board_databases):
-    if set(board_databases) != {item.board_plan.board_id for item in plan.sources}:
+    _require_retired_board_plans(tuple(item.board_plan for item in plan.sources), board_databases)
+
+
+def _require_retired_board_plans(plans, board_databases):
+    if set(board_databases) != {item.board_id for item in plans}:
         raise ValueError("global_retirement_board_population_mismatch")
-    for item in plan.sources:
-        snapshot = make_grafx_logical_source(board_databases[item.board_plan.board_id], scope="board").open_snapshot()
+    for item in plans:
+        snapshot = make_grafx_logical_source(board_databases[item.board_id], scope="board").open_snapshot()
         try:
-            if graph_retirement_fingerprint(snapshot) != item.board_plan.after_sha256:
+            if graph_retirement_fingerprint(snapshot) != item.after_sha256:
                 raise ValueError("global_retirement_board_not_retired")
         finally:
             snapshot.close()
