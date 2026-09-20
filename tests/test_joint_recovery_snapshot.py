@@ -11,6 +11,7 @@ import subprocess
 import sys
 
 import pytest
+from okto_pulse.core.kg.interfaces.graph_errors import GraphLockContention
 
 from logical_transfer_matrix_support import (
     export_generation, one_node_corpus, open_generation_database, seed_generation,
@@ -246,8 +247,20 @@ def test_restore_requires_the_recorded_build_pair(sources, tmp_path):
     assert not list(tmp_path.glob("*.restore"))
 
 
-def test_bound_capture_records_exact_inventory_and_absent_board(sources, tmp_path):
-    artifact = capture(sources, kg_base_dir=sources[3] / "kg")
+def test_bound_capture_records_exact_inventory_and_absent_board(sources, tmp_path, monkeypatch):
+    from test_graph_binding_publication_window import child
+    kg = sources[3] / "kg"
+    publish, checked = joint._publish, []
+    def publishing(stage, final):
+        assert child(kg) == "blocked"
+        publish(stage, final)
+        assert child(kg) == "blocked"
+        checked.append(True)
+    with monkeypatch.context() as patch:
+        patch.setattr(joint, "_publish", publishing)
+        artifact = capture(sources, kg_base_dir=kg)
+    assert checked == [True]
+    assert child(kg) == "entered"
     manifest = joint.verify_joint_recovery_snapshot(artifact)
     assert manifest["format"] == "joint-recovery-snapshot/v2"
     inventory = manifest["routing_inventory"]
@@ -269,7 +282,7 @@ def test_bound_capture_rejects_omitted_active_graph(sources):
 @pytest.mark.parametrize("change", ["binding", "new_storage", "identity"])
 def test_bound_capture_rejects_observed_routing_drift(sources, monkeypatch, change):
     kg = sources[3] / "kg"
-    bindings = CommunityGraphBackendBindingStore(kg)
+    bindings = CommunityGraphBackendBindingStore(kg, lock_timeout_seconds=0.05)
     before = bindings.inspect_board_binding("board-one")
     real_backup = joint.backup_logical_graph_file
     calls = 0
@@ -299,9 +312,12 @@ def test_bound_capture_rejects_observed_routing_drift(sources, monkeypatch, chan
                     lambda path: "0" * 64 if path == before.physical_path / "grafx.meta" else real_digest(path))
         return result
     monkeypatch.setattr(joint, "backup_logical_graph_file", change_after_first)
-    with pytest.raises(ValueError, match="routing_changed_during_capture"):
+    expected = GraphLockContention if change == "binding" else ValueError
+    message = "publication window" if change == "binding" else "routing_changed_during_capture"
+    with pytest.raises(expected, match=message):
         capture(sources, kg_base_dir=kg)
     assert not (sources[2] / "capture").exists()
+    assert bindings.inspect_board_binding("board-one") == before
 
 
 @pytest.fixture

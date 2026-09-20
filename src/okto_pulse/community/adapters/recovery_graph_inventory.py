@@ -12,7 +12,7 @@ from pathlib import Path
 import sqlite3
 
 from okto_pulse.community.adapters.graph_backend_binding import (
-    BOARD_BINDING_FILENAME, CommunityGraphBackendBindingStore,
+    BINDING_PUBLICATION_MUTEX_FILENAME, BOARD_BINDING_FILENAME, CommunityGraphBackendBindingStore,
 )
 from okto_pulse.community.adapters.relational_recovery_snapshot import _digest, _path
 
@@ -113,7 +113,9 @@ def read_recovery_graph_inventory(
         return path.relative_to(root).as_posix()
 
     for entry in entries(root):
-        if entry.name not in {"boards", "global", ".okto-pulse-serve.lock.acquire"}:
+        if entry.name == BINDING_PUBLICATION_MUTEX_FILENAME and (not entry.is_file() or entry.stat().st_size != 0):
+            raise ValueError("recovery_graph_inventory_publication_mutex_path_occupied")
+        if entry.name not in {"boards", "global", ".okto-pulse-serve.lock.acquire", BINDING_PUBLICATION_MUTEX_FILENAME}:
             other.append(relative(entry))
     known_boards = set(board_ids)
     for entry in entries(root / "boards"):

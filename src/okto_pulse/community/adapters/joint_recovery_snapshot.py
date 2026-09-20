@@ -28,6 +28,7 @@ from filelock import FileLock
 from okto_grafx import Database
 
 from okto_pulse.community.adapters.filesystem_erasure import fsync_directory, remove_contained_tree
+from okto_pulse.community.adapters.graph_backend_binding import CommunityGraphBackendBindingStore
 from okto_pulse.community.adapters.logical_graph_file import verify_logical_graph_file
 from okto_pulse.community.adapters.logical_graph_transfer import (
     backup_logical_graph_file, restore_logical_graph_file,
@@ -148,8 +149,10 @@ def create_joint_recovery_snapshot(
     No automatic retry can turn an unstable capture into a reported success.
 
     With an explicit KG root, v2 also records authenticated routing inventory
-    and requires the exact active selection before and after capture. This is
-    drift detection, not exclusion of external binding/directory replacement.
+    and requires the exact active selection before and after capture. Current
+    capture holds the binding store's publication window through final artifact
+    publication. This excludes cooperating initialization/CAS, not native graph
+    writes, physical erasure, old binaries or raw directory replacement.
     Supplying the upload root requires routing inventory and creates v4. Its
     storage copy and relational reference reconciliation occur inside the SQL
     reservation and the stable Grafx interval. v3 artifacts retain their older
@@ -184,7 +187,7 @@ def create_joint_recovery_snapshot(
     final = _explicit_path(root / snapshot_id)
     stage = root / f".{snapshot_id}.{secrets.token_hex(12)}.partial"
     lock_path = _explicit_path(root / ".joint-recovery.lock")
-    with offline_migration_window(runtime_directories), FileLock(str(lock_path), timeout=max_seconds):
+    with offline_migration_window(runtime_directories), FileLock(str(lock_path), timeout=max_seconds), ExitStack() as publication:
         if final.exists():
             raise FileExistsError("joint_snapshot_destination_exists")
         stage.mkdir(mode=0o700)
@@ -192,6 +195,10 @@ def create_joint_recovery_snapshot(
             # mode=rw refuses a missing source instead of creating an empty DB.
             with closing(sqlite3.connect(source.as_uri() + "?mode=rw", uri=True, timeout=max_seconds)) as reserved:
                 reserved.execute("BEGIN IMMEDIATE")
+                if kg_root is not None:
+                    publication.enter_context(CommunityGraphBackendBindingStore(
+                        kg_root, lock_timeout_seconds=max_seconds,
+                    ).publication_window())
                 inventory = None
                 storage_snapshot = None
                 if kg_root is not None:

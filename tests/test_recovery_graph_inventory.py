@@ -8,7 +8,9 @@ from types import SimpleNamespace
 import pytest
 from okto_pulse.core.kg.interfaces.graph_errors import GraphCorruption
 
-from okto_pulse.community.adapters.graph_backend_binding import CommunityGraphBackendBindingStore
+from okto_pulse.community.adapters.graph_backend_binding import (
+    BINDING_PUBLICATION_MUTEX_FILENAME, CommunityGraphBackendBindingStore,
+)
 from okto_pulse.community.adapters.recovery_graph_inventory import (
     read_recovery_graph_inventory, recovery_graph_inventory_from_manifest,
     require_recovery_graph_selection,
@@ -39,6 +41,24 @@ def bind(store, board_id="a"):
 
 def files(root):
     return {str(path.relative_to(root)): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+
+
+@pytest.mark.parametrize("content", [b"", b"opaque history", None])
+def test_publication_control_name_cannot_hide_nonempty_data(source, content):
+    connection, root, _ = source
+    path = root / BINDING_PUBLICATION_MUTEX_FILENAME
+    if content is None:
+        path.mkdir()
+    else:
+        path.write_bytes(content)
+    if content == b"":
+        census = read_recovery_graph_inventory(connection, root)
+        assert census.other_storage_paths == ()
+    else:
+        with pytest.raises(ValueError, match="publication_mutex_path_occupied"):
+            read_recovery_graph_inventory(connection, root)
+    assert path.is_dir() if content is None else path.read_bytes() == content
+    assert not (root / "boards").exists()
 
 
 def test_census_preserves_files_and_exposes_absence_and_retention_locations(source):

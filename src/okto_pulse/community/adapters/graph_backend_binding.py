@@ -13,6 +13,7 @@ import os
 import re
 import secrets
 from collections.abc import Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
@@ -30,6 +31,7 @@ from okto_pulse.community.adapters.filesystem_erasure import (
     contained_lexical_path,
     fsync_directory,
     is_filesystem_alias,
+    reject_filesystem_alias_ancestry,
     validate_scope_id,
 )
 from okto_pulse.community.config import (
@@ -45,6 +47,7 @@ GraphBindingScope = Literal["board", "global"]
 BINDING_FORMAT = "okto-pulse-community-graph-binding/1"
 BOARD_BINDING_FILENAME = "graph_backend_binding.json"
 GLOBAL_BINDING_FILENAME = "graph_backend_binding.json"
+BINDING_PUBLICATION_MUTEX_FILENAME = ".graph-binding-publication.lock"
 MAX_BINDING_BYTES = 16 * 1024
 
 _BACKENDS: frozenset[str] = frozenset({"ladybug", "grafx"})
@@ -477,10 +480,53 @@ class CommunityGraphBackendBindingStore:
                 operation="configure_graph_backend_bindings",
             )
         self._lock_timeout_seconds = float(lock_timeout_seconds)
+        # Reentrant only through this store/thread, so an internal coordinator
+        # can publish its own CAS while retaining the outer publication window.
+        self._publication_lock = FileLock(
+            str(self._root / BINDING_PUBLICATION_MUTEX_FILENAME),
+            timeout=self._lock_timeout_seconds,
+        )
 
     @property
     def root(self) -> Path:
         return self._root
+
+    @contextmanager
+    def publication_window(self):
+        """Exclude cooperating initialization/CAS for this KG root.
+
+        Only the root mutex is created: absent Board/global routes stay absent.
+        Normal graph reads/writes and candidate construction do not enter this
+        window. It is not a native writer lease or a physical-erasure fence.
+        An owner needing to publish must use this SAME store on this thread;
+        every existing CAS/admission check still applies.
+        """
+        path = self._root / BINDING_PUBLICATION_MUTEX_FILENAME
+        reject_filesystem_alias_ancestry(path)
+        # FileLock may remove its sidecar on release (Windows). Never treat
+        # pre-existing nonempty data at the new reserved path as a lockfile.
+        try:
+            metadata = path.stat()
+        except FileNotFoundError:
+            pass
+        else:
+            if not path.is_file() or metadata.st_size != 0:
+                raise ValueError("binding_publication_mutex_path_occupied")
+        if not self._root.is_dir():
+            raise _unavailable("binding_root_missing", operation="fence_binding_publication",
+                scope="kg_root", scope_id=str(self._root))
+        try:
+            self._publication_lock.acquire()
+        except FileLockTimeout as exc:
+            raise GraphLockContention(
+                "The Community graph binding publication window is contended.",
+                details={"operation": "fence_binding_publication", "reason": "binding_publication_contention"},
+            ) from exc
+        try:
+            reject_filesystem_alias_ancestry(path)
+            yield self
+        finally:
+            self._publication_lock.release()
 
     def board_ladybug_path(self, board_id: str) -> Path:
         safe_board_id = self._validated_segment(board_id, field_name="board_id")
@@ -886,6 +932,10 @@ class CommunityGraphBackendBindingStore:
         }
 
     def _publish_initial(self, path: Path, *, body: Mapping[str, Any]) -> None:
+        with self.publication_window():
+            self._publish_initial_serialized(path, body=body)
+
+    def _publish_initial_serialized(self, path: Path, *, body: Mapping[str, Any]) -> None:
         scope = "global" if path == self._global_binding_path() else "board"
         scope_id = "global" if scope == "global" else path.parent.name
         try:
@@ -940,6 +990,19 @@ class CommunityGraphBackendBindingStore:
             ) from exc
 
     def _publish_compare_and_swap(
+        self,
+        path: Path,
+        *,
+        expected_binding_sha256: str,
+        candidate: CommunityGraphBackendBinding,
+        body: Mapping[str, Any],
+    ) -> CommunityGraphBackendBinding:
+        with self.publication_window():
+            return self._publish_compare_and_swap_serialized(
+                path, expected_binding_sha256=expected_binding_sha256, candidate=candidate, body=body,
+            )
+
+    def _publish_compare_and_swap_serialized(
         self,
         path: Path,
         *,
@@ -1133,6 +1196,7 @@ class CommunityGraphBackendBindingStore:
 __all__ = [
     "BINDING_FORMAT",
     "BOARD_BINDING_FILENAME",
+    "BINDING_PUBLICATION_MUTEX_FILENAME",
     "GLOBAL_BINDING_FILENAME",
     "CommunityGraphBackendBinding",
     "CommunityGraphBackendBindingStore",
