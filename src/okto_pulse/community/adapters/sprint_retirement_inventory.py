@@ -19,6 +19,10 @@ from okto_pulse.community.adapters.sprint_retirement_work import (
     SprintWorkInventory,
     inspect_sprint_retirement_work,
 )
+from okto_pulse.community.adapters.sprint_retirement_references import (
+    SprintReferenceInventory,
+    inspect_sprint_historical_references,
+)
 
 
 _OWNED = frozenset({"sprints", "sprint_history", "sprint_qa_items", "sprint_activation_baselines"})
@@ -63,6 +67,7 @@ class SprintRelationalInventory:
     counts: tuple[tuple[str, int], ...]
     violations: tuple[SprintRelationViolation, ...]
     work: SprintWorkInventory
+    historical_references: SprintReferenceInventory
 
     def require_valid_relations(self) -> None:
         if self.violations:
@@ -180,7 +185,9 @@ def _inspect_snapshot(connection: Connection, *, max_rows: int) -> SprintRelatio
             if baseline and row["sprint_row"] is not None and row["spec_id"] != row["sprint_spec"]:
                 violations.append(SprintRelationViolation(f"{table}.spec_id", row["id"], row["spec_id"], "scope_mismatch"))
     work = inspect_sprint_retirement_work(connection, remaining_rows=max_rows - consumed, sprint_boards=sprint_boards)
-    return SprintRelationalInventory(tuple(sorted(counts.items())), tuple(violations), work)
+    references = inspect_sprint_historical_references(connection,
+        remaining_rows=max_rows - consumed - sum(count for _, count in work.scanned_counts))
+    return SprintRelationalInventory(tuple(sorted(counts.items())), tuple(violations), work, references)
 
 
 async def read_sprint_retirement_inventory(
