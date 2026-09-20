@@ -24,7 +24,8 @@ from okto_pulse.community.adapters.sprint_retirement_inventory import _inspect_s
 
 
 _LEGACY_FORMAT = "historical-relational-archive/v1"
-_FORMAT = "historical-relational-archive/v2"
+_RELATED_FORMAT = "historical-relational-archive/v2"
+_FORMAT = "historical-relational-archive/v3"
 _EVENT = "historical_archive.created"
 _NAMESPACE = uuid.UUID("9ad371f4-024e-5cbe-a550-b112926cf66a")
 _TABLES = ("sprints", "sprint_history", "sprint_qa_items", "sprint_activation_baselines")
@@ -70,7 +71,7 @@ def _counts(document):
     tables = _TABLES if document["format"] == _LEGACY_FORMAT else sorted(document["tables"])
     result = tuple((name, len(document["tables"][name]["rows"])) for name in tables)
     result += (("card_links", len(document["card_links"])),)
-    if document["format"] == _FORMAT:
+    if document["format"] != _LEGACY_FORMAT:
         result += (("reference_roles", len(document["reference_roles"])),)
     return result
 
@@ -96,6 +97,12 @@ def _related_plan(inventory):
         add(item.table, (("id", item.row_id),), item.board_id, {
             "role": "durable_work", "origin_ids": list(item.sprint_ids),
             "disposition": item.action, "reason": item.reason,
+        })
+    for reference in inventory.embedded_references.references:
+        add(reference.table, reference.key, reference.owner_board_id, {
+            "role": "embedded_source", "column": reference.column, "path": list(reference.path),
+            "origin_id": reference.sprint_id, "reference_board_id": reference.reference_board_id,
+            "scope_state": reference.scope_state, "form": reference.form,
         })
     return plan
 
@@ -139,7 +146,10 @@ def _append_related(connection, schema, plan, documents, consume, remaining_byte
                     consume([cells, evidence])
                     document = documents[board]
                     section = document["tables"].setdefault(table, {**descriptor, "rows": []})
-                    section["rows"].append(cells)
+                    # Owned rows were already copied above; embedded references
+                    # add provenance roles, not duplicate historical source rows.
+                    if table not in _TABLES:
+                        section["rows"].append(cells)
                     document["reference_roles"].append(evidence)
                     observed.add(key)
             if observed != set(batch):
@@ -150,6 +160,7 @@ def _capture(connection: Connection, *, migration_id: str, max_rows: int, max_by
     inventory = _inspect_snapshot(connection, max_rows=max_rows)
     inventory.require_valid_relations()
     inventory.historical_references.require_resolved_scopes()
+    inventory.embedded_references.require_resolved_scopes()
     # Unknown pending effects do not prevent preserving their history. They do
     # prevent cutover through require_classified_work(), which is a separate gate.
     schema = inspect(connection)
@@ -234,7 +245,7 @@ async def verify_historical_archive(storage: StorageProvider, reference: Histori
     if len(content) != reference.size or hashlib.sha256(content).hexdigest() != reference.sha256:
         raise ValueError("historical_archive_hash_mismatch")
     document = json.loads(content)
-    if (document.get("format") not in {_LEGACY_FORMAT, _FORMAT} or document.get("board_id") != reference.board_id
+    if (document.get("format") not in {_LEGACY_FORMAT, _RELATED_FORMAT, _FORMAT} or document.get("board_id") != reference.board_id
             or document.get("migration_id") != reference.migration_id):
         raise ValueError("historical_archive_scope_mismatch")
     counts = _counts(document)

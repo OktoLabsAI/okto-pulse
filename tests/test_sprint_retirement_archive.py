@@ -207,7 +207,7 @@ async def test_receipt_and_composite_children_preserved_once_without_other_subje
     storage = CommunityFileSystemStorage(str(tmp_path / "storage"))
     reference, = await capture_sprint_retirement_archive(engine, storage, migration_id="receipts")
     document = await verify_historical_archive(storage, reference)
-    assert document["format"] == "historical-relational-archive/v2"
+    assert document["format"] == "historical-relational-archive/v3"
     assert [row["receipt_id"] for row in decoded_rows(document, "policy_compliance_receipts")] == [["text", "receipt"]]
     child, = decoded_rows(document, "policy_compliance_adopted_revisions")
     assert child["receipt_id"] == ["text", "receipt"] and child["revision_digest"] == ["text", "b" * 64]
@@ -274,20 +274,25 @@ async def test_related_row_mutation_invalidates_replay_and_limit_covers_related_
 
 
 @pytest.mark.asyncio
-async def test_v1_archive_remains_readable_but_does_not_claim_v2_reference_coverage(database, tmp_path):
+@pytest.mark.parametrize("version", [1, 2])
+async def test_previous_archive_formats_remain_readable_without_embedded_coverage(database, tmp_path, version):
     engine, _ = database
     storage = CommunityFileSystemStorage(str(tmp_path / "storage"))
     reference, = await capture_sprint_retirement_archive(engine, storage, migration_id="legacy")
     document = await verify_historical_archive(storage, reference)
-    document["format"] = "historical-relational-archive/v1"
-    document.pop("reference_roles")
+    document["format"] = f"historical-relational-archive/v{version}"
+    if version == 1:
+        document.pop("reference_roles")
     encoded = json.dumps(document, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     path = await storage.save("board-a", "legacy.json", encoded)
     counts = tuple((table, len(document["tables"][table]["rows"])) for table in (
         "sprints", "sprint_history", "sprint_qa_items", "sprint_activation_baselines")) + (("card_links", 0),)
+    if version == 2:
+        counts = tuple((table, len(document["tables"][table]["rows"])) for table in sorted(document["tables"])) + (("card_links", 0), ("reference_roles", 0))
     legacy = replace(reference, storage_path=path, sha256=hashlib.sha256(encoded).hexdigest(), size=len(encoded), counts=counts)
     restored = await verify_historical_archive(storage, legacy)
-    assert restored["format"].endswith("/v1") and "reference_roles" not in restored
+    assert restored["format"].endswith(f"/v{version}")
+    assert all(not role["roles"] for role in restored.get("reference_roles", []))
 
 
 @pytest.mark.asyncio
