@@ -35,7 +35,6 @@ from okto_pulse.community.api.discovery import router as discovery_router
 from okto_pulse.community.api.settings import router as settings_router
 from okto_pulse.community.api.queue_health import router as queue_health_router
 from okto_pulse.community.api.kg_health import router as kg_health_router
-from okto_pulse.community.api.kg_rebuild import router as kg_rebuild_router
 from okto_pulse.community.api.kg_canonical_debt import (
     router as kg_canonical_debt_router,
 )
@@ -131,7 +130,6 @@ api_router.include_router(discovery_router, tags=["discovery"])
 api_router.include_router(settings_router, tags=["settings"])
 api_router.include_router(queue_health_router, tags=["queue-health"])
 api_router.include_router(kg_health_router, tags=["kg-health"])
-api_router.include_router(kg_rebuild_router, tags=["kg-rebuild"])
 api_router.include_router(kg_canonical_debt_router, tags=["kg-canonical-debt"])
 api_router.include_router(kg_projection_repair_router, tags=["kg-projection-repair"])
 api_router.include_router(

@@ -154,19 +154,6 @@ def test_explicit_privacy_erases_only_board_graph_artifacts_under_fence(tmp_path
     assert preserved.read_bytes() == b"opaque bytes"
 
 
-def test_offline_executor_rejects_legacy_files_without_mutating_them(tmp_path):
-    from okto_pulse.community import kg_recovery_only as recovery
-
-    board = tmp_path / "boards" / "retired"
-    board.mkdir(parents=True)
-    graph = board / "graph.lbug"
-    graph.write_bytes(b"preserve")
-    with pytest.raises(recovery.RecoveryRefused, match="retired_files_preserved"):
-        recovery._require_authenticated_recoverable_backend(tmp_path, "retired")
-    assert graph.read_bytes() == b"preserve"
-    assert list(board.iterdir()) == [graph]
-
-
 @pytest.mark.parametrize("scope", ["board", "global"])
 def test_legacy_files_refused_without_binding_publication_or_mutation(tmp_path, scope):
     store = CommunityGraphBackendBindingStore(tmp_path)

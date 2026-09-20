@@ -18,7 +18,6 @@ from __future__ import annotations
 import ast
 import asyncio
 import hashlib
-import json
 import sqlite3
 from pathlib import Path
 from zipfile import ZipFile
@@ -1069,7 +1068,6 @@ def test_v030_installed_schema_upgrades_to_exact_semantic_v2_and_replays(
     )
     assert binding_contract["observed"] == binding_contract["expected"]
     assert owned_schema
-    from okto_pulse.community import kg_recovery_only as recovery
 
     with sqlite3.connect(database_path) as connection:
         schema_objects = tuple(
@@ -1119,22 +1117,6 @@ def test_v030_installed_schema_upgrades_to_exact_semantic_v2_and_replays(
             "exact_rebuild_consolidation_compensations",
             "exact_rebuild_consolidation_compensations",
         ),
-    )
-    assert recovery.MAX_RECOVERY_SQLITE_SCHEMA_OBJECTS >= 4 * len(schema_objects)
-    assert (
-        len(json.dumps(schema_objects, sort_keys=True, separators=(",", ":")).encode())
-        < recovery.MAX_LEGACY_PROTECTED_QUEUE_BYTES
-    )
-    fingerprint = recovery._sqlite_schema_fingerprint(database_path)
-    assert len(fingerprint) == 64
-    assert fingerprint == recovery._sqlite_schema_fingerprint(database_path)
-    logical_fingerprints = recovery._sqlite_logical_fingerprints(database_path)
-    assert set(recovery.SQLITE_LOGICAL_STREAMING_POLICIES).issubset(
-        logical_fingerprints
-    )
-    assert all(
-        len(logical_fingerprints[table_name]) == 64
-        for table_name in recovery.SQLITE_LOGICAL_STREAMING_POLICIES
     )
 
 

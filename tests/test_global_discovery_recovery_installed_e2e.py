@@ -24,6 +24,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import tomllib
 import zipfile
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -39,7 +40,7 @@ from fastmcp import Client
 from okto_pulse.core.application.boundary.repository_checkout import (
     resolve_repository_checkout,
 )
-from okto_pulse.community import kg_recovery_only as _kg_recovery_only
+from packaging.requirements import Requirement
 
 COMMUNITY_REPO = Path(__file__).resolve().parents[1]
 _CORE_CHECKOUT = resolve_repository_checkout(
@@ -59,14 +60,20 @@ FINAL_WHEEL_DIR_ENV = "OKTO_E2E_FINAL_WHEEL_DIR"
 FINAL_CORE_WHEEL_SHA256_ENV = "OKTO_E2E_FINAL_CORE_WHEEL_SHA256"
 FINAL_COMMUNITY_WHEEL_SHA256_ENV = "OKTO_E2E_FINAL_COMMUNITY_WHEEL_SHA256"
 FINAL_GRAFX_WHEEL_SHA256_ENV = "OKTO_E2E_FINAL_GRAFX_WHEEL_SHA256"
-# Single source of truth for the pinned Grafx release: the recovery-only CLI
-# module asserts it against the Community dependency pin.
-EXPECTED_GRAFX_VERSION = _kg_recovery_only.EXPECTED_GRAFX_VERSION
+# Derive the build requirement from the same local project used by this harness.
+_grafx_requirement = next(
+    Requirement(value)
+    for value in tomllib.loads((COMMUNITY_REPO / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
+    if Requirement(value).name == "okto-grafx"
+)
+_grafx_pins = tuple(_grafx_requirement.specifier)
+assert len(_grafx_pins) == 1 and _grafx_pins[0].operator == "=="
+EXPECTED_GRAFX_VERSION = _grafx_pins[0].version
 BOARD_CENSUS_SIZE = 1_500
-EXPECTED_TOOL_COUNT = 340
-EXPECTED_CANONICAL_TOOL_COUNT = 332
+EXPECTED_TOOL_COUNT = 341
+EXPECTED_CANONICAL_TOOL_COUNT = 333
 EXPECTED_TOOL_INVENTORY_SHA256 = (
-    "dd873175dd1a3e150200ab34497184e32898b007b9776ad3995246dc74f25717"
+    "b88574861a237b1159358930b705b3d30592bc01b5cf0c61f30a55841edd2412"
 )
 EXPECTED_TOOL_ALIASES = {
     "okto_pulse_ask_ideation_question": "okto_pulse_ask",
@@ -2927,7 +2934,6 @@ async def test_installed_hard_kill_at_building_is_adopted_charged_and_completes(
         assert journal_path.name == "active_generation.json"
         assert killed_journal["layout_version"] == 1
         assert killed_journal["generation_id"].startswith("gdr_")
-        killed_journal_sha = hashlib.sha256(killed_journal_bytes).hexdigest()
 
         pre_dispatches = _recovery_dispatch_rows(runtime, run_id)
         recovery_pre = [

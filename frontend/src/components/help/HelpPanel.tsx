@@ -1587,7 +1587,7 @@ MCP agents can query **and curate** the Knowledge Graph via 25+ tools:
 
 **Cognitive ledger** — \`kg_list_cognitive_pending_items\`, \`kg_update_cognitive_pending_item\`
 
-**Operate** — \`kg_health\`, \`kg_tick_run_now\`, \`kg_migrate_schema\`, \`kg_rebuild_preflight\` / \`kg_rebuild_confirm\` / \`kg_rebuild_run\`, \`kg_dead_letter_list\` / \`kg_dead_letter_reprocess\`, \`kg_orphan_report\` / \`kg_orphan_backfill\`, \`kg_schema_info\`
+**Operate** — \`kg_health\`, \`kg_tick_run_now\`, \`kg_migrate_schema\`, \`kg_dead_letter_list\` / \`kg_dead_letter_reprocess\`, \`kg_orphan_report\` / \`kg_orphan_backfill\`, \`kg_schema_info\`
 `,
     },
     {
