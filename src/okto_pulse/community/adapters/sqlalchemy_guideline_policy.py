@@ -133,7 +133,6 @@ from .sqlalchemy_models import (
     DomainEventRow,
     Refinement,
     Spec,
-    Sprint,
     SemanticGuidelineRevisionRow,
     SemanticGuidelineBindingConfigurationRow,
 )
@@ -4197,14 +4196,13 @@ class CommunitySqlAlchemyGuidelinePolicy:
         *,
         board_id: str,
     ) -> tuple[PolicySubjectRef, ...]:
-        """Return every resolvable board artifact/version in canonical order."""
+        """Return live board subjects; sealed historical receipts keep their own inventory."""
 
         subjects: list[PolicySubjectRef] = []
         model_specs = (
             (PolicyEntityType.IDEATION, Ideation, "version", "edition"),
             (PolicyEntityType.REFINEMENT, Refinement, "version", "edition"),
             (PolicyEntityType.SPEC, Spec, "version", "edition"),
-            (PolicyEntityType.SPRINT, Sprint, "version", None),
             (PolicyEntityType.CARD, Card, "policy_version", None),
         )
         for entity_type, model, version_field, edition_field in model_specs:
