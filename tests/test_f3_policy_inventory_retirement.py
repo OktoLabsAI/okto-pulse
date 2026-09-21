@@ -11,6 +11,7 @@ import pytest
 from sqlalchemy import event, select
 
 from okto_pulse.community.adapters.sqlalchemy_database import get_engine, get_session_factory
+from okto_pulse.community.adapters import sqlalchemy_guideline_policy as policy_adapter
 from okto_pulse.community.adapters.sqlalchemy_guideline_policy import CommunitySqlAlchemyGuidelinePolicy
 from okto_pulse.community.adapters.sqlalchemy_models import (
     Board, Card, Guideline as LegacyGuidelineRow, GuidelineImpactAdoptionRow,
@@ -122,6 +123,10 @@ async def test_sealed_sprint_history_survives_live_inventory_retirement(
     # storage. Assertions below use the real current adapter, without patches.
     with monkeypatch.context() as old:
         old.setattr(CommunitySqlAlchemyGuidelinePolicy, "list_policy_subjects", legacy_inventory)
+        # Reconstruct the frozen pre-retirement storage only. New publication
+        # now rejects this target, while the receipt/adoption must remain exact.
+        # The real guard is restored before every assertion against the runtime.
+        old.setattr(policy_adapter, "require_writable_guideline_revision", lambda revision: None)
         _, plan, adoption = await _seed_preview()
         assert _json_value(plan.receipt) == baseline["receipt"]
         assert plan.request_digest == baseline["preview_request_digest"]
@@ -149,6 +154,13 @@ async def test_sealed_sprint_history_survives_live_inventory_retirement(
             assert await adapter.save_impact_preview(plan=plan) == plan.receipt
             stored = await adapter.get_impact_receipt(board_id=BOARD, impact_receipt_id=plan.receipt.impact_receipt_id)
             assert _json_value(stored) == baseline["receipt"]
+            identity = await adapter.get_guideline(guideline_id="guideline-f3-history")
+            head = await adapter.get_head(guideline_id=identity.guideline_id)
+            revision = await adapter.get_revision(guideline_id=identity.guideline_id, revision_id=head.revision_id)
+            assert await adapter.create_guideline(
+                guideline=identity, initial_revision=revision, initial_head=head,
+                idempotency_key="create:f3-history", request_digest="1" * 64,
+            ) == (identity, revision, head)
             items, cursor = [], None
             while True:
                 page = await adapter.list_impact_items(GuidelineImpactListQuery(

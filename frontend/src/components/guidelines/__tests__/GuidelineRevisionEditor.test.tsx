@@ -194,6 +194,32 @@ describe('GuidelineRevisionEditor semantic authoring', () => {
     expect(screen.queryByText('Deterministic predicates')).not.toBeInTheDocument();
     expect(screen.queryByText('Operator')).not.toBeInTheDocument();
     expect(screen.queryByText('Code')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Add Sprint metric target' })).not.toBeInTheDocument();
+  });
+
+  it('requires explicit removal of a historical target and preserves the loaded revision', async () => {
+    const historical = revision([{ ...metric, target_entity_types: ['spec', 'sprint'] }]);
+    const original = JSON.stringify(historical);
+    renderEditor(historical);
+    const remove = await screen.findByRole('button', { name: 'Remove historical Sprint target' });
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'New title' } });
+    expect(screen.getByTestId('create-guideline-revision')).toBeDisabled();
+    expect(policyApiMock.createGuidelineRevision).not.toHaveBeenCalled();
+    fireEvent.click(remove);
+    fireEvent.change(screen.getByLabelText('Version bump'), { target: { value: 'major' } });
+    expect(screen.getByTestId('create-guideline-revision')).toBeEnabled();
+    fireEvent.click(screen.getByTestId('create-guideline-revision'));
+    await waitFor(() => expect(policyApiMock.createGuidelineRevision).toHaveBeenCalledTimes(1));
+    expect(policyApiMock.createGuidelineRevision.mock.calls[0][2].metrics[0].target_entity_types).toEqual(['spec']);
+    expect(JSON.stringify(historical)).toBe(original);
+  });
+
+  it('does not grant metric authoring authority to remove a historical target', async () => {
+    grant('guidelines.revisions.read', 'guidelines.revisions.create');
+    renderEditor(revision([{ ...metric, target_entity_types: ['sprint'] }]));
+    expect(await screen.findByRole('button', { name: 'Remove historical Sprint target' })).toBeDisabled();
+    expect(screen.getByTestId('create-guideline-revision')).toBeDisabled();
+    expect(policyApiMock.createGuidelineRevision).not.toHaveBeenCalled();
   });
 
   it('creates an ordered semantic revision with the current head fence', async () => {

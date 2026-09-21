@@ -1,10 +1,9 @@
-import type { PolicyEntityType } from '@/types/policy-governance';
+import type { ActivePolicyEntityType } from '@/types/policy-governance';
 
-export const GUIDELINE_ENTITY_TYPES: readonly PolicyEntityType[] = [
+export const GUIDELINE_ENTITY_TYPES: readonly ActivePolicyEntityType[] = [
   'ideation',
   'refinement',
   'spec',
-  'sprint',
   'card',
   'test_scenario',
 ];

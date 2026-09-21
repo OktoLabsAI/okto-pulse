@@ -324,6 +324,22 @@ function SemanticMetricCard({
             );
           })}
         </div>
+        {metric.targetEntityTypes.includes('sprint') && (
+          <div className="mt-2 rounded-lg border border-amber-300 p-3 text-xs">
+            <p>Sprint is preserved in this historical revision. A new revision requires explicit removal of this target.</p>
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => onChange({
+                ...metric,
+                targetEntityTypes: metric.targetEntityTypes.filter((target) => target !== 'sprint'),
+              })}
+              className="mt-2 underline disabled:opacity-40"
+            >
+              Remove historical Sprint target
+            </button>
+          </div>
+        )}
       </fieldset>
 
       <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_260px]">

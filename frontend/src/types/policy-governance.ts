@@ -17,6 +17,8 @@ export type PolicyEntityType =
   | 'test_scenario';
 
 export type PolicyGuidelineScope = 'global' | 'inline';
+/** New authoring excludes retired targets; PolicyEntityType also reads history. */
+export type ActivePolicyEntityType = Exclude<PolicyEntityType, 'sprint'>;
 export type GuidelineContextScope = 'all';
 export type GuidelineEnforcement = 'advisory' | 'blocking';
 export type GuidelineBindingState = 'active' | 'unlinked';
