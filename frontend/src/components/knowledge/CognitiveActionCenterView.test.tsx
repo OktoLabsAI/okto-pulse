@@ -152,6 +152,15 @@ function mockList(items: CognitiveReadinessItem[], enforcement = false) {
   vi.spyOn(api, "getReadinessMetrics").mockResolvedValue(METRICS);
 }
 
+test('retains a legacy Sprint reference without a live entity lookup or navigation', async () => {
+  mockList([item({ artifact_id: 'sprint:retired', source_ref_original: 'sprint:retired', aliases: ['sprint:retired'] })]);
+  render(<CognitiveActionCenterView boardId="b" onClose={vi.fn()} />);
+  await screen.findByText('sprint:retired');
+  expect(entityApi.getSprint).not.toHaveBeenCalled();
+  expect(screen.queryByRole('button', { name: 'Open source' })).not.toBeInTheDocument();
+  expect(navigation).not.toHaveBeenCalled();
+});
+
 afterEach(() => {
   vi.restoreAllMocks();
 });

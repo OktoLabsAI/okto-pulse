@@ -34,9 +34,12 @@ function ScopedSource({ node, boardId }: { node: KGNode; boardId?: string }) {
     return () => controller.abort();
   }, [boardId, node.id, attempt]);
 
-  const target = result?.status === 'resolved' && result.target?.board_id === boardId ? result.target : null;
+  // A stale graph response may still name a retired entity. Preserve its source
+  // reference below without offering an operational Sprint link.
+  const target = result?.status === 'resolved' && result.target && result.target.board_id === boardId
+    && result.target.entity_type !== 'sprint' ? result.target : null;
   const open = () => {
-    if (!target || !stack) return;
+    if (!target || !stack || target.entity_type === 'sprint') return;
     const top = stack.stack[stack.stack.length - 1];
     if (top?.type !== 'kg_node' || top.id !== node.id || top.boardId !== boardId) {
       stack.push({ type: 'kg_node', id: node.id, boardId });

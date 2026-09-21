@@ -24,7 +24,7 @@ beforeEach(() => { vi.clearAllMocks(); vi.mocked(getNodeSource).mockResolvedValu
 afterEach(cleanup);
 
 describe('KG source navigation shared by graph and Discovery', () => {
-  it.each(['spec', 'refinement', 'ideation', 'sprint', 'story', 'card'] as const)('opens the authorized %s modal, with a node return layer', async (entityType) => {
+  it.each(['spec', 'refinement', 'ideation', 'story', 'card'] as const)('opens the authorized %s modal, with a node return layer', async (entityType) => {
     vi.mocked(getNodeSource).mockResolvedValue({ ...resolved, target: { ...resolved.target!, entity_type: entityType, entity_kind: entityType } });
     render(<View />);
     fireEvent.click(await screen.findByRole('button', { name: `Open ${entityType}: Owner title` }));
@@ -59,6 +59,16 @@ describe('KG source navigation shared by graph and Discovery', () => {
     render(<View />);
     await screen.findByText(/source is unavailable/);
     expect(screen.queryByText('Owner title')).not.toBeInTheDocument();
+  });
+
+  it('preserves a retired Sprint reference without opening a live entity', async () => {
+    vi.mocked(getNodeSource).mockResolvedValue({ ...resolved, source_artifact_ref: 'sprint:retired',
+      target: { ...resolved.target!, entity_type: 'sprint', entity_kind: 'sprint' } });
+    render(<View />);
+    await screen.findByText('sprint:retired');
+    expect(screen.queryByRole('button', { name: /^Open / })).not.toBeInTheDocument();
+    expect(screen.getByTestId('stack')).toHaveTextContent('[]');
+    expect(openCard).not.toHaveBeenCalled();
   });
 
   it('cancels and ignores late results after changing board/node', async () => {

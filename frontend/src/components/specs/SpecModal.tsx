@@ -66,7 +66,6 @@ import type {
   ObservabilityRequirement,
   Spec,
   SpecStatus,
-  SprintSummary,
   SpecQAItem,
   SpecHistoryEntry,
   SpecStructuredEntityOperation,
@@ -115,7 +114,6 @@ import {
   type PolicyTransitionPreviewLoadState,
 } from '@/components/policy-compliance';
 import { ValidationErrorDisplay } from './ValidationErrorDisplay';
-import { SprintSuggestionModal } from '@/components/sprints/SprintSuggestionModal';
 import { SPEC_STATUSES, SPEC_STATUS_LABELS } from '@/types';
 import { MentionInput, type Mentionable } from '@/components/shared/MentionInput';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
@@ -148,7 +146,6 @@ import {
 } from '@/components/code-traceability';
 import { SpecDependenciesTab } from './SpecDependenciesTab';
 import type { SpecDependencyDirection } from '@/types/spec-dependencies';
-import { QABadge } from '@/components/shared/QABadge';
 import {
   ProjectStructureErrorBoundary,
   ProjectStructureTab,
@@ -185,7 +182,6 @@ type ModalTab =
   | 'resources'
   | 'qa'
   | 'references'
-  | 'sprints'
   | 'kg'
   | 'validation'
   | 'historical-context'
@@ -1343,64 +1339,6 @@ export function QATab({
   );
 }
 
-function SpecSprintsTab({ sprints, api }: { sprints: SprintSummary[]; api: ReturnType<typeof useDashboardApi> }) {
-  const [details, setDetails] = useState<Record<string, any>>({});
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    if (sprints.length === 0) { setLoading(false); return; }
-    Promise.all(sprints.map(s => api.getSprint(s.id).catch(() => null)))
-      .then(results => {
-        const map: Record<string, any> = {};
-        for (const r of results) { if (r) map[r.id] = r; }
-        setDetails(map);
-      })
-      .finally(() => setLoading(false));
-  }, [sprints.length]);
-
-  if (loading) return <p className="text-sm text-gray-400 text-center py-6">Loading sprints...</p>;
-  if (sprints.length === 0) return <p className="text-sm text-gray-400 text-center py-6">No sprints linked to this spec</p>;
-
-  return (
-    <div className="space-y-3">
-      {sprints.map((sprint) => {
-        const detail = details[sprint.id];
-        const cards = detail?.cards || [];
-        const total = cards.length;
-        const done = cards.filter((c: any) => c.status === 'done').length;
-        const pct = total > 0 ? Math.round((done / total) * 100) : 0;
-        return (
-          <div key={sprint.id} className="p-3 bg-gray-50 dark:bg-gray-700/50 rounded-lg">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2">
-                <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium text-white ${
-                  sprint.status === 'closed' ? 'bg-green-500' :
-                  sprint.status === 'active' ? 'bg-blue-500' :
-                  sprint.status === 'review' ? 'bg-amber-500' :
-                  sprint.status === 'cancelled' ? 'bg-red-500' : 'bg-gray-500'
-                }`}>{sprint.status}</span>
-                <span className="text-sm font-medium text-gray-900 dark:text-white">{sprint.title}</span>
-                <QABadge count={sprint.open_qa_count} />
-              </div>
-              <span className="text-xs font-bold text-gray-600 dark:text-gray-300">{pct}%</span>
-            </div>
-            <div className="w-full bg-gray-200 dark:bg-gray-600 rounded-full h-2 mb-1">
-              <div
-                className={`h-2 rounded-full transition-all ${pct === 100 ? 'bg-green-500' : pct >= 50 ? 'bg-blue-500' : 'bg-amber-500'}`}
-                style={{ width: `${pct}%` }}
-              />
-            </div>
-            <div className="flex items-center justify-between mt-1">
-              <p className="text-[10px] text-gray-400">{done}/{total} cards done · v{sprint.version}</p>
-              {sprint.objective && <p className="text-[10px] text-gray-500 truncate max-w-[60%]">{sprint.objective}</p>}
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 /* ============================================================
    Knowledge Base Tab
    ============================================================ */
@@ -1709,8 +1647,6 @@ export function SpecModal({
   const [showValidateModal, setShowValidateModal] = useState(false);
   const [validateResult, setValidateResult] = useState<{ success: boolean; error: string | null }>({ success: false, error: null });
   const [validating, setValidating] = useState(false);
-  const [sprintSuggestions, setSprintSuggestions] = useState<any[] | null>(null);
-  const [linkedSprints, setLinkedSprints] = useState<SprintSummary[]>([]);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [validationHistoryRefreshKey, setValidationHistoryRefreshKey] =
     useState(0);
@@ -1945,14 +1881,6 @@ export function SpecModal({
           }
         } else {
           setParentRefinement(null);
-        }
-        try {
-          const sprints = await api.listSprints(data.board_id, data.id);
-          if (!isCurrent()) return null;
-          setLinkedSprints(sprints);
-        } catch {
-          if (!isCurrent()) return null;
-          setLinkedSprints([]);
         }
       }
 
@@ -2270,16 +2198,6 @@ export function SpecModal({
         await loadAllowedTransitions(updated);
         onChanged();
         setValidateResult({ success: true, error: null });
-        if (updated.cards && updated.cards.length >= 6) {
-          try {
-            const result = await api.suggestSprints(updated.board_id, specId);
-            if (result.suggestions && result.suggestions.length > 1) {
-              setSprintSuggestions(result.suggestions);
-            }
-          } catch {
-            // Suggestion is optional, don't block on failure
-          }
-        }
       } catch (err: any) {
         setValidateResult({ success: false, error: err?.message || 'Validation failed' });
         await loadAllowedTransitions(spec);
@@ -2416,7 +2334,6 @@ export function SpecModal({
     { id: 'resources', label: 'Resources', icon: <BookOpen size={14} /> },
     { id: 'qa', label: 'Q&A', icon: <MessageCircleQuestion size={14} />, count: spec.qa_items?.length || 0, highlight: unansweredQA > 0 },
     { id: 'references', label: 'References', icon: <Link2 size={14} />, count: spec.cards?.length || 0 },
-    { id: 'sprints', label: 'Sprints', icon: <Layers size={14} />, count: linkedSprints.length },
     { id: 'kg', label: 'KG Graph', icon: <Network size={14} /> },
     ...(showValidationTab
       ? [{ id: 'validation' as ModalTab, label: 'Validation', icon: <ShieldCheck size={14} /> }]
@@ -2868,16 +2785,6 @@ export function SpecModal({
                 }}
               />
 
-              {/* Sprints summary — details in Sprints tab */}
-              {linkedSprints.length > 0 && (
-                <button
-                  onClick={() => setActiveTab('sprints')}
-                  className="text-xs text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1"
-                >
-                  <Layers size={12} />
-                  {linkedSprints.length} sprint{linkedSprints.length > 1 ? 's' : ''} linked — view details
-                </button>
-              )}
             </div>
           )}
 
@@ -3367,9 +3274,7 @@ export function SpecModal({
             />
           )}
 
-          {activeTab === 'sprints' && (
-            <SpecSprintsTab sprints={linkedSprints} api={api} />
-          )}
+
 
           {activeTab === 'references' && (
             <div className="space-y-4" data-testid="spec-references-panel">
@@ -3509,25 +3414,6 @@ export function SpecModal({
                 {validating ? 'Validating...' : 'Validate'}
               </button>
             )}
-            {['validated', 'in_progress'].includes(spec.status) && (spec.cards?.length || 0) >= 4 && (
-              <button
-                onClick={async () => {
-                  try {
-                    const result = await api.suggestSprints(spec.board_id, specId);
-                    if (result.suggestions?.length > 1) {
-                      setSprintSuggestions(result.suggestions);
-                    } else {
-                      toast('Not enough tasks to split into sprints', { icon: 'ℹ️' });
-                    }
-                  } catch { toast.error('Failed to generate suggestions'); }
-                }}
-                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors
-                  bg-indigo-50 text-indigo-700 hover:bg-indigo-100 dark:bg-indigo-900/30 dark:text-indigo-300 dark:hover:bg-indigo-900/50"
-              >
-                <Layers size={14} />
-                Suggest Sprints
-              </button>
-            )}
             <button onClick={onClose} className="btn btn-secondary">Close</button>
           </div>
         </div>
@@ -3557,18 +3443,6 @@ export function SpecModal({
           onClose={() => setViewingSpecId(null)}
           onEscape={() => setViewingSpecId(null)}
           onChanged={loadSpec}
-        />
-      )}
-
-      {/* Sprint Suggestion Modal */}
-      {sprintSuggestions && spec && (
-        <SprintSuggestionModal
-          boardId={spec.board_id}
-          specId={specId}
-          suggestions={sprintSuggestions}
-          onClose={() => setSprintSuggestions(null)}
-          onSkip={() => setSprintSuggestions(null)}
-          onCreated={() => { setSprintSuggestions(null); loadSpec(); }}
         />
       )}
 

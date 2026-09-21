@@ -36,9 +36,6 @@ vi.mock('@/components/refinements', () => ({
 vi.mock('@/components/specs', () => ({
   SpecsPanel: (props: ProbeProps) => <PanelProbe {...props} name="specs" />,
 }));
-vi.mock('@/components/sprints', () => ({
-  SprintsPanel: (props: ProbeProps) => <PanelProbe {...props} name="sprints" />,
-}));
 vi.mock('@/components/kanban', () => ({
   KanbanBoard: (props: ProbeProps) => <PanelProbe {...props} name="tasks" />,
 }));
@@ -68,7 +65,7 @@ describe('BoardStageContent', () => {
     },
   );
 
-  it.each(['ideations', 'refinements', 'specs', 'sprints', 'archives'] as const)(
+  it.each(['ideations', 'refinements', 'specs', 'archives'] as const)(
     'remounts %s on both refresh and board change',
     (activeTab) => {
       const { rerender } = render(

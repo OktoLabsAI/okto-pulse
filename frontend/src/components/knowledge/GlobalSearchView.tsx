@@ -213,16 +213,16 @@ export function GlobalSearchView({ boardId }: Props) {
     const meta = (row.meta || {}) as Record<string, unknown>;
     const entityType = typeof meta.entity_type === 'string' ? meta.entity_type : null;
     const entityId = typeof meta.entity_id === 'string' ? meta.entity_id : null;
-    if (!entityType || !entityId) return;
+    if (!entityType || !entityId || entityType === 'sprint') return;
 
-    const valid = ['card', 'spec', 'ideation', 'refinement', 'sprint', 'kg_node'];
+    const valid = ['card', 'spec', 'ideation', 'refinement', 'kg_node'];
     const type = valid.includes(entityType) ? entityType : 'kg_node';
 
     if (type === 'card') {
       // CardModal reads the id from the dashboard store, not props.
       openCardInStore(entityId);
     }
-    pushModal({ type: type as 'card' | 'spec' | 'ideation' | 'refinement' | 'sprint' | 'kg_node', id: entityId,
+    pushModal({ type: type as 'card' | 'spec' | 'ideation' | 'refinement' | 'kg_node', id: entityId,
       boardId: typeof meta.board_id === 'string' ? meta.board_id : boardId });
   };
   const [intentsOpen, setIntentsOpen] = useState<boolean>(() => {
@@ -1163,6 +1163,7 @@ export function GlobalSearchView({ boardId }: Props) {
                       const meta = (r.meta || {}) as Record<string, unknown>;
                       const canOpen =
                         typeof meta.entity_type === 'string' &&
+                        meta.entity_type !== 'sprint' &&
                         typeof meta.entity_id === 'string' &&
                         (meta.entity_type as string).length > 0 &&
                         (meta.entity_id as string).length > 0;

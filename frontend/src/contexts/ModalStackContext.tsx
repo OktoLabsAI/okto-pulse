@@ -15,7 +15,7 @@
  *     close/X control — "X fecha todas as modais, independente do nível
  *     de drill down".
  *
- * Entities supported today: card, story, spec, ideation, refinement, sprint,
+ * Entities supported today: card, story, spec, ideation, refinement,
  * kg_node. New entity types just need an entry in ModalStackRenderer.
  */
 
@@ -33,7 +33,6 @@ export type ModalStackEntry = { boardId?: string } & (
   }
   | { type: 'ideation'; id: string }
   | { type: 'refinement'; id: string }
-  | { type: 'sprint'; id: string }
   | { type: 'kg_node'; id: string });
 
 interface ModalStackContextValue {
@@ -49,6 +48,8 @@ export function ModalStackProvider({ children }: { children: ReactNode }) {
   const [stack, setStack] = useState<ModalStackEntry[]>([]);
 
   const push = useCallback((entry: ModalStackEntry) => {
+    // Old links or external graph data must not open an unsupported modal.
+    if (!['card', 'story', 'spec', 'ideation', 'refinement', 'kg_node'].includes(entry.type)) return;
     setStack((prev) => {
       // Dedupe: if the top of the stack is the same entity, don't push
       // twice (avoids double-click creating phantom layers).

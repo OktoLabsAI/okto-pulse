@@ -26,7 +26,6 @@ import { StoryModal } from '@/components/stories';
 import { SpecModal } from '@/components/specs/SpecModal';
 import { IdeationModal } from '@/components/ideations/IdeationModal';
 import { RefinementModal } from '@/components/refinements/RefinementModal';
-import { SprintModal } from '@/components/sprints/SprintModal';
 import { NodeDetailModal } from '@/components/knowledge/NodeDetailModal';
 import { useDashboardApi } from '@/services/api';
 import { useDashboardStore } from '@/store/dashboard';
@@ -165,14 +164,6 @@ export function ModalStackRenderer({ boardId: currentBoardId }: Props) {
           onChanged={() => {
             /* drill-down is read-only from here */
           }}
-        />
-      )}
-      {top.type === 'sprint' && (
-        <SprintModal
-          key={`sprint-${boardId}-${top.id}`}
-          sprintId={top.id}
-          onClose={handleClose}
-          onEscape={stack.length > 1 ? handleBack : handleClose}
         />
       )}
       {top.type === 'kg_node' && (

@@ -24,7 +24,7 @@ describe('paginated list API surface', () => {
     });
   });
 
-  it('opts all five list surfaces into envelopes with offset, limit, filters and cancellation', async () => {
+  it('opts all four list surfaces into envelopes with offset, limit, filters and cancellation', async () => {
     const controller = new AbortController();
     const { result } = renderHook(() => useDashboardApi());
 
@@ -64,14 +64,7 @@ describe('paginated list API surface', () => {
       labels: ['api', 'ux'],
       signal: controller.signal,
     });
-    await result.current.listBoardSprintsPage('board-1', {
-      offset: 25,
-      limit: 25,
-      status: 'in_progress',
-      specId: 'spec-1',
-      search: 'sprint query',
-      signal: controller.signal,
-    });
+
 
     expect(mockApiClient.fetchJson).toHaveBeenNthCalledWith(
       1,
@@ -91,11 +84,6 @@ describe('paginated list API surface', () => {
     expect(mockApiClient.fetchJson).toHaveBeenNthCalledWith(
       4,
       '/boards/board-1/refinements?offset=0&limit=25&status=done&search=needle&derivation_pending=true&labels=api%2Cux',
-      { signal: controller.signal },
-    );
-    expect(mockApiClient.fetchJson).toHaveBeenNthCalledWith(
-      5,
-      '/boards/board-1/sprints?offset=25&limit=25&status=in_progress&spec_id=spec-1&search=sprint+query',
       { signal: controller.signal },
     );
   });

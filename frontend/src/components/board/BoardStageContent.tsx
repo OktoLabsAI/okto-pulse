@@ -2,7 +2,6 @@ import { IdeationsPanel } from '@/components/ideations';
 import { KanbanBoard } from '@/components/kanban';
 import { RefinementsPanel } from '@/components/refinements';
 import { SpecsPanel } from '@/components/specs';
-import { SprintsPanel } from '@/components/sprints';
 import { StoriesPanel } from '@/components/stories';
 import { HistoricalArchivesPanel } from './HistoricalArchivesPanel';
 
@@ -11,7 +10,6 @@ export type StageTabId =
   | 'ideations'
   | 'refinements'
   | 'specs'
-  | 'sprints'
   | 'tasks'
   | 'archives';
 
@@ -46,9 +44,6 @@ export function BoardStageContent({
       )}
       {activeTab === 'specs' && (
         <SpecsPanel key={`${boardId}:${refreshKey}`} boardId={boardId} />
-      )}
-      {activeTab === 'sprints' && (
-        <SprintsPanel key={`${boardId}:${refreshKey}`} boardId={boardId} />
       )}
       {activeTab === 'tasks' && (
         <KanbanBoard key={boardId} boardId={boardId} refreshKey={refreshKey} />

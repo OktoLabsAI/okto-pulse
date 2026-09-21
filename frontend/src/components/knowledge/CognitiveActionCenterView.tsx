@@ -83,9 +83,9 @@ export function artifactTarget(
   if (!id) return null;
   if (["card", "task", "test", "bug"].includes(kind))
     return { type: "card", id };
-  if (["spec", "ideation", "refinement", "sprint", "story"].includes(kind))
+  if (["spec", "ideation", "refinement", "story"].includes(kind))
     return {
-      type: kind as "spec" | "ideation" | "refinement" | "sprint" | "story",
+      type: kind as "spec" | "ideation" | "refinement" | "story",
       id,
     };
   return null;
@@ -227,7 +227,6 @@ function ActionCenter({ boardId, boardName, onClose, onOpenHealth }: Props) {
       spec: api.getSpec,
       ideation: api.getIdeation,
       refinement: api.getRefinement,
-      sprint: api.getSprint,
       story: api.getStory,
     };
     const worker = async () => {

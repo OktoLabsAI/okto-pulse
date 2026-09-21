@@ -328,7 +328,7 @@ describe('SpecModal Dependencies workspace', () => {
       expect(screen.queryByText(staleSnapshot.title)).not.toBeInTheDocument();
       expect(onChanged).not.toHaveBeenCalled();
       expect(apiMock.getAllowedTransitions).toHaveBeenCalledTimes(2);
-      expect(apiMock.listSprints).toHaveBeenCalledTimes(2);
+      expect(apiMock.listSprints).not.toHaveBeenCalled();
     });
   }, 10_000);
 

@@ -27,7 +27,6 @@ from okto_pulse.community.api.allowed_transitions import (
 )
 from okto_pulse.community.api.architecture import router as architecture_router
 from okto_pulse.community.api.presets import router as presets_router
-from okto_pulse.community.api.sprints import router as sprints_router
 from okto_pulse.community.api.kg_routes import router as kg_router
 from okto_pulse.community.api.kg_exploration import router as kg_exploration_router
 from okto_pulse.community.api.kg_projection_repair import router as kg_projection_repair_router
@@ -120,7 +119,6 @@ api_router.include_router(comments_router, prefix="/comments", tags=["comments"]
 api_router.include_router(analytics_router, tags=["analytics"])
 api_router.include_router(architecture_router, tags=["architecture"])
 api_router.include_router(presets_router, prefix="/presets", tags=["presets"])
-api_router.include_router(sprints_router, tags=["sprints"])
 api_router.include_router(kg_router, tags=["knowledge-graph"])
 api_router.include_router(kg_exploration_router)
 api_router.include_router(me_router, tags=["me"])

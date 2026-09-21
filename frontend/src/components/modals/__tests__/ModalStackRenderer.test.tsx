@@ -1,11 +1,30 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { ModalStackProvider, useModalStack } from '@/contexts/ModalStackContext';
+import { ModalStackProvider, useModalStack, type ModalStackEntry } from '@/contexts/ModalStackContext';
 import type { SpecSummary } from '@/types';
 import { RefinementEvidenceMatrixNavigation } from '@/components/refinements/RefinementModal';
 import { ModalStackRenderer } from '../ModalStackRenderer';
 
 const specModalSpy = vi.hoisted(() => vi.fn());
+
+function OldLinkProbe() {
+  const { push, stack } = useModalStack();
+  return <>
+    <button onClick={() => push({ type: 'spec', id: 'current' })}>Current Spec</button>
+    <button onClick={() => push({ type: 'sprint', id: 'retired' } as unknown as ModalStackEntry)}>Old link</button>
+    <output data-testid="stack-depth">{stack.length}</output>
+  </>;
+}
+
+it('ignores a retired Sprint link without losing the current Spec or adding a modal', () => {
+  render(<ModalStackProvider><OldLinkProbe /><ModalStackRenderer boardId="board-1" /></ModalStackProvider>);
+  fireEvent.click(screen.getByText('Old link'));
+  expect(screen.getByTestId('stack-depth')).toHaveTextContent('0');
+  fireEvent.click(screen.getByText('Current Spec'));
+  fireEvent.click(screen.getByText('Old link'));
+  expect(screen.getByTestId('stack-depth')).toHaveTextContent('1');
+  expect(specModalSpy).toHaveBeenLastCalledWith(expect.objectContaining({ specId: 'current' }));
+});
 
 vi.mock('@/components/specs/SpecModal', () => ({
   SpecModal: (props: Record<string, unknown>) => {
@@ -20,7 +39,6 @@ vi.mock('@/components/refinements/RefinementModal', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/components/refinements/RefinementModal')>();
   return { ...actual, RefinementModal: () => null };
 });
-vi.mock('@/components/sprints/SprintModal', () => ({ SprintModal: () => null }));
 vi.mock('@/components/knowledge/NodeDetailModal', () => ({ NodeDetailModal: () => null }));
 vi.mock('@/services/api', () => ({
   useDashboardApi: () => ({ listTopics: vi.fn().mockResolvedValue([]) }),

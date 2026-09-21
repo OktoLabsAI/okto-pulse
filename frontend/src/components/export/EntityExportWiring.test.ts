@@ -7,7 +7,6 @@ const MODALS = [
   ['ideations/IdeationModal.tsx', 'ideation'],
   ['refinements/RefinementModal.tsx', 'refinement'],
   ['specs/SpecModal.tsx', 'spec'],
-  ['sprints/SprintModal.tsx', 'sprint'],
   ['kanban/CardModal.tsx', 'card'],
 ] as const;
 

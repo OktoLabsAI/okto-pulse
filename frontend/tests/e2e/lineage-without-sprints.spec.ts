@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 
 test('packaged lineage connects Spec to task and opens its details without a Sprint stage', async ({ page }) => {
-  const errors: string[] = [], writes: string[] = [], selections: string[] = [];
+  const errors: string[] = [], writes: string[] = [], selections: string[] = [], sprintRequests: string[] = [];
   let cardReads = 0;
   page.on('pageerror', error => errors.push(error.message));
   const dates = { created_at: '2026-09-20T00:00:00Z', updated_at: '2026-09-20T00:00:00Z' };
@@ -16,6 +16,7 @@ test('packaged lineage connects Spec to task and opens its details without a Spr
     description: null, details: null, assignee_id: null, due_date: null, labels: [], test_scenario_ids: [],
     screen_mockups: [], knowledge_bases: [], conclusions: [], validations: [], attachments: [], qa_items: [], comments: [], architecture_designs: [] };
   await page.addInitScript(() => {
+    localStorage.setItem('okto.pagination.sprints.scope.board-1', JSON.stringify({ page: 2, pageSize: 25 }));
     localStorage.setItem('okto.onboarding.completed.v1', 'true');
     localStorage.setItem('okto-pulse:metrics-opt-in-prompt-dismissed:1.1.0', new Date().toISOString());
     localStorage.setItem('okto.guided-help.progress.v1', JSON.stringify({ schemaVersion: 1,
@@ -24,6 +25,10 @@ test('packaged lineage connects Spec to task and opens its details without a Spr
   // Every API request ends in this fixture; this browser test never touches a runtime database.
   await page.route('**/api/v1/**', async (route, request) => {
     const url = new URL(request.url()), path = url.pathname;
+    if (/\/sprints(?:\/|$)/.test(path)) {
+      sprintRequests.push(path);
+      return route.fulfill({ status: 404, json: { detail: 'Retired route' } });
+    }
     if (request.method() !== 'GET') {
       writes.push(path);
       return route.fulfill({ status: 403, json: { detail: 'Fixture is read-only' } });
@@ -59,13 +64,15 @@ test('packaged lineage connects Spec to task and opens its details without a Spr
     if (path.endsWith('/effective-resources')) return route.fulfill({ json: { board_id: board.id, entity_type: 'spec', entity_id: spec.id,
       profile: 'summary', items: [], next_cursor: null, resources: { architecture: [], mockup: [], knowledge_base: [] } } });
     if (path.endsWith('/seen-status')) return route.fulfill({ json: { items: {} } });
-    if (/\/(sprints|agents|topics|qa|dependencies|dependents|activity)$/.test(path)) return route.fulfill({ json: [] });
+    if (/\/(agents|topics|qa|dependencies|dependents|activity)$/.test(path)) return route.fulfill({ json: [] });
     if (path === '/api/v1/me/permissions') return route.fulfill({ json: { board_id: board.id, preset_name: 'fixture', owner_review_required: false, flags: {} } });
     return route.fulfill({ status: 404, json: { detail: 'Unmocked read blocked' } });
   });
-  await page.goto('/?accept_terms=1');
+  await page.goto('/?accept_terms=1&tab=sprints');
+  await expect(page.getByRole('button', { name: 'Sprints', exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: 'Specs', exact: true }).click();
   await page.getByText(spec.title, { exact: true }).click();
+  await expect(page.getByRole('tab', { name: /^Sprints/ })).toHaveCount(0);
   await page.getByRole('dialog', { name: spec.title }).getByTitle('Open lineage graph').click();
   const dialog = page.getByRole('dialog', { name: 'SDLC Lineage' });
   try {
@@ -83,5 +90,6 @@ test('packaged lineage connects Spec to task and opens its details without a Spr
   await expect.poll(() => cardReads).toBeGreaterThan(0);
   expect(selections).toEqual(['spec']);
   expect(writes).toEqual([]);
+  expect(sprintRequests).toEqual([]);
   expect(errors).toEqual([]);
 });

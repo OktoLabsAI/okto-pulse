@@ -93,8 +93,6 @@ import type {
   AllowedTransitionEntityType,
   AllowedTransitionsResponse,
   Spec,
-  Sprint,
-  SprintSummary,
   SpecStructuredEntityMutationRequest,
   SpecStructuredEntityMutationResult,
   SpecStructuredEntityOperation,
@@ -110,7 +108,6 @@ import type {
   SpecValidationSubmitResponse,
   CreateSpecRequest,
   UpdateSpecRequest,
-  UpdateSprintRequest,
   MoveSpecRequest,
   SpecKnowledge,
   SpecKnowledgeSummary,
@@ -357,22 +354,6 @@ export type StoryPageItem = Omit<
 export type BoardRefinementPageItem = RefinementSummary & {
   ideation_title: string;
 };
-
-export interface SprintPageItem {
-  id: string;
-  spec_id: string;
-  board_id: string;
-  title: string;
-  description: string | null;
-  objective: string | null;
-  expected_outcome: string | null;
-  status: 'draft' | 'active' | 'review' | 'closed' | 'cancelled';
-  created_by: string;
-  created_at: string;
-  updated_at: string;
-  archived: boolean;
-  open_qa_count?: number | null;
-}
 
 function isCardCreateKnowledgeMutationResponse(
   response: Card | CardCreateKnowledgeMutationResponse,
@@ -2937,93 +2918,6 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
 
     async deletePreset(presetId: string): Promise<void> {
       await apiClient.fetch(`/presets/${presetId}`, { method: 'DELETE' });
-    },
-
-    // ---- Sprints ----
-    async listSprints(boardId: string, specId: string): Promise<SprintSummary[]> {
-      return apiClient.fetchJson<SprintSummary[]>(`/boards/${boardId}/specs/${specId}/sprints`);
-    },
-
-    async listBoardSprints(boardId: string, status?: string, specId?: string, includeArchived?: boolean): Promise<SprintSummary[]> {
-      const params = new URLSearchParams();
-      if (status) params.set('status', status);
-      if (specId) params.set('spec_id', specId);
-      if (includeArchived) params.set('include_archived', 'true');
-      const qs = params.toString();
-      return apiClient.fetchJson<SprintSummary[]>(`/boards/${boardId}/sprints${qs ? `?${qs}` : ''}`);
-    },
-
-    async listBoardSprintsPage(boardId: string, options: PageWindow & {
-      status?: string;
-      specId?: string;
-      search?: string;
-      includeArchived?: boolean;
-    }): Promise<PageEnvelope<SprintPageItem>> {
-      const params = new URLSearchParams({
-        offset: String(options.offset),
-        limit: String(options.limit),
-      });
-      if (options.status) params.set('status', options.status);
-      if (options.specId) params.set('spec_id', options.specId);
-      if (options.search?.trim()) params.set('search', options.search.trim());
-      if (options.includeArchived) params.set('include_archived', 'true');
-      return apiClient.fetchJson<PageEnvelope<SprintPageItem>>(
-        `/boards/${boardId}/sprints?${params.toString()}`,
-        { signal: options.signal },
-      );
-    },
-
-    async createSprint(boardId: string, specId: string, data: any): Promise<any> {
-      return apiClient.fetchJson(`/boards/${boardId}/specs/${specId}/sprints`, {
-        method: 'POST', body: JSON.stringify(data),
-      });
-    },
-
-    async assignTasksToSprint(sprintId: string, cardIds: string[]): Promise<any> {
-      return apiClient.fetchJson(`/sprints/${sprintId}/assign-tasks`, {
-        method: 'POST', body: JSON.stringify({ card_ids: cardIds }),
-      });
-    },
-
-    async unassignTasksFromSprint(sprintId: string, cardIds: string[]): Promise<any> {
-      return apiClient.fetchJson(`/sprints/${sprintId}/unassign-tasks`, {
-        method: 'POST', body: JSON.stringify({ card_ids: cardIds }),
-      });
-    },
-
-    async getSprint(sprintId: string): Promise<Sprint> {
-      return apiClient.fetchJson<Sprint>(`/sprints/${sprintId}`);
-    },
-
-    async updateSprint(sprintId: string, data: UpdateSprintRequest): Promise<Sprint> {
-      return apiClient.fetchJson<Sprint>(`/sprints/${sprintId}`, {
-        method: 'PATCH', body: JSON.stringify(data),
-      });
-    },
-
-    async moveSprint(sprintId: string, data: { status: string; cancellation_reason?: string; expected_version?: number }): Promise<any> {
-      return apiClient.fetchJson(`/sprints/${sprintId}/move`, {
-        method: 'POST', body: JSON.stringify(data),
-      });
-    },
-
-    async deleteSprint(sprintId: string): Promise<void> {
-      await apiClient.fetch(`/sprints/${sprintId}`, { method: 'DELETE' });
-    },
-
-    async submitSprintEvaluation(sprintId: string, evaluation: any): Promise<any> {
-      return apiClient.fetchJson(`/sprints/${sprintId}/evaluations`, {
-        method: 'POST', body: JSON.stringify(evaluation),
-      });
-    },
-
-    async listSprintHistory(sprintId: string): Promise<any[]> {
-      return apiClient.fetchJson(`/sprints/${sprintId}/history`);
-    },
-
-    async suggestSprints(boardId: string, specId: string, threshold?: number): Promise<any> {
-      const params = threshold ? `?threshold=${threshold}` : '';
-      return apiClient.fetchJson(`/boards/${boardId}/specs/${specId}/sprints/suggest${params}`);
     },
 
     // ==================== TASK VALIDATION ====================

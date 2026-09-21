@@ -614,7 +614,7 @@ describe('GlobalSearchView typed Discovery params', () => {
     });
   });
 
-  it('preserves the existing Open action through parent spec metadata', async () => {
+  it.each(['spec', 'sprint'])('only exposes supported parent navigation for %s metadata', async (entityType) => {
     vi.mocked(discoveryApi.listIntents).mockResolvedValue([intent(null)]);
     vi.mocked(discoveryApi.executeIntent).mockResolvedValue({
       rows: [
@@ -623,7 +623,7 @@ describe('GlobalSearchView typed Discovery params', () => {
           type: 'technical_requirement',
           title: 'TR-1 Cache invalidation',
           meta: {
-            entity_type: 'spec',
+            entity_type: entityType,
             entity_id: 'spec-parent',
             child_type: 'technical_requirement',
             child_ref: 'spec:spec-parent:technical_requirement:tr-1',
@@ -641,6 +641,12 @@ describe('GlobalSearchView typed Discovery params', () => {
 
     render(<GlobalSearchView boardId={BOARD} />);
     fireEvent.click(await screen.findByTestId('discovery-intent-trace_spec_child'));
+    if (entityType === 'sprint') {
+      await screen.findByText('TR-1 Cache invalidation');
+      expect(screen.queryByTestId('discovery-intent-row-0-open')).not.toBeInTheDocument();
+      expect(mocks.pushModal).not.toHaveBeenCalled();
+      return;
+    }
     fireEvent.click(await screen.findByTestId('discovery-intent-row-0-open'));
 
     expect(mocks.pushModal).toHaveBeenCalledWith({

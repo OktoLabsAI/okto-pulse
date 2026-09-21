@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SpecModal } from '../SpecModal';
 import { persistTestScenariosWithWriteGuard } from '../scenarioWriteGuard';
-import type { Spec, SpecHistoryEntry, SprintSummary, TestScenario } from '@/types';
+import type { Spec, SpecHistoryEntry, TestScenario } from '@/types';
 
 type ValidationGateOverrideProps = {
   title?: string;
@@ -194,34 +194,6 @@ const historyEntry: SpecHistoryEntry = {
   ],
 };
 
-function sprintSummary(overrides: Partial<SprintSummary> = {}): SprintSummary {
-  return {
-    id: 'sprint-1',
-    spec_id: spec.id,
-    board_id: spec.board_id,
-    title: 'Spec sprint',
-    description: null,
-    objective: null,
-    expected_outcome: null,
-    status: 'active',
-    lane_type: 'normal',
-    origin_sprint_id: null,
-    origin_bug_id: null,
-    normal_sprint_created: false,
-    spec_version: spec.version,
-    start_date: null,
-    end_date: null,
-    test_scenario_ids: [],
-    business_rule_ids: [],
-    version: 1,
-    labels: [],
-    created_by: 'user-1',
-    created_at: '2026-05-29T10:00:00Z',
-    updated_at: '2026-05-29T10:00:00Z',
-    archived: false,
-    ...overrides,
-  };
-}
 
 describe('SpecModal Activity tab', () => {
   beforeEach(() => {
@@ -403,7 +375,6 @@ describe('SpecModal Activity tab', () => {
       'Resources',
       'Q&A',
       'References',
-      'Sprints',
       'KG Graph',
       'Validation',
       'Activity',
@@ -420,31 +391,14 @@ describe('SpecModal Activity tab', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('shows only positive open Q&A counts in the linked-sprints list', async () => {
-    apiMock.listSprints.mockResolvedValue([
-      sprintSummary({ id: 'sprint-open', title: 'Sprint with questions', open_qa_count: 2 }),
-      sprintSummary({ id: 'sprint-clear', title: 'Sprint without questions', open_qa_count: 0 }),
-    ]);
-    apiMock.getSprint.mockImplementation((sprintId: string) => Promise.resolve({
-      id: sprintId,
-      cards: [],
-    }));
-
-    render(
-      <SpecModal
-        specId={spec.id}
-        boardId={spec.board_id}
-        onClose={vi.fn()}
-        onChanged={vi.fn()}
-      />,
-    );
-
+  it('does not expose or request Sprints even with old pagination preferences', async () => {
+    window.localStorage.setItem('okto.pagination.sprints.scope.board-1', JSON.stringify({ page: 2, pageSize: 25 }));
+    render(<SpecModal specId={spec.id} boardId={spec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
     await screen.findByText(spec.title);
-    fireEvent.click(screen.getByRole('tab', { name: /^Sprints/ }));
-
-    await screen.findByText('Sprint without questions');
-    expect(screen.getAllByTestId('qa-open-badge')).toHaveLength(1);
-    expect(screen.getByLabelText('2 unanswered questions')).toHaveTextContent('2 open Q&A');
+    expect(screen.queryByRole('tab', { name: /Sprints/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Suggest Sprints/ })).not.toBeInTheDocument();
+    expect(apiMock.listSprints).not.toHaveBeenCalled();
+    expect(apiMock.getSprint).not.toHaveBeenCalled();
   });
 
   it('notifies the board list exactly once after asking and answering Q&A', async () => {

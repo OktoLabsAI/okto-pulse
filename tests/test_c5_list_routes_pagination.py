@@ -28,7 +28,6 @@ from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.community.api.ideations import router as ideations_router
 from okto_pulse.community.api.refinements import router as refinements_router
 from okto_pulse.community.api.specs import router as specs_router
-from okto_pulse.community.api.sprints import router as sprints_router
 from okto_pulse.community.api.stories import router as stories_router
 from okto_pulse.core.domain.realm import RealmScope
 from okto_pulse.core.ports.application_persistence import (
@@ -45,8 +44,6 @@ LIST_CASES = (
     ("/api/v1/boards/b1/ideations", 25),
     ("/api/v1/ideations/i00/refinements", 25),
     ("/api/v1/boards/b1/specs", 25),
-    ("/api/v1/boards/b1/sprints", 25),
-    ("/api/v1/boards/b1/specs/p00/sprints", 12),
 )
 
 
@@ -362,7 +359,6 @@ def client(tmp_path: Path):
         ideations_router,
         refinements_router,
         specs_router,
-        sprints_router,
     ):
         app.include_router(route, prefix="/api/v1")
     app.state.sql_statements = statements
@@ -430,7 +426,6 @@ def test_offset_or_limit_alone_activates_defaults(client: TestClient) -> None:
         ("/api/v1/boards/b1/ideations?status=draft", 13),
         ("/api/v1/ideations/i00/refinements?status=draft", 13),
         ("/api/v1/boards/b1/specs?status=draft", 13),
-        ("/api/v1/boards/b1/sprints?status=draft", 12),
     ),
 )
 def test_filters_change_only_total_filtered(
@@ -474,7 +469,6 @@ def test_story_relational_and_converted_filters_are_server_side(
     (
         ("/api/v1/boards/b1/ideations", "i07"),
         ("/api/v1/boards/b1/specs", "p07"),
-        ("/api/v1/boards/b1/sprints", "q07"),
     ),
 )
 def test_consumer_search_is_applied_before_the_window(
@@ -550,12 +544,6 @@ def test_ideation_and_refinement_pages_project_lifecycle_edition(
         ("/api/v1/ideations/i00/refinements?offset=0&limit=25", "r00", "r01"),
         ("/api/v1/boards/b1/refinements?offset=0&limit=25", "r00", "r01"),
         ("/api/v1/boards/b1/specs?offset=0&limit=25", "p00", "p01"),
-        ("/api/v1/boards/b1/sprints?offset=0&limit=25", "q00", "q01"),
-        (
-            "/api/v1/boards/b1/specs/p00/sprints?offset=0&limit=25",
-            "q00",
-            "q01",
-        ),
     ),
 )
 def test_paginated_qa_parent_routes_project_positive_and_zero_open_counts(
@@ -579,8 +567,6 @@ def test_paginated_qa_parent_routes_project_positive_and_zero_open_counts(
         "/api/v1/ideations/i00/refinements?offset=0&limit=25",
         "/api/v1/boards/b1/refinements?offset=0&limit=25",
         "/api/v1/boards/b1/specs?offset=0&limit=25",
-        "/api/v1/boards/b1/sprints?offset=0&limit=25",
-        "/api/v1/boards/b1/specs/p00/sprints?offset=0&limit=25",
     ),
 )
 def test_paginated_qa_parent_routes_omit_counts_without_qa_read(
@@ -605,8 +591,6 @@ def test_paginated_qa_parent_routes_omit_counts_without_qa_read(
         "/api/v1/boards/b1/ideations",
         "/api/v1/ideations/i00/refinements",
         "/api/v1/boards/b1/specs",
-        "/api/v1/boards/b1/sprints",
-        "/api/v1/boards/b1/specs/p00/sprints",
     ),
 )
 def test_legacy_qa_parent_routes_omit_counts_without_qa_read(
@@ -648,7 +632,6 @@ def test_ideation_derivation_pending_is_server_side_and_null_safe(
     (
         "/api/v1/boards/b1/ideations?search=definitely-missing&derivation_pending=true",
         "/api/v1/boards/b1/specs?search=definitely-missing",
-        "/api/v1/boards/b1/sprints?search=definitely-missing",
     ),
 )
 def test_new_consumer_filters_preserve_legacy_list_semantics(
@@ -659,19 +642,6 @@ def test_new_consumer_filters_preserve_legacy_list_semantics(
     assert len(response.json()) == 25
 
 
-def test_board_and_nested_sprint_scope_have_distinct_totals(client: TestClient) -> None:
-    board = client.get("/api/v1/boards/b1/sprints?offset=0&limit=25&spec_id=p00")
-    nested = client.get("/api/v1/boards/b1/specs/p00/sprints?offset=0&limit=25")
-    nested_all = client.get(
-        "/api/v1/boards/b1/specs/p00/sprints?offset=0&limit=25&include_archived=true"
-    )
-    assert board.status_code == nested.status_code == nested_all.status_code == 200
-    assert board.json()["total_filtered"] == 12
-    assert board.json()["total_overall"] == 25
-    assert nested.json()["total_filtered"] == nested.json()["total_overall"] == 12
-    assert (
-        nested_all.json()["total_filtered"] == nested_all.json()["total_overall"] == 15
-    )
 
 
 @pytest.mark.parametrize(
@@ -681,7 +651,6 @@ def test_board_and_nested_sprint_scope_have_distinct_totals(client: TestClient) 
         ("/api/v1/boards/b1/ideations", 25, 30),
         ("/api/v1/ideations/i00/refinements", 25, 30),
         ("/api/v1/boards/b1/specs", 25, 30),
-        ("/api/v1/boards/b1/sprints", 25, 30),
     ),
 )
 def test_archived_policy_moves_both_totals(
@@ -808,15 +777,10 @@ def test_raw_offset_guard_applies_to_all_six_routes(
         "/api/v1/boards/missing/ideations?offset=0&limit=25",
         "/api/v1/ideations/missing/refinements?offset=0&limit=25",
         "/api/v1/boards/missing/specs?offset=0&limit=25",
-        "/api/v1/boards/missing/sprints?offset=0&limit=25",
-        "/api/v1/boards/b1/specs/missing/sprints?offset=0&limit=25",
         "/api/v1/boards/b2/stories?offset=0&limit=25",
         "/api/v1/boards/b2/ideations?offset=0&limit=25",
         "/api/v1/ideations/ix/refinements?offset=0&limit=25",
         "/api/v1/boards/b2/specs?offset=0&limit=25",
-        "/api/v1/boards/b2/sprints?offset=0&limit=25",
-        "/api/v1/boards/b1/specs/px/sprints?offset=0&limit=25",
-        "/api/v1/boards/b1/sprints?offset=0&limit=25&spec_id=px",
     ),
 )
 def test_missing_foreign_and_mismatched_scopes_preserve_404(
@@ -837,16 +801,6 @@ def test_refinement_page_preserves_legacy_cross_board_consistency_filter(
     assert paged.json()["total_filtered"] == paged.json()["total_overall"] == 25
 
 
-def test_nested_sprint_page_preserves_legacy_cross_board_consistency_filter(
-    client: TestClient,
-) -> None:
-    path = "/api/v1/boards/b1/specs/p00/sprints"
-    legacy = client.get(path)
-    paged = client.get(f"{path}?offset=0&limit=25")
-    assert legacy.status_code == paged.status_code == 200
-    assert "q-corrupt" not in {item["id"] for item in legacy.json()}
-    assert "q-corrupt" not in {item["id"] for item in paged.json()["items"]}
-    assert paged.json()["total_filtered"] == paged.json()["total_overall"] == 12
 
 
 def test_story_projection_is_lean_and_count_is_computed_in_sql(
@@ -900,8 +854,6 @@ def test_each_paginated_route_stays_within_bounded_statements(
         "/api/v1/boards/b1/ideations?offset=0&limit=25",
         "/api/v1/ideations/i00/refinements?offset=0&limit=25",
         "/api/v1/boards/b1/specs?offset=0&limit=25",
-        "/api/v1/boards/b1/sprints?offset=0&limit=25&spec_id=p00",
-        "/api/v1/boards/b1/specs/p00/sprints?offset=0&limit=25",
     ),
 )
 def test_shared_reader_is_authorized_within_the_bounded_statement_cap(
@@ -919,12 +871,10 @@ def test_shared_reader_is_authorized_within_the_bounded_statement_cap(
         "/api/v1/boards/b1/ideations?offset=0&limit=25": 6,
         "/api/v1/ideations/i00/refinements?offset=0&limit=25": 7,
         "/api/v1/boards/b1/specs?offset=0&limit=25": 6,
-        "/api/v1/boards/b1/sprints?offset=0&limit=25&spec_id=p00": 7,
     }
     if path in quality_projection_counts:
         # The shared-reader fixture resolves its custom preset lineage before
-        # the single lifecycle-summary batch read. Nested refinements and the
-        # sprint Q&A projection keep one additional leaf-resolution statement
+        # the single lifecycle-summary batch read. Nested refinements keep one additional leaf-resolution statement
         # outside the productive list budget; every path remains fixed-size.
         assert len(statements) == quality_projection_counts[path], statements
     else:

@@ -4,14 +4,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { IdeationsPanel } from '@/components/ideations/IdeationsPanel';
 import { RefinementsPanel } from '@/components/refinements/RefinementsPanel';
 import { SpecsPanel } from '@/components/specs/SpecsPanel';
-import { SprintsPanel } from '@/components/sprints/SprintsPanel';
 import { scopedPaginationKey } from '@/hooks/usePersistedPagination';
 
 const apiMock = vi.hoisted(() => ({
   listIdeationsPage: vi.fn(),
   listBoardRefinementsPage: vi.fn(),
   listSpecsPage: vi.fn(),
-  listBoardSprintsPage: vi.fn(),
   lookupIdeations: vi.fn(),
   lookupSpecs: vi.fn(),
   archiveTree: vi.fn(),
@@ -68,20 +66,6 @@ const refinement = {
   archived: false,
 };
 
-const sprint = {
-  id: 'sprint-1',
-  spec_id: 'spec-1',
-  board_id: 'board-1',
-  title: 'Server sprint',
-  description: 'Description',
-  status: 'draft',
-  created_by: 'user-1',
-  created_at: '2026-07-20T00:00:00Z',
-  updated_at: '2026-07-20T00:00:00Z',
-  archived: false,
-  open_qa_count: 0,
-};
-
 const spec = {
   id: 'spec-1',
   board_id: 'board-1',
@@ -118,7 +102,6 @@ describe('paginated entity panels', () => {
     apiMock.listIdeationsPage.mockResolvedValue(envelope([ideation]));
     apiMock.listBoardRefinementsPage.mockResolvedValue(envelope([refinement]));
     apiMock.listSpecsPage.mockResolvedValue(envelope([spec]));
-    apiMock.listBoardSprintsPage.mockResolvedValue(envelope([sprint]));
     apiMock.lookupIdeations.mockResolvedValue({
       items: [],
       total: 0,
@@ -215,37 +198,6 @@ describe('paginated entity panels', () => {
     );
   });
 
-  it('requests exactly one new sprint page after advancing the paginator', async () => {
-    apiMock.listBoardSprintsPage.mockImplementation(
-      async (_boardId: string, options: { offset: number }) => envelope(
-        options.offset === 0 ? [sprint] : [],
-        options.offset,
-      ),
-    );
-
-    render(<SprintsPanel boardId="board-1" />);
-    await waitFor(() => expect(apiMock.listBoardSprintsPage).toHaveBeenCalledTimes(1));
-
-    fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
-
-    await waitFor(() => expect(apiMock.listBoardSprintsPage).toHaveBeenCalledTimes(2));
-    expect(apiMock.listBoardSprintsPage).toHaveBeenLastCalledWith(
-      'board-1',
-      expect.objectContaining({ offset: 25, limit: 25 }),
-    );
-    const sprintKey = scopedPaginationKey('sprints', 'board-1');
-    expect(JSON.parse(window.localStorage.getItem(`okto.pagination.${sprintKey}`) ?? '{}'))
-      .toEqual({ page: 2, pageSize: 25 });
-
-    fireEvent.change(screen.getByTestId('sprints-search'), { target: { value: 'server sprint' } });
-
-    await waitFor(() => expect(apiMock.listBoardSprintsPage).toHaveBeenCalledTimes(3));
-    expect(apiMock.listBoardSprintsPage).toHaveBeenLastCalledWith(
-      'board-1',
-      expect.objectContaining({ search: 'server sprint', offset: 0, limit: 25 }),
-    );
-  });
-
   it('renders open Q&A badges and omits zero counts in all non-Kanban board lists', async () => {
     apiMock.listIdeationsPage.mockResolvedValue(envelope([
       { ...ideation, id: 'idea-open', title: 'Ideation with Q&A', open_qa_count: 2 },
@@ -277,14 +229,5 @@ describe('paginated entity panels', () => {
     expect(screen.getByTestId('qa-open-badge')).toHaveTextContent('4 open Q&A');
     view.unmount();
 
-    apiMock.listBoardSprintsPage.mockResolvedValue(envelope([
-      { ...sprint, id: 'sprint-open', title: 'Sprint with Q&A', open_qa_count: 5 },
-      { ...sprint, id: 'sprint-clear', title: 'Sprint without Q&A', open_qa_count: 0 },
-    ]));
-    view = render(<SprintsPanel boardId="board-1" />);
-    await screen.findByText('Sprint without Q&A');
-    expect(screen.getAllByTestId('qa-open-badge')).toHaveLength(1);
-    expect(screen.getByTestId('qa-open-badge')).toHaveTextContent('5 open Q&A');
-    view.unmount();
   });
 });
