@@ -60,6 +60,9 @@ class CommunitySqlAlchemySpecResourcePropagationStore:
         return ResourcePropagationCardRecord(
             id=str(row.id),
             board_id=str(row.board_id),
+            spec_id=row.spec_id,
+            status=row.status,
+            card_type=row.card_type,
             knowledge_bases=copy.deepcopy(row.knowledge_bases or []),
             screen_mockups=copy.deepcopy(row.screen_mockups or []),
         )

@@ -491,10 +491,10 @@ export function CardModal({
   const canCreateComments = canMutateCard('card.comments.create');
   const canCreateChoiceComments = canMutateCard('card.comments.create_choice');
   const canRespondToChoiceComments = canMutateCard('card.comments.respond_choice');
-  const canUploadAttachments = canMutateCard('card.attachments.upload');
-  const canDeleteAttachments = canMutateCard('card.attachments.delete');
-  const canDeleteCard = canMutateCard('card.entity.delete');
-  const canManageDependencies = canMutateCard('card.entity.manage_dependencies');
+  const canUploadAttachments = !normalContentFrozen && canMutateCard('card.attachments.upload');
+  const canDeleteAttachments = !normalContentFrozen && canMutateCard('card.attachments.delete');
+  const canDeleteCard = !normalContentFrozen && canMutateCard('card.entity.delete');
+  const canManageDependencies = !normalContentFrozen && canMutateCard('card.entity.manage_dependencies');
   const canLinkScenarios = canMutateCard('card.link_to.scenario');
   const canLinkRules = canMutateCard('card.link_to.rule');
   const canLinkContracts = canMutateCard('card.link_to.contract');
@@ -2315,6 +2315,7 @@ export function CardModal({
                   <CardResourcesPanel
                     card={card}
                     expanded={expanded}
+                    contentReadOnly={normalContentFrozen}
                     specKnowledgeBases={specKBsFull}
                     canReadMockups={canReadMockups}
                     canReadKnowledge={canReadKnowledge}

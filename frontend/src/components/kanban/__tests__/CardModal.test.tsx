@@ -215,7 +215,7 @@ vi.mock('../CardKnowledgeTab', () => ({
 }));
 
 vi.mock('@/components/architecture', () => ({
-  ArchitectureTab: () => <div />,
+  ArchitectureTab: ({ locked }: { locked?: boolean }) => <div data-testid="architecture-tab" data-locked={Boolean(locked)} />,
 }));
 
 vi.mock('@/components/traceability', () => ({
@@ -686,6 +686,14 @@ describe('CardModal', () => {
       expect(screen.queryByText(/Normal task content is locked/)).not.toBeInTheDocument();
     }
     expect(screen.getByRole('tab', { name: /^Comments/ })).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Delete' }) !== null).toBe(cardType !== 'normal');
+    fireEvent.click(screen.getByRole('tab', { name: /^Resources/ }));
+    fireEvent.click(screen.getByRole('tab', { name: /^Attachments/ }));
+    expect(screen.queryByText('+ Add attachment') !== null).toBe(cardType !== 'normal');
+    fireEvent.click(screen.getByRole('tab', { name: /^Knowledge/ }));
+    expect(cardKnowledgeTabMock.render).toHaveBeenLastCalledWith(expect.objectContaining({ readOnly: cardType === 'normal' }));
+    fireEvent.click(screen.getByRole('tab', { name: /^Architecture/ }));
+    expect(screen.getByTestId('architecture-tab')).toHaveAttribute('data-locked', String(cardType === 'normal'));
     expect(apiMock.updateCard).not.toHaveBeenCalled();
     expect(apiMock.moveCard).not.toHaveBeenCalled();
   });
