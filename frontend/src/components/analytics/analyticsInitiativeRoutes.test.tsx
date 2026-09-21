@@ -151,6 +151,15 @@ describe('Analytics A3-A6 route integration', () => {
     window.history.replaceState({}, '', `${boardPath}?${sharedQuery}`);
   });
 
+  it('opens copied Sprint analytics URLs at their Board without mounting retired detail', async () => {
+    window.history.replaceState({}, '', `${boardPath}/entities/sprint/legacy?from=2026-06-01&to=2026-06-30`);
+    render(<AnalyticsPage />);
+    expect(await screen.findByTestId('board-dashboard-route')).toBeInTheDocument();
+    expect(screen.queryByTestId('entity-route')).not.toBeInTheDocument();
+    expect(window.location.search).toContain('from=2026-06-01');
+    expect(window.location.search).toContain('to=2026-06-30');
+  });
+
   it.each([
     {
       initiative: 'A3',

@@ -44,10 +44,6 @@ from okto_pulse.core.application.use_cases import (
     BoardEntitiesUseCase,
     BoardEntityDetailCommand,
     BoardEntityDetailUseCase,
-    BoardSprintAnalyticsCommand,
-    BoardSprintAnalyticsUseCase,
-    BoardSprintsAnalyticsCommand,
-    BoardSprintsAnalyticsUseCase,
     BoardVelocityCommand,
     BoardVelocityUseCase,
     CoverageTraceabilityAnalyticsCommand,
@@ -529,38 +525,9 @@ async def board_validations(
 
 
 # ---------------------------------------------------------------------------
-# NEW: /boards/{board_id}/analytics/sprints — Sprint panel
 # ---------------------------------------------------------------------------
 
 
-@router.get("/boards/{board_id}/analytics/sprints")
-async def board_sprints_analytics(
-    board_id: str,
-    date_from: str | None = Query(None, alias="from"),
-    date_to: str | None = Query(None, alias="to"),
-    user_id: str = Depends(require_user),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-):
-    """Sprint panel for a board.
-
-    Returns:
-    - summary: counts by status + evaluation aggregate
-    - sprints: per-sprint breakdown with cards, completion, last eval"""
-    try:
-        result = await BoardSprintsAnalyticsUseCase().execute(
-            BoardSprintsAnalyticsCommand(
-                board_id,
-                dt_from=_parse_date(date_from),
-                dt_to=_parse_date(date_to, end_of_day=True),
-            ),
-            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
-            uow=uow,
-        )
-    except EntityNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
-        )
-    return result.data
 
 
 # ---------------------------------------------------------------------------
@@ -589,28 +556,9 @@ async def board_spec_analytics(
 
 
 # ---------------------------------------------------------------------------
-# NEW: /boards/{board_id}/analytics/sprint/{sprint_id} — Per-sprint detail
 # ---------------------------------------------------------------------------
 
 
-@router.get("/boards/{board_id}/analytics/sprint/{sprint_id}")
-async def board_sprint_analytics(
-    board_id: str,
-    sprint_id: str,
-    user_id: str = Depends(require_user),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-):
-    """Per-sprint analytics: kanban distribution, task gate, evaluation timeline."""
-    try:
-        result = await BoardSprintAnalyticsUseCase().execute(
-            BoardSprintAnalyticsCommand(board_id, sprint_id),
-            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
-            uow=uow,
-        )
-    except EntityNotFoundError as exc:
-        detail = "Board not found" if exc.entity_type == "board" else "Sprint not found"
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
-    return result.data
 
 
 # ---------------------------------------------------------------------------

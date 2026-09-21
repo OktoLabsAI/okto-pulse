@@ -124,7 +124,6 @@ _CROSS_EDITION_CONTRACT_EXPECTATION: tuple[str, ...] = (
     "okto_pulse.core.services.analytics_workspace",
     "okto_pulse.core.services.board_kg_analytics",
     "okto_pulse.core.services.coverage_traceability",
-    "okto_pulse.core.services.delivery_commitment",
     "okto_pulse.core.services.delivery_evidence.delivery_digest",
     "okto_pulse.core.services.delivery_evidence.delivery_inventory",
     "okto_pulse.core.services.flow_health",

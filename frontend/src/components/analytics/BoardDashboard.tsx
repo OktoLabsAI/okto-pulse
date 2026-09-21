@@ -234,7 +234,7 @@ interface BoardDashboardProps {
   boardId: string;
   from: string;
   to: string;
-  onSelectEntity: (type: 'ideation' | 'spec' | 'refinement' | 'sprint' | 'card', id: string, name: string) => void;
+  onSelectEntity: (type: 'ideation' | 'spec' | 'refinement' | 'card', id: string, name: string) => void;
   onOpenFlowHealth?: () => void;
   onOpenCanonicalCoverage?: (query: CanonicalCoverageQueryState) => void;
   onOpenKgEffectiveness?: () => void;

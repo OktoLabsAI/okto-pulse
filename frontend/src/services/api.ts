@@ -20,7 +20,6 @@ import type {
 import type {
   DeliveryIntelligenceFilters,
   DeliveryIntelligenceResponse,
-  SprintAnalyticsResponse,
 } from '@/components/analytics/analyticsDeliveryTypes';
 import type {
   AddSpecDependencyRequest,
@@ -2695,12 +2694,7 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
     },
 
     // --- Sprint analytics panel (summary + per-sprint breakdown)
-    async getBoardAnalyticsSprints(boardId: string, from?: string, to?: string): Promise<SprintAnalyticsResponse> {
-      const params = new URLSearchParams();
-      if (from) params.set('from', from);
-      if (to) params.set('to', to);
-      return apiClient.fetchJson(`/boards/${boardId}/analytics/sprints?${params.toString()}`);
-    },
+
 
     async getBoardDeliveryIntelligence(
       boardId: string,
@@ -2802,9 +2796,7 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
     },
 
     // --- Per-sprint analytics detail (kanban distribution, task gate, evals)
-    async getBoardAnalyticsSprintDetail(boardId: string, sprintId: string): Promise<any> {
-      return apiClient.fetchJson(`/boards/${boardId}/analytics/sprint/${sprintId}`);
-    },
+
 
     async exportOverviewCsv(from?: string, to?: string): Promise<void> {
       const params = new URLSearchParams();

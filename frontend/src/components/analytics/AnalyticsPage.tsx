@@ -44,7 +44,7 @@ interface AnalyticsState {
   level: AnalyticsLevel;
   boardId?: string;
   boardName?: string;
-  entityType?: 'ideation' | 'spec' | 'refinement' | 'sprint' | 'card';
+  entityType?: 'ideation' | 'spec' | 'refinement' | 'card';
   entityId?: string;
   entityName?: string;
   focusedCoverageSpecId?: string;
@@ -74,7 +74,7 @@ function decodePathSegment(segment: string): string | undefined {
 // drill. Dedicated Board analytics surfaces are real URLs so refresh,
 // browser history and copied links preserve the selected evidence scope.
 function stateFromPath(pathname: string): AnalyticsState {
-  const entityMatch = pathname.match(/^\/analytics\/boards\/([^/]+)\/entities\/(ideation|spec|refinement|sprint|card)\/([^/]+)\/?$/);
+  const entityMatch = pathname.match(/^\/analytics\/boards\/([^/]+)\/entities\/(ideation|spec|refinement|card)\/([^/]+)\/?$/);
   if (entityMatch) {
     const boardId = decodePathSegment(entityMatch[1]);
     const entityId = decodePathSegment(entityMatch[3]);
@@ -413,7 +413,7 @@ export function AnalyticsPage() {
   };
 
   const navigateToEntity = (
-    entityType: 'ideation' | 'spec' | 'refinement' | 'sprint' | 'card',
+    entityType: 'ideation' | 'spec' | 'refinement' | 'card',
     entityId: string,
     entityName: string,
   ) => {
