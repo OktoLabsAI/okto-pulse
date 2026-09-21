@@ -31,6 +31,19 @@ _KEYS = {'format', 'offline_run_sha256', 'source_database', 'migration_builds', 
     'bootstrap', 'captured_at', 'graphs', 'boards'}
 
 
+class RetirementProjectionDependencies:
+    """Use the existing rebuild identity/ancestry checks against the fenced SQL."""
+
+    def __init__(self, source):
+        self.source = _explicit_path(source)
+
+    def resolve(self, *, board_id, sources):
+        from .board_rebuild_ingestion import _resolve_evidence_dependency_closure
+        rows, _ = _resolve_evidence_dependency_closure(db_path=self.source,
+            board_id=board_id, sources=sources)
+        return rows
+
+
 @dataclass(frozen=True, slots=True)
 class RetirementProjectionInputs:
     directory: Path
@@ -115,7 +128,8 @@ async def capture_retirement_projection_inputs(runtime, graphs, run, document, b
             captured_at = datetime.now(timezone.utc)
             prepared = []
             accumulated_bytes = 0
-            planner = make_deterministic_projection_planner(CommunitySqlAlchemyConsolidationPersistence())
+            planner = make_deterministic_projection_planner(CommunitySqlAlchemyConsolidationPersistence(),
+                dependencies=RetirementProjectionDependencies(source))
             async with AsyncSession(bind=connection, autoflush=False, expire_on_commit=False,
                     join_transaction_mode='create_savepoint') as session:
                 for board_id, captured in sorted(boards.items()):

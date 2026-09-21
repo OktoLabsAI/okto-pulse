@@ -14,6 +14,45 @@ from test_card_context_retirement import dump
 
 
 @pytest.mark.asyncio
+async def test_final_projection_preserves_only_required_expired_evidence_chain(tmp_path):
+    from datetime import timedelta
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from okto_pulse.community.adapters.sqlalchemy_models import Base
+    from okto_pulse.community.adapters.board_source_reader import CommunityBoardSourceReader
+    from test_code_traceability_kg_rebuild_e2e import (
+        NOW, seed_complete_traceability_source, seed_superseded_evidence_chain,
+    )
+    path = tmp_path / 'projection-chain.sqlite3'
+    engine = create_async_engine(f'sqlite+aiosqlite:///{path.as_posix()}')
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+            await seed_complete_traceability_source(connection)
+            await seed_superseded_evidence_chain(connection)
+        before = dump(path)
+        snapshot = CommunityBoardSourceReader(path).fetch('board-1')
+        assert snapshot.complete
+        planner = inputs.make_deterministic_projection_planner(inputs.CommunitySqlAlchemyConsolidationPersistence(),
+            dependencies=inputs.RetirementProjectionDependencies(path))
+        async with async_sessionmaker(engine, expire_on_commit=False)() as session:
+            encoded = await planner.prepare_board(session, board_id='board-1',
+                source_rows=tuple(snapshot.rows), cognitive_rows=(), captured_at=NOW + timedelta(days=1))
+        document = json.loads(encoded)
+        assert document['format'] == 'deterministic-board-projection-plan/v2'
+        assert {row['id'] for row in document['dependency_closure']} == {'evidence-y', 'evidence-z'}
+        plans = {item['source']['artifact_id']: item for item in document['plans']}
+        assert {'evidence-y', 'evidence-z', 'evidence-1'} <= plans.keys()
+        assert 'evidence-unrelated' not in plans
+        for identity in ('evidence-y', 'evidence-z'):
+            nodes = plans[identity]['projection']['nodes']
+            root = next(node for node in nodes if node['source_artifact_ref'] == f'code_evidence:{identity}')
+            assert root['graph_layer'] == 'working' and root['maturity_status'] == 'working_superseded'
+        assert dump(path) == before
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_frozen_predecessor_bootstrap_prepares_final_sources_without_writes(tmp_path, monkeypatch):
     runtime, storage, run, path = await prepare(tmp_path)
     try:
@@ -22,8 +61,8 @@ async def test_frozen_predecessor_bootstrap_prepares_final_sources_without_write
         from okto_pulse.core.application.processors import consolidation
         monkeypatch.setattr(consolidation, 'begin_consolidation', lambda *a, **k: pytest.fail('graph session started'))
         factory = inputs.make_deterministic_projection_planner
-        def observed(port):
-            delegate = factory(port)
+        def observed(port, **kwargs):
+            delegate = factory(port, **kwargs)
             original = delegate.prepare_board
             async def checked(*args, **kwargs):
                 with sqlite3.connect(path, timeout=0.01) as competitor:
@@ -89,7 +128,7 @@ async def test_projection_read_cannot_write_sql_or_leave_connection_readonly(tmp
         async def writer(session, **kwargs):
             await session.execute(text("UPDATE specs SET title='forbidden' WHERE id='spec-a'"))
             pytest.fail('projection wrote the authoritative source')
-        monkeypatch.setattr(inputs, 'make_deterministic_projection_planner', lambda _: SimpleNamespace(prepare_board=writer))
+        monkeypatch.setattr(inputs, 'make_deterministic_projection_planner', lambda _, **kwargs: SimpleNamespace(prepare_board=writer))
         with pytest.raises(Exception, match='readonly'):
             await offline.prepare_offline_retirement_projection_inputs(runtime, storage, (), run,
                 migration_builds=MIGRATION, projection_directory=tmp_path / 'projection')
@@ -116,7 +155,7 @@ async def test_aggregate_board_limit_stops_preparation_without_publishing(tmp_pa
         planner = SimpleNamespace(prepare_board=AsyncMock(return_value=encoded))
         monkeypatch.setattr(inputs, '_census', lambda *args: census)
         monkeypatch.setattr(inputs, '_LIMIT', len(encoded) + 1)
-        monkeypatch.setattr(inputs, 'make_deterministic_projection_planner', lambda _: planner)
+        monkeypatch.setattr(inputs, 'make_deterministic_projection_planner', lambda _, **kwargs: planner)
         with pytest.raises(ValueError, match='plan_limit'):
             await offline.prepare_offline_retirement_projection_inputs(runtime, storage, (), run,
                 migration_builds=MIGRATION, projection_directory=tmp_path / 'projection')
