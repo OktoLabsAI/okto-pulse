@@ -20508,6 +20508,8 @@ def _remove_known_fixture_graph_if_present(engine: object) -> bool:
         or not fixture_dir.is_dir()
     ):
         raise RuntimeError("fixture graph cleanup rejected an unsafe path")
+    if getattr(engine, "permits_external_schema_effects", True) is not True:
+        raise RuntimeError("schema_transaction_external_effect_requires_coordinator")
     shutil.rmtree(fixture_dir)
     if fixture_dir.exists():
         raise RuntimeError("fixture graph cleanup did not remove the synthetic graph")
