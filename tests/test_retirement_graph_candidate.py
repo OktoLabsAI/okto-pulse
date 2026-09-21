@@ -112,14 +112,19 @@ async def test_native_candidate_is_private_and_preserves_history_after_failed_co
             await restored_engine.dispose()
         from okto_pulse.community.config import CommunitySettings
         projected = tmp_path / 'projected-history'
+        projection_settings = CommunitySettings(kg_embedding_mode='stub', kg_embedding_dim=384)
         applied = await candidate.build_projected_retirement_graph_candidate(runtime, storage, graphs, run, seed, projected,
-            migration_builds=MIGRATION, settings=CommunitySettings(kg_embedding_mode='stub', kg_embedding_dim=384),
+            migration_builds=MIGRATION, settings=projection_settings,
             confirm_original_offline=True, max_seconds=300)
         assert applied['state'] == 'projected_not_reconciled' and dump(source) == before
         projected_binding = CommunityGraphBackendBindingStore(projected / 'kg-artifacts').inspect_board_binding('board-a')
         with connect(projected_binding.physical_path, page_size=8192, read_only=True) as cold:
             assert cold.identity.database_uuid == original_uuid
             assert history(cold).as_of('board-a', cursor, ('Decision',), ()) == past
+        verified = await candidate.build_projected_retirement_graph_candidate(runtime, storage, graphs, run, seed, projected,
+            migration_builds=MIGRATION, settings=projection_settings, confirm_original_offline=True,
+            confirm_candidate_offline=True, expected_receipt_sha256=applied['receipt_sha256'], max_seconds=300)
+        assert verified == applied
         history_file = restored_binding.physical_path / 'system-history.dat'
         original_history = history_file.read_bytes()
         assert original_history

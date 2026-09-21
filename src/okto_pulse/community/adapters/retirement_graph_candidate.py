@@ -232,7 +232,8 @@ def _require_private_replay_mutexes(target):
 
 async def _restore_retirement_graph_candidate(runtime, storage, graphs, run, seed, destination, *,
         migration_builds: RecoveryBuildPair, confirm_original_offline=False,
-        confirm_candidate_offline=False, max_seconds=180, projection_settings=None):
+        confirm_candidate_offline=False, max_seconds=180, projection_settings=None,
+        expected_receipt_sha256=None):
     """Build a new private generation; do not publish any original route.
 
     The explicit assertion covers ALL participants, including native writers
@@ -253,7 +254,9 @@ async def _restore_retirement_graph_candidate(runtime, storage, graphs, run, see
     _closed_originals(graphs, manifest)
     target = _explicit_path(destination)
     replay = target.exists()
-    if replay and projection_settings is not None:
+    if not replay and expected_receipt_sha256 is not None:
+        raise ValueError('retirement_candidate_checkpoint_target_missing')
+    if replay and projection_settings is not None and expected_receipt_sha256 is None:
         raise ValueError('retirement_candidate_projected_replay_requires_checkpoint')
     if replay:
         if confirm_candidate_offline is not True:
@@ -278,8 +281,17 @@ async def _restore_retirement_graph_candidate(runtime, storage, graphs, run, see
                 try:
                     if await connection.run_sync(_snapshot) != _expected_sql(projection):
                         raise ValueError('retirement_candidate_live_source_changed')
-                    await revalidate_retirement_projection_inputs(connection, source, projection, max_seconds=max_seconds)
+                    membership = await revalidate_retirement_projection_inputs(connection, source, projection,
+                        max_seconds=max_seconds)
                     _require_routes(source, kg, manifest['routing_inventory'])
+                    if replay and projection_settings is not None:
+                        from .retirement_candidate_checkpoint import verify_projected_candidate
+
+                        result = await verify_projected_candidate(target, seed=seed, seed_document=document,
+                            projection=projection, settings=projection_settings, membership=membership,
+                            expected_receipt_sha256=expected_receipt_sha256, max_seconds=max_seconds)
+                        _require_routes(source, kg, manifest['routing_inventory'])
+                        return result
                     reference = target.with_name(f'.{target.name}.{secrets.token_hex(12)}.replay') if replay else target
                     with _staged_joint_recovery_restore(snapshot, reference, builds=migration_builds,
                             current_storage_root=uploads, confirm_original_offline=True, max_seconds=max_seconds,
@@ -332,9 +344,15 @@ async def _restore_retirement_graph_candidate(runtime, storage, graphs, run, see
                                     bound = bindings.inspect_board_binding(board_id)
                                     routes.append({'scope': 'board', 'board_id': board_id,
                                         'generation': bound.generation, 'binding_sha256': bound.binding_sha256})
+                                    native_paths.append(bound.physical_path.relative_to(stage).as_posix())
+                            from .retirement_candidate_checkpoint import seal_candidate_checkpoint
+
+                            checkpoint = seal_candidate_checkpoint(stage, native_paths,
+                                seed_sha256=seed.manifest_sha256, max_seconds=max_seconds)
                             receipt_document = {'format': 'retirement-native-candidate/v2',
                                 'seed_sha256': seed.manifest_sha256, 'state': state, 'routes': routes,
-                                'projection_receipt_sha256': projection_receipt.manifest_sha256}
+                                'projection_receipt_sha256': projection_receipt.manifest_sha256,
+                                'checkpoint_sha256': checkpoint.manifest_sha256}
                         receipt = offline._seal(stage / 'candidate-receipt', receipt_document)
                         receipt_sha256 = receipt.manifest_sha256
                         _require_routes(source, kg, manifest['routing_inventory'])
@@ -359,17 +377,19 @@ async def restore_retirement_graph_candidate(runtime, storage, graphs, run, seed
 
 
 async def build_projected_retirement_graph_candidate(runtime, storage, graphs, run, seed, destination, *,
-        migration_builds: RecoveryBuildPair, settings, confirm_original_offline=False, max_seconds=180):
+        migration_builds: RecoveryBuildPair, settings, confirm_original_offline=False,
+        confirm_candidate_offline=False, expected_receipt_sha256=None, max_seconds=180):
     """Restore and project privately under one original-source recovery window.
 
     Failure before publication discards only the private stage; retry starts
-    from the retained seed. Published output still requires reconciliation and
-    has no runtime admission. Existing outputs are never adopted or overwritten;
-    their post-write replay needs the later checkpoint verification contract.
+    from the retained seed. A published output is read-only verified against
+    the externally retained receipt digest under both offline fences. This
+    does not reconcile its effects or grant runtime admission.
     """
     from okto_pulse.community.config import CommunitySettings
     if not isinstance(settings, CommunitySettings):
         raise TypeError('retirement_candidate_explicit_settings_required')
     return await _restore_retirement_graph_candidate(runtime, storage, graphs, run, seed, destination,
         migration_builds=migration_builds, confirm_original_offline=confirm_original_offline,
-        max_seconds=max_seconds, projection_settings=settings)
+        confirm_candidate_offline=confirm_candidate_offline, max_seconds=max_seconds,
+        projection_settings=settings, expected_receipt_sha256=expected_receipt_sha256)

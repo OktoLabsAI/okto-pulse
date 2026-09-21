@@ -26,11 +26,21 @@ from .storage import CommunityFileSystemStorage
 from .sprint_retirement_archive import _encode
 
 
+def projection_execution_binding(*, board_id, item, seed, seed_document, projection, settings):
+    """The retained plan and candidate generation own one exact run identity."""
+    settings_digest = hashlib.sha256(_encode(settings.model_dump(mode='json'))).hexdigest()
+    binding = {'format': 'retirement-projection-execution/v1', 'board_id': board_id,
+        'seed_sha256': seed.manifest_sha256, 'offline_run_sha256': projection['offline_run_sha256'],
+        'projection_sha256': item['sha256'], 'generation': seed_document['generation'],
+        'migration_builds': projection['migration_builds'], 'original_backup': projection['original_backup'],
+        'candidate_snapshot': seed_document['snapshot'], 'execution_settings_sha256': settings_digest}
+    return binding, hashlib.sha256(_encode(binding)).hexdigest()
+
+
 async def execute_candidate_projection(stage, *, seed, seed_document, projection, settings, lifetime_probe, max_seconds):
     """Only the restore coordinator supplies this still-private, fenced stage."""
     deadline = _deadline(max_seconds)
     source, kg = stage / 'database.sqlite3', stage / 'kg-artifacts'
-    settings_digest = hashlib.sha256(_encode(settings.model_dump(mode='json'))).hexdigest()
     candidate_settings = settings.model_copy(update={'database_url': f'sqlite+aiosqlite:///{source}',
         'data_dir': str(stage), 'kg_base_dir': str(kg), 'upload_dir': str(stage / 'uploads')})
     def require_live():
@@ -63,12 +73,8 @@ async def execute_candidate_projection(stage, *, seed, seed_document, projection
                 require_live()
                 board_id = item['projection']['board_id']
                 sources = membership[board_id]
-                binding = {'format': 'retirement-projection-execution/v1', 'board_id': board_id,
-                    'seed_sha256': seed.manifest_sha256, 'offline_run_sha256': projection['offline_run_sha256'],
-                    'projection_sha256': item['sha256'], 'generation': seed_document['generation'],
-                    'migration_builds': projection['migration_builds'], 'original_backup': projection['original_backup'],
-                    'candidate_snapshot': seed_document['snapshot'], 'execution_settings_sha256': settings_digest}
-                lineage = hashlib.sha256(_encode(binding)).hexdigest()
+                binding, lineage = projection_execution_binding(board_id=board_id, item=item, seed=seed,
+                    seed_document=seed_document, projection=projection, settings=settings)
                 run_id = 'retirement-' + lineage
                 scope = ConsolidationClaimScope(board_id=board_id, source='rebuild:' + run_id,
                     reservation_lineage_id=lineage)

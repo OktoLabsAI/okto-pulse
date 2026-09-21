@@ -60,6 +60,10 @@ async def test_failed_private_execution_can_retry_from_seed_and_keeps_original_p
         result = await candidate.build_projected_retirement_graph_candidate(*arguments, migration_builds=MIGRATION,
             settings=settings, confirm_original_offline=True, max_seconds=300)
         assert result['state'] == 'projected_not_reconciled'
+        with pytest.raises(ValueError, match='checkpoint_target_missing'):
+            await candidate.build_projected_retirement_graph_candidate(runtime, storage, (), run, seed,
+                tmp_path / 'missing-projected', migration_builds=MIGRATION, settings=settings,
+                confirm_original_offline=True, expected_receipt_sha256=result['receipt_sha256'])
         assert get_settings() is ambient and dump(source) == before
         document = json.loads((target / 'candidate-receipt/run.json').read_bytes())
         receipt_bytes = (target / 'projection-receipt/run.json').read_bytes()
@@ -85,6 +89,25 @@ async def test_failed_private_execution_can_retry_from_seed_and_keeps_original_p
         with pytest.raises(ValueError, match='projected_replay_requires_checkpoint'):
             await candidate.build_projected_retirement_graph_candidate(*arguments, migration_builds=MIGRATION,
                 settings=settings, confirm_original_offline=True)
+        with pytest.raises(ValueError, match='replay_offline_required'):
+            await candidate.build_projected_retirement_graph_candidate(*arguments, migration_builds=MIGRATION,
+                settings=settings, confirm_original_offline=True,
+                expected_receipt_sha256=result['receipt_sha256'])
+        with pytest.raises(ValueError, match='checkpoint_receipt_mismatch'):
+            await candidate.build_projected_retirement_graph_candidate(*arguments, migration_builds=MIGRATION,
+                settings=settings, confirm_original_offline=True, confirm_candidate_offline=True,
+                expected_receipt_sha256='0' * 64)
+        replay = await candidate.build_projected_retirement_graph_candidate(*arguments, migration_builds=MIGRATION,
+            settings=settings, confirm_original_offline=True, confirm_candidate_offline=True,
+            expected_receipt_sha256=result['receipt_sha256'])
+        assert replay == result
+        marker = target / 'unexpected-payload'
+        marker.write_text('candidate changed after checkpoint')
+        with pytest.raises(ValueError, match='checkpoint_content_changed'):
+            await candidate.build_projected_retirement_graph_candidate(*arguments, migration_builds=MIGRATION,
+                settings=settings, confirm_original_offline=True, confirm_candidate_offline=True,
+                expected_receipt_sha256=result['receipt_sha256'])
+        marker.unlink()
         assert (target / 'projection-receipt/run.json').read_bytes() == receipt_bytes
     finally:
         await runtime.close()
