@@ -526,6 +526,20 @@ def restore_joint_recovery_snapshot(
     max_seconds: float = 60, batch_size: int = 500, current_storage_root: Path | None = None,
     confirm_original_offline: bool = False,
 ) -> Path:
+    """Restore a complete set, retaining privacy guards through publication."""
+    with _staged_joint_recovery_restore(snapshot, target_directory, builds=builds,
+            max_seconds=max_seconds, batch_size=batch_size, current_storage_root=current_storage_root,
+            confirm_original_offline=confirm_original_offline):
+        pass
+    return _explicit_path(target_directory)
+
+
+@contextmanager
+def _staged_joint_recovery_restore(
+    snapshot: JointRecoverySnapshot, target_directory: Path, *, builds: RecoveryBuildPair,
+    max_seconds: float = 60, batch_size: int = 500, current_storage_root: Path | None = None,
+    confirm_original_offline: bool = False,
+) -> Iterator[Path]:
     """Restore into an entirely new directory; never promote live bindings.
 
     v1-v6 use logical transfer and regenerate native UUIDs/LSNs. v7 restores the
@@ -595,12 +609,14 @@ def restore_joint_recovery_snapshot(
             if 'kg_artifacts' in manifest:
                 restore_kg_artifact_snapshot(_kg_artifact(snapshot.directory, manifest), stage / 'kg-artifacts',
                     max_seconds=max_seconds)
+            # Trusted internal installer composition happens while erasure and
+            # publication guards still cover the entire unpublished candidate.
+            yield stage
             _check_time(deadline)
             fsync_directory(stage)
             if storage_guard is not None:
                 storage_guard.validate()
             _publish(stage, target)
-            return target
         finally:
             if stage.exists():
                 remove_contained_tree(stage, base_dir=target.parent)

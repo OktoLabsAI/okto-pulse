@@ -106,3 +106,17 @@ def test_privacy_fence_spans_native_restore_and_final_publication(stored_sources
             current_storage_root=stored_sources[1], confirm_original_offline=True, max_seconds=120)
     assert not (tmp_path / 'restored').exists()
     assert not list(tmp_path.glob('*.restore'))
+
+
+def test_privacy_is_revalidated_after_installer_layout_composition(stored_sources, tmp_path):
+    snapshot = capture(stored_sources)
+    for graph in stored_sources[0][1]:
+        graph.database.close()
+    target = tmp_path / 'composed'
+    with pytest.raises(ValueError, match='privacy_state_changed'):
+        with joint._staged_joint_recovery_restore(snapshot, target, builds=recovery.BUILDS,
+                current_storage_root=stored_sources[1], confirm_original_offline=True, max_seconds=120) as stage:
+            assert (stage / 'database.sqlite3').is_file()
+            digest = hashlib.sha256(b'erasure-during-composition').hexdigest()
+            (stored_sources[1] / '.board_lifecycle' / f'{digest}.erased').write_bytes(b'erased\n')
+    assert not target.exists() and not list(tmp_path.glob('.composed.*.restore'))
