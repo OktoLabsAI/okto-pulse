@@ -28,7 +28,6 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     KuzuNodeRef,
     Refinement,
     Spec,
-    Sprint,
 )
 from okto_pulse.core.domain.code_traceability_kg import (
     CODE_TRACEABILITY_KG_SUBTYPES,
@@ -147,7 +146,7 @@ class CommunitySqlAlchemyKGOperationalReadModel(KGOperationalReadModelPort):
         context: Any,
         *,
         board_id: str,
-        depth: int = 5,
+        depth: int = 4,
     ) -> Mapping[str, Any]:
         q_rows = (
             await context.execute(
@@ -195,9 +194,6 @@ class CommunitySqlAlchemyKGOperationalReadModel(KGOperationalReadModelPort):
         specs = (
             await context.execute(select(Spec).where(Spec.board_id == board_id))
         ).scalars().all()
-        sprints = (
-            await context.execute(select(Sprint).where(Sprint.board_id == board_id))
-        ).scalars().all()
         cards = (
             await context.execute(select(Card).where(Card.board_id == board_id))
         ).scalars().all()
@@ -212,16 +208,9 @@ class CommunitySqlAlchemyKGOperationalReadModel(KGOperationalReadModelPort):
                 specs_by_refinement[row.refinement_id].append(row)
             else:
                 specs_orphan.append(row)
-        sprints_by_spec: dict[str, list[Any]] = defaultdict(list)
-        for row in sprints:
-            sprints_by_spec[row.spec_id].append(row)
-        cards_by_sprint: dict[str, list[Any]] = defaultdict(list)
-        cards_by_spec_direct: dict[str, list[Any]] = defaultdict(list)
+        cards_by_spec: dict[str, list[Any]] = defaultdict(list)
         for row in cards:
-            if getattr(row, "sprint_id", None):
-                cards_by_sprint[row.sprint_id].append(row)
-            else:
-                cards_by_spec_direct[row.spec_id].append(row)
+            cards_by_spec[row.spec_id].append(row)
 
         levels_counter = {
             level: {
@@ -231,7 +220,7 @@ class CommunitySqlAlchemyKGOperationalReadModel(KGOperationalReadModelPort):
                 "failed": 0,
                 "not_queued": 0,
             }
-            for level in ("ideations", "refinements", "specs", "sprints", "cards")
+            for level in ("ideations", "refinements", "specs", "cards")
         }
 
         def _tally(level: str, artifact_type: str, artifact_id: str) -> None:
@@ -252,38 +241,20 @@ class CommunitySqlAlchemyKGOperationalReadModel(KGOperationalReadModelPort):
                 "children": [],
             }
 
-        def _sprint_node(row: Any) -> dict[str, Any]:
-            meta = _queue_meta("sprint", row.id)
-            _tally("sprints", "sprint", row.id)
-            children = [_card_node(card) for card in cards_by_sprint.get(row.id, [])]
-            if depth < 5:
-                children = []
-            return {
-                "id": row.id,
-                "type": "sprint",
-                "title": row.title,
-                **meta,
-                "children": children,
-            }
-
         def _spec_node(row: Any) -> dict[str, Any]:
             meta = _queue_meta("spec", row.id)
             _tally("specs", "spec", row.id)
-            sprint_children = [
-                _sprint_node(sprint) for sprint in sprints_by_spec.get(row.id, [])
-            ]
             direct_cards = [
-                _card_node(card) for card in cards_by_spec_direct.get(row.id, [])
+                _card_node(card) for card in cards_by_spec.get(row.id, [])
             ]
             if depth < 4:
-                sprint_children = []
                 direct_cards = []
             return {
                 "id": row.id,
                 "type": "spec",
                 "title": row.title,
                 **meta,
-                "children": sprint_children + direct_cards,
+                "children": direct_cards,
             }
 
         def _refinement_node(row: Any) -> dict[str, Any]:
@@ -321,6 +292,10 @@ class CommunitySqlAlchemyKGOperationalReadModel(KGOperationalReadModelPort):
             })
         for row in specs_orphan:
             tree.append(_spec_node(row))
+        # A Card may legitimately have no Spec, even when legacy metadata
+        # named a Sprint. Keep it at Board scope without inventing a parent.
+        for row in cards_by_spec.get(None, []):
+            tree.append(_card_node(row))
 
         total_pending = sum(
             sum(
@@ -599,7 +574,8 @@ class CommunitySqlAlchemyKGWorkerQueue(KGWorkerQueuePort):
                 ConsolidationDeadLetter.id.in_(selected_ids)
             )
         else:
-            query = query.where(~retired_work_origin_exists(ConsolidationDeadLetter.board_id,
+            query = query.where(ConsolidationDeadLetter.artifact_type != "sprint",
+                ~retired_work_origin_exists(ConsolidationDeadLetter.board_id,
                 ConsolidationDeadLetter.artifact_type, ConsolidationDeadLetter.artifact_id))
         rows = list(
             (
@@ -626,6 +602,10 @@ class CommunitySqlAlchemyKGWorkerQueue(KGWorkerQueuePort):
                 ConsolidationDeadLetter.board_id, ConsolidationDeadLetter.artifact_type, ConsolidationDeadLetter.artifact_id))).limit(1))
         if retired is not None:
             return {**blocked_selection(), "error": "work_superseded"}
+        if any(row.artifact_type == "sprint" for row in rows):
+            # Explicit mixed selection remains atomic. Only offline retirement
+            # may dispose of the historical Sprint work; never recreate it.
+            return {**blocked_selection(), "error": "retired_sprint_work_requires_offline_cutover"}
         from okto_pulse.core.ports.kg_operational import (
             classify_kg_recovery_failure,
         )
@@ -739,7 +719,7 @@ class CommunitySqlAlchemyKGWorkerQueue(KGWorkerQueuePort):
         include_code_traceability: bool = True,
     ) -> Mapping[str, Any] | None:
         entry = await context.get(ConsolidationQueue, queue_entry_id, populate_existing=True)
-        if entry is None or entry.board_id != board_id or entry.status == SUPERSEDED_WORK_STATUS:
+        if entry is None or entry.board_id != board_id or entry.artifact_type == "sprint" or entry.status == SUPERSEDED_WORK_STATUS:
             return None
         if await context.scalar(select(retired_work_origin_exists(entry.board_id, entry.artifact_type, entry.artifact_id))):
             return None
@@ -824,16 +804,6 @@ class CommunitySqlAlchemyKGWorkerQueue(KGWorkerQueuePort):
             descendants.extend(("spec", spec_id) for spec_id in spec_ids)
 
             if spec_ids:
-                sprint_ids = list(
-                    (
-                        await context.execute(
-                            select(Sprint.id).where(
-                                Sprint.board_id == board_id,
-                                Sprint.spec_id.in_(spec_ids),
-                            )
-                        )
-                    ).scalars().all()
-                )
                 card_ids = list(
                     (
                         await context.execute(
@@ -844,23 +814,7 @@ class CommunitySqlAlchemyKGWorkerQueue(KGWorkerQueuePort):
                         )
                     ).scalars().all()
                 )
-                descendants.extend(
-                    ("sprint", sprint_id) for sprint_id in sprint_ids
-                )
                 descendants.extend(("card", card_id) for card_id in card_ids)
-            elif entry.artifact_type == "sprint":
-                card_ids = list(
-                    (
-                        await context.execute(
-                            select(Card.id).where(
-                                Card.board_id == board_id,
-                                Card.sprint_id == entry.artifact_id,
-                            )
-                        )
-                    ).scalars().all()
-                )
-                descendants.extend(("card", card_id) for card_id in card_ids)
-
             for artifact_type, artifact_id in dict.fromkeys(descendants):
                 row = (
                     await context.execute(

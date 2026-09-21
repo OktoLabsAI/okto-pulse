@@ -2,7 +2,7 @@
  * PendingQueueTree — hierarchical view of the consolidation queue
  * (spec f33eb9ca, card e335f585).
  *
- * Renders 5 levels (Ideations → Refinements → Specs → Sprints → Cards),
+ * Renders 4 levels (Ideations → Refinements → Specs → Cards),
  * each with a status badge + age + retry-count metadata. Expand/collapse
  * state is preserved in localStorage so a refresh keeps the user's view.
  *
@@ -44,7 +44,6 @@ const TYPE_ICON: Record<string, string> = {
   ideation: '💡',
   refinement: '✏️',
   spec: '📄',
-  sprint: '🏃',
   card: '🃏',
 };
 
@@ -166,7 +165,7 @@ export function PendingQueueTree({ boardId, initialData }: Props) {
     setLoading(true);
     setError(null);
     try {
-      const resp = await kgApi.getPendingTree(boardId, 5);
+      const resp = await kgApi.getPendingTree(boardId, 4);
       setData({
         tree: resp.tree,
         levels: resp.levels,

@@ -19,7 +19,6 @@ from okto_pulse.core.kg.board_source_store import (
     SPEC_CONTENT_COLUMNS_V1,
     SPEC_CONTENT_COLUMNS_V2,
     SPEC_SOURCE_MANIFEST_VERSION,
-    SPRINT_CONTENT_COLUMNS,
     STORY_CONTENT_COLUMNS,
     bug_has_minimal_evidence,
     canonical_content_hash,
@@ -84,7 +83,6 @@ ARTIFACT_QUERIES: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
     ("ideation", "ideations", "status", IDEATION_CONTENT_COLUMNS),
     ("spec", "specs", "status", SPEC_CONTENT_COLUMNS_V2),
     ("refinement", "refinements", "status", REFINEMENT_CONTENT_COLUMNS),
-    ("sprint", "sprints", "status", SPRINT_CONTENT_COLUMNS),
 )
 
 CODE_TRACEABILITY_SOURCE_MANIFEST_VERSION = "code-traceability-source/v1"

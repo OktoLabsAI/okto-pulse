@@ -62,8 +62,9 @@ describe('KG source navigation shared by graph and Discovery', () => {
   });
 
   it('preserves a retired Sprint reference without opening a live entity', async () => {
+    // Raw response from an old server deliberately violates the current wire type.
     vi.mocked(getNodeSource).mockResolvedValue({ ...resolved, source_artifact_ref: 'sprint:retired',
-      target: { ...resolved.target!, entity_type: 'sprint', entity_kind: 'sprint' } });
+      target: { ...resolved.target!, entity_type: 'sprint', entity_kind: 'sprint' } } as unknown as KGNodeSource);
     render(<View />);
     await screen.findByText('sprint:retired');
     expect(screen.queryByRole('button', { name: /^Open / })).not.toBeInTheDocument();

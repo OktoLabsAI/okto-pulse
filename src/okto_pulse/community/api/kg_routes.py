@@ -1861,13 +1861,13 @@ async def list_pending(
 @router.get("/boards/{board_id}/pending/tree")
 async def list_pending_tree(
     board_id: str,
-    depth: int = Query(5, ge=1, le=5),
+    depth: int = Query(4, ge=1, le=4),
     actor: ActorContext = Depends(require_kg_board_actor),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Hierarchical pending-queue view (spec f33eb9ca — Layer 4 Pending Queue UI).
 
-    Returns a 5-level tree: Ideations → Refinements → Specs → Sprints →
+    Returns a 4-level tree: Ideations → Refinements → Specs →
     Cards, each level annotated with aggregate status counters drawn from
     `consolidation_queue`. The UI renders this via
     `frontend/src/components/knowledge/PendingQueueTree.tsx` with lazy
@@ -1878,7 +1878,7 @@ async def list_pending_tree(
           "board_id": str,
           "total_pending": int,
           "levels": {ideations: {pending,in_progress,done,failed},
-                     refinements: ..., specs: ..., sprints: ..., cards: ...},
+                     refinements: ..., specs: ..., cards: ...},
           "tree": [ideation-nodes with nested children]
         }
 
@@ -2206,7 +2206,7 @@ async def retry_pending_entry(
 ):
     """Re-queue a failed/done ConsolidationQueue entry so the worker
     reprocesses it. `recursive=true` also re-enqueues descendants below
-    the artifact in the Ideation→Refinement→Spec→Sprint→Card hierarchy.
+    the artifact in the Ideation→Refinement→Spec→Card hierarchy.
 
     Idempotency: content_hash BR still owns "nothing actually changed"
     no-op behaviour downstream, so retrying an unchanged artifact is a

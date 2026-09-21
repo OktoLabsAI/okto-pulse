@@ -2,14 +2,14 @@
  * Performance test for ts_b379dc82 (card 65147ed4):
  *   "Árvore pending renderiza 100+ itens em <500ms".
  *
- * Mocks the kg-api response with a 5-level tree containing 100+ nodes
+ * Mocks the kg-api response with a 4-level tree containing 100+ nodes
  * and asserts that the initial mount + flush completes within 500ms in
  * jsdom. We use performance.now() instead of Lighthouse since this lives
  * in the unit suite — Lighthouse runs in the e2e/visual project.
  */
 
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { PendingQueueTree } from '../PendingQueueTree';
 import type { PendingTreeNode } from '@/services/kg-api';
 
@@ -40,9 +40,7 @@ function makeCards(parentId: string, count: number): PendingTreeNode[] {
 }
 
 function makeTree(): { tree: PendingTreeNode[]; total: number } {
-  // 1 ideation → 2 refinements → 2 specs each → 2 sprints each → 5 cards each
-  // Total cards: 1 * 2 * 2 * 2 * 5 = 40 + intermediate nodes (1+2+4+8) = 55
-  // Add 60 direct cards under specs to comfortably exceed 100.
+  // Keep the same 100 Cards: 1 Ideation + 2 Refinements + 4 Specs + 100 Cards.
   const tree: PendingTreeNode[] = [{
     id: 'idea_root',
     type: 'ideation',
@@ -59,24 +57,25 @@ function makeTree(): { tree: PendingTreeNode[]; total: number } {
         title: `Spec ${ri}.${si}`,
         status: 'pending',
         children: [
-          ...Array.from({ length: 2 }, (_, spi) => ({
-            id: `sprint_${ri}_${si}_${spi}`,
-            type: 'sprint' as const,
-            title: `Sprint ${ri}.${si}.${spi}`,
-            status: 'pending',
-            children: makeCards(`sprint_${ri}_${si}_${spi}`, 5),
-          })),
+          ...Array.from({ length: 2 }, (_, group) =>
+            makeCards(`group_${ri}_${si}_${group}`, 5),
+          ).flat(),
           ...makeCards(`spec_${ri}_${si}`, 15), // 60 extra cards across the spec layer
         ],
       })),
     })),
   }];
-  return { tree, total: 120 };
+  // One of the same 100 Cards has no Spec and belongs directly to the Board.
+  const orphan = tree[0].children![0].children![0].children!.pop()!;
+  orphan.title = 'Card without Spec';
+  tree.push(orphan);
+  return { tree, total: 75 };
 }
 
 describe('PendingQueueTree perf', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.localStorage.clear();
   });
 
   it('renders 100+ items in under 500ms (initial mount with initialData)', async () => {
@@ -91,8 +90,7 @@ describe('PendingQueueTree perf', () => {
             ideations: { pending: 1, in_progress: 0, done: 0, failed: 0 },
             refinements: { pending: 2, in_progress: 0, done: 0, failed: 0 },
             specs: { pending: 4, in_progress: 0, done: 0, failed: 0 },
-            sprints: { pending: 8, in_progress: 0, done: 0, failed: 0 },
-            cards: { pending: 105, in_progress: 0, done: 0, failed: 25 },
+            cards: { pending: 68, in_progress: 0, done: 0, failed: 32 },
           },
           total_pending: total,
         }}
@@ -104,6 +102,11 @@ describe('PendingQueueTree perf', () => {
     expect(elapsed).toBeLessThan(500);
     // Sanity: the root row exists.
     expect(screen.getByTestId('pending-queue-tree')).toBeInTheDocument();
+    expect(screen.getByText('Card without Spec')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('pending-tree-expand-all'));
+    expect(screen.getAllByTestId(/^pending-row-card-/)).toHaveLength(100);
+    expect(screen.getAllByTestId(/^pending-row-/)).toHaveLength(107);
+    expect(screen.queryByText(/sprint/i)).not.toBeInTheDocument();
   });
 
   it('lazy-fetch by level: descendants only render when expanded', async () => {
@@ -118,7 +121,6 @@ describe('PendingQueueTree perf', () => {
             ideations: { pending: 1, in_progress: 0, done: 0, failed: 0 },
             refinements: { pending: 0, in_progress: 0, done: 0, failed: 0 },
             specs: { pending: 0, in_progress: 0, done: 0, failed: 0 },
-            sprints: { pending: 0, in_progress: 0, done: 0, failed: 0 },
             cards: { pending: 0, in_progress: 0, done: 0, failed: 0 },
           },
           total_pending: total,
@@ -143,7 +145,6 @@ describe('PendingQueueTree perf', () => {
             ideations: { pending: 1, in_progress: 0, done: 0, failed: 0 },
             refinements: { pending: 0, in_progress: 0, done: 0, failed: 0 },
             specs: { pending: 0, in_progress: 0, done: 0, failed: 0 },
-            sprints: { pending: 0, in_progress: 0, done: 0, failed: 0 },
             cards: { pending: 0, in_progress: 0, done: 0, failed: 0 },
           },
           total_pending: total,

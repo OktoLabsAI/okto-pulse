@@ -37,9 +37,9 @@ function ScopedSource({ node, boardId }: { node: KGNode; boardId?: string }) {
   // A stale graph response may still name a retired entity. Preserve its source
   // reference below without offering an operational Sprint link.
   const target = result?.status === 'resolved' && result.target && result.target.board_id === boardId
-    && result.target.entity_type !== 'sprint' ? result.target : null;
+    && ['spec', 'refinement', 'ideation', 'story', 'card'].includes(result.target.entity_type) ? result.target : null;
   const open = () => {
-    if (!target || !stack || target.entity_type === 'sprint') return;
+    if (!target || !stack) return;
     const top = stack.stack[stack.stack.length - 1];
     if (top?.type !== 'kg_node' || top.id !== node.id || top.boardId !== boardId) {
       stack.push({ type: 'kg_node', id: node.id, boardId });

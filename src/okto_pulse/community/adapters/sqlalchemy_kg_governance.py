@@ -86,11 +86,10 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     Spec,
     SpecDependency,
     SpecDependencyOperation,
-    Sprint,
     Story,
     TargetOverlapAcknowledgementRow,
 )
-from okto_pulse.core.domain.enums import SpecStatus, SprintStatus
+from okto_pulse.core.domain.enums import SpecStatus
 from okto_pulse.core.ports.kg_events import HISTORICAL_PROGRESS_SETTINGS_KEY
 from okto_pulse.core.ports.kg_governance import (
     BoardErasureJobFact,
@@ -261,14 +260,6 @@ class CommunitySqlAlchemyKGGovernanceStore:
                         (SpecStatus.DONE, SpecStatus.APPROVED, SpecStatus.VALIDATED)
                     ),
                     Spec.archived.is_(False),
-                ),
-            ),
-            (
-                "sprint",
-                select(Sprint.id).where(
-                    Sprint.board_id == board_id,
-                    Sprint.status == SprintStatus.CLOSED,
-                    Sprint.archived.is_(False),
                 ),
             ),
             ("card", select(Card.id).where(Card.board_id == board_id)),

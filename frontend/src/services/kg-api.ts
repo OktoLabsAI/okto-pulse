@@ -58,7 +58,7 @@ export interface KGNodeSource {
   source_artifact_ref: string | null;
   target: {
     board_id: string;
-    entity_type: 'spec' | 'refinement' | 'ideation' | 'sprint' | 'story' | 'card';
+    entity_type: 'spec' | 'refinement' | 'ideation' | 'story' | 'card';
     entity_kind: string;
     entity_id: string;
     title: string;
@@ -289,7 +289,7 @@ export async function listPending(boardId: string) {
 // Pending queue — hierarchical tree (spec f33eb9ca)
 export interface PendingTreeNode {
   id: string;
-  type: 'ideation' | 'refinement' | 'spec' | 'sprint' | 'card';
+  type: 'ideation' | 'refinement' | 'spec' | 'card';
   title: string;
   status: string;
   queue_entry_id?: string | null;
@@ -304,11 +304,10 @@ export interface PendingTreeLevels {
   ideations: { pending: number; in_progress: number; done: number; failed: number };
   refinements: PendingTreeLevels['ideations'];
   specs: PendingTreeLevels['ideations'];
-  sprints: PendingTreeLevels['ideations'];
   cards: PendingTreeLevels['ideations'];
 }
 
-export async function getPendingTree(boardId: string, depth = 5) {
+export async function getPendingTree(boardId: string, depth = 4) {
   return kgFetch<{
     board_id: string;
     depth: number;
