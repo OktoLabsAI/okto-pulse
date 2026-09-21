@@ -7,6 +7,7 @@ it is not reconciliation or runtime admission.
 
 import hashlib
 import json
+from pathlib import Path
 import re
 
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
@@ -118,6 +119,7 @@ async def verify_projected_candidate(target, *, seed, seed_document, projection,
     if _sql_snapshot(target / 'database.sqlite3') != projected['after_sql']:
         raise ValueError('retirement_candidate_checkpoint_sql_changed')
     engine = create_async_engine(f'sqlite+aiosqlite:///{target / "database.sqlite3"}')
+    all_receipts = []
     try:
         persistence = CommunitySqlAlchemyConsolidationPersistence()
         async with engine.connect() as connection:
@@ -135,6 +137,7 @@ async def verify_projected_candidate(target, *, seed, seed_document, projection,
                                 or type(entry['acks']) is not list):
                             raise ValueError('retirement_candidate_checkpoint_binding_changed')
                         receipts = tuple(ExactConsolidationAckReceipt.from_payload(ack) for ack in entry['acks'])
+                        all_receipts.extend(receipts)
                         expected = {(row['source_ref'], row['source_version'], row['content_hash'])
                             for row in membership[board_id]}
                         if (len(receipts) != len(expected)
@@ -149,6 +152,10 @@ async def verify_projected_candidate(target, *, seed, seed_document, projection,
                 await connection.rollback()
     finally:
         await engine.dispose()
+    from .retirement_candidate_sql_delta import verify_candidate_sql_delta
+
+    verify_candidate_sql_delta(Path(seed_document['snapshot']['directory']) / 'relational/database.sqlite3',
+        target / 'database.sqlite3', tuple(all_receipts), deadline=deadline)
     if _inventory_digest(target, native_paths, deadline, published=True) != checkpoint['content_sha256']:
         raise ValueError('retirement_candidate_checkpoint_content_changed')
     return {'state': 'projected_not_reconciled', 'directory': target,

@@ -332,6 +332,13 @@ async def _restore_retirement_graph_candidate(runtime, storage, graphs, run, see
                                     max_seconds=max_seconds)
                             finally:
                                 execution_live[0] = False
+                            from okto_pulse.core.ports.consolidation import ExactConsolidationAckReceipt
+                            from .retirement_candidate_sql_delta import verify_candidate_sql_delta
+
+                            acknowledgements = tuple(ExactConsolidationAckReceipt.from_payload(ack)
+                                for board in executed['boards'] for ack in board['acks'])
+                            verify_candidate_sql_delta(snapshot.directory / 'relational/database.sqlite3',
+                                stage / 'database.sqlite3', acknowledgements, deadline=_deadline(max_seconds))
                             projection_receipt = offline._seal(stage / 'projection-receipt', executed)
                             state = 'projected_not_reconciled'
                             # Binding paths are relative, so the final rename does not

@@ -1,8 +1,9 @@
 """Restored candidates execute privately; failed attempts never touch originals."""
 
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 import hashlib
 import json
+from pathlib import Path
 import sqlite3
 
 import pytest
@@ -101,6 +102,29 @@ async def test_failed_private_execution_can_retry_from_seed_and_keeps_original_p
             settings=settings, confirm_original_offline=True, confirm_candidate_offline=True,
             expected_receipt_sha256=result['receipt_sha256'])
         assert replay == result
+        from okto_pulse.core.ports.consolidation import ExactConsolidationAckReceipt
+        from okto_pulse.community.adapters.retirement_candidate_sql_delta import verify_candidate_sql_delta
+        from okto_pulse.community.adapters.relational_recovery_snapshot import _deadline
+
+        changed_sql = tmp_path / 'changed-candidate.sqlite3'
+        with closing(sqlite3.connect(target / 'database.sqlite3')) as original, closing(sqlite3.connect(changed_sql)) as altered:
+            original.backup(altered)
+            with altered:
+                altered.execute("UPDATE boards SET name='Unowned change' WHERE id='board-a'")
+        seed_document = candidate.read_retirement_candidate_seed(seed)[0]
+        acknowledgements = tuple(ExactConsolidationAckReceipt.from_payload(ack)
+            for board in receipt['boards'] for ack in board['acks'])
+        with pytest.raises(ValueError, match='sql_delta_unclassified:boards'):
+            verify_candidate_sql_delta(
+                Path(seed_document['snapshot']['directory']) / 'relational/database.sqlite3',
+                changed_sql, acknowledgements, deadline=_deadline(60))
+        sidecar = Path(str(changed_sql) + '-wal')
+        sidecar.write_bytes(b'uncheckpointed')
+        with pytest.raises(ValueError, match='relational_snapshot_unexpected_sidecar'):
+            verify_candidate_sql_delta(
+                Path(seed_document['snapshot']['directory']) / 'relational/database.sqlite3',
+                changed_sql, acknowledgements, deadline=_deadline(60))
+        sidecar.unlink()
         marker = target / 'unexpected-payload'
         marker.write_text('candidate changed after checkpoint')
         with pytest.raises(ValueError, match='checkpoint_content_changed'):
