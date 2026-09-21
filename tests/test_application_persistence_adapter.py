@@ -155,6 +155,48 @@ async def test_card_gate_projection_keeps_history_bodies_inside_sqlite(tmp_path)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("confidence", (90, 60))
+async def test_card_policy_compatibility_survives_bounded_sql_projection(tmp_path, confidence):
+    from okto_pulse.core.domain.task_validation_policy import resolve_task_validation_config
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'gate-policy.db'}")
+    factory = async_sessionmaker(engine, expire_on_commit=False,
+                                sync_session_class=CommunitySemanticSession,
+                                info={"realm_scope": RealmScope.local()})
+    adapter = CommunitySqlAlchemyApplicationPersistence()
+    policy = {
+        "contract_version": "card-validation-compatibility/v1", "board_id": "board",
+        "card_id": "card", "source_sprint_id": "retired-origin",
+        "source_spec_id": None, "migration_id": "offline-migration",
+        "overrides": {"min_confidence": confidence, "required": False, "max_drift": 0},
+    }
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        async with factory() as session:
+            await adapter.add(session, ApplicationRecord(entity="board", values={
+                "id": "board", "name": "Migrated gate", "owner_id": "owner"}))
+            await adapter.add(session, ApplicationRecord(entity="card", values={
+                "id": "card", "board_id": "board", "title": "Task", "created_by": "owner",
+                "migrated_validation_policy": policy, "description": "Not selected"}))
+            await adapter.commit(session)
+        fields = ("id", "board_id", "sprint_id", "migrated_validation_policy")
+        async with factory() as session:
+            rows = await adapter.list(session, ApplicationQuery(entity="card",
+                filters=(ApplicationFilter("id", "eq", "card"),), select_fields=fields, limit=1))
+            assert len(rows) == 1
+            assert set(rows[0].values) == set(fields)
+            assert rows[0].migrated_validation_policy == policy
+            config = resolve_task_validation_config(rows[0], None, None, {})
+            assert config["min_confidence"] == confidence
+            assert config["required"] is False
+            assert config["max_drift"] == 0
+            assert config["resolved_sources"]["min_confidence"] == "card_compatibility"
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_application_persistence_round_trip_includes_and_rollback(tmp_path):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'application.db'}")
     factory = async_sessionmaker(
