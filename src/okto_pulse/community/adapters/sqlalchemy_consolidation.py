@@ -52,7 +52,6 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     Spec,
     SpecDependency,
     SpecQAItem,
-    Sprint,
     Story,
 )
 from okto_pulse.core.ports.consolidation import (
@@ -112,7 +111,6 @@ _MODELS = {
     "ideation": Ideation,
     "refinement": Refinement,
     "spec": Spec,
-    "sprint": Sprint,
     "card": Card,
     "amendment_hotfix_revision": AmendmentHotfixRevision,
 }
@@ -125,7 +123,7 @@ _QUALITY_QA_BINDINGS = {
 
 _DELETION_INTENT_SCHEMA_VERSION = 1
 _GOVERNED_DELETION_ARTIFACT_TYPES = frozenset(
-    {"card", "spec", "ideation", "refinement", "sprint"}
+    {"card", "spec", "ideation", "refinement"}
 )
 _EXACT_ACK_JOURNAL_MAX_ROWS = 50_000
 _EXACT_SQL_CHUNK_SIZE = 400
@@ -825,8 +823,6 @@ class CommunitySqlAlchemyConsolidationPersistence:
             statement = statement.options(selectinload(Ideation.story_links))
         elif artifact_type == "spec":
             statement = statement.options(selectinload(Spec.architecture_designs))
-        elif artifact_type == "sprint":
-            statement = statement.options(selectinload(Sprint.spec))
         elif artifact_type == "card":
             statement = statement.options(selectinload(Card.architecture_designs))
         return (await context.execute(statement)).scalars().first()

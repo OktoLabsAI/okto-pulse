@@ -7,7 +7,6 @@ import pytest
 from sqlalchemy import insert, text, update
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from okto_pulse.core.events.types import SprintClosed
 from okto_pulse.community.adapters import card_validation_retirement as cards
 from okto_pulse.community.adapters import context_disposition_retirement as context
 from okto_pulse.community.adapters import retirement_data_journal as journal
@@ -25,9 +24,8 @@ async def prepare(engine, tmp_path, *, old_schema=False):
     async with engine.begin() as connection:
         if old_schema:
             await connection.exec_driver_sql("DROP TABLE retirement_data_checkpoints")
-        event = SprintClosed(board_id="board-a", sprint_id="sprint")
         await connection.execute(insert(DomainEventRow).values(id="pending-event", board_id="board-a",
-            event_type=event.event_type, payload_json=event.payload_for_storage()))
+            event_type="sprint.closed", payload_json={"sprint_id": "sprint"}))
         await connection.execute(insert(DomainEventHandlerExecution).values(id="pending-handler", event_id="pending-event",
             handler_name="ConsolidationEnqueuer", status="pending", attempts=2, last_error="original failure"))
     storage, references, plan = await prepare_context(engine, tmp_path)

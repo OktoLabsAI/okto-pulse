@@ -8,20 +8,19 @@ from sqlalchemy import insert, text
 from okto_pulse.community.adapters.sprint_retirement_inventory import read_sprint_retirement_inventory
 from okto_pulse.community.adapters.sprint_retirement_work import SprintRetirementWorkError
 from okto_pulse.community.adapters.sqlalchemy_models import Base
-from okto_pulse.core.events.types import CardCreated, SprintClosed
+from okto_pulse.core.events.types import CardCreated
 import test_sprint_retirement_inventory as relational
 
 database = relational.database
 
 
 async def seed(engine, *, handler="ConsolidationEnqueuer", status="pending", event_type=None, payload=None, board_id="board-a"):
-    event = SprintClosed(event_id="event", board_id=board_id, sprint_id="sprint")
     async with engine.begin() as connection:
         await connection.execute(insert(Base.metadata.tables["domain_events"]).values(
-            id=event.event_id, board_id=event.board_id, event_type=event_type or event.event_type,
-            payload_json=event.payload_for_storage() if payload is None else payload))
+            id="event", board_id=board_id, event_type=event_type or "sprint.closed",
+            payload_json={"sprint_id": "sprint"} if payload is None else payload))
         await connection.execute(insert(Base.metadata.tables["domain_event_handler_executions"]).values(
-            id="execution", event_id=event.event_id, handler_name=handler, status=status, attempts=3,
+            id="execution", event_id="event", handler_name=handler, status=status, attempts=3,
             last_error="historical error"))
 
 

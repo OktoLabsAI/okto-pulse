@@ -8,7 +8,6 @@ import pytest
 from sqlalchemy import delete, event, insert, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from okto_pulse.core.events.types import CardCreated, SprintClosed
 from okto_pulse.core.ports.domain_event_delivery import DomainEventFailure
 from okto_pulse.core.ports.relational_effects import ConsolidationQueueUpsert
 from okto_pulse.core.ports.reconcile_intent import ReconcileIntentCreate
@@ -34,11 +33,14 @@ database = relational.database
 
 async def prepare(engine, tmp_path, *, status="pending", handler="ConsolidationEnqueuer", queue_status="pending", materialize=True):
     async with engine.begin() as connection:
-        for identity, model in (("event", SprintClosed(board_id="board-a", sprint_id="sprint")),
-                ("done-event", SprintClosed(board_id="board-a", sprint_id="sprint")),
-                ("mixed", CardCreated(board_id="board-a", card_id="c1", spec_id="spec-a"))):
+        # Frozen v0.3.4 payloads survive removal of the operational DTOs.
+        for identity, event_type, payload in (
+            ("event", "sprint.closed", {"sprint_id": "sprint"}),
+            ("done-event", "sprint.closed", {"sprint_id": "sprint"}),
+            ("mixed", "card.created", {"card_id": "c1", "spec_id": "spec-a", "card_type": "normal", "priority": "none", "sprint_id": "sprint"}),
+        ):
             await connection.execute(insert(DomainEventRow).values(id=identity, board_id="board-a",
-                event_type=model.event_type, payload_json={**model.payload_for_storage(), **({"sprint_id": "sprint"} if identity == "mixed" else {})}))
+                event_type=event_type, payload_json=payload))
         for identity, parent, state, name in (("execution", "event", status, handler),
                 ("done-execution", "done-event", "done", "ConsolidationEnqueuer"),
                 ("mixed-execution", "mixed", "pending", "ConsolidationEnqueuer")):

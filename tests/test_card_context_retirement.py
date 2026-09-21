@@ -14,7 +14,6 @@ from sqlalchemy import delete, insert, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from okto_pulse.core.domain.realm import RealmScope
-from okto_pulse.core.events.types import CardCreated, SprintClosed
 from okto_pulse.core.mcp import server
 from okto_pulse.core.ports.authentication import Principal
 from okto_pulse.core.ports.historical_archive import ArchiveSection
@@ -49,10 +48,13 @@ async def prepare(engine, tmp_path, *, embedded=False):
     async with engine.begin() as connection:
         await connection.execute(text("UPDATE boards SET realm_id='local',owner_id='local-user'"))
         await add_agent(connection, "reader")
-        for identity, model in (("exclusive", SprintClosed(board_id="board-a", sprint_id="sprint")),
-                ("mixed", CardCreated(board_id="board-a", card_id="c1", spec_id="spec-a"))):
+        # Frozen v0.3.4 payloads survive removal of the operational DTOs.
+        for identity, event_type, payload in (
+            ("exclusive", "sprint.closed", {"sprint_id": "sprint"}),
+            ("mixed", "card.created", {"card_id": "c1", "spec_id": "spec-a", "card_type": "normal", "priority": "none", "sprint_id": "sprint"}),
+        ):
             await connection.execute(insert(DomainEventRow).values(id=identity, board_id="board-a",
-                event_type=model.event_type, payload_json={**model.payload_for_storage(), **({"sprint_id": "sprint"} if identity == "mixed" else {})}))
+                event_type=event_type, payload_json=payload))
             await connection.execute(insert(DomainEventHandlerExecution).values(id=identity, event_id=identity,
                 handler_name="ConsolidationEnqueuer", status="pending", attempts=2, last_error="original failure"))
         await connection.execute(insert(ConsolidationQueue).values(id="queue", board_id="board-a", artifact_type="sprint",
