@@ -17,7 +17,7 @@ from okto_pulse.core.ports.knowledge_propagation import register_knowledge_propa
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("source", ("live", "migrated-90", "migrated-60", "missing", "foreign"))
+@pytest.mark.parametrize("source", ("inherited", "live", "migrated-90", "migrated-60", "missing", "foreign"))
 async def test_card_policy_read_preserves_values_scope_and_source_data(tmp_path, monkeypatch, source):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'policy.db'}")
     sessions = async_sessionmaker(engine, expire_on_commit=False,
@@ -28,11 +28,13 @@ async def test_card_policy_read_preserves_values_scope_and_source_data(tmp_path,
             "board_id": "board", "card_id": "card", "source_spec_id": "spec",
             "source_sprint_id": "sprint", "migration_id": "migration",
             "overrides": {"min_confidence": int(source.split("-")[1]), "max_drift": 0, "required": False}}
-    sprint_id = None if policy else "missing" if source == "missing" else "sprint"
+    sprint_id = None if policy or source == "inherited" else "missing" if source == "missing" else "sprint"
     writes = []
+    statements = []
     commits = []
 
     def capture_write(_connection, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement.lower())
         if statement.lstrip().split(" ", 1)[0].lower() in {"insert", "update", "delete", "replace"}:
             writes.append(statement)
 
@@ -61,19 +63,20 @@ async def test_card_policy_read_preserves_values_scope_and_source_data(tmp_path,
             monkeypatch.setattr(uow, "commit", commit)
             response = (await GetCardUseCase().execute(GetCardCommand("card"), actor=actor, uow=uow)).card
             config = response.model_dump(mode="json")["validation_config"]
-            if source in {"missing", "foreign"}:
+            if source in {"live", "missing", "foreign"}:
                 assert config is None
             else:
-                assert config["min_confidence"] == (int(source.split("-")[1]) if policy else 95)
+                assert config["min_confidence"] == (int(source.split("-")[1]) if policy else 70)
                 assert config["min_completeness"] == 92
                 assert config["max_drift"] == (0 if policy else 12)
                 assert config["required"] is (False if policy else True)
-                assert config["resolved_sources"]["min_confidence"] == ("card_compatibility" if policy else "sprint")
+                assert config["resolved_sources"]["min_confidence"] == ("card_compatibility" if policy else "board")
             commit.assert_not_awaited()
         denied = ActorContext("other", "rest", board_id="board")
         async with factory(actor=denied) as uow:
             with pytest.raises(EntityNotFoundError):
                 await GetCardUseCase().execute(GetCardCommand("card"), actor=denied, uow=uow)
+        assert not any("from sprints" in statement or "join sprints" in statement for statement in statements)
         async with sessions() as db:
             stored = await db.get(Card, "card")
             assert stored.sprint_id == sprint_id

@@ -187,7 +187,7 @@ async def test_card_policy_compatibility_survives_bounded_sql_projection(tmp_pat
             assert len(rows) == 1
             assert set(rows[0].values) == set(fields)
             assert rows[0].migrated_validation_policy == policy
-            config = resolve_task_validation_config(rows[0], None, None, {})
+            config = resolve_task_validation_config(rows[0], None, {})
             assert config["min_confidence"] == confidence
             assert config["required"] is False
             assert config["max_drift"] == 0

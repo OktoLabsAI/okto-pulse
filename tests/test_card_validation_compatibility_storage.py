@@ -12,6 +12,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import Base, Board, Card, S
 from okto_pulse.core.domain.task_validation_policy import plan_migrated_validation_policy, FIELDS
 from okto_pulse.core.models.schemas import CardResponse
 from okto_pulse.core.services import CardService
+from okto_pulse.core.domain.task_validation_policy import resolve_historical_task_validation_config
 
 
 @pytest.mark.asyncio
@@ -68,7 +69,7 @@ async def test_persisted_compatibility_preserves_each_card_policy_and_public_rea
             for suffix in ("a", "b"):
                 card = await reader.get(Card, "card-" + suffix)
                 sprint = await reader.get(Sprint, "sprint-" + suffix)
-                before = CardService._resolve_validation_config(None, card, spec, sprint, {})
+                before = resolve_historical_task_validation_config(card, spec, sprint, {})
                 policy = plan_migrated_validation_policy(card=card, spec=spec, sprint=sprint,
                     board_settings={}, migration_id="disposable-cutover")
                 planned.append((card.id, before, deepcopy(card.validations), policy))
@@ -82,7 +83,7 @@ async def test_persisted_compatibility_preserves_each_card_policy_and_public_rea
             spec = await reader.get(Spec, "spec")
             for identity, before, history, policy in planned:
                 card = await reader.get(Card, identity)
-                after = CardService._resolve_validation_config(None, card, spec, None, {})
+                after = CardService._resolve_validation_config(None, card, spec, {})
                 assert {field: after[field] for field in FIELDS} == {field: before[field] for field in FIELDS}
                 assert card.status == "done" and card.validations == history
                 await reader.refresh(card, attribute_names=["architecture_designs", "attachments", "qa_items", "comments"])

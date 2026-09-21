@@ -1642,7 +1642,7 @@ describe('CardModal', () => {
     const validationCard: Card = {
       ...cardForType('normal'),
       id: 'validation-mixed-thresholds-1',
-      validation_config: policyConfig(95, 92, 12, { min_confidence: 'sprint', min_completeness: 'spec' }),
+      validation_config: policyConfig(95, 92, 12, { min_confidence: 'card_compatibility', min_completeness: 'spec' }),
       status: 'validation',
     };
     storeMock.currentBoard.settings = {
@@ -1694,7 +1694,7 @@ describe('CardModal', () => {
       }),
     ).toBeInTheDocument();
     expect(screen.getByTestId('task-validation-confidence-threshold-source'))
-      .toHaveTextContent('Threshold source: sprint');
+      .toHaveTextContent('Threshold source: preserved Card policy');
     expect(screen.getByTestId('task-validation-completeness-threshold-source'))
       .toHaveTextContent('Threshold source: spec');
     expect(screen.getByTestId('task-validation-drift-threshold-source'))

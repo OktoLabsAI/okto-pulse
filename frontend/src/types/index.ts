@@ -2307,7 +2307,7 @@ export interface RefinementAmbiguityGateSkipReceipt {
   edition?: number;
 }
 
-export type TaskValidationPolicySource = 'card_compatibility' | 'sprint' | 'spec' | 'board' | 'default';
+export type TaskValidationPolicySource = 'card_compatibility' | 'spec' | 'board' | 'default';
 
 /** Read-only policy resolved by Core for the current Card. */
 export interface TaskValidationConfig {
