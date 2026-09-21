@@ -13,7 +13,8 @@ from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import C
 from okto_pulse.community.adapters.sqlalchemy_models import (
     Base, Board, Card, ConsolidationDeadLetter, ConsolidationQueue, Spec, Sprint,
 )
-from okto_pulse.core.domain.enums import SpecStatus, SprintStatus
+from okto_pulse.core.domain.enums import SpecStatus
+from okto_pulse.community.adapters.legacy_sprint_values import HistoricalSprintStatus as SprintStatus
 from okto_pulse.core.domain.realm import RealmScope
 
 

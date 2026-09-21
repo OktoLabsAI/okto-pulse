@@ -11,7 +11,8 @@ from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import C
 from okto_pulse.community.adapters.sqlalchemy_traceability_read_model import (
     build_lineage_graph, build_traceability_report, resolve_lineage_root,
 )
-from okto_pulse.core.domain.enums import CardStatus, CardType, SpecStatus, SprintStatus
+from okto_pulse.core.domain.enums import CardStatus, CardType, SpecStatus
+from okto_pulse.community.adapters.legacy_sprint_values import HistoricalSprintStatus as SprintStatus
 from okto_pulse.core.domain.realm import RealmScope
 from okto_pulse.core.ports.traceability import TraceabilityReadError
 

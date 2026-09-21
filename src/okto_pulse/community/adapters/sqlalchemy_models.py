@@ -40,12 +40,14 @@ from okto_pulse.core.domain.enums import (
     IdeationStatus,
     RefinementStatus,
     SpecStatus,
-    SprintLaneType,
-    SprintStatus,
     StoryStatus,
 )
 from okto_pulse.core.domain.datetime_utils import normalize_utc_datetime
 from okto_pulse.community.adapters.sqlalchemy_base import Base
+from okto_pulse.community.adapters.legacy_sprint_values import (
+    HistoricalSprintLaneType,
+    HistoricalSprintStatus,
+)
 
 if TYPE_CHECKING:
     pass
@@ -308,34 +310,34 @@ class RefinementStatusType(TypeDecorator):
         return RefinementStatus(value)
 
 
-class SprintStatusType(TypeDecorator):
+class HistoricalSprintStatusType(TypeDecorator):
     impl = String(50)
     cache_ok = True
 
     def process_bind_param(self, value, dialect):
         if value is None:
             return None
-        return value.value if isinstance(value, SprintStatus) else value
+        return value.value if isinstance(value, HistoricalSprintStatus) else value
 
     def process_result_value(self, value, dialect):
         if value is None:
             return None
-        return SprintStatus(value)
+        return HistoricalSprintStatus(value)
 
 
-class SprintLaneTypeType(TypeDecorator):
+class HistoricalSprintLaneTypeType(TypeDecorator):
     impl = String(50)
     cache_ok = True
 
     def process_bind_param(self, value, dialect):
         if value is None:
             return None
-        return value.value if isinstance(value, SprintLaneType) else value
+        return value.value if isinstance(value, HistoricalSprintLaneType) else value
 
     def process_result_value(self, value, dialect):
         if value is None:
             return None
-        return SprintLaneType(value)
+        return HistoricalSprintLaneType(value)
 
 
 class SpecStatusType(TypeDecorator):
@@ -2222,12 +2224,12 @@ class Sprint(Base):
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     spec_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    status: Mapped[SprintStatus] = mapped_column(
-        SprintStatusType(), default=SprintStatus.DRAFT, nullable=False
+    status: Mapped[HistoricalSprintStatus] = mapped_column(
+        HistoricalSprintStatusType(), default=HistoricalSprintStatus.DRAFT, nullable=False
     )
-    lane_type: Mapped[SprintLaneType] = mapped_column(
-        SprintLaneTypeType(),
-        default=SprintLaneType.NORMAL,
+    lane_type: Mapped[HistoricalSprintLaneType] = mapped_column(
+        HistoricalSprintLaneTypeType(),
+        default=HistoricalSprintLaneType.NORMAL,
         server_default=text("'normal'"),
         nullable=False,
     )
@@ -2298,11 +2300,6 @@ class Sprint(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
-
-    @property
-    def normal_sprint_created(self) -> bool:
-        """Derived response flag for creation surfaces."""
-        return self.lane_type == SprintLaneType.NORMAL
 
     # Relationships
     spec: Mapped["Spec"] = relationship("Spec", back_populates="sprints")
