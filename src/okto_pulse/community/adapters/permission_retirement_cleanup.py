@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 import json
 import re
 
-from sqlalchemy import LargeBinary, cast, func, insert, select, update
+from sqlalchemy import LargeBinary, cast, func, insert, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from okto_pulse.core.ports.permission_retirement import (
@@ -20,7 +20,7 @@ from okto_pulse.community.adapters.permission_retirement_checkpoint import (
     read_permission_retirement_checkpoint,
 )
 from okto_pulse.community.adapters.permission_retirement_review_installation import (
-    _AUDIT, _LAYERS, _install_reviews, _require_loaded_parity,
+    _AUDIT, _LAYERS, _install_reviews, _require_loaded_parity, _write_migration_field,
 )
 
 _PHASE = "permission_retirement_cleanup"
@@ -183,8 +183,7 @@ async def retire_permission_documents(
                         continue
                     changes.append({"layer": layer, "id": row["id"], "before": before,
                         "after": candidate.document, "removed_paths": list(candidate.removed_paths)})
-                    await connection.execute(update(table).where(table.c.id == row["id"]).values(
-                        {flags_key: candidate.document}))
+                    await _write_migration_field(connection, table, row["id"], flags_key, candidate.document)
                     row[flags_key] = candidate.document
             # Re-read persisted values; SQL triggers must not bypass the gate.
             persisted = await _load_layers(connection)

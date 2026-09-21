@@ -55,18 +55,34 @@ _LAYERS = (
 )
 
 
+async def _write_migration_field(connection, table, identity, field, value):
+    # This is a mechanical migration, not a new author edit. Preserve raw
+    # onupdate cells (notably preset.updated_at); the migration audit has its
+    # own timestamp. Column self-assignment avoids datetime re-serialization.
+    values = {column.name: column for column in table.c if column.onupdate is not None}
+    values[field] = value
+    await connection.execute(update(table).where(table.c.id == identity).values(values))
+
+
 async def _install_reviews(
     connection: AsyncConnection, checkpoint: PermissionRetirementCheckpoint, *, retired_flags: tuple[str, ...],
 ) -> int:
     """Caller owns the write fence and commits review with the whole cutover."""
     if not connection.in_transaction():
         raise ValueError("permission_retirement_transaction_required")
+    from okto_pulse.community.adapters.relational_schema_steps import _ensure_permission_migration_reviews
     contexts = await read_permission_retirement_checkpoint(connection, checkpoint)
     identity = _id(checkpoint.migration_id, "review-installation")
     payload = {"format": "permission-retirement-review-installation/v1",
         "checkpoint_sha256": checkpoint.evidence_sha256, "source_sha256": checkpoint.source_sha256,
         "migration_id": checkpoint.migration_id, "retired_flags": sorted(retired_flags)}
     previous = (await connection.execute(select(_AUDIT).where(_AUDIT.c.id == identity))).mappings().one_or_none()
+    missing = await _ensure_permission_migration_reviews(connection, create=False, require_tables=True)
+    if missing and (previous is not None or (await connection.execute(select(_AUDIT.c.id).where(
+            _AUDIT.c.phase.in_((_PHASE, "permission_retirement_cleanup"))).limit(1))).first() is not None):
+        # Shared destinations cannot be reconstructed from a new migration's
+        # checkpoint after any earlier review/cleanup evidence has survived.
+        raise ValueError("permission_retirement_review_storage_missing")
     if previous is not None:
         payload["marker_count"] = previous["mutation_count"]
         if (previous["manifest_version"] != SOURCE_VERSION or previous["phase"] != _PHASE
@@ -83,6 +99,8 @@ async def _install_reviews(
     current_receipt, _ = _rows(checkpoint.migration_id, source, current_contexts)
     if current_receipt != checkpoint:
         raise ValueError("permission_retirement_review_source_changed")
+    if missing:
+        await _ensure_permission_migration_reviews(connection, require_tables=True)
     loaded, mutations = {}, 0
     for layer, table, flags_key, other_fields in _LAYERS:
         oversized = (await connection.execute(select(table.c.id).where(
@@ -101,8 +119,7 @@ async def _install_reviews(
                 checkpoint_sha256=checkpoint.evidence_sha256)
             if marker is not None:
                 row["permission_migration_review"] = marker.document()
-                await connection.execute(update(table).where(table.c.id == row["id"]).values(
-                    permission_migration_review=marker.document()))
+                await _write_migration_field(connection, table, row["id"], "permission_migration_review", marker.document())
                 mutations += 1
             loaded[layer][row["id"]] = row
     _require_loaded_parity(loaded, contexts, retired_flags=retired_flags)

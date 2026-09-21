@@ -170,19 +170,20 @@ async def _verify_events(events, references, migration_id, storage, *, connectio
     return _receipt(migration_id, payloads)
 
 
-async def _load_cards(connection):
+async def _load_cards(connection, *, linked_only=True):
     # Read raw SQL cells so status, timestamps, JSON formatting, history, assignee
     # and every unrelated column can be compared without ORM normalization.
     columns = (await connection.exec_driver_sql('PRAGMA table_info("cards")')).mappings().all()
     names = [column["name"] for column in columns]
     quoted = ['"' + name.replace('"', '""') + '"' for name in names]
     size = "+".join(f"coalesce(length(CAST({name} AS BLOB)),0)" for name in quoted)
+    scope = " WHERE sprint_id IS NOT NULL" if linked_only else ""
     count, total = (await connection.execute(text(
-        f"SELECT count(*),coalesce(sum({size}),0) FROM cards WHERE sprint_id IS NOT NULL"))).one()
+        f"SELECT count(*),coalesce(sum({size}),0) FROM cards{scope}"))).one()
     if count > 100_000 or total > _MAX_BYTES:
         raise ValueError("card_validation_retirement_limit")
     return [dict(row) for row in (await connection.execute(text(
-        "SELECT * FROM cards WHERE sprint_id IS NOT NULL ORDER BY id"))).mappings()]
+        f"SELECT * FROM cards{scope} ORDER BY id"))).mappings()]
 
 
 async def _load_policy_layers(connection):
@@ -217,7 +218,7 @@ async def _read_raw_card(connection, identity, columns):
 
 
 async def _require_context_fence(connection, storage, references, before, receipt, targets, expected_rows):
-    """Reject trigger drift, allowing only the two already-verified Card cells."""
+    """Allow only exact Card outputs, including an added NULL compatibility cell."""
     _, current_targets = await verify_context_disposition_snapshot(connection, storage, references,
         expected_receipt=receipt)
     named_hashes = {identity: _digest([(name, _cell(value)) for name, value in row.items()])
@@ -276,6 +277,7 @@ async def materialize_archived_card_policies(
     """
     if engine.dialect.name != "sqlite":
         raise ValueError("card_validation_retirement_backend_unsupported")
+    from okto_pulse.community.adapters.relational_schema_steps import _ensure_card_validation_compatibility
     _receipt(migration_id, [])  # Validate identity even for an empty population.
     if context_receipt is not None and (not isinstance(context_receipt, ContextDispositionReceipt)
             or context_receipt.migration_id != migration_id):
@@ -293,7 +295,10 @@ async def materialize_archived_card_policies(
             for reference in references:
                 await _install_historical_archive_grants(connection, storage, reference, require_existing=True)
             previous = await _read_events(connection, migration_id)
+            add_column = await _ensure_card_validation_compatibility(connection, create=False) == "missing"
             if previous:
+                if add_column:
+                    raise ValueError("card_validation_retirement_storage_missing")
                 receipt = await _verify_events(previous, references, migration_id, storage,
                     connection=connection, context_receipt=context_receipt)
                 if expected_receipt is not None and expected_receipt != receipt:
@@ -320,20 +325,27 @@ async def materialize_archived_card_policies(
                     for identity, board, content, counts in captures] != [
                     (ref.event_id, ref.board_id, ref.sha256, ref.size, ref.counts) for ref in references]:
                 raise ValueError("card_validation_retirement_archive_changed")
-            cards = await _load_cards(connection)
+            # Capture original raw cells before additive DDL. Every unlinked
+            # Card also gains NULL, changing its context hash; accept only that
+            # exact output and verify it again after all triggers have fired.
+            source_cards = await _load_cards(connection, linked_only=not add_column)
+            cards = [row for row in source_cards if row["sprint_id"] is not None]
+            expected_rows = {row["id"]: {**row, "migrated_validation_policy": None}
+                for row in source_cards if row["sprint_id"] is None} if add_column else {}
+            if add_column:
+                await _ensure_card_validation_compatibility(connection)
             population = (await connection.execute(text("SELECT count(*) FROM cards"))).scalar_one()
             version = _CONTEXT_FORMAT if context_receipt is not None else _FORMAT
             bound_context = {"context_receipt": asdict(context_receipt)} if context_receipt is not None else {}
             payloads = {ref.board_id: {"format": version, "migration_id": migration_id,
                 "archive": _reference(ref), "cards": [], **bound_context} for ref in references}
-            expected_rows = {}
             audit_size = len(json.dumps(list(payloads.values()), allow_nan=False).encode("utf-8"))
             layers = await _load_policy_layers(connection)
             for row in cards:
                 facts = {"card": {name: row[name] for name in ("id", "board_id", "spec_id", "sprint_id")},
                     "spec": layers["specs"].get(row["spec_id"]), "sprint": layers["sprints"][row["sprint_id"]],
                     "board_settings": layers["boards"][row["board_id"]]["settings"] or {}}
-                facts["card"]["migrated_validation_policy"] = json.loads(row["migrated_validation_policy"]) if row["migrated_validation_policy"] is not None else None
+                facts["card"]["migrated_validation_policy"] = json.loads(row["migrated_validation_policy"]) if row.get("migrated_validation_policy") is not None else None
                 plan = plan_card_validation_migration(**facts, migration_id=migration_id)
                 policy = plan.policy.model_dump(mode="json", exclude_none=True) if plan.policy else None
                 serialized = json.dumps(policy, ensure_ascii=False, allow_nan=False) if policy else None
@@ -342,7 +354,7 @@ async def materialize_archived_card_policies(
                 # Raw SQL deliberately avoids ORM onupdate timestamps and events.
                 await connection.execute(text("UPDATE cards SET sprint_id=NULL,migrated_validation_policy=:policy WHERE id=:id"),
                     {"policy": serialized, "id": row["id"]})
-                persisted = await _read_raw_card(connection, row["id"], row)
+                persisted = await _read_raw_card(connection, row["id"], expected)
                 if _encode([_cell(value) for value in persisted.values()]) != _encode([_cell(value) for value in expected.values()]):
                     raise ValueError("card_validation_retirement_write_mismatch")
                 verify_card_validation_migration(card={**facts["card"], "sprint_id": persisted["sprint_id"],
@@ -380,11 +392,10 @@ async def materialize_archived_card_policies(
             if _digest(await _load_policy_layers(connection)) != _digest(layers):
                 raise ValueError("card_validation_retirement_policy_changed")
             # A later update's trigger must not alter a previously verified Card.
-            for payload in payloads.values():
-                for entry in payload["cards"]:
-                    stored = await _read_raw_card(connection, entry["facts"]["card"]["id"], cards[0])
-                    if _digest([_cell(value) for value in stored.values()]) != entry["row_after"]:
-                        raise ValueError("card_validation_retirement_write_mismatch")
+            for identity, expected in expected_rows.items():
+                stored = await _read_raw_card(connection, identity, expected)
+                if _encode([_cell(value) for value in stored.values()]) != _encode([_cell(value) for value in expected.values()]):
+                    raise ValueError("card_validation_retirement_write_mismatch")
             if ((await connection.execute(text("SELECT count(*) FROM cards"))).scalar_one() != population
                     or (await connection.execute(text("SELECT 1 FROM cards WHERE sprint_id IS NOT NULL LIMIT 1"))).first()):
                 raise ValueError("card_validation_retirement_population_changed")

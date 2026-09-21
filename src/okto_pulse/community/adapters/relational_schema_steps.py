@@ -26,20 +26,38 @@ logger = logging.getLogger(__name__)
 
 async def _migrate_permission_migration_reviews() -> None:
     """Add nullable review provenance before any bootstrap can normalize flags."""
-    from sqlalchemy import inspect
-
     async with get_engine().begin() as connection:
         if connection.dialect.name == "sqlite":
             await connection.exec_driver_sql("BEGIN IMMEDIATE")
-        for table in ("agents", "agent_boards", "permission_presets"):
-            def columns(sync_connection, table_name=table):
-                inspector = inspect(sync_connection)
-                return ({column["name"] for column in inspector.get_columns(table_name)}
-                    if inspector.has_table(table_name) else None)
-            names = await connection.run_sync(columns)
-            if names is not None and "permission_migration_review" not in names:
-                await connection.exec_driver_sql(
-                    f'ALTER TABLE "{table}" ADD COLUMN permission_migration_review JSON NULL')
+        await _ensure_permission_migration_reviews(connection)
+
+
+async def _ensure_permission_migration_reviews(connection, *, create=True, require_tables=False):
+    """Validate all three destinations before adding anything in the caller's transaction."""
+    from sqlalchemy import JSON, inspect
+
+    missing = []
+    for table in ("agents", "agent_boards", "permission_presets"):
+        def columns(sync_connection, table_name=table):
+            inspector = inspect(sync_connection)
+            return ({column["name"]: column for column in inspector.get_columns(table_name)}
+                if inspector.has_table(table_name) else None)
+        observed = await connection.run_sync(columns)
+        if observed is None:
+            if require_tables:
+                raise RuntimeError("permission_retirement_review_schema_drift")
+            continue
+        column = observed.get("permission_migration_review")
+        if column is None:
+            missing.append(table)
+        elif (not isinstance(column["type"], JSON) or not column["nullable"]
+                or column.get("default") is not None or column.get("computed") is not None):
+            raise RuntimeError("permission_retirement_review_schema_drift")
+    if create:
+        for table in missing:
+            await connection.exec_driver_sql(
+                f'ALTER TABLE "{table}" ADD COLUMN permission_migration_review JSON NULL')
+    return tuple(missing)
 
 
 def _normalize_legacy_code_traceability_settings_payload(
@@ -8917,6 +8935,12 @@ async def _migrate_add_card_validation_compatibility() -> str | None:
 
     Never freeze current policies or remove links as an implicit schema upgrade.
     """
+    async with get_engine().begin() as conn:
+        return await _ensure_card_validation_compatibility(conn)
+
+
+async def _ensure_card_validation_compatibility(conn, *, create=True) -> str | None:
+    """Use the caller's transaction; inspection never repairs retained evidence."""
     from sqlalchemy import JSON, inspect, text as sa_text
 
     def observed(connection):
@@ -8925,16 +8949,18 @@ async def _migrate_add_card_validation_compatibility() -> str | None:
             return None
         return {column['name']: column for column in inspector.get_columns('cards')}
 
-    async with get_engine().begin() as conn:
-        columns = await conn.run_sync(observed)
-        if columns is None:
-            return 'skipped'
-        existing = columns.get('migrated_validation_policy')
-        if existing is not None:
-            if not isinstance(existing['type'], JSON) or not existing['nullable']:
-                raise RuntimeError('card_validation_compatibility_schema_drift')
-            return 'skipped'
-        await conn.execute(sa_text('ALTER TABLE cards ADD COLUMN migrated_validation_policy JSON'))
+    columns = await conn.run_sync(observed)
+    if columns is None:
+        return 'skipped' if create else 'missing'
+    existing = columns.get('migrated_validation_policy')
+    if existing is not None:
+        if (not isinstance(existing['type'], JSON) or not existing['nullable']
+                or existing.get('default') is not None or existing.get('computed') is not None):
+            raise RuntimeError('card_validation_compatibility_schema_drift')
+        return 'skipped'
+    if not create:
+        return 'missing'
+    await conn.execute(sa_text('ALTER TABLE cards ADD COLUMN migrated_validation_policy JSON'))
 
 
 async def _migrate_architecture_classification_storage() -> str:

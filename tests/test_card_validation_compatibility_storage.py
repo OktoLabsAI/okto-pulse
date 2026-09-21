@@ -35,7 +35,7 @@ async def test_additive_upgrade_is_idempotent_and_does_not_capture_policy_or_tou
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("column", ["TEXT", "JSON NOT NULL"])
+@pytest.mark.parametrize("column", ["TEXT", "JSON NOT NULL", "JSON DEFAULT '{}'", "JSON GENERATED ALWAYS AS ('{}') VIRTUAL"])
 async def test_incompatible_existing_column_blocks_upgrade(tmp_path, monkeypatch, column):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'drift.sqlite'}")
     monkeypatch.setattr(steps, "get_engine", lambda: engine)
