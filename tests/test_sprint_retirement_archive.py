@@ -28,6 +28,28 @@ def decoded_rows(document, table):
 
 
 @pytest.mark.asyncio
+async def test_archived_bug_origin_survives_relational_card_deletion(database, tmp_path):
+    engine, _ = database
+    await relational.add_card(engine, card_type="bug", status="not_started", sprint_id=None)
+    async with engine.begin() as connection:
+        await connection.execute(text("UPDATE sprints SET lane_type='hotfix',origin_bug_id='card' WHERE id='sprint'"))
+    storage = CommunityFileSystemStorage(str(tmp_path / "storage"))
+    reference, = await capture_sprint_retirement_archive(engine, storage, migration_id="bug-origin")
+    before = Path(reference.storage_path).read_bytes()
+    # The immutable capture owns lineage after retirement. Physical Card
+    # deletion must not erase the old identity even when its FK sets NULL.
+    async with engine.connect() as connection:
+        await connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+        assert (await connection.exec_driver_sql("PRAGMA foreign_keys")).scalar_one() == 1
+        await connection.execute(text("DELETE FROM cards WHERE id='card'"))
+        await connection.commit()
+        assert (await connection.execute(text("SELECT origin_bug_id FROM sprints"))).scalar_one() is None
+    document = await verify_historical_archive(storage, reference)
+    assert decoded_rows(document, "sprints")[0]["origin_bug_id"] == ["text", "card"]
+    assert Path(reference.storage_path).read_bytes() == before
+
+
+@pytest.mark.asyncio
 async def test_empty_sprint_and_two_boards_archive_exact_history_without_new_cards(database, tmp_path):
     engine, _ = database
     async with engine.begin() as connection:

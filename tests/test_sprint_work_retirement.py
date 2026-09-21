@@ -36,9 +36,9 @@ async def prepare(engine, tmp_path, *, status="pending", handler="ConsolidationE
     async with engine.begin() as connection:
         for identity, model in (("event", SprintClosed(board_id="board-a", sprint_id="sprint")),
                 ("done-event", SprintClosed(board_id="board-a", sprint_id="sprint")),
-                ("mixed", CardCreated(board_id="board-a", card_id="c1", spec_id="spec-a", sprint_id="sprint"))):
+                ("mixed", CardCreated(board_id="board-a", card_id="c1", spec_id="spec-a"))):
             await connection.execute(insert(DomainEventRow).values(id=identity, board_id="board-a",
-                event_type=model.event_type, payload_json=model.payload_for_storage()))
+                event_type=model.event_type, payload_json={**model.payload_for_storage(), **({"sprint_id": "sprint"} if identity == "mixed" else {})}))
         for identity, parent, state, name in (("execution", "event", status, handler),
                 ("done-execution", "done-event", "done", "ConsolidationEnqueuer"),
                 ("mixed-execution", "mixed", "pending", "ConsolidationEnqueuer")):

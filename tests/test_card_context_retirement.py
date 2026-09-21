@@ -50,9 +50,9 @@ async def prepare(engine, tmp_path, *, embedded=False):
         await connection.execute(text("UPDATE boards SET realm_id='local',owner_id='local-user'"))
         await add_agent(connection, "reader")
         for identity, model in (("exclusive", SprintClosed(board_id="board-a", sprint_id="sprint")),
-                ("mixed", CardCreated(board_id="board-a", card_id="c1", spec_id="spec-a", sprint_id="sprint"))):
+                ("mixed", CardCreated(board_id="board-a", card_id="c1", spec_id="spec-a"))):
             await connection.execute(insert(DomainEventRow).values(id=identity, board_id="board-a",
-                event_type=model.event_type, payload_json=model.payload_for_storage()))
+                event_type=model.event_type, payload_json={**model.payload_for_storage(), **({"sprint_id": "sprint"} if identity == "mixed" else {})}))
             await connection.execute(insert(DomainEventHandlerExecution).values(id=identity, event_id=identity,
                 handler_name="ConsolidationEnqueuer", status="pending", attempts=2, last_error="original failure"))
         await connection.execute(insert(ConsolidationQueue).values(id="queue", board_id="board-a", artifact_type="sprint",

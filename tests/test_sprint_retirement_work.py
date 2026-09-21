@@ -29,10 +29,10 @@ async def seed(engine, *, handler="ConsolidationEnqueuer", status="pending", eve
 async def test_mixed_and_exclusive_events_with_jobs_are_inventoried_without_processing(database):
     engine, path = database
     await seed(engine)
-    card = CardCreated(board_id="board-a", card_id="card", spec_id="spec-a", sprint_id="sprint")
+    card = CardCreated(board_id="board-a", card_id="card", spec_id="spec-a")
     async with engine.begin() as connection:
         await connection.execute(insert(Base.metadata.tables["domain_events"]).values(id="card-event", board_id=card.board_id,
-            event_type=card.event_type, payload_json=card.payload_for_storage()))
+            event_type=card.event_type, payload_json={**card.payload_for_storage(), "sprint_id": "sprint"}))
         await connection.execute(insert(Base.metadata.tables["domain_event_handler_executions"]).values(
             id="card-execution", event_id="card-event", handler_name="ConsolidationEnqueuer", status="pending"))
         await connection.execute(insert(Base.metadata.tables["consolidation_queue"]).values(
