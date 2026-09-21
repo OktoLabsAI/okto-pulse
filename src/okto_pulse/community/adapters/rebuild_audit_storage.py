@@ -37,6 +37,7 @@ from .filesystem_erasure import (
 )
 from .local_storage_ref import resolve_local_storage_ref
 
+REBUILD_ARTIFACT_MUTEX_FILENAME = ".rebuild-audit-artifact-store.lock"
 
 def default_community_rebuild_base_dir(
     kg_base_dir: str | os.PathLike[str] | None = None,
@@ -198,7 +199,7 @@ class CommunityFileSystemRebuildAuditArtifactStore(RebuildAuditArtifactStore):
         lock_dir.mkdir(parents=True, exist_ok=True)
         self._process_lock = threading.RLock()
         self._file_lock = FileLock(
-            str(lock_dir / ".rebuild-audit-artifact-store.lock"),
+            str(lock_dir / REBUILD_ARTIFACT_MUTEX_FILENAME),
             timeout=30,
         )
 

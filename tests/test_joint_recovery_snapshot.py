@@ -358,7 +358,7 @@ def test_v4_roundtrip_keeps_privacy_fenced_through_final_joint_publish(stored_so
     monkeypatch.setattr(joint, "create_storage_recovery_snapshot", capture_under_sql_reservation)
     snapshot = capture_stored(stored_sources)
     manifest = joint.verify_joint_recovery_snapshot(snapshot)
-    assert manifest["format"] == "joint-recovery-snapshot/v4"
+    assert manifest["format"] == "joint-recovery-snapshot/v5"
     assert manifest["storage_references"]["attachment_count"] == 1
     assert manifest["storage_references"]["historical_archive_count"] == 1
     assert manifest["storage_references"]["unreferenced_object_count"] == 0
@@ -409,6 +409,7 @@ except Timeout:
             joint.verify_joint_recovery_snapshot(forged)
     # Old v3 remains readable with its original, explicitly narrower guarantee.
     manifest.pop("storage_references")
+    manifest.pop("kg_artifacts")
     manifest["format"] = "joint-recovery-snapshot/v3"
     encoded = json.dumps(manifest).encode()
     (snapshot.directory / "manifest.json").write_bytes(encoded)

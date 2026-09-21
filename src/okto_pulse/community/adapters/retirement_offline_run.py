@@ -58,6 +58,16 @@ _KEYS = {"format", "migration_id", "source_database", "storage_root", "kg_base_d
     "source_builds", "migration_builds", "backup", "plan", "permission_checkpoint", "data_run"}
 
 
+def _complete_backup(manifest):
+    if manifest['format'] == 'joint-recovery-snapshot/v5':
+        return True  # The verifier already reconciled its artifact coverage.
+    # Preserve old retained runs only where their inventory proves there was
+    # no omitted KG storage. Never recapture transformed data as the original.
+    return (manifest['format'] == 'joint-recovery-snapshot/v4'
+        and not manifest['routing_inventory']['other_storage_paths']
+        and not manifest['routing_inventory']['unselected_generation_paths'])
+
+
 @dataclass(frozen=True, slots=True)
 class OfflineRetirementRun:
     directory: Path
@@ -238,7 +248,7 @@ async def resume_offline_retirement_data(runtime, storage, run: OfflineRetiremen
     async with _serialized_schema_lifecycle(runtime):
         with offline_migration_window(roots):
             manifest = verify_joint_recovery_snapshot(backup)
-            if manifest["format"] != "joint-recovery-snapshot/v4" or manifest["builds"] != document["source_builds"]:
+            if not _complete_backup(manifest) or manifest["builds"] != document["source_builds"]:
                 raise ValueError("offline_retirement_backup_mismatch")
             await _verify_retained_receipts(runtime.engine, permission, data)
             result = await resume_retirement_data_run(runtime.engine, storage, data, plan=plan)
@@ -296,7 +306,7 @@ async def _resume_materialization_and_permissions(runtime, storage, graphs, run,
     async with _serialized_schema_lifecycle(runtime):
         with offline_migration_window(roots), CommunityGraphBackendBindingStore(kg).publication_window():
             manifest = verify_joint_recovery_snapshot(backup)
-            if manifest["format"] != "joint-recovery-snapshot/v4" or manifest["builds"] != document["source_builds"]:
+            if not _complete_backup(manifest) or manifest["builds"] != document["source_builds"]:
                 raise ValueError("offline_retirement_backup_mismatch")
             await _verify_retained_receipts(runtime.engine, permission, data)
             require_materialization_bindings(source, kg, graphs, manifest)
