@@ -3802,24 +3802,14 @@ export interface MoveCardRequest {
 export type BugWorkflowRemediationPath =
   | 'path_a_reuse_existing_scenario'
   | 'path_b_semantic_gap'
-  | 'path_c_hotfix_lane'
-  | 'standard_sprint'
+  | 'path_b_amendment_lineage'
   | 'none';
 
 export type BugWorkflowNextAction =
   | 'create_regression_test_card'
   | 'escalate_semantic_gap'
-  | 'assign_hotfix_lane'
-  | 'activate_hotfix_lane'
-  | 'assign_sprint'
-  | 'activate_sprint'
+  | 'confirm_validator_coverage'
   | 'none';
-
-export type BugWorkflowHotfixLaneStatus =
-  | 'not_applicable'
-  | 'missing'
-  | 'inactive'
-  | 'ready';
 
 export interface BugWorkflowRemediationAction {
   action_id: BugWorkflowNextAction | string;
@@ -3834,7 +3824,6 @@ export interface BugWorkflowRemediationMessage {
   next_action: BugWorkflowNextAction;
   semantic_gap_required: boolean;
   eligible_scenarios_count: number;
-  hotfix_lane_status: BugWorkflowHotfixLaneStatus;
   message: string;
   detail: string;
   actions: BugWorkflowRemediationAction[];

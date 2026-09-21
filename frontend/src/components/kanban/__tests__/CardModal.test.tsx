@@ -585,7 +585,6 @@ describe('CardModal', () => {
         next_action: 'create_regression_test_card',
         semantic_gap_required: false,
         eligible_scenarios_count: 1,
-        hotfix_lane_status: 'not_applicable',
         message: 'Create a fresh regression test card that references one of the eligible existing scenarios.',
         detail: 'This is Path A: reuse an existing scenario linked to the bug origin task.',
         actions: [

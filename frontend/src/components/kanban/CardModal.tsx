@@ -179,10 +179,8 @@ function remediationPathLabel(path: string): string {
       return 'Path A · Reuse eligible scenario';
     case 'path_b_semantic_gap':
       return 'Path B · Semantic gap';
-    case 'path_c_hotfix_lane':
-      return 'Path C · Hotfix lane';
-    case 'standard_sprint':
-      return 'Sprint lane';
+    case 'path_b_amendment_lineage':
+      return 'Path B · Amendment lineage';
     default:
       return 'Workflow guidance';
   }
@@ -237,7 +235,7 @@ function BugWorkflowRemediationPanel({
             </span>
           </div>
           <p className="text-xs mt-1 opacity-90">{remediation.detail}</p>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3 text-[10px]">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mt-3 text-[10px]">
             <div className="rounded bg-white/70 dark:bg-black/20 px-2 py-1">
               <span className="block opacity-70">Next action</span>
               <strong>{remediation.next_action}</strong>
@@ -249,10 +247,6 @@ function BugWorkflowRemediationPanel({
             <div className="rounded bg-white/70 dark:bg-black/20 px-2 py-1">
               <span className="block opacity-70">Semantic gap</span>
               <strong>{remediation.semantic_gap_required ? 'yes' : 'no'}</strong>
-            </div>
-            <div className="rounded bg-white/70 dark:bg-black/20 px-2 py-1">
-              <span className="block opacity-70">Hotfix lane</span>
-              <strong>{remediation.hotfix_lane_status}</strong>
             </div>
           </div>
           {primaryAction && (

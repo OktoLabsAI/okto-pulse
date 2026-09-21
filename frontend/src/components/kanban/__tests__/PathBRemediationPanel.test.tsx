@@ -1,5 +1,5 @@
 // Spec be089cd3 / card b002b7ca — PathBRemediationPanel component tests.
-// Proves Path A/B/C are distinct, coverage states never look closure-ready when
+// Proves Path A/B are distinct, coverage states never look closure-ready when
 // pending, no skip/bypass control exists, and create/associate fire only on
 // user click (never on render).
 import { render, screen, fireEvent } from '@testing-library/react';
@@ -76,13 +76,22 @@ function renderPanel(props: {
 }
 
 describe('PathBRemediationPanel', () => {
-  it('shows Path A / Path B / Path C as distinct concepts and that Path C is not a substitute', () => {
+  it('shows regression and amendment paths without execution lane controls', () => {
     renderPanel({ preview: PATH_B_PREVIEW });
     expect(screen.getByText('Path A')).toBeInTheDocument();
     expect(screen.getByText('Path B')).toBeInTheDocument();
-    expect(screen.getByText('Path C')).toBeInTheDocument();
-    const note = screen.getByTestId('path-c-not-substitute-note');
-    expect(note.textContent).toMatch(/does NOT replace Path B/i);
+    expect(screen.queryByText('Path C')).toBeNull();
+    expect(screen.queryByText(/hotfix lane|sprint/i)).toBeNull();
+  });
+
+  it('keeps amendment lineage pending even before revisions are loaded', () => {
+    renderPanel({
+      preview: { ...PATH_B_PREVIEW, semantic_gap_required: false,
+        remediation: { ...PATH_B_PREVIEW.remediation, remediation_path: 'path_b_amendment_lineage' } },
+      pathBResolution: { available: true, coverage_state: 'coverage_pending' },
+    });
+    expect(screen.queryByTestId('path-b-not-required')).toBeNull();
+    expect(screen.getByTestId('coverage-not-closure-ready')).toBeInTheDocument();
   });
 
   it('coverage_pending is shown NOT closure-ready', () => {
