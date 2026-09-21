@@ -447,7 +447,6 @@ export interface CardSummaryForSpec {
   priority: CardPriority;
   assignee_id: string | null;
   card_type?: CardType;
-  sprint_id?: string | null;
 }
 
 export interface TaskValidationGateOverride {
@@ -2329,7 +2328,6 @@ export interface Card {
   board_id: string;
   subject_version?: number;
   spec_id: string | null;
-  sprint_id: string | null;
   title: string;
   description: string | null;
   details: string | null;
@@ -3686,7 +3684,6 @@ export interface UpdateCardRequest {
   assignee_id?: string;
   due_date?: string;
   labels?: string[];
-  sprint_id?: string | null;
   test_scenario_ids?: string[];
   screen_mockups?: ScreenMockup[];
   knowledge_bases?: CardKnowledgeBase[];

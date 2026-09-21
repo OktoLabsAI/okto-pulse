@@ -158,7 +158,6 @@ const createdCard = {
   id: 'card-1',
   board_id: 'board-1',
   spec_id: 'spec-1',
-  sprint_id: null,
   title: 'Implement selective propagation',
   description: null,
   details: null,

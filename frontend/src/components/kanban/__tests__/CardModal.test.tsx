@@ -264,7 +264,6 @@ const bugCard: Card = {
   id: 'bug-1',
   board_id: 'board-1',
   spec_id: 'spec-1',
-  sprint_id: null,
   title: 'Bug: traceability is hidden',
   description: 'Bug description',
   details: null,
@@ -1645,7 +1644,6 @@ describe('CardModal', () => {
       id: 'validation-mixed-thresholds-1',
       validation_config: policyConfig(95, 92, 12, { min_confidence: 'sprint', min_completeness: 'spec' }),
       status: 'validation',
-      sprint_id: 'sprint-1',
     };
     storeMock.currentBoard.settings = {
       min_confidence: 70,
@@ -1705,7 +1703,7 @@ describe('CardModal', () => {
   });
 
   it.each([60, 90])('shows the preserved Card threshold %s without a live Sprint', async confidence => {
-    const validationCard: Card = { ...cardForType('normal'), status: 'validation', sprint_id: null,
+    const validationCard: Card = { ...cardForType('normal'), status: 'validation',
       validation_config: policyConfig(confidence, 92, 0, { min_confidence: 'card_compatibility', min_completeness: 'spec', max_drift: 'card_compatibility' }),
       migrated_validation_policy: { contract_version: 'card-validation-compatibility/v1', board_id: 'board-1',
         card_id: cardForType('normal').id, source_sprint_id: 'historical-sprint', migration_id: 'migration-1',
@@ -1733,7 +1731,6 @@ describe('CardModal', () => {
       id: 'validation-threshold-retry-1',
       validation_config: null,
       status: 'validation',
-      sprint_id: 'sprint-threshold-retry',
     };
     storeMock.selectedCardId = validationCard.id;
     apiMock.getCard.mockResolvedValue(validationCard);
