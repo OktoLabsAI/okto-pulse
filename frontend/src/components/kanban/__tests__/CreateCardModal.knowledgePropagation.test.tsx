@@ -215,6 +215,23 @@ beforeEach(() => {
 });
 
 describe('CreateCardModal selective Knowledge integration', () => {
+  it('keeps Done Specs for bug/regression work and clears the parent on switching to normal work', async () => {
+    apiMock.listSpecs.mockImplementation((_boardId: string, status: string) =>
+      Promise.resolve(status === 'done' ? [{ ...specSummary, status: 'done' }] : []));
+    render(<CreateCardModal boardId="board-1" initialStatus="not_started" onClose={vi.fn()} />);
+    await waitFor(() => expect(apiMock.listSpecs).toHaveBeenCalledTimes(4));
+    expect(screen.queryByRole('option', { name: /Selective propagation spec/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Test' }));
+    expect(await screen.findByRole('option', { name: 'Selective propagation spec (done)' })).toBeInTheDocument();
+    fireEvent.change(specSelect(), { target: { value: 'spec-1' } });
+    expect(specSelect()).toHaveValue('spec-1');
+    fireEvent.click(screen.getByRole('button', { name: 'Task' }));
+    await waitFor(() => expect(specSelect()).toHaveValue(''));
+    expect(apiMock.createCard).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Bug' }));
+    expect(await screen.findByRole('option', { name: 'Selective propagation spec (done)' })).toBeInTheDocument();
+  });
+
   it.each(['validation', 'rejected'] as const)(
     'only offers initial lifecycle states and normalizes %s on create',
     async (initialStatus) => {

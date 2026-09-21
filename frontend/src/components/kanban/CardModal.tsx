@@ -480,9 +480,11 @@ export function CardModal({
   const canReadActivity = perms.has('card.activity_read');
   const { canReadProjection: canReadCodeTraceability } =
     useCodeTraceabilityAuthority(boardId);
-  const canEditCardFields = canMutateCard('card.entity.edit_fields');
+  const normalContentFrozen = (card?.card_type ?? 'normal') === 'normal'
+    && fullSpec?.id === card?.spec_id && fullSpec?.status === 'done';
+  const canEditCardFields = !normalContentFrozen && canMutateCard('card.entity.edit_fields');
   const canEditBugFields = canMutateCard('card.entity.edit_bug_fields');
-  const canAssignCard = canMutateCard('card.entity.assign');
+  const canAssignCard = !normalContentFrozen && canMutateCard('card.entity.assign');
   const canLinkTests = canMutateCard('card.entity.link_tests');
   const canAskQA = canMutateCard('card.qa.ask');
   const canAnswerQA = canMutateCard('card.qa.answer');
@@ -1530,6 +1532,11 @@ export function CardModal({
             />
 
             <div className="modal-body">
+              {normalContentFrozen && (
+                <p role="status" className="mb-4 text-sm text-amber-700 dark:text-amber-300">
+                  This Spec is Done. Normal task content is locked; use the authorized Spec revision workflow to resume normal work. Reading and collaboration remain available.
+                </p>
+              )}
               {/* Details Tab */}
               <AccessibleTabPanel
                 idBase={`${tabIdBase}-card-${card.id}`}

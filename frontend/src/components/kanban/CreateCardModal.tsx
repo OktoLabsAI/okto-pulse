@@ -106,6 +106,14 @@ export function CreateCardModal({ boardId, initialStatus, onClose }: CreateCardM
   const [actionPlan, setActionPlan] = useState('');
 
   // Filter tasks by selected spec (for bug origin task picker)
+  useEffect(() => {
+    // Switching from post-delivery Bug/Test work must not retain a hidden Done
+    // parent for a normal task. The backend revalidates under its write fence.
+    if (cardType === 'normal' && specs.some((spec) => spec.id === selectedSpecId && spec.status === 'done')) {
+      setSelectedSpecId('');
+    }
+  }, [cardType, specs, selectedSpecId]);
+
   const tasksForSpec = useMemo(() => {
     if (!selectedSpecId) return allBoardCards;
     return allBoardCards.filter((c) => c.spec_id === selectedSpecId);
@@ -433,7 +441,7 @@ export function CreateCardModal({ boardId, initialStatus, onClose }: CreateCardM
                   .filter((s) => cardType === 'bug'
                     ? ['approved', 'in_progress', 'done'].includes(s.status)
                     : cardType === 'test'
-                    ? ['approved', 'validated', 'in_progress'].includes(s.status)
+                    ? ['approved', 'validated', 'in_progress', 'done'].includes(s.status)
                     : ['approved', 'in_progress'].includes(s.status))
                   .map((s) => (
                   <option key={s.id} value={s.id}>{s.title} ({s.status})</option>

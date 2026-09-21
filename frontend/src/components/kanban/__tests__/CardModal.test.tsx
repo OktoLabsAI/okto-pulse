@@ -662,6 +662,34 @@ describe('CardModal', () => {
     },
   );
 
+  it.each(['normal', 'bug', 'test'] as const)('applies the Done Spec content restriction only to %s normal work', async (cardType) => {
+    const selected = cardForType(cardType);
+    storeMock.selectedCardId = selected.id;
+    apiMock.getCard.mockResolvedValue(selected);
+    apiMock.getSpec.mockResolvedValue({ id: 'spec-1', title: 'Delivered', status: 'done', test_scenarios: [] });
+    apiMock.getAllowedTransitions.mockResolvedValue(transitionEnvelope(selected.id, 'not_started', [
+      allowedTransition('started', cardType === 'normal' ? {
+        blocked_reason: 'normal_card_spec_done: Normal work requires an authorized Spec revision.',
+      } : {}),
+      allowedTransition('cancelled'),
+    ]));
+    render(<CardModal boardId="board-1" />);
+    const title = await screen.findByText(selected.title);
+    await waitFor(() => expect(apiMock.getSpec).toHaveBeenCalled());
+    if (cardType === 'normal') {
+      expect(await screen.findByText(/This Spec is Done\. Normal task content is locked/)).toBeVisible();
+      expect(title).toHaveAttribute('contenteditable', 'false');
+      const status = screen.getByRole('combobox', { name: 'Card status' });
+      expect(within(status).queryByRole('option', { name: 'Started' })).not.toBeInTheDocument();
+    } else {
+      expect(title).toHaveAttribute('contenteditable', 'true');
+      expect(screen.queryByText(/Normal task content is locked/)).not.toBeInTheDocument();
+    }
+    expect(screen.getByRole('tab', { name: /^Comments/ })).toBeVisible();
+    expect(apiMock.updateCard).not.toHaveBeenCalled();
+    expect(apiMock.moveCard).not.toHaveBeenCalled();
+  });
+
   it('keeps cancellation audit context in Details instead of creating a transient tab', async () => {
     const cancelledCard: Card = {
       ...cardForType('normal'),
