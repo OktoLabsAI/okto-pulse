@@ -9,7 +9,7 @@ import hashlib as _hashlib
 import json as _json
 import uuid as _uuid
 
-from okto_pulse.core.discovery_intent_catalog import DEFAULT_DISCOVERY_INTENTS
+from okto_pulse.core.discovery_intent_catalog import DEFAULT_DISCOVERY_INTENTS, RETIRED_DISCOVERY_INTENT_NAMES
 from okto_pulse.core.ports.permission_policy import (
     PermissionPresetLineageNode,
     get_permission_flag,
@@ -351,6 +351,14 @@ async def _bootstrap_default_discovery_intents() -> None:
 
     async with get_engine().begin() as conn:
         import json as _json
+
+        # Preserve IDs, saved-search references and history; retired names are
+        # never reactivated or silently redirected to a different population.
+        for name in sorted(RETIRED_DISCOVERY_INTENT_NAMES):
+            await conn.execute(sa_text(
+                "UPDATE discovery_intents SET active=0, updated_at=CURRENT_TIMESTAMP "
+                "WHERE name=:name AND active<>0"
+            ), {"name": name})
 
         for s in DEFAULT_DISCOVERY_INTENTS:
             params_literal = (

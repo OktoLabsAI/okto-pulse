@@ -143,6 +143,26 @@ beforeEach(() => {
 });
 
 describe('GlobalSearchView typed Discovery params', () => {
+  it('executes Board Card blockers without Sprint input and opens the Card', async () => {
+    const blockers = { ...intent(null), name: 'blocked_cards', label: 'What is blocking cards on this board?',
+      category: 'dependencies_blockers', tool_binding: 'okto_pulse_list_blockers' };
+    vi.mocked(discoveryApi.listIntents).mockResolvedValue([blockers]);
+    vi.mocked(discoveryApi.executeIntent).mockResolvedValue({
+      rows: [{ id: 'card-1', type: 'on_hold_card', title: 'Paused task', summary: 'Explicitly paused',
+        meta: { entity_type: 'card', entity_id: 'card-1', card_id: 'card-1' } }],
+      columns: ['Type', 'Title', 'Reason'], total: 1, tool_binding: blockers.tool_binding,
+      params_echo: {},
+      execution: 'real_tool', intent_id: blockers.id, intent_name: blockers.name,
+    });
+    render(<GlobalSearchView boardId={BOARD} />);
+    fireEvent.click(await screen.findByTestId('discovery-intent-blocked_cards'));
+    expect(await screen.findByText('Explicitly paused')).toBeInTheDocument();
+    expect(discoveryApi.executeIntent).toHaveBeenCalledWith(blockers.id, BOARD, {});
+    expect(screen.queryByText(/sprint/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('discovery-intent-row-0-open'));
+    expect(mocks.openCardModal).toHaveBeenCalledWith('card-1');
+  });
+
   it('opens a search result in its own board and preserves the search input', async () => {
     vi.mocked(discoveryApi.listIntents).mockResolvedValue([]);
     vi.mocked(kgApi.globalSearch).mockResolvedValue({ results: [{

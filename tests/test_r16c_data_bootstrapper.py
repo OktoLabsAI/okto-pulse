@@ -197,7 +197,7 @@ def test_ts_71673acb_idempotent_replay_preserves_presets_and_flags(
 
     before, after1, after2, after3, r1, r2, r3 = asyncio.run(drive())
 
-    assert before["presets"] == 7 and before["di"] == 14  # init_db seeded
+    assert before["presets"] == 6 and before["di"] == 14  # Sprint Manager retired; other seeds unchanged
 
     assert r1.is_success
     assert len(r1.applied_steps) == 4
