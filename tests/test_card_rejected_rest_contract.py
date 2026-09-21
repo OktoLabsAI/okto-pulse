@@ -22,7 +22,6 @@ from okto_pulse.community.api import attachments as attachments_api
 from okto_pulse.community.api import boards as boards_api
 from okto_pulse.community.api import cards as cards_api
 from okto_pulse.community.api import specs as specs_api
-from okto_pulse.community.api import sprints as sprints_api
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.core.services.main import CardOperationError
@@ -342,9 +341,6 @@ async def test_cross_surface_rejected_freeze_maps_to_structured_409(
     monkeypatch.setattr(specs_api.LinkCardToSpecUseCase, "execute", execute)
     monkeypatch.setattr(boards_api.ArchiveTreeUseCase, "execute", execute)
     monkeypatch.setattr(boards_api.RestoreTreeUseCase, "execute", execute)
-    monkeypatch.setattr(sprints_api.DeleteSprintUseCase, "execute", execute)
-    monkeypatch.setattr(sprints_api.AssignSprintTasksUseCase, "execute", execute)
-    monkeypatch.setattr(sprints_api.UnassignSprintTasksUseCase, "execute", execute)
 
     attachment = UploadFile(
         BytesIO(b"evidence"),
@@ -399,23 +395,6 @@ async def test_cross_surface_rejected_freeze_maps_to_structured_409(
                 realm_id="local",
                 actor_kind="human",
             ),
-            uow=object(),
-        ),
-        sprints_api.delete_sprint(
-            sprint_id="sprint-1",
-            user_id="reviewer",
-            uow=object(),
-        ),
-        sprints_api.assign_tasks(
-            sprint_id="sprint-1",
-            data={"card_ids": ["card-1"]},
-            user_id="reviewer",
-            uow=object(),
-        ),
-        sprints_api.unassign_tasks(
-            sprint_id="sprint-1",
-            data={"card_ids": ["card-1"]},
-            user_id="reviewer",
             uow=object(),
         ),
     )

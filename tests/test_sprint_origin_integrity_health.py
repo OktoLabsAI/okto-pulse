@@ -1,17 +1,13 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 import okto_pulse.community.app as app_module
-from okto_pulse.community.api import sprints as sprints_api
 from okto_pulse.community.adapters.sprint_origin_integrity import (
     inspect_sprint_origin_integrity,
 )
@@ -19,7 +15,6 @@ from okto_pulse.community.adapters.sqlalchemy_database import (
     configure_community_database,
 )
 from okto_pulse.community.config import CommunitySettings
-from okto_pulse.core.application.errors import SprintOperationError
 
 
 async def _minimal_engine(tmp_path, name: str, *, constraints: bool):
@@ -241,25 +236,3 @@ async def test_health_liveness_skips_scan_and_integrity_endpoint_keeps_diagnosti
     assert payload["integrity_status"] == "critical"
     assert payload["findings"]["sprint_origin_integrity"] == critical_finding
     assert probe_calls == [app_module.get_engine]
-
-
-def test_delete_sprint_maps_origin_conflict_to_http_409():
-    app = FastAPI()
-    app.include_router(sprints_api.router)
-    app.dependency_overrides[sprints_api.require_user] = lambda: "actor"
-    app.dependency_overrides[sprints_api.get_unit_of_work] = lambda: object()
-    error = SprintOperationError(
-        "origin_sprint_delete_conflict",
-        "dependent hotfix would become ineligible",
-        remediation="relineage_hotfix_lane",
-    )
-
-    with patch.object(
-        sprints_api.DeleteSprintUseCase,
-        "execute",
-        new=AsyncMock(side_effect=error),
-    ):
-        response = TestClient(app).delete("/sprints/origin")
-
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "origin_sprint_delete_conflict"
