@@ -297,11 +297,26 @@ async def resume_offline_retirement_bootstrap(runtime, storage, graphs, run: Off
         migration_builds=migration_builds, cleanup_permissions=True, cut_schema=True, bootstrap=True)
 
 
+async def prepare_offline_retirement_projection_inputs(runtime, storage, graphs, run: OfflineRetirementRun, *,
+        migration_builds: RecoveryBuildPair, projection_directory: Path):
+    """Prepare the final source and deterministic emissions under the same fences.
+
+    Create-only private input for candidate construction. No generation is
+    promoted and no normal runtime is admitted by projection_inputs_prepared.
+    """
+    return await _resume_materialization_and_permissions(runtime, storage, graphs, run,
+        migration_builds=migration_builds, cleanup_permissions=True, cut_schema=True, bootstrap=True,
+        projection_directory=projection_directory)
+
+
 async def _resume_materialization_and_permissions(runtime, storage, graphs, run, *, migration_builds, cleanup_permissions,
-        cut_schema=False, bootstrap=False):
+        cut_schema=False, bootstrap=False, projection_directory=None):
     retired_flags = retired_feature_permission_flags() if cleanup_permissions else None
     source, uploads = _binding(runtime, storage)
     document, plan, permission, data, backup, roots = read_offline_retirement_run(run)
+    if projection_directory is not None:
+        from .retirement_projection_inputs import projection_destination
+        projection_directory = projection_destination(projection_directory, document)
     if document["format"] != _FORMAT:
         raise ValueError("offline_retirement_materialization_plan_missing")
     if (document["source_database"] != str(source) or document["storage_root"] != str(uploads)
@@ -347,11 +362,18 @@ async def _resume_materialization_and_permissions(runtime, storage, graphs, run,
                             verify_live=True) != data_result['cards']:
                         raise ValueError('offline_retirement_card_policy_mismatch')
                 completed = await complete_retirement_bootstrap(runtime.engine, data, verify_dependency=verify_bootstrap_dependencies)
-                return {**data_result, 'state': 'bootstrap_complete', 'bootstrap': completed,
+                result = {**data_result, 'state': 'bootstrap_complete', 'bootstrap': completed,
                     'materialization': _receipt('graphs', prefix[5]['payload']),
                     'permission_cleanup': _receipt('permissions', prefix[6]['payload']),
                     'schema': _receipt('schema', prefix[7]['payload']), 'offline_run': run,
                     'backup': backup, 'permission_checkpoint': permission}
+                if projection_directory is not None:
+                    from .retirement_projection_inputs import capture_retirement_projection_inputs
+                    projection = await capture_retirement_projection_inputs(runtime, graphs, run, document, completed,
+                        projection_directory,
+                        verify_bindings=lambda: require_materialization_bindings(source, kg, graphs, manifest))
+                    result = {**result, 'state': 'projection_inputs_prepared', 'projection_inputs': projection}
+                return result
 
             if len(records) >= 9:
                 if not bootstrap:
