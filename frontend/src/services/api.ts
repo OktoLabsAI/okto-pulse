@@ -20,7 +20,6 @@ import type {
 import type {
   DeliveryIntelligenceFilters,
   DeliveryIntelligenceResponse,
-  DeliveryForecastResponse,
   SprintAnalyticsResponse,
 } from '@/components/analytics/analyticsDeliveryTypes';
 import type {
@@ -2743,30 +2742,6 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       const a = document.createElement('a');
       a.href = url;
       a.download = `board-${boardId}-delivery-intelligence.csv`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    },
-
-    async getBoardDeliveryForecast(boardId: string, from?: string, to?: string): Promise<DeliveryForecastResponse> {
-      const params = new URLSearchParams();
-      if (from) params.set('from', from);
-      if (to) params.set('to', to);
-      return apiClient.fetchJson(`/boards/${boardId}/analytics/delivery-forecast?${params.toString()}`);
-    },
-
-    async exportBoardDeliveryForecastCsv(boardId: string, from?: string, to?: string): Promise<void> {
-      const params = new URLSearchParams();
-      if (from) params.set('from', from);
-      if (to) params.set('to', to);
-      const response = await apiClient.fetch(`/boards/${boardId}/analytics/delivery-forecast/export?${params.toString()}`);
-      if (!response.ok) throw new Error(`Export failed: ${response.status}`);
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `board-${boardId}-delivery-forecast.csv`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);

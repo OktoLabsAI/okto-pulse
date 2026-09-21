@@ -1,9 +1,8 @@
 """Board-scoped SQLAlchemy evidence adapters for governed Analytics.
 
 The adapters in this module are deliberately read-only.  They expose the
-edition-owned relational authorities that Core needs for Delivery Forecast
-and Board KG Effectiveness without leaking an ``AsyncSession`` into either
-application use case.
+edition-owned relational authorities that Core needs for Board KG Effectiveness
+without leaking an ``AsyncSession`` into the application use case.
 """
 
 from __future__ import annotations
@@ -20,15 +19,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
     CanonicalDebt,
-    Card,
     ConsolidationDeadLetter,
     ConsolidationQueue,
     DomainEventHandlerExecution,
     DomainEventRow,
-    Sprint,
-    SprintActivationBaseline,
 )
-from okto_pulse.core.domain.enums import CardStatus, SprintStatus
 from okto_pulse.core.kg.rebuild_audit import (
     CognitiveConsolidationItem,
     CognitiveConsolidationItemStore,
@@ -59,17 +54,6 @@ from okto_pulse.core.ports.board_kg_analytics import (
     BoardKgHealthState,
     BoardKgOperationalDomain,
     BoardKgProvenanceKind,
-)
-from okto_pulse.core.ports.delivery_commitment import (
-    DELIVERY_COMMITMENT_CONTRACT_VERSION,
-)
-from okto_pulse.core.ports.delivery_forecast import (
-    DEFAULT_FORECAST_MINIMUM_OBSERVATIONS,
-    FORECAST_READINESS_RULE_VERSION,
-    DeliveryForecastEvidence,
-    ForecastInputState,
-    ForecastObservation,
-    ForecastReadinessQuery,
 )
 from okto_pulse.core.services.board_kg_analytics import (
     read_board_kg_health_evidence,
@@ -271,126 +255,6 @@ def _operational_domain(
         drill_down=BoardKgDrillDown(True, target),
         reason=("open_operational_debt" if count else "no_open_operational_debt"),
     )
-
-
-class CommunitySqlAlchemyDeliveryForecastEvidence:
-    """Read completed Sprint commitment observations in one board snapshot."""
-
-    def __init__(self, session: AsyncSession) -> None:
-        self._session = session
-
-    @staticmethod
-    def _sprint_filter(query: ForecastReadinessQuery) -> tuple[str, ...]:
-        selected: tuple[str, ...] = ()
-        for clause in query.foundation.filters:
-            if clause.field != "sprint_id" or clause.operator != "in":
-                raise ValueError("delivery_forecast_filter_unsupported")
-            selected = tuple(str(value) for value in clause.value)  # type: ignore[union-attr]
-        return selected
-
-    async def load(
-        self, context: object, *, query: ForecastReadinessQuery
-    ) -> DeliveryForecastEvidence:
-        del context
-        observed_at = query.foundation.as_of
-        if observed_at is None:
-            raise ValueError("delivery_forecast_projection_as_of_required")
-        window = query.foundation.window
-        sprint_ids = self._sprint_filter(query)
-        statement = (
-            select(Sprint, SprintActivationBaseline)
-            .outerjoin(
-                SprintActivationBaseline,
-                (
-                    (SprintActivationBaseline.board_id == Sprint.board_id)
-                    & (SprintActivationBaseline.sprint_id == Sprint.id)
-                ),
-            )
-            .where(
-                Sprint.board_id == query.foundation.board_id,
-                Sprint.status == SprintStatus.CLOSED,
-                Sprint.archived.is_(False),
-                Sprint.updated_at >= window.from_inclusive,
-                Sprint.updated_at < window.to_exclusive,
-            )
-            .order_by(Sprint.id)
-        )
-        if sprint_ids:
-            statement = statement.where(Sprint.id.in_(sprint_ids))
-        rows = (await self._session.execute(statement)).all()
-
-        relevant_ids = tuple(row[0].id for row in rows)
-        done_card_ids: set[str] = set()
-        if relevant_ids:
-            done_card_ids = set(
-                (
-                    await self._session.execute(
-                        select(Card.id).where(
-                            Card.board_id == query.foundation.board_id,
-                            Card.sprint_id.in_(relevant_ids),
-                            Card.status == CardStatus.DONE,
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-            )
-
-        observations: list[ForecastObservation] = []
-        for sprint, baseline in rows:
-            baseline_members = {
-                str(item.get("card_id"))
-                for item in (baseline.members if baseline is not None else ())
-                if isinstance(item, dict) and item.get("card_id")
-            }
-            comparable = bool(
-                baseline is not None
-                and baseline_members
-                and baseline.sprint_version <= sprint.version
-            )
-            observations.append(
-                ForecastObservation(
-                    observation_id=sprint.id,
-                    delivered_count=len(baseline_members & done_card_ids),
-                    source_ref=(
-                        baseline.baseline_ref
-                        if baseline is not None
-                        else f"sprint:{sprint.id}:activation-baseline-unavailable"
-                    ),
-                    completed_at=_utc(sprint.updated_at, fallback=observed_at),
-                    comparable=comparable,
-                )
-            )
-
-        available = bool(observations)
-        return DeliveryForecastEvidence(
-            board_id=query.foundation.board_id,
-            foundation_contract_version=ANALYTICS_FOUNDATION_CONTRACT_VERSION,
-            delivery_contract_version=DELIVERY_COMMITMENT_CONTRACT_VERSION,
-            observed_at=observed_at,
-            input_state=(
-                ForecastInputState.AVAILABLE if available else ForecastInputState.EMPTY
-            ),
-            minimum_observations=DEFAULT_FORECAST_MINIMUM_OBSERVATIONS,
-            readiness_rule_version=FORECAST_READINESS_RULE_VERSION,
-            observations=tuple(observations),
-            backtest_outcomes=(),
-            population_scope=AnalyticsPopulationScope(
-                query.foundation.actor_scope_ref,
-                len(observations),
-            ),
-            exclusions=AnalyticsExclusionSummary(),
-            currentness=AnalyticsProjectionCurrentness.CURRENT,
-            sources=(
-                AnalyticsSourceAuthority(
-                    "delivery_commitment_projection",
-                    f"board:{query.foundation.board_id}:sprint-activation-baselines:v1",
-                    "sprints.updated_at",
-                ),
-            ),
-            reason=None if available else "forecast_input_empty",
-            historical_as_of_supported=False,
-        )
 
 
 class CommunitySqlAlchemyBoardKgAnalyticsEvidence:
@@ -764,5 +628,4 @@ class CommunitySqlAlchemyBoardKgAnalyticsEvidence:
 
 __all__ = [
     "CommunitySqlAlchemyBoardKgAnalyticsEvidence",
-    "CommunitySqlAlchemyDeliveryForecastEvidence",
 ]

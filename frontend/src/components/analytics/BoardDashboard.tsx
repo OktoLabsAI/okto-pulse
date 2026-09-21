@@ -25,7 +25,6 @@ import {
 import { useDashboardApi } from '@/services/api';
 import { PulseLoader } from '@/components/shared/PulseLoader';
 import { CanonicalCoveragePanel } from './CanonicalCoveragePanel';
-import { DeliveryForecastPanel } from './DeliveryForecastPanel';
 import { FlowHealthSummary } from './FlowHealthSummary';
 import { KgEffectivenessPanel } from './KgEffectivenessPanel';
 import { mergeBoardKgAnalyticsPages } from './kgEffectivenessPagination';
@@ -35,11 +34,6 @@ import type {
   CanonicalCoverageResponse,
   FlowHealthResponse,
 } from './analyticsCanonicalTypes';
-import type {
-  DeliveryForecastResponse,
-  SprintAnalyticsResponse,
-} from './analyticsDeliveryTypes';
-
 // ---------------------------------------------------------------------------
 // Types matching backend responses
 // ---------------------------------------------------------------------------
@@ -384,13 +378,6 @@ export function BoardDashboard({
   const [quality, setQuality] = useState<QualityPoint[]>([]);
   const [agents, setAgents] = useState<AgentRow[]>([]);
   const [validations, setValidations] = useState<ValidationsResponse | null>(null);
-  const [sprints, setSprints] = useState<SprintAnalyticsResponse | null>(null);
-  const [deliveryForecast, setDeliveryForecast] = useState<DeliveryForecastResponse | null>(null);
-  const [deliveryForecastLoading, setDeliveryForecastLoading] = useState(true);
-  const [deliveryForecastError, setDeliveryForecastError] = useState<string | null>(null);
-  const [deliveryForecastExportError, setDeliveryForecastExportError] = useState<string | null>(null);
-  const [deliveryForecastRetry, setDeliveryForecastRetry] = useState(0);
-  const [deliveryForecastExporting, setDeliveryForecastExporting] = useState(false);
   const [kgAnalytics, setKgAnalytics] = useState<BoardKgAnalyticsResponse | null>(null);
   const [kgLoading, setKgLoading] = useState(true);
   const [kgError, setKgError] = useState<string | null>(null);
@@ -439,9 +426,8 @@ export function BoardDashboard({
       api.getBoardAnalyticsQuality(boardId, from, to),
       api.getBoardAnalyticsAgents(boardId, from, to),
       api.getBoardAnalyticsValidations(boardId, from, to),
-      api.getBoardAnalyticsSprints(boardId, from, to),
     ])
-      .then(([funnelRes, qualityRes, agentsRes, validationsRes, sprintsRes]) => {
+      .then(([funnelRes, qualityRes, agentsRes, validationsRes]) => {
         if (cancelled) return;
         setFunnel(funnelRes as FunnelData);
         // Quality endpoint now returns {conclusion_reported, validation_reported}.
@@ -450,7 +436,6 @@ export function BoardDashboard({
         setQuality(q.validation_reported.length > 0 ? q.validation_reported : q.conclusion_reported);
         setAgents(agentsRes as AgentRow[]);
         setValidations(validationsRes as ValidationsResponse);
-        setSprints(sprintsRes);
       })
       .catch((err: unknown) => {
         if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load board analytics');
@@ -464,7 +449,7 @@ export function BoardDashboard({
   }, [boardId, from, to]);
 
   // KG Analytics has an independent lifecycle: failure here must not hide the
-  // usable funnel, coverage, validation or Sprint panels.
+  // usable funnel, coverage and validation panels.
   useEffect(() => {
     let cancelled = false;
     setKgLoading(true);
@@ -505,26 +490,6 @@ export function BoardDashboard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boardId, from, to, kgRetry]);
 
-  useEffect(() => {
-    let cancelled = false;
-    setDeliveryForecastLoading(true);
-    setDeliveryForecastError(null);
-    api.getBoardDeliveryForecast(boardId, from, to)
-      .then((payload) => {
-        if (!cancelled) setDeliveryForecast(payload);
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) {
-          setDeliveryForecast(null);
-          setDeliveryForecastError(err instanceof Error ? err.message : 'Delivery forecast is unavailable.');
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setDeliveryForecastLoading(false);
-      });
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [boardId, from, to, deliveryForecastRetry]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1447,31 +1412,11 @@ export function BoardDashboard({
 
       {governedAnalyticsSections}
 
-      <DeliveryForecastPanel
-        sprints={sprints}
-        forecast={deliveryForecast}
-        forecastLoading={deliveryForecastLoading}
-        forecastError={deliveryForecastError}
-        forecastExportError={deliveryForecastExportError}
-        forecastExporting={deliveryForecastExporting}
-        from={from}
-        to={to}
-        compact
-        onOpenFullView={onOpenDeliveryIntelligence}
-        onRetryForecast={() => setDeliveryForecastRetry((value) => value + 1)}
-        onExportForecast={async () => {
-          if (deliveryForecastExporting) return;
-          setDeliveryForecastExporting(true);
-          setDeliveryForecastExportError(null);
-          try {
-            await api.exportBoardDeliveryForecastCsv(boardId, from, to);
-          } catch (err) {
-            setDeliveryForecastExportError(err instanceof Error ? err.message : 'Delivery forecast export failed');
-          } finally {
-            setDeliveryForecastExporting(false);
-          }
-        }}
-      />
+      <section aria-labelledby="delivery-intelligence-heading" className="rounded-xl border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-800" data-testid="delivery-summary">
+        <h3 id="delivery-intelligence-heading" className="text-sm font-semibold">Delivery Intelligence</h3>
+        <p className="mt-1 text-xs text-gray-500">Delivery metrics and contribution by role.</p>
+        <button type="button" onClick={onOpenDeliveryIntelligence} disabled={!onOpenDeliveryIntelligence} className="mt-3 rounded-md border border-blue-200 px-3 py-2 text-xs font-semibold text-blue-700 disabled:opacity-50 dark:border-blue-800 dark:text-blue-300">Open full view</button>
+      </section>
     </div>
   );
 }

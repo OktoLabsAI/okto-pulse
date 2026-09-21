@@ -16,8 +16,6 @@ export type {
 export type {
   SprintAnalyticsItem,
   SprintAnalyticsResponse,
-  SprintForecastProjection,
-  DeliveryForecastResponse,
   DeliveryIntelligenceFilters,
   DeliveryIntelligenceResponse,
 } from './analyticsDeliveryTypes';

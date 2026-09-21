@@ -2,7 +2,6 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DeliveryIntelligenceFullView } from './DeliveryIntelligenceFullView';
 import type {
-  DeliveryForecastResponse,
   DeliveryIntelligenceResponse,
   DeliveryIntelligenceSprint,
   DeliveryMetric,
@@ -92,7 +91,6 @@ function sprint(
       series: [{ sprint: sprintId, done: 8 }],
       reason: null,
     },
-    forecast: null,
   };
 }
 
@@ -167,84 +165,6 @@ function deliveryPage({
   };
 }
 
-const forecastBase = {
-  contract_version: '1',
-  dependency_versions: { analytics_foundation: '1', delivery_phase_1: '1' },
-  query_fingerprint: 'f'.repeat(64),
-  filters: [],
-  as_of: '2026-08-01T12:00:00Z',
-  board_id: 'board-1',
-  provenance: {
-    observed_at: '2026-08-01T12:00:00Z',
-    currentness: 'current' as const,
-    reason: null,
-    sources: [{ authority: 'sprint_delivery', reference: 'board:board-1', timestamp_field: 'completed_at' }],
-  },
-  population_scope: { scope_ref: 'board:board-1', accessible_count: 8, excluded_count: 0 },
-  exclusions: { restricted_count: 0, excluded_count: 0, reasons: [] },
-};
-
-function readyForecast(): DeliveryForecastResponse {
-  return {
-    ...forecastBase,
-    result_state: 'available',
-    readiness: {
-      ready: true,
-      state: 'ready',
-      reason: null,
-      remediation: null,
-      actual_observations: 8,
-      required_observations: 5,
-      rule_version: 'history-v1',
-    },
-    forecast: {
-      point: 12,
-      lower_bound: 9,
-      upper_bound: 15,
-      confidence_level: 0.8,
-      horizon: 'next_sprint',
-      assumptions: ['stable_scope', 'observed_history_only'],
-      sample_size: 8,
-      source_period: { from: '2026-07-01T00:00:00Z', to: '2026-07-31T23:59:59Z' },
-      method_version: 'empirical-v1',
-    },
-    backtest: {
-      state: 'available',
-      error: 1.5,
-      calibration: 0.82,
-      method_version: 'empirical-v1',
-      sample_size: 5,
-      evaluation_window: { from: '2026-06-01T00:00:00Z', to: '2026-06-30T23:59:59Z' },
-      reason: null,
-    },
-  };
-}
-
-function nonReadyForecast(): DeliveryForecastResponse {
-  return {
-    ...forecastBase,
-    result_state: 'unavailable',
-    readiness: {
-      ready: false,
-      state: 'insufficient_history',
-      reason: 'insufficient_observations',
-      remediation: 'Complete more governed Sprints.',
-      actual_observations: 2,
-      required_observations: 5,
-      rule_version: 'history-v1',
-    },
-    backtest: {
-      state: 'unavailable',
-      error: null,
-      calibration: null,
-      method_version: 'empirical-v1',
-      sample_size: 0,
-      evaluation_window: null,
-      reason: 'insufficient_observations',
-    },
-  };
-}
-
 function renderFullView(overrides: Partial<React.ComponentProps<typeof DeliveryIntelligenceFullView>> = {}) {
   const props: React.ComponentProps<typeof DeliveryIntelligenceFullView> = {
     boardId: 'board-1',
@@ -265,7 +185,6 @@ describe('Delivery Intelligence A5 full view', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     dashboardApi.getBoardDeliveryIntelligence.mockResolvedValue(deliveryPage());
-    dashboardApi.getBoardDeliveryForecast.mockResolvedValue(nonReadyForecast());
     dashboardApi.exportBoardDeliveryIntelligenceCsv.mockResolvedValue(undefined);
   });
 
@@ -273,14 +192,11 @@ describe('Delivery Intelligence A5 full view', () => {
     const onFiltersChange = vi.fn();
     const onPeriodChange = vi.fn();
     const onSelectEntity = vi.fn();
-    dashboardApi.getBoardDeliveryForecast.mockResolvedValue(readyForecast());
     const { props } = renderFullView({ onFiltersChange, onPeriodChange, onSelectEntity });
 
     const page = await screen.findByTestId('delivery-intelligence-full-view');
     expect(within(page).getByRole('heading', { name: 'Delivery Intelligence' })).toBeInTheDocument();
     expect((await within(page).findAllByText('87.5%')).length).toBeGreaterThan(0);
-    expect(within(page).getByText('Forecast ready')).toBeInTheDocument();
-    expect(within(page).getByText('9–15 · confidence 0.8')).toBeInTheDocument();
 
     const sprintButton = within(page).getByRole('button', { name: 'Sprint Alpha' });
     sprintButton.focus();
@@ -452,13 +368,11 @@ describe('Delivery Intelligence A5 full view', () => {
     expect(screen.getByRole('button', { name: 'Sprint Current' })).toBeInTheDocument();
   });
 
-  it('keeps a non-ready forecast absent and gives the governed remediation', async () => {
+  it('keeps contributions without requesting or rendering the retired forecast', async () => {
     renderFullView();
-
-    const forecastRegion = await screen.findByLabelText('Delivery forecast state');
-    expect(within(forecastRegion).getAllByText('Insufficient History')).toHaveLength(2);
-    expect(within(forecastRegion).getByText('Insufficient Observations')).toBeInTheDocument();
-    expect(within(forecastRegion).getByText(/2\/5 observations · Complete more governed Sprints/)).toBeInTheDocument();
-    expect(within(forecastRegion).queryByText('Forecast ready')).not.toBeInTheDocument();
+    await screen.findByRole('heading', { name: 'Contribution by role' });
+    expect(dashboardApi.getBoardDeliveryForecast).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText('Delivery forecast state')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Forecast ready|forecast readiness/i)).not.toBeInTheDocument();
   });
 });

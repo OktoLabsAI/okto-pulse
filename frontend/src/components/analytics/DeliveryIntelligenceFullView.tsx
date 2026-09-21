@@ -2,15 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   CalendarRange,
-  CheckCircle2,
   Download,
   RefreshCw,
-  ShieldCheck,
 } from 'lucide-react';
 import { useDashboardApi } from '@/services/api';
 import type {
-  DeliveryForecastResponse,
-  DeliveryForecastReadyResponse,
   DeliveryIntelligenceFilters,
   DeliveryIntelligenceResponse,
   DeliveryMetric,
@@ -83,12 +79,6 @@ function sameFilters(a: DeliveryIntelligenceFilters, b: DeliveryIntelligenceFilt
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-function isReadyForecast(
-  value: DeliveryForecastResponse | null,
-): value is DeliveryForecastReadyResponse {
-  return value !== null && value.readiness.ready === true && value.forecast !== undefined;
-}
-
 export function DeliveryIntelligenceFullView({
   boardId,
   from,
@@ -107,12 +97,9 @@ export function DeliveryIntelligenceFullView({
     ...(initialFilters ?? {}),
   });
   const [data, setData] = useState<DeliveryIntelligenceResponse | null>(null);
-  const [forecast, setForecast] = useState<DeliveryForecastResponse | null>(null);
   const [loading, setLoading] = useState(true);
-  const [forecastLoading, setForecastLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
-  const [forecastError, setForecastError] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
   const [exporting, setExporting] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -162,26 +149,6 @@ export function DeliveryIntelligenceFullView({
     };
   }, [load]);
 
-  useEffect(() => {
-    let cancelled = false;
-    setForecastLoading(true);
-    setForecastError(null);
-    api.getBoardDeliveryForecast(boardId, from, to)
-      .then((payload) => {
-        if (!cancelled) setForecast(payload);
-      })
-      .catch((caught: unknown) => {
-        if (!cancelled) {
-          setForecast(null);
-          setForecastError(caught instanceof Error ? caught.message : 'Delivery forecast is unavailable.');
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setForecastLoading(false);
-      });
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [boardId, from, to, retry]);
 
   const updateFilters = (patch: Partial<DeliveryIntelligenceFilters>) => {
     setFilters((current) => {
@@ -230,7 +197,6 @@ export function DeliveryIntelligenceFullView({
     () => Array.from(new Set(data?.contributions.map((item) => item.role) ?? [])).sort(),
     [data?.contributions],
   );
-  const readyForecast = isReadyForecast(forecast) ? forecast : null;
 
   return (
     <main aria-label="Delivery Intelligence analytics" className="space-y-6" data-testid="delivery-intelligence-full-view">
@@ -324,8 +290,8 @@ export function DeliveryIntelligenceFullView({
             </article>
           </section>
 
-          <section className="grid gap-6 xl:grid-cols-5">
-            <article className="overflow-hidden rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800 xl:col-span-3">
+          <section>
+            <article className="overflow-hidden rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
               <div className="flex flex-wrap items-start justify-between gap-3 border-b border-gray-200 px-5 py-4 dark:border-gray-700"><div><h3 className="font-semibold">Contribution by role</h3><p className="text-xs text-gray-500">Context, denominators, and samples are shown; rows are not ranked.</p></div><span className="rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-[10px] text-violet-700 dark:border-violet-800 dark:bg-violet-950/30 dark:text-violet-300">{words(filters.contributionView)} · minimum n = {data.minimum_sample_size}</span></div>
               <div className="border-b border-gray-200 bg-blue-50/60 px-5 py-3 text-xs text-blue-700 dark:border-gray-700 dark:bg-blue-950/20 dark:text-blue-300" role="status">Named metrics are limited to you or an authorized operator. Other contributors remain minimum-sample-protected aggregates.</div>
               <div className="overflow-x-auto"><table className="w-full min-w-[900px] text-left text-xs"><caption className="sr-only">Role-aware contribution metrics</caption><thead className="bg-gray-50 text-[10px] uppercase text-gray-400 dark:bg-gray-900/40"><tr><th className="px-4 py-3">Subject</th><th className="px-4 py-3">Role</th><th className="px-4 py-3">Done n</th><th className="px-4 py-3">First pass</th><th className="px-4 py-3">Validation success</th><th className="px-4 py-3">Rework</th><th className="px-4 py-3">Median cycle</th></tr></thead><tbody className="divide-y divide-gray-100 dark:divide-gray-700">
@@ -335,14 +301,6 @@ export function DeliveryIntelligenceFullView({
               <p className="border-t border-gray-200 px-5 py-3 text-[10px] text-gray-500 dark:border-gray-700">No hidden productivity score is computed. Every displayed rate includes its numerator, denominator, period, and role.</p>
             </article>
 
-            <aside className="rounded-xl border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-800 xl:col-span-2" aria-label="Delivery forecast state">
-              <div className="flex items-start justify-between gap-3"><div><p className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Phase 2</p><h3 className="mt-1 font-semibold">Delivery forecast</h3></div>{forecast && <StateBadge value={forecast.readiness.state} title={forecast.readiness.reason} />}</div>
-              {forecastLoading && <p className="mt-5 text-sm text-gray-500" role="status">Loading forecast readiness…</p>}
-              {!forecastLoading && forecastError && <div className="mt-5 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300" role="alert">{forecastError}</div>}
-              {!forecastLoading && !forecastError && forecast && !forecast.readiness.ready && <div className="mt-5 rounded-lg border border-dashed border-gray-300 bg-gray-50 p-5 text-center dark:border-gray-700 dark:bg-gray-900/40"><AlertTriangle className="mx-auto h-5 w-5 text-amber-500" /><p className="mt-2 font-medium">{words(forecast.readiness.state)}</p><p className="mt-2 text-sm text-gray-500">{words(forecast.readiness.reason)}</p><p className="mt-2 text-xs text-gray-400">{forecast.readiness.actual_observations}/{forecast.readiness.required_observations} observations · {forecast.readiness.remediation}</p></div>}
-              {!forecastLoading && !forecastError && readyForecast && <div className="mt-5 space-y-3"><div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-800 dark:bg-emerald-950/30"><div className="flex items-center gap-2"><CheckCircle2 className="h-4 w-4 text-emerald-600" /><span className="text-sm font-semibold">Forecast ready</span></div><p className="mt-2 text-2xl font-bold">{readyForecast.forecast.point}</p><p className="text-xs text-gray-500">{readyForecast.forecast.lower_bound}–{readyForecast.forecast.upper_bound} · confidence {readyForecast.forecast.confidence_level}</p></div><dl className="grid gap-2 text-xs"><div><dt className="text-gray-400">Horizon</dt><dd>{readyForecast.forecast.horizon}</dd></div><div><dt className="text-gray-400">Method</dt><dd>{readyForecast.forecast.method_version}</dd></div><div><dt className="text-gray-400">Sample</dt><dd>n = {readyForecast.forecast.sample_size}</dd></div><div><dt className="text-gray-400">Assumptions</dt><dd>{readyForecast.forecast.assumptions.join('; ')}</dd></div></dl><div className="rounded-lg border border-gray-200 p-3 text-xs dark:border-gray-700"><p className="font-semibold">Backtest</p><p className="mt-1 text-gray-500">Error {readyForecast.backtest.error ?? 'Unavailable'} · calibration {readyForecast.backtest.calibration ?? 'Unavailable'} · n = {readyForecast.backtest.sample_size}</p></div></div>}
-              <div className="mt-4 rounded-lg border border-gray-200 p-3 text-xs dark:border-gray-700"><div className="flex items-center gap-2"><ShieldCheck className="h-4 w-4 text-blue-500" /><span className="font-semibold">Read-only authority</span></div><p className="mt-1 text-gray-500">Forecast never changes Sprint scope, allocation, priority, or lifecycle.</p></div>
-            </aside>
           </section>
         </>
       )}

@@ -12,7 +12,6 @@ from starlette.responses import StreamingResponse
 from okto_pulse.community.api.analytics_transport import (
     CanonicalBoardKgAnalyticsResponseDTO,
     CanonicalCoverageResponseDTO,
-    CanonicalDeliveryForecastResponseDTO,
     CanonicalFlowHealthResponseDTO,
     DeliveryIntelligenceResponseDTO,
     FlowHealthSettingsResponseDTO,
@@ -69,10 +68,6 @@ from okto_pulse.core.application.use_cases import (
     SaveFlowHealthSettingsUseCase,
     SpecReadinessAnalyticsUseCase,
 )
-from okto_pulse.core.application.use_cases.delivery_forecast import (
-    DeliveryForecastCommand,
-    DeliveryForecastUseCase,
-)
 from okto_pulse.core.application.use_cases.delivery_intelligence import (
     DeliveryIntelligenceCommand,
     DeliveryIntelligenceUseCase,
@@ -83,12 +78,6 @@ from okto_pulse.core.ports.application_persistence import PAGE_OFFSET_MAX
 from okto_pulse.core.ports.analytics_foundation import (
     AnalyticsFilterClause,
     AnalyticsUtcWindow,
-)
-from okto_pulse.core.ports.delivery_forecast import (
-    DEFAULT_FORECAST_CONFIDENCE_LEVEL,
-    DEFAULT_FORECAST_HORIZON,
-    DEFAULT_FORECAST_METHOD_VERSION,
-    DeliveryForecastError,
 )
 from okto_pulse.core.ports.board_kg_analytics import (
     BoardKgAnalyticsError,
@@ -868,177 +857,6 @@ async def delivery_intelligence_export(
     return _canonical_csv_response(
         payload,
         filename=f"board-{board_id}-delivery-intelligence.csv",
-    )
-
-
-# ---------------------------------------------------------------------------
-# Delivery Forecast — governed readiness/result union and complete CSV
-# ---------------------------------------------------------------------------
-
-
-def _delivery_forecast_command(
-    board_id: str,
-    *,
-    date_from: str | None,
-    date_to: str | None,
-    historical_as_of: str | None,
-    sprint_ids: tuple[str, ...],
-    horizon: str,
-    confidence_level: float,
-    method_version: str,
-) -> DeliveryForecastCommand:
-    observed_at = datetime.now(timezone.utc)
-    window_from = _parse_date(date_from) or datetime(1970, 1, 1, tzinfo=timezone.utc)
-    window_to = _parse_date(date_to, end_of_day=True) or observed_at + timedelta(
-        microseconds=1
-    )
-    filters = (
-        (
-            AnalyticsFilterClause(
-                field="sprint_id",
-                operator="in",
-                value=sprint_ids,
-            ),
-        )
-        if sprint_ids
-        else ()
-    )
-    return DeliveryForecastCommand(
-        board_id=board_id,
-        window=AnalyticsUtcWindow(window_from, window_to),
-        as_of=observed_at,
-        horizon=horizon,
-        confidence_level=confidence_level,
-        method_version=method_version,
-        filters=filters,
-        historical_as_of=_parse_date(historical_as_of),
-    )
-
-
-async def _delivery_forecast_payload(
-    board_id: str,
-    *,
-    date_from: str | None,
-    date_to: str | None,
-    range_value: str | None,
-    historical_as_of: str | None,
-    sprint_ids: tuple[str, ...],
-    horizon: str,
-    confidence_level: float,
-    method_version: str,
-    user_id: str,
-    uow: PulseUnitOfWork,
-) -> dict[str, object]:
-    if range_value is not None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "code": "analytics_query_invalid",
-                "message": "analytics_range_encoding_unsupported_use_from_and_to",
-            },
-        )
-    try:
-        result = await DeliveryForecastUseCase().execute(
-            _delivery_forecast_command(
-                board_id,
-                date_from=date_from,
-                date_to=date_to,
-                historical_as_of=historical_as_of,
-                sprint_ids=sprint_ids,
-                horizon=horizon,
-                confidence_level=confidence_level,
-                method_version=method_version,
-            ),
-            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
-            uow=uow,
-        )
-    except EntityNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": "board_not_found", "message": "Board not found"},
-        ) from exc
-    except DeliveryForecastError as exc:
-        raise HTTPException(
-            status_code=exc.http_status,
-            detail=exc.canonical_dict(),
-        ) from exc
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"code": "analytics_query_invalid", "message": str(exc)},
-        ) from exc
-    return result.data
-
-
-@router.get(
-    "/boards/{board_id}/analytics/delivery-forecast",
-    response_model=CanonicalDeliveryForecastResponseDTO,
-)
-async def delivery_forecast(
-    board_id: str,
-    date_from: str | None = Query(None, alias="from"),
-    date_to: str | None = Query(None, alias="to"),
-    range_value: str | None = Query(
-        None,
-        alias="range",
-        deprecated=True,
-        description="Unsupported until the Spec defines a concrete range encoding; use from/to.",
-    ),
-    sprint_ids: list[UUID] | None = Query(None),
-    horizon: str = Query(DEFAULT_FORECAST_HORIZON),
-    confidence_level: float = Query(DEFAULT_FORECAST_CONFIDENCE_LEVEL),
-    method_version: str = Query(DEFAULT_FORECAST_METHOD_VERSION),
-    historical_as_of: str | None = Query(None, alias="as_of"),
-    user_id: str = Depends(require_user),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-):
-    """Read the deterministic forecast readiness/result projection."""
-    return await _delivery_forecast_payload(
-        board_id,
-        date_from=date_from,
-        date_to=date_to,
-        range_value=range_value,
-        historical_as_of=historical_as_of,
-        sprint_ids=tuple(str(item) for item in (sprint_ids or ())),
-        horizon=horizon,
-        confidence_level=confidence_level,
-        method_version=method_version,
-        user_id=user_id,
-        uow=uow,
-    )
-
-
-@router.get("/boards/{board_id}/analytics/delivery-forecast/export")
-async def delivery_forecast_export(
-    board_id: str,
-    date_from: str | None = Query(None, alias="from"),
-    date_to: str | None = Query(None, alias="to"),
-    range_value: str | None = Query(None, alias="range", deprecated=True),
-    sprint_ids: list[UUID] | None = Query(None),
-    horizon: str = Query(DEFAULT_FORECAST_HORIZON),
-    confidence_level: float = Query(DEFAULT_FORECAST_CONFIDENCE_LEVEL),
-    method_version: str = Query(DEFAULT_FORECAST_METHOD_VERSION),
-    historical_as_of: str | None = Query(None, alias="as_of"),
-    user_id: str = Depends(require_user),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-):
-    """Export exactly one authorized canonical forecast projection."""
-    payload = await _delivery_forecast_payload(
-        board_id,
-        date_from=date_from,
-        date_to=date_to,
-        range_value=range_value,
-        historical_as_of=historical_as_of,
-        sprint_ids=tuple(str(item) for item in (sprint_ids or ())),
-        horizon=horizon,
-        confidence_level=confidence_level,
-        method_version=method_version,
-        user_id=user_id,
-        uow=uow,
-    )
-    return _canonical_csv_response(
-        payload,
-        filename=f"board-{board_id}-delivery-forecast.csv",
     )
 
 

@@ -643,14 +643,6 @@ class CommunityRelationalApplicationAdapter:
 
         return CommunityDeliveryEvidenceStore(session)
 
-    def delivery_forecast_read(self, session: AsyncSession):
-        """Bind board-scoped Sprint commitment evidence for forecasting."""
-
-        from okto_pulse.community.adapters.sqlalchemy_analytics_evidence import (
-            CommunitySqlAlchemyDeliveryForecastEvidence,
-        )
-
-        return CommunitySqlAlchemyDeliveryForecastEvidence(session)
 
     def board_kg_analytics_read(self, session: AsyncSession):
         """Bind read-only relational/KG evidence for Analytics v2."""

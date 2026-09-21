@@ -2,7 +2,6 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { BoardDashboard } from './BoardDashboard';
 import { CanonicalCoveragePanel } from './CanonicalCoveragePanel';
-import { DeliveryForecastPanel } from './DeliveryForecastPanel';
 import { EntityDetail } from './EntityDetail';
 import { KgEffectivenessPanel } from './KgEffectivenessPanel';
 
@@ -20,7 +19,6 @@ const mockApi = vi.hoisted(() => ({
   getBoardAnalyticsAgents: vi.fn(),
   getBoardAnalyticsValidations: vi.fn(),
   getBoardAnalyticsSprints: vi.fn(),
-  getBoardDeliveryForecast: vi.fn(),
   getBoardKgAnalytics: vi.fn(),
   exportBoardKgAnalyticsCsv: vi.fn(),
   getBoardAnalyticsEntities: vi.fn(),
@@ -113,41 +111,6 @@ describe('analytics IR/OR coverage UI', () => {
         sprint_evaluation: { total_submitted: 0, approve_rate: null, avg_overall_score: null },
       },
       sprints: [],
-    });
-    mockApi.getBoardDeliveryForecast.mockResolvedValue({
-      contract_version: '1',
-      dependency_versions: { analytics_foundation: '1', delivery_phase_1: '1' },
-      query_fingerprint: '9'.repeat(64),
-      filters: [],
-      as_of: '2026-05-28T12:00:00.000000Z',
-      board_id: 'board-1',
-      result_state: 'unavailable',
-      provenance: {
-        observed_at: '2026-05-28T12:00:00.000000Z',
-        currentness: 'unavailable',
-        reason: 'insufficient_observations',
-        sources: [],
-      },
-      readiness: {
-        ready: false,
-        state: 'unavailable',
-        reason: 'insufficient_observations',
-        remediation: 'Complete more governed Sprints.',
-        actual_observations: 0,
-        required_observations: 5,
-        rule_version: '1',
-      },
-      backtest: {
-        state: 'unavailable',
-        error: null,
-        calibration: null,
-        method_version: 'empirical-v1',
-        sample_size: 0,
-        evaluation_window: null,
-        reason: 'insufficient_observations',
-      },
-      population_scope: { scope_ref: 'board:board-1', accessible_count: 0, excluded_count: 0 },
-      exclusions: { restricted_count: 0, excluded_count: 0, reasons: [] },
     });
     mockApi.getBoardAnalyticsEntities.mockResolvedValue({ total: 0, offset: 0, limit: 50, items: [] });
     mockApi.getBoardKgAnalytics.mockResolvedValue({
@@ -685,60 +648,6 @@ describe('analytics IR/OR coverage UI', () => {
     expect(row).not.toBeNull();
     expect(within(row!).getAllByText('Unavailable')).toHaveLength(2);
     expect(within(row!).getAllByText('—')).toHaveLength(4);
-  });
-
-  it('labels a historical Sprint commitment unavailable without inferred counts', async () => {
-    mockApi.getBoardAnalyticsCoverage.mockResolvedValue([]);
-    mockApi.getBoardAnalyticsSprints.mockResolvedValue({
-      summary: {
-        total_sprints: 1,
-        status_breakdown: { active: 1 },
-        avg_completion_rate: 50,
-        sprint_evaluation: { total_submitted: 0, approve_rate: null, avg_overall_score: null },
-      },
-      sprints: [{
-        sprint_id: 'sprint-legacy',
-        title: 'Legacy Sprint',
-        status: 'active',
-        spec_id: 'spec-1',
-        total_cards: 2,
-        done_cards: 1,
-        completion_rate: 50,
-        card_status_breakdown: { done: 1, in_progress: 1 },
-        evaluations_count: 0,
-        last_evaluation: null,
-        task_validation_gate: {
-          total_submitted: 0,
-          total_success: 0,
-          total_failed: 0,
-          rejection_reasons: {},
-          first_pass_rate: null,
-        },
-        commitment: {
-          state: 'unavailable_legacy',
-          baseline_ref: null,
-          unavailable_reason: 'activation_baseline_not_persisted',
-        },
-      }],
-    });
-
-    render(
-      <DeliveryForecastPanel
-        sprints={await mockApi.getBoardAnalyticsSprints('board-1', '2026-05-01', '2026-05-28')}
-        forecast={await mockApi.getBoardDeliveryForecast('board-1', '2026-05-01', '2026-05-28')}
-        forecastLoading={false}
-        forecastError={null}
-        forecastExporting={false}
-        from="2026-05-01"
-        to="2026-05-28"
-        onRetryForecast={vi.fn()}
-        onExportForecast={vi.fn().mockResolvedValue(undefined)}
-      />,
-    );
-
-    await waitFor(() => expect(screen.getByText('Legacy Sprint')).toBeInTheDocument());
-    expect(screen.getByText('Unavailable Legacy')).toBeInTheDocument();
-    expect(screen.queryByText(/original ·/)).not.toBeInTheDocument();
   });
 
   it('does not render the conflicting legacy board coverage projection', async () => {
