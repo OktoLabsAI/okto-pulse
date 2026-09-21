@@ -24,9 +24,9 @@ async def expand_retirement_checkpoint_schema(connection):
     if len(checks) != 1 or checks[0]["name"] != "ck_retirement_checkpoint_ordinal":
         raise ValueError("retirement_checkpoint_constraint_mismatch")
     expression = " ".join(checks[0]["sqltext"].split())
-    if expression == "ordinal >= 0 AND ordinal <= 7":
+    if expression == "ordinal >= 0 AND ordinal <= 8":
         return
-    if expression not in {"ordinal >= 0 AND ordinal <= 3", "ordinal >= 0 AND ordinal <= 5", "ordinal >= 0 AND ordinal <= 6"}:
+    if expression not in {"ordinal >= 0 AND ordinal <= 3", "ordinal >= 0 AND ordinal <= 5", "ordinal >= 0 AND ordinal <= 6", "ordinal >= 0 AND ordinal <= 7"}:
         raise ValueError("retirement_checkpoint_constraint_mismatch")
     objects = (await connection.exec_driver_sql("SELECT type,name,sql FROM sqlite_schema WHERE "
         "name=? OR (name<>? AND tbl_name<>? AND lower(sql) LIKE ?) OR (tbl_name=? AND type IN ('trigger','index'))",

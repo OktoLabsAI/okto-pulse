@@ -151,12 +151,13 @@ async def retire_permission_documents(
     async with engine.connect() as connection:
         try:
             await connection.exec_driver_sql("BEGIN IMMEDIATE")
-            if checkpoint_run is not None:
-                from .retirement_data_journal import ensure_retirement_data_journal
-                await ensure_retirement_data_journal(connection)
             contexts = await read_permission_retirement_checkpoint(connection, checkpoint)
             previous = await _read_completion(connection, checkpoint, retired_flags)
             prefix = await _checkpoint_prefix(connection, checkpoint_run, checkpoint, previous)
+            if checkpoint_run is not None and len(prefix) < 8:
+                # Preserve the DDL covered by an existing schema-cut receipt.
+                from .retirement_data_journal import ensure_retirement_data_journal
+                await ensure_retirement_data_journal(connection)
             if verify_dependency is not None:
                 await verify_dependency(connection)
             if expected_receipt is not None and expected_receipt != previous:

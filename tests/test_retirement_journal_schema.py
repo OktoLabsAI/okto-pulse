@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 from okto_pulse.community.adapters.retirement_data_journal import ensure_retirement_data_journal
 
 
-@pytest.fixture(params=[3, 5, 6])
+@pytest.fixture(params=[3, 5, 6, 7])
 def old_max(request):
     return request.param
 
@@ -54,9 +54,9 @@ async def test_expansion_keeps_raw_cells_and_immutable_triggers(old_journal):
             with pytest.raises(Exception, match="immutable"):
                 await connection.exec_driver_sql(operation)
     async with old_journal.begin() as connection:
-        await connection.exec_driver_sql("INSERT INTO retirement_data_checkpoints VALUES ('probe',7,'{}',?)", ("a" * 64,))
+        await connection.exec_driver_sql("INSERT INTO retirement_data_checkpoints VALUES ('probe',8,'{}',?)", ("a" * 64,))
         with pytest.raises(Exception, match="ck_retirement_checkpoint_ordinal"):
-            await connection.exec_driver_sql("INSERT INTO retirement_data_checkpoints VALUES ('probe',8,'{}',?)", ("a" * 64,))
+            await connection.exec_driver_sql("INSERT INTO retirement_data_checkpoints VALUES ('probe',9,'{}',?)", ("a" * 64,))
     unchanged = await snapshot(old_journal)
     async with old_journal.connect() as connection:
         await connection.exec_driver_sql("BEGIN IMMEDIATE")

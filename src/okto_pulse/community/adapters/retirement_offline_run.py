@@ -19,6 +19,7 @@ from filelock import FileLock
 from okto_pulse.core.ports.context_disposition import ContextDispositionPlan
 from okto_pulse.core.ports.permission_retirement import retired_feature_permission_flags
 from .context_disposition_retirement import _documents, _records, _require_original_archive, _targets
+from .card_validation_retirement import _read_events as _card_events, _verify_events as _verify_card_events
 from .filesystem_erasure import fsync_directory, remove_contained_tree
 from .historical_archive_grant_installation import install_historical_archive_grants
 from .graph_backend_binding import CommunityGraphBackendBindingStore
@@ -31,10 +32,13 @@ from .migration_runtime_fence import _directories, offline_migration_window
 from .permission_retirement_checkpoint import (
     PermissionRetirementCheckpoint, capture_permission_retirement_checkpoint, read_permission_retirement_checkpoint,
 )
-from .permission_retirement_cleanup import retire_permission_documents, _read_completion
+from .permission_retirement_cleanup import retire_permission_documents, _read_completion, _load_layers
+from .permission_retirement_review_installation import _require_loaded_parity
+from .retirement_bootstrap import complete_retirement_bootstrap
 from .retirement_schema_cutover import retire_schema
 from .retirement_data_journal import (
     RetirementDataRun, prepare_retirement_data_run, read_retirement_data_journal, resume_retirement_data_run,
+    _receipt,
 )
 from .retirement_runtime_admission import require_retirement_runtime_admission as require_retirement_runtime_admission
 from .retirement_runtime_admission import require_retirement_not_started
@@ -42,9 +46,9 @@ from .retirement_materialization import resume_retirement_materialization, verif
 from .retirement_materialization_plan import (
     decode_materialization_plan, prepare_materialization_plan, require_materialization_bindings, require_materialization_states,
 )
-from .sprint_retirement_archive import _encode, capture_sprint_retirement_archive
+from .sprint_retirement_archive import HistoricalArchiveReference, _encode, capture_sprint_retirement_archive
 from .sprint_retirement_preflight import inspect_sprint_pretransform
-from .sqlalchemy_database import CommunityDatabaseRuntime, _serialized_schema_lifecycle
+from .sqlalchemy_database import CommunityDatabaseRuntime, _serialized_schema_lifecycle, get_engine
 from .storage import CommunityFileSystemStorage
 
 _FORMAT = "retirement-offline-run/v2"
@@ -271,8 +275,14 @@ async def resume_offline_retirement_schema(runtime, storage, graphs, run: Offlin
         migration_builds=migration_builds, cleanup_permissions=True, cut_schema=True)
 
 
+async def resume_offline_retirement_bootstrap(runtime, storage, graphs, run: OfflineRetirementRun, *, migration_builds: RecoveryBuildPair):
+    """Complete lifecycle plus receipt atomically; terminal admission remains closed."""
+    return await _resume_materialization_and_permissions(runtime, storage, graphs, run,
+        migration_builds=migration_builds, cleanup_permissions=True, cut_schema=True, bootstrap=True)
+
+
 async def _resume_materialization_and_permissions(runtime, storage, graphs, run, *, migration_builds, cleanup_permissions,
-        cut_schema=False):
+        cut_schema=False, bootstrap=False):
     retired_flags = retired_feature_permission_flags() if cleanup_permissions else None
     source, uploads = _binding(runtime, storage)
     document, plan, permission, data, backup, roots = read_offline_retirement_run(run)
@@ -299,6 +309,38 @@ async def _resume_materialization_and_permissions(runtime, storage, graphs, run,
                         or raw != retained.original and (_outbox_sha(raw) != retained.after_sha256 or not all_retired)
                         or len(records) >= 6 and _outbox_sha(raw) != retained.after_sha256):
                     raise ValueError("offline_retirement_outbox_state_mismatch")
+
+            async def finish_bootstrap():
+                data_result = None
+                prefix = None
+                async def verify_bootstrap_dependencies(connection):
+                    nonlocal data_result, prefix
+                    prefix = await read_retirement_data_journal(connection, data)
+                    await verify_materialization_state(connection, runtime, permission, retained, manifest, graphs, kg, retired=True)
+                    if await _read_completion(connection, permission, retired_flags) != _receipt('permissions', prefix[6]['payload']):
+                        raise ValueError('offline_retirement_permission_completion_mismatch')
+                    contexts = await read_permission_retirement_checkpoint(connection, permission)
+                    _require_loaded_parity(await _load_layers(connection), contexts, retired_flags=retired_flags)
+                    # Replay the existing evidence readers through savepoints on
+                    # the reserved connection, including private archive blobs.
+                    data_result = await resume_retirement_data_run(get_engine(), storage, data, plan=plan)
+                    references = tuple(HistoricalArchiveReference(**{**item, 'counts': tuple(tuple(pair) for pair in item['counts'])})
+                        for item in prefix[0]['payload']['archives'])
+                    if await _verify_card_events(await _card_events(connection, data.migration_id), references,
+                            data.migration_id, storage, connection=connection, context_receipt=data_result['context'],
+                            verify_live=True) != data_result['cards']:
+                        raise ValueError('offline_retirement_card_policy_mismatch')
+                completed = await complete_retirement_bootstrap(runtime.engine, data, verify_dependency=verify_bootstrap_dependencies)
+                return {**data_result, 'state': 'bootstrap_complete', 'bootstrap': completed,
+                    'materialization': _receipt('graphs', prefix[5]['payload']),
+                    'permission_cleanup': _receipt('permissions', prefix[6]['payload']),
+                    'schema': _receipt('schema', prefix[7]['payload']), 'offline_run': run,
+                    'backup': backup, 'permission_checkpoint': permission}
+
+            if len(records) >= 9:
+                if not bootstrap:
+                    raise ValueError('offline_retirement_bootstrap_checkpoint_requires_resume')
+                return await finish_bootstrap()
             result = await resume_retirement_data_run(runtime.engine, storage, data, plan=plan)
             receipt = await resume_retirement_materialization(runtime, data, permission, document["materialization"],
                 backup, manifest, graphs, kg)
@@ -320,4 +362,6 @@ async def _resume_materialization_and_permissions(runtime, storage, graphs, run,
                     schema = await retire_schema(runtime.engine, data, storage, verify_dependency=verify_schema_dependencies)
                     await _verify_retained_receipts(runtime.engine, permission, data)
                     result = {**result, "state": "schema_retired", "schema": schema}
+                    if bootstrap:
+                        return await finish_bootstrap()
             return result

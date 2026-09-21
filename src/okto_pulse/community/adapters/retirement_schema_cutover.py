@@ -37,7 +37,6 @@ async def retire_schema(engine, run, storage, *, verify_dependency):
             await connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
             await connection.exec_driver_sql("PRAGMA legacy_alter_table=ON")
             await connection.exec_driver_sql("BEGIN IMMEDIATE")
-            await ensure_retirement_data_journal(connection)
             records = await read_retirement_data_journal(connection, run)
             if len(records) not in {7, 8}:
                 raise ValueError("retirement_schema_dependencies_incomplete")
@@ -49,6 +48,9 @@ async def retire_schema(engine, run, storage, *, verify_dependency):
                 receipt = SchemaRetirementCheckpoint(**records[7]["payload"])
                 await connection.run_sync(lambda sync: require_cut_schema(sync, receipt))
             else:
+                # Expanding the journal changes the schema hash. Never do it
+                # before validating an already-retained schema-cut receipt.
+                await ensure_retirement_data_journal(connection)
                 values = await connection.run_sync(lambda sync: cut_retired_schema(sync, documents))
                 receipt = SchemaRetirementCheckpoint(run.migration_id, **values)
             await record_retirement_stage(connection, run, "schema", receipt, replay=len(records) == 8)

@@ -64,10 +64,13 @@ async def resume_retirement_materialization(runtime, run, permission, payload, b
     async with runtime.engine.connect() as connection:
         await connection.exec_driver_sql("BEGIN IMMEDIATE")
         try:
-            await ensure_retirement_data_journal(connection)
             records = await read_retirement_data_journal(connection, run)
-            if len(records) < 4:
+            if len(records) not in {4, 5, 6, 7, 8}:
                 raise ValueError("retirement_materialization_data_incomplete")
+            # A retained schema receipt hashes the journal DDL too. Later
+            # bootstrap owns expansion after verifying that original hash.
+            if len(records) < 8:
+                await ensure_retirement_data_journal(connection)
             replay = len(records) >= 5
             # Missing intent cannot be reconstructed from already changed graphs.
             await verify(connection, original=not replay, retired=len(records) >= 6)

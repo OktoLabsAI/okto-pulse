@@ -85,10 +85,15 @@ async def _read_events(connection, migration_id):
     return (await connection.execute(select(_EVENTS).where(*selection).order_by(_EVENTS.c.board_id))).mappings().all()
 
 
-async def _verify_events(events, references, migration_id, storage, *, connection=None, context_receipt=None):
+async def _verify_events(events, references, migration_id, storage, *, connection=None, context_receipt=None, verify_live=False):
     if len(events) != len(references):
         raise ValueError("card_validation_retirement_evidence_mismatch")
     payloads, seen, total_size = [], set(), 0
+    if verify_live:
+        if connection is None:
+            raise ValueError("card_validation_retirement_live_connection_required")
+        live_cards = {row['id']: row for row in await _load_cards(connection, linked_only=False)}
+        live_layers = await _load_policy_layers(connection, include_sprints=False)
     formats, context_receipts = set(), []
     for event, reference in zip(events, references, strict=True):
         manifest = event["payload_json"]
@@ -149,6 +154,16 @@ async def _verify_events(events, references, migration_id, storage, *, connectio
                 raise ValueError("card_validation_retirement_evidence_mismatch")
             seen.add(facts["card"]["id"])
             identities.append(facts["card"]["id"])
+            if verify_live:
+                live = live_cards.get(facts['card']['id'])
+                if live is None or any(live[key] != facts['card'][key] for key in ('id', 'board_id', 'spec_id')):
+                    raise ValueError('card_validation_retirement_live_identity_changed')
+                live_policy = json.loads(live['migrated_validation_policy']) if live['migrated_validation_policy'] is not None else None
+                if live_policy != entry['policy']:
+                    raise ValueError('card_validation_retirement_live_policy_changed')
+                verify_card_validation_migration(card={**live, 'sprint_id': None, 'migrated_validation_policy': live_policy},
+                    spec=live_layers['specs'].get(live['spec_id']),
+                    board_settings=live_layers['boards'][live['board_id']]['settings'] or {}, expected=entry['after'])
         if identities != sorted(identities):
             raise ValueError("card_validation_retirement_evidence_mismatch")
         if (manifest["card_count"] != len(payload["cards"])
@@ -186,15 +201,17 @@ async def _load_cards(connection, *, linked_only=True):
         f"SELECT * FROM cards{scope} ORDER BY id"))).mappings()]
 
 
-async def _load_policy_layers(connection):
+async def _load_policy_layers(connection, *, include_sprints=True):
     # Historical SQL projection only. Never register a retired table or mapper
     # in the operational metadata used by fresh installation.
     legacy_sprint = Table("sprints", MetaData(), Column("id", String), Column("board_id", String),
         Column("require_task_validation", Boolean),
         *(Column(name, Integer) for name in _ATTRIBUTES if name != "require_task_validation"))
     layers, count_total, size_total = {}, 0, 0
-    for table, fields in ((Board.__table__, ("settings",)),
-            (Spec.__table__, ("board_id", *_ATTRIBUTES)), (legacy_sprint, ("board_id", *_ATTRIBUTES))):
+    selected = ((Board.__table__, ("settings",)), (Spec.__table__, ("board_id", *_ATTRIBUTES)))
+    if include_sprints:
+        selected += ((legacy_sprint, ("board_id", *_ATTRIBUTES)),)
+    for table, fields in selected:
         count, size = (await connection.execute(select(func.count(), func.coalesce(func.sum(sum(
             func.coalesce(func.length(cast(table.c[name], LargeBinary)), 0) for name in ("id", *fields))), 0)))).one()
         count_total += count
