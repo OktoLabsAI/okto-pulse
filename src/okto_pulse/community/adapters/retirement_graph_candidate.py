@@ -6,12 +6,14 @@ The new layout is published only in a separate private directory, under the
 joint recovery privacy guards. Deterministic materialization is still required.
 """
 
-from contextlib import closing
+from contextlib import closing, nullcontext
 from dataclasses import asdict, dataclass
 import hashlib
 import json
 from pathlib import Path
+import re
 import secrets
+import stat
 
 from okto_grafx import connect
 from sqlalchemy import create_engine
@@ -25,7 +27,7 @@ from .joint_recovery_snapshot import (
 from .migration_runtime_fence import offline_migration_window
 from .native_graph_recovery_snapshot import NativeGraphRecoverySnapshot, verify_native_graph_snapshot
 from .recovery_graph_inventory import read_recovery_graph_inventory
-from .relational_recovery_snapshot import _readonly, _deadline
+from .relational_recovery_snapshot import _readonly, _deadline, _check_time
 from .retirement_bootstrap import _snapshot
 from .retirement_projection_inputs import (
     RetirementProjectionInputs, projection_destination, read_retirement_projection_inputs,
@@ -35,6 +37,7 @@ from .sprint_retirement_archive import _encode
 
 _FORMAT = 'retirement-native-candidate-seed/v1'
 _KEYS = {'format', 'offline_run_sha256', 'projection_inputs', 'snapshot', 'generation'}
+_STARTUP_MUTEXES = ('.okto-pulse-serve.lock.acquire', 'kg-artifacts/.okto-pulse-serve.lock.acquire')
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,12 +156,81 @@ def _require_routes(source, kg, expected):
         raise ValueError('retirement_candidate_original_routing_changed')
 
 
+def _candidate_contents(root, native_paths, deadline):
+    """Bounded byte inventory; ignore only empty, recognized rendezvous files.
+
+    Native leases, commit state, history and indexes are data, not mutexes.
+    Inactive generations and archived artifacts receive no exclusions at all.
+    """
+    directories, files, count, total = [], {}, 0, 0
+    native_controls = {f'{path}/control' for path in native_paths}
+
+    def visit(directory):
+        nonlocal count, total
+        for child in sorted(directory.iterdir()):
+            _check_time(deadline)
+            count += 1
+            if count > 500_000:
+                raise ValueError('retirement_candidate_inventory_limit')
+            child = _explicit_path(child)
+            relative = child.relative_to(root).as_posix()
+            identity = child.stat()
+            if stat.S_ISDIR(identity.st_mode):
+                directories.append(relative)
+                visit(child)
+                continue
+            if not stat.S_ISREG(identity.st_mode):
+                raise ValueError('retirement_candidate_regular_file_required')
+            if identity.st_nlink != 1:
+                raise ValueError('retirement_candidate_private_file_required')
+            native_mutex = (child.parent.relative_to(root).as_posix() in native_controls
+                and re.fullmatch(r'(?:commit|first-open|writer\.lease|(?:txn|page0)-[0-9a-f]{8})\.lock', child.name))
+            if relative in _STARTUP_MUTEXES or native_mutex:
+                if identity.st_size != 0:
+                    raise ValueError('retirement_candidate_mutex_occupied')
+                continue
+            total += identity.st_size
+            if total > 2 * 1024**4:
+                raise ValueError('retirement_candidate_content_limit')
+            measured, digest = 0, hashlib.sha256()
+            with child.open('rb') as reader:
+                while chunk := reader.read(1024 * 1024):
+                    _check_time(deadline)
+                    measured += len(chunk)
+                    if measured > identity.st_size:
+                        raise ValueError('retirement_candidate_content_changed')
+                    digest.update(chunk)
+            after = child.stat()
+            if measured != identity.st_size or any(getattr(after, key) != getattr(identity, key)
+                    for key in ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns')):
+                raise ValueError('retirement_candidate_content_changed')
+            files[relative] = (measured, digest.hexdigest())
+
+    visit(root)
+    return sorted(directories), files
+
+
+def _require_private_replay_mutexes(target):
+    # Some FileLock implementations truncate their rendezvous file on open.
+    # Check BEFORE taking any candidate startup lock, not after opening aliases.
+    for relative in _STARTUP_MUTEXES:
+        path = _explicit_path(target / relative)
+        if path.exists():
+            identity = path.stat()
+            if not stat.S_ISREG(identity.st_mode) or identity.st_nlink != 1 or identity.st_size != 0:
+                raise ValueError('retirement_candidate_mutex_occupied')
+
+
 async def restore_retirement_graph_candidate(runtime, storage, graphs, run, seed, destination, *,
-        migration_builds: RecoveryBuildPair, confirm_original_offline=False, max_seconds=180):
+        migration_builds: RecoveryBuildPair, confirm_original_offline=False,
+        confirm_candidate_offline=False, max_seconds=180):
     """Build a new private generation; do not publish any original route.
 
     The explicit assertion covers ALL participants, including native writers
     outside Pulse. Closed supplied handles alone do not prove their absence.
+    An existing destination also requires candidate-offline confirmation. Replay
+    rebuilds an unpublished reference and compares every payload byte; it never
+    adopts a candidate based on its receipt alone or overwrites a changed one.
     """
     if confirm_original_offline is not True:
         raise ValueError('retirement_candidate_original_offline_required')
@@ -170,13 +242,25 @@ async def restore_retirement_graph_candidate(runtime, storage, graphs, run, seed
             or not isinstance(migration_builds, RecoveryBuildPair) or asdict(migration_builds) != manifest['builds']):
         raise ValueError('retirement_candidate_runtime_mismatch')
     _closed_originals(graphs, manifest)
-    target = projection_destination(destination, original)
-    if any(target.is_relative_to(root) for root in (seed.directory, snapshot.directory,
-            Path(document['projection_inputs']['directory']))):
+    target = _explicit_path(destination)
+    replay = target.exists()
+    if replay:
+        if confirm_candidate_offline is not True:
+            raise ValueError('retirement_candidate_replay_offline_required')
+        if not target.is_dir():
+            raise ValueError('retirement_candidate_directory_required')
+    else:
+        projection_destination(target, original)
+    protected = (source, uploads, Path(original['kg_base_dir']), Path(original['backup']['directory']),
+        run.directory, seed.directory, snapshot.directory, Path(document['projection_inputs']['directory']))
+    if any(target.is_relative_to(root) or root.is_relative_to(target) for root in protected):
         raise ValueError('retirement_candidate_private_destination_required')
+    if replay:
+        _require_private_replay_mutexes(target)
     kg = Path(original['kg_base_dir'])
     async with _serialized_schema_lifecycle(runtime):
-        with offline_migration_window(roots), CommunityGraphBackendBindingStore(kg).publication_window():
+        with offline_migration_window(roots), CommunityGraphBackendBindingStore(kg).publication_window(), (
+                offline_migration_window((target, target / 'kg-artifacts')) if replay else nullcontext()):
             await offline._verify_retained_receipts(runtime.engine, permission, data)
             async with runtime.engine.connect() as connection:
                 await connection.exec_driver_sql('BEGIN IMMEDIATE')
@@ -184,10 +268,12 @@ async def restore_retirement_graph_candidate(runtime, storage, graphs, run, seed
                     if await connection.run_sync(_snapshot) != _expected_sql(projection):
                         raise ValueError('retirement_candidate_live_source_changed')
                     _require_routes(source, kg, manifest['routing_inventory'])
-                    with _staged_joint_recovery_restore(snapshot, target, builds=migration_builds,
-                            current_storage_root=uploads, confirm_original_offline=True, max_seconds=max_seconds) as stage:
+                    reference = target.with_name(f'.{target.name}.{secrets.token_hex(12)}.replay') if replay else target
+                    with _staged_joint_recovery_restore(snapshot, reference, builds=migration_builds,
+                            current_storage_root=uploads, confirm_original_offline=True, max_seconds=max_seconds,
+                            publish=not replay) as stage:
                         bindings = CommunityGraphBackendBindingStore(stage / 'kg-artifacts')
-                        routes = []
+                        routes, native_paths = [], []
                         for index, graph in enumerate(manifest['graphs']):
                             native = manifest['native_graphs'][index]
                             physical = verify_native_graph_snapshot(NativeGraphRecoverySnapshot(
@@ -197,6 +283,7 @@ async def restore_retirement_graph_candidate(runtime, storage, graphs, run, seed
                                 else bindings.global_grafx_path(generation))
                             path.parent.mkdir(parents=True, exist_ok=True)
                             (stage / f'graph-{index:04d}').rename(path)
+                            native_paths.append(path.relative_to(stage).as_posix())
                             with connect(path, page_size=physical['page_size'],
                                     partitions_per_table=physical['partitions_per_table'], read_only=True) as cold:
                                 _verify_native_logical(cold, graph, 500, _deadline(max_seconds))
@@ -212,6 +299,11 @@ async def restore_retirement_graph_candidate(runtime, storage, graphs, run, seed
                             'seed_sha256': seed.manifest_sha256, 'state': 'restored_not_materialized', 'routes': routes})
                         receipt_sha256 = receipt.manifest_sha256
                         _require_routes(source, kg, manifest['routing_inventory'])
+                        if replay:
+                            deadline = _deadline(max_seconds)
+                            expected = _candidate_contents(stage, native_paths, deadline)
+                            if _candidate_contents(target, native_paths, deadline) != expected:
+                                raise ValueError('retirement_candidate_replay_content_mismatch')
                     return {'state': 'restored_not_materialized', 'directory': target,
                         'receipt_sha256': receipt_sha256, 'seed': seed}
                 finally:

@@ -539,6 +539,7 @@ def _staged_joint_recovery_restore(
     snapshot: JointRecoverySnapshot, target_directory: Path, *, builds: RecoveryBuildPair,
     max_seconds: float = 60, batch_size: int = 500, current_storage_root: Path | None = None,
     confirm_original_offline: bool = False,
+    publish: bool = True,
 ) -> Iterator[Path]:
     """Restore into an entirely new directory; never promote live bindings.
 
@@ -549,8 +550,12 @@ def _staged_joint_recovery_restore(
     process detection. The installer must use the recorded compatible build pair.
     Version 3 checks current erasure BEFORE reconstructing even the SQL copy,
     and holds source lifecycle locks through publication of the WHOLE set.
+    Trusted replay verification may use publish=False to compare this temporary
+    reference; all guards still run and the unpublished stage is always removed.
     """
     deadline = _deadline(max_seconds)
+    if type(publish) is not bool:
+        raise ValueError('joint_snapshot_publication_mode_invalid')
     manifest = verify_joint_recovery_snapshot(snapshot, max_seconds=max_seconds)
     if not isinstance(builds, RecoveryBuildPair) or asdict(builds) != manifest["builds"]:
         raise ValueError("joint_snapshot_restore_build_pair_mismatch")
@@ -616,7 +621,8 @@ def _staged_joint_recovery_restore(
             fsync_directory(stage)
             if storage_guard is not None:
                 storage_guard.validate()
-            _publish(stage, target)
+            if publish:
+                _publish(stage, target)
         finally:
             if stage.exists():
                 remove_contained_tree(stage, base_dir=target.parent)

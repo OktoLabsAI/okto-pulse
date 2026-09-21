@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 import json
+import os
 import sqlite3
 
 import pytest
@@ -26,6 +27,7 @@ database = convergence.database
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(480)
 async def test_native_candidate_is_private_and_preserves_history_after_failed_composition(tmp_path, monkeypatch):
     source = restore_source(tmp_path)
     for name in ('uploads', 'kg', 'backups', 'candidate-backups'):
@@ -92,6 +94,12 @@ async def test_native_candidate_is_private_and_preserves_history_after_failed_co
             assert cold.identity.database_uuid == original_uuid
             assert history(cold).commits('board-a') == commits
             assert history(cold).as_of('board-a', cursor, ('Decision',), ()) == past
+        with pytest.raises(ValueError, match='replay_offline_required'):
+            await candidate.restore_retirement_graph_candidate(*args, migration_builds=MIGRATION, confirm_original_offline=True)
+        replay = await candidate.restore_retirement_graph_candidate(*args, migration_builds=MIGRATION,
+            confirm_original_offline=True, confirm_candidate_offline=True, max_seconds=300)
+        assert replay == result
+        assert not list(tmp_path.glob('*.replay*'))
         assert dump(source) == before
         assert candidate._sql_snapshot(target / 'database.sqlite3') == candidate._sql_snapshot(source)
         receipt = json.loads((target / 'candidate-receipt/run.json').read_text())
@@ -102,8 +110,93 @@ async def test_native_candidate_is_private_and_preserves_history_after_failed_co
                 await offline.require_retirement_runtime_admission(restored_engine)
         finally:
             await restored_engine.dispose()
+        history_file = restored_binding.physical_path / 'system-history.dat'
+        original_history = history_file.read_bytes()
+        assert original_history
+        changed_history = bytes([original_history[0] ^ 1]) + original_history[1:]
+        history_file.write_bytes(changed_history)
+        with pytest.raises(ValueError, match='replay_content_mismatch'):
+            await candidate.restore_retirement_graph_candidate(*args, migration_builds=MIGRATION,
+                confirm_original_offline=True, confirm_candidate_offline=True, max_seconds=300)
+        assert history_file.read_bytes() == changed_history
     finally:
         graph.close()
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(420)
+async def test_lost_response_replay_authenticates_payload_and_rechecks_erasure(tmp_path, monkeypatch):
+    from okto_pulse.community.adapters import joint_recovery_snapshot as joint
+    from test_retirement_offline_bootstrap import prepare
+    runtime, storage, run, source = await prepare(tmp_path)
+    try:
+        projection = await offline.prepare_offline_retirement_projection_inputs(runtime, storage, (), run,
+            migration_builds=MIGRATION, projection_directory=tmp_path / 'projection')
+        recovery = tmp_path / 'candidate-backups'
+        recovery.mkdir()
+        seed = await candidate.prepare_retirement_candidate_seed(runtime, storage, (), run, projection['projection_inputs'],
+            migration_builds=MIGRATION, recovery_directory=recovery, seed_directory=tmp_path / 'seed')
+        target = tmp_path / 'candidate'
+        args = (runtime, storage, (), run, seed, target)
+        publish = joint._publish
+        def lose_response(stage, final):
+            publish(stage, final)
+            if final == target:
+                raise RuntimeError('response lost after publication')
+        with monkeypatch.context() as scoped:
+            scoped.setattr(joint, '_publish', lose_response)
+            with pytest.raises(RuntimeError, match='response lost'):
+                await candidate.restore_retirement_graph_candidate(*args,
+                    migration_builds=MIGRATION, confirm_original_offline=True)
+        assert target.is_dir()
+        options = dict(migration_builds=MIGRATION, confirm_original_offline=True, confirm_candidate_offline=True)
+        replay = await candidate.restore_retirement_graph_candidate(*args, **options)
+        assert replay['state'] == 'restored_not_materialized'
+        receipt = target / 'candidate-receipt/run.json'
+        original = receipt.read_bytes()
+        receipt.write_bytes(original + b' ')
+        with pytest.raises(ValueError, match='replay_content_mismatch'):
+            await candidate.restore_retirement_graph_candidate(*args, **options)
+        assert receipt.read_bytes() == original + b' '
+        receipt.write_bytes(original)
+        shared = tmp_path / 'shared-receipt'
+        shared.write_bytes(original)
+        receipt.unlink()
+        os.link(shared, receipt)
+        with pytest.raises(ValueError, match='private_file_required'):
+            await candidate.restore_retirement_graph_candidate(*args, **options)
+        assert shared.read_bytes() == original
+        receipt.unlink()
+        receipt.write_bytes(original)
+        mutex = target / '.okto-pulse-serve.lock.acquire'
+        mutex.unlink(missing_ok=True)  # Windows FileLock removes its rendezvous on release.
+        sentinel = tmp_path / 'must-not-truncate'
+        for content in (b'preserve source before opening any candidate lock', b''):
+            sentinel.write_bytes(content)
+            os.link(sentinel, mutex)
+            with pytest.raises(ValueError, match='mutex_occupied'):
+                await candidate.restore_retirement_graph_candidate(*args, **options)
+            assert sentinel.read_bytes() == content
+            mutex.unlink()
+        extra = target / 'kg-artifacts/unrecorded'
+        extra.write_bytes(b'not in authenticated snapshot')
+        with pytest.raises(ValueError, match='replay_content_mismatch'):
+            await candidate.restore_retirement_graph_candidate(*args, **options)
+        assert extra.read_bytes() == b'not in authenticated snapshot'
+        extra.unlink()
+        with sqlite3.connect(target / 'database.sqlite3') as connection:
+            connection.execute("UPDATE specs SET title='changed candidate' WHERE id='spec-a'")
+        with pytest.raises(ValueError, match='replay_content_mismatch'):
+            await candidate.restore_retirement_graph_candidate(*args, **options)
+        assert dump(source) != dump(target / 'database.sqlite3')
+        control = tmp_path / 'uploads/.board_lifecycle'
+        control.mkdir(exist_ok=True)
+        (control / ('0' * 64 + '.erased')).write_bytes(b'erased after publication')
+        with pytest.raises(ValueError, match='newer_erasure_refused'):
+            await candidate.restore_retirement_graph_candidate(*args, **options)
+        assert not list(tmp_path.glob('*.replay*'))
+    finally:
         await runtime.close()
 
 
@@ -159,6 +252,10 @@ async def test_private_layout_recomposes_two_boards_and_global_discovery(databas
                 assert cold.identity.database_uuid == identity
                 assert cold.transactions.published_lsn() == lsn
         assert len(expected) == 3
+        replay = await candidate.restore_retirement_graph_candidate(args[0], args[1], tuple(graphs), run, seed, target,
+            migration_builds=MIGRATION, confirm_original_offline=True, confirm_candidate_offline=True, max_seconds=300)
+        assert replay == result
+        assert not list(tmp_path.glob('*.replay*'))
     finally:
         for item in graphs:
             item.database.close()
