@@ -91,7 +91,7 @@ vi.mock('./DeliveryIntelligenceFullView', () => ({
     initialFilters: DeliveryIntelligenceFilters;
   }) => (
     <div data-testid="delivery-intelligence-route">
-      delivery:{from}|{to}|{initialFilters.sprintId}|{initialFilters.lane}|{initialFilters.role}|{initialFilters.contributionView}
+      delivery:{from}|{to}|{initialFilters.role}|{initialFilters.contributionView}
     </div>
   ),
 }));
@@ -168,7 +168,7 @@ describe('Analytics A3-A6 route integration', () => {
       initiative: 'A5',
       url: `${boardPath}/delivery-intelligence?from=2026-06-01&to=2026-06-30&sprint_id=sprint-9&lane=normal&role=developer&contribution_view=self`,
       testId: 'delivery-intelligence-route',
-      content: 'delivery:2026-06-01|2026-06-30|sprint-9|normal|developer|self',
+      content: 'delivery:2026-06-01|2026-06-30|developer|self',
     },
     {
       initiative: 'A6',
@@ -206,10 +206,10 @@ describe('Analytics A3-A6 route integration', () => {
     moveWithPopstate(`${boardPath}?${sharedQuery}`);
     fireEvent.click(await screen.findByRole('button', { name: 'Open A5 full view' }));
     expect(await screen.findByTestId('delivery-intelligence-route')).toHaveTextContent(
-      'delivery:2026-07-01|2026-07-31|sprint-7|hotfix|reviewer|aggregates',
+      'delivery:2026-07-01|2026-07-31|reviewer|aggregates',
     );
     expect(window.location.pathname).toBe(`${boardPath}/delivery-intelligence`);
-    expect(new URLSearchParams(window.location.search).get('sprint_id')).toBe('sprint-7');
+    expect(new URLSearchParams(window.location.search).get('sprint_id')).toBeNull();
     expect(new URLSearchParams(window.location.search).get('contribution_view')).toBe('aggregates');
 
     moveWithPopstate(`${boardPath}?${sharedQuery}`);
@@ -239,7 +239,7 @@ describe('Analytics A3-A6 route integration', () => {
 
     moveWithPopstate(`${boardPath}/delivery-intelligence?from=2026-03-01&to=2026-03-31&sprint_id=sprint-3&lane=normal&role=qa`);
     expect(await screen.findByTestId('delivery-intelligence-route')).toHaveTextContent(
-      'delivery:2026-03-01|2026-03-31|sprint-3|normal|qa|self_and_aggregates',
+      'delivery:2026-03-01|2026-03-31|qa|self_and_aggregates',
     );
 
     moveWithPopstate(`${boardPath}/kg-effectiveness?from=2026-02-01&to=2026-02-28&cognitive_status=consolidated&artifact_type=decision&limit=12`);

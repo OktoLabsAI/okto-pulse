@@ -4,9 +4,8 @@ import csv
 import io
 import json
 from datetime import datetime, timedelta, timezone
-from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import Request, APIRouter, Depends, HTTPException, Query, status
 from starlette.responses import StreamingResponse
 
 from okto_pulse.community.api.analytics_transport import (
@@ -615,14 +614,22 @@ async def board_sprint_analytics(
 
 
 # ---------------------------------------------------------------------------
-# Delivery Intelligence — immutable commitment, lanes, contribution and CSV
+# Delivery Intelligence — Card contributions and CSV
 # ---------------------------------------------------------------------------
 
 
-_DELIVERY_LANES = frozenset({"normal", "hotfix"})
 _CONTRIBUTION_VIEWS = frozenset(
     {"self", "aggregates", "self_and_aggregates", "operator"}
 )
+
+
+def _reject_retired_delivery_filters(request: Request) -> None:
+    if any(key in request.query_params for key in ("sprint_id", "lane")):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "analytics_query_invalid",
+                    "message": "delivery_intelligence_sprint_filters_retired"},
+        )
 
 
 def _delivery_intelligence_command(
@@ -631,8 +638,6 @@ def _delivery_intelligence_command(
     date_from: str | None,
     date_to: str | None,
     as_of: str | None,
-    sprint_ids: tuple[str, ...],
-    lanes: tuple[str, ...],
     roles: tuple[str, ...],
     contribution_view: str,
     cursor: str | None,
@@ -644,11 +649,6 @@ def _delivery_intelligence_command(
     window_to = _parse_date(date_to, end_of_day=True) or observed_at + timedelta(
         microseconds=1
     )
-    normalized_lanes = tuple(
-        sorted({value.strip().lower() for value in lanes if value.strip()})
-    )
-    if any(value not in _DELIVERY_LANES for value in normalized_lanes):
-        raise ValueError("delivery_intelligence_lane_invalid")
     normalized_roles = tuple(
         sorted({value.strip().lower() for value in roles if value.strip()})
     )
@@ -656,10 +656,6 @@ def _delivery_intelligence_command(
     if normalized_view not in _CONTRIBUTION_VIEWS:
         raise ValueError("delivery_intelligence_contribution_view_invalid")
     filters: list[AnalyticsFilterClause] = []
-    if sprint_ids:
-        filters.append(AnalyticsFilterClause("sprint_id", "in", sprint_ids))
-    if normalized_lanes:
-        filters.append(AnalyticsFilterClause("lane", "in", normalized_lanes))
     if normalized_roles:
         filters.append(AnalyticsFilterClause("role", "in", normalized_roles))
     filters.append(AnalyticsFilterClause("contribution_view", "eq", normalized_view))
@@ -681,8 +677,6 @@ async def _delivery_intelligence_payload(
     date_to: str | None,
     as_of: str | None,
     range_value: str | None,
-    sprint_ids: tuple[str, ...],
-    lanes: tuple[str, ...],
     roles: tuple[str, ...],
     contribution_view: str,
     cursor: str | None,
@@ -715,8 +709,6 @@ async def _delivery_intelligence_payload(
                 date_from=date_from,
                 date_to=date_to,
                 as_of=as_of,
-                sprint_ids=sprint_ids,
-                lanes=lanes,
                 roles=roles,
                 contribution_view=contribution_view,
                 cursor=cursor,
@@ -745,12 +737,11 @@ async def _delivery_intelligence_payload(
 )
 async def delivery_intelligence(
     board_id: str,
+    request: Request,
     date_from: str | None = Query(None, alias="from"),
     date_to: str | None = Query(None, alias="to"),
     as_of: str | None = Query(None),
     range_value: str | None = Query(None, alias="range", deprecated=True),
-    sprint_ids: list[UUID] | None = Query(None, alias="sprint_id"),
-    lanes: list[str] | None = Query(None, alias="lane"),
     roles: list[str] | None = Query(None, alias="role"),
     contribution_view: str = Query("self_and_aggregates"),
     cursor: str | None = Query(None),
@@ -760,14 +751,13 @@ async def delivery_intelligence(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Return the versioned, authorized Delivery Intelligence projection."""
+    _reject_retired_delivery_filters(request)
     return await _delivery_intelligence_payload(
         board_id,
         date_from=date_from,
         date_to=date_to,
         as_of=as_of,
         range_value=range_value,
-        sprint_ids=tuple(str(value) for value in (sprint_ids or ())),
-        lanes=tuple(lanes or ()),
         roles=tuple(roles or ()),
         contribution_view=contribution_view,
         cursor=cursor,
@@ -781,12 +771,11 @@ async def delivery_intelligence(
 @router.get("/boards/{board_id}/analytics/delivery-intelligence/export")
 async def delivery_intelligence_export(
     board_id: str,
+    request: Request,
     date_from: str | None = Query(None, alias="from"),
     date_to: str | None = Query(None, alias="to"),
     as_of: str | None = Query(None),
     range_value: str | None = Query(None, alias="range", deprecated=True),
-    sprint_ids: list[UUID] | None = Query(None, alias="sprint_id"),
-    lanes: list[str] | None = Query(None, alias="lane"),
     roles: list[str] | None = Query(None, alias="role"),
     contribution_view: str = Query("self_and_aggregates"),
     cursor: str | None = Query(None),
@@ -796,6 +785,7 @@ async def delivery_intelligence_export(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Export the complete authorized projection for the selected filters."""
+    _reject_retired_delivery_filters(request)
     del cursor, limit  # Pagination controls never truncate a complete export.
     if as_of is not None:
         raise HTTPException(
@@ -818,8 +808,6 @@ async def delivery_intelligence_export(
             date_to=date_to,
             as_of=export_as_of,
             range_value=range_value,
-            sprint_ids=tuple(str(value) for value in (sprint_ids or ())),
-            lanes=tuple(lanes or ()),
             roles=tuple(roles or ()),
             contribution_view=contribution_view,
             cursor=next_cursor,
@@ -846,11 +834,11 @@ async def delivery_intelligence_export(
 
     payload = {
         **pages[0],
-        "sprints": [
-            sprint
+        "contributions": [
+            contribution
             for page in pages
-            for sprint in page.get("sprints", [])
-            if isinstance(sprint, dict)
+            for contribution in page.get("contributions", [])
+            if isinstance(contribution, dict)
         ],
         "next_cursor": None,
     }

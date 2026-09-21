@@ -108,33 +108,6 @@ class DeliveryMetricDTO(_CanonicalDTO):
     unit: str | None
 
 
-class DeliveryThroughputSummaryDTO(_CanonicalDTO):
-    state: str
-    total: int = Field(ge=0)
-    normal: int = Field(ge=0)
-    hotfix: int = Field(ge=0)
-    sample_size: int = Field(ge=0)
-    reason: str | None
-
-
-class DeliveryScopeSummaryDTO(_CanonicalDTO):
-    state: str
-    committed_at_activation: int | None = Field(default=None, ge=0)
-    completed_from_commitment: int | None = Field(default=None, ge=0)
-    added_after_activation: int | None = Field(default=None, ge=0)
-    removed_after_activation: int | None = Field(default=None, ge=0)
-    sample_size: int = Field(ge=0)
-    reason: str | None
-
-
-class DeliverySummaryDTO(_CanonicalDTO):
-    commitment_reliability: DeliveryMetricDTO
-    throughput: DeliveryThroughputSummaryDTO
-    carryover: DeliveryMetricDTO
-    hotfix_share: DeliveryMetricDTO
-    scope: DeliveryScopeSummaryDTO
-
-
 class DeliveryContributionDTO(_CanonicalDTO):
     subject_id: str | None
     subject_label: str
@@ -151,7 +124,7 @@ class DeliveryContributionDTO(_CanonicalDTO):
 
 
 class DeliveryIntelligenceResponseDTO(_CanonicalDTO):
-    contract_version: Literal["1"]
+    contract_version: Literal["2"]
     foundation_version: str
     query_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     filters: list[AnalyticsFilterDTO]
@@ -164,8 +137,6 @@ class DeliveryIntelligenceResponseDTO(_CanonicalDTO):
     population_scope: AnalyticsPopulationScopeDTO
     exclusions: AnalyticsExclusionsDTO
     minimum_sample_size: int = Field(ge=2)
-    summary: DeliverySummaryDTO
-    sprints: list[dict[str, object]]
     contributions: list[DeliveryContributionDTO]
     next_cursor: str | None
 

@@ -37,6 +37,57 @@ SPEC_ID = "22222222-2222-4222-8222-222222222222"
 
 
 @pytest.mark.asyncio
+async def test_delivery_card_cohort_through_real_uow_without_sprints():
+    from okto_pulse.community.adapters.sqlalchemy_models import Card
+    from okto_pulse.community.adapters.sqlalchemy_analytics_read import CommunitySqlAlchemyAnalyticsReader
+    from okto_pulse.community.api.analytics_transport import DeliveryIntelligenceResponseDTO
+    from okto_pulse.core.application.use_cases.delivery_intelligence import (
+        DeliveryIntelligenceCommand, DeliveryIntelligenceUseCase,
+    )
+    from okto_pulse.core.domain.enums import CardStatus
+    from okto_pulse.core.ports.analytics_read import register_analytics_read_port
+
+    engine = create_async_engine("sqlite+aiosqlite://")
+    factory = async_sessionmaker(
+        engine, sync_session_class=CommunitySemanticSession, expire_on_commit=False,
+    )
+    register_relational_application_adapter(CommunityRelationalApplicationAdapter())
+    register_analytics_read_port(CommunitySqlAlchemyAnalyticsReader())
+    lower = NOW - timedelta(days=30)
+    other_board = "33333333-3333-4333-8333-333333333333"
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        async with factory() as session:
+            for board_id in (BOARD_ID, other_board):
+                session.add(Board(id=board_id, name="Cohort", owner_id="user-1", realm_id="local"))
+            await session.flush()
+            for name, created, board_id, archived in (
+                ("lower", lower, BOARD_ID, False),
+                ("inside", NOW - timedelta(days=1), BOARD_ID, False),
+                ("before", lower - timedelta(seconds=1), BOARD_ID, False),
+                ("upper", NOW, BOARD_ID, False),
+                ("archived", lower, BOARD_ID, True),
+                ("foreign", lower, other_board, False),
+            ):
+                session.add(Card(id=name, board_id=board_id, title=name, created_by="user-1",
+                                 status=CardStatus.DONE, created_at=created, updated_at=NOW,
+                                 archived=archived, sprint_id=None, validations=[]))
+            await session.commit()
+            result = await DeliveryIntelligenceUseCase().execute(
+                DeliveryIntelligenceCommand(board_id=BOARD_ID, window=AnalyticsUtcWindow(lower, NOW), as_of=NOW),
+                actor=RESTAdapterContract.actor("user-1", board_id=BOARD_ID),
+                uow=CommunityUnitOfWork(session),
+            )
+        assert result.data['population_scope']['accessible_count'] == 2
+        assert result.data['contributions'][0]['done_count'] == 2
+        assert result.data['contributions'][0]['visibility'] == 'self'
+        assert DeliveryIntelligenceResponseDTO.model_validate(result.data).model_dump(mode='json') == result.data
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_board_kg_is_reachable_through_real_uow_without_sprint_forecast() -> None:
     engine = create_async_engine("sqlite+aiosqlite://", future=True)
     factory = async_sessionmaker(

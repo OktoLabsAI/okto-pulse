@@ -5,10 +5,9 @@ import io
 import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from uuid import UUID
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from pydantic import ValidationError
 
 from okto_pulse.community.api import analytics as analytics_api
@@ -25,7 +24,6 @@ from okto_pulse.core.ports.board_kg_analytics import (
 )
 
 
-SPRINT_ID = UUID("12345678-1234-5678-1234-567812345678")
 
 
 def _delivery_metric(
@@ -55,16 +53,10 @@ def _delivery_intelligence_projection() -> dict[str, object]:
         "to": "2026-08-21T00:00:00.000000Z",
     }
     return {
-        "contract_version": "1",
+        "contract_version": "2",
         "foundation_version": "1",
         "query_fingerprint": "d" * 64,
         "filters": [
-            {
-                "field": "sprint_id",
-                "operator": "in",
-                "value": [str(SPRINT_ID)],
-            },
-            {"field": "lane", "operator": "in", "value": ["hotfix", "normal"]},
             {
                 "field": "role",
                 "operator": "in",
@@ -81,9 +73,9 @@ def _delivery_intelligence_projection() -> dict[str, object]:
             "reason": None,
             "sources": [
                 {
-                    "authority": "sprint_activation_baselines",
-                    "reference": "board:board-1:delivery-intelligence:v1",
-                    "timestamp_field": "sprints.updated_at",
+                    "authority": "board_cards_created_in_window",
+                    "reference": "board:board-1:delivery-intelligence:v2",
+                    "timestamp_field": "cards.created_at",
                 }
             ],
         },
@@ -98,54 +90,6 @@ def _delivery_intelligence_projection() -> dict[str, object]:
             "reasons": [],
         },
         "minimum_sample_size": 9,
-        "summary": {
-            "commitment_reliability": _delivery_metric(
-                80.0, numerator=4, denominator=5, sample_size=1
-            ),
-            "throughput": {
-                "state": "available",
-                "total": 7,
-                "normal": 5,
-                "hotfix": 2,
-                "sample_size": 1,
-                "reason": None,
-            },
-            "carryover": _delivery_metric(
-                None,
-                numerator=None,
-                denominator=None,
-                sample_size=0,
-                state="unavailable",
-                reason="carryover_lineage_not_persisted",
-                unit=None,
-            ),
-            "hotfix_share": _delivery_metric(
-                28.6, numerator=2, denominator=7, sample_size=7
-            ),
-            "scope": {
-                "state": "available",
-                "committed_at_activation": 5,
-                "completed_from_commitment": 4,
-                "added_after_activation": 1,
-                "removed_after_activation": 0,
-                "sample_size": 1,
-                "reason": None,
-            },
-        },
-        "sprints": [
-            {
-                "sprint_id": str(SPRINT_ID),
-                "title": "Release 24",
-                "lane_type": "normal",
-                "done_cards": 5,
-                "commitment": {
-                    "state": "available",
-                    "original_member_count": 5,
-                    "added_count": 1,
-                    "removed_count": 0,
-                },
-            }
-        ],
         "contributions": [
             {
                 "subject_id": "user-1",
@@ -172,7 +116,7 @@ def _delivery_intelligence_projection() -> dict[str, object]:
                 "period": period,
             }
         ],
-        "next_cursor": "offset:1",
+        "next_cursor": "contributions-v2:offset:1",
     }
 
 
@@ -188,6 +132,9 @@ def test_delivery_intelligence_route_publishes_closed_response_model() -> None:
     }
 
     assert serialized == payload
+    for retired in ("summary", "sprints"):
+        with pytest.raises(ValidationError):
+            DeliveryIntelligenceResponseDTO.model_validate({**payload, retired: []})
     assert (
         route_models[("/boards/{board_id}/analytics/delivery-intelligence", "GET")]
         is DeliveryIntelligenceResponseDTO
@@ -214,7 +161,7 @@ async def test_delivery_intelligence_rest_page_and_complete_csv_share_filters(
         assert command.window.to_exclusive == datetime(2026, 8, 21, tzinfo=UTC)
         assert command.as_of.tzinfo is not None
         if is_rest_call:
-            assert command.cursor == "offset:7"
+            assert command.cursor == "contributions-v2:offset:7"
             assert command.limit == 17
         else:
             assert command.cursor is None
@@ -229,15 +176,14 @@ async def test_delivery_intelligence_rest_page_and_complete_csv_share_filters(
     monkeypatch.setattr(analytics_api.DeliveryIntelligenceUseCase, "execute", execute)
     sentinel_uow = object()
     kwargs = {
+        "request": Request({"type": "http", "query_string": b""}),
         "date_from": "2026-06-01",
         "date_to": "2026-08-20",
         "as_of": None,
         "range_value": None,
-        "sprint_ids": [SPRINT_ID],
-        "lanes": ["normal", "HOTFIX", "normal"],
         "roles": ["Validation_Agent", " implementation_agent "],
         "contribution_view": "OPERATOR",
-        "cursor": "offset:7",
+        "cursor": "contributions-v2:offset:7",
         "limit": 17,
         "minimum_sample_size": 9,
         "user_id": "user-1",
@@ -270,11 +216,11 @@ async def test_delivery_intelligence_csv_drains_every_cursor_page(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     first = _delivery_intelligence_projection()
-    first["sprints"] = [{"sprint_id": "sprint-1", "title": "Sprint 1"}]
-    first["next_cursor"] = "offset:100"
+    first["contributions"] = [{"subject_id": "agent-1"}]
+    first["next_cursor"] = "contributions-v2:offset:100"
     second = {
         **first,
-        "sprints": [{"sprint_id": "sprint-2", "title": "Sprint 2"}],
+        "contributions": [{"subject_id": "agent-2"}],
         "next_cursor": None,
     }
     commands = []
@@ -286,15 +232,14 @@ async def test_delivery_intelligence_csv_drains_every_cursor_page(
     monkeypatch.setattr(analytics_api.DeliveryIntelligenceUseCase, "execute", execute)
     response = await analytics_api.delivery_intelligence_export(
         "board-1",
+        request=Request({"type": "http", "query_string": b""}),
         date_from="2026-06-01",
         date_to="2026-08-20",
         as_of=None,
         range_value=None,
-        sprint_ids=None,
-        lanes=None,
         roles=None,
         contribution_view="self_and_aggregates",
-        cursor="offset:999",
+        cursor="contributions-v2:offset:999",
         limit=1,
         minimum_sample_size=5,
         user_id="user-1",
@@ -315,11 +260,11 @@ async def test_delivery_intelligence_csv_drains_every_cursor_page(
 
     assert [(command.cursor, command.limit) for command in commands] == [
         (None, 100),
-        ("offset:100", 100),
+        ("contributions-v2:offset:100", 100),
     ]
     assert commands[0].as_of == commands[1].as_of
-    assert rows["$.sprints[0].sprint_id"] == "sprint-1"
-    assert rows["$.sprints[1].sprint_id"] == "sprint-2"
+    assert rows["$.contributions[0].subject_id"] == "agent-1"
+    assert rows["$.contributions[1].subject_id"] == "agent-2"
     assert rows["$.next_cursor"] is None
 
 
@@ -339,8 +284,6 @@ async def test_delivery_intelligence_rejects_historical_as_of_before_projection(
             date_to=None,
             as_of="2026-01-01T00:00:00Z",
             range_value=None,
-            sprint_ids=(),
-            lanes=(),
             roles=(),
             contribution_view="self_and_aggregates",
             cursor=None,
@@ -362,12 +305,11 @@ async def test_delivery_intelligence_export_rejects_historical_as_of() -> None:
     with pytest.raises(HTTPException) as caught:
         await analytics_api.delivery_intelligence_export(
             "board-1",
+            request=Request({"type": "http", "query_string": b""}),
             date_from=None,
             date_to=None,
             as_of="2026-01-01T00:00:00Z",
             range_value=None,
-            sprint_ids=None,
-            lanes=None,
             roles=None,
             contribution_view="self_and_aggregates",
             cursor=None,
@@ -400,8 +342,6 @@ async def test_delivery_intelligence_missing_board_is_non_enumerable_404(
             date_to=None,
             as_of=None,
             range_value=None,
-            sprint_ids=(),
-            lanes=(),
             roles=(),
             contribution_view="self_and_aggregates",
             cursor=None,
@@ -420,21 +360,18 @@ async def test_delivery_intelligence_missing_board_is_non_enumerable_404(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("lanes", "contribution_view", "limit", "expected_message"),
+    ("contribution_view", "limit", "expected_message"),
     (
-        (("expedite",), "self", 50, "delivery_intelligence_lane_invalid"),
         (
-            (),
             "team",
             50,
             "delivery_intelligence_contribution_view_invalid",
         ),
-        ((), "self", 0, "delivery_intelligence_limit_invalid"),
+        ("self", 0, "delivery_intelligence_limit_invalid"),
     ),
 )
 async def test_delivery_intelligence_validation_errors_fail_before_projection(
     monkeypatch: pytest.MonkeyPatch,
-    lanes: tuple[str, ...],
     contribution_view: str,
     limit: int,
     expected_message: str,
@@ -451,8 +388,6 @@ async def test_delivery_intelligence_validation_errors_fail_before_projection(
             date_to=None,
             as_of=None,
             range_value=None,
-            sprint_ids=(),
-            lanes=lanes,
             roles=(),
             contribution_view=contribution_view,
             cursor=None,
@@ -689,3 +624,15 @@ async def test_kg_effectiveness_missing_board_is_non_enumerable_404(
         "code": "board_not_found",
         "message": "Board not found",
     }
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('route', [analytics_api.delivery_intelligence, analytics_api.delivery_intelligence_export])
+@pytest.mark.parametrize('query', [b'sprint_id=legacy', b'lane=normal', b'lane='])
+async def test_delivery_retired_filters_fail_before_projection(route, query, monkeypatch):
+    async def forbidden(*args, **kwargs):
+        raise AssertionError('retired query must not reach projection')
+    monkeypatch.setattr(analytics_api.DeliveryIntelligenceUseCase, 'execute', forbidden)
+    with pytest.raises(HTTPException) as caught:
+        await route('board-1', request=Request({'type': 'http', 'query_string': query}))
+    assert caught.value.status_code == 400
+    assert caught.value.detail['message'] == 'delivery_intelligence_sprint_filters_retired'

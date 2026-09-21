@@ -568,7 +568,6 @@ export function AnalyticsPage() {
           initialFilters={deliveryFilters}
           onFiltersChange={updateDeliveryFilters}
           onPeriodChange={updateDeliveryPeriod}
-          onSelectEntity={navigateToEntity}
         />
       )}
       {state.level === 'kg-effectiveness' && state.boardId && (

@@ -2711,8 +2711,6 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       const params = new URLSearchParams();
       if (from) params.set('from', from);
       if (to) params.set('to', to);
-      if (options.sprintId) params.append('sprint_id', options.sprintId);
-      if (options.lane && options.lane !== 'all') params.append('lane', options.lane);
       if (options.role && options.role !== 'all') params.append('role', options.role);
       if (options.contributionView) params.set('contribution_view', options.contributionView);
       if (options.cursor) params.set('cursor', options.cursor);
@@ -2729,8 +2727,6 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       const params = new URLSearchParams();
       if (from) params.set('from', from);
       if (to) params.set('to', to);
-      if (options.sprintId) params.append('sprint_id', options.sprintId);
-      if (options.lane && options.lane !== 'all') params.append('lane', options.lane);
       if (options.role && options.role !== 'all') params.append('role', options.role);
       if (options.contributionView) params.set('contribution_view', options.contributionView);
       if (options.cursor) params.set('cursor', options.cursor);

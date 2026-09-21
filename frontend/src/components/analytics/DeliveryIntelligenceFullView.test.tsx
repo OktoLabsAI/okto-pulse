@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DeliveryIntelligenceFullView } from './DeliveryIntelligenceFullView';
 import type {
   DeliveryIntelligenceResponse,
-  DeliveryIntelligenceSprint,
   DeliveryMetric,
 } from './analyticsDeliveryTypes';
 
@@ -36,79 +35,17 @@ function metric(
   };
 }
 
-function sprint(
-  sprintId = 'sprint-1',
-  title = 'Sprint Alpha',
-): DeliveryIntelligenceSprint {
-  return {
-    sprint_id: sprintId,
-    title,
-    status: 'completed',
-    spec_id: 'spec-1',
-    lane_type: 'normal',
-    origin_sprint_id: null,
-    origin_bug_id: null,
-    total_cards: 10,
-    done_cards: 8,
-    completion_rate: 80,
-    card_status_breakdown: { done: 8, active: 2 },
-    evaluations_count: 1,
-    last_evaluation: {
-      overall_score: 92,
-      recommendation: 'approve',
-      evaluator_name: 'Delivery evaluator',
-      created_at: '2026-07-31T12:00:00Z',
-    },
-    task_validation_gate: {
-      total_submitted: 8,
-      total_success: 7,
-      total_failed: 1,
-      rejection_reasons: { test_failure: 1 },
-      first_pass_rate: 87.5,
-    },
-    commitment: {
-      state: 'available',
-      baseline_ref: `sprint:${sprintId}:activation`,
-      activated_at: '2026-07-01T12:00:00Z',
-      original_member_count: 8,
-      current_member_count: 10,
-      added_count: 3,
-      removed_count: 1,
-      unavailable_reason: null,
-    },
-    completed_committed_count: 7,
-    committed_effort: {
-      state: 'available',
-      value: 21,
-      unit: 'points',
-      reason: null,
-    },
-    carryover: { state: 'available', count: 1, reason: null },
-    velocity: {
-      state: 'available',
-      period: 'sprint',
-      sample_size: 4,
-      series: [{ sprint: sprintId, done: 8 }],
-      reason: null,
-    },
-  };
-}
-
 function deliveryPage({
   resultState = 'available',
-  sprints = [sprint()],
+  subject = "You",
   nextCursor = null,
 }: {
   resultState?: DeliveryIntelligenceResponse['result_state'];
-  sprints?: DeliveryIntelligenceSprint[];
+  subject?: string;
   nextCursor?: string | null;
 } = {}): DeliveryIntelligenceResponse {
-  const factState = resultState === 'available' || resultState === 'partial'
-    ? resultState
-    : resultState;
-  const factValue = factState === 'available' || factState === 'partial' ? 87.5 : null;
   return {
-    contract_version: '1',
+    contract_version: '2',
     foundation_version: '1',
     query_fingerprint: 'd'.repeat(64),
     filters: [],
@@ -119,37 +56,14 @@ function deliveryPage({
       observed_at: '2026-08-01T12:00:00Z',
       currentness: resultState === 'available' ? 'current' : 'partial',
       reason: resultState === 'available' ? null : `${resultState}_projection`,
-      sources: [{ authority: 'sprint_delivery', reference: 'board:board-1', timestamp_field: 'completed_at' }],
+      sources: [{ authority: 'board_cards_created_in_window', reference: 'board:board-1', timestamp_field: 'completed_at' }],
     },
     population_scope: { scope_ref: 'board:board-1', accessible_count: 8, excluded_count: 0 },
     exclusions: { restricted_count: resultState === 'restricted' ? 8 : 0, excluded_count: 0, reasons: [] },
     minimum_sample_size: 5,
-    summary: {
-      commitment_reliability: metric(factValue, factState),
-      throughput: {
-        state: factState,
-        total: factValue === null ? 0 : 10,
-        normal: factValue === null ? 0 : 8,
-        hotfix: factValue === null ? 0 : 2,
-        sample_size: factValue === null ? 0 : 8,
-        reason: factValue === null ? `${factState}_by_authority` : null,
-      },
-      carryover: metric(factValue === null ? null : 2, factState, { numerator: null, denominator: null }),
-      hotfix_share: metric(factValue === null ? null : 20, factState, { numerator: 2, denominator: 10 }),
-      scope: {
-        state: factState,
-        committed_at_activation: factValue === null ? null : 8,
-        completed_from_commitment: factValue === null ? null : 7,
-        added_after_activation: factValue === null ? null : 3,
-        removed_after_activation: factValue === null ? null : 1,
-        sample_size: factValue === null ? 0 : 8,
-        reason: factValue === null ? `${factState}_by_authority` : null,
-      },
-    },
-    sprints: resultState === 'available' || resultState === 'partial' ? sprints : [],
     contributions: resultState === 'available' || resultState === 'partial' ? [{
-      subject_id: 'user-1',
-      subject_label: 'You',
+      subject_id: subject,
+      subject_label: subject,
       visibility: 'self',
       role: 'Developer',
       done_count: 8,
@@ -169,7 +83,6 @@ function renderFullView(overrides: Partial<React.ComponentProps<typeof DeliveryI
   const props: React.ComponentProps<typeof DeliveryIntelligenceFullView> = {
     boardId: 'board-1',
     ...period,
-    onSelectEntity: vi.fn(),
     ...overrides,
   };
   return { ...render(<DeliveryIntelligenceFullView {...props} />), props };
@@ -188,29 +101,24 @@ describe('Delivery Intelligence A5 full view', () => {
     dashboardApi.exportBoardDeliveryIntelligenceCsv.mockResolvedValue(undefined);
   });
 
-  it('renders available facts, emits governed filters, exports, and opens a keyboard-focusable Sprint', async () => {
+  it('renders available facts, emits governed filters, exports, without Sprint controls', async () => {
     const onFiltersChange = vi.fn();
     const onPeriodChange = vi.fn();
-    const onSelectEntity = vi.fn();
-    const { props } = renderFullView({ onFiltersChange, onPeriodChange, onSelectEntity });
+    renderFullView({ onFiltersChange, onPeriodChange });
 
     const page = await screen.findByTestId('delivery-intelligence-full-view');
     expect(within(page).getByRole('heading', { name: 'Delivery Intelligence' })).toBeInTheDocument();
     expect((await within(page).findAllByText('87.5%')).length).toBeGreaterThan(0);
 
-    const sprintButton = within(page).getByRole('button', { name: 'Sprint Alpha' });
-    sprintButton.focus();
-    expect(sprintButton).toHaveFocus();
-    fireEvent.click(sprintButton);
-    expect(onSelectEntity).toHaveBeenCalledWith('sprint', 'sprint-1', 'Sprint Alpha');
-
-    fireEvent.change(within(page).getByLabelText('Delivery Sprint'), { target: { value: 'sprint-1' } });
-    fireEvent.change(within(page).getByLabelText('Delivery lane'), { target: { value: 'hotfix' } });
+    expect(within(page).queryByLabelText('Delivery Sprint')).not.toBeInTheDocument();
+    expect(within(page).queryByLabelText('Delivery lane')).not.toBeInTheDocument();
+    expect(within(page).getByText(/Cards created in the selected period/)).toBeInTheDocument();
+    // Filtering stays possible when a role has no rows on the current page.
+    expect(within(page).getByRole('option', { name: 'Validation agent' })).toBeInTheDocument();
+    expect(within(page).getByRole('option', { name: 'Implementation agent' })).toBeInTheDocument();
     fireEvent.change(within(page).getByLabelText('Contribution role'), { target: { value: 'developer' } });
     fireEvent.change(within(page).getByLabelText('Contribution visibility'), { target: { value: 'self' } });
     expect(onFiltersChange).toHaveBeenLastCalledWith({
-      sprintId: 'sprint-1',
-      lane: 'hotfix',
       role: 'developer',
       contributionView: 'self',
       limit: 25,
@@ -227,9 +135,8 @@ describe('Delivery Intelligence A5 full view', () => {
       'board-1',
       period.from,
       period.to,
-      expect.objectContaining({ sprintId: 'sprint-1', lane: 'hotfix', role: 'developer', contributionView: 'self' }),
+      expect.objectContaining({ role: 'developer', contributionView: 'self' }),
     ));
-    expect(props.onSelectEntity).toBe(onSelectEntity);
   });
 
   it('keeps partial, restricted, and error result states explicit', async () => {
@@ -244,16 +151,16 @@ describe('Delivery Intelligence A5 full view', () => {
   });
 
   it('renders an honest empty state without inferring a zero commitment', async () => {
-    dashboardApi.getBoardDeliveryIntelligence.mockResolvedValue(deliveryPage({ resultState: 'empty', sprints: [] }));
+    dashboardApi.getBoardDeliveryIntelligence.mockResolvedValue(deliveryPage({ resultState: 'empty' }));
     renderFullView();
 
     expect(await screen.findByText('No delivery evidence in this period')).toBeInTheDocument();
-    expect(screen.getByText(/No zero-valued commitment is inferred/)).toBeInTheDocument();
+    expect(screen.getByText(/Change the period, role/)).toBeInTheDocument();
     expect(screen.queryByLabelText('Delivery summary')).not.toBeInTheDocument();
   });
 
   it('keeps an empty projection visible and retries only a failed export', async () => {
-    dashboardApi.getBoardDeliveryIntelligence.mockResolvedValue(deliveryPage({ resultState: 'empty', sprints: [] }));
+    dashboardApi.getBoardDeliveryIntelligence.mockResolvedValue(deliveryPage({ resultState: 'empty' }));
     dashboardApi.exportBoardDeliveryIntelligenceCsv
       .mockRejectedValueOnce(new Error('download unavailable'))
       .mockResolvedValueOnce(undefined);
@@ -284,8 +191,6 @@ describe('Delivery Intelligence A5 full view', () => {
     await waitFor(() => expect(exportButton).toHaveTextContent('Exporting…'));
     for (const label of [
       'Delivery period',
-      'Delivery Sprint',
-      'Delivery lane',
       'Contribution role',
       'Contribution visibility',
     ]) {
@@ -306,48 +211,48 @@ describe('Delivery Intelligence A5 full view', () => {
     expect(alert).toHaveTextContent('Delivery authority timed out.');
     expect(screen.queryByText('No delivery evidence in this period')).not.toBeInTheDocument();
     fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
-    expect(await screen.findByRole('button', { name: 'Sprint Alpha' })).toBeInTheDocument();
+    expect(await screen.findByText('You')).toBeInTheDocument();
     expect(dashboardApi.getBoardDeliveryIntelligence).toHaveBeenCalledTimes(2);
   });
 
-  it('loads the next cursor page and appends Sprints without losing the first page', async () => {
+  it('loads the next cursor page and appends contributions without losing the first page', async () => {
     dashboardApi.getBoardDeliveryIntelligence.mockImplementation((
       _boardId: string,
       _from: string,
       _to: string,
       filters: { cursor?: string },
     ) => Promise.resolve(filters.cursor === 'cursor-2'
-      ? deliveryPage({ sprints: [sprint('sprint-2', 'Sprint Beta')], nextCursor: null })
+      ? deliveryPage({ subject: 'Agent Beta', nextCursor: null })
       : deliveryPage({ nextCursor: 'cursor-2' })));
     renderFullView();
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Load more Sprints' }));
-    expect(await screen.findByRole('button', { name: 'Sprint Beta' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Sprint Alpha' })).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more contributions' }));
+    expect(await screen.findByText('Agent Beta')).toBeInTheDocument();
+    expect(screen.getByText('You')).toBeInTheDocument();
     expect(dashboardApi.getBoardDeliveryIntelligence).toHaveBeenLastCalledWith(
       'board-1',
       period.from,
       period.to,
       expect.objectContaining({ cursor: 'cursor-2', limit: 25 }),
     );
-    expect(screen.queryByRole('button', { name: 'Load more Sprints' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Load more contributions' })).not.toBeInTheDocument();
   });
 
   it('keeps the loaded projection visible and retries only a failed cursor page', async () => {
     dashboardApi.getBoardDeliveryIntelligence
       .mockResolvedValueOnce(deliveryPage({ nextCursor: 'cursor-2' }))
       .mockRejectedValueOnce(new Error('Next page timed out.'))
-      .mockResolvedValueOnce(deliveryPage({ sprints: [sprint('sprint-2', 'Sprint Beta')], nextCursor: null }));
+      .mockResolvedValueOnce(deliveryPage({ subject: 'Agent Beta', nextCursor: null }));
     renderFullView();
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Load more Sprints' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more contributions' }));
     const paginationAlert = await screen.findByRole('alert');
     expect(paginationAlert).toHaveTextContent('Next page timed out.');
-    expect(screen.getByRole('button', { name: 'Sprint Alpha' })).toBeInTheDocument();
+    expect(screen.getByText('You')).toBeInTheDocument();
 
     fireEvent.click(within(paginationAlert).getByRole('button', { name: 'Retry page' }));
-    expect(await screen.findByRole('button', { name: 'Sprint Beta' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Sprint Alpha' })).toBeInTheDocument();
+    expect(await screen.findByText('Agent Beta')).toBeInTheDocument();
+    expect(screen.getByText('You')).toBeInTheDocument();
     expect(dashboardApi.getBoardDeliveryIntelligence).toHaveBeenCalledTimes(3);
   });
 
@@ -360,12 +265,12 @@ describe('Delivery Intelligence A5 full view', () => {
 
     const view = renderFullView();
     view.rerender(<DeliveryIntelligenceFullView {...view.props} boardId="board-2" />);
-    current.resolve(deliveryPage({ sprints: [sprint('sprint-2', 'Sprint Current')] }));
+    current.resolve(deliveryPage({ subject: 'Agent Current' }));
 
-    expect(await screen.findByRole('button', { name: 'Sprint Current' })).toBeInTheDocument();
-    stale.resolve(deliveryPage({ sprints: [sprint('sprint-1', 'Sprint Stale')] }));
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Sprint Stale' })).not.toBeInTheDocument());
-    expect(screen.getByRole('button', { name: 'Sprint Current' })).toBeInTheDocument();
+    expect(await screen.findByText('Agent Current')).toBeInTheDocument();
+    stale.resolve(deliveryPage({ subject: 'Agent Stale' }));
+    await waitFor(() => expect(screen.queryByText('Agent Stale')).not.toBeInTheDocument());
+    expect(screen.getByText('Agent Current')).toBeInTheDocument();
   });
 
   it('keeps contributions without requesting or rendering the retired forecast', async () => {

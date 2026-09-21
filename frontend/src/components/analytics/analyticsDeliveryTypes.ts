@@ -109,31 +109,6 @@ export interface DeliveryMetric {
   unit: string | null;
 }
 
-export interface DeliveryIntelligenceSprint extends SprintAnalyticsItem {
-  lane_type: 'normal' | 'hotfix' | string;
-  origin_sprint_id: string | null;
-  origin_bug_id: string | null;
-  completed_committed_count: number | null;
-  committed_effort: {
-    state: AnalyticsAvailabilityState;
-    value: number | null;
-    unit: string | null;
-    reason: string | null;
-  };
-  carryover: {
-    state: AnalyticsAvailabilityState;
-    count: number | null;
-    reason: string | null;
-  };
-  velocity: {
-    state: AnalyticsAvailabilityState;
-    period: string;
-    sample_size: number;
-    series: Array<Record<string, string | number>>;
-    reason: string | null;
-  };
-}
-
 export interface DeliveryContribution {
   subject_id: string | null;
   subject_label: string;
@@ -150,7 +125,7 @@ export interface DeliveryContribution {
 }
 
 export interface DeliveryIntelligenceResponse {
-  contract_version: '1';
+  contract_version: '2';
   foundation_version: string;
   query_fingerprint: string;
   filters: AnalyticsFilterClause[];
@@ -161,36 +136,11 @@ export interface DeliveryIntelligenceResponse {
   population_scope: AnalyticsPopulationScope;
   exclusions: AnalyticsExclusionSummary;
   minimum_sample_size: number;
-  summary: {
-    commitment_reliability: DeliveryMetric;
-    throughput: {
-      state: AnalyticsAvailabilityState;
-      total: number;
-      normal: number;
-      hotfix: number;
-      sample_size: number;
-      reason: string | null;
-    };
-    carryover: DeliveryMetric;
-    hotfix_share: DeliveryMetric;
-    scope: {
-      state: AnalyticsAvailabilityState;
-      committed_at_activation: number | null;
-      completed_from_commitment: number | null;
-      added_after_activation: number | null;
-      removed_after_activation: number | null;
-      sample_size: number;
-      reason: string | null;
-    };
-  };
-  sprints: DeliveryIntelligenceSprint[];
   contributions: DeliveryContribution[];
   next_cursor: string | null;
 }
 
 export interface DeliveryIntelligenceFilters {
-  sprintId?: string;
-  lane?: 'all' | 'normal' | 'hotfix';
   role?: string;
   contributionView?: 'self' | 'aggregates' | 'self_and_aggregates' | 'operator';
   cursor?: string;
