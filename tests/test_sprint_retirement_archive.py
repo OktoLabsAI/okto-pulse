@@ -28,6 +28,24 @@ def decoded_rows(document, table):
 
 
 @pytest.mark.asyncio
+async def test_archived_sprint_survives_spec_cascade_without_rewriting_history(database, tmp_path):
+    engine, _ = database
+    storage = CommunityFileSystemStorage(str(tmp_path / "storage"))
+    reference, = await capture_sprint_retirement_archive(engine, storage, migration_id="spec-cascade")
+    before = Path(reference.storage_path).read_bytes()
+    async with engine.connect() as connection:
+        await connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+        assert (await connection.exec_driver_sql("PRAGMA foreign_keys")).scalar_one() == 1
+        await connection.execute(text("DELETE FROM specs WHERE id='spec-a'"))
+        await connection.commit()
+        assert (await connection.execute(text("SELECT count(*) FROM sprints"))).scalar_one() == 0
+    document = await verify_historical_archive(storage, reference)
+    assert decoded_rows(document, "sprints")[0]["spec_id"] == ["text", "spec-a"]
+    assert decoded_rows(document, "sprints")[0]["id"] == ["text", "sprint"]
+    assert Path(reference.storage_path).read_bytes() == before
+
+
+@pytest.mark.asyncio
 async def test_archived_bug_origin_survives_relational_card_deletion(database, tmp_path):
     engine, _ = database
     await relational.add_card(engine, card_type="bug", status="not_started", sprint_id=None)

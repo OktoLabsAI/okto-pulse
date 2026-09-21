@@ -116,6 +116,33 @@ describe('paginated entity panels', () => {
     });
   });
 
+  it.each([
+    ['ideation', false], ['ideation', true],
+    ['refinement', false], ['refinement', true],
+    ['spec', false], ['spec', true],
+  ] as const)('archives/restores the %s tree with archived=%s and no Sprint count', async (kind, archived) => {
+    const config = {
+      ideation: { Panel: IdeationsPanel, item: ideation, list: apiMock.listIdeationsPage },
+      refinement: { Panel: RefinementsPanel, item: refinement, list: apiMock.listBoardRefinementsPage },
+      spec: { Panel: SpecsPanel, item: spec, list: apiMock.listSpecsPage },
+    }[kind];
+    config.list.mockResolvedValue(envelope([{ ...config.item, archived }]));
+    const mutate = archived ? apiMock.restoreTree : apiMock.archiveTree;
+    mutate.mockResolvedValue({
+      [archived ? 'restored_count' : 'archived_count']: {
+        ideations: 0, refinements: 0, specs: 1, cards: 2,
+      },
+    });
+    const { Panel } = config;
+    render(<Panel boardId="board-1" />);
+    const button = await screen.findByTitle(archived ? 'Restore tree' : 'Archive tree');
+    const readsBefore = config.list.mock.calls.length;
+    fireEvent.click(button);
+    await waitFor(() => expect(mutate).toHaveBeenCalledWith('board-1', kind, config.item.id));
+    await waitFor(() => expect(config.list.mock.calls.length).toBeGreaterThan(readsBefore));
+    expect(screen.queryByText(/sprint/i)).not.toBeInTheDocument();
+  });
+
   it('sends ideation search and derivation filters to the server one interaction at a time', async () => {
     render(<IdeationsPanel boardId="board-1" />);
     await waitFor(() => expect(apiMock.listIdeationsPage).toHaveBeenCalledTimes(1));
