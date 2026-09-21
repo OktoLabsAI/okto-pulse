@@ -62,8 +62,7 @@ def test_legacy_v4_reader_does_not_claim_omitted_kg_authority(stored_sources, tm
 
 
 @pytest.mark.parametrize('relative,reason', [
-    ('boards/board-one/grafx/inactive', 'inactive_generations_require_coverage'),
-    ('quarantine', 'unclassified_storage'),
+    ('unknown', 'unclassified_storage'),
 ])
 def test_incomplete_kg_coverage_refuses_publication_without_touching_source(stored_sources, relative, reason):
     original, _, _, _ = stored_sources

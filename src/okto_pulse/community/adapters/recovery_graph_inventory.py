@@ -8,7 +8,7 @@ listing an inactive generation or another file does not back up its contents.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import sqlite3
 
 from okto_pulse.community.adapters.graph_backend_binding import (
@@ -177,6 +177,32 @@ def require_recovery_graph_selection(inventory: RecoveryGraphInventory, selected
                 for route in inventory.routes if route.state == "bound"}
     if len(set(selected)) != len(selected) or set(selected) != expected:
         raise ValueError("recovery_graph_inventory_selection_mismatch")
+
+
+def require_retained_generation_inventory(inventory: RecoveryGraphInventory) -> None:
+    """An inert copy must name a known scope and cannot claim an active route."""
+    active = {(route.scope, route.board_id, route.generation.casefold())
+        for route in inventory.routes if route.state == 'bound'}
+    for value in inventory.other_storage_paths:
+        parts = PurePosixPath(value).parts
+        if len(parts) > 1 and parts[0] == 'boards' and parts[1] not in inventory.board_ids:
+            raise ValueError('recovery_graph_inventory_retained_scope_invalid')
+    observed = set()
+    for value in inventory.unselected_generation_paths:
+        path = PurePosixPath(value)
+        parts = path.parts
+        if path.as_posix() != value or any(part in {'.', '..'} for part in parts) or '\\' in value:
+            raise ValueError('recovery_graph_inventory_retained_path_invalid')
+        if len(parts) == 4 and parts[0] == 'boards' and parts[2] == 'grafx' and parts[1] in inventory.board_ids:
+            key = ('board', parts[1], parts[3].casefold())
+        elif len(parts) == 3 and parts[:2] == ('global', 'grafx'):
+            key = ('global_discovery', None, parts[2].casefold())
+        else:
+            raise ValueError('recovery_graph_inventory_retained_scope_invalid')
+        alias = value.casefold()
+        if key in active or alias in observed:
+            raise ValueError('recovery_graph_inventory_retained_active_or_alias')
+        observed.add(alias)
 
 
 def recovery_graph_inventory_from_manifest(value: dict) -> RecoveryGraphInventory:

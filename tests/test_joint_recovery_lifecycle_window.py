@@ -46,7 +46,7 @@ async def _exercise_window(stored_sources, monkeypatch, fail):
                 assert observed == ["capture"]
                 assert probe(schema_lock) == "blocked"
                 assert [_start(root) for root in (data, data / "kg")] == ["blocked", "blocked"]
-                assert joint.verify_joint_recovery_snapshot(snapshot)["format"] == "joint-recovery-snapshot/v5"
+                assert joint.verify_joint_recovery_snapshot(snapshot)["format"] == "joint-recovery-snapshot/v6"
                 with sqlite3.connect(sql, timeout=0.05) as connection:
                     connection.execute("UPDATE history SET payload=X'1122'")
                 if fail:

@@ -69,7 +69,7 @@ def test_verified_v4_backup_fences_capture_verification_and_body_then_restores_o
         try:
             with _window(source, storage_root=uploads) as artifact:
                 assert observed == ["published", "verified"]
-                assert json.loads((artifact.directory / "manifest.json").read_bytes())["format"] == "joint-recovery-snapshot/v5"
+                assert json.loads((artifact.directory / "manifest.json").read_bytes())["format"] == "joint-recovery-snapshot/v6"
                 assert [_start(root) for root in roots] == ["blocked", "blocked"]
                 # Capture locks have ended; the caller owns new SQL/graph work.
                 assert publication_attempt(data / "kg") == "entered"

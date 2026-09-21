@@ -59,7 +59,7 @@ _KEYS = {"format", "migration_id", "source_database", "storage_root", "kg_base_d
 
 
 def _complete_backup(manifest):
-    if manifest['format'] == 'joint-recovery-snapshot/v5':
+    if manifest['format'] in {'joint-recovery-snapshot/v5', 'joint-recovery-snapshot/v6'}:
         return True  # The verifier already reconciled its artifact coverage.
     # Preserve old retained runs only where their inventory proves there was
     # no omitted KG storage. Never recapture transformed data as the original.

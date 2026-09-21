@@ -1,8 +1,9 @@
-"""Private byte-preserving recovery of the existing KG audit namespaces.
+"""Private byte-preserving custody of retained KG storage.
 
 These files retain authority/history; they are never reinterpreted as current
 approvals. The joint coordinator owns startup exclusion and SQL/graph fences.
-Native generations and unclassified paths require their own recovery contract.
+Inactive generations remain inert bytes: no open, repair, lease release or
+promotion is performed. Their eventual operational admission is a separate step.
 """
 
 from contextlib import contextmanager, nullcontext
@@ -21,8 +22,10 @@ from .rebuild_audit_storage import REBUILD_ARTIFACT_MUTEX_FILENAME
 from .relational_recovery_snapshot import _check_time, _deadline, _encode, _path
 
 _ROOTS = frozenset({'rebuild', 'contingency', 'stress'})
+_EXTENDED_ROOTS = _ROOTS | {'quarantine', 'candidate_decisions'}
 _MUTEX = f'rebuild/{REBUILD_ARTIFACT_MUTEX_FILENAME}'
-_FORMAT = 'kg-artifact-recovery/v1'
+_LEGACY_FORMAT = 'kg-artifact-recovery/v1'
+_FORMAT = 'kg-artifact-recovery/v2'
 _MAX_MANIFEST = 16 * 1024 * 1024
 _MAX_FILES = 100_000
 _MAX_BYTES = 16 * 1024**3
@@ -40,9 +43,45 @@ def _relative(value):
     path = PurePosixPath(value)
     if (path.is_absolute() or path.as_posix() != value or len(path.parts) > 32
             or any(part in {'.', '..'} or part.rstrip(' .') != part for part in path.parts)
-            or path.parts[0] not in _ROOTS or value == _MUTEX):
+            or any(ord(char) < 32 for char in value)
+            or path.parts[0] not in _EXTENDED_ROOTS | {'boards', 'global'} or value == _MUTEX):
         raise ValueError('kg_artifact_recovery_path_invalid')
     return value
+
+
+def _retained_generation(value):
+    _relative(value)
+    parts = PurePosixPath(value).parts
+    return ((len(parts) == 4 and parts[0] == 'boards' and parts[2] == 'grafx')
+        or (len(parts) == 3 and parts[:2] == ('global', 'grafx')))
+
+
+def _retired_payload(value):
+    """Historical physical files only; no retired runtime is imported/opened."""
+    _relative(value)
+    parts = PurePosixPath(value).parts
+    if len(parts) == 3 and parts[0] == 'boards':
+        base = 'graph.lbug'
+    elif len(parts) == 2 and parts[0] == 'global':
+        base = 'discovery.lbug'
+    else:
+        return False
+    return parts[-1] == base or parts[-1].startswith(base + '.')
+
+
+def _auxiliary_root(value):
+    if type(value) is not str:
+        return False
+    if value in _EXTENDED_ROOTS:
+        return True
+    try:
+        return _retired_payload(value)
+    except ValueError:
+        return False
+
+
+def _under_roots(value, roots):
+    return any(value == root or value.startswith(root + '/') for root in roots)
 
 
 def _stamp(path):
@@ -53,7 +92,7 @@ def _stamp(path):
 
 
 def _inventory(root, roots, deadline):
-    directories, files, aliases = [], {}, set()
+    directories, files, aliases = set(), {}, set()
     total = 0
     def visit(path):
         nonlocal total
@@ -70,7 +109,7 @@ def _inventory(root, roots, deadline):
             raise ValueError('kg_artifact_recovery_inventory_limit_or_alias')
         aliases.add(alias)
         if path.is_dir():
-            directories.append(relative)
+            directories.add(relative)
             for child in sorted(path.iterdir()):
                 visit(child)
         else:
@@ -81,9 +120,13 @@ def _inventory(root, roots, deadline):
             files[relative] = identity
     for name in roots:
         path = _path(root / name)
-        if not path.is_dir():
+        if not path.is_dir() and not (_retired_payload(name) and path.is_file()):
             raise ValueError('kg_artifact_recovery_namespace_missing')
         visit(path)
+        # Only structural parents are added; unrelated siblings are not copied.
+        directories.update(parent.as_posix() for parent in PurePosixPath(name).parents if parent != PurePosixPath('.'))
+    if len(directories) + len(files) > _MAX_FILES:
+        raise ValueError('kg_artifact_recovery_inventory_limit_or_alias')
     return tuple(sorted(directories)), dict(sorted(files.items()))
 
 
@@ -108,13 +151,18 @@ def _copy(source, target, size, deadline):
 
 
 @contextmanager
-def kg_artifact_capture_window(kg_root, *, selected_paths, max_seconds=60):
+def kg_artifact_capture_window(kg_root, *, selected_paths, retained_generations=(), max_seconds=60):
     """Hold the ArtifactStore's real mutex through joint capture/publication."""
     root = _path(kg_root)
     selected = tuple(selected_paths)
-    if (any(type(name) is not str or name not in _ROOTS for name in selected)
+    retained = tuple(retained_generations)
+    if (any(not _auxiliary_root(name) for name in selected)
             or selected != tuple(sorted(set(selected)))):
         raise ValueError('kg_artifact_recovery_unclassified_storage')
+    if (any(not _retained_generation(name) for name in retained)
+            or retained != tuple(sorted(set(retained)))):
+        raise ValueError('kg_artifact_recovery_retained_generation_invalid')
+    selected = tuple(sorted((*selected, *retained)))
     deadline = _deadline(max_seconds)
     mutex = _path(root / _MUTEX)
     guard = FileLock(str(mutex), timeout=max_seconds) if 'rebuild' in selected else nullcontext()
@@ -176,11 +224,15 @@ def verify_kg_artifact_snapshot(snapshot, *, max_seconds=60):
         raise ValueError('kg_artifact_recovery_manifest_mismatch')
     document = json.loads(encoded)
     if (type(document) is not dict or set(document) != {'format', 'roots', 'directories', 'files'}
-            or document['format'] != _FORMAT or type(document['roots']) is not list
-            or any(type(name) is not str or name not in _ROOTS for name in document['roots'])
+            or document['format'] not in {_LEGACY_FORMAT, _FORMAT} or type(document['roots']) is not list
+            or any(type(name) is not str for name in document['roots'])
             or document['roots'] != sorted(set(document['roots']))
             or type(document['directories']) is not list or type(document['files']) is not list):
         raise ValueError('kg_artifact_recovery_manifest_invalid')
+    roots = document['roots']
+    legacy = document['format'] == _LEGACY_FORMAT
+    if any((name not in _ROOTS if legacy else not (_auxiliary_root(name) or _retained_generation(name))) for name in roots):
+        raise ValueError('kg_artifact_recovery_manifest_roots_invalid')
     if (len(document['directories']) + len(document['files']) > _MAX_FILES
             or any(type(entry) is not dict or set(entry) != {'path', 'size', 'sha256'}
                 or type(entry['path']) is not str or type(entry['size']) is not int
@@ -191,10 +243,17 @@ def verify_kg_artifact_snapshot(snapshot, *, max_seconds=60):
         raise ValueError('kg_artifact_recovery_manifest_invalid')
     for relative in (*document['directories'], *(entry['path'] for entry in document['files'])):
         _relative(relative)
+    if (any(not _under_roots(entry['path'], roots) for entry in document['files'])
+            or any(not _under_roots(path, roots) and not any(root.startswith(path + '/') for root in roots)
+                for path in document['directories'])):
+        raise ValueError('kg_artifact_recovery_manifest_scope_mismatch')
     files_root = _path(root / 'files')
-    if sorted(path.name for path in files_root.iterdir()) != document['roots']:
+    top_levels = sorted({PurePosixPath(name).parts[0] for name in roots})
+    if sorted(path.name for path in files_root.iterdir()) != top_levels:
         raise ValueError('kg_artifact_recovery_namespace_mismatch')
-    directories, files = _inventory(files_root, tuple(document['roots']), deadline)
+    # Walk every actual sibling under structural parents too, so an extra active
+    # generation or binding cannot hide outside the selected retained paths.
+    directories, files = _inventory(files_root, tuple(top_levels), deadline)
     if list(directories) != document['directories'] or len(files) != len(document['files']):
         raise ValueError('kg_artifact_recovery_inventory_mismatch')
     for (relative, identity), expected in zip(files.items(), document['files'], strict=True):

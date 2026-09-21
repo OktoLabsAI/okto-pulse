@@ -89,7 +89,7 @@ def test_changed_source_refuses_capture_and_never_repairs_original(tmp_path, mon
     assert changed.read_bytes() == b'changed by an unfenced writer'
 
 
-@pytest.mark.parametrize('path', ['quarantine', 'rebuild/../boards', '/rebuild', 'rebuild\\audit'])
+@pytest.mark.parametrize('path', ['unknown', 'rebuild/../boards', '/rebuild', 'rebuild\\audit'])
 def test_unclassified_or_aliased_namespaces_are_not_claimed_as_protected(tmp_path, path):
     root = source(tmp_path)
     with pytest.raises(ValueError, match='unclassified_storage'):
