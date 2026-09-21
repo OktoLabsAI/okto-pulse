@@ -31,7 +31,8 @@ from .migration_runtime_fence import _directories, offline_migration_window
 from .permission_retirement_checkpoint import (
     PermissionRetirementCheckpoint, capture_permission_retirement_checkpoint, read_permission_retirement_checkpoint,
 )
-from .permission_retirement_cleanup import retire_permission_documents
+from .permission_retirement_cleanup import retire_permission_documents, _read_completion
+from .retirement_schema_cutover import retire_schema
 from .retirement_data_journal import (
     RetirementDataRun, prepare_retirement_data_run, read_retirement_data_journal, resume_retirement_data_run,
 )
@@ -263,7 +264,14 @@ async def resume_offline_retirement_permissions(runtime, storage, graphs, run: O
         migration_builds=migration_builds, cleanup_permissions=True)
 
 
-async def _resume_materialization_and_permissions(runtime, storage, graphs, run, *, migration_builds, cleanup_permissions):
+async def resume_offline_retirement_schema(runtime, storage, graphs, run: OfflineRetirementRun, *, migration_builds: RecoveryBuildPair):
+    """Cut physical Sprint storage after all preservation receipts; no startup grant."""
+    return await _resume_materialization_and_permissions(runtime, storage, graphs, run,
+        migration_builds=migration_builds, cleanup_permissions=True, cut_schema=True)
+
+
+async def _resume_materialization_and_permissions(runtime, storage, graphs, run, *, migration_builds, cleanup_permissions,
+        cut_schema=False):
     retired_flags = retired_feature_permission_flags() if cleanup_permissions else None
     source, uploads = _binding(runtime, storage)
     document, plan, permission, data, backup, roots = read_offline_retirement_run(run)
@@ -303,4 +311,12 @@ async def _resume_materialization_and_permissions(runtime, storage, graphs, run,
                     retired_flags=retired_flags, checkpoint_run=data, verify_dependency=verify_dependency)
                 await _verify_retained_receipts(runtime.engine, permission, data)
                 result = {**result, "state": "permissions_retired", "permission_cleanup": cleanup}
+                if cut_schema:
+                    async def verify_schema_dependencies(connection):
+                        await verify_dependency(connection)
+                        if await _read_completion(connection, permission, retired_flags) != cleanup:
+                            raise ValueError("offline_retirement_permission_completion_mismatch")
+                    schema = await retire_schema(runtime.engine, data, storage, verify_dependency=verify_schema_dependencies)
+                    await _verify_retained_receipts(runtime.engine, permission, data)
+                    result = {**result, "state": "schema_retired", "schema": schema}
             return result

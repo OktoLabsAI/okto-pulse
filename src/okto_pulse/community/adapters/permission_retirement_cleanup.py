@@ -221,10 +221,10 @@ async def _checkpoint_prefix(connection, run, checkpoint, previous):
     if run.migration_id != checkpoint.migration_id:
         raise ValueError("permission_retirement_checkpoint_scope_mismatch")
     records = await read_retirement_data_journal(connection, run)
-    if len(records) not in {6, 7}:
+    if len(records) not in {6, 7, 8}:
         raise ValueError("permission_retirement_materialization_incomplete")
-    if ((len(records) == 7) != (previous is not None)
-            or len(records) == 7 and records[6]["payload"] != asdict(previous)):
+    if ((len(records) >= 7) != (previous is not None)
+            or len(records) >= 7 and records[6]["payload"] != asdict(previous)):
         raise ValueError("permission_retirement_checkpoint_replay_mismatch")
     return records
 
@@ -235,6 +235,7 @@ async def _record_checkpoint(connection, run, checkpoint, receipt, prefix, *, re
     from .retirement_data_journal import read_retirement_data_journal, record_retirement_stage
     await record_retirement_stage(connection, run, "permissions", receipt, replay=replay)
     records = await read_retirement_data_journal(connection, run)
-    if len(records) != 7 or records[:6] != prefix[:6]:
+    if (len(records) not in {7, 8} or records[:6] != prefix[:6]
+            or replay and records != prefix):
         raise ValueError("permission_retirement_checkpoint_prefix_changed")
     await read_permission_retirement_checkpoint(connection, checkpoint)

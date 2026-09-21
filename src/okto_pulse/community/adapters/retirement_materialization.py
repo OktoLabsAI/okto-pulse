@@ -88,7 +88,7 @@ async def resume_retirement_materialization(runtime, run, permission, payload, b
         await connection.exec_driver_sql("BEGIN IMMEDIATE")
         try:
             records = await read_retirement_data_journal(connection, run)
-            if len(records) not in {5, 6, 7} or records[4]["payload"] != asdict(receipt):
+            if len(records) not in {5, 6, 7, 8} or records[4]["payload"] != asdict(receipt):
                 raise ValueError("retirement_materialization_intent_mismatch")
             await verify(connection)
             require_materialization_states(plan, graphs, retired=True)
@@ -98,7 +98,7 @@ async def resume_retirement_materialization(runtime, run, permission, payload, b
             # outbox evidence or the just-verified graph state.
             await verify(connection, retired=True)
             complete = await read_retirement_data_journal(connection, run)
-            if len(complete) not in {6, 7} or complete[5]["payload"] != asdict(receipt):
+            if len(complete) not in {6, 7, 8} or complete[5]["payload"] != asdict(receipt):
                 raise ValueError("retirement_materialization_completion_mismatch")
             await connection.commit()
         finally:
