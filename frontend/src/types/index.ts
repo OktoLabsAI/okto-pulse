@@ -84,7 +84,6 @@ export type LineageEntityType =
   | 'ideation'
   | 'refinement'
   | 'spec'
-  | 'sprint'
   | 'task'
   | 'test'
   | 'bug'

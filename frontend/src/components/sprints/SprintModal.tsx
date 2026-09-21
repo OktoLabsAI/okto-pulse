@@ -5,7 +5,7 @@
 import { useEffect, useState } from 'react';
 import {
   X, ChevronRight, ChevronUp, ChevronDown, ArrowRight, FileText, Link2, History, MessageCircleQuestion,
-  FlaskConical, Scale, RefreshCw, Maximize2, Minimize2, GitBranch, Ban, CheckCircle2,
+  FlaskConical, Scale, RefreshCw, Maximize2, Minimize2, Ban, CheckCircle2,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
@@ -24,7 +24,6 @@ import {
   PolicyCompliancePanel,
   usePolicyTransitionAuthority,
 } from '@/components/policy-compliance';
-import { openLineageGraph } from '@/components/traceability';
 import { deriveSprintDisplayCounts, normalizeSprintCardType } from './sprintDisplayCounts';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import {
@@ -431,13 +430,6 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
             </button>
           )}
           <div className="flex items-center gap-1">
-            <button
-              onClick={() => openLineageGraph('sprint', sprint.id)}
-              className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg"
-              title="Open lineage graph"
-            >
-              <GitBranch size={16} />
-            </button>
             <EntityExportButton
               boardId={sprint.board_id}
               entityType="sprint"

@@ -202,7 +202,7 @@ const bugGraph: LineageGraphResponse = {
       title: 'Implement feature',
       label: 'Implement feature',
       status: 'done',
-      stage: 4,
+      stage: 3,
     },
     {
       id: 'test:test-1',
@@ -211,7 +211,7 @@ const bugGraph: LineageGraphResponse = {
       title: 'Regression test',
       label: 'Regression test',
       status: 'done',
-      stage: 4,
+      stage: 3,
     },
     {
       id: 'bug:bug-1',
@@ -220,7 +220,7 @@ const bugGraph: LineageGraphResponse = {
       title: 'Fix bug',
       label: 'Fix bug',
       status: 'validation',
-      stage: 5,
+      stage: 4,
     },
   ],
   edges: [
@@ -273,7 +273,7 @@ const specLineageGraph: LineageGraphResponse = {
       title: 'Task A',
       label: 'Task A',
       status: 'started',
-      stage: 4,
+      stage: 3,
     },
   ],
   edges: [
@@ -287,7 +287,7 @@ const specLineageGraph: LineageGraphResponse = {
       id: 'lineage:spec-task',
       source: 'origin:spec-a',
       target: 'origin:task-a',
-      relationship: 'contains_card',
+      relationship: 'has_card',
     },
   ],
   summary: { ideations: 1, specs: 1, tasks: 1, nodes: 3, edges: 2 },
@@ -501,6 +501,21 @@ describe('LineageGraphModal', () => {
     apiMock.getLineageGraph.mockResolvedValue(graph);
   });
 
+  it('shows tasks directly after Specs without a Sprint stage or navigation target', async () => {
+    apiMock.getLineageGraph.mockResolvedValue(specLineageGraph);
+    render(<LineageGraphModal boardId="board-1" />);
+    act(() => openLineageGraph('spec', 'spec-a'));
+    const edge = await screen.findByTestId('flow-edge-lineage:spec-task');
+    expect(edge).toHaveAttribute('data-source', 'origin:spec-a');
+    expect(edge).toHaveAttribute('data-target', 'origin:task-a');
+    expect(screen.queryByText('Sprint')).not.toBeInTheDocument();
+    expect(screen.getByText('Tasks / Tests')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('flow-node-origin:task-a'));
+    fireEvent.click(screen.getByText('Show details'));
+    expect(openCardModalMock).toHaveBeenCalledWith('task-a');
+    expect(pushMock).toHaveBeenCalledWith({ type: 'card', id: 'task-a' });
+  });
+
   it('keeps the lineage graph open when Show details opens an entity modal', async () => {
     render(<LineageGraphModal boardId="board-1" />);
 
@@ -580,14 +595,13 @@ describe('LineageGraphModal', () => {
     expect(stageBar).not.toHaveClass('overflow-x-auto');
     expect(
       within(stageBar).getAllByText(
-        /^(Stories|Ideation|Refinement|Spec|Sprint|Tasks \/ Tests|Bugs)$/,
+        /^(Stories|Ideation|Refinement|Spec|Tasks \/ Tests|Bugs)$/,
       ).map((item) => item.textContent),
     ).toEqual([
       'Stories',
       'Ideation',
       'Refinement',
       'Spec',
-      'Sprint',
       'Tasks / Tests',
       'Bugs',
     ]);
@@ -1018,20 +1032,12 @@ describe('LineageGraphModal', () => {
           stage: 2,
         },
         {
-          id: 'origin:phase-2-sprint',
-          entity_type: 'sprint',
-          entity_id: 'phase-2-sprint',
-          title: 'Analytics Phase 2 Sprint',
-          label: 'Analytics Phase 2 Sprint',
-          stage: 3,
-        },
-        {
           id: 'origin:phase-2-task',
           entity_type: 'task',
           entity_id: 'phase-2-task',
           title: 'Build forecast panel',
           label: 'Build forecast panel',
-          stage: 4,
+          stage: 3,
         },
         {
           id: 'origin:phase-2-test',
@@ -1039,7 +1045,7 @@ describe('LineageGraphModal', () => {
           entity_id: 'phase-2-test',
           title: 'Verify forecast scenarios',
           label: 'Verify forecast scenarios',
-          stage: 4,
+          stage: 3,
         },
         {
           id: 'origin:phase-2-bug',
@@ -1047,7 +1053,7 @@ describe('LineageGraphModal', () => {
           entity_id: 'phase-2-bug',
           title: 'Forecast regression',
           label: 'Forecast regression',
-          stage: 5,
+          stage: 4,
         },
       ],
       edges: [
@@ -1082,22 +1088,16 @@ describe('LineageGraphModal', () => {
           relationship: 'direct_spec',
         },
         {
-          id: 'lineage:spec-sprint-2',
+          id: 'lineage:spec-task-2',
           source: 'origin:phase-2-spec',
-          target: 'origin:phase-2-sprint',
-          relationship: 'has_sprint',
-        },
-        {
-          id: 'lineage:sprint-task-2',
-          source: 'origin:phase-2-sprint',
           target: 'origin:phase-2-task',
-          relationship: 'contains_card',
+          relationship: 'has_card',
         },
         {
-          id: 'lineage:sprint-test-2',
-          source: 'origin:phase-2-sprint',
+          id: 'lineage:spec-test-2',
+          source: 'origin:phase-2-spec',
           target: 'origin:phase-2-test',
-          relationship: 'contains_card',
+          relationship: 'has_card',
         },
         {
           id: 'lineage:task-bug-2',
@@ -1110,12 +1110,11 @@ describe('LineageGraphModal', () => {
         ideations: 1,
         refinements: 2,
         specs: 3,
-        sprints: 1,
         tasks: 1,
         tests: 1,
         bugs: 1,
-        nodes: 10,
-        edges: 9,
+        nodes: 9,
+        edges: 8,
       },
       warnings: [],
     };
