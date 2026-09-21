@@ -61,7 +61,6 @@ _SEMANTIC_ENTITY_BY_MODEL: dict[type, str] = {
     Ideation: "ideation",
     Refinement: "refinement",
     Spec: "spec",
-    Sprint: "sprint",
     Card: "card",
 }
 
@@ -104,7 +103,7 @@ _PROTECTED_SEMANTIC_MODELS: tuple[type, ...] = (
     Ideation,
     Refinement,
     Spec,
-    Sprint,
+    Sprint,  # Historical rows retain their composition guard until schema retirement.
     Card,
     CardDependency,
     Attachment,
@@ -370,6 +369,8 @@ def queue_semantic_subject_mutation(
         raise TypeError("semantic_subject_bridge_session_invalid")
     if not isinstance(entity_type, PolicyEntityType):
         raise TypeError("semantic_subject_bridge_entity_type_invalid")
+    if entity_type is PolicyEntityType.SPRINT:
+        raise ValueError("semantic_subject_bridge_entity_type_retired")
     sync_session = session.sync_session
     if not sync_session.info.get(_SEMANTIC_BRIDGE_ENABLED_KEY):
         return
@@ -518,17 +519,15 @@ def _before_flush(
         Ideation: set(),
         Refinement: set(),
         Spec: set(),
-        Sprint: set(),
     }
     card_ids: set[str] = set()
-    sprint_ids: set[str] = set()
     scenario_spec_ids: set[str] = set()
 
     for instance in tuple(session.dirty):
         changed = _changed_attribute_names(instance)
         if not changed:
             continue
-        if isinstance(instance, (Ideation, Refinement, Spec, Sprint)):
+        if isinstance(instance, (Ideation, Refinement, Spec)):
             semantic_changes = changed - {
                 "version",
                 "updated_at",
@@ -558,8 +557,6 @@ def _before_flush(
                         )
                     ).scalars()
                     card_ids.update(str(value) for value in dependent_ids)
-            if {"status", "sprint_id", "test_scenario_ids"} & changed:
-                sprint_ids.update(_history_values(instance, "sprint_id"))
             if {"spec_id", "test_scenario_ids"} & changed:
                 scenario_spec_ids.update(_history_values(instance, "spec_id"))
 
@@ -567,8 +564,6 @@ def _before_flush(
         if isinstance(instance, Card):
             if instance.id:
                 card_ids.add(str(instance.id))
-            if instance.sprint_id:
-                sprint_ids.add(str(instance.sprint_id))
             if instance.spec_id and instance.test_scenario_ids:
                 scenario_spec_ids.add(str(instance.spec_id))
 
@@ -614,14 +609,6 @@ def _before_flush(
             ):
                 continue
             direct_version_targets[Spec].update(_history_values(relation, "spec_id"))
-        elif isinstance(relation, SprintQAItem):
-            if relation in session.dirty and not (
-                _changed_attribute_names(relation) - {"created_at"}
-            ):
-                continue
-            direct_version_targets[Sprint].update(
-                _history_values(relation, "sprint_id")
-            )
         elif isinstance(relation, QAItem):
             if relation in session.dirty and not (
                 _changed_attribute_names(relation) - {"created_at"}
@@ -674,7 +661,6 @@ def _before_flush(
         identities=scenario_spec_ids,
         field_name="test_scenario_policy_epoch",
     )
-    direct_version_targets[Sprint].update(sprint_ids)
     for model, identities in direct_version_targets.items():
         _bump_many(
             session,
@@ -706,7 +692,6 @@ def _before_flush(
         Ideation,
         Refinement,
         Spec,
-        Sprint,
         Card,
         PolicyWaiverRow,
         PolicyWaiverEventRow,

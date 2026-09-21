@@ -77,6 +77,7 @@ from okto_pulse.core.domain.guideline_semantic_assessment import (
     SemanticMetricAssessment,
     record_semantic_guideline_assessment,
 )
+from okto_pulse.core.domain.guideline_semantic_snapshot import semantic_policy_subject_content_digest_v1
 from okto_pulse.core.domain.enums import RefinementStatus
 from okto_pulse.core.domain.quality_assessment import (
     EvidenceRef,
@@ -499,7 +500,7 @@ async def _assert_blocking_assessment_can_be_saved(
 
 
 @pytest.mark.asyncio
-async def test_factory_writers_bridge_all_six_subjects_and_assessment(
+async def test_factory_writers_bridge_all_five_live_subjects_and_assessment(
     tmp_path,
 ):
     engine, sessions = await _database(
@@ -531,13 +532,6 @@ async def test_factory_writers_bridge_all_six_subjects_and_assessment(
             "Changed refinement",
         ),
         (PolicyEntityType.SPEC, seed.spec_id, "spec", "context", "Changed spec"),
-        (
-            PolicyEntityType.SPRINT,
-            seed.sprint_id,
-            "sprint",
-            "objective",
-            "Changed sprint",
-        ),
         (PolicyEntityType.CARD, seed.card_id, "card", "details", "Changed card"),
     )
     for _entity_type, subject_id, entity, field, value in mutations:
@@ -566,7 +560,6 @@ async def test_factory_writers_bridge_all_six_subjects_and_assessment(
             (PolicyEntityType.IDEATION, seed.ideation_id),
             (PolicyEntityType.REFINEMENT, seed.refinement_id),
             (PolicyEntityType.SPEC, seed.spec_id),
-            (PolicyEntityType.SPRINT, seed.sprint_id),
             (PolicyEntityType.CARD, seed.card_id),
             (PolicyEntityType.TEST_SCENARIO, seed.scenario_id),
         ):
@@ -583,60 +576,15 @@ async def test_factory_writers_bridge_all_six_subjects_and_assessment(
     await engine.dispose()
 
 
-@pytest.mark.asyncio
-async def test_sprint_lane_and_origin_fields_change_digest_and_head(tmp_path):
-    engine, sessions = await _database(tmp_path / "sprint-lane-origin.db")
-    origin_sprint_id = _id()
-    async with sessions() as session, session.begin():
-        seed = await _seed_subjects(session)
-        session.add(
-            Sprint(
-                id=origin_sprint_id,
-                board_id=seed.board_id,
-                spec_id=seed.spec_id,
-                title="Origin sprint",
-                spec_version=1,
-                status="closed",
-                lane_type="normal",
-                version=1,
-                created_by="seed",
-            )
-        )
-        await session.flush()
-        adapter = CommunitySqlAlchemySemanticGuidelineAssessment(session)
-        baseline = await adapter.resolve_policy_subject_snapshot(
-            board_id=seed.board_id,
-            entity_type=PolicyEntityType.SPRINT,
-            subject_id=seed.sprint_id,
-        )
-        assert baseline is not None
-
-    factory = CommunityUnitOfWorkFactory(sessions)
-    actor = ActorContext("hotfix-author", "mcp", board_id=seed.board_id)
-    async with factory(actor=actor) as uow:
-        sprint = await uow.services.get_application_record(
-            entity="sprint",
-            record_id=seed.sprint_id,
-        )
-        assert sprint is not None
-        sprint.lane_type = "hotfix"
-        sprint.origin_sprint_id = origin_sprint_id
-        sprint.origin_bug_id = seed.card_id
-        await uow.commit()
-
-    async with sessions() as session:
-        current = await CommunitySqlAlchemySemanticGuidelineAssessment(
-            session
-        ).resolve_policy_subject_snapshot(
-            board_id=seed.board_id,
-            entity_type=PolicyEntityType.SPRINT,
-            subject_id=seed.sprint_id,
-        )
-        assert current is not None
-        assert current.content_digest != baseline.content_digest
-        assert current.last_semantic_editor_id == actor.actor_id
-
-    await engine.dispose()
+@pytest.mark.parametrize("field,value", [
+    ("lane_type", "hotfix"), ("origin_sprint_id", "origin-sprint"), ("origin_bug_id", "origin-bug"),
+])
+def test_historical_sprint_lane_and_origin_fields_still_affect_v1_digest(field, value):
+    # The live writer is retired. Immutable v1 receipts still bind these fields.
+    artifact = {"title": "Historical Sprint", "lane_type": "normal"}
+    before = semantic_policy_subject_content_digest_v1(subject_type=PolicyEntityType.SPRINT, artifact=artifact)
+    after = semantic_policy_subject_content_digest_v1(subject_type=PolicyEntityType.SPRINT, artifact={**artifact, field: value})
+    assert after != before
 
 
 @pytest.mark.asyncio
@@ -925,12 +873,6 @@ async def test_research_decision_bulk_version_writer_queues_refinement_head(
             "qa_item",
             "card_id",
         ),
-        (
-            PolicyEntityType.SPRINT,
-            "sprint_id",
-            "sprint_qa_item",
-            "sprint_id",
-        ),
     ),
 )
 async def test_q_and_a_writer_updates_owner_head(
@@ -950,7 +892,6 @@ async def test_q_and_a_writer_updates_owner_head(
         PolicyEntityType.IDEATION: Ideation,
         PolicyEntityType.REFINEMENT: Refinement,
         PolicyEntityType.SPEC: Spec,
-        PolicyEntityType.SPRINT: Sprint,
         PolicyEntityType.CARD: Card,
     }[entity_type]
     async with sessions() as session:

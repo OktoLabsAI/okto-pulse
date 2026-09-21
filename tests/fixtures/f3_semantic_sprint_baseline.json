@@ -1,0 +1,116 @@
+{
+  "source_core": "c853b92fcff4c9bc311063821644f4d3397f2987",
+  "source_community": "1c647b98e339c187ba3de9ea3c56006a9cd3531f",
+  "seed": {
+    "board_id": "00000000-0000-0000-0000-000000000001",
+    "ideation_id": "00000000-0000-0000-0000-000000000002",
+    "refinement_id": "00000000-0000-0000-0000-000000000003",
+    "spec_id": "00000000-0000-0000-0000-000000000004",
+    "sprint_id": "00000000-0000-0000-0000-000000000005",
+    "card_id": "00000000-0000-0000-0000-000000000006",
+    "scenario_id": "00000000-0000-0000-0000-000000000007",
+    "design_id": "00000000-0000-0000-0000-000000000008"
+  },
+  "snapshot": {
+    "subject": {
+      "board_id": "00000000-0000-0000-0000-000000000001",
+      "entity_type": "sprint",
+      "subject_id": "00000000-0000-0000-0000-000000000005",
+      "subject_version": 2,
+      "subject_edition": null
+    },
+    "content_digest": "73d326be677cfdb540fd3c447c7a4ee9a37b9566708691edb512c3621a8e088f",
+    "last_semantic_editor_id": "historical-author",
+    "captured_at": "2026-09-21T00:00:00+00:00"
+  },
+  "result": {
+    "input_digest": "28b75b194e7965e44903303e8b0510221c4bb5f2a237f4826c6d935b883aa876",
+    "request_digest": "9f0291f135c21e02da7ef07d85e129ab7452d997dcfe6206ab55a5be7a3f3f45",
+    "receipt": {
+      "receipt_id": "00000000-0000-0000-0000-00000000000c",
+      "subject": {
+        "board_id": "00000000-0000-0000-0000-000000000001",
+        "entity_type": "sprint",
+        "subject_id": "00000000-0000-0000-0000-000000000005",
+        "subject_version": 2,
+        "subject_edition": null
+      },
+      "subject_content_digest": "73d326be677cfdb540fd3c447c7a4ee9a37b9566708691edb512c3621a8e088f",
+      "last_semantic_editor_id": "historical-author",
+      "binding_id": "00000000-0000-0000-0000-00000000000b",
+      "binding_revision": 1,
+      "guideline_id": "00000000-0000-0000-0000-000000000009",
+      "guideline_revision_id": "00000000-0000-0000-0000-00000000000a",
+      "guideline_revision_digest": "c26a19aa5a74478854f439409a4ce83949b3de029235a0d112c0591f081e2249",
+      "binding_configuration_digest": "bfff62745b9c63f8f6ff03f45aceffc46333d05c87a077cf71a1fd05469f0f22",
+      "policy_set_digest": "40c542b15e1b575de5b77024fee691928af43fc047e500aab1d370443a6032e5",
+      "binding_head_digest": "52ad59ba7f528cb0e2a00e527367c0c01ef315b13156fccf998dddbe59e61819",
+      "input_digest": "28b75b194e7965e44903303e8b0510221c4bb5f2a237f4826c6d935b883aa876",
+      "request_digest": "9f0291f135c21e02da7ef07d85e129ab7452d997dcfe6206ab55a5be7a3f3f45",
+      "idempotency_key": "assessment-sprint-00000000-0000-0000-0000-000000000005",
+      "enforcement": "blocking",
+      "assessor": {
+        "agent_id": "independent-reviewer",
+        "model_id": "test-model"
+      },
+      "assessor_independent": true,
+      "confidence": 95,
+      "minimum_confidence": 80,
+      "confidence_admissible": true,
+      "state": "passed",
+      "currentness": "current",
+      "metric_results": [
+        {
+          "metric_result_id": "fbd593defde59e946aacc819ba5b470784e3c4ff5e0c41e3cdee1e9966b15ccb",
+          "receipt_id": "00000000-0000-0000-0000-00000000000c",
+          "subject": {
+            "board_id": "00000000-0000-0000-0000-000000000001",
+            "entity_type": "sprint",
+            "subject_id": "00000000-0000-0000-0000-000000000005",
+            "subject_version": 2,
+            "subject_edition": null
+          },
+          "binding_id": "00000000-0000-0000-0000-00000000000b",
+          "guideline_id": "00000000-0000-0000-0000-000000000009",
+          "revision_id": "00000000-0000-0000-0000-00000000000a",
+          "metric_id": "metric-segregation",
+          "metric_code": "segregation",
+          "metric_definition_digest": "d1fbbf4d23dd8ff8218d101fcc825e317e42ae840afe74f18278fbf00ccbc146",
+          "score": 90,
+          "direction": "minimum",
+          "default_threshold": 70,
+          "effective_threshold": 70,
+          "threshold_source": "default",
+          "outcome": "pass",
+          "rationale": "The authored evidence demonstrates segregation.",
+          "evidence_refs": [
+            {
+              "source_type": "sprint",
+              "source_id": "00000000-0000-0000-0000-000000000005",
+              "source_version": 2,
+              "content_hash": "73d326be677cfdb540fd3c447c7a4ee9a37b9566708691edb512c3621a8e088f"
+            }
+          ],
+          "pinpoints": [
+            {
+              "subject": {
+                "board_id": "00000000-0000-0000-0000-000000000001",
+                "entity_type": "sprint",
+                "subject_id": "00000000-0000-0000-0000-000000000005",
+                "subject_version": 2,
+                "subject_edition": null
+              },
+              "input_digest": "28b75b194e7965e44903303e8b0510221c4bb5f2a237f4826c6d935b883aa876",
+              "anchor_type": "whole_artifact",
+              "anchor_ref": null,
+              "excerpt_hash": null
+            }
+          ]
+        }
+      ],
+      "recorded_at": "2026-09-21T00:00:00+00:00",
+      "receipt_digest": "c00f031e40e20a3383bac86172ad47ac443fa413f77a2ac8bce80b32cf270589"
+    },
+    "replayed": true
+  }
+}
