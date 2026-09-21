@@ -59,6 +59,12 @@ _KEYS = {"format", "migration_id", "source_database", "storage_root", "kg_base_d
 
 
 def _complete_backup(manifest):
+    if manifest['format'] == 'joint-recovery-snapshot/v7':
+        return True
+    # Logical graph copies omit the native commit/system history exposed by the
+    # predecessor. Old sets cannot certify operational rollback of those stores.
+    if manifest['graphs']:
+        return False
     if manifest['format'] in {'joint-recovery-snapshot/v5', 'joint-recovery-snapshot/v6'}:
         return True  # The verifier already reconciled its artifact coverage.
     # Preserve old retained runs only where their inventory proves there was
@@ -204,7 +210,7 @@ async def prepare_offline_retirement_run(
             await require_retirement_not_started(runtime.engine)
             async with joint_recovery_lifecycle_window(runtime, graphs, recovery, snapshot_id=snapshot_id,
                     builds=source_builds, runtime_directories=roots, kg_base_dir=kg,
-                    storage_root=uploads, max_seconds=max_seconds) as backup:
+                    storage_root=uploads, max_seconds=max_seconds, include_native=True) as backup:
                 permission = await capture_permission_retirement_checkpoint(runtime.engine, migration_id=plan.migration_id)
                 references = await capture_sprint_retirement_archive(runtime.engine, storage, migration_id=plan.migration_id)
                 for reference in references:

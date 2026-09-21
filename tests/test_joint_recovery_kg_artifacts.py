@@ -54,7 +54,9 @@ def test_legacy_v4_reader_does_not_claim_omitted_kg_authority(stored_sources, tm
     path.write_bytes(encoded)
     legacy = joint.JointRecoverySnapshot(snapshot.directory, hashlib.sha256(encoded).hexdigest())
     verified = joint.verify_joint_recovery_snapshot(legacy)
-    assert _complete_backup(verified) is (not has_artifacts)
+    # These fixtures contain native graphs. v4 never preserved their original
+    # commit/system history, even when no separate artifact directory existed.
+    assert not _complete_backup(verified)
     restored = joint.restore_joint_recovery_snapshot(legacy, tmp_path / 'legacy-restored', builds=recovery.BUILDS,
         current_storage_root=uploads, max_seconds=120)
     assert (restored / 'database.sqlite3').is_file()

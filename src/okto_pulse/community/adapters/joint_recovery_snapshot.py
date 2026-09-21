@@ -9,6 +9,7 @@ the explicitly supplied Community upload namespace and current erasure guards;
 version 4 also reconciles known attachment and historical-archive references.
 Version 5 retains the existing KG audit namespaces under their real mutex.
 Version 6 adds opaque inactive generations and quarantine without opening them.
+Optional version 7 captures native checkpoints too, preserving graph history.
 The installer must establish those separately. Never serve these artifacts as
 Board history: the relational database can contain credentials and many Boards.
 """
@@ -28,7 +29,8 @@ import secrets
 import sqlite3
 
 from filelock import FileLock
-from okto_grafx import Database
+from okto_grafx import Database, connect
+from okto_pulse.core.kg.logical_transfer import LogicalFingerprintAccumulator
 
 from okto_pulse.community.adapters.filesystem_erasure import fsync_directory, remove_contained_tree
 from okto_pulse.community.adapters.graph_backend_binding import CommunityGraphBackendBindingStore
@@ -44,6 +46,10 @@ from okto_pulse.community.adapters.logical_transfer_factories import (
     make_grafx_logical_sink, make_grafx_logical_source,
 )
 from okto_pulse.community.adapters.migration_runtime_fence import offline_migration_window
+from okto_pulse.community.adapters.native_graph_recovery_snapshot import (
+    NativeGraphRecoverySnapshot, capture_native_graph_snapshot,
+    verify_native_graph_snapshot, restore_native_graph_snapshot,
+)
 from okto_pulse.community.adapters.recovery_graph_inventory import (
     read_recovery_graph_inventory, recovery_graph_inventory_from_manifest,
     require_recovery_graph_selection,
@@ -152,6 +158,7 @@ def create_joint_recovery_snapshot(
     *, snapshot_id: str, builds: RecoveryBuildPair, runtime_directories: tuple[Path, ...],
     max_seconds: float = 60, batch_size: int = 500, kg_base_dir: Path | None = None,
     storage_root: Path | None = None,
+    include_native: bool = False,
 ) -> JointRecoverySnapshot:
     """Capture and verify a backup, releasing startup exclusion on return.
 
@@ -161,7 +168,7 @@ def create_joint_recovery_snapshot(
     with joint_recovery_window(source_database, graphs, recovery_directory,
             snapshot_id=snapshot_id, builds=builds, runtime_directories=runtime_directories,
             max_seconds=max_seconds, batch_size=batch_size, kg_base_dir=kg_base_dir,
-            storage_root=storage_root) as snapshot:
+            storage_root=storage_root, include_native=include_native) as snapshot:
         return snapshot
 
 
@@ -171,6 +178,7 @@ def joint_recovery_window(
     *, snapshot_id: str, builds: RecoveryBuildPair, runtime_directories: tuple[Path, ...],
     max_seconds: float = 60, batch_size: int = 500, kg_base_dir: Path | None = None,
     storage_root: Path | None = None,
+    include_native: bool = False,
 ) -> Iterator[JointRecoverySnapshot]:
     """Keep cooperating startup excluded from backup through caller-owned work.
 
@@ -190,7 +198,7 @@ def joint_recovery_window(
         snapshot = _capture_joint_recovery_snapshot(source_database, graphs, recovery_directory,
             snapshot_id=snapshot_id, builds=builds, runtime_directories=roots,
             max_seconds=max_seconds, batch_size=batch_size, kg_base_dir=kg_base_dir,
-            storage_root=storage_root)
+            storage_root=storage_root, include_native=include_native)
         verify_joint_recovery_snapshot(snapshot, max_seconds=max_seconds)
         yield snapshot
 
@@ -200,6 +208,7 @@ async def joint_recovery_lifecycle_window(
     runtime, graphs: tuple[RecoveryGraph, ...], recovery_directory: Path,
     *, snapshot_id: str, builds: RecoveryBuildPair, runtime_directories: tuple[Path, ...],
     kg_base_dir: Path, storage_root: Path, max_seconds: float = 60, batch_size: int = 500,
+    include_native: bool = False,
 ) -> AsyncIterator[JointRecoverySnapshot]:
     """Hold schema initialization and cooperating startup through offline work.
 
@@ -223,7 +232,8 @@ async def joint_recovery_lifecycle_window(
     async with _serialized_schema_lifecycle(runtime):
         with joint_recovery_window(source, graphs, recovery_directory, snapshot_id=snapshot_id,
                 builds=builds, runtime_directories=runtime_directories, kg_base_dir=kg_base_dir,
-                storage_root=storage_root, max_seconds=max_seconds, batch_size=batch_size) as snapshot:
+                storage_root=storage_root, max_seconds=max_seconds, batch_size=batch_size,
+                include_native=include_native) as snapshot:
             yield snapshot
 
 
@@ -232,12 +242,15 @@ def _capture_joint_recovery_snapshot(
     *, snapshot_id: str, builds: RecoveryBuildPair, runtime_directories: tuple[Path, ...],
     max_seconds: float = 60, batch_size: int = 500, kg_base_dir: Path | None = None,
     storage_root: Path | None = None,
+    include_native: bool = False,
 ) -> JointRecoverySnapshot:
     """Capture explicitly selected stores; publish only after stable-state proof.
 
     Private capture body; its caller owns the enclosing offline runtime window.
-    Graph handles remain caller-owned. This never repairs, checkpoints, binds or
-    closes them. A graph commit at any point between the two LSN collections
+    Graph handles remain caller-owned; this never repairs, binds or closes them.
+    Logical mode does not checkpoint. Explicit include_native mode checkpoints
+    through Grafx's public backup API and retains UUID/LSN/history in v7.
+    A graph commit at any point between the two LSN collections
     refuses publication, even when that commit later restores the old values.
     No automatic retry can turn an unstable capture into a reported success.
 
@@ -276,6 +289,8 @@ def _capture_joint_recovery_snapshot(
         raise ValueError("joint_snapshot_duplicate_database")
     kg_root = _explicit_path(kg_base_dir) if kg_base_dir is not None else None
     uploads = _explicit_path(storage_root) if storage_root is not None else None
+    if type(include_native) is not bool or (include_native and (uploads is None or kg_root is None)):
+        raise ValueError('joint_snapshot_native_requires_full_capture')
     if uploads is not None and kg_root is None:
         raise ValueError("joint_snapshot_storage_requires_routing_inventory")
     if kg_root is not None and kg_root not in {_explicit_path(path) for path in runtime_directories}:
@@ -315,7 +330,7 @@ def _capture_joint_recovery_snapshot(
                 if len({item["database_uuid"] for item in before}) != len(before):
                     raise ValueError("joint_snapshot_duplicate_database_uuid")
                 relational = create_sqlite_recovery_snapshot(source, stage, snapshot_id="relational", max_seconds=max_seconds)
-                records = []
+                records, native_records = [], []
                 for index, (graph, path, stamp) in enumerate(zip(graphs, graph_paths, before, strict=True)):
                     _check_time(deadline)
                     filename = f"graph-{index:04d}.jsonl"
@@ -327,6 +342,9 @@ def _capture_joint_recovery_snapshot(
                     records.append({"file": filename, "scope": graph.scope, "board_id": graph.board_id,
                         "source_path": str(path), **stamp, "sha256": _digest(artifact),
                         "certificate": asdict(certificate)})
+                    if include_native:
+                        native = capture_native_graph_snapshot(graph.database, stage / f'native-{index:04d}', max_seconds=max_seconds)
+                        native_records.append({'directory': native.directory.name, 'manifest_sha256': native.manifest_sha256})
                 if uploads is not None:
                     _check_time(deadline)
                     storage_snapshot = create_storage_recovery_snapshot(
@@ -357,6 +375,9 @@ def _capture_joint_recovery_snapshot(
                 manifest["storage"] = {"manifest_sha256": storage_snapshot.manifest_sha256}
                 manifest["storage_references"] = storage_references
                 manifest["kg_artifacts"] = {"manifest_sha256": artifact_snapshot.manifest_sha256}
+            if include_native:
+                manifest['format'] = 'joint-recovery-snapshot/v7'
+                manifest['native_graphs'] = native_records
             encoded = _encode(manifest)
             if len(encoded) > _MAX_MANIFEST:
                 raise ValueError("joint_snapshot_manifest_limit")
@@ -389,17 +410,19 @@ def verify_joint_recovery_snapshot(snapshot: JointRecoverySnapshot, *, max_secon
         raise ValueError("joint_snapshot_manifest_hash_mismatch")
     manifest = json.loads(encoded)
     keys = {"format", "snapshot_id", "capture_contract", "created_at", "builds", "grafx_version", "relational", "graphs"}
-    if isinstance(manifest, dict) and manifest.get("format") in {"joint-recovery-snapshot/v2", "joint-recovery-snapshot/v3", "joint-recovery-snapshot/v4", "joint-recovery-snapshot/v5", "joint-recovery-snapshot/v6"}:
+    if isinstance(manifest, dict) and manifest.get("format") in {"joint-recovery-snapshot/v2", "joint-recovery-snapshot/v3", "joint-recovery-snapshot/v4", "joint-recovery-snapshot/v5", "joint-recovery-snapshot/v6", "joint-recovery-snapshot/v7"}:
         keys.add("routing_inventory")
-    if isinstance(manifest, dict) and manifest.get("format") in {"joint-recovery-snapshot/v3", "joint-recovery-snapshot/v4", "joint-recovery-snapshot/v5", "joint-recovery-snapshot/v6"}:
+    if isinstance(manifest, dict) and manifest.get("format") in {"joint-recovery-snapshot/v3", "joint-recovery-snapshot/v4", "joint-recovery-snapshot/v5", "joint-recovery-snapshot/v6", "joint-recovery-snapshot/v7"}:
         keys.add("storage")
-    if isinstance(manifest, dict) and manifest.get("format") in {"joint-recovery-snapshot/v4", "joint-recovery-snapshot/v5", "joint-recovery-snapshot/v6"}:
+    if isinstance(manifest, dict) and manifest.get("format") in {"joint-recovery-snapshot/v4", "joint-recovery-snapshot/v5", "joint-recovery-snapshot/v6", "joint-recovery-snapshot/v7"}:
         keys.add("storage_references")
-    if isinstance(manifest, dict) and manifest.get("format") in {"joint-recovery-snapshot/v5", "joint-recovery-snapshot/v6"}:
+    if isinstance(manifest, dict) and manifest.get("format") in {"joint-recovery-snapshot/v5", "joint-recovery-snapshot/v6", "joint-recovery-snapshot/v7"}:
         keys.add("kg_artifacts")
+    if isinstance(manifest, dict) and manifest.get('format') == 'joint-recovery-snapshot/v7':
+        keys.add('native_graphs')
     if (not isinstance(manifest, dict)
         or set(manifest) != keys
-        or manifest["format"] not in {_FORMAT, "joint-recovery-snapshot/v2", "joint-recovery-snapshot/v3", "joint-recovery-snapshot/v4", "joint-recovery-snapshot/v5", "joint-recovery-snapshot/v6"} or manifest["capture_contract"] != _CAPTURE
+        or manifest["format"] not in {_FORMAT, "joint-recovery-snapshot/v2", "joint-recovery-snapshot/v3", "joint-recovery-snapshot/v4", "joint-recovery-snapshot/v5", "joint-recovery-snapshot/v6", "joint-recovery-snapshot/v7"} or manifest["capture_contract"] != _CAPTURE
         or manifest["snapshot_id"] != root.name or type(manifest["graphs"]) is not list
         or len(manifest["graphs"]) > 256):
         raise ValueError("joint_snapshot_manifest_invalid")
@@ -454,7 +477,7 @@ def verify_joint_recovery_snapshot(snapshot: JointRecoverySnapshot, *, max_secon
         artifacts = verify_kg_artifact_snapshot(_kg_artifact(root, manifest), max_seconds=max_seconds)
         inventory = manifest['routing_inventory']
         expected_roots = inventory['other_storage_paths']
-        if manifest['format'] == 'joint-recovery-snapshot/v6':
+        if manifest['format'] in {'joint-recovery-snapshot/v6', 'joint-recovery-snapshot/v7'}:
             require_retained_generation_inventory(recovery_graph_inventory_from_manifest(inventory))
             expected_roots = sorted((*expected_roots, *inventory['unselected_generation_paths']))
             expected_format = 'kg-artifact-recovery/v2'
@@ -464,18 +487,52 @@ def verify_joint_recovery_snapshot(snapshot: JointRecoverySnapshot, *, max_secon
             expected_format = 'kg-artifact-recovery/v1'
         if artifacts['roots'] != expected_roots or artifacts['format'] != expected_format:
             raise ValueError('joint_snapshot_kg_artifact_coverage_mismatch')
+    if 'native_graphs' in manifest:
+        if type(manifest['native_graphs']) is not list or len(manifest['native_graphs']) != len(manifest['graphs']):
+            raise ValueError('joint_snapshot_native_coverage_mismatch')
+        for index, (native, graph) in enumerate(zip(manifest['native_graphs'], manifest['graphs'], strict=True)):
+            if (type(native) is not dict or set(native) != {'directory', 'manifest_sha256'}
+                    or native['directory'] != f'native-{index:04d}'):
+                raise ValueError('joint_snapshot_native_record_invalid')
+            observed = verify_native_graph_snapshot(NativeGraphRecoverySnapshot(root / native['directory'], native['manifest_sha256']),
+                max_seconds=max_seconds)
+            if observed['database_uuid'] != graph['database_uuid'] or observed['checkpoint_lsn'] != graph['published_lsn']:
+                raise ValueError('joint_snapshot_native_identity_mismatch')
     return manifest
+
+
+def _verify_native_logical(database, graph, batch_size, deadline):
+    snapshot = make_grafx_logical_source(database, scope=graph['scope'], scan_batch_size=batch_size).open_snapshot()
+    try:
+        measured = LogicalFingerprintAccumulator.for_schema(snapshot.schema())
+        for batch in snapshot.iter_nodes(batch_size=batch_size):
+            _check_time(deadline)
+            for node in batch:
+                measured.add_node(node)
+        for batch in snapshot.iter_relations(batch_size=batch_size):
+            _check_time(deadline)
+            for relation in batch:
+                measured.add_relation(relation)
+        certificate = graph['certificate']
+        if (measured.schema_hex != certificate['schema_digest'] or measured.digest() != certificate['fingerprint']
+                or asdict(measured.counts()) != certificate['counts']):
+            raise ValueError('joint_snapshot_restore_certificate_mismatch')
+    finally:
+        snapshot.close()
 
 
 def restore_joint_recovery_snapshot(
     snapshot: JointRecoverySnapshot, target_directory: Path, *, builds: RecoveryBuildPair,
     max_seconds: float = 60, batch_size: int = 500, current_storage_root: Path | None = None,
+    confirm_original_offline: bool = False,
 ) -> Path:
     """Restore into an entirely new directory; never promote live bindings.
 
-    Existing logical transfer cold-certifies every new Grafx database. Native
-    UUIDs/LSNs are regenerated: this is logical recovery, not native commit-log
-    transplantation. The installer must run the compatible recorded build pair.
+    v1-v6 use logical transfer and regenerate native UUIDs/LSNs. v7 restores the
+    authenticated native image and cold-verifies its logical certificate too.
+    Its operator must explicitly confirm all original participants are offline
+    and will not resume alongside the same-UUID replacement; this flag is not
+    process detection. The installer must use the recorded compatible build pair.
     Version 3 checks current erasure BEFORE reconstructing even the SQL copy,
     and holds source lifecycle locks through publication of the WHOLE set.
     """
@@ -487,6 +544,8 @@ def restore_joint_recovery_snapshot(
         raise ValueError("joint_snapshot_batch_size_invalid")
     if "storage" in manifest and current_storage_root is None:
         raise ValueError("joint_snapshot_current_storage_root_required")
+    if manifest.get('native_graphs') and confirm_original_offline is not True:
+        raise ValueError('joint_snapshot_original_offline_required')
     target = _explicit_path(target_directory)
     if target.exists() or not target.parent.is_dir():
         raise FileExistsError("joint_snapshot_restore_requires_new_directory")
@@ -512,6 +571,17 @@ def restore_joint_recovery_snapshot(
             restore_sqlite_recovery_snapshot(_sql_artifact(snapshot.directory, manifest), stage / "database.sqlite3", max_seconds=max_seconds)
             for index, record in enumerate(manifest["graphs"]):
                 _check_time(deadline)
+                if 'native_graphs' in manifest:
+                    native = manifest['native_graphs'][index]
+                    physical = verify_native_graph_snapshot(NativeGraphRecoverySnapshot(snapshot.directory / native['directory'],
+                        native['manifest_sha256']), max_seconds=max_seconds)
+                    restore_native_graph_snapshot(NativeGraphRecoverySnapshot(snapshot.directory / native['directory'],
+                        native['manifest_sha256']), stage / f'graph-{index:04d}',
+                        confirm_original_offline=confirm_original_offline, max_seconds=max_seconds)
+                    with connect(stage / f'graph-{index:04d}', page_size=physical['page_size'],
+                            partitions_per_table=physical['partitions_per_table'], read_only=True) as cold:
+                        _verify_native_logical(cold, record, batch_size, deadline)
+                    continue
                 report = restore_logical_graph_file(
                     _explicit_path(snapshot.directory / record["file"]),
                     make_grafx_logical_sink(stage / f"graph-{index:04d}", scope=record["scope"], max_batch_size=batch_size),
