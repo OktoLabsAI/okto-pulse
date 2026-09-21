@@ -133,6 +133,7 @@ async def revalidate_retirement_projection_inputs(connection, source, document, 
     planner = make_deterministic_projection_planner(CommunitySqlAlchemyConsolidationPersistence(),
         dependencies=RetirementProjectionDependencies(source))
     query_only = (await connection.exec_driver_sql('PRAGMA query_only')).scalar_one()
+    membership = {}
     try:
         await connection.exec_driver_sql('PRAGMA query_only=ON')
         async with AsyncSession(bind=connection, autoflush=False, expire_on_commit=False,
@@ -146,9 +147,10 @@ async def revalidate_retirement_projection_inputs(connection, source, document, 
                 encoded = _encode(item['projection'])
                 if hashlib.sha256(encoded).hexdigest() != item['sha256']:
                     raise ValueError('retirement_projection_board_manifest_mismatch')
-                await planner.revalidate_board(session, encoded, board_id=board_id,
+                membership[board_id] = await planner.prepare_execution(session, encoded, board_id=board_id,
                     source_rows=current['sources'], cognitive_rows=current['cognitive'])
                 _check_time(deadline)
+        return membership
     finally:
         await connection.exec_driver_sql(f'PRAGMA query_only={int(query_only)}')
 

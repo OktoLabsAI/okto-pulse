@@ -905,6 +905,7 @@ class CommunityBoardRebuildIngestionAdapter:
         board_id: str,
         run_id: str,
         sources: Sequence[Mapping[str, Any]],
+        mutation_guard: Callable[[], bool] | None = None,
     ) -> dict[str, int]:
         """Atomically adopt one ConsolidationQueue row per rebuild source.
 
@@ -923,6 +924,17 @@ class CommunityBoardRebuildIngestionAdapter:
         preempt unrelated backlog from boards that may themselves be corrupt.
         """
 
+        def require_authority(phase):
+            if mutation_guard is None:
+                return
+            try:
+                valid = mutation_guard()
+            except BaseException:
+                valid = False
+            if type(valid) is not bool or not valid:
+                raise RuntimeError(f'rebuild_enqueue_authority_lost:{phase}')
+
+        require_authority('before_open')
         counts = {
             "inserted": 0,
             "reset_to_pending": 0,
@@ -936,6 +948,7 @@ class CommunityBoardRebuildIngestionAdapter:
             # Reserve the writer before the first queue read so the complete
             # SELECT-to-UPSERT adoption is one atomic cut with live events.
             conn.execute("BEGIN IMMEDIATE")
+            require_authority('under_sql_reservation')
             conn.row_factory = sqlite3.Row
             queue_columns = {
                 str(column["name"])
@@ -1098,7 +1111,9 @@ class CommunityBoardRebuildIngestionAdapter:
                     counts["fenced_claimed"] += 1
                 else:
                     counts["reset_to_pending"] += 1
+            require_authority('before_commit')
             conn.commit()
+            require_authority('after_commit')
         return counts
 
     def queue_observation(

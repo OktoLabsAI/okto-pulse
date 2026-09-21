@@ -82,6 +82,10 @@ async def test_final_projection_preserves_only_required_expired_evidence_chain(t
                 source_rows=tuple(snapshot.rows), cognitive_rows=(), captured_at=NOW + timedelta(days=1))
             await planner.revalidate_board(session, encoded, board_id='board-1',
                 source_rows=tuple(snapshot.rows), cognitive_rows=())
+            membership = await planner.prepare_execution(session, encoded, board_id='board-1',
+                source_rows=tuple(snapshot.rows), cognitive_rows=())
+            assert {'evidence-y', 'evidence-z', 'evidence-1'} <= {row['id'] for row in membership}
+            assert 'evidence-unrelated' not in {row['id'] for row in membership}
         document = json.loads(encoded)
         assert document['format'] == 'deterministic-board-projection-plan/v2'
         assert {row['id'] for row in document['dependency_closure']} == {'evidence-y', 'evidence-z'}

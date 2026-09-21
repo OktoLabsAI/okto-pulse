@@ -230,9 +230,9 @@ def _require_private_replay_mutexes(target):
                 raise ValueError('retirement_candidate_mutex_occupied')
 
 
-async def restore_retirement_graph_candidate(runtime, storage, graphs, run, seed, destination, *,
+async def _restore_retirement_graph_candidate(runtime, storage, graphs, run, seed, destination, *,
         migration_builds: RecoveryBuildPair, confirm_original_offline=False,
-        confirm_candidate_offline=False, max_seconds=180):
+        confirm_candidate_offline=False, max_seconds=180, projection_settings=None):
     """Build a new private generation; do not publish any original route.
 
     The explicit assertion covers ALL participants, including native writers
@@ -253,6 +253,8 @@ async def restore_retirement_graph_candidate(runtime, storage, graphs, run, seed
     _closed_originals(graphs, manifest)
     target = _explicit_path(destination)
     replay = target.exists()
+    if replay and projection_settings is not None:
+        raise ValueError('retirement_candidate_projected_replay_requires_checkpoint')
     if replay:
         if confirm_candidate_offline is not True:
             raise ValueError('retirement_candidate_replay_offline_required')
@@ -305,8 +307,35 @@ async def restore_retirement_graph_candidate(runtime, storage, graphs, run, seed
                                 'generation': generation, 'binding_sha256': bound.binding_sha256})
                         if _sql_snapshot(stage / 'database.sqlite3') != _expected_sql(projection):
                             raise ValueError('retirement_candidate_restored_source_changed')
-                        receipt = offline._seal(stage / 'candidate-receipt', {'format': 'retirement-native-candidate/v1',
-                            'seed_sha256': seed.manifest_sha256, 'state': 'restored_not_materialized', 'routes': routes})
+                        state = 'restored_not_materialized'
+                        receipt_document = {'format': 'retirement-native-candidate/v1',
+                            'seed_sha256': seed.manifest_sha256, 'state': state, 'routes': routes}
+                        if projection_settings is not None:
+                            from .retirement_candidate_execution import execute_candidate_projection
+                            execution_live = [True]
+                            try:
+                                executed = await execute_candidate_projection(stage, seed=seed, seed_document=document,
+                                    projection=projection, settings=projection_settings,
+                                    lifetime_probe=lambda: execution_live[0] and connection.in_transaction(),
+                                    max_seconds=max_seconds)
+                            finally:
+                                execution_live[0] = False
+                            projection_receipt = offline._seal(stage / 'projection-receipt', executed)
+                            state = 'projected_not_reconciled'
+                            # Binding paths are relative, so the final rename does not
+                            # change their identity. Include explicitly created routes.
+                            for board in projection['boards']:
+                                board_id = board['projection']['board_id']
+                                if any(row['scope'] == 'board' and row['board_id'] == board_id for row in routes):
+                                    continue
+                                if board['projection']['plans']:
+                                    bound = bindings.inspect_board_binding(board_id)
+                                    routes.append({'scope': 'board', 'board_id': board_id,
+                                        'generation': bound.generation, 'binding_sha256': bound.binding_sha256})
+                            receipt_document = {'format': 'retirement-native-candidate/v2',
+                                'seed_sha256': seed.manifest_sha256, 'state': state, 'routes': routes,
+                                'projection_receipt_sha256': projection_receipt.manifest_sha256}
+                        receipt = offline._seal(stage / 'candidate-receipt', receipt_document)
                         receipt_sha256 = receipt.manifest_sha256
                         _require_routes(source, kg, manifest['routing_inventory'])
                         if replay:
@@ -314,7 +343,33 @@ async def restore_retirement_graph_candidate(runtime, storage, graphs, run, seed
                             expected = _candidate_contents(stage, native_paths, deadline)
                             if _candidate_contents(target, native_paths, deadline) != expected:
                                 raise ValueError('retirement_candidate_replay_content_mismatch')
-                    return {'state': 'restored_not_materialized', 'directory': target,
+                    return {'state': state, 'directory': target,
                         'receipt_sha256': receipt_sha256, 'seed': seed}
                 finally:
                     await connection.rollback()
+
+
+async def restore_retirement_graph_candidate(runtime, storage, graphs, run, seed, destination, *,
+        migration_builds: RecoveryBuildPair, confirm_original_offline=False,
+        confirm_candidate_offline=False, max_seconds=180):
+    """Restore/replay the authenticated pristine candidate without projection writes."""
+    return await _restore_retirement_graph_candidate(runtime, storage, graphs, run, seed, destination,
+        migration_builds=migration_builds, confirm_original_offline=confirm_original_offline,
+        confirm_candidate_offline=confirm_candidate_offline, max_seconds=max_seconds)
+
+
+async def build_projected_retirement_graph_candidate(runtime, storage, graphs, run, seed, destination, *,
+        migration_builds: RecoveryBuildPair, settings, confirm_original_offline=False, max_seconds=180):
+    """Restore and project privately under one original-source recovery window.
+
+    Failure before publication discards only the private stage; retry starts
+    from the retained seed. Published output still requires reconciliation and
+    has no runtime admission. Existing outputs are never adopted or overwritten;
+    their post-write replay needs the later checkpoint verification contract.
+    """
+    from okto_pulse.community.config import CommunitySettings
+    if not isinstance(settings, CommunitySettings):
+        raise TypeError('retirement_candidate_explicit_settings_required')
+    return await _restore_retirement_graph_candidate(runtime, storage, graphs, run, seed, destination,
+        migration_builds=migration_builds, confirm_original_offline=confirm_original_offline,
+        max_seconds=max_seconds, projection_settings=settings)

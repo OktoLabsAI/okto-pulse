@@ -110,6 +110,16 @@ async def test_native_candidate_is_private_and_preserves_history_after_failed_co
                 await offline.require_retirement_runtime_admission(restored_engine)
         finally:
             await restored_engine.dispose()
+        from okto_pulse.community.config import CommunitySettings
+        projected = tmp_path / 'projected-history'
+        applied = await candidate.build_projected_retirement_graph_candidate(runtime, storage, graphs, run, seed, projected,
+            migration_builds=MIGRATION, settings=CommunitySettings(kg_embedding_mode='stub', kg_embedding_dim=384),
+            confirm_original_offline=True, max_seconds=300)
+        assert applied['state'] == 'projected_not_reconciled' and dump(source) == before
+        projected_binding = CommunityGraphBackendBindingStore(projected / 'kg-artifacts').inspect_board_binding('board-a')
+        with connect(projected_binding.physical_path, page_size=8192, read_only=True) as cold:
+            assert cold.identity.database_uuid == original_uuid
+            assert history(cold).as_of('board-a', cursor, ('Decision',), ()) == past
         history_file = restored_binding.physical_path / 'system-history.dat'
         original_history = history_file.read_bytes()
         assert original_history
