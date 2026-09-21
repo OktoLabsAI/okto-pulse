@@ -17,7 +17,9 @@ import time
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from okto_pulse.core.ports.deterministic_projection import make_deterministic_projection_planner
+from okto_pulse.core.ports.deterministic_projection import (
+    make_deterministic_projection_planner, require_board_projection_cleanup,
+)
 from .board_source_reader import read_realm_source_snapshot, read_realm_cognitive_source_snapshot
 from .joint_recovery_snapshot import _explicit_path, _stamp
 from .relational_recovery_snapshot import _readonly, _deadline, _check_time
@@ -66,6 +68,13 @@ def read_retirement_projection_inputs(handle):
     if (type(document) is not dict or set(document) != _KEYS or document.get('format') != _FORMAT
             or _encode(document) != encoded):
         raise ValueError('retirement_projection_manifest_invalid')
+    for board in document['boards']:
+        planned = _encode(board['projection'])
+        if hashlib.sha256(planned).hexdigest() != board['sha256']:
+            raise ValueError('retirement_projection_board_manifest_mismatch')
+        # Domain coverage is Core policy. Never infer cleanup from an empty
+        # census, repair a retained plan on read, or duplicate that rule here.
+        require_board_projection_cleanup(planned)
     return document
 
 

@@ -1,5 +1,6 @@
 """Final SQL sources -> real Core projection preparation, without graph writes."""
 
+import hashlib
 import json
 import sqlite3
 
@@ -11,6 +12,48 @@ from okto_pulse.community.adapters import retirement_projection_inputs as inputs
 from test_retirement_offline_bootstrap import prepare, resume
 from test_retirement_offline_run import MIGRATION
 from test_card_context_retirement import dump
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('status,archived', [('cancelled', False), ('done', True)])
+async def test_terminal_refinement_from_real_sql_keeps_empty_cleanup_outside_census(tmp_path, status, archived):
+    from datetime import datetime, timezone
+    from sqlalchemy import insert
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from okto_pulse.community.adapters.sqlalchemy_models import Base, Board, Ideation, Refinement, Spec
+    from okto_pulse.community.adapters.board_source_reader import CommunityBoardSourceReader
+    path = tmp_path / 'terminal-projection.sqlite3'
+    engine = create_async_engine(f'sqlite+aiosqlite:///{path.as_posix()}')
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+            await connection.execute(insert(Board).values(id='board', name='Board', owner_id='owner'))
+            await connection.execute(insert(Ideation).values(id='idea', board_id='board', title='Archived context',
+                status='cancelled', created_by='owner'))
+            await connection.execute(insert(Refinement).values(id='refinement', board_id='board', ideation_id='idea',
+                title='Terminal refinement', status=status, archived=archived, created_by='owner'))
+            await connection.execute(insert(Spec).values(id='spec', board_id='board', title='Surviving Spec',
+                status='done', created_by='owner'))
+        before = dump(path)
+        snapshot = CommunityBoardSourceReader(path).fetch('board')
+        assert snapshot.complete
+        planner = inputs.make_deterministic_projection_planner(inputs.CommunitySqlAlchemyConsolidationPersistence(),
+            dependencies=inputs.RetirementProjectionDependencies(path))
+        async with async_sessionmaker(engine, expire_on_commit=False)() as session:
+            encoded = await planner.prepare_board(session, board_id='board', source_rows=tuple(snapshot.rows),
+                cognitive_rows=(), captured_at=datetime.now(timezone.utc))
+        document = json.loads(encoded)
+        assert document['census']['eligible_count'] == 1 and document['census']['skipped_cancelled_count'] == 2
+        plans = {item['source']['artifact_id']: item for item in document['plans']}
+        assert set(plans) == {'refinement', 'spec'}
+        assert plans['refinement']['projection']['nodes'] == []
+        assert plans['refinement']['projection']['relational_projection_active_set_intent'] == {
+            'owner_type': 'refinement', 'owner_id': 'refinement', 'namespace': 'rdl',
+            'active_refs': [], 'active_edges': [],
+        }
+        assert dump(path) == before
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -94,6 +137,19 @@ async def test_frozen_predecessor_bootstrap_prepares_final_sources_without_write
         assert dump(path) == before
         assert json.loads((tmp_path / 'projection/run.json').read_text()) == document
         artifact = tmp_path / 'projection/run.json'
+        original = artifact.read_bytes()
+        # Model a retained pre-fix v2 plan: valid hashes do not excuse missing
+        # cleanup, even when its claimed census omits the terminal source.
+        board['source_rows'].append({'artifact_type': 'refinement', 'id': 'cancelled-refinement',
+            'status': 'cancelled', 'content_hash': 'a' * 64})
+        document['boards'][0]['sha256'] = hashlib.sha256(inputs._encode(board)).hexdigest()
+        incomplete = inputs._encode(document)
+        artifact.write_bytes(incomplete)
+        handle = inputs.RetirementProjectionInputs(artifact.parent, hashlib.sha256(incomplete).hexdigest())
+        with pytest.raises(ValueError, match='cleanup_missing'):
+            read_retirement_projection_inputs(handle)
+        assert artifact.read_bytes() == incomplete
+        artifact.write_bytes(original)
         artifact.write_bytes(artifact.read_bytes() + b' ')
         with pytest.raises(ValueError, match='manifest_mismatch'):
             read_retirement_projection_inputs(result['projection_inputs'])
