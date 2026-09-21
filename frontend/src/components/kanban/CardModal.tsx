@@ -19,7 +19,7 @@ import {
   useColumns,
   useCurrentBoard,
 } from '@/store/dashboard';
-import type { Card, CardStatus, CardPriority, Comment, TestScenario, TestScenarioEvidence, BugSeverity, Spec, Sprint, BugRegressionScenarioPreview, BugWorkflowRemediationMessage, AmendmentRevisionListResponse, ValidationEntry, ImpactEvidence, ProjectStructureProjectionResponse } from '@/types';
+import type { Card, CardStatus, CardPriority, Comment, TestScenario, TestScenarioEvidence, BugSeverity, Spec, BugRegressionScenarioPreview, BugWorkflowRemediationMessage, AmendmentRevisionListResponse, ValidationEntry, ImpactEvidence, ProjectStructureProjectionResponse } from '@/types';
 import { CARD_STATUSES, STATUS_LABELS, PRIORITY_LABELS, CARD_PRIORITIES, BUG_SEVERITY_LABELS } from '@/types';
 import { PathBRemediationPanel } from '@/components/kanban/PathBRemediationPanel';
 import {
@@ -67,7 +67,6 @@ import {
 } from '@/components/code-traceability';
 import { CardResourcesPanel } from './CardResourcesPanel';
 import {
-  resolveTaskValidationThresholds,
   type ResolvedTaskValidationThresholds,
   type TaskValidationThresholdSource,
 } from './taskValidationThresholds';
@@ -327,9 +326,7 @@ interface CardModalProps {
 interface TaskValidationHierarchySnapshot {
   cardId: string;
   specId: string | null;
-  sprintId: string | null;
-  spec: Spec | null;
-  sprint: Sprint | null;
+  config: ResolvedTaskValidationThresholds;
 }
 
 export function CardModal({
@@ -418,16 +415,10 @@ export function CardModal({
     card
     && currentBoard?.id === card.board_id
     && taskValidationHierarchy?.cardId === card.id
-    && taskValidationHierarchy.specId === (card.spec_id ?? null)
-    && taskValidationHierarchy.sprintId === (card.sprint_id ?? null),
+    && taskValidationHierarchy.specId === (card.spec_id ?? null),
   );
   const taskValidationThresholds = taskValidationThresholdsReady
-    ? resolveTaskValidationThresholds({
-        boardSettings: currentBoard?.settings,
-        spec: taskValidationHierarchy?.spec,
-        sprint: taskValidationHierarchy?.sprint,
-        migratedPolicy: card?.migrated_validation_policy,
-      })
+    ? taskValidationHierarchy!.config
     : null;
   const originTask = card?.origin_task_id
     ? allBoardCards.find((candidate) => candidate.id === card.origin_task_id) || null
@@ -668,10 +659,7 @@ export function CardModal({
         const specRequest: Promise<Spec | null | undefined> = data.spec_id
           ? api.getSpec(data.spec_id).catch(() => undefined)
           : Promise.resolve(null);
-        const sprintRequest: Promise<Sprint | null | undefined> = data.sprint_id
-          ? api.getSprint(data.sprint_id).catch(() => undefined)
-          : Promise.resolve(null);
-        void Promise.all([specRequest, sprintRequest]).then(([spec, sprint]) => {
+        void specRequest.then((spec) => {
           if (!isCurrentLoad()) return;
 
           if (spec) {
@@ -705,18 +693,16 @@ export function CardModal({
             setSpecTRs([]);
             setSpecKBsFull([]);
           }
-          if (spec === undefined || sprint === undefined) {
+          if (spec === undefined || !data.validation_config) {
             setTaskValidationHierarchy(null);
             setTaskValidationHierarchyError(
-              'Could not load the authoritative Spec/Sprint validation thresholds.',
+              'Could not load the authoritative Card validation thresholds.',
             );
           } else {
             setTaskValidationHierarchy({
               cardId: data.id,
               specId: data.spec_id ?? null,
-              sprintId: data.sprint_id ?? null,
-              spec,
-              sprint,
+              config: data.validation_config,
             });
             setTaskValidationHierarchyError(null);
           }
@@ -824,10 +810,7 @@ export function CardModal({
         const specRequest: Promise<Spec | null | undefined> = data.spec_id
           ? api.getSpec(data.spec_id).catch(() => undefined)
           : Promise.resolve(null);
-        const sprintRequest: Promise<Sprint | null | undefined> = data.sprint_id
-          ? api.getSprint(data.sprint_id).catch(() => undefined)
-          : Promise.resolve(null);
-        void Promise.all([specRequest, sprintRequest]).then(([spec, sprint]) => {
+        void specRequest.then((spec) => {
           if (!isCurrentRefresh()) return;
           if (spec) {
             setParentSpec({ id: spec.id, title: spec.title });
@@ -848,18 +831,16 @@ export function CardModal({
             setSpecORs([]);
             setSpecTRs([]);
           }
-          if (spec === undefined || sprint === undefined) {
+          if (spec === undefined || !data.validation_config) {
             setTaskValidationHierarchy(null);
             setTaskValidationHierarchyError(
-              'Could not refresh the authoritative Spec/Sprint validation thresholds.',
+              'Could not refresh the authoritative Card validation thresholds.',
             );
           } else {
             setTaskValidationHierarchy({
               cardId: data.id,
               specId: data.spec_id ?? null,
-              sprintId: data.sprint_id ?? null,
-              spec,
-              sprint,
+              config: data.validation_config,
             });
             setTaskValidationHierarchyError(null);
           }
@@ -2746,14 +2727,6 @@ function CardLineagePanel({
               No parent spec
             </p>
           )}
-        </div>
-        <div className="rounded-lg border border-gray-200 p-3 dark:border-gray-700">
-          <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
-            Sprint
-          </p>
-          <p className="mt-1 break-all text-sm font-medium text-gray-800 dark:text-gray-200">
-            {card.sprint_id || 'Not assigned to a sprint'}
-          </p>
         </div>
         <div className="rounded-lg border border-gray-200 p-3 dark:border-gray-700">
           <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">

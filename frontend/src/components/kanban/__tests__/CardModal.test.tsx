@@ -251,7 +251,15 @@ async function flushMicrotasks() {
   });
 }
 
+function policyConfig(min_confidence = 70, min_completeness = 80, max_drift = 50,
+  sources: Partial<NonNullable<Card['validation_config']>['resolved_sources']> = {},
+): NonNullable<Card['validation_config']> {
+  return { required: true, min_confidence, min_completeness, max_drift, resolved_from: 'board',
+    resolved_sources: { required: 'board', min_confidence: 'board', min_completeness: 'board', max_drift: 'board', ...sources } };
+}
+
 const bugCard: Card = {
+  validation_config: policyConfig(),
   subject_version: 7,
   id: 'bug-1',
   board_id: 'board-1',
@@ -1562,6 +1570,7 @@ describe('CardModal', () => {
     const validationCard: Card = {
       ...cardForType('normal'),
       id: 'validation-thresholds-1',
+      validation_config: policyConfig(85, 90, 10),
       status: 'validation',
     };
     storeMock.currentBoard.settings = {
@@ -1595,10 +1604,11 @@ describe('CardModal', () => {
     expect(screen.queryByText('No threshold configured')).not.toBeInTheDocument();
   });
 
-  it('resolves each task-validation threshold through sprint, spec, and board overrides', async () => {
+  it('uses the Core policy instead of recomputing from parent records', async () => {
     const validationCard: Card = {
       ...cardForType('normal'),
       id: 'validation-mixed-thresholds-1',
+      validation_config: policyConfig(95, 92, 12, { min_confidence: 'sprint', min_completeness: 'spec' }),
       status: 'validation',
       sprint_id: 'sprint-1',
     };
@@ -1656,11 +1666,12 @@ describe('CardModal', () => {
       .toHaveTextContent('Threshold source: spec');
     expect(screen.getByTestId('task-validation-drift-threshold-source'))
       .toHaveTextContent('Threshold source: board');
-    expect(apiMock.getSprint).toHaveBeenCalledWith('sprint-1');
+    expect(apiMock.getSprint).not.toHaveBeenCalled();
   });
 
   it.each([60, 90])('shows the preserved Card threshold %s without a live Sprint', async confidence => {
     const validationCard: Card = { ...cardForType('normal'), status: 'validation', sprint_id: null,
+      validation_config: policyConfig(confidence, 92, 0, { min_confidence: 'card_compatibility', min_completeness: 'spec', max_drift: 'card_compatibility' }),
       migrated_validation_policy: { contract_version: 'card-validation-compatibility/v1', board_id: 'board-1',
         card_id: cardForType('normal').id, source_sprint_id: 'historical-sprint', migration_id: 'migration-1',
         overrides: { min_confidence: confidence, max_drift: 0 } } };
@@ -1685,12 +1696,12 @@ describe('CardModal', () => {
     const validationCard: Card = {
       ...cardForType('normal'),
       id: 'validation-threshold-retry-1',
+      validation_config: null,
       status: 'validation',
       sprint_id: 'sprint-threshold-retry',
     };
     storeMock.selectedCardId = validationCard.id;
     apiMock.getCard.mockResolvedValue(validationCard);
-    apiMock.getSprint.mockRejectedValueOnce(new Error('sprint unavailable'));
 
     render(<CardModal boardId="board-1" />);
 
@@ -1698,20 +1709,13 @@ describe('CardModal', () => {
     fireEvent.click(await screen.findByRole('tab', { name: /^Task validation/ }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      'Could not load the authoritative Spec/Sprint validation thresholds.',
+      'Could not load the authoritative Card validation thresholds.',
     );
     expect(
       screen.queryByRole('button', { name: /Submit Validation/ }),
     ).not.toBeInTheDocument();
 
-    apiMock.getSprint.mockResolvedValue({
-      id: 'sprint-threshold-retry',
-      spec_id: 'spec-1',
-      board_id: 'board-1',
-      validation_min_confidence: 96,
-      validation_min_completeness: 94,
-      validation_max_drift: 6,
-    });
+    apiMock.getCard.mockResolvedValue({ ...validationCard, validation_config: policyConfig(96, 94, 6) });
     fireEvent.click(screen.getByRole('button', { name: 'Retry thresholds' }));
 
     expect(
@@ -1729,6 +1733,7 @@ describe('CardModal', () => {
     const initialCard: Card = {
       ...cardForType('normal'),
       id: 'validation-poll-generation-1',
+      validation_config: policyConfig(71, 80, 50, { min_confidence: 'spec' }),
       status: 'validation',
       updated_at: '2026-08-06T10:00:00Z',
     };
@@ -1738,6 +1743,7 @@ describe('CardModal', () => {
     };
     const currentCard = {
       ...initialCard,
+      validation_config: policyConfig(97, 80, 50, { min_confidence: 'spec' }),
       updated_at: '2026-08-06T10:02:00Z',
     };
     const initialSpec = {

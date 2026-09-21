@@ -2457,8 +2457,21 @@ export interface RefinementAmbiguityGateSkipReceipt {
   edition?: number;
 }
 
+export type TaskValidationPolicySource = 'card_compatibility' | 'sprint' | 'spec' | 'board' | 'default';
+
+/** Read-only policy resolved by Core for the current Card. */
+export interface TaskValidationConfig {
+  required: boolean;
+  min_confidence: number;
+  min_completeness: number;
+  max_drift: number;
+  resolved_from: TaskValidationPolicySource;
+  resolved_sources: Record<'required' | 'min_confidence' | 'min_completeness' | 'max_drift', TaskValidationPolicySource>;
+}
+
 // Card
 export interface Card {
+  validation_config?: TaskValidationConfig | null;
   /** Deprecated migration-only compatibility. Never send this in Card writes. */
   migrated_validation_policy?: MigratedTaskValidationPolicy | null;
   id: string;
