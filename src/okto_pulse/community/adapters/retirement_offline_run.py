@@ -17,6 +17,7 @@ import secrets
 from filelock import FileLock
 
 from okto_pulse.core.ports.context_disposition import ContextDispositionPlan
+from okto_pulse.core.ports.permission_retirement import retired_feature_permission_flags
 from .context_disposition_retirement import _documents, _records, _require_original_archive, _targets
 from .filesystem_erasure import fsync_directory, remove_contained_tree
 from .historical_archive_grant_installation import install_historical_archive_grants
@@ -30,11 +31,12 @@ from .migration_runtime_fence import _directories, offline_migration_window
 from .permission_retirement_checkpoint import (
     PermissionRetirementCheckpoint, capture_permission_retirement_checkpoint, read_permission_retirement_checkpoint,
 )
+from .permission_retirement_cleanup import retire_permission_documents
 from .retirement_data_journal import (
     RetirementDataRun, prepare_retirement_data_run, read_retirement_data_journal, resume_retirement_data_run,
 )
 from .retirement_runtime_admission import require_retirement_runtime_admission
-from .retirement_materialization import resume_retirement_materialization
+from .retirement_materialization import resume_retirement_materialization, verify_materialization_state
 from .retirement_materialization_plan import (
     decode_materialization_plan, prepare_materialization_plan, require_materialization_bindings, require_materialization_states,
 )
@@ -247,6 +249,22 @@ async def resume_offline_retirement_materialization(runtime, storage, graphs, ru
     The supplied handles are matched to the original active routes and UUIDs;
     absent stores stay absent. No plan or backup is recaptured on this path.
     """
+    return await _resume_materialization_and_permissions(runtime, storage, graphs, run,
+        migration_builds=migration_builds, cleanup_permissions=False)
+
+
+async def resume_offline_retirement_permissions(runtime, storage, graphs, run: OfflineRetirementRun, *, migration_builds: RecoveryBuildPair):
+    """Retire obsolete grants after materialization under the same writer fences.
+
+    The result still does not certify physical schema retirement or admit startup.
+    The exact registry policy is owned by Core, not inferred by this adapter.
+    """
+    return await _resume_materialization_and_permissions(runtime, storage, graphs, run,
+        migration_builds=migration_builds, cleanup_permissions=True)
+
+
+async def _resume_materialization_and_permissions(runtime, storage, graphs, run, *, migration_builds, cleanup_permissions):
+    retired_flags = retired_feature_permission_flags() if cleanup_permissions else None
     source, uploads = _binding(runtime, storage)
     document, plan, permission, data, backup, roots = read_offline_retirement_run(run)
     if document["format"] != _FORMAT:
@@ -266,15 +284,23 @@ async def resume_offline_retirement_materialization(runtime, storage, graphs, ru
             async with runtime.engine.connect() as connection:
                 await connection.exec_driver_sql("BEGIN")
                 records = await read_retirement_data_journal(connection, data)
-                all_retired = require_materialization_states(retained, graphs, original=len(records) < 5, retired=len(records) == 6)
+                all_retired = require_materialization_states(retained, graphs, original=len(records) < 5, retired=len(records) >= 6)
                 raw = await connection.run_sync(_outbox_snapshot)
                 if (len(records) < 5 and raw != retained.original
                         or raw != retained.original and (_outbox_sha(raw) != retained.after_sha256 or not all_retired)
-                        or len(records) == 6 and _outbox_sha(raw) != retained.after_sha256):
+                        or len(records) >= 6 and _outbox_sha(raw) != retained.after_sha256):
                     raise ValueError("offline_retirement_outbox_state_mismatch")
             result = await resume_retirement_data_run(runtime.engine, storage, data, plan=plan)
             receipt = await resume_retirement_materialization(runtime, data, permission, document["materialization"],
                 backup, manifest, graphs, kg)
             await _verify_retained_receipts(runtime.engine, permission, data)
-            return {**result, "state": "materialization_retired", "materialization": receipt,
+            result = {**result, "state": "materialization_retired", "materialization": receipt,
                 "offline_run": run, "backup": backup, "permission_checkpoint": permission}
+            if cleanup_permissions:
+                async def verify_dependency(connection):
+                    await verify_materialization_state(connection, runtime, permission, retained, manifest, graphs, kg, retired=True)
+                cleanup = await retire_permission_documents(runtime.engine, permission,
+                    retired_flags=retired_flags, checkpoint_run=data, verify_dependency=verify_dependency)
+                await _verify_retained_receipts(runtime.engine, permission, data)
+                result = {**result, "state": "permissions_retired", "permission_cleanup": cleanup}
+            return result

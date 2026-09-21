@@ -4,7 +4,7 @@ The coordinator must retain both receipts outside this candidate transaction.
 This operation is not a startup hook and does not authorize a policy decision.
 """
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import json
 import re
@@ -130,24 +130,41 @@ async def _load_layers(connection: AsyncConnection) -> dict:
 async def retire_permission_documents(
     engine: AsyncEngine, checkpoint: PermissionRetirementCheckpoint, *, retired_flags: tuple[str, ...],
     expected_receipt: PermissionRetirementCleanup | None = None,
+    checkpoint_run=None,
+    verify_dependency=None,
 ) -> PermissionRetirementCleanup:
     """Prune once under a SQLite write fence; replay preserves later owner edits.
 
     Retain expected_receipt on resume, including a zero-change completion. An
     absent journal cannot distinguish that completion from a never-started run.
     No flags, review markers or audit writes survive a failed parity check.
+    When composed into offline cutover, the permissions checkpoint commits in
+    this same transaction. Existing standalone evidence cannot fill a missing
+    coordinated checkpoint after the fact.
     """
     if engine.dialect.name != "sqlite":
         raise ValueError("permission_retirement_backend_unsupported")
+    if ((checkpoint_run is not None and not callable(verify_dependency))
+            or (checkpoint_run is None and verify_dependency is not None)):
+        raise ValueError("permission_retirement_dependency_verifier_required")
     validate_permission_retirement_registry(retired_flags)
     async with engine.connect() as connection:
         try:
             await connection.exec_driver_sql("BEGIN IMMEDIATE")
+            if checkpoint_run is not None:
+                from .retirement_data_journal import ensure_retirement_data_journal
+                await ensure_retirement_data_journal(connection)
             contexts = await read_permission_retirement_checkpoint(connection, checkpoint)
             previous = await _read_completion(connection, checkpoint, retired_flags)
+            prefix = await _checkpoint_prefix(connection, checkpoint_run, checkpoint, previous)
+            if verify_dependency is not None:
+                await verify_dependency(connection)
             if expected_receipt is not None and expected_receipt != previous:
                 raise ValueError("permission_retirement_cleanup_replay_mismatch")
             if previous is not None:
+                await _record_checkpoint(connection, checkpoint_run, checkpoint, previous, prefix, replay=True)
+                if verify_dependency is not None:
+                    await verify_dependency(connection)
                 await connection.commit()
                 return previous
             source, current = await _capture_contexts(connection, max_contexts=10_000, max_bytes=_MAX_BYTES)
@@ -179,8 +196,45 @@ async def retire_permission_documents(
             await connection.execute(insert(_AUDIT).values(**evidence, created_at=datetime.now(timezone.utc)))
             if await _read_completion(connection, checkpoint, retired_flags) != receipt:
                 raise ValueError("permission_retirement_cleanup_evidence_mismatch")
+            await _record_checkpoint(connection, checkpoint_run, checkpoint, receipt, prefix, replay=False)
+            if verify_dependency is not None:
+                await verify_dependency(connection)
+            # An audit/checkpoint trigger runs after the earlier parity check.
+            # Verify the actual stored layers again before this transaction commits.
+            final = await _load_layers(connection)
+            if _digest(final) != _digest(loaded):
+                raise ValueError("permission_retirement_cleanup_write_mismatch")
+            _require_loaded_parity(final, contexts, retired_flags=retired_flags)
+            if await _read_completion(connection, checkpoint, retired_flags) != receipt:
+                raise ValueError("permission_retirement_cleanup_evidence_mismatch")
             await connection.commit()
             return receipt
         except BaseException:
             await connection.rollback()
             raise
+
+
+async def _checkpoint_prefix(connection, run, checkpoint, previous):
+    if run is None:
+        return ()
+    from .retirement_data_journal import read_retirement_data_journal
+    if run.migration_id != checkpoint.migration_id:
+        raise ValueError("permission_retirement_checkpoint_scope_mismatch")
+    records = await read_retirement_data_journal(connection, run)
+    if len(records) not in {6, 7}:
+        raise ValueError("permission_retirement_materialization_incomplete")
+    if ((len(records) == 7) != (previous is not None)
+            or len(records) == 7 and records[6]["payload"] != asdict(previous)):
+        raise ValueError("permission_retirement_checkpoint_replay_mismatch")
+    return records
+
+
+async def _record_checkpoint(connection, run, checkpoint, receipt, prefix, *, replay):
+    if run is None:
+        return
+    from .retirement_data_journal import read_retirement_data_journal, record_retirement_stage
+    await record_retirement_stage(connection, run, "permissions", receipt, replay=replay)
+    records = await read_retirement_data_journal(connection, run)
+    if len(records) != 7 or records[:6] != prefix[:6]:
+        raise ValueError("permission_retirement_checkpoint_prefix_changed")
+    await read_permission_retirement_checkpoint(connection, checkpoint)

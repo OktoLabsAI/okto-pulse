@@ -33,27 +33,33 @@ class MaterializationCheckpoint:
             raise ValueError("retirement_materialization_checkpoint_invalid")
 
 
+async def verify_materialization_state(connection, runtime, permission, plan, manifest, graphs, kg_root, *, original=False, retired=False):
+    """Recheck graph/outbox evidence inside the caller's SQL write reservation."""
+    source = runtime.local_database_path()
+    await read_permission_retirement_checkpoint(connection, permission)
+    require_materialization_bindings(source, kg_root, graphs, manifest)
+    actual_boards = (await connection.exec_driver_sql("SELECT id FROM boards ORDER BY id")).scalars().all()
+    if actual_boards != manifest["routing_inventory"]["board_ids"]:
+        raise ValueError("retirement_materialization_board_population_mismatch")
+    all_retired = require_materialization_states(plan, graphs, original=original, retired=retired)
+    raw = await connection.run_sync(_snapshot)
+    if original and raw != plan.original:
+        raise ValueError("retirement_materialization_original_outbox_mismatch")
+    if retired and _sha(raw) != plan.after_sha256:
+        raise ValueError("retirement_materialization_outbox_mismatch")
+    if raw != plan.original and (_sha(raw) != plan.after_sha256 or not all_retired):
+        raise ValueError("retirement_materialization_stage_order_invalid")
+
+
 async def resume_retirement_materialization(runtime, run, permission, payload, backup, manifest, graphs, kg_root: Path):
     """Caller holds schema, startup and binding-publication exclusion throughout."""
     plan = decode_materialization_plan(payload)
     receipt = MaterializationCheckpoint(run.migration_id, _sha(_encode(payload)), backup.manifest_sha256, plan.after_sha256)
     boards, global_db = graph_handles(graphs)
-    source = runtime.local_database_path()
 
     async def verify(connection, *, original=False, retired=False):
-        await read_permission_retirement_checkpoint(connection, permission)
-        require_materialization_bindings(source, kg_root, graphs, manifest)
-        actual_boards = (await connection.exec_driver_sql("SELECT id FROM boards ORDER BY id")).scalars().all()
-        if actual_boards != manifest["routing_inventory"]["board_ids"]:
-            raise ValueError("retirement_materialization_board_population_mismatch")
-        all_retired = require_materialization_states(plan, graphs, original=original, retired=retired)
-        raw = await connection.run_sync(_snapshot)
-        if original and raw != plan.original:
-            raise ValueError("retirement_materialization_original_outbox_mismatch")
-        if retired and _sha(raw) != plan.after_sha256:
-            raise ValueError("retirement_materialization_outbox_mismatch")
-        if raw != plan.original and (_sha(raw) != plan.after_sha256 or not all_retired):
-            raise ValueError("retirement_materialization_stage_order_invalid")
+        await verify_materialization_state(connection, runtime, permission, plan, manifest, graphs, kg_root,
+            original=original, retired=retired)
 
     async with runtime.engine.connect() as connection:
         await connection.exec_driver_sql("BEGIN IMMEDIATE")
@@ -64,11 +70,11 @@ async def resume_retirement_materialization(runtime, run, permission, payload, b
                 raise ValueError("retirement_materialization_data_incomplete")
             replay = len(records) >= 5
             # Missing intent cannot be reconstructed from already changed graphs.
-            await verify(connection, original=not replay, retired=len(records) == 6)
+            await verify(connection, original=not replay, retired=len(records) >= 6)
             await record_retirement_stage(connection, run, "graph_intent", receipt, replay=replay)
-            if len(records) == 6 and records[5]["payload"] != asdict(receipt):
+            if len(records) >= 6 and records[5]["payload"] != asdict(receipt):
                 raise ValueError("retirement_materialization_completion_mismatch")
-            await verify(connection, original=not replay, retired=len(records) == 6)
+            await verify(connection, original=not replay, retired=len(records) >= 6)
             await connection.commit()
         finally:
             await connection.rollback()
@@ -82,17 +88,17 @@ async def resume_retirement_materialization(runtime, run, permission, payload, b
         await connection.exec_driver_sql("BEGIN IMMEDIATE")
         try:
             records = await read_retirement_data_journal(connection, run)
-            if len(records) not in {5, 6} or records[4]["payload"] != asdict(receipt):
+            if len(records) not in {5, 6, 7} or records[4]["payload"] != asdict(receipt):
                 raise ValueError("retirement_materialization_intent_mismatch")
             await verify(connection)
             require_materialization_states(plan, graphs, retired=True)
             await _apply_outbox_in_transaction(connection, plan)
-            await record_retirement_stage(connection, run, "graphs", receipt, replay=len(records) == 6)
+            await record_retirement_stage(connection, run, "graphs", receipt, replay=len(records) >= 6)
             # Checkpoint triggers must not silently damage earlier authority,
             # outbox evidence or the just-verified graph state.
             await verify(connection, retired=True)
             complete = await read_retirement_data_journal(connection, run)
-            if len(complete) != 6 or complete[5]["payload"] != asdict(receipt):
+            if len(complete) not in {6, 7} or complete[5]["payload"] != asdict(receipt):
                 raise ValueError("retirement_materialization_completion_mismatch")
             await connection.commit()
         finally:

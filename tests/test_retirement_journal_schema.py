@@ -6,16 +6,21 @@ from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 from okto_pulse.community.adapters.retirement_data_journal import ensure_retirement_data_journal
 
 
+@pytest.fixture(params=[3, 5])
+def old_max(request):
+    return request.param
+
+
 @pytest.fixture
-async def old_journal(tmp_path):
+async def old_journal(tmp_path, old_max):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'old-journal.db'}")
     async with engine.begin() as connection:
-        await connection.exec_driver_sql("""CREATE TABLE retirement_data_checkpoints (
+        await connection.exec_driver_sql(f"""CREATE TABLE retirement_data_checkpoints (
             migration_id VARCHAR(128) NOT NULL, ordinal INTEGER NOT NULL,
             record_json JSON NOT NULL, sha256 VARCHAR(64) NOT NULL,
             PRIMARY KEY(migration_id,ordinal),
-            CONSTRAINT ck_retirement_checkpoint_ordinal CHECK (ordinal >= 0 AND ordinal <= 3))""")
-        for ordinal in (0, 3):
+            CONSTRAINT ck_retirement_checkpoint_ordinal CHECK (ordinal >= 0 AND ordinal <= {old_max}))""")
+        for ordinal in (0, old_max):
             await connection.exec_driver_sql("INSERT INTO retirement_data_checkpoints VALUES (?,?,?,?)",
                 ("original", ordinal, '{ "opaque" : "Ω original spacing" }', str(ordinal) * 64))
         for operation in ("UPDATE", "DELETE"):
@@ -49,9 +54,9 @@ async def test_expansion_keeps_raw_cells_and_immutable_triggers(old_journal):
             with pytest.raises(Exception, match="immutable"):
                 await connection.exec_driver_sql(operation)
     async with old_journal.begin() as connection:
-        await connection.exec_driver_sql("INSERT INTO retirement_data_checkpoints VALUES ('probe',5,'{}',?)", ("a" * 64,))
+        await connection.exec_driver_sql("INSERT INTO retirement_data_checkpoints VALUES ('probe',6,'{}',?)", ("a" * 64,))
         with pytest.raises(Exception, match="ck_retirement_checkpoint_ordinal"):
-            await connection.exec_driver_sql("INSERT INTO retirement_data_checkpoints VALUES ('probe',6,'{}',?)", ("a" * 64,))
+            await connection.exec_driver_sql("INSERT INTO retirement_data_checkpoints VALUES ('probe',7,'{}',?)", ("a" * 64,))
     unchanged = await snapshot(old_journal)
     async with old_journal.connect() as connection:
         await connection.exec_driver_sql("BEGIN IMMEDIATE")
@@ -61,7 +66,7 @@ async def test_expansion_keeps_raw_cells_and_immutable_triggers(old_journal):
 
 
 @pytest.mark.asyncio
-async def test_failure_after_drop_restores_original_schema_rows_and_triggers(old_journal, monkeypatch):
+async def test_failure_after_drop_restores_original_schema_rows_and_triggers(old_journal, old_max, monkeypatch):
     before = await snapshot(old_journal)
     execute = AsyncConnection.exec_driver_sql
     async def fail(self, statement, *a, **kw):
@@ -78,7 +83,7 @@ async def test_failure_after_drop_restores_original_schema_rows_and_triggers(old
     assert await snapshot(old_journal) == before
     async with old_journal.begin() as connection:
         with pytest.raises(Exception, match="ck_retirement_checkpoint_ordinal"):
-            await connection.exec_driver_sql("INSERT INTO retirement_data_checkpoints VALUES ('probe',4,'{}',?)", ("a" * 64,))
+            await connection.exec_driver_sql("INSERT INTO retirement_data_checkpoints VALUES ('probe',?,'{}',?)", (old_max + 1, "a" * 64))
 
 
 @pytest.mark.asyncio
