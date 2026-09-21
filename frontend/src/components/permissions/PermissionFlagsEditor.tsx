@@ -84,7 +84,7 @@ interface PermissionFlagsEditorProps {
 
 export function PermissionFlagsEditor({ flags, onChange, readOnly = false }: PermissionFlagsEditorProps) {
   const [expandedEntity, setExpandedEntity] = useState<string | null>(null);
-  const entities = Object.keys(flags);
+  const entities = Object.keys(flags).filter((entity) => entity !== 'sprint');
 
   // Global counts
   let globalTotal = 0;
@@ -293,8 +293,9 @@ function ToggleSwitch({
 export function countAllFlags(flags: FlagsMap): { total: number; enabled: number } {
   let total = 0;
   let enabled = 0;
-  for (const entity of Object.values(flags)) {
-    const c = countFlags(entity);
+  for (const [entity, tree] of Object.entries(flags)) {
+    if (entity === 'sprint') continue;
+    const c = countFlags(tree);
     total += c.total;
     enabled += c.enabled;
   }
@@ -305,6 +306,7 @@ export function countAllFlags(flags: FlagsMap): { total: number; enabled: number
 export function countPerEntity(flags: FlagsMap): Record<string, { total: number; enabled: number }> {
   const result: Record<string, { total: number; enabled: number }> = {};
   for (const [entity, data] of Object.entries(flags)) {
+    if (entity === 'sprint') continue;
     result[entity] = countFlags(data);
   }
   return result;
@@ -313,7 +315,9 @@ export function countPerEntity(flags: FlagsMap): Record<string, { total: number;
 /** Utility: set all flags to a value */
 export function setAllFlags(flags: FlagsMap, value: boolean): FlagsMap {
   return Object.fromEntries(
-    Object.entries(flags).map(([entity, tree]) => [entity, setFlagsInTree(tree, value)]),
+    Object.entries(flags).map(([entity, tree]) => [
+      entity, entity === 'sprint' ? tree : setFlagsInTree(tree, value),
+    ]),
   );
 }
 

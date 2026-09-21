@@ -77,7 +77,7 @@ def test_reconcile_twice_emits_no_second_write_and_preserves_custom() -> None:
     first, second, custom, builtin_count, audits = asyncio.run(drive())
     assert first.changed is True
     assert second.changed is False
-    assert builtin_count == 7
+    assert builtin_count == 6
     assert custom is not None
     assert custom.name == "My custom preset"
     assert custom.flags == {"board": {"read": False}}
@@ -87,7 +87,7 @@ def test_reconcile_twice_emits_no_second_write_and_preserves_custom() -> None:
     assert {audit.manifest_version for audit in audits} == set(expected_versions)
     for manifest_order, version in enumerate(expected_versions):
         version_rows = [audit for audit in audits if audit.manifest_version == version]
-        assert sorted(audit.mutation_count for audit in version_rows) == [0, 7]
+        assert sorted(audit.mutation_count for audit in version_rows) == [0, 6]
         assert all(
             audit.details["manifest_order"] == manifest_order for audit in version_rows
         )
@@ -182,4 +182,4 @@ def test_failure_mid_plan_rolls_back_and_retry_converges() -> None:
     assert after_failure == 0
     assert audit_after_failure == 0
     assert retry.changed is True
-    assert after_retry == 7
+    assert after_retry == 6

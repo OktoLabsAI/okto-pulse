@@ -116,6 +116,7 @@ export function hasEffectivePermission(
   data: PermissionsResponse | null,
   flag: string,
 ): boolean {
+  if (flag.startsWith('sprint.')) return false;
   const introduced = isIntroducedPermissionLeaf(flag);
   if (!data) return !introduced;
   if (data.owner_review_required) return false;

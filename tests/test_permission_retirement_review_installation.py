@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from okto_pulse.core.models.schemas import AgentUpdate
 from okto_pulse.core.domain.realm import RealmScope
 from okto_pulse.core.ports.permission_policy import registered_permission_flags
+from okto_pulse.core.ports.permission_retirement import capture_permission_retirement_authority
 from okto_pulse.core.services import AgentService
 from okto_pulse.community.adapters.permission_retirement_checkpoint import capture_permission_retirement_checkpoint
 from okto_pulse.community.adapters.permission_retirement_review_installation import install_permission_retirement_reviews
@@ -21,6 +22,9 @@ RETIRED = tuple(sorted((
     "kg.operations.global_recovery.cancel", "kg.operations.global_recovery.resume", "kg.operations.global_recovery.run",
     "kg.operations.quarantine.restore", "kg.operations.global_outbox.read", "kg.operations.global_outbox.reprocess",
     "kg.operations.global_outbox.verify", "kg.operations.tick.run",
+    *(path for path, _ in capture_permission_retirement_authority(agent_flags=None,
+        legacy_permissions=None, preset_id=None, presets=(), board_overrides=None).decisions
+      if path.startswith("sprint.")),
 )))
 MALFORMED = {"kg": {"operations": {"tick": {"run": 1}}}}
 

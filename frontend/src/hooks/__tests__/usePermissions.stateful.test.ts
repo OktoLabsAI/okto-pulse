@@ -61,6 +61,13 @@ function permissionChecker(flags: Record<string, unknown>) {
 }
 
 describe('state-aware UI permission composition', () => {
+  it.each(SPRINT_ACTIONS)('denies retired %s even in a stale all-true response', (action) => {
+    const flags: Record<string, unknown> = {};
+    setFlag(flags, action, true);
+    setFlag(flags, 'sprint.interact_in.active', true);
+    expect(hasEffectivePermission(response(flags), action)).toBe(false);
+    expect(hasEffectivePermission(null, action)).toBe(false);
+  });
   it.each([
     'unrecognized_direct_permissions',
     'invalid_agent_flags',
@@ -139,7 +146,7 @@ describe('state-aware UI permission composition', () => {
       'sprint.entity.assign',
       'sprint',
       'draft',
-    )).toBe(true);
+    )).toBe(false);
 
     expect(hasPermissionWithState(
       unavailable,

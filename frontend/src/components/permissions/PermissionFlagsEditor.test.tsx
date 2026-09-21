@@ -77,6 +77,15 @@ const structuredSpecFlags: FlagsMap = {
   },
 };
 
+it('does not offer retired Sprint controls from an old permission document', () => {
+  const flags = { ...storyTopicFlags, sprint: { entity: { read: true } } };
+  render(<PermissionFlagsEditor flags={flags} />);
+  expect(screen.queryByRole('button', { name: /Edit Sprint.* permissions/i })).toBeNull();
+  expect(screen.getByRole('button', { name: 'Edit Stories permissions' })).toBeTruthy();
+  expect(countAllFlags(flags)).toEqual(countAllFlags(storyTopicFlags));
+  expect(setAllFlags(flags, false).sprint).toEqual(flags.sprint);
+});
+
 const codeTraceabilityFlags: FlagsMap = {
   code_traceability: {
     investigation: { request: true, revoke: false },

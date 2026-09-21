@@ -72,7 +72,7 @@ async def test_capture_and_first_install_no_longer_call_live_registry_or_gateway
         # today's smaller registry must not reinterpret it as Full Control.
         await add_agent(connection, "ambiguous", flags=registered_permission_flags())
     live = deepcopy(permissions.PERMISSION_REGISTRY)
-    live.pop("sprint")
+    assert "sprint" not in live
     monkeypatch.setattr(permissions, "PERMISSION_REGISTRY", live)
     monkeypatch.setattr(permissions, "ALL_FLAGS", [flag for flag in permissions.ALL_FLAGS if not flag.startswith("sprint.")])
     monkeypatch.setattr(sdlc_registry, "SDLC_REGISTRY", {})
