@@ -37,7 +37,6 @@ interface FunnelData {
   ideations: number;
   refinements: number;
   specs: number;
-  sprints: number;
   cards: number;
   tests: number;
   bugs: number;
@@ -58,7 +57,6 @@ interface BoardStat {
   ideations: number;
   refinements: number;
   specs: number;
-  sprints: number;
   cards: number;
   cards_done: number;
   bugs: number;
@@ -116,24 +114,13 @@ interface SpecEvaluationData {
   specs_with_evaluation: number;
 }
 
-interface SprintEvaluationData {
-  total_submitted: number;
-  total_approve: number;
-  total_reject: number;
-  approve_rate: number | null;
-  avg_overall_score: number | null;
-  sprints_with_evaluation: number;
-}
-
 interface OverviewData {
   total_ideations: number;
   ideations_done: number;
   total_specs: number;
   specs_done: number;
   specs_with_tests: number;
-  total_sprints: number;
   spec_status_breakdown: Record<string, number>;
-  sprint_status_breakdown: Record<string, number>;
   card_status_breakdown: Record<string, number>;
   total_business_rules: number;
   total_api_contracts: number;
@@ -145,7 +132,6 @@ interface OverviewData {
   spec_validation_gate: SpecValidationGateData;
   task_validation_gate: TaskValidationGateData;
   spec_evaluation: SpecEvaluationData;
-  sprint_evaluation: SprintEvaluationData;
   funnel: FunnelData;
   velocity: VelocityWeek[];
   boards: BoardStat[];
@@ -154,7 +140,7 @@ interface OverviewData {
   avg_drift: number | null;
   // Cycle time
   avg_cycle_hours: number | null;
-  cycle_time: { ideation: number | null; spec: number | null; sprint: number | null; card: number | null } | null;
+  cycle_time: { ideation: number | null; spec: number | null; card: number | null } | null;
   // Bug metrics
   total_bugs: number;
   bugs_open: number;
@@ -495,20 +481,6 @@ export function OverviewDashboard({ from, to, onSelectBoard }: OverviewDashboard
           }
         />
 
-        {/* Sprints */}
-        <KpiCard
-          icon={<Target className="w-4 h-4 text-indigo-500" />}
-          title="Sprints"
-          value={data.total_sprints ?? 0}
-          badge={`${data.sprint_status_breakdown?.active ?? 0} active`}
-          badgeColor="bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300"
-          extra={
-            <span className="text-[10px] text-gray-400 dark:text-gray-500">
-              {data.sprint_status_breakdown?.closed ?? 0} closed
-            </span>
-          }
-        />
-
         {/* Avg Completeness — self-reported with validation fallback */}
         <div
           className={`rounded-lg border border-gray-200 dark:border-gray-700 p-4 ${completenessBg(data.avg_completeness ?? null)}`}
@@ -566,9 +538,6 @@ export function OverviewDashboard({ from, to, onSelectBoard }: OverviewDashboard
               {data.cycle_time.spec != null && (
                 <span className="text-[10px] text-gray-400">Spec: {formatCycleTime(data.cycle_time.spec)}</span>
               )}
-              {data.cycle_time.sprint != null && (
-                <span className="text-[10px] text-gray-400">Sprint: {formatCycleTime(data.cycle_time.sprint)}</span>
-              )}
               {data.cycle_time.card != null && (
                 <span className="text-[10px] text-gray-400">Task: {formatCycleTime(data.cycle_time.card)}</span>
               )}
@@ -578,10 +547,9 @@ export function OverviewDashboard({ from, to, onSelectBoard }: OverviewDashboard
       </div>
 
       {/* ------------------------------------------------------------------ */}
-      {/* Validation Gates row — 4 cards (Spec Val, Task Val, Spec Eval,     */}
-      {/* Sprint Eval — D5: separated)                                       */}
+      {/* Validation Gates — Spec Validation, Task Validation, Spec Evaluation     */}
       {/* ------------------------------------------------------------------ */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         <ValidationGateCard
           title="Spec Validation Gate"
           subtitle="approved → validated (semantic)"
@@ -626,19 +594,6 @@ export function OverviewDashboard({ from, to, onSelectBoard }: OverviewDashboard
           attemptsValue={data.spec_evaluation?.specs_with_evaluation ?? null}
           topReasons={[]}
           accent="emerald"
-        />
-        <ValidationGateCard
-          title="Sprint Evaluation"
-          subtitle="qualitative sprint review"
-          total={data.sprint_evaluation?.total_submitted ?? 0}
-          successRate={data.sprint_evaluation?.approve_rate ?? null}
-          failedCount={data.sprint_evaluation?.total_reject ?? 0}
-          avgLabel="avg overall"
-          avgValue={data.sprint_evaluation?.avg_overall_score ?? null}
-          attemptsLabel="sprints evaluated"
-          attemptsValue={data.sprint_evaluation?.sprints_with_evaluation ?? null}
-          topReasons={[]}
-          accent="amber"
         />
       </div>
 

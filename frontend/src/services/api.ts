@@ -2687,7 +2687,7 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       return apiClient.fetchJson(`/boards/${boardId}/analytics/entity/${entityType}/${entityId}?${params.toString()}`);
     },
 
-    // --- Validation gate panel (spec + task gates, spec evaluation, sprint evaluation)
+    // --- Validation gate panel (spec + task gates, spec evaluation)
     async getBoardAnalyticsValidations(boardId: string, from?: string, to?: string): Promise<any> {
       const params = new URLSearchParams();
       if (from) params.set('from', from);

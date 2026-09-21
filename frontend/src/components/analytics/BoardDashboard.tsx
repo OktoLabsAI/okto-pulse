@@ -56,7 +56,6 @@ interface FunnelData {
   refinements: number;
   specs: number;
   specs_done: number;
-  sprints: number;
   cards: number;
   cards_impl: number;
   cards_test: number;
@@ -67,7 +66,6 @@ interface FunnelData {
   specs_with_rules: number;
   specs_with_contracts: number;
   spec_status_breakdown: Record<string, number>;
-  sprint_status_breakdown: Record<string, number>;
   card_status_breakdown: Record<string, number>;
   bugs_total: number;
   bugs_open: number;
@@ -130,7 +128,6 @@ interface ValidationsResponse {
       title: string;
       card_type: string;
       spec_id: string | null;
-      sprint_id: string | null;
       status: string;
       attempts: number;
       last_outcome: string | null;
@@ -147,12 +144,6 @@ interface ValidationsResponse {
     approve_rate: number | null;
     avg_overall_score: number | null;
     specs_with_evaluation: number;
-  };
-  sprint_evaluation: {
-    total_submitted: number;
-    approve_rate: number | null;
-    avg_overall_score: number | null;
-    sprints_with_evaluation: number;
   };
 }
 

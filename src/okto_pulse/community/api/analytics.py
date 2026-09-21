@@ -279,7 +279,7 @@ async def analytics_overview(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Cross-board KPIs: totals, lifecycle status breakdowns, validation gates,
-    sprint summary, funnel, velocity, board list.
+    funnel, velocity, board list.
 
     Semântica de campos opcionais:
     - ``avg_triage_hours``: null quando não há bugs triados no período
@@ -287,9 +287,6 @@ async def analytics_overview(
       indica ausência do sinal.
     - ``bug_rate_per_spec``: retorna apenas specs com ``rate > 0``.
       Specs sem bugs são omitidas da lista para reduzir o payload.
-    - ``sprint_evaluation``: mesmo shape que ``spec_evaluation``
-      (inclui ``avg_dimension_scores`` — dict vazio quando nenhum
-      sprint_evaluation carrega dimensions).
     """
     result = await AnalyticsOverviewUseCase().execute(
         AnalyticsOverviewCommand(
@@ -446,7 +443,7 @@ async def board_velocity(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Velocity stacked by impl/test/bug with validation_bounce +
-    spec_done/sprint_done overlays. Supports week or day granularity.
+    spec_done overlays. Supports week or day granularity.
     """
     if granularity not in ("week", "day"):
         raise HTTPException(
@@ -525,7 +522,6 @@ async def board_validations(
     - spec_validation_gate: aggregate across all specs + per-spec breakdown
     - task_validation_gate: aggregate across all cards + per-card breakdown
     - spec_evaluation: aggregate (different gate — qualitative breakdown quality)
-    - sprint_evaluation: aggregate
     """
     try:
         result = await BoardValidationsUseCase().execute(
