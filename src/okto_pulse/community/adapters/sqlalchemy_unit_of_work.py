@@ -297,7 +297,7 @@ class CommunityUnitOfWork:
         try:
             await self._application_persistence.commit(self._session)
         except StaleDataError as exc:
-            # A versioned subject row (Ideation/Refinement/Spec/Sprint) changed
+            # A versioned subject row (Ideation/Refinement/Spec) changed
             # underneath this unit of work: the ORM UPDATE/DELETE matched zero
             # rows on its ``WHERE version = <loaded>`` fence.  Roll back and
             # surface the Core port conflict so the REST/MCP boundaries answer

@@ -281,7 +281,6 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
         False,
         "Enforce single story->ideation link.",
     ),
-    ("_migrate_add_card_sprint_id", "post_create_all", False, "Add card.sprint_id."),
     (
         "_migrate_add_card_knowledge_bases",
         "post_create_all",
@@ -312,18 +311,6 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
         False,
         "Create and post-validate target scopes, temporal assignments, governed "
         "snapshots, DROP tombstones, and append-only mutation ledgers.",
-    ),
-    (
-        "_migrate_add_sprint_scope_fields",
-        "post_create_all",
-        False,
-        "Add sprint scope fields.",
-    ),
-    (
-        "_migrate_add_sprint_lane_fields",
-        "post_create_all",
-        False,
-        "Add sprint lane fields.",
     ),
     (
         "_migrate_agent_boards",
@@ -384,7 +371,7 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
         "post_create_all",
         False,
         "Add cancellation-justification columns (reason/at/by) to ideations, "
-        "refinements, specs, sprints, and cards (ITEM 17).",
+        "refinements, specs, and cards (ITEM 17).",
     ),
     (
         "_migrate_pagination_indices_and_positions",

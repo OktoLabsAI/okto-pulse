@@ -12,8 +12,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from okto_pulse.core.ports.historical_archive import ArchiveSection, parse_archive_read_grant
 from okto_pulse.core.ports.permission_policy import PermissionSet
+from okto_pulse.core.ports.historical_archive_authority import capture_authenticated_human_sections_v034
 from okto_pulse.community.adapters.sprint_retirement_archive import capture_sprint_retirement_archive, verify_historical_archive
-from okto_pulse.community.adapters.sqlalchemy_models import Agent, AgentBoard, PermissionPreset, Sprint
+from okto_pulse.community.adapters.sqlalchemy_models import Agent, AgentBoard, PermissionPreset
+from legacy_sprint_schema import Sprint
 from okto_pulse.community.adapters.storage import CommunityFileSystemStorage
 from okto_pulse.community.adapters.relational_application import CommunityAgentAuthenticationGateway
 import test_sprint_retirement_inventory as relational
@@ -71,7 +73,9 @@ async def test_resolved_grants_preserve_root_sections_lineage_board_overrides_an
     assert await capture_sprint_retirement_archive(engine, storage, migration_id="authority") == references
     async with AsyncSession(engine) as session:
         legacy = await CommunityAgentAuthenticationGateway(session).resolve_agent_permission_context("empty-list", board_id="board-a")
-        assert legacy.permissions.has("sprint.entity.read")
+        # Captured old read access does not reactivate a retired live flag.
+        assert not legacy.permissions.has("sprint.entity.read")
+        assert legacy.permissions.has("card.entity.read")
         assert not legacy.permissions.has("board.admin.delete")
         assert not legacy.permissions.has("card.entity.edit_fields")
 
@@ -136,7 +140,10 @@ async def test_old_archive_verifies_without_fabricating_access_and_new_scope_is_
 def test_sparse_historical_permission_is_not_equivalent_to_board_only():
     # Source compatibility is intentionally permissive for absent old leaves;
     # an explicit false must survive the authority capture instead of disappearing.
-    assert PermissionSet({"board": {"read": True}}).has("sprint.qa.read")
+    flags = {"board": {"read": True}}
+    assert capture_authenticated_human_sections_v034(flags).qa
+    assert not capture_authenticated_human_sections_v034({**flags, "sprint": {"qa": {"read": False}}}).qa
+    assert not PermissionSet(flags).has("sprint.qa.read")
 
 
 @pytest.mark.asyncio

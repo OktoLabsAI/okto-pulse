@@ -36,7 +36,8 @@ from .retirement_schema_cutover import retire_schema
 from .retirement_data_journal import (
     RetirementDataRun, prepare_retirement_data_run, read_retirement_data_journal, resume_retirement_data_run,
 )
-from .retirement_runtime_admission import require_retirement_runtime_admission
+from .retirement_runtime_admission import require_retirement_runtime_admission as require_retirement_runtime_admission
+from .retirement_runtime_admission import require_retirement_not_started
 from .retirement_materialization import resume_retirement_materialization, verify_materialization_state
 from .retirement_materialization_plan import (
     decode_materialization_plan, prepare_materialization_plan, require_materialization_bindings, require_materialization_states,
@@ -186,7 +187,7 @@ async def prepare_offline_retirement_run(
             raise FileExistsError("offline_retirement_run_exists")
         async with _serialized_schema_lifecycle(runtime):
             # Refuse taking a replacement backup of an already transformed run.
-            await require_retirement_runtime_admission(runtime.engine)
+            await require_retirement_not_started(runtime.engine)
             async with joint_recovery_lifecycle_window(runtime, graphs, recovery, snapshot_id=snapshot_id,
                     builds=source_builds, runtime_directories=roots, kg_base_dir=kg,
                     storage_root=uploads, max_seconds=max_seconds) as backup:

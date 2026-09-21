@@ -8,7 +8,8 @@ from sqlalchemy import delete, event, insert, select, text, update
 from okto_pulse.community.adapters import card_validation_retirement as migration
 from okto_pulse.community.adapters.historical_archive_grant_installation import install_historical_archive_grants
 from okto_pulse.community.adapters.sprint_retirement_archive import capture_sprint_retirement_archive
-from okto_pulse.community.adapters.sqlalchemy_models import Board, Card, DomainEventRow, Spec, Sprint
+from okto_pulse.community.adapters.sqlalchemy_models import Board, DomainEventRow, Spec
+from legacy_sprint_schema import Card, Sprint
 from okto_pulse.community.adapters.storage import CommunityFileSystemStorage
 import test_sprint_retirement_inventory as relational
 

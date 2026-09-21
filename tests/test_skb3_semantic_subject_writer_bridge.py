@@ -23,23 +23,8 @@ from okto_pulse.community.adapters.relational_schema_steps import (
 from okto_pulse.community.adapters.sqlalchemy_architecture_persistence import (
     CommunitySqlAlchemyArchitecturePersistence,
 )
-from okto_pulse.community.adapters.sqlalchemy_models import (
-    ArchitectureDesign,
-    Base,
-    Board,
-    Card,
-    Guideline,
-    GuidelineBoardBindingRow,
-    GuidelineRevisionRow,
-    Ideation,
-    Refinement,
-    SemanticGuidelineBindingConfigurationRow,
-    SemanticGuidelineRevisionRow,
-    SemanticSubjectVersionEventRow,
-    SemanticSubjectVersionRow,
-    Spec,
-    Sprint,
-)
+from okto_pulse.community.adapters.sqlalchemy_models import ArchitectureDesign, Board, Card, Guideline, GuidelineBoardBindingRow, GuidelineRevisionRow, Ideation, Refinement, SemanticGuidelineBindingConfigurationRow, SemanticGuidelineRevisionRow, SemanticSubjectVersionEventRow, SemanticSubjectVersionRow, Spec
+from legacy_sprint_schema import Base, Sprint
 from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
     CommunitySemanticSession,
 )
@@ -243,7 +228,6 @@ async def _seed_subjects(session: AsyncSession) -> _Seed:
             id=seed.card_id,
             board_id=seed.board_id,
             spec_id=seed.spec_id,
-            sprint_id=seed.sprint_id,
             title="Implement port",
             description="Initial card",
             status="not_started",

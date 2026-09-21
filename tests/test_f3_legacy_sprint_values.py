@@ -8,9 +8,8 @@ from okto_pulse.community.adapters.legacy_sprint_values import (
     HistoricalSprintLaneType, HistoricalSprintStatus,
 )
 from okto_pulse.community.adapters.sqlalchemy_database import build_community_session_factory
-from okto_pulse.community.adapters.sqlalchemy_models import (
-    Base, Board, HistoricalSprintLaneTypeType, HistoricalSprintStatusType, Spec, Sprint,
-)
+from okto_pulse.community.adapters.sqlalchemy_models import Board, Spec
+from legacy_sprint_schema import Base, HistoricalSprintLaneTypeType, HistoricalSprintStatusType, Sprint
 
 
 STATUS_VALUES = {"DRAFT": "draft", "ACTIVE": "active", "REVIEW": "review", "CLOSED": "closed", "CANCELLED": "cancelled"}

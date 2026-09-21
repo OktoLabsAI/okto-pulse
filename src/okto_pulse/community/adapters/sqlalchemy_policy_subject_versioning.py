@@ -44,8 +44,6 @@ from .sqlalchemy_models import (
     Spec,
     SpecKnowledgeBase,
     SpecQAItem,
-    Sprint,
-    SprintQAItem,
 )
 
 
@@ -103,7 +101,6 @@ _PROTECTED_SEMANTIC_MODELS: tuple[type, ...] = (
     Ideation,
     Refinement,
     Spec,
-    Sprint,  # Historical rows retain their composition guard until schema retirement.
     Card,
     CardDependency,
     Attachment,
@@ -112,7 +109,6 @@ _PROTECTED_SEMANTIC_MODELS: tuple[type, ...] = (
     IdeationQAItem,
     RefinementQAItem,
     SpecQAItem,
-    SprintQAItem,
     QAItem,
     IdeationKnowledgeBase,
     RefinementKnowledgeBase,

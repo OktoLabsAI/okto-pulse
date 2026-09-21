@@ -13,7 +13,9 @@ from okto_pulse.core.ports import relational_runtime as core_runtime
 from okto_pulse.core.ports.schema_lifecycle import register_relational_schema_lifecycle_orchestrator
 from okto_pulse.community.adapters import sqlalchemy_database as db
 from okto_pulse.community.adapters.relational_schema_lifecycle import register_community_relational_schema_lifecycle
-from okto_pulse.community.adapters.retirement_runtime_admission import require_retirement_runtime_admission
+from okto_pulse.community.adapters.retirement_runtime_admission import (
+    require_retirement_not_started, require_retirement_runtime_admission,
+)
 from okto_pulse.community.adapters.sqlalchemy_models import RetirementDataCheckpoint
 from okto_pulse.community.adapters import joint_recovery_snapshot as recovery
 from okto_pulse.community.adapters.retirement_data_journal import prepare_retirement_data_run, resume_retirement_data_run
@@ -169,7 +171,7 @@ asyncio.run(main())
 
 
 @pytest.mark.asyncio
-async def test_completed_data_preservation_blocks_restarted_runtime_and_original_joint_restore_admits(database, tmp_path):
+async def test_completed_data_preservation_blocks_runtime_and_joint_restore_recovers_original_source(database, tmp_path):
     engine, path = database
     uploads, kg, backups = (tmp_path / name for name in ("storage", "kg", "backups"))
     for directory in (uploads, kg, backups):
@@ -199,7 +201,16 @@ async def test_completed_data_preservation_blocks_restarted_runtime_and_original
         current_storage_root=uploads, max_seconds=120)
     # This is a complete rollback to the pre-run set, not deletion of markers.
     assert dump(restored / "database.sqlite3") == original_rows
-    assert await asyncio.to_thread(_startup, restored / "database.sqlite3") == "ready"
+    # This fixture proves joint data restoration and admission as an installer
+    # source. A real rollback boots the retained matching source build pair;
+    # the new build must not serve its removed operational Sprint schema.
+    restored_engine = create_async_engine(f"sqlite+aiosqlite:///{restored / 'database.sqlite3'}")
+    try:
+        await require_retirement_not_started(restored_engine)
+    finally:
+        await restored_engine.dispose()
+    assert await asyncio.to_thread(_startup, restored / "database.sqlite3") == "retirement_legacy_schema_requires_offline_cutover"
+    assert dump(restored / "database.sqlite3") == original_rows
 
 
 def test_committed_journal_survives_abrupt_process_exit_and_refuses_startup(tmp_path):

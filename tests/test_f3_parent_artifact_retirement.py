@@ -7,7 +7,8 @@ from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from okto_pulse.community.adapters.sqlalchemy_database import build_community_session_factory
-from okto_pulse.community.adapters.sqlalchemy_models import Base, Board, Card, Spec, Sprint
+from okto_pulse.community.adapters.sqlalchemy_models import Board, Card, Spec
+from legacy_sprint_schema import Base, Sprint
 from okto_pulse.community.adapters.sqlalchemy_parent_artifact import CommunitySqlAlchemyParentArtifactReader
 from okto_pulse.core.domain.realm import RealmScope
 from okto_pulse.core.kg.parent_doc import resolve_parent_artifacts

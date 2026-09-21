@@ -14,7 +14,7 @@ from okto_pulse.community.adapters.sprint_retirement_archive import (
     capture_sprint_retirement_archive,
     verify_historical_archive,
 )
-from okto_pulse.community.adapters.sqlalchemy_models import Base, Sprint
+from legacy_sprint_schema import Base, Sprint
 from okto_pulse.community.adapters.storage import CommunityFileSystemStorage
 import test_sprint_retirement_inventory as relational
 import test_sprint_retirement_references as historical

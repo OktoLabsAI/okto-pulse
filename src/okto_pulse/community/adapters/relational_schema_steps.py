@@ -12097,7 +12097,7 @@ async def _migrate_agent_boards() -> None:
 
 
 async def _migrate_add_task_validation_columns() -> None:
-    """Add task validation gate columns to cards, specs, and sprints."""
+    """Add task validation gate columns to the surviving cards and specs."""
     from sqlalchemy import text as sa_text
 
     # Cards: add validations JSON column
@@ -12111,18 +12111,10 @@ async def _migrate_add_task_validation_columns() -> None:
         ("validation_min_completeness", "INTEGER"),
         ("validation_max_drift", "INTEGER"),
     ]
-    # Sprints: same fields
-    sprint_columns = [
-        ("require_task_validation", "BOOLEAN"),
-        ("validation_min_confidence", "INTEGER"),
-        ("validation_min_completeness", "INTEGER"),
-        ("validation_max_drift", "INTEGER"),
-    ]
 
     migrations = [
         ("cards", card_columns),
         ("specs", spec_columns),
-        ("sprints", sprint_columns),
     ]
 
     async with get_engine().begin() as conn:
@@ -12253,9 +12245,15 @@ async def _migrate_add_agent_seen_board_id() -> None:
     then from the agent's legacy/default board. Unresolved rows stay NULL and
     are intentionally invisible to tenant-scoped reads.
     """
-    from sqlalchemy import text as sa_text
+    from sqlalchemy import inspect, text as sa_text
 
     async with get_engine().begin() as conn:
+        # This historical migration may still be exercised on an old fixture.
+        # Fresh/cut schemas have no retired parent to resolve; never recreate it.
+        has_legacy_qa = await conn.run_sync(lambda sync: inspect(sync).has_table("sprint_qa_items")
+            and inspect(sync).has_table("sprints"))
+        legacy_qa = ("(SELECT s.board_id FROM sprint_qa_items x JOIN sprints s "
+            " ON s.id = x.sprint_id WHERE x.id = agent_seen_items.item_id LIMIT 1),") if has_legacy_qa else ""
         try:
             await conn.execute(
                 sa_text("ALTER TABLE agent_seen_items ADD COLUMN board_id VARCHAR(36)")
@@ -12276,8 +12274,7 @@ async def _migrate_add_agent_seen_board_id() -> None:
                 " ON i.id = x.ideation_id WHERE x.id = agent_seen_items.item_id LIMIT 1),"
                 "(SELECT r.board_id FROM refinement_qa_items x JOIN refinements r "
                 " ON r.id = x.refinement_id WHERE x.id = agent_seen_items.item_id LIMIT 1),"
-                "(SELECT s.board_id FROM sprint_qa_items x JOIN sprints s "
-                " ON s.id = x.sprint_id WHERE x.id = agent_seen_items.item_id LIMIT 1),"
+                f"{legacy_qa}"
                 "(SELECT c.board_id FROM cards c "
                 " WHERE c.id = agent_seen_items.item_id LIMIT 1),"
                 "(SELECT a.board_id FROM activity_logs a "
@@ -19027,16 +19024,16 @@ WHERE NOT trigger.tgisinternal
 
 
 async def _migrate_add_cancellation_columns() -> None:
-    """Add cancellation-justification columns to the 5 lifecycle tables (ITEM 17).
+    """Add cancellation-justification columns to the 4 lifecycle tables (ITEM 17).
 
     ``cancellation_reason`` / ``cancelled_at`` / ``cancelled_by`` are required
-    when an ideation/refinement/spec/sprint/card moves to 'cancelled' and are
+    when an ideation/refinement/spec/card moves to 'cancelled' and are
     cleared on reopen. All nullable — existing rows read as NULL (legacy-safe).
     Idempotent via SQLite duplicate-column handling.
     """
     from sqlalchemy import text as sa_text
 
-    tables = ["ideations", "refinements", "specs", "sprints", "cards"]
+    tables = ["ideations", "refinements", "specs", "cards"]
     columns = [
         ("cancellation_reason", "TEXT"),
         ("cancelled_at", "TIMESTAMP"),
@@ -19079,7 +19076,6 @@ async def _migrate_pagination_indices_and_positions() -> None:
         "ideations",
         "refinements",
         "specs",
-        "sprints",
         "cards",
     )
     # FULL TR3 matrix (tr_8b519755) — every canonical read-path shape,
@@ -19116,20 +19112,6 @@ async def _migrate_pagination_indices_and_positions() -> None:
         # one board-scoped GROUP BY without hydrating Story rows.
         "CREATE INDEX IF NOT EXISTS ix_stories_board_topic_archived "
         "ON stories(board_id, topic_id, archived)",
-        # Sprint lists scoped by spec (TR3 literal ASC form + the
-        # status-filtered DESC/DESC variant from the round-3 addendum).
-        "CREATE INDEX IF NOT EXISTS ix_sprints_spec_archived_updated_id "
-        "ON sprints(spec_id, archived, updated_at, id)",
-        "CREATE INDEX IF NOT EXISTS ix_sprints_spec_status_archived_updated_id "
-        "ON sprints(spec_id, status, archived, updated_at DESC, id DESC)",
-        "CREATE INDEX IF NOT EXISTS ix_sprints_spec_updated_id "
-        "ON sprints(spec_id, updated_at, id)",
-        # MCP list_by_board preserves its legacy sprint order
-        # (created_at ASC, id DESC), independently from the REST list order.
-        "CREATE INDEX IF NOT EXISTS ix_sprints_spec_archived_created_iddesc "
-        "ON sprints(board_id, spec_id, archived, created_at ASC, id DESC)",
-        "CREATE INDEX IF NOT EXISTS ix_sprints_spec_status_archived_created_iddesc "
-        "ON sprints(board_id, spec_id, status, archived, created_at ASC, id DESC)",
         # Lookup/typeahead canonical order (title ASC, id ASC) — with or
         # without a status eligibility filter and with the linked_to_cards
         # EXISTS probe (AC13 covers the lookups too).
@@ -19173,8 +19155,6 @@ async def _migrate_pagination_indices_and_positions() -> None:
         "ON refinement_qa_items(refinement_id) WHERE answered_at IS NULL",
         "CREATE INDEX IF NOT EXISTS ix_spec_qa_items_parent_open "
         "ON spec_qa_items(spec_id) WHERE answered_at IS NULL",
-        "CREATE INDEX IF NOT EXISTS ix_sprint_qa_items_parent_open "
-        "ON sprint_qa_items(sprint_id) WHERE answered_at IS NULL",
     ]
     for table in list_entities:
         # Board-wide list, archived-filtered variant — TR3 literally requires
@@ -25351,7 +25331,6 @@ SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
         _migrate_global_discovery_recovery_control_plane
     ),
     "_migrate_story_ideation_single_link": _migrate_story_ideation_single_link,
-    "_migrate_add_card_sprint_id": _migrate_add_card_sprint_id,
     "_migrate_add_card_knowledge_bases": _migrate_add_card_knowledge_bases,
     "_migrate_add_knowledge_source_columns": _migrate_add_knowledge_source_columns,
     "_migrate_add_kb_lineage_columns": _migrate_add_kb_lineage_columns,
@@ -25359,8 +25338,6 @@ SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
     "_migrate_knowledge_propagation_v2_schema": (
         _migrate_knowledge_propagation_v2_schema
     ),
-    "_migrate_add_sprint_scope_fields": _migrate_add_sprint_scope_fields,
-    "_migrate_add_sprint_lane_fields": _migrate_add_sprint_lane_fields,
     "_migrate_agent_boards": _migrate_agent_boards,
     "_migrate_add_task_validation_columns": _migrate_add_task_validation_columns,
     "_migrate_add_consolidation_resilience_columns": _migrate_add_consolidation_resilience_columns,

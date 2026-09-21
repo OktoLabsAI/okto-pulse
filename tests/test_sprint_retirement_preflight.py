@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import insert, text, update
 
 from okto_pulse.community.adapters import sprint_retirement_preflight as preflight
-from okto_pulse.community.adapters.sqlalchemy_models import Sprint, SprintQAItem, SprintHistory
+from legacy_sprint_schema import Sprint, SprintQAItem, SprintHistory
 from test_card_validation_retirement import prepare, raw_cards, run
 from test_sprint_retirement_references import receipt
 from test_sprint_retirement_embedded import seed_source

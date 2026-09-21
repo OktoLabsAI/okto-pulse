@@ -21,7 +21,8 @@ from okto_pulse.core.ports.historical_archive_read import ArchiveReadRequest, Ar
 from okto_pulse.community.adapters.historical_archive_grant_installation import install_historical_archive_grants
 from okto_pulse.community.adapters.historical_archive_reader import CommunityHistoricalArchiveReader
 from okto_pulse.community.adapters.sprint_retirement_archive import capture_sprint_retirement_archive
-from okto_pulse.community.adapters.sqlalchemy_models import BoardShare, Sprint, SprintHistory, SprintQAItem
+from okto_pulse.community.adapters.sqlalchemy_models import BoardShare
+from legacy_sprint_schema import Sprint, SprintHistory, SprintQAItem
 from okto_pulse.community.adapters.sqlalchemy_unit_of_work import CommunityUnitOfWork
 from okto_pulse.community.adapters.storage import CommunityFileSystemStorage
 from okto_pulse.community.api import historical_archives as api

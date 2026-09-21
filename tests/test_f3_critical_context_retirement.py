@@ -9,7 +9,8 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from okto_pulse.community.adapters.sqlalchemy_critical_context import CommunitySqlAlchemyCriticalContextReader
 from okto_pulse.community.adapters.sqlalchemy_database import build_community_session_factory
-from okto_pulse.community.adapters.sqlalchemy_models import ActivityLog, Base, Board, Card, CardDependency, Spec, Sprint
+from okto_pulse.community.adapters.sqlalchemy_models import ActivityLog, Board, Card, CardDependency, Spec
+from legacy_sprint_schema import Card as LegacyCard, Base, Sprint
 from okto_pulse.core.domain.realm import RealmScope
 from okto_pulse.core.services.critical_context_guard import ContextFingerprintProvider
 
@@ -43,7 +44,7 @@ async def test_live_fingerprint_ignores_sprint_but_keeps_context_and_historical_
                 Board(id="board", name="Board", owner_id="owner", realm_id=RealmScope.local().realm_id),
                 Spec(id="spec", board_id="board", title="Spec", description="Original content", created_by="owner"),
                 Sprint(id="legacy", board_id="board", spec_id="spec", title="Historical Sprint", created_by="owner"),
-                Card(id="card", board_id="board", spec_id="spec", title="Task", created_by="owner",
+                LegacyCard(id="card", board_id="board", spec_id="spec", title="Task", created_by="owner",
                      sprint_id=None if migrated else "legacy", migrated_validation_policy=policy,
                      linked_test_task_ids=["regression"], test_scenario_ids=["scenario"]),
                 Card(id="regression", board_id="board", spec_id="spec", title="Regression", created_by="owner", card_type="test"),

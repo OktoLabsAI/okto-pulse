@@ -402,7 +402,10 @@ def _application_attribute(model: Any, name: str, *default):
     Legacy tables remain owned by offline capture until the atomic schema cut.
     Reject includes, filters, projections and ordering before any SQL executes.
     """
-    attribute = getattr(model, name, *default)
+    try:
+        attribute = getattr(model, name, *default)
+    except AttributeError as error:
+        raise ValueError(f"unsupported_application_attribute:{name}") from error
     relationship = model.__mapper__.relationships.get(name)
     if relationship is not None and relationship.mapper.class_ not in _CLASS_ENTITIES:
         raise ValueError(f"unsupported_application_relationship:{name}")

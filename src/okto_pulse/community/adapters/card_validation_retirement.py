@@ -13,7 +13,7 @@ import json
 import re
 import uuid
 
-from sqlalchemy import LargeBinary, cast, func, insert, select, text
+from sqlalchemy import Boolean, Column, Integer, LargeBinary, MetaData, String, Table, cast, func, insert, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from okto_pulse.core import StorageProvider
@@ -28,7 +28,7 @@ from okto_pulse.community.adapters.historical_archive_grant_installation import 
 from okto_pulse.community.adapters.sprint_retirement_archive import (
     HistoricalArchiveReference, _attach_access, _capture, _cell, _encode,
 )
-from okto_pulse.community.adapters.sqlalchemy_models import Board, DomainEventRow, Spec, Sprint
+from okto_pulse.community.adapters.sqlalchemy_models import Board, DomainEventRow, Spec
 from okto_pulse.community.adapters.sprint_retirement_preflight import inspect_sprint_pretransform
 
 _EVENT = "migration.card_validation_preserved"
@@ -186,9 +186,14 @@ async def _load_cards(connection):
 
 
 async def _load_policy_layers(connection):
+    # Historical SQL projection only. Never register a retired table or mapper
+    # in the operational metadata used by fresh installation.
+    legacy_sprint = Table("sprints", MetaData(), Column("id", String), Column("board_id", String),
+        Column("require_task_validation", Boolean),
+        *(Column(name, Integer) for name in _ATTRIBUTES if name != "require_task_validation"))
     layers, count_total, size_total = {}, 0, 0
     for table, fields in ((Board.__table__, ("settings",)),
-            (Spec.__table__, ("board_id", *_ATTRIBUTES)), (Sprint.__table__, ("board_id", *_ATTRIBUTES))):
+            (Spec.__table__, ("board_id", *_ATTRIBUTES)), (legacy_sprint, ("board_id", *_ATTRIBUTES))):
         count, size = (await connection.execute(select(func.count(), func.coalesce(func.sum(sum(
             func.coalesce(func.length(cast(table.c[name], LargeBinary)), 0) for name in ("id", *fields))), 0)))).one()
         count_total += count

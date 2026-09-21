@@ -14,7 +14,15 @@ from okto_pulse.core.ports.retirement_context import inspect_retirement_context
 from okto_pulse.community.adapters.sprint_retirement_archive import _cell, _encode
 from okto_pulse.community.adapters.sprint_retirement_embedded import _constant, _object
 from okto_pulse.community.adapters.sprint_retirement_inventory import SprintRelationalInventory, _inspect_snapshot
-from okto_pulse.community.adapters.sqlalchemy_models import Base
+
+# Frozen source columns from sqlalchemy_models blob
+# e5c38207a7a66c08bab6d0e2b58816972a6b8487; never infer historical
+# acceptance from the operational metadata. Unknown fields still fail closed.
+_SOURCE_COLUMNS = {
+    "sprints": frozenset(('id', 'spec_id', 'board_id', 'title', 'description', 'spec_version', 'status', 'lane_type', 'origin_sprint_id', 'origin_bug_id', 'start_date', 'end_date', 'objective', 'expected_outcome', 'test_scenario_ids', 'business_rule_ids', 'evaluations', 'skip_test_coverage', 'skip_rules_coverage', 'skip_qualitative_validation', 'validation_threshold', 'require_task_validation', 'validation_min_confidence', 'validation_min_completeness', 'validation_max_drift', 'version', 'labels', 'archived', 'pre_archive_status', 'cancellation_reason', 'cancelled_at', 'cancelled_by', 'created_by', 'created_at', 'updated_at')),
+    "sprint_history": frozenset(('id', 'sprint_id', 'action', 'actor_type', 'actor_id', 'actor_name', 'changes', 'summary', 'version', 'created_at')),
+    "sprint_qa_items": frozenset(('id', 'sprint_id', 'question', 'question_type', 'choices', 'allow_free_text', 'answer', 'selected', 'asked_by', 'answered_by', 'created_at', 'answered_at')),
+}
 
 _MAX_ROW_BYTES = 1024 * 1024
 _MAX_TOTAL_BYTES = 64 * 1024 * 1024
@@ -88,7 +96,7 @@ def inspect_sprint_pretransform(connection, *, max_rows=100_000):
     quote = connection.dialect.identifier_preparer.quote
     for table, kind, required, json_columns in _SOURCES:
         columns = tuple(column["name"] for column in schema.get_columns(table))
-        if not set(required) <= set(columns) or set(columns) - set(Base.metadata.tables[table].columns.keys()):
+        if not set(required) <= set(columns) or set(columns) - _SOURCE_COLUMNS[table]:
             raise ValueError(f"sprint_context_schema_invalid:{table}")
         # Bind the disposition to every physical source field, including author,
         # dates and version. Unknown extension fields require investigation.

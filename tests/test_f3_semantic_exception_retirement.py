@@ -10,9 +10,8 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from okto_pulse.community.adapters.sqlalchemy_database import build_community_session_factory
 from okto_pulse.community.adapters.sqlalchemy_guideline_policy import CommunitySqlAlchemyGuidelinePolicy
-from okto_pulse.community.adapters.sqlalchemy_models import (
-    Base, Sprint, SemanticGuidelineWaiverRow, SemanticGuidelineSkipRow,
-)
+from okto_pulse.community.adapters.sqlalchemy_models import SemanticGuidelineWaiverRow, SemanticGuidelineSkipRow
+from legacy_sprint_schema import Base, Sprint
 from okto_pulse.community.adapters.sqlalchemy_semantic_guideline_assessment import (
     CommunitySqlAlchemySemanticGuidelineAssessment,
 )

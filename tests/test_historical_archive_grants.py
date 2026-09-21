@@ -15,7 +15,8 @@ from okto_pulse.core.ports.historical_archive import (
 from okto_pulse.community.adapters.historical_archive_grant_installation import install_historical_archive_grants
 from okto_pulse.community.adapters.historical_archive_grants import CommunityHistoricalArchiveGrants
 from okto_pulse.community.adapters.sprint_retirement_archive import capture_sprint_retirement_archive
-from okto_pulse.community.adapters.sqlalchemy_models import DomainEventRow, HistoricalArchiveGrant, Sprint
+from okto_pulse.community.adapters.sqlalchemy_models import DomainEventRow, HistoricalArchiveGrant
+from legacy_sprint_schema import Sprint
 from okto_pulse.community.adapters.sqlalchemy_unit_of_work import CommunityUnitOfWork
 from okto_pulse.community.adapters.storage import CommunityFileSystemStorage
 from test_sprint_retirement_access import add_agent

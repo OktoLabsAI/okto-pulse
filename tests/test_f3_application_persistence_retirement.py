@@ -8,7 +8,8 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from okto_pulse.community.adapters.sqlalchemy_application_persistence import CommunitySqlAlchemyApplicationPersistence
 from okto_pulse.community.adapters.sqlalchemy_database import build_community_session_factory
-from okto_pulse.community.adapters.sqlalchemy_models import Base, Board, Spec, SpecQAItem, Sprint, SprintQAItem
+from okto_pulse.community.adapters.sqlalchemy_models import Board, Spec, SpecQAItem
+from legacy_sprint_schema import Base, Sprint, SprintQAItem
 from okto_pulse.core.domain.realm import RealmScope
 from okto_pulse.core.ports.application_persistence import (
     ApplicationFilter, ApplicationGroupCountQuery, ApplicationQuery, ApplicationRecord,
@@ -60,7 +61,7 @@ async def test_retired_relationships_cannot_bypass_catalog_via_query_shapes(oper
         sessions = build_community_session_factory(engine)
         async with sessions() as db:
             adapter = CommunitySqlAlchemyApplicationPersistence()
-            with pytest.raises(ValueError, match="unsupported_application_relationship"):
+            with pytest.raises(ValueError, match="unsupported_application_(relationship|attribute|projection|group_field)"):
                 await getattr(adapter, operation)(db, query)
         assert statements == []
     finally:

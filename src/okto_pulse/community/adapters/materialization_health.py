@@ -30,7 +30,6 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     Ideation,
     Refinement,
     Spec,
-    Sprint,
     Story,
 )
 from okto_pulse.core.kg.board_source_store import decision_sources_from_spec
@@ -355,7 +354,6 @@ class CommunitySqlAlchemyMaterializationCensus:
         Story,
         Ideation,
         Refinement,
-        Sprint,
         Card,
         AmendmentHotfixRevision,
     )

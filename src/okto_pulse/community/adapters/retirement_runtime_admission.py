@@ -35,6 +35,15 @@ async def require_retirement_runtime_admission(engine):
     This is startup admission, not exclusion of concurrent raw database writers.
     The installer must still own its continuous runtime/schema writer window.
     """
+    await _require_admission(engine, runtime=True)
+
+
+async def require_retirement_not_started(engine):
+    """Installer preflight permits its original schema, never retained effects."""
+    await _require_admission(engine, runtime=False)
+
+
+async def _require_admission(engine, *, runtime):
     if engine.dialect.name != "sqlite":
         raise _refuse("retirement_runtime_backend_unsupported")
     async with engine.connect() as connection:
@@ -66,3 +75,9 @@ async def require_retirement_runtime_admission(engine):
                 ))).scalar()
             if effects is not None:
                 raise _refuse("retirement_cutover_incomplete")
+        if runtime:
+            legacy = (await connection.exec_driver_sql("SELECT 1 FROM main.sqlite_schema WHERE "
+                "name COLLATE NOCASE IN ('sprints','sprint_history','sprint_qa_items','sprint_activation_baselines') LIMIT 1")).first()
+            columns = (await connection.exec_driver_sql('PRAGMA main.table_info("cards")')).all()
+            if legacy is not None or any(row[1].casefold() == "sprint_id" for row in columns):
+                raise _refuse("retirement_legacy_schema_requires_offline_cutover")

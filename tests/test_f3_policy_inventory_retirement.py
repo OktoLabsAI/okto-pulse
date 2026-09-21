@@ -13,10 +13,8 @@ from sqlalchemy import event, select
 from okto_pulse.community.adapters.sqlalchemy_database import get_engine, get_session_factory
 from okto_pulse.community.adapters import sqlalchemy_guideline_policy as policy_adapter
 from okto_pulse.community.adapters.sqlalchemy_guideline_policy import CommunitySqlAlchemyGuidelinePolicy
-from okto_pulse.community.adapters.sqlalchemy_models import (
-    Board, Card, Guideline as LegacyGuidelineRow, GuidelineImpactAdoptionRow,
-    Ideation, Refinement, Spec, Sprint,
-)
+from okto_pulse.community.adapters.sqlalchemy_models import Board, Card, Guideline as LegacyGuidelineRow, GuidelineImpactAdoptionRow, Ideation, Refinement, Spec
+from legacy_sprint_schema import Base as HistoricalBase, Sprint
 from okto_pulse.core.domain.guideline_compliance import PolicyProjection
 from okto_pulse.core.domain.guideline_impact import (
     GuidelineImpactPreviewCommand, impact_fence_from_receipt,
@@ -70,11 +68,14 @@ async def _seed_preview():
         session.add_all([
             Board(id=BOARD, name="Historical policy", owner_id="owner"),
             Spec(id="spec-f3-history", board_id=BOARD, title="Spec", created_by="owner"),
-            Sprint(id="sprint-f3-history", board_id=BOARD, spec_id="spec-f3-history",
-                   title="Sprint", created_by="owner"),
             Card(id="card-f3-history", board_id=BOARD, spec_id="spec-f3-history",
                  title="Card", created_by="owner"),
         ])
+        # The historical mapper intentionally has no live ORM relationships.
+        # Persist its surviving parents first, keeping FK enforcement enabled.
+        await session.flush()
+        session.add(Sprint(id="sprint-f3-history", board_id=BOARD, spec_id="spec-f3-history",
+                           title="Sprint", created_by="owner"))
         await CommunitySqlAlchemyGuidelinePolicy(session).create_guideline(
             guideline=Guideline(guideline_id=revision.guideline_id, owner_id="owner",
                                 scope=GuidelineScope.GLOBAL, created_at=NOW),
@@ -119,6 +120,8 @@ async def test_sealed_sprint_history_survives_live_inventory_retirement(
         return legacy_subjects
 
     await _fresh_database(tmp_path / "history.db")
+    async with get_engine().begin() as connection:
+        await connection.run_sync(HistoricalBase.metadata.create_all)
     # Replay the captured pre-retirement inventory only while preparing old
     # storage. Assertions below use the real current adapter, without patches.
     with monkeypatch.context() as old:
@@ -220,6 +223,8 @@ async def test_sealed_sprint_history_survives_live_inventory_retirement(
 @pytest.mark.asyncio
 async def test_live_policy_inventory_keeps_all_other_subjects_and_board_scope(tmp_path):
     await _fresh_database(tmp_path / "live.db")
+    async with get_engine().begin() as connection:
+        await connection.run_sync(HistoricalBase.metadata.create_all)
     async with get_session_factory()() as session:
         session.add_all([
             Board(id=BOARD, name="Board", owner_id="owner"),
@@ -231,8 +236,9 @@ async def test_live_policy_inventory_keeps_all_other_subjects_and_board_scope(tm
                  test_scenario_policy_epoch=7, test_scenarios=[{"id": "scenario"}]),
             Card(id="card", board_id=BOARD, title="Card", created_by="owner", policy_version=5),
             Card(id="other-card", board_id="other-board", title="Other", created_by="owner"),
-            Sprint(id="retired", board_id=BOARD, spec_id="spec", title="Historical", created_by="owner"),
         ])
+        await session.flush()
+        session.add(Sprint(id="retired", board_id=BOARD, spec_id="spec", title="Historical", created_by="owner"))
         await session.commit()
     async with get_session_factory()() as session:
         adapter = CommunitySqlAlchemyGuidelinePolicy(session)

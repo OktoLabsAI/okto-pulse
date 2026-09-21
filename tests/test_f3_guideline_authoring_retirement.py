@@ -7,7 +7,8 @@ import pytest
 from sqlalchemy import text
 
 from okto_pulse.community.adapters.sqlalchemy_guideline_policy import CommunitySqlAlchemyGuidelinePolicy
-from okto_pulse.community.adapters.sqlalchemy_models import GuidelineHeadRow, Sprint
+from okto_pulse.community.adapters.sqlalchemy_models import GuidelineHeadRow
+from legacy_sprint_schema import Sprint
 from okto_pulse.core.domain.guideline_lifecycle import (
     GuidelineLifecycleError, GuidelinePatchCommand, GuidelineRevisionPatch, execute_guideline_patch,
 )

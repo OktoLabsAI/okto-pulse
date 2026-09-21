@@ -6,7 +6,8 @@ import pytest
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from okto_pulse.community.adapters.sqlalchemy_models import Base, Board, Card, Spec, Sprint
+from okto_pulse.community.adapters.sqlalchemy_models import Board, Card, Spec
+from legacy_sprint_schema import Card as LegacyCard, Base, Sprint
 from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import CommunitySemanticSession
 from okto_pulse.community.adapters.sqlalchemy_traceability_read_model import (
     build_lineage_graph, build_traceability_report, resolve_lineage_root,
@@ -39,7 +40,7 @@ async def test_report_and_lineage_preserve_work_without_sprint_nodes(tmp_path, i
             db.add(Sprint(id="retired", board_id="board", spec_id="spec", title="Private archive",
                           status=SprintStatus.CLOSED, created_by="owner"))
             for identity, kind in (("task", CardType.NORMAL), ("test", CardType.TEST), ("bug", CardType.BUG)):
-                db.add(Card(id=identity, board_id="board", spec_id="spec", sprint_id="retired",
+                db.add(LegacyCard(id=identity, board_id="board", spec_id="spec", sprint_id="retired",
                     title=identity, created_by="owner", card_type=kind, status=CardStatus.NOT_STARTED,
                     origin_task_id="task" if kind == CardType.BUG else None,
                     linked_test_task_ids=["test"] if kind == CardType.BUG else []))
@@ -77,7 +78,7 @@ async def test_report_and_lineage_preserve_work_without_sprint_nodes(tmp_path, i
         event.remove(engine.sync_engine, "before_cursor_execute", capture)
         async with factory() as db:
             assert (await db.get(Sprint, "retired")).status == SprintStatus.CLOSED
-            assert (await db.get(Card, "task")).sprint_id == "retired"
+            assert (await db.get(LegacyCard, "task")).sprint_id == "retired"
             assert (await db.get(Card, "bug")).origin_task_id == "task"
     finally:
         await engine.dispose()

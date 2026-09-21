@@ -8,7 +8,8 @@ from sqlalchemy import insert, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from okto_pulse.community.adapters import relational_schema_steps as steps
-from okto_pulse.community.adapters.sqlalchemy_models import Base, Board, Card, Spec, Sprint
+from okto_pulse.community.adapters.sqlalchemy_models import Board, Card, Spec
+from legacy_sprint_schema import Base, Sprint, Card as LegacyCard
 from okto_pulse.core.domain.task_validation_policy import plan_migrated_validation_policy, FIELDS
 from okto_pulse.core.models.schemas import CardResponse
 from okto_pulse.core.services import CardService
@@ -59,7 +60,7 @@ async def test_persisted_compatibility_preserves_each_card_policy_and_public_rea
             for suffix, confidence in [("a", 90), ("b", 60)]:
                 await connection.execute(insert(Sprint.__table__).values(id="sprint-" + suffix, board_id="board",
                     spec_id="spec", title=suffix, created_by="owner", validation_min_confidence=confidence))
-                await connection.execute(insert(Card.__table__).values(id="card-" + suffix, board_id="board",
+                await connection.execute(insert(LegacyCard.__table__).values(id="card-" + suffix, board_id="board",
                     spec_id="spec", sprint_id="sprint-" + suffix, title=suffix, created_by="owner",
                     status="done", validations=[dict(id="historical", confidence=confidence)]))
         factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -67,7 +68,7 @@ async def test_persisted_compatibility_preserves_each_card_policy_and_public_rea
             spec = await reader.get(Spec, "spec")
             planned = []
             for suffix in ("a", "b"):
-                card = await reader.get(Card, "card-" + suffix)
+                card = await reader.get(LegacyCard, "card-" + suffix)
                 sprint = await reader.get(Sprint, "sprint-" + suffix)
                 before = resolve_historical_task_validation_config(card, spec, sprint, {})
                 policy = plan_migrated_validation_policy(card=card, spec=spec, sprint=sprint,
@@ -77,7 +78,7 @@ async def test_persisted_compatibility_preserves_each_card_policy_and_public_rea
         # history archival/ACL and migration fences must precede real detachment.
         async with engine.begin() as connection:
             for identity, _, _, policy in planned:
-                await connection.execute(Card.__table__.update().where(Card.id == identity).values(
+                await connection.execute(LegacyCard.__table__.update().where(LegacyCard.id == identity).values(
                     sprint_id=None, migrated_validation_policy=policy.model_dump(mode="json", exclude_none=True)))
         async with factory() as reader:
             spec = await reader.get(Spec, "spec")

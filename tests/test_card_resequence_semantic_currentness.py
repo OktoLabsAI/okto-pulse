@@ -8,13 +8,8 @@ import uuid
 import pytest
 from sqlalchemy import func, select
 
-from okto_pulse.community.adapters.sqlalchemy_models import (
-    Card,
-    SemanticSubjectVersionEventRow,
-    SemanticSubjectVersionRow,
-    Spec,
-    Sprint,
-)
+from okto_pulse.community.adapters.sqlalchemy_models import Card, SemanticSubjectVersionEventRow, SemanticSubjectVersionRow, Spec
+from legacy_sprint_schema import Sprint
 from okto_pulse.community.adapters.sqlalchemy_semantic_guideline_assessment import (
     CommunitySqlAlchemySemanticGuidelineAssessment,
 )
@@ -117,7 +112,6 @@ async def _add_source_lane_bystanders(session, seed) -> tuple[str, str]:
                 id=bystander_b_id,
                 board_id=seed.board_id,
                 spec_id=seed.spec_id,
-                sprint_id=seed.sprint_id,
                 title="Source lane bystander B",
                 description="B remains semantically unchanged",
                 status=CardStatus.NOT_STARTED,
@@ -129,7 +123,6 @@ async def _add_source_lane_bystanders(session, seed) -> tuple[str, str]:
                 id=bystander_c_id,
                 board_id=seed.board_id,
                 spec_id=seed.spec_id,
-                sprint_id=seed.sprint_id,
                 title="Source lane bystander C",
                 description="C remains semantically unchanged",
                 status=CardStatus.NOT_STARTED,
@@ -522,7 +515,7 @@ async def test_same_column_reorder_is_operational_but_content_remains_semantic(
 
 
 @pytest.mark.asyncio
-async def test_sprint_and_test_scenario_propagation_survives_operational_filter(
+async def test_scenario_propagates_while_historical_sprints_remain_unchanged(
     tmp_path,
 ):
     engine, sessions = await _database(tmp_path / "card-related-propagation.db")
@@ -567,7 +560,7 @@ async def test_sprint_and_test_scenario_propagation_survives_operational_filter(
                 record_id=seed.card_id,
             )
             assert record is not None
-            record.sprint_id = target_sprint_id
+            assert not hasattr(Card, "sprint_id")
             record.test_scenario_ids = [seed.scenario_id]
             await uow.commit()
 
@@ -581,8 +574,8 @@ async def test_sprint_and_test_scenario_propagation_survives_operational_filter(
             assert target_sprint is not None
             assert spec is not None
             assert card.policy_version == baseline_card_version + 1
-            assert source_sprint.version == baseline_source_sprint_version + 1
-            assert target_sprint.version == baseline_target_sprint_version + 1
+            assert source_sprint.version == baseline_source_sprint_version
+            assert target_sprint.version == baseline_target_sprint_version
             assert spec.test_scenario_policy_epoch == baseline_scenario_epoch + 1
             assert (
                 await _semantic_event_count(
@@ -601,7 +594,7 @@ async def test_sprint_and_test_scenario_propagation_survives_operational_filter(
                         entity_type=PolicyEntityType.SPRINT,
                         subject_id=sprint_id,
                     )
-                    == 1
+                    == 0
                 )
             assert (
                 await _semantic_event_count(

@@ -11,9 +11,8 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from okto_pulse.community.adapters.sqlalchemy_database import build_community_session_factory
 from okto_pulse.community.adapters.sqlalchemy_guideline_policy import CommunitySqlAlchemyGuidelinePolicy
-from okto_pulse.community.adapters.sqlalchemy_models import (
-    Card, SemanticSubjectVersionEventRow, SemanticSubjectVersionRow, Sprint,
-)
+from okto_pulse.community.adapters.sqlalchemy_models import Card, SemanticSubjectVersionEventRow, SemanticSubjectVersionRow
+from legacy_sprint_schema import Sprint
 from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
     bind_semantic_subject_actor, queue_semantic_subject_mutation,
 )
@@ -130,7 +129,7 @@ async def test_historical_semantic_receipt_and_mutation_replay_survive_retiremen
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("operation", ["status", "details", "test_scenario_ids", "sprint_id", "create", "delete"])
+@pytest.mark.parametrize("operation", ["status", "details", "test_scenario_ids", "create", "delete"])
 async def test_card_listener_never_bumps_or_queues_historical_sprint(tmp_path, operation):
     baseline, engine, sessions = _restore_history(tmp_path)
     seed = baseline["seed"]
@@ -155,10 +154,10 @@ async def test_card_listener_never_bumps_or_queues_historical_sprint(tmp_path, o
                     await session.delete(card)
                 elif operation == "create":
                     session.add(Card(id="new-card", board_id=seed["board_id"], spec_id=seed["spec_id"],
-                                     sprint_id=seed["sprint_id"], title="Card", created_by="writer"))
+                                     title="Card", created_by="writer"))
                 else:
                     setattr(card, operation, {"status": "in_progress", "details": "New content",
-                                             "test_scenario_ids": [seed["scenario_id"]], "sprint_id": None}[operation])
+                                             "test_scenario_ids": [seed["scenario_id"]]}[operation])
                 await uow.commit()
         event.remove(engine.sync_engine, "before_cursor_execute", capture)
         assert not any("sprints" in sql or "sprint_qa" in sql for sql in statements)
@@ -167,7 +166,7 @@ async def test_card_listener_never_bumps_or_queues_historical_sprint(tmp_path, o
             assert after[0] == before[0]
             for original, current in zip(before[1:], after[1:]):
                 assert [row for row in current if row["subject_type"] == "sprint"] == original
-            if operation in {"details", "test_scenario_ids", "sprint_id", "create"}:
+            if operation in {"details", "test_scenario_ids", "create"}:
                 assert any(row["subject_type"] == "card" and row["last_semantic_editor_id"] == "writer" for row in after[1])
     finally:
         await engine.dispose()

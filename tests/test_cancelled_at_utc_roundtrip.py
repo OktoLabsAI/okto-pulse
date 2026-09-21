@@ -4,14 +4,8 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import Column, Integer, MetaData, Table, create_engine, insert, select
 
-from okto_pulse.community.adapters.sqlalchemy_models import (
-    Card,
-    Ideation,
-    Refinement,
-    Spec,
-    Sprint,
-    UTCDateTime,
-)
+from okto_pulse.community.adapters.sqlalchemy_models import Card, Ideation, Refinement, Spec, UTCDateTime
+from legacy_sprint_schema import Sprint
 
 
 def test_all_cancellable_entities_use_timezone_preserving_type():

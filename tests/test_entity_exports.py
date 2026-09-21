@@ -20,21 +20,8 @@ from okto_pulse.community.adapters.sqlalchemy_entity_export import (
 from okto_pulse.community.adapters.sqlalchemy_database import (
     build_community_session_factory,
 )
-from okto_pulse.community.adapters.sqlalchemy_models import (
-    ArchitectureDesign,
-    ArchitectureDiagramPayload,
-    Base,
-    Board,
-    Card,
-    CardDependency,
-    Ideation,
-    Refinement,
-    Spec,
-    SpecQAItem,
-    Sprint,
-    Story,
-    Topic,
-)
+from okto_pulse.community.adapters.sqlalchemy_models import ArchitectureDesign, ArchitectureDiagramPayload, Board, Card, CardDependency, Ideation, Refinement, Spec, SpecQAItem, Story, Topic
+from legacy_sprint_schema import Card as LegacyCard, Base, Sprint
 from okto_pulse.community.api import entity_exports as api
 from okto_pulse.community.api.auth_deps import require_principal
 from okto_pulse.community.api.deps import get_unit_of_work_factory
@@ -244,7 +231,7 @@ async def test_spec_and_card_exports_ignore_legacy_sprint_without_mutating_histo
                 Spec(id="spec", board_id="board", title="Spec", created_by="owner"),
                 Sprint(id="legacy", board_id="board", spec_id="spec", title="Archived Sprint",
                        description="Historical source unchanged", created_by="owner"),
-                Card(id="card", board_id="board", spec_id="spec", sprint_id="legacy",
+                LegacyCard(id="card", board_id="board", spec_id="spec", sprint_id="legacy",
                      title="Card remains exportable", created_by="owner"),
             ])
             await session.commit()
@@ -281,7 +268,7 @@ async def test_spec_and_card_exports_ignore_legacy_sprint_without_mutating_histo
         event.remove(engine.sync_engine, "before_cursor_execute", capture)
         async with sessions() as session:
             assert (await session.get(Sprint, "legacy")).description == "Historical source unchanged"
-            assert (await session.get(Card, "card")).sprint_id == "legacy"
+            assert (await session.get(LegacyCard, "card")).sprint_id == "legacy"
     finally:
         await engine.dispose()
 

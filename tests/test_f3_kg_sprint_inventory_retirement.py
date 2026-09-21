@@ -10,9 +10,8 @@ from okto_pulse.community.adapters.kg_operational import (
 )
 from okto_pulse.community.adapters.sqlalchemy_kg_governance import CommunitySqlAlchemyKGGovernanceStore
 from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import CommunitySemanticSession
-from okto_pulse.community.adapters.sqlalchemy_models import (
-    Base, Board, Card, ConsolidationDeadLetter, ConsolidationQueue, Spec, Sprint,
-)
+from okto_pulse.community.adapters.sqlalchemy_models import Board, ConsolidationDeadLetter, ConsolidationQueue, Spec
+from legacy_sprint_schema import Card as LegacyCard, Base, Sprint
 from okto_pulse.core.domain.enums import SpecStatus
 from okto_pulse.community.adapters.legacy_sprint_values import HistoricalSprintStatus as SprintStatus
 from okto_pulse.core.domain.realm import RealmScope
@@ -29,8 +28,8 @@ async def database(tmp_path):
         db.add(Board(id="b", name="Board", owner_id="owner"))
         db.add(Spec(id="spec", board_id="b", title="Spec", status=SpecStatus.DONE, created_by="owner"))
         db.add(Sprint(id="old", board_id="b", spec_id="spec", title="Historical", status=SprintStatus.CLOSED, created_by="owner"))
-        db.add(Card(id="card", board_id="b", spec_id="spec", sprint_id="old", title="Card", created_by="owner"))
-        db.add(Card(id="orphan", board_id="b", spec_id=None, sprint_id="old", title="No Spec", created_by="owner"))
+        db.add(LegacyCard(id="card", board_id="b", spec_id="spec", sprint_id="old", title="Card", created_by="owner"))
+        db.add(LegacyCard(id="orphan", board_id="b", spec_id=None, sprint_id="old", title="No Spec", created_by="owner"))
         for kind, identity in (("spec", "spec"), ("sprint", "old"), ("card", "card")):
             db.add(ConsolidationQueue(id=f"q-{kind}", board_id="b", artifact_type=kind,
                 artifact_id=identity, status="failed", source="original", last_error="original failure"))

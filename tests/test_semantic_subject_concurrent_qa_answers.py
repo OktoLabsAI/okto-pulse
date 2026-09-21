@@ -9,7 +9,7 @@ lost version bumps); after it every answer lands, the subject version and the
 semantic head advance by exactly N and the event trail is strictly monotonic.
 
 TS2 — the optimistic fence: a session holding a stale ``Ideation`` /
-``Refinement`` / ``Spec`` / ``Sprint`` fails closed with
+``Refinement`` / ``Spec`` fails closed with
 ``GuidelinePolicyVersionConflict("subject_version_conflict")`` instead of
 overwriting the row written by another transaction.  ``Card.policy_version``
 deliberately stays outside the ORM fence (TR2).
@@ -37,18 +37,8 @@ from okto_pulse.community.adapters.relational_schema_steps import (
 from okto_pulse.community.adapters.sqlalchemy_database import (
     install_community_sqlite_pragmas,
 )
-from okto_pulse.community.adapters.sqlalchemy_models import (
-    Base,
-    Board,
-    Card,
-    Ideation,
-    IdeationQAItem,
-    Refinement,
-    SemanticSubjectVersionEventRow,
-    SemanticSubjectVersionRow,
-    Spec,
-    Sprint,
-)
+from okto_pulse.community.adapters.sqlalchemy_models import Board, Card, Ideation, IdeationQAItem, Refinement, SemanticSubjectVersionEventRow, SemanticSubjectVersionRow, Spec
+from legacy_sprint_schema import Base, Sprint
 from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
     CommunitySemanticSession,
 )
@@ -187,7 +177,6 @@ async def _seed(session: AsyncSession, *, questions: int) -> dict[str, object]:
             id=card_id,
             board_id=board_id,
             spec_id=spec_id,
-            sprint_id=sprint_id,
             title="Card",
             description="Initial card",
             status="not_started",
@@ -322,7 +311,6 @@ async def test_ts1_parallel_qa_answers_serialize_without_500_or_lost_bumps(tmp_p
         (Ideation, "ideation_id", "ideations"),
         (Refinement, "refinement_id", "refinements"),
         (Spec, "spec_id", "specs"),
-        (Sprint, "sprint_id", "sprints"),
     ],
 )
 @pytest.mark.asyncio
@@ -376,6 +364,6 @@ async def test_ts2_stale_flush_fails_closed_with_subject_version_conflict(
 
 def test_card_policy_version_stays_outside_the_orm_fence():
     assert Card.__mapper__.version_id_col is None
-    for model in (Ideation, Refinement, Spec, Sprint):
+    for model in (Ideation, Refinement, Spec):
         assert model.__mapper__.version_id_col.name == "version"
         assert model.__mapper__.version_id_generator is False

@@ -13,7 +13,8 @@ from okto_pulse.community.adapters.sprint_retirement_inventory import (
     SprintRetirementRelationsInvalid,
     read_sprint_retirement_inventory,
 )
-from okto_pulse.community.adapters.sqlalchemy_models import Base, Board, Card, Spec, Sprint
+from okto_pulse.community.adapters.sqlalchemy_models import Board, Spec
+from legacy_sprint_schema import Base, Card, Sprint
 
 
 @pytest_asyncio.fixture
