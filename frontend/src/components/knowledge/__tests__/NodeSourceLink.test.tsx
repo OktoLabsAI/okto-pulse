@@ -71,6 +71,15 @@ describe('KG source navigation shared by graph and Discovery', () => {
     expect(openCard).not.toHaveBeenCalled();
   });
 
+  it('shows an unsupported Sprint source as provenance without navigation', async () => {
+    vi.mocked(getNodeSource).mockResolvedValue({ status: 'unsupported', source_artifact_ref: 'sprint:retired', target: null });
+    render(<View />);
+    await screen.findByText('sprint:retired');
+    expect(screen.queryByRole('button', { name: /^Open / })).not.toBeInTheDocument();
+    expect(screen.getByTestId('stack')).toHaveTextContent('[]');
+    expect(openCard).not.toHaveBeenCalled();
+  });
+
   it('cancels and ignores late results after changing board/node', async () => {
     let finish!: (result: KGNodeSource) => void;
     vi.mocked(getNodeSource).mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));

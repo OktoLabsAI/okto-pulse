@@ -44,6 +44,8 @@ def validate_card_list_query(request: Request) -> None:
     """Return the C7 typed 400 envelope before FastAPI can emit a 422."""
 
     query = request.query_params
+    if "sprint_id" in query:
+        _error("sprint_filter_retired")
     for name in ("offset", "limit"):
         raw = query.get(name)
         if raw is None:
@@ -155,7 +157,6 @@ def card_page_request(
     *,
     status_value: str | None,
     spec_ids: str | None,
-    sprint_id: str | None,
     priority: str | None,
     card_types: str | None,
     assignee_id: str | None,
@@ -170,7 +171,6 @@ def card_page_request(
     filters: list[ApplicationFilter] = []
     for field, value in (
         ("status", status_value),
-        ("sprint_id", sprint_id),
         ("priority", priority),
         ("assignee_id", assignee_id),
     ):

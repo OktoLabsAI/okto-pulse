@@ -320,7 +320,7 @@ def cards_client(tmp_path: Path):
 
 
 FULL_QUERY = (
-    "status=in_progress&spec_ids=s1,s2,__unlinked__&sprint_id=sp1&priority=high"
+    "status=in_progress&spec_ids=s1,s2,__unlinked__&priority=high"
     "&card_types=normal,test&assignee_id=alice&labels=blue,green&search=needle"
     "&include_archived=true&limit=25"
 )
@@ -334,7 +334,7 @@ def test_complete_filter_set_is_pre_limit_and_pages_without_gaps(
     first = cards_client.get(f"/api/v1/boards/b1/cards?{FULL_QUERY}&offset=0")
     assert first.status_code == 200, first.text
     first_body = first.json()
-    assert first_body["total_filtered"] == 30
+    assert first_body["total_filtered"] == 31
     assert first_body["total_overall"] == 38
     assert len(first_body["items"]) == 25
     assert len(statements) <= 6
@@ -347,22 +347,22 @@ def test_complete_filter_set_is_pre_limit_and_pages_without_gaps(
         "knowledge_bases",
         "validations",
         "conclusions",
-    } & set(first_body["items"][0])
-    assert first_body["items"][0]["id"] == "c029"
-    assert first_body["items"][0]["first_pass_confidence"] == 94
-    assert first_body["items"][0]["last_conclusion_completeness"] == 89
-    assert first_body["items"][0]["open_qa_count"] == 1
+    } & set(first_body["items"][1])
+    assert first_body["items"][1]["id"] == "c029"
+    assert first_body["items"][1]["first_pass_confidence"] == 94
+    assert first_body["items"][1]["last_conclusion_completeness"] == 89
+    assert first_body["items"][1]["open_qa_count"] == 1
 
     statements.clear()
     second = cards_client.get(f"/api/v1/boards/b1/cards?{FULL_QUERY}&offset=25")
     assert second.status_code == 200, second.text
     second_body = second.json()
-    assert second_body["total_filtered"] == 30
-    assert len(second_body["items"]) == 5
+    assert second_body["total_filtered"] == 31
+    assert len(second_body["items"]) == 6
     assert len(statements) <= 6
 
     ids = [item["id"] for item in first_body["items"] + second_body["items"]]
-    assert ids == [f"c{index:03d}" for index in range(29, -1, -1)]
+    assert ids == ["d-sprint", *[f"c{index:03d}" for index in range(29, -1, -1)]]
     assert len(ids) == len(set(ids))
     assert {item["labels"][0] for item in first_body["items"]} == {
         "blue",
@@ -459,10 +459,11 @@ def test_missing_board_and_openapi_contract(cards_client: TestClient) -> None:
     operation = cards_client.app.openapi()["paths"]["/api/v1/boards/{board_id}/cards"][
         "get"
     ]
+    assert 'sprint_id' not in {item['name'] for item in operation['parameters']}
+    assert 'sprint_id' not in CardPageItem.model_fields
     assert {item["name"] for item in operation["parameters"]} >= {
         "status",
         "spec_ids",
-        "sprint_id",
         "priority",
         "card_types",
         "assignee_id",
@@ -473,6 +474,13 @@ def test_missing_board_and_openapi_contract(cards_client: TestClient) -> None:
         "limit",
     }
     assert "200" in operation["responses"]
+
+
+@pytest.mark.parametrize('value', ['legacy', ''])
+def test_retired_sprint_filter_is_rejected_instead_of_silently_ignored(cards_client, value):
+    response = cards_client.get(f'/api/v1/boards/b1/cards?sprint_id={value}')
+    assert response.status_code == 400
+    assert response.json()['detail']['error'] == 'sprint_filter_retired'
 
 
 async def _build_unicode_labels_engine(path: Path) -> AsyncEngine:

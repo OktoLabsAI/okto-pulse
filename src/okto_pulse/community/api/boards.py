@@ -297,7 +297,6 @@ async def list_board_cards(
         None,
         description="CSV spec ids; __unlinked__ includes cards without a spec.",
     ),
-    sprint_id: str | None = Query(None),
     priority: str | None = Query(None),
     card_types: str | None = Query(
         None,
@@ -325,7 +324,6 @@ async def list_board_cards(
         board_id,
         status_value=status_filter,
         spec_ids=spec_ids,
-        sprint_id=sprint_id,
         priority=priority,
         card_types=card_types,
         assignee_id=assignee_id,

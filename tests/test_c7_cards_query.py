@@ -52,7 +52,6 @@ def test_complete_filter_request_preserves_three_independent_or_dimensions() -> 
         "b1",
         status_value="in_progress",
         spec_ids="s1,s2,__unlinked__",
-        sprint_id="sp1",
         priority="high",
         card_types="normal,test",
         assignee_id="alice",
@@ -68,7 +67,6 @@ def test_complete_filter_request_preserves_three_independent_or_dimensions() -> 
     assert all(item.field != "archived" for item in request.scope)
     assert {(item.field, item.operator) for item in request.filters} == {
         ("status", "eq"),
-        ("sprint_id", "eq"),
         ("priority", "eq"),
         ("assignee_id", "eq"),
         ("card_type", "in"),
@@ -100,7 +98,6 @@ def test_default_scope_excludes_archived_cards() -> None:
         "b1",
         status_value=None,
         spec_ids=None,
-        sprint_id=None,
         priority=None,
         card_types=None,
         assignee_id=None,

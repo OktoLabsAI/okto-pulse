@@ -745,9 +745,9 @@ def install_guideline_policy_error_handler(app: FastAPI) -> None:
 
 
 def install_request_validation_handler(app: FastAPI) -> None:
-    """Register the canonical RequestValidationError handler (card S-LANE-01).
+    """Register the canonical scenario-type RequestValidationError handler.
 
-    Mapped ``lane_type`` and ``scenario_type`` failures are rejected before a
+    Mapped ``scenario_type`` failures are rejected before a
     service call using their canonical 422 envelopes. Other validation errors
     retain FastAPI's default shape.
     """
@@ -756,7 +756,6 @@ def install_request_validation_handler(app: FastAPI) -> None:
     from fastapi.responses import JSONResponse
 
     from okto_pulse.core.inbound.enum_error_envelope import (
-        canonical_enum_error,
         canonical_scenario_type_error,
     )
 
@@ -765,7 +764,4 @@ def install_request_validation_handler(app: FastAPI) -> None:
         scenario_type_envelope = canonical_scenario_type_error(exc.errors())
         if scenario_type_envelope is not None:
             return JSONResponse(status_code=422, content=scenario_type_envelope)
-        envelope = canonical_enum_error(exc.errors())
-        if envelope is not None:
-            return JSONResponse(status_code=422, content=envelope)
         return await request_validation_exception_handler(request, exc)
