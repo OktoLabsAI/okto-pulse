@@ -211,7 +211,6 @@ from okto_pulse.core.application.errors import (
     ResourceGateError,
     ResourceLineageResolutionError,
     SpecLineagePreflightError,
-    SprintOperationError,
 )
 from okto_pulse.core.services.gate_contracts import (
     GateContractError,
@@ -1811,8 +1810,6 @@ async def move_spec(
         )
     except CancellationReasonRequiredError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.to_dict())
-    except SprintOperationError as e:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=e.to_dict())
     except PolicyTransitionRejected as e:
         raise RESTAdapterContract.http_error(e) from e
     except SubjectEditRequiresDraftError as e:

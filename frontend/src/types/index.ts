@@ -159,7 +159,6 @@ export type AllowedTransitionEntityType =
   | 'refinement'
   | 'spec'
   | 'card'
-  | 'sprint'
   | 'test_scenario';
 
 export interface AllowedTransition {
