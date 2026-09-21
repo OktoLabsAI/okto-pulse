@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from copy import deepcopy
 import json
 
 from fastapi import FastAPI
@@ -13,6 +14,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from okto_pulse.community.adapters.sqlalchemy_entity_export import (
     CommunityEntityExportLimitError,
+    CommunityEntityExportRequestError,
     CommunitySqlAlchemyEntityExportReader,
 )
 from okto_pulse.community.adapters.sqlalchemy_database import (
@@ -117,7 +119,7 @@ def _bundle(
 
 
 @pytest.mark.asyncio
-async def test_reader_supports_six_types_and_fences_realm_and_related_rows() -> None:
+async def test_reader_supports_five_types_and_fences_realm_and_related_rows() -> None:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
@@ -175,7 +177,6 @@ async def test_reader_supports_six_types_and_fences_realm_and_related_rows() -> 
             (EntityExportType.IDEATION, "ideation"),
             (EntityExportType.REFINEMENT, "refinement"),
             (EntityExportType.SPEC, "spec"),
-            (EntityExportType.SPRINT, "sprint"),
             (EntityExportType.CARD, "card"),
         )
         for entity_type, entity_id in cases:
@@ -227,6 +228,62 @@ async def test_reader_supports_six_types_and_fences_realm_and_related_rows() -> 
         )
         assert payload["records"]["card_dependencies"] == ()
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_spec_and_card_exports_ignore_legacy_sprint_without_mutating_history():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    statements = []
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        sessions = build_community_session_factory(engine)
+        async with sessions() as session:
+            session.add_all([
+                Board(id="board", name="Board", owner_id="owner", realm_id="realm"),
+                Spec(id="spec", board_id="board", title="Spec", created_by="owner"),
+                Sprint(id="legacy", board_id="board", spec_id="spec", title="Archived Sprint",
+                       description="Historical source unchanged", created_by="owner"),
+                Card(id="card", board_id="board", spec_id="spec", sprint_id="legacy",
+                     title="Card remains exportable", created_by="owner"),
+            ])
+            await session.commit()
+
+        def capture(_connection, _cursor, statement, _parameters, _context, _executemany):
+            statements.append(statement.lower())
+
+        event.listen(engine.sync_engine, "before_cursor_execute", capture)
+        async with sessions() as session:
+            reader = CommunitySqlAlchemyEntityExportReader(session, clock=lambda: _NOW)
+            for entity_type, identity in ((EntityExportType.SPEC, "spec"), (EntityExportType.CARD, "card")):
+                bundle = await reader.build_bundle(
+                    request=EntityExportRequest(board_id="board", entity_type=entity_type, entity_id=identity),
+                    disclosure=EntityExportDisclosure(frozenset({"spec.entity.read", "card.entity.read"})),
+                    actor_id="owner", realm_scope=RealmScope.tenant("realm"),
+                )
+                raw = bundle.to_dict()
+                assert "sprints" not in {entry["section_key"] for entry in raw["manifest"]["entries"]}
+                base = next(section["payload"]["record"] for section in raw["sections"] if section["section_key"] == "base")
+                assert "sprint_id" not in base
+                if identity == "spec":
+                    cards = next(section for section in raw["sections"] if section["section_key"] == "cards")
+                    assert cards["payload"]["records"]["cards"][0]["title"] == "Card remains exportable"
+            assert not any("from sprints" in sql or "join sprints" in sql for sql in statements)
+            assert not any(sql.lstrip().startswith(("insert ", "update ", "delete ")) for sql in statements)
+            statements.clear()
+            with pytest.raises(CommunityEntityExportRequestError, match="sections_unknown:sprints"):
+                await reader.build_bundle(
+                    request=EntityExportRequest(board_id="board", entity_type=EntityExportType.SPEC, entity_id="spec"),
+                    disclosure=EntityExportDisclosure(frozenset(), ("sprints",)),
+                    actor_id="owner", realm_scope=RealmScope.tenant("realm"),
+                )
+            assert statements == []
+        event.remove(engine.sync_engine, "before_cursor_execute", capture)
+        async with sessions() as session:
+            assert (await session.get(Sprint, "legacy")).description == "Historical source unchanged"
+            assert (await session.get(Card, "card")).sprint_id == "legacy"
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -1429,9 +1486,9 @@ def test_policy_pinpoint_uses_human_target_from_same_sealed_bundle() -> None:
 
 @pytest.mark.parametrize(
     "entity_type",
-    ["story", "ideation", "refinement", "spec", "sprint", "card"],
+    ["story", "ideation", "refinement", "spec", "card"],
 )
-def test_preflight_wire_contract_supports_all_six_types(
+def test_preflight_wire_contract_supports_all_five_types(
     monkeypatch, entity_type: str
 ) -> None:
     bundle = _bundle(entity_type=EntityExportType(entity_type), title="Report")
@@ -1458,6 +1515,49 @@ def test_preflight_wire_contract_supports_all_six_types(
     assert body["scope"] == "complete"
     assert body["sections"][0]["state"] == "included"
     assert body["snapshot_fingerprint"] == bundle.snapshot_fingerprint
+
+
+@pytest.mark.parametrize("operation", ["preflight", "download"])
+def test_retired_sprint_export_is_not_materialized(monkeypatch, operation):
+    async def forbidden(**kwargs):
+        raise AssertionError("Retired export reached persistence")
+
+    monkeypatch.setattr(api, "_materialize_bundle", forbidden)
+    app = FastAPI()
+    app.include_router(api.router, prefix="/api/v1")
+    app.dependency_overrides[require_principal] = lambda: Principal(
+        subject="user", realm_id="realm", actor_kind="human"
+    )
+    app.dependency_overrides[get_unit_of_work_factory] = lambda: object()
+    body = {"scope": "complete"}
+    if operation == "download":
+        body.update(format="markdown", expected_snapshot_fingerprint="a" * 64)
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/v1/boards/board-1/entity-exports/sprint/legacy/{operation}", json=body
+        )
+    assert response.status_code == 404
+
+
+def test_passive_rendering_keeps_preexisting_sprint_report_content():
+    # Previously produced v1 documents remain readable; this detached payload
+    # grants no access to operational entities or to the F2A archive store.
+    raw = _bundle(title="Historical Sprint report").to_dict()
+    raw["subject"]["entity_type"] = "sprint"
+    raw["sections"][0]["payload"]["record"] = {
+        "title": "Historical Sprint report", "objective": "Preserved objective",
+    }
+    raw["sections"].append({"section_key": "qa", "schema_version": "entity-export-section/v1",
+        "payload": {"records": {"sprint_qa_items": [
+            {"question": "Archived question", "answer": "Preserved answer"},
+        ]}}})
+    raw["manifest"]["entries"].append({**raw["manifest"]["entries"][0], "section_key": "qa"})
+    before = deepcopy(raw)
+    for rendered in (render_entity_export_markdown(raw), render_entity_export_html(raw)):
+        for text in ("Historical Sprint report", "Preserved objective", "Archived question", "Preserved answer"):
+            assert text in rendered
+        assert "<script" not in rendered
+    assert raw == before
 
 
 def test_download_stale_and_secure_headers_and_render_after_materialization(

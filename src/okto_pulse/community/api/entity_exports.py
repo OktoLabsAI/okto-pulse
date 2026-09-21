@@ -48,7 +48,6 @@ _SUPPORTED_TYPES = frozenset(
         EntityExportType.IDEATION,
         EntityExportType.REFINEMENT,
         EntityExportType.SPEC,
-        EntityExportType.SPRINT,
         EntityExportType.CARD,
     }
 )

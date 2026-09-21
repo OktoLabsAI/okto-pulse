@@ -27,7 +27,6 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     Ideation,
     Refinement,
     Spec,
-    Sprint,
     Story,
 )
 from okto_pulse.community.services.entity_export_rich_media import (
@@ -97,7 +96,6 @@ _MODELS: dict[EntityExportType, type[Any]] = {
     EntityExportType.IDEATION: Ideation,
     EntityExportType.REFINEMENT: Refinement,
     EntityExportType.SPEC: Spec,
-    EntityExportType.SPRINT: Sprint,
     EntityExportType.CARD: Card,
 }
 
@@ -106,7 +104,6 @@ _ROOT_PERMISSIONS: dict[EntityExportType, str] = {
     EntityExportType.IDEATION: "ideation.entity.read",
     EntityExportType.REFINEMENT: "refinement.entity.read",
     EntityExportType.SPEC: "spec.entity.read",
-    EntityExportType.SPRINT: "sprint.entity.read",
     EntityExportType.CARD: "card.entity.read",
 }
 
@@ -153,7 +150,6 @@ _QA_TABLES = frozenset(
         "ideation_qa_items",
         "refinement_qa_items",
         "spec_qa_items",
-        "sprint_qa_items",
         "qa_items",
     }
 )
@@ -250,11 +246,6 @@ _EMBEDDED_FIELD_SECTIONS: dict[EntityExportType, dict[str, str]] = {
         "project_structure_revision": "project_structure",
         "project_structure_digest": "project_structure",
         "project_structure": "project_structure",
-    },
-    EntityExportType.SPRINT: {
-        "evaluations": "evaluations",
-        "test_scenario_ids": "test_scenarios",
-        "business_rule_ids": "business_rules",
     },
     EntityExportType.CARD: {
         "screen_mockups": "mockups",
@@ -694,18 +685,6 @@ def _definitions(entity_type: EntityExportType) -> tuple[_SectionDefinition, ...
                 ),
             ),
             _SectionDefinition(
-                "sprints",
-                "sprint.entity.read",
-                queries=(
-                    _q(
-                        "sprints",
-                        "entity_fk",
-                        "spec_id",
-                        projected_columns=_IDENTITY_COLUMNS + ("lane_type",),
-                    ),
-                ),
-            ),
-            _SectionDefinition(
                 "research_decision_derivations",
                 "refinement.research_decisions.read",
                 queries=(_q("research_decision_derivations", "entity_fk", "spec_id"),),
@@ -798,49 +777,6 @@ def _definitions(entity_type: EntityExportType) -> tuple[_SectionDefinition, ...
             ),
             *policy,
             *_code_sections(entity_type),
-            *resources,
-        )
-    if entity_type is EntityExportType.SPRINT:
-        return (
-            _SectionDefinition(
-                "cards",
-                "card.entity.read",
-                queries=(
-                    _q(
-                        "cards",
-                        "entity_fk",
-                        "sprint_id",
-                        projected_columns=_CARD_HUMAN_COLUMNS,
-                    ),
-                ),
-            ),
-            _SectionDefinition(
-                "qa",
-                "sprint.qa.read",
-                queries=(_q("sprint_qa_items", "entity_fk", "sprint_id"),),
-            ),
-            _SectionDefinition(
-                "evaluations",
-                "sprint.evaluations.read",
-                embedded_fields=("evaluations",),
-            ),
-            _SectionDefinition(
-                "test_scenarios",
-                "spec.tests.read",
-                embedded_fields=("test_scenario_ids",),
-            ),
-            _SectionDefinition(
-                "business_rules",
-                "spec.rules.read",
-                embedded_fields=("business_rule_ids",),
-            ),
-            _SectionDefinition(
-                "history",
-                "sprint.history_read",
-                queries=(_q("sprint_history", "entity_fk", "sprint_id"),),
-                history_only=True,
-            ),
-            *policy,
             *resources,
         )
     if entity_type is EntityExportType.CARD:
@@ -1340,7 +1276,7 @@ def _model_payload(row: Any, entity_type: EntityExportType) -> dict[str, Any]:
         name = str(column.name)
         if name in _SENSITIVE_COLUMNS:
             continue
-        if entity_type is EntityExportType.CARD and name in _CURRENT_REJECTION_COLUMNS:
+        if entity_type is EntityExportType.CARD and name in _CURRENT_REJECTION_COLUMNS | {"sprint_id"}:
             continue
         if name in separated:
             payload[name] = {
@@ -1607,7 +1543,8 @@ class CommunitySqlAlchemyEntityExportReader:
         base_attributes = [
             getattr(model, column.name)
             for column in model.__table__.columns
-            if column.name not in separated or column.name in allowed_embedded
+            if (column.name not in separated or column.name in allowed_embedded)
+            and not (request.entity_type is EntityExportType.CARD and column.name == "sprint_id")
         ]
         if (
             request.entity_type is EntityExportType.CARD

@@ -64,7 +64,6 @@ const ENTITY_TYPE_LABELS: Record<EntityExportType, string> = {
   ideation: 'Ideation',
   refinement: 'Refinement',
   spec: 'Spec',
-  sprint: 'Sprint',
   card: 'Card',
 };
 

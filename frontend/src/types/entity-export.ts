@@ -3,7 +3,6 @@ export type EntityExportType =
   | 'ideation'
   | 'refinement'
   | 'spec'
-  | 'sprint'
   | 'card';
 
 export type EntityExportFormat = 'markdown' | 'html';
