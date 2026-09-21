@@ -80,6 +80,8 @@ async def test_final_projection_preserves_only_required_expired_evidence_chain(t
         async with async_sessionmaker(engine, expire_on_commit=False)() as session:
             encoded = await planner.prepare_board(session, board_id='board-1',
                 source_rows=tuple(snapshot.rows), cognitive_rows=(), captured_at=NOW + timedelta(days=1))
+            await planner.revalidate_board(session, encoded, board_id='board-1',
+                source_rows=tuple(snapshot.rows), cognitive_rows=())
         document = json.loads(encoded)
         assert document['format'] == 'deterministic-board-projection-plan/v2'
         assert {row['id'] for row in document['dependency_closure']} == {'evidence-y', 'evidence-z'}
@@ -93,6 +95,98 @@ async def test_final_projection_preserves_only_required_expired_evidence_chain(t
         assert dump(path) == before
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_candidate_seed_and_restore_reject_resealed_plan_that_does_not_match_sql(tmp_path):
+    from okto_pulse.community.adapters import retirement_graph_candidate as candidate
+    runtime, storage, run, source = await prepare(tmp_path)
+    try:
+        prepared = await offline.prepare_offline_retirement_projection_inputs(runtime, storage, (), run,
+            migration_builds=MIGRATION, projection_directory=tmp_path / 'projection')
+        handle = prepared['projection_inputs']
+        artifact = handle.directory / 'run.json'
+        original = artifact.read_bytes()
+        malformed = json.loads(original)
+        board = malformed['boards'][0]
+        board['projection']['plans'][0]['projection']['nodes'][0]['title'] = 'Not from the retained SQL'
+        board['sha256'] = hashlib.sha256(inputs._encode(board['projection'])).hexdigest()
+        changed = inputs._encode(malformed)
+        artifact.write_bytes(changed)
+        changed_handle = inputs.RetirementProjectionInputs(handle.directory, hashlib.sha256(changed).hexdigest())
+        assert inputs.read_retirement_projection_inputs(changed_handle) == malformed
+        before = dump(source)
+        recovery = tmp_path / 'candidate-backups'
+        recovery.mkdir()
+        with pytest.raises(ValueError, match='retained_plan_mismatch'):
+            await candidate.prepare_retirement_candidate_seed(runtime, storage, (), run, changed_handle,
+                migration_builds=MIGRATION, recovery_directory=recovery, seed_directory=tmp_path / 'bad-seed')
+        assert not (tmp_path / 'bad-seed').exists() and artifact.read_bytes() == changed
+        artifact.write_bytes(original)
+        seed = await candidate.prepare_retirement_candidate_seed(runtime, storage, (), run, handle,
+            migration_builds=MIGRATION, recovery_directory=recovery, seed_directory=tmp_path / 'seed')
+        # Simulate a retained seed with consistent outer/inner hashes. Restore
+        # must independently reject the content, not rely on prior preparation.
+        artifact.write_bytes(changed)
+        seed_path = seed.directory / 'run.json'
+        seed_document = json.loads(seed_path.read_bytes())
+        seed_document['projection_inputs']['manifest_sha256'] = changed_handle.manifest_sha256
+        encoded_seed = inputs._encode(seed_document)
+        seed_path.write_bytes(encoded_seed)
+        resealed_seed = candidate.RetirementGraphCandidateSeed(seed.directory, hashlib.sha256(encoded_seed).hexdigest())
+        with pytest.raises(ValueError, match='retained_plan_mismatch'):
+            await candidate.restore_retirement_graph_candidate(runtime, storage, (), run, resealed_seed,
+                tmp_path / 'candidate', migration_builds=MIGRATION, confirm_original_offline=True)
+        assert not (tmp_path / 'candidate').exists()
+        assert artifact.read_bytes() == changed and seed_path.read_bytes() == encoded_seed
+        assert dump(source) == before
+        async with runtime.engine.connect() as connection:
+            assert (await connection.exec_driver_sql('PRAGMA query_only')).scalar_one() == 0
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_revalidation_reads_independent_inventory_under_readonly_sql_reservation(tmp_path, monkeypatch):
+    from sqlalchemy import text
+    runtime, storage, run, source = await prepare(tmp_path)
+    try:
+        prepared = await offline.prepare_offline_retirement_projection_inputs(runtime, storage, (), run,
+            migration_builds=MIGRATION, projection_directory=tmp_path / 'projection')
+        document = inputs.read_retirement_projection_inputs(prepared['projection_inputs'])
+        before = dump(source)
+        factory = inputs.make_deterministic_projection_planner
+        def guarded(port, **kwargs):
+            planner = factory(port, **kwargs)
+            revalidate = planner.revalidate_board
+            async def checked(session, *args, **options):
+                with sqlite3.connect(source, timeout=0.01) as competitor:
+                    with pytest.raises(sqlite3.OperationalError, match='locked'):
+                        competitor.execute("UPDATE specs SET title='concurrent' WHERE id='spec-a'")
+                with pytest.raises(Exception, match='readonly'):
+                    await session.execute(text("UPDATE specs SET title='write denied' WHERE id='spec-a'"))
+                return await revalidate(session, *args, **options)
+            planner.revalidate_board = checked
+            return planner
+        monkeypatch.setattr(inputs, 'make_deterministic_projection_planner', guarded)
+        async with runtime.engine.connect() as connection:
+            await connection.exec_driver_sql('BEGIN IMMEDIATE')
+            await inputs.revalidate_retirement_projection_inputs(connection, source, document)
+            assert (await connection.exec_driver_sql('PRAGMA query_only')).scalar_one() == 0
+            await connection.rollback()
+        assert dump(source) == before
+        with sqlite3.connect(source) as writer:
+            writer.execute("UPDATE specs SET title='New source revision' WHERE id='spec-a'")
+        changed = dump(source)
+        async with runtime.engine.connect() as connection:
+            await connection.exec_driver_sql('BEGIN IMMEDIATE')
+            with pytest.raises(ValueError, match='retained_plan_mismatch'):
+                await inputs.revalidate_retirement_projection_inputs(connection, source, document)
+            assert (await connection.exec_driver_sql('PRAGMA query_only')).scalar_one() == 0
+            await connection.rollback()
+        assert dump(source) == changed
+    finally:
+        await runtime.close()
 
 
 @pytest.mark.asyncio

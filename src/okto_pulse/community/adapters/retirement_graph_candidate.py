@@ -31,6 +31,7 @@ from .relational_recovery_snapshot import _readonly, _deadline, _check_time
 from .retirement_bootstrap import _snapshot
 from .retirement_projection_inputs import (
     RetirementProjectionInputs, projection_destination, read_retirement_projection_inputs,
+    revalidate_retirement_projection_inputs,
 )
 from .sqlalchemy_database import _serialized_schema_lifecycle
 from .sprint_retirement_archive import _encode
@@ -127,7 +128,15 @@ async def prepare_retirement_candidate_seed(runtime, storage, graphs, run, proje
             'snapshot': {'directory': str(snapshot.directory), 'manifest_sha256': snapshot.manifest_sha256},
             'generation': 'retirement-' + secrets.token_hex(12)}
         _validate_seed_document(seed_document)
-        sealed = offline._seal(target, seed_document)
+        async with runtime.engine.connect() as connection:
+            await connection.exec_driver_sql('BEGIN IMMEDIATE')
+            try:
+                if await connection.run_sync(_snapshot) != _expected_sql(projection):
+                    raise ValueError('retirement_candidate_live_source_changed')
+                await revalidate_retirement_projection_inputs(connection, source, projection, max_seconds=max_seconds)
+                sealed = offline._seal(target, seed_document)
+            finally:
+                await connection.rollback()
         seed = RetirementGraphCandidateSeed(sealed.directory, sealed.manifest_sha256)
         return seed
 
@@ -267,6 +276,7 @@ async def restore_retirement_graph_candidate(runtime, storage, graphs, run, seed
                 try:
                     if await connection.run_sync(_snapshot) != _expected_sql(projection):
                         raise ValueError('retirement_candidate_live_source_changed')
+                    await revalidate_retirement_projection_inputs(connection, source, projection, max_seconds=max_seconds)
                     _require_routes(source, kg, manifest['routing_inventory'])
                     reference = target.with_name(f'.{target.name}.{secrets.token_hex(12)}.replay') if replay else target
                     with _staged_joint_recovery_restore(snapshot, reference, builds=migration_builds,

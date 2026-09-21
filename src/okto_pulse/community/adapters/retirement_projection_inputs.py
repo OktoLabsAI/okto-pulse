@@ -116,6 +116,43 @@ def _census(source, deadline):
         return boards
 
 
+async def revalidate_retirement_projection_inputs(connection, source, document, *, max_seconds=180):
+    """Re-derive every Board plan while the coordinator holds BEGIN IMMEDIATE.
+
+    This is a read-only check inside the caller's source reservation, not a
+    reusable receipt or authority to write. The caller also checks the complete
+    bootstrap snapshot; no operational table exclusions are introduced here.
+    """
+    if not connection.in_transaction():
+        raise ValueError('retirement_projection_source_transaction_required')
+    deadline = _deadline(max_seconds)
+    boards = _census(_explicit_path(source), deadline)
+    retained = document['boards']
+    if type(retained) is not list or len(retained) != len(boards):
+        raise ValueError('retirement_projection_board_inventory_mismatch')
+    planner = make_deterministic_projection_planner(CommunitySqlAlchemyConsolidationPersistence(),
+        dependencies=RetirementProjectionDependencies(source))
+    query_only = (await connection.exec_driver_sql('PRAGMA query_only')).scalar_one()
+    try:
+        await connection.exec_driver_sql('PRAGMA query_only=ON')
+        async with AsyncSession(bind=connection, autoflush=False, expire_on_commit=False,
+                join_transaction_mode='create_savepoint') as session:
+            for item, (board_id, current) in zip(retained, sorted(boards.items()), strict=True):
+                _check_time(deadline)
+                if (type(item) is not dict or set(item) != {'realm_id', 'metadata', 'projection', 'sha256'}
+                        or item['realm_id'] != current['realm_id'] or item['metadata'] != current['metadata']
+                        or item['projection']['captured_at'] != document['captured_at']):
+                    raise ValueError('retirement_projection_board_inventory_mismatch')
+                encoded = _encode(item['projection'])
+                if hashlib.sha256(encoded).hexdigest() != item['sha256']:
+                    raise ValueError('retirement_projection_board_manifest_mismatch')
+                await planner.revalidate_board(session, encoded, board_id=board_id,
+                    source_rows=current['sources'], cognitive_rows=current['cognitive'])
+                _check_time(deadline)
+    finally:
+        await connection.exec_driver_sql(f'PRAGMA query_only={int(query_only)}')
+
+
 async def capture_retirement_projection_inputs(runtime, graphs, run, document, bootstrap, directory, *, verify_bindings,
         max_seconds=180):
     """Called only by the coordinator after verifying the complete retained run."""
