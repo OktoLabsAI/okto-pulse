@@ -1,0 +1,515 @@
+{
+  "source_core": "10cdc855088e9b1b39891546d15a996b92b7a047",
+  "source_community": "096aeffc5e7949bf13f43ed3f14691585fab29a8",
+  "failed_assessment_origin": "synthetic failed receipt using captured subject via setup-only loader; not a captured pre-retirement assessment",
+  "skip_origin": "synthetic persisted predecessor built from frozen semantic subject; not a captured live CREATE",
+  "semantic_baseline": {
+    "source_core": "c853b92fcff4c9bc311063821644f4d3397f2987",
+    "source_community": "1c647b98e339c187ba3de9ea3c56006a9cd3531f",
+    "seed": {
+      "board_id": "00000000-0000-0000-0000-000000000001",
+      "ideation_id": "00000000-0000-0000-0000-000000000002",
+      "refinement_id": "00000000-0000-0000-0000-000000000003",
+      "spec_id": "00000000-0000-0000-0000-000000000004",
+      "sprint_id": "00000000-0000-0000-0000-000000000005",
+      "card_id": "00000000-0000-0000-0000-000000000006",
+      "scenario_id": "00000000-0000-0000-0000-000000000007",
+      "design_id": "00000000-0000-0000-0000-000000000008"
+    },
+    "snapshot": {
+      "subject": {
+        "board_id": "00000000-0000-0000-0000-000000000001",
+        "entity_type": "sprint",
+        "subject_id": "00000000-0000-0000-0000-000000000005",
+        "subject_version": 2,
+        "subject_edition": null
+      },
+      "content_digest": "73d326be677cfdb540fd3c447c7a4ee9a37b9566708691edb512c3621a8e088f",
+      "last_semantic_editor_id": "historical-author",
+      "captured_at": "2026-09-21T00:00:00+00:00"
+    },
+    "result": {
+      "input_digest": "28b75b194e7965e44903303e8b0510221c4bb5f2a237f4826c6d935b883aa876",
+      "request_digest": "9f0291f135c21e02da7ef07d85e129ab7452d997dcfe6206ab55a5be7a3f3f45",
+      "receipt": {
+        "receipt_id": "00000000-0000-0000-0000-00000000000c",
+        "subject": {
+          "board_id": "00000000-0000-0000-0000-000000000001",
+          "entity_type": "sprint",
+          "subject_id": "00000000-0000-0000-0000-000000000005",
+          "subject_version": 2,
+          "subject_edition": null
+        },
+        "subject_content_digest": "73d326be677cfdb540fd3c447c7a4ee9a37b9566708691edb512c3621a8e088f",
+        "last_semantic_editor_id": "historical-author",
+        "binding_id": "00000000-0000-0000-0000-00000000000b",
+        "binding_revision": 1,
+        "guideline_id": "00000000-0000-0000-0000-000000000009",
+        "guideline_revision_id": "00000000-0000-0000-0000-00000000000a",
+        "guideline_revision_digest": "c26a19aa5a74478854f439409a4ce83949b3de029235a0d112c0591f081e2249",
+        "binding_configuration_digest": "bfff62745b9c63f8f6ff03f45aceffc46333d05c87a077cf71a1fd05469f0f22",
+        "policy_set_digest": "40c542b15e1b575de5b77024fee691928af43fc047e500aab1d370443a6032e5",
+        "binding_head_digest": "52ad59ba7f528cb0e2a00e527367c0c01ef315b13156fccf998dddbe59e61819",
+        "input_digest": "28b75b194e7965e44903303e8b0510221c4bb5f2a237f4826c6d935b883aa876",
+        "request_digest": "9f0291f135c21e02da7ef07d85e129ab7452d997dcfe6206ab55a5be7a3f3f45",
+        "idempotency_key": "assessment-sprint-00000000-0000-0000-0000-000000000005",
+        "enforcement": "blocking",
+        "assessor": {
+          "agent_id": "independent-reviewer",
+          "model_id": "test-model"
+        },
+        "assessor_independent": true,
+        "confidence": 95,
+        "minimum_confidence": 80,
+        "confidence_admissible": true,
+        "state": "passed",
+        "currentness": "current",
+        "metric_results": [
+          {
+            "metric_result_id": "fbd593defde59e946aacc819ba5b470784e3c4ff5e0c41e3cdee1e9966b15ccb",
+            "receipt_id": "00000000-0000-0000-0000-00000000000c",
+            "subject": {
+              "board_id": "00000000-0000-0000-0000-000000000001",
+              "entity_type": "sprint",
+              "subject_id": "00000000-0000-0000-0000-000000000005",
+              "subject_version": 2,
+              "subject_edition": null
+            },
+            "binding_id": "00000000-0000-0000-0000-00000000000b",
+            "guideline_id": "00000000-0000-0000-0000-000000000009",
+            "revision_id": "00000000-0000-0000-0000-00000000000a",
+            "metric_id": "metric-segregation",
+            "metric_code": "segregation",
+            "metric_definition_digest": "d1fbbf4d23dd8ff8218d101fcc825e317e42ae840afe74f18278fbf00ccbc146",
+            "score": 90,
+            "direction": "minimum",
+            "default_threshold": 70,
+            "effective_threshold": 70,
+            "threshold_source": "default",
+            "outcome": "pass",
+            "rationale": "The authored evidence demonstrates segregation.",
+            "evidence_refs": [
+              {
+                "source_type": "sprint",
+                "source_id": "00000000-0000-0000-0000-000000000005",
+                "source_version": 2,
+                "content_hash": "73d326be677cfdb540fd3c447c7a4ee9a37b9566708691edb512c3621a8e088f"
+              }
+            ],
+            "pinpoints": [
+              {
+                "subject": {
+                  "board_id": "00000000-0000-0000-0000-000000000001",
+                  "entity_type": "sprint",
+                  "subject_id": "00000000-0000-0000-0000-000000000005",
+                  "subject_version": 2,
+                  "subject_edition": null
+                },
+                "input_digest": "28b75b194e7965e44903303e8b0510221c4bb5f2a237f4826c6d935b883aa876",
+                "anchor_type": "whole_artifact",
+                "anchor_ref": null,
+                "excerpt_hash": null
+              }
+            ]
+          }
+        ],
+        "recorded_at": "2026-09-21T00:00:00+00:00",
+        "receipt_digest": "c00f031e40e20a3383bac86172ad47ac443fa413f77a2ac8bce80b32cf270589"
+      },
+      "replayed": true
+    }
+  },
+  "mutations": [
+    {
+      "waiver": {
+        "waiver_id": "historical-waiver",
+        "anchor": {
+          "metric_result_id": "f8a85d1d63ca2e905e1fdf6ce68f62d0ef066e8df44a5e569b1262bdff337681",
+          "metric_result_digest": "197489d4d72236854116076ee9da503ede6855956a8caaca68c96d0686dfddd8",
+          "finding_id": "8a5d7439b10197918ee1d691136cc2b4da101af495225438b282dee0d3c02c80",
+          "finding_digest": "1f854129a50afc8a7c2999a0479678608a334d59ad02f24ca6606fcdb23abbca",
+          "receipt_id": "historical-failed-receipt",
+          "receipt_digest": "ea504e0dd2624bd30ee8bd2b09a895785e275485a8d379ae45298c33a023cf4b",
+          "subject": {
+            "board_id": "00000000-0000-0000-0000-000000000001",
+            "entity_type": "sprint",
+            "subject_id": "00000000-0000-0000-0000-000000000005",
+            "subject_version": 2,
+            "subject_edition": null
+          },
+          "subject_content_digest": "73d326be677cfdb540fd3c447c7a4ee9a37b9566708691edb512c3621a8e088f",
+          "guideline_id": "00000000-0000-0000-0000-000000000009",
+          "guideline_revision_id": "00000000-0000-0000-0000-00000000000a",
+          "guideline_revision_digest": "c26a19aa5a74478854f439409a4ce83949b3de029235a0d112c0591f081e2249",
+          "binding_id": "00000000-0000-0000-0000-00000000000b",
+          "binding_revision": 1,
+          "binding_configuration_digest": "bfff62745b9c63f8f6ff03f45aceffc46333d05c87a077cf71a1fd05469f0f22",
+          "metric_id": "metric-segregation",
+          "metric_code": "segregation",
+          "assessment_assessor_id": "independent-reviewer"
+        },
+        "scope_digest": "8ca0aafc9e311b1f01d685a6c96a210cc87eefea50e2b8ccbb3675e19d3e9dfc",
+        "justification": "Historical bounded exception",
+        "evidence_refs": [
+          {
+            "source_type": "review",
+            "source_id": "historical-review",
+            "source_version": 1,
+            "content_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        ],
+        "requested_by": "requester",
+        "requested_at": "2026-09-21T00:00:00+00:00",
+        "original_expires_at": null,
+        "status": "requested",
+        "waiver_revision": 1,
+        "expires_at": null,
+        "last_event_id": "historical-waiver-request",
+        "last_event_type": "request",
+        "last_event_at": "2026-09-21T00:00:00+00:00",
+        "last_event_idempotency_key": "historical-waiver-request",
+        "reviewed_by": null,
+        "reviewed_at": null,
+        "review_reason": null,
+        "revoked_by": null,
+        "revoked_at": null,
+        "expire_reason": null,
+        "last_revalidation_status": null,
+        "last_revalidation_current": null,
+        "last_revalidation_reason_code": null,
+        "last_revalidation_evaluated_at": null,
+        "last_revalidation_currentness_reasons": [],
+        "last_revalidation_scheduled_expiry_observed": false,
+        "head_digest": "6edeba21d18a63d473c30811950454875828fcec0adfe7cfa085247575a09416"
+      },
+      "event": {
+        "event_id": "historical-waiver-request",
+        "predecessor_event_id": null,
+        "waiver_id": "historical-waiver",
+        "waiver_revision": 1,
+        "event_type": "request",
+        "from_status": null,
+        "to_status": "requested",
+        "actor_id": "requester",
+        "occurred_at": "2026-09-21T00:00:00+00:00",
+        "reason": "Historical bounded exception",
+        "evidence_refs": [
+          {
+            "source_type": "review",
+            "source_id": "historical-review",
+            "source_version": 1,
+            "content_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        ],
+        "expires_at": null,
+        "scope_digest": "8ca0aafc9e311b1f01d685a6c96a210cc87eefea50e2b8ccbb3675e19d3e9dfc",
+        "waiver_digest": "6edeba21d18a63d473c30811950454875828fcec0adfe7cfa085247575a09416",
+        "idempotency_key": "historical-waiver-request",
+        "request_digest": "8d9b7e40eed396d42cc341e17dd6ad26bd8d135cedd515ad1a1d3c6fa17ade59",
+        "expire_reason": null,
+        "evaluated_at": null,
+        "revalidation_status": null,
+        "revalidation_current": null,
+        "revalidation_reason_code": null,
+        "currentness_reasons": [],
+        "scheduled_expiry_observed": false
+      }
+    },
+    {
+      "waiver": {
+        "waiver_id": "historical-waiver",
+        "anchor": {
+          "metric_result_id": "f8a85d1d63ca2e905e1fdf6ce68f62d0ef066e8df44a5e569b1262bdff337681",
+          "metric_result_digest": "197489d4d72236854116076ee9da503ede6855956a8caaca68c96d0686dfddd8",
+          "finding_id": "8a5d7439b10197918ee1d691136cc2b4da101af495225438b282dee0d3c02c80",
+          "finding_digest": "1f854129a50afc8a7c2999a0479678608a334d59ad02f24ca6606fcdb23abbca",
+          "receipt_id": "historical-failed-receipt",
+          "receipt_digest": "ea504e0dd2624bd30ee8bd2b09a895785e275485a8d379ae45298c33a023cf4b",
+          "subject": {
+            "board_id": "00000000-0000-0000-0000-000000000001",
+            "entity_type": "sprint",
+            "subject_id": "00000000-0000-0000-0000-000000000005",
+            "subject_version": 2,
+            "subject_edition": null
+          },
+          "subject_content_digest": "73d326be677cfdb540fd3c447c7a4ee9a37b9566708691edb512c3621a8e088f",
+          "guideline_id": "00000000-0000-0000-0000-000000000009",
+          "guideline_revision_id": "00000000-0000-0000-0000-00000000000a",
+          "guideline_revision_digest": "c26a19aa5a74478854f439409a4ce83949b3de029235a0d112c0591f081e2249",
+          "binding_id": "00000000-0000-0000-0000-00000000000b",
+          "binding_revision": 1,
+          "binding_configuration_digest": "bfff62745b9c63f8f6ff03f45aceffc46333d05c87a077cf71a1fd05469f0f22",
+          "metric_id": "metric-segregation",
+          "metric_code": "segregation",
+          "assessment_assessor_id": "independent-reviewer"
+        },
+        "scope_digest": "8ca0aafc9e311b1f01d685a6c96a210cc87eefea50e2b8ccbb3675e19d3e9dfc",
+        "justification": "Historical bounded exception",
+        "evidence_refs": [
+          {
+            "source_type": "review",
+            "source_id": "historical-review",
+            "source_version": 1,
+            "content_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        ],
+        "requested_by": "requester",
+        "requested_at": "2026-09-21T00:00:00+00:00",
+        "original_expires_at": null,
+        "status": "approved",
+        "waiver_revision": 2,
+        "expires_at": null,
+        "last_event_id": "historical-waiver-approve",
+        "last_event_type": "approve",
+        "last_event_at": "2026-09-21T00:00:00+00:00",
+        "last_event_idempotency_key": "historical-waiver-approve",
+        "reviewed_by": "reviewer",
+        "reviewed_at": "2026-09-21T00:00:00+00:00",
+        "review_reason": "Historical independent approval",
+        "revoked_by": null,
+        "revoked_at": null,
+        "expire_reason": null,
+        "last_revalidation_status": null,
+        "last_revalidation_current": null,
+        "last_revalidation_reason_code": null,
+        "last_revalidation_evaluated_at": null,
+        "last_revalidation_currentness_reasons": [],
+        "last_revalidation_scheduled_expiry_observed": false,
+        "head_digest": "1bfa6c37a839da5de12f72e71e9bedc43716b522d4cdcc125283f778734d74e7"
+      },
+      "event": {
+        "event_id": "historical-waiver-approve",
+        "predecessor_event_id": "historical-waiver-request",
+        "waiver_id": "historical-waiver",
+        "waiver_revision": 2,
+        "event_type": "approve",
+        "from_status": "requested",
+        "to_status": "approved",
+        "actor_id": "reviewer",
+        "occurred_at": "2026-09-21T00:00:00+00:00",
+        "reason": "Historical independent approval",
+        "evidence_refs": [
+          {
+            "source_type": "review",
+            "source_id": "historical-review",
+            "source_version": 1,
+            "content_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        ],
+        "expires_at": null,
+        "scope_digest": "8ca0aafc9e311b1f01d685a6c96a210cc87eefea50e2b8ccbb3675e19d3e9dfc",
+        "waiver_digest": "1bfa6c37a839da5de12f72e71e9bedc43716b522d4cdcc125283f778734d74e7",
+        "idempotency_key": "historical-waiver-approve",
+        "request_digest": "033b9235e9adb6c40c10632a732ac7a5b1ab19feee8e1d95208a244cd51f16a1",
+        "expire_reason": null,
+        "evaluated_at": null,
+        "revalidation_status": null,
+        "revalidation_current": null,
+        "revalidation_reason_code": null,
+        "currentness_reasons": [],
+        "scheduled_expiry_observed": false
+      }
+    },
+    {
+      "waiver": {
+        "waiver_id": "historical-waiver",
+        "anchor": {
+          "metric_result_id": "f8a85d1d63ca2e905e1fdf6ce68f62d0ef066e8df44a5e569b1262bdff337681",
+          "metric_result_digest": "197489d4d72236854116076ee9da503ede6855956a8caaca68c96d0686dfddd8",
+          "finding_id": "8a5d7439b10197918ee1d691136cc2b4da101af495225438b282dee0d3c02c80",
+          "finding_digest": "1f854129a50afc8a7c2999a0479678608a334d59ad02f24ca6606fcdb23abbca",
+          "receipt_id": "historical-failed-receipt",
+          "receipt_digest": "ea504e0dd2624bd30ee8bd2b09a895785e275485a8d379ae45298c33a023cf4b",
+          "subject": {
+            "board_id": "00000000-0000-0000-0000-000000000001",
+            "entity_type": "sprint",
+            "subject_id": "00000000-0000-0000-0000-000000000005",
+            "subject_version": 2,
+            "subject_edition": null
+          },
+          "subject_content_digest": "73d326be677cfdb540fd3c447c7a4ee9a37b9566708691edb512c3621a8e088f",
+          "guideline_id": "00000000-0000-0000-0000-000000000009",
+          "guideline_revision_id": "00000000-0000-0000-0000-00000000000a",
+          "guideline_revision_digest": "c26a19aa5a74478854f439409a4ce83949b3de029235a0d112c0591f081e2249",
+          "binding_id": "00000000-0000-0000-0000-00000000000b",
+          "binding_revision": 1,
+          "binding_configuration_digest": "bfff62745b9c63f8f6ff03f45aceffc46333d05c87a077cf71a1fd05469f0f22",
+          "metric_id": "metric-segregation",
+          "metric_code": "segregation",
+          "assessment_assessor_id": "independent-reviewer"
+        },
+        "scope_digest": "8ca0aafc9e311b1f01d685a6c96a210cc87eefea50e2b8ccbb3675e19d3e9dfc",
+        "justification": "Historical bounded exception",
+        "evidence_refs": [
+          {
+            "source_type": "review",
+            "source_id": "historical-review",
+            "source_version": 1,
+            "content_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        ],
+        "requested_by": "requester",
+        "requested_at": "2026-09-21T00:00:00+00:00",
+        "original_expires_at": null,
+        "status": "revoked",
+        "waiver_revision": 3,
+        "expires_at": null,
+        "last_event_id": "new-waiver-revoke",
+        "last_event_type": "revoke",
+        "last_event_at": "2026-09-21T00:01:00+00:00",
+        "last_event_idempotency_key": "new-waiver-revoke",
+        "reviewed_by": "reviewer",
+        "reviewed_at": "2026-09-21T00:00:00+00:00",
+        "review_reason": "Historical independent approval",
+        "revoked_by": "reviewer",
+        "revoked_at": "2026-09-21T00:01:00+00:00",
+        "expire_reason": null,
+        "last_revalidation_status": null,
+        "last_revalidation_current": null,
+        "last_revalidation_reason_code": null,
+        "last_revalidation_evaluated_at": null,
+        "last_revalidation_currentness_reasons": [],
+        "last_revalidation_scheduled_expiry_observed": false,
+        "head_digest": "7740493cca466fb1b686e30dc2081e18a0111ee9c824d293113bf6506e891e71"
+      },
+      "event": {
+        "event_id": "new-waiver-revoke",
+        "predecessor_event_id": "historical-waiver-approve",
+        "waiver_id": "historical-waiver",
+        "waiver_revision": 3,
+        "event_type": "revoke",
+        "from_status": "approved",
+        "to_status": "revoked",
+        "actor_id": "reviewer",
+        "occurred_at": "2026-09-21T00:01:00+00:00",
+        "reason": "Revoke historical exception",
+        "evidence_refs": [
+          {
+            "source_type": "review",
+            "source_id": "historical-review",
+            "source_version": 1,
+            "content_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        ],
+        "expires_at": null,
+        "scope_digest": "8ca0aafc9e311b1f01d685a6c96a210cc87eefea50e2b8ccbb3675e19d3e9dfc",
+        "waiver_digest": "7740493cca466fb1b686e30dc2081e18a0111ee9c824d293113bf6506e891e71",
+        "idempotency_key": "new-waiver-revoke",
+        "request_digest": "4a29545e14bb87d885137b8b54aa6e817e007583ae39db1abcfb7d44924ccb5b",
+        "expire_reason": null,
+        "evaluated_at": null,
+        "revalidation_status": null,
+        "revalidation_current": null,
+        "revalidation_reason_code": null,
+        "currentness_reasons": [],
+        "scheduled_expiry_observed": false
+      }
+    },
+    {
+      "skip": {
+        "skip_id": "90283214c6c7be30adc9b7865480303f7b5a66caa5df97bee860d9601ceefcb9",
+        "skip_revision": 1,
+        "scope": {
+          "subject": {
+            "board_id": "00000000-0000-0000-0000-000000000001",
+            "entity_type": "sprint",
+            "subject_id": "00000000-0000-0000-0000-000000000005",
+            "subject_version": 2,
+            "subject_edition": null
+          },
+          "subject_content_digest": "73d326be677cfdb540fd3c447c7a4ee9a37b9566708691edb512c3621a8e088f",
+          "guideline_id": "00000000-0000-0000-0000-000000000009",
+          "guideline_revision_id": "00000000-0000-0000-0000-00000000000a",
+          "guideline_revision_digest": "c26a19aa5a74478854f439409a4ce83949b3de029235a0d112c0591f081e2249",
+          "binding_id": "00000000-0000-0000-0000-00000000000b",
+          "binding_revision": 1,
+          "binding_configuration_digest": "bfff62745b9c63f8f6ff03f45aceffc46333d05c87a077cf71a1fd05469f0f22"
+        },
+        "scope_digest": "72a63d5cd65911c2fb88d9355e1e80b93ad271a1b215cd11e1f4104f4491088d",
+        "status": "active",
+        "reason": "Historical human decision",
+        "created_by": "owner",
+        "created_at": "2026-09-21T00:00:00+00:00",
+        "last_event_id": "5a0048bacc2351df708762a2fca8bf844546f76c629ddeba178218561cb07a5f",
+        "last_event_type": "create",
+        "last_event_at": "2026-09-21T00:00:00+00:00",
+        "idempotency_key": "historical-skip-create",
+        "request_digest": "c81280dbd8764d7c037c8d47fa6c93ff6a95527875301cdf8e8e4bf081d3a93e",
+        "revoked_by": null,
+        "revoked_at": null,
+        "revocation_reason": null,
+        "skip_digest": "bb5931577edb0240c5cc6a060fc4175a0a05c6163d31380143d5dd11f977fe0a"
+      },
+      "event": {
+        "event_id": "5a0048bacc2351df708762a2fca8bf844546f76c629ddeba178218561cb07a5f",
+        "predecessor_event_id": null,
+        "skip_id": "90283214c6c7be30adc9b7865480303f7b5a66caa5df97bee860d9601ceefcb9",
+        "skip_revision": 1,
+        "event_type": "create",
+        "from_status": null,
+        "to_status": "active",
+        "actor_id": "owner",
+        "actor_kind": "human",
+        "occurred_at": "2026-09-21T00:00:00+00:00",
+        "reason": "Historical human decision",
+        "scope_digest": "72a63d5cd65911c2fb88d9355e1e80b93ad271a1b215cd11e1f4104f4491088d",
+        "skip_digest": "bb5931577edb0240c5cc6a060fc4175a0a05c6163d31380143d5dd11f977fe0a",
+        "idempotency_key": "historical-skip-create",
+        "request_digest": "c81280dbd8764d7c037c8d47fa6c93ff6a95527875301cdf8e8e4bf081d3a93e"
+      }
+    },
+    {
+      "skip": {
+        "skip_id": "90283214c6c7be30adc9b7865480303f7b5a66caa5df97bee860d9601ceefcb9",
+        "skip_revision": 2,
+        "scope": {
+          "subject": {
+            "board_id": "00000000-0000-0000-0000-000000000001",
+            "entity_type": "sprint",
+            "subject_id": "00000000-0000-0000-0000-000000000005",
+            "subject_version": 2,
+            "subject_edition": null
+          },
+          "subject_content_digest": "73d326be677cfdb540fd3c447c7a4ee9a37b9566708691edb512c3621a8e088f",
+          "guideline_id": "00000000-0000-0000-0000-000000000009",
+          "guideline_revision_id": "00000000-0000-0000-0000-00000000000a",
+          "guideline_revision_digest": "c26a19aa5a74478854f439409a4ce83949b3de029235a0d112c0591f081e2249",
+          "binding_id": "00000000-0000-0000-0000-00000000000b",
+          "binding_revision": 1,
+          "binding_configuration_digest": "bfff62745b9c63f8f6ff03f45aceffc46333d05c87a077cf71a1fd05469f0f22"
+        },
+        "scope_digest": "72a63d5cd65911c2fb88d9355e1e80b93ad271a1b215cd11e1f4104f4491088d",
+        "status": "revoked",
+        "reason": "Historical human decision",
+        "created_by": "owner",
+        "created_at": "2026-09-21T00:00:00+00:00",
+        "last_event_id": "c240cc1ba2079e188886fadc23ec233e93ef1f9b61c5d0aaf541da31e53a83c0",
+        "last_event_type": "revoke",
+        "last_event_at": "2026-09-21T00:01:00+00:00",
+        "idempotency_key": "new-skip-revoke",
+        "request_digest": "4938d42cf24e4e1ca47dac0cd70da72c6a23f643892c373ef185e1e89ef7a686",
+        "revoked_by": "owner",
+        "revoked_at": "2026-09-21T00:01:00+00:00",
+        "revocation_reason": "Revoke historical skip",
+        "skip_digest": "f1aed6679e0eb54fcded234866e3592305565f232f58819e8563c54145d01ec0"
+      },
+      "event": {
+        "event_id": "c240cc1ba2079e188886fadc23ec233e93ef1f9b61c5d0aaf541da31e53a83c0",
+        "predecessor_event_id": "5a0048bacc2351df708762a2fca8bf844546f76c629ddeba178218561cb07a5f",
+        "skip_id": "90283214c6c7be30adc9b7865480303f7b5a66caa5df97bee860d9601ceefcb9",
+        "skip_revision": 2,
+        "event_type": "revoke",
+        "from_status": "active",
+        "to_status": "revoked",
+        "actor_id": "owner",
+        "actor_kind": "human",
+        "occurred_at": "2026-09-21T00:01:00+00:00",
+        "reason": "Revoke historical skip",
+        "scope_digest": "72a63d5cd65911c2fb88d9355e1e80b93ad271a1b215cd11e1f4104f4491088d",
+        "skip_digest": "f1aed6679e0eb54fcded234866e3592305565f232f58819e8563c54145d01ec0",
+        "idempotency_key": "new-skip-revoke",
+        "request_digest": "4938d42cf24e4e1ca47dac0cd70da72c6a23f643892c373ef185e1e89ef7a686"
+      }
+    }
+  ]
+}

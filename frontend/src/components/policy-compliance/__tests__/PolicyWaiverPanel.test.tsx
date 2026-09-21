@@ -189,6 +189,29 @@ beforeEach(() => {
 });
 
 describe('PolicyWaiverPanel', () => {
+  it.each(['requested', 'approved', 'revoked', 'expired', 'rejected'] as const)(
+    'keeps a historical Sprint waiver %s readable without mutation actions',
+    async (status) => {
+      grant('guidelines.waiver.read', 'guidelines.waiver.review',
+        'guidelines.waiver.revoke', 'guidelines.waiver.revalidate');
+      policyApiMock.listSemanticMetricWaivers.mockResolvedValue(page([
+        waiver({ entity_type: 'sprint', subject_id: 'historical-sprint', status }),
+      ]));
+      render(<PolicyWaiverPanel boardId="board-1" />);
+      await screen.findByTestId('policy-waiver-waiver-1');
+      expect(screen.getByText('Historical · read only')).toBeInTheDocument();
+      for (const name of ['Approve', 'Reject', 'Revoke', 'Revalidate']) {
+        expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
+      }
+      fireEvent.click(screen.getByRole('button', { name: 'Expand waiver waiver-1' }));
+      expect(screen.getByText('Temporary semantic exception.')).toBeInTheDocument();
+      expect(screen.getByTestId('policy-waiver-history-waiver-1-toggle')).toBeInTheDocument();
+      expect(policyApiMock.reviewSemanticMetricWaiver).not.toHaveBeenCalled();
+      expect(policyApiMock.revokeSemanticMetricWaiver).not.toHaveBeenCalled();
+      expect(policyApiMock.revalidateSemanticMetricWaiver).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([
     {
       label: 'loading',

@@ -97,6 +97,7 @@ from okto_pulse.core.ports.guideline_policy import (
     GuidelinePolicyEditionConflict,
     GuidelinePolicyIdempotencyConflict,
     GuidelinePolicySubjectConflict,
+    require_writable_policy_subject_type,
 )
 
 from .sqlalchemy_models import (
@@ -3461,6 +3462,7 @@ class CommunitySqlAlchemySemanticGuidelineAssessment:
             )
 
         anchor = waiver.anchor
+        require_writable_policy_subject_type(anchor.subject.entity_type)
         if event.event_type is SemanticMetricWaiverEventType.REQUEST:
             finding_row = (
                 await self._session.execute(
@@ -3778,6 +3780,7 @@ class CommunitySqlAlchemySemanticGuidelineAssessment:
                 )
             return _skip_mutation_from_row(replay)
 
+        require_writable_policy_subject_type(scope.subject.entity_type)
         if event.event_type is SemanticPolicySkipEventType.CREATE:
             subject = await self.resolve_policy_subject_snapshot(
                 board_id=board_id,
