@@ -8,6 +8,7 @@ import sqlite3
 
 import pytest
 from sqlalchemy import insert, text
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from okto_pulse.core.ports.historical_archive import ArchiveSection, parse_archive_read_grant
@@ -94,6 +95,27 @@ async def test_permission_change_rejects_replay_without_rewriting_prior_evidence
         await capture_sprint_retirement_archive(engine, storage, migration_id="stable")
     assert Path(reference.storage_path).read_bytes() == previous
     assert (await verify_historical_archive(storage, reference))["access"]["grants"][1]["sections"]["qa"]
+
+
+@pytest.mark.asyncio
+async def test_authority_capture_reads_original_schema_without_new_review_columns_or_credentials(database, tmp_path):
+    engine, _ = database
+    async with engine.begin() as connection:
+        await connection.execute(insert(PermissionPreset).values(id="old-preset", name="Old", flags={"sprint": {
+            "entity": {"read": True}, "qa": {"read": False}, "evaluations": {"read": True}, "history_read": True}}))
+        await add_agent(connection, "reader", preset="old-preset")
+        for table in ("agents", "agent_boards", "permission_presets"):
+            await connection.exec_driver_sql(f"ALTER TABLE {table} DROP COLUMN permission_migration_review")
+    storage = CommunityFileSystemStorage(str(tmp_path / "original-storage"))
+    statements = []
+    event.listen(engine.sync_engine, "before_cursor_execute", lambda *args: statements.append(args[2].lower()))
+    references = await capture_sprint_retirement_archive(engine, storage, migration_id="source-v034")
+    assert not any("permission_migration_review" in sql or "api_key" in sql for sql in statements)
+    document = await verify_historical_archive(storage, references[0])
+    grant = next(parse_archive_read_grant(value) for value in document["access"]["grants"] if value["actor_id"] == "reader")
+    assert grant.sections.content and grant.sections.evaluations and grant.sections.history
+    assert not grant.sections.qa
+    assert await capture_sprint_retirement_archive(engine, storage, migration_id="source-v034") == references
 
 
 @pytest.mark.asyncio

@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from okto_pulse.core import StorageProvider
 from okto_pulse.core.ports.historical_archive import parse_archive_read_grant
 from okto_pulse.community.adapters.sqlalchemy_models import DomainEventRow
-from okto_pulse.community.adapters.historical_archive_grants import _TABLE, _key, _where, _decode
+from okto_pulse.community.adapters.historical_archive_grants import _TABLE, _key, _where, _decode, _REVOKE_EVENT
 from okto_pulse.community.adapters.sprint_retirement_access import capture_archive_access
 from okto_pulse.community.adapters.sprint_retirement_archive import (
     HistoricalArchiveReference,
@@ -23,6 +23,29 @@ from okto_pulse.community.adapters.sprint_retirement_archive import (
 
 _INSTALL_EVENT = "historical_archive.grants_installed"
 _NAMESPACE = uuid.UUID("4a572353-cde7-52fd-9101-baa059f36c1c")
+
+
+async def _require_grant_storage(connection, *, replay):
+    """Create the additive destination only for an initial, verified install.
+
+    An old source has no grant table. A lost destination with retained effects
+    is a different state: never reconstruct its revoked/current authority.
+    """
+    from .relational_schema_steps import _sqlite_owned_table_contract
+
+    kind = (await connection.exec_driver_sql("SELECT type FROM main.sqlite_schema "
+        "WHERE name=? COLLATE NOCASE AND type IN ('table','view')", (_TABLE.name,))).scalar_one_or_none()
+    if kind is None:
+        installed = await connection.scalar(select(DomainEventRow.id)
+            .where(DomainEventRow.event_type.in_((_INSTALL_EVENT, _REVOKE_EVENT))).limit(1))
+        if replay or installed is not None:
+            raise ValueError("historical_archive_grant_storage_missing")
+        await connection.run_sync(_TABLE.create)
+    elif kind != "table":
+        raise ValueError("historical_archive_grant_storage_drift")
+    contract = await connection.run_sync(lambda sync: _sqlite_owned_table_contract(sync, _TABLE))
+    if contract["observed"] != contract["expected"]:
+        raise ValueError("historical_archive_grant_storage_drift")
 
 
 async def install_historical_archive_grants(
@@ -87,6 +110,7 @@ async def _install_historical_archive_grants(
             max_rows=100_000, max_bytes=64 * 1024 * 1024)
         if current[reference.board_id] != document["access"]:
             raise ValueError("historical_archive_authority_changed")
+    await _require_grant_storage(connection, replay=replay)
     population = (await connection.execute(select(func.count()).select_from(_TABLE).where(
         _TABLE.c.archive_id == reference.event_id,
     ))).scalar_one()

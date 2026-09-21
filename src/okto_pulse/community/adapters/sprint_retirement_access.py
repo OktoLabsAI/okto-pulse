@@ -75,10 +75,16 @@ async def capture_archive_access(
     local_sections = capture_authenticated_human_sections_v034(local_flags)
     result, grant_count = {}, 0
     async with AsyncSession(bind=connection, join_transaction_mode="rollback_only", expire_on_commit=False) as session:
-        preset_rows = (await session.execute(select(PermissionPreset).order_by(PermissionPreset.id))).scalars().all()
+        # Capture the actual v0.3.4 source before any permission reconciliation.
+        # Loading whole current mappers would require new review columns and
+        # unnecessarily fetch credentials. Only these historical facts decide
+        # access, through the frozen public Core authority port below.
+        preset_rows = (await session.execute(select(PermissionPreset.id, PermissionPreset.flags,
+            PermissionPreset.base_preset_id).order_by(PermissionPreset.id))).all()
         presets = tuple(HistoricalArchivePresetFacts(row.id, row.flags, row.base_preset_id) for row in preset_rows)
         for board_id, origin_ids in sorted(origins.items()):
-            board = await session.get(Board, board_id)
+            board = (await session.execute(select(Board.id, Board.realm_id, Board.owner_id)
+                .where(Board.id == board_id))).one_or_none()
             # Canonical Board access treats a legacy NULL realm as local only.
             if board is None or (board.realm_id or LOCAL_REALM_ID) != LOCAL_REALM_ID:
                 raise ValueError("historical_archive_authority_board_scope_invalid")
@@ -89,11 +95,12 @@ async def capture_archive_access(
             subjects = [("human", principal.subject, local_sections
                 if board_membership_allows_read(owner_id=board.owner_id, actor_id=principal.subject,
                     share_permission=share) else _DENIED)]
-            bindings = (await session.execute(select(AgentBoard).where(
+            bindings = (await session.execute(select(AgentBoard.agent_id, AgentBoard.permission_overrides).where(
                 AgentBoard.board_id == board_id,
-            ).order_by(AgentBoard.agent_id))).scalars().all()
+            ).order_by(AgentBoard.agent_id))).all()
             for binding in bindings:
-                agent = await session.get(Agent, binding.agent_id)
+                agent = (await session.execute(select(Agent.id, Agent.is_active, Agent.permission_flags,
+                    Agent.permissions, Agent.preset_id).where(Agent.id == binding.agent_id))).one_or_none()
                 sections = (_DENIED if agent is None or not bool(getattr(agent, "is_active", True)) else
                     resolve_historical_archive_sections_v034(agent_flags=agent.permission_flags,
                         legacy_permissions=agent.permissions, preset_id=agent.preset_id, presets=presets,

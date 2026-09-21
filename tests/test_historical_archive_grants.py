@@ -67,6 +67,90 @@ async def test_install_and_replay_preserve_revocation_and_immutable_archive(data
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("late_failure", [False, True])
+async def test_initial_install_creates_missing_destination_atomically(database, tmp_path, late_failure):
+    engine, path = database
+    storage, reference = await capture(database, tmp_path)
+    async with engine.begin() as connection:
+        await connection.run_sync(HistoricalArchiveGrant.__table__.drop)
+        if late_failure:
+            await connection.exec_driver_sql("CREATE TRIGGER refuse_archive_install BEFORE INSERT ON domain_events "
+                "WHEN NEW.event_type='historical_archive.grants_installed' BEGIN SELECT RAISE(ABORT,'injected'); END")
+    if late_failure:
+        with sqlite3.connect(path) as connection:
+            before = list(connection.iterdump())
+        with pytest.raises(Exception, match="injected"):
+            await install_historical_archive_grants(engine, storage, reference)
+        with sqlite3.connect(path) as connection:
+            assert list(connection.iterdump()) == before
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql("DROP TRIGGER refuse_archive_install")
+    assert await install_historical_archive_grants(engine, storage, reference) == 2
+    assert await install_historical_archive_grants(engine, storage, reference) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("new_origin", [False, True])
+async def test_missing_destination_with_prior_installation_is_not_recreated(database, tmp_path, new_origin):
+    engine, path = database
+    storage, reference = await capture(database, tmp_path)
+    await install_historical_archive_grants(engine, storage, reference)
+    if new_origin:
+        async with engine.begin() as connection:
+            await connection.execute(insert(Sprint).values(id="another", board_id="board-b", spec_id="spec-b",
+                title="Another", created_by="owner"))
+        references = await capture_sprint_retirement_archive(engine, storage, migration_id="second")
+        reference = next(item for item in references if item.board_id == "board-b")
+    async with engine.begin() as connection:
+        await connection.run_sync(HistoricalArchiveGrant.__table__.drop)
+    with sqlite3.connect(path) as connection:
+        before = list(connection.iterdump())
+    with pytest.raises(ValueError, match="grant_storage_missing"):
+        await install_historical_archive_grants(engine, storage, reference)
+    with sqlite3.connect(path) as connection:
+        assert list(connection.iterdump()) == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", ["view", "extra_column"])
+async def test_initial_install_refuses_unclassified_destination_schema(database, tmp_path, shape):
+    engine, path = database
+    storage, reference = await capture(database, tmp_path)
+    async with engine.begin() as connection:
+        if shape == "view":
+            await connection.run_sync(HistoricalArchiveGrant.__table__.drop)
+            await connection.exec_driver_sql("CREATE VIEW historical_archive_grants AS SELECT 1 AS id")
+        else:
+            await connection.exec_driver_sql("ALTER TABLE historical_archive_grants ADD COLUMN extension TEXT")
+    with sqlite3.connect(path) as connection:
+        before = list(connection.iterdump())
+    with pytest.raises(ValueError, match="grant_storage_drift"):
+        await install_historical_archive_grants(engine, storage, reference)
+    with sqlite3.connect(path) as connection:
+        assert list(connection.iterdump()) == before
+
+
+@pytest.mark.asyncio
+async def test_retained_revocation_alone_prevents_recreating_a_lost_destination(database, tmp_path):
+    engine, path = database
+    storage, reference = await capture(database, tmp_path)
+    await install_historical_archive_grants(engine, storage, reference)
+    async with CommunityUnitOfWork(AsyncSession(engine)) as uow:
+        await uow.begin_consistent_read()
+        await revoke(uow.historical_archive_grants)
+        await uow.commit()
+    async with engine.begin() as connection:
+        await connection.exec_driver_sql("DELETE FROM domain_events WHERE event_type='historical_archive.grants_installed'")
+        await connection.run_sync(HistoricalArchiveGrant.__table__.drop)
+    with sqlite3.connect(path) as connection:
+        before = list(connection.iterdump())
+    with pytest.raises(ValueError, match="grant_storage_missing"):
+        await install_historical_archive_grants(engine, storage, reference)
+    with sqlite3.connect(path) as connection:
+        assert list(connection.iterdump()) == before
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("change", [{"realm_id": "other"}, {"board_id": "board-b"},
     {"origin_kind": "other"}, {"origin_id": "other"}, {"actor_kind": "human"}, {"actor_id": "other"}])
 async def test_lookup_requires_every_scope_and_identity_component(database, tmp_path, change):
