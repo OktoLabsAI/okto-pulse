@@ -74,9 +74,6 @@ _ENTITY_CLASSES = {
     "spec_history": models.SpecHistory,
     "spec_knowledge_base": models.SpecKnowledgeBase,
     "spec_qa_item": models.SpecQAItem,
-    "sprint": models.Sprint,
-    "sprint_history": models.SprintHistory,
-    "sprint_qa_item": models.SprintQAItem,
     "story": models.Story,
     "story_ideation_link": models.StoryIdeationLink,
     "topic": models.Topic,
@@ -137,8 +134,6 @@ _PARENT_SCOPE_PATHS: dict[str, tuple[str, str]] = {
     "spec_history": ("spec_id", "spec"),
     "spec_knowledge_base": ("spec_id", "spec"),
     "spec_qa_item": ("spec_id", "spec"),
-    "sprint_history": ("sprint_id", "sprint"),
-    "sprint_qa_item": ("sprint_id", "sprint"),
 }
 
 
@@ -184,7 +179,7 @@ def _realm_predicate(entity: str, scope: RealmScope):
     return (
         select(parent_model.id)
         .where(
-            parent_model.id == getattr(model, foreign_key),
+            parent_model.id == _application_attribute(model, foreign_key),
             _realm_predicate(parent_entity, scope),
         )
         .exists()
@@ -329,7 +324,7 @@ def _predicate(model: Any, item: ApplicationFilter):
             .scalar_subquery()
         )
     else:
-        column = getattr(model, item.field)
+        column = _application_attribute(model, item.field)
     value: Any = item.value
     # SQLite's CURRENT_TIMESTAMP stores second precision without a fractional
     # suffix, while SQLAlchemy datetime binds include ``.000000``. Lexical
@@ -401,13 +396,26 @@ def _predicate(model: Any, item: ApplicationFilter):
     raise ValueError(f"unsupported_application_operator:{item.operator}")
 
 
+def _application_attribute(model: Any, name: str, *default):
+    """Retired ORM relations cannot bypass the operational entity catalog.
+
+    Legacy tables remain owned by offline capture until the atomic schema cut.
+    Reject includes, filters, projections and ordering before any SQL executes.
+    """
+    attribute = getattr(model, name, *default)
+    relationship = model.__mapper__.relationships.get(name)
+    if relationship is not None and relationship.mapper.class_ not in _CLASS_ENTITIES:
+        raise ValueError(f"unsupported_application_relationship:{name}")
+    return attribute
+
+
 def _load_option(model: Any, path: str):
     parts = path.split(".")
-    relationship = getattr(model, parts[0])
+    relationship = _application_attribute(model, parts[0])
     option = selectinload(relationship)
     related_model = relationship.property.mapper.class_
     for part in parts[1:]:
-        relationship = getattr(related_model, part)
+        relationship = _application_attribute(related_model, part)
         option = option.selectinload(relationship)
         related_model = relationship.property.mapper.class_
     return option
@@ -441,7 +449,6 @@ def _projection_expression(model: Any, field_name: str) -> Any:
             models.RefinementQAItem.refinement_id,
         ),
         models.Spec: (models.SpecQAItem, models.SpecQAItem.spec_id),
-        models.Sprint: (models.SprintQAItem, models.SprintQAItem.sprint_id),
     }.get(model)
     if field_name == "open_qa_count" and open_qa_binding is not None:
         qa_model, parent_id = open_qa_binding
@@ -548,7 +555,7 @@ def _projection_expression(model: Any, field_name: str) -> Any:
             .scalar_subquery()
             .label(field_name)
         )
-    column = getattr(model, field_name, None)
+    column = _application_attribute(model, field_name, None)
     if column is None:
         raise ValueError(f"unsupported_application_projection:{field_name}")
     return column.label(field_name)
@@ -847,7 +854,7 @@ class CommunitySqlAlchemyApplicationPersistence:
                 *(_load_option(model, path) for path in query.includes)
             )
         for field_name, descending in query.order_by:
-            column = getattr(model, field_name)
+            column = _application_attribute(model, field_name)
             statement = statement.order_by(
                 column.desc() if descending else column.asc()
             )
@@ -889,6 +896,11 @@ class CommunitySqlAlchemyApplicationPersistence:
         if query.select_fields and query.includes:
             raise ValueError("application_projection_includes_conflict")
 
+        # Validate the complete requested shape before the count/page query,
+        # including when the page is empty or uses the Refinement count path.
+        projections = tuple(_projection_expression(model, field) for field in query.select_fields)
+        include_options = tuple(_load_option(model, path) for path in query.includes)
+
         # Refinement query-plan tests (TR2) require the canonical index order
         # to remain free of a table-level TEMP B-TREE. SQLite's COUNT window
         # introduces such a sort even when the underlying page is indexable;
@@ -925,7 +937,7 @@ class CommunitySqlAlchemyApplicationPersistence:
                 )
             )
         for field_name, descending in query.order_by:
-            column = getattr(model, field_name)
+            column = _application_attribute(model, field_name)
             key_statement = key_statement.order_by(
                 column.desc() if descending else column.asc()
             )
@@ -946,10 +958,7 @@ class CommunitySqlAlchemyApplicationPersistence:
             fetch_id_label = "__okto_fetch_id"
             fetch_statement = select(
                 model.id.label(fetch_id_label),
-                *(
-                    _projection_expression(model, field_name)
-                    for field_name in query.select_fields
-                ),
+                *projections,
             )
             if model is models.Refinement and "ideation_title" in query.select_fields:
                 fetch_statement = fetch_statement.select_from(models.Refinement).join(
@@ -965,9 +974,7 @@ class CommunitySqlAlchemyApplicationPersistence:
             )
         fetch_statement = fetch_statement.where(model.id.in_(ordered_ids))
         if query.includes:
-            fetch_statement = fetch_statement.options(
-                *(_load_option(model, path) for path in query.includes)
-            )
+            fetch_statement = fetch_statement.options(*include_options)
         fetch_result = await context.execute(
             fetch_statement.execution_options(populate_existing=True)
         )
@@ -1041,7 +1048,7 @@ class CommunitySqlAlchemyApplicationPersistence:
             raise ValueError("application_group_count_fields_required")
         group_columns: list[Any] = []
         for field_name in query.group_by:
-            column = getattr(model, field_name, None)
+            column = _application_attribute(model, field_name, None)
             if column is None:
                 raise ValueError(f"unsupported_application_group_field:{field_name}")
             group_columns.append(column)
@@ -1123,9 +1130,9 @@ class CommunitySqlAlchemyApplicationPersistence:
         for field_name, expected in expected_values.items():
             if field_name not in model.__table__.columns:
                 raise ValueError(f"unsupported_application_fence_field:{field_name}")
-            predicates.append(getattr(model, field_name) == expected)
+            predicates.append(_application_attribute(model, field_name) == expected)
         fence_values = {
-            column.key: getattr(model, column.key)
+            column.key: _application_attribute(model, column.key)
             for column in model.__table__.columns
             if column.primary_key or column.onupdate is not None
         }
@@ -1266,6 +1273,7 @@ class CommunitySqlAlchemyApplicationPersistence:
     async def refresh(
         self, context: Any, record: ApplicationRecord
     ) -> ApplicationRecord:
+        _model(record.entity)
         await self.flush(context)
         rows = await self.list(
             context,
@@ -1304,7 +1312,6 @@ class CommunitySqlAlchemyApplicationPersistence:
             ("ideation_qa_items", True),
             ("refinement_qa_items", True),
             ("spec_qa_items", True),
-            ("sprint_qa_items", True),
             ("qa_items", False),
         )
         fixed: dict[str, int] = {}
