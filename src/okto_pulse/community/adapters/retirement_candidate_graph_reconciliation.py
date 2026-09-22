@@ -101,11 +101,14 @@ def _edge_identity(row):
 
 
 def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata, deadline, history=None):
-    # Historical records qualify only by their full authenticated fingerprint.
-    # They remain unclassified, even when their literal preservation is proven.
+    # Prior records qualify by a full fingerprint, preserved or independently
+    # reconciled against the authenticated property trace. Both stay unclassified.
     delta = history['delta'] if history is not None else {}
     prior_nodes = {(row['node_type'], row['node_id']): row['fingerprint']
         for row in delta.get('unchanged_nodes', ())}
+    unchanged_nodes = set(prior_nodes)
+    prior_nodes.update({(row['after']['node_type'], row['after']['node_id']): row['after']['fingerprint']
+        for row in delta.get('changed_nodes', ())})
     prior_edges = Counter({_edge_identity(row): row['count'] for row in delta.get('retained_edges', ())})
     nodes, metadata, identities, hashes = {}, {}, [], {}
     edges, new_edges, connected = [], [], set()
@@ -192,7 +195,7 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
             if len(new_edges) != expected_edge_count or len(new_edges) != len(set(new_edges)):
                 raise ValueError('retirement_candidate_graph_edge_census_changed')
             orphans = set(nodes) - connected
-            if orphans - preserved_nodes or orphans & set(expected_by_identity):
+            if orphans - unchanged_nodes or orphans & set(expected_by_identity):
                 raise ValueError('retirement_candidate_graph_orphan_detected')
         finally:
             reader.close()
@@ -203,6 +206,7 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
             for root in roots]),
         'source_metadata_root_count': len(expected_metadata), 'source_metadata_validation': 'passed',
         'historical_node_count': len(preserved_nodes),
+        'historical_property_change_count': len(delta.get('changed_nodes', ())),
         'historical_edge_count': sum(row['count'] for row in delta.get('retained_edges', ())),
         'historical_orphan_count': len(orphans),
         'history_classification': 'pending' if preserved_nodes or delta.get('retained_edges') else 'not_applicable',
@@ -217,11 +221,17 @@ def verify_candidate_graph_reconciliation(target, boards, *, projection, deadlin
     """
     histories, global_history = {}, 'no_prior_records'
     if historical_observations is not None:
-        if historical_observations.get('format') != 'retirement-candidate-history-observations/v2':
+        if historical_observations.get('format') != 'retirement-candidate-history-observations/v3':
             raise ValueError('retirement_candidate_history_observations_invalid')
+        proofs = historical_observations['property_composition']
         for item in historical_observations['graphs']:
-            if item['history_state'] == 'prior_changes_unclassified':
+            delta = item['delta']
+            if delta['removed_nodes'] or delta['removed_edges']:
                 raise ValueError('retirement_candidate_prior_changes_unclassified')
+            for change in delta['changed_nodes']:
+                if (item['scope'] != 'board' or sum(proof == {'board_id': item['board_id'], **change}
+                        for proof in proofs) != 1):
+                    raise ValueError('retirement_candidate_prior_changes_unclassified')
             if item['scope'] == 'global_discovery':
                 global_history = item['history_state']
                 if item['delta']['introduced_nodes'] or item['delta']['introduced_edges']:
@@ -269,6 +279,6 @@ def verify_candidate_graph_reconciliation(target, boards, *, projection, deadlin
         raise ValueError('retirement_candidate_history_scope_unplanned')
     pending = (any(report['history_classification'] == 'pending' for report in reports)
         or global_history != 'no_prior_records')
-    return {'format': 'retirement-candidate-graph-reconciliation/v4',
+    return {'format': 'retirement-candidate-graph-reconciliation/v5',
         'state': 'source_projection_reconciled_history_pending' if pending else 'source_graph_reconciled',
         'global_history_state': global_history, 'boards': reports}

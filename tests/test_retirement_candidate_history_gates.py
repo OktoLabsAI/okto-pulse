@@ -34,3 +34,19 @@ def test_current_root_must_not_be_an_orphan_even_when_its_record_is_preserved(mo
     refs = {} if preserved else {(node.type_name, node.key): 'session-a'}
     with pytest.raises(ValueError, match='graph_orphan_detected'):
         reconcile._board_graph(binding, refs, 0, roots, _deadline(30), prior)
+
+
+@pytest.mark.parametrize('damage', ['unproved', 'removed_node', 'removed_edge', 'global'])
+def test_property_proof_does_not_authorize_unproved_changes_removals_or_global_scope(damage):
+    before = {'node_type': 'Entity', 'node_id': 'old', 'fingerprint': 'a' * 64}
+    after = {**before, 'fingerprint': 'b' * 64}
+    change = {'before': before, 'after': after}
+    delta = {'changed_nodes': [change], 'removed_nodes': [before] if damage == 'removed_node' else [],
+        'removed_edges': [{'count': 1}] if damage == 'removed_edge' else []}
+    observed = {'format': 'retirement-candidate-history-observations/v3',
+        'graphs': [{'scope': 'global_discovery' if damage == 'global' else 'board',
+            'board_id': 'board', 'history_state': 'prior_changes_unclassified', 'delta': delta}],
+        'property_composition': [] if damage == 'unproved' else [{'board_id': 'board', **change}]}
+    with pytest.raises(ValueError, match='prior_changes_unclassified'):
+        reconcile.verify_candidate_graph_reconciliation(None, [], projection={}, deadline=_deadline(30),
+            historical_observations=observed)

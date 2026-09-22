@@ -14,7 +14,7 @@ import sqlite3
 from types import SimpleNamespace
 
 from okto_pulse.core.ports.consolidation import ExactConsolidationAckReceipt
-from okto_pulse.core.ports.projection_effects import validated_projection_effect_extension
+from okto_pulse.core.ports.projection_effects import ProjectionPropertyEffects, validated_projection_effect_extension
 
 from .global_discovery_recovery import CommunityRelationalRecoverySnapshotFingerprint
 from .materialization_health import materialization_generation_key
@@ -87,7 +87,7 @@ def _inserted(changes, table, field, receipts, receipt_field):
     return {row[field]: row for row in added}
 
 
-def verify_candidate_sql_delta(baseline_path, candidate_path, receipts, *, deadline):
+def verify_candidate_sql_delta(baseline_path, candidate_path, receipts, *, deadline, effects_out=None):
     """Check complete table bags and classify only rows owned by exact ACKs.
 
     This certifies only receipt-owned relational projection effects. Callers
@@ -173,6 +173,9 @@ def verify_candidate_sql_delta(baseline_path, candidate_path, receipts, *, deadl
         settings_added, settings_removed = changes.get('app_settings', ([], []))
         first, last = {}, {}
         for ack in receipts:
+            if (ack.board_id in last and ack.previous_materialization_generation
+                    != last[ack.board_id].materialization_generation):
+                raise ValueError('retirement_candidate_sql_delta_ack_order_changed')
             first.setdefault(ack.board_id, ack)
             last[ack.board_id] = ack
         keys = {materialization_generation_key(board_id): board_id for board_id in first}
@@ -224,6 +227,13 @@ def verify_candidate_sql_delta(baseline_path, candidate_path, receipts, *, deadl
             expected_revision_delta = 0
         _sidecars_absent(baseline_path)
         _sidecars_absent(candidate_path)
+        if effects_out is not None:
+            # Export only after every audit/ref/ACK and complete SQL delta passes.
+            # Order is the sealed execution order, checked by generation chaining.
+            effects_out.extend(ProjectionPropertyEffects.from_payload(value)
+                for ack in receipts
+                if (value := json.loads(outbox[ack.outbox_event_id]['payload'])
+                    .get('projection_property_effects')) is not None)
         return {'format': 'retirement-candidate-sql-delta/v1',
             'state': 'receipt_owned_projection_effects' if receipts else 'no_projection_effects',
             'ack_count': len(receipts), 'node_ref_count': len(refs),

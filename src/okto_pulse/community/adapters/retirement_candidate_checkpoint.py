@@ -155,8 +155,9 @@ async def verify_projected_candidate(target, *, seed, seed_document, projection,
         await engine.dispose()
     from .retirement_candidate_sql_delta import verify_candidate_sql_delta
 
+    property_effects = []
     verify_candidate_sql_delta(Path(seed_document['snapshot']['directory']) / 'relational/database.sqlite3',
-        target / 'database.sqlite3', tuple(all_receipts), deadline=deadline)
+        target / 'database.sqlite3', tuple(all_receipts), deadline=deadline, effects_out=property_effects)
     from .retirement_candidate_graph_reconciliation import (
         verify_candidate_graph_reconciliation,
     )
@@ -165,7 +166,8 @@ async def verify_projected_candidate(target, *, seed, seed_document, projection,
 
     snapshot = JointRecoverySnapshot(Path(seed_document['snapshot']['directory']),
         seed_document['snapshot']['manifest_sha256'])
-    historical_observations = observe_candidate_history(target, snapshot, max_seconds=max_seconds)
+    historical_observations = observe_candidate_history(target, snapshot, max_seconds=max_seconds,
+        property_effects=tuple(property_effects))
     if historical_observations != projected['historical_observations']:
         raise ValueError('retirement_candidate_checkpoint_history_observations_changed')
     if verify_candidate_graph_reconciliation(

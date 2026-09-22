@@ -32,7 +32,7 @@ _FIELDS = (
 
 
 
-def read_graph_record_census(reader, *, deadline, budget):
+def read_graph_record_census(reader, *, deadline, budget, node_observer=None):
     """Read one pinned logical stream; callers own authentication and closing."""
     nodes, relations, identities = [], Counter(), set()
     measured = LogicalFingerprintAccumulator.for_schema(reader.schema())
@@ -47,6 +47,8 @@ def read_graph_record_census(reader, *, deadline, budget):
                 raise ValueError('retirement_historical_census_duplicate_node')
             identities.add(identity)
             measured.add_node(node)
+            if node_observer is not None:
+                node_observer(reader.schema(), node)
             single = LogicalFingerprintAccumulator(measured.schema_hex)
             single.add_node(node)
             record = {'type': node.type_name, 'id': node.key, 'sha256': single.digest(),
@@ -84,7 +86,7 @@ def read_graph_record_census(reader, *, deadline, budget):
             for key, count in sorted(relations.items())],
     }
 
-def read_retirement_historical_graph_census(snapshot, *, max_seconds=180):
+def read_retirement_historical_graph_census(snapshot, *, max_seconds=180, node_observer=None):
     """Bind a bounded per-record inventory to a verified joint recovery snapshot."""
     deadline = _deadline(max_seconds)
     manifest = verify_joint_recovery_snapshot(snapshot, max_seconds=max_seconds)
@@ -94,7 +96,9 @@ def read_retirement_historical_graph_census(snapshot, *, max_seconds=180):
         path = snapshot.directory / graph['file']
         reader = LogicalGraphFileSnapshotSource(path).open_snapshot()
         try:
-            measured, records = read_graph_record_census(reader, deadline=deadline, budget=budget)
+            measured, records = read_graph_record_census(reader, deadline=deadline, budget=budget,
+                node_observer=(lambda schema, node: node_observer(graph['scope'], graph['board_id'], schema, node))
+                    if node_observer is not None else None)
             certificate = graph['certificate']
             if (not reader.manifest_verified or measured.schema_hex != certificate['schema_digest']
                     or measured.digest() != certificate['fingerprint']

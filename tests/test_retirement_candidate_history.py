@@ -2,7 +2,10 @@
 
 import shutil
 
+import pytest
+
 from okto_grafx import connect
+from okto_pulse.core.ports.projection_effects import ProjectionPropertyEffect, ProjectionPropertyEffects
 
 from okto_pulse.community.adapters.graph_backend_binding import CommunityGraphBackendBindingStore
 from okto_pulse.community.adapters.retirement_candidate_history import observe_candidate_history
@@ -58,3 +61,17 @@ def test_candidate_observes_preserved_retired_source_content_change_and_global_e
     assert len(global_scope['unchanged_nodes']) == 1
     assert global_scope['introduced_edges'][0]['count'] == 2
     assert not global_scope['removed_edges']
+    original = next(corpus for corpus in sources[4] if corpus.schema.scope == 'board').nodes[0]
+    effects = (ProjectionPropertyEffects('board-one', 'verified-session',
+        (ProjectionPropertyEffect.from_values('Decision', 'baseline',
+            {'title': original.properties['title']}, {'title': 'changed history'}),)),)
+    composed = observe_candidate_history(target, snapshot, property_effects=effects)
+    assert composed['property_composition'] == [{'board_id': 'board-one', **board['changed_nodes'][0]}]
+    assert composed['state'] == 'observed_not_classified'
+    binding = bindings.inspect_board_binding('board-one')
+    with connect(binding.physical_path, page_size=8192) as graph:
+        with graph.begin('write') as writer:
+            writer.execute("MATCH (n:Decision {id:'baseline'}) SET n.content='undeclared change'")
+        graph.checkpoint()
+    with pytest.raises(ValueError, match='final_node_mismatch'):
+        observe_candidate_history(target, snapshot, property_effects=effects)
