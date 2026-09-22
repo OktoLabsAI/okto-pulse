@@ -1,4 +1,4 @@
-"""Closed Pulse 0.5.0 schema manifest for the inactive Grafx adapter.
+"""Closed Pulse 0.6.0 schema manifest for the Grafx adapter.
 
 The Core contract owns logical names and relationship ordering.  The existing
 Community DDL remains the authority for physical node-column order.  This

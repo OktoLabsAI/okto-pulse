@@ -123,7 +123,7 @@ class SchemaCensus:
     relation_property_defs: int
 
 
-# Board: 11 typed nodes of 44 columns each, plus BoardMeta's 5, over 69 concrete
+# Board 0.6.0: 11 typed nodes of 49 columns each, plus BoardMeta's 5, over 80 concrete
 # endpoint triples of 7 columns each, against 11 embedding spaces.
 #
 # Written as literals, deliberately. Computing them from the same authorities
@@ -132,10 +132,10 @@ class SchemaCensus:
 # which is precisely the drift this is here to catch.
 BOARD_CENSUS: Final[SchemaCensus] = SchemaCensus(
     node_types=12,
-    relation_layouts=69,
+    relation_layouts=80,
     vector_spaces=11,
-    node_property_defs=489,
-    relation_property_defs=483,
+    node_property_defs=544,
+    relation_property_defs=560,
 )
 
 # Global Discovery: 4 nodes of 8/6/6/10 columns, 7 layouts carrying `weight`

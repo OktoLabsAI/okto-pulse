@@ -87,7 +87,7 @@ async def test_final_projection_preserves_only_required_expired_evidence_chain(t
             assert {'evidence-y', 'evidence-z', 'evidence-1'} <= {row['id'] for row in membership}
             assert 'evidence-unrelated' not in {row['id'] for row in membership}
         document = json.loads(encoded)
-        assert document['format'] == 'deterministic-board-projection-plan/v2'
+        assert document['format'] == 'deterministic-board-projection-plan/v3'
         assert {row['id'] for row in document['dependency_closure']} == {'evidence-y', 'evidence-z'}
         plans = {item['source']['artifact_id']: item for item in document['plans']}
         assert {'evidence-y', 'evidence-z', 'evidence-1'} <= plans.keys()

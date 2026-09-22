@@ -82,7 +82,7 @@ def _validate_seed_document(document):
         document['projection_inputs']['manifest_sha256'])
     projection = read_retirement_projection_inputs(projection_handle)
     if (projection['offline_run_sha256'] != document['offline_run_sha256']
-            or any(board['projection']['format'] != 'deterministic-board-projection-plan/v2'
+            or any(board['projection']['format'] != 'deterministic-board-projection-plan/v3'
                 for board in projection['boards'])):
         raise ValueError('retirement_candidate_projection_mismatch')
     snapshot = JointRecoverySnapshot(Path(document['snapshot']['directory']), document['snapshot']['manifest_sha256'])
@@ -344,7 +344,7 @@ async def _restore_retirement_graph_candidate(runtime, storage, graphs, run, see
                             )
 
                             executed['graph_reconciliation'] = verify_candidate_graph_reconciliation(
-                                stage, executed['boards'], deadline=_deadline(max_seconds))
+                                stage, executed['boards'], projection=projection, deadline=_deadline(max_seconds))
                             projection_receipt = offline._seal(stage / 'projection-receipt', executed)
                             state = 'projected_not_reconciled'
                             # Binding paths are relative, so the final rename does not

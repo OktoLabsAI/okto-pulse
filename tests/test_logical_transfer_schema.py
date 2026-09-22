@@ -30,7 +30,7 @@ class TestBoardScope:
     def test_the_derived_schema_matches_its_frozen_census(self) -> None:
         schema = board_logical_schema()
         assert len(schema.node_types) == BOARD_CENSUS.node_types == 12
-        assert len(schema.relation_layouts) == BOARD_CENSUS.relation_layouts == 69
+        assert len(schema.relation_layouts) == BOARD_CENSUS.relation_layouts == 80
         assert len(schema.vector_spaces) == BOARD_CENSUS.vector_spaces == 11
 
     def test_board_meta_is_carried_with_its_own_key(self) -> None:
@@ -58,13 +58,26 @@ class TestBoardScope:
     def test_one_layout_name_spans_several_endpoint_pairs(self) -> None:
         layouts = board_logical_schema().relation_layouts
         names = {layout.name for layout in layouts}
-        assert len(layouts) == 69
+        assert len(layouts) == 80
         assert len(names) == 16
         supersedes = {
             layout.identity for layout in layouts if layout.name == "supersedes"
         }
         assert ("supersedes", "Decision", "Decision") in supersedes
         assert ("supersedes", "Alternative", "Alternative") in supersedes
+
+    def test_source_chronology_and_bug_links_belong_to_current_transfer_contract(self):
+        schema = board_logical_schema()
+        for node in schema.node_types:
+            if node.name == 'BoardMeta':
+                continue
+            for name in ('source_created_at', 'source_updated_at', 'resolved_at'):
+                assert node.property_def(name).type == 'timestamp_us'
+            for name in ('source_status', 'severity'):
+                assert node.property_def(name).type == 'string'
+        identities = {layout.identity for layout in schema.relation_layouts}
+        assert {('violates', 'Bug', 'Requirement'), ('violates', 'Bug', 'Criterion'),
+            ('derives_from', 'Requirement', 'Requirement')} <= identities
 
     def test_every_layout_carries_the_relation_columns(self) -> None:
         for layout in board_logical_schema().relation_layouts:

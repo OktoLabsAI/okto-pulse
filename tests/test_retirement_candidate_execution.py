@@ -79,6 +79,8 @@ async def test_failed_private_execution_can_retry_from_seed_and_keeps_original_p
         assert receipt['graph_reconciliation']['boards'][0]['node_count'] == 4
         assert receipt['graph_reconciliation']['boards'][0]['edge_count'] == 5
         assert receipt['graph_reconciliation']['boards'][0]['zero_orphan_validation'] == 'passed'
+        assert receipt['graph_reconciliation']['boards'][0]['source_metadata_validation'] == 'passed'
+        assert receipt['graph_reconciliation']['boards'][0]['source_metadata_root_count'] == 3
         # ACK membership keeps the census task reference; graph roots use card.
         assert {ack['membership_source_ref'] for ack in receipt['boards'][0]['acks']} == {'spec:spec-a', 'task:card-a', 'task:card-b'}
         bindings = CommunityGraphBackendBindingStore(target / 'kg-artifacts')
@@ -174,6 +176,8 @@ async def test_failed_private_execution_can_retry_from_seed_and_keeps_original_p
         from okto_pulse.community.adapters.retirement_candidate_graph_reconciliation import (
             verify_candidate_graph_reconciliation,
         )
+        from okto_pulse.community.adapters.retirement_projection_inputs import read_retirement_projection_inputs
+        source_plan = read_retirement_projection_inputs(projection['projection_inputs'])
 
         changed_graph_evidence = tmp_path / 'changed-graph-evidence'
         shutil.copytree(target, changed_graph_evidence)
@@ -183,7 +187,30 @@ async def test_failed_private_execution_can_retry_from_seed_and_keeps_original_p
                     "WHERE id=(SELECT id FROM kuzu_node_refs ORDER BY id LIMIT 1)")
         with pytest.raises(ValueError, match='graph_node_census_changed'):
             verify_candidate_graph_reconciliation(
-                changed_graph_evidence, receipt['boards'], deadline=_deadline(60))
+                changed_graph_evidence, receipt['boards'], projection=source_plan, deadline=_deadline(60))
+        changed_temporal = tmp_path / 'changed-temporal'
+        shutil.copytree(target, changed_temporal)
+        changed_binding = CommunityGraphBackendBindingStore(changed_temporal / 'kg-artifacts').inspect_board_binding('board-a')
+        with connect(changed_binding.physical_path, page_size=changed_binding.page_size) as graph:
+            original_date = graph.execute("MATCH (n:Entity) WHERE n.source_artifact_ref='card:card-a' "
+                "RETURN n.source_created_at").rows[0][0]
+            with graph.begin('write') as writer:
+                writer.execute("MATCH (n:Entity) WHERE n.source_artifact_ref='card:card-a' "
+                    "SET n.source_created_at=NULL")
+            graph.checkpoint()
+        with pytest.raises(ValueError, match='source_metadata_changed:source_created_at'):
+            verify_candidate_graph_reconciliation(changed_temporal, receipt['boards'],
+                projection=source_plan, deadline=_deadline(60))
+        with connect(changed_binding.physical_path, page_size=changed_binding.page_size) as graph:
+            with graph.begin('write') as writer:
+                writer.execute("MATCH (n:Entity) WHERE n.source_artifact_ref='card:card-a' "
+                    "SET n.source_created_at=$stamp", {'stamp': original_date})
+                writer.execute("MATCH (n:Entity) WHERE n.source_artifact_ref='board:board-a' "
+                    "SET n.source_created_at=$stamp", {'stamp': original_date})
+            graph.checkpoint()
+        with pytest.raises(ValueError, match='source_metadata_changed:source_created_at'):
+            verify_candidate_graph_reconciliation(changed_temporal, receipt['boards'],
+                projection=source_plan, deadline=_deadline(60))
         marker = target / 'unexpected-payload'
         marker.write_text('candidate changed after checkpoint')
         with pytest.raises(ValueError, match='checkpoint_content_changed'):

@@ -186,7 +186,7 @@ def canonical_corpus(scope: str) -> Corpus:
 
     corpus = Corpus(schema, tuple(nodes), tuple(relations))
     expected = {
-        "board": LogicalCounts(24, 70, 1_468, 11),
+        "board": LogicalCounts(24, 81, 1_655, 11),
         "global_discovery": LogicalCounts(8, 8, 63, 4),
     }[scope]
     if corpus.counts != expected:

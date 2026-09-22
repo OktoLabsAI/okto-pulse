@@ -1,6 +1,7 @@
 """Read-only source/graph reconciliation for a private retirement candidate."""
 
 from contextlib import closing
+from datetime import datetime, timezone
 import hashlib
 import json
 import sqlite3
@@ -15,6 +16,8 @@ from .relational_recovery_snapshot import _check_time, _readonly, _sidecars_abse
 
 _MAX_NODES = 100_000
 _MAX_EDGES = 500_000
+_SOURCE_FIELDS = ('source_created_at', 'source_updated_at', 'source_status', 'severity', 'resolved_at')
+_DATE_FIELDS = frozenset({'source_created_at', 'source_updated_at', 'resolved_at'})
 
 
 def _digest(value):
@@ -52,23 +55,67 @@ def _relational_evidence(database_path, receipts):
     return refs, edge_count
 
 
-def _board_graph(binding, expected_refs, expected_edge_count, deadline):
+def _source_expectations(board_plan):
+    expected = {}
+    for plan in board_plan['plans']:
+        projection = plan['projection']
+        if projection is None:
+            continue
+        metadata = projection.get('source_metadata')
+        if type(metadata) is not dict:
+            raise ValueError('retirement_candidate_source_metadata_missing')
+        root_ref = plan['source']['artifact_type'] + ':' + plan['source']['artifact_id']
+        root_nodes = [node for node in projection['nodes'] if node['source_artifact_ref'] == root_ref]
+        if set(metadata) != ({root_ref} if root_nodes else set()):
+            raise ValueError('retirement_candidate_source_metadata_scope')
+        for ref, values in metadata.items():
+            if (ref in expected or type(values) is not dict or set(values) != set(_SOURCE_FIELDS)
+                    or any(value is not None and type(value) is not str for value in values.values())):
+                raise ValueError('retirement_candidate_source_metadata_invalid')
+            expected[ref] = values
+    return expected
+
+
+def _source_value(name, value):
+    if value is None or name not in _DATE_FIELDS:
+        return value
+    stamp = datetime.fromisoformat(value)
+    if stamp.tzinfo is None:
+        raise ValueError('retirement_candidate_source_metadata_naive')
+    delta = stamp.astimezone(timezone.utc) - datetime(1970, 1, 1, tzinfo=timezone.utc)
+    return (delta.days * 86400 + delta.seconds) * 1_000_000 + delta.microseconds
+
+
+def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata, deadline):
     nodes = {}
+    observed_metadata = set()
     with connect(binding.physical_path, page_size=binding.page_size, read_only=True) as graph:
         for node_type in NODE_TYPES:
             _check_time(deadline)
             rows = graph.execute(f'MATCH (n:{node_type}) RETURN n.id, '
-                'n.source_artifact_ref, n.source_session_id, n.created_by_agent').rows
+                'n.source_artifact_ref, n.source_session_id, n.created_by_agent, '
+                + ', '.join(f'n.{name}' for name in _SOURCE_FIELDS)).rows
             for row in rows:
                 identity = node_type, str(row[0])
                 if (identity in nodes or not row[1] or not row[2] or not row[3]
                         or str(row[1]).startswith('sprint:')):
                     raise ValueError('retirement_candidate_graph_node_invalid')
                 nodes[identity] = (str(row[1]), str(row[2]), str(row[3]))
+                source_ref = str(row[1])
+                expected = expected_metadata.get(source_ref, {})
+                for name, actual in zip(_SOURCE_FIELDS, row[4:], strict=True):
+                    wanted = _source_value(name, expected.get(name))
+                    observed = (actual.micros if actual is not None and name in _DATE_FIELDS else actual)
+                    if observed != wanted:
+                        raise ValueError('retirement_candidate_source_metadata_changed:' + name)
+                if source_ref in expected_metadata:
+                    observed_metadata.add(source_ref)
                 if len(nodes) > _MAX_NODES:
                     raise ValueError('retirement_candidate_graph_limit')
         if set(nodes) != set(expected_refs):
             raise ValueError('retirement_candidate_graph_node_census_changed')
+        if observed_metadata != set(expected_metadata):
+            raise ValueError('retirement_candidate_source_metadata_incomplete')
         if any(nodes[identity][1] != session_id
                 for identity, session_id in expected_refs.items()):
             raise ValueError('retirement_candidate_graph_node_session_changed')
@@ -108,10 +155,13 @@ def _board_graph(binding, expected_refs, expected_edge_count, deadline):
         for (kind, node_id), values in nodes.items())
     return {'node_count': len(nodes), 'edge_count': len(edges),
         'node_sha256': _digest(canonical_nodes), 'edge_sha256': _digest(sorted(edges)),
+        'source_metadata_sha256': _digest(expected_metadata),
+        'source_metadata_root_count': len(expected_metadata),
+        'source_metadata_validation': 'passed',
         'zero_orphan_validation': 'passed'}
 
 
-def verify_candidate_graph_reconciliation(target, boards, *, deadline):
+def verify_candidate_graph_reconciliation(target, boards, *, projection, deadline):
     """Bind every candidate node/edge to exact ACK evidence and reject orphans."""
     if type(boards) is not list:
         raise ValueError('retirement_candidate_graph_boards_invalid')
@@ -120,6 +170,9 @@ def verify_candidate_graph_reconciliation(target, boards, *, deadline):
     _sidecars_absent(database_path)
     reports = []
     seen_boards = set()
+    planned = {item['projection']['board_id']: item['projection'] for item in projection['boards']}
+    if len(planned) != len(projection['boards']) or len(planned) != len(boards):
+        raise ValueError('retirement_candidate_graph_boards_invalid')
     for board in boards:
         _check_time(deadline)
         if type(board) is not dict or type(board.get('acks')) is not list:
@@ -138,9 +191,11 @@ def verify_candidate_graph_reconciliation(target, boards, *, deadline):
         refs, edge_count = _relational_evidence(database_path, receipts)
         board_refs = {identity: session for identity, session in refs.items()
             if next(ack for ack in receipts if ack.consolidation_session_id == session).board_id == board_id}
-        report = _board_graph(binding, board_refs, edge_count, deadline)
+        if board_id not in planned:
+            raise ValueError('retirement_candidate_graph_boards_invalid')
+        report = _board_graph(binding, board_refs, edge_count, _source_expectations(planned[board_id]), deadline)
         reports.append({'board_id': board_id, 'generation': binding.generation,
             'binding_sha256': binding.binding_sha256, **report})
     _sidecars_absent(database_path)
-    return {'format': 'retirement-candidate-graph-reconciliation/v1',
+    return {'format': 'retirement-candidate-graph-reconciliation/v2',
         'state': 'source_graph_reconciled', 'boards': reports}

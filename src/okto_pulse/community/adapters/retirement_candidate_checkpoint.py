@@ -162,7 +162,7 @@ async def verify_projected_candidate(target, *, seed, seed_document, projection,
     )
 
     if verify_candidate_graph_reconciliation(
-            target, projected['boards'], deadline=deadline) != projected['graph_reconciliation']:
+            target, projected['boards'], projection=projection, deadline=deadline) != projected['graph_reconciliation']:
         raise ValueError('retirement_candidate_checkpoint_graph_reconciliation_changed')
     if _inventory_digest(target, native_paths, deadline, published=True) != checkpoint['content_sha256']:
         raise ValueError('retirement_candidate_checkpoint_content_changed')
