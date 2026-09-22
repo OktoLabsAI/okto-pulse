@@ -87,8 +87,10 @@ async def verify_projected_candidate(target, *, seed, seed_document, projection,
         raise ValueError('retirement_candidate_checkpoint_invalid')
     projected = _read_sealed(target / 'projection-receipt', receipt['projection_receipt_sha256'])
     if (set(projected) != {'format', 'seed_sha256', 'state', 'before_sql', 'after_sql',
-            'boards', 'graph_reconciliation', 'historical_observations', 'schema_evolutions', 'global_source_inputs'}
-            or projected['format'] != 'retirement-candidate-projection/v4'
+            'boards', 'graph_reconciliation', 'historical_observations', 'schema_evolutions', 'global_source_inputs',
+            'global_materialization'}
+            or projected['format'] != 'retirement-candidate-projection/v5'
+            or type(projected['global_materialization']) is not dict
             or type(projected['schema_evolutions']) is not list
             or projected['seed_sha256'] != seed.manifest_sha256
             or projected['state'] != 'projected_not_reconciled'
@@ -100,6 +102,10 @@ async def verify_projected_candidate(target, *, seed, seed_document, projection,
     required = {(graph['scope'], graph['board_id']) for graph in projection['graphs']}
     required.update(('board', item['projection']['board_id']) for item in projection['boards']
         if item['projection']['plans'])
+    if projected['global_materialization'].get('state') == 'created':
+        if ('global_discovery', None) in required:
+            raise ValueError('retirement_global_materialization_prior_history_present')
+        required.add(('global_discovery', None))
     observed, native_paths = set(), []
     for route in receipt['routes']:
         if (type(route) is not dict or set(route) != {'scope', 'board_id', 'generation', 'binding_sha256'}
@@ -179,9 +185,15 @@ async def verify_projected_candidate(target, *, seed, seed_document, projection,
     from .retirement_candidate_global_reconciliation import compare_candidate_global_projection
 
     global_comparison = compare_candidate_global_projection(target, global_inputs, settings=settings, max_seconds=max_seconds)
+    from .retirement_candidate_global_materialization import verify_candidate_global_materialization
+
+    verify_candidate_global_materialization(target, global_inputs, projected['global_materialization'], settings=settings,
+        generation=seed_document['generation'], had_global=any(graph['scope'] == 'global_discovery'
+            for graph in projection['graphs']), comparison=global_comparison, max_seconds=max_seconds)
     if verify_candidate_graph_reconciliation(
             target, projected['boards'], projection=projection, deadline=deadline,
-            historical_observations=historical_observations, global_comparison=global_comparison) != projected['graph_reconciliation']:
+            historical_observations=historical_observations, global_comparison=global_comparison,
+            global_materialization=projected['global_materialization']) != projected['graph_reconciliation']:
         raise ValueError('retirement_candidate_checkpoint_graph_reconciliation_changed')
     if _inventory_digest(target, native_paths, deadline, published=True) != checkpoint['content_sha256']:
         raise ValueError('retirement_candidate_checkpoint_content_changed')

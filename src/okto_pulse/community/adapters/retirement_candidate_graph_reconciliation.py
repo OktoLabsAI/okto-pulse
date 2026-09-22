@@ -336,7 +336,7 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
 
 
 def verify_candidate_graph_reconciliation(target, boards, *, projection, deadline, historical_observations=None,
-        global_comparison=None):
+        global_comparison=None, global_materialization=None):
     """Verify new projection effects; preserved history never receives implicit approval.
 
     historical_observations must be freshly derived under the caller's offline
@@ -358,7 +358,12 @@ def verify_candidate_graph_reconciliation(target, boards, *, projection, deadlin
             if item['scope'] == 'global_discovery':
                 global_history = item['history_state']
                 if item['delta']['introduced_nodes'] or item['delta']['introduced_edges']:
-                    raise ValueError('retirement_candidate_global_effects_unowned')
+                    if (global_materialization is None or global_materialization.get('state') != 'created'
+                            or global_comparison is None or global_comparison['state'] != 'matched'
+                            or global_materialization['expected_sha256'] != global_comparison['expected_sha256']
+                            or item['history_state'] != 'no_prior_records'
+                            or len(delta['introduced_nodes']) != global_comparison['expected_nodes']):
+                        raise ValueError('retirement_candidate_global_effects_unowned')
             else:
                 if item['board_id'] in histories:
                     raise ValueError('retirement_candidate_history_observations_invalid')
@@ -410,7 +415,7 @@ def verify_candidate_graph_reconciliation(target, boards, *, projection, deadlin
         or (global_comparison['state'] != 'matched' if global_comparison is not None else global_history != 'no_prior_records'))
     mismatch = any(any(report['source_relation_comparison'][field] for field in
         ('missing_count', 'unresolved_count', 'unexpected_new_count')) for report in reports)
-    return {'format': 'retirement-candidate-graph-reconciliation/v13',
+    return {'format': 'retirement-candidate-graph-reconciliation/v14',
         'state': ('source_projection_mismatch' if mismatch else
             'source_projection_reconciled_history_pending' if pending else 'source_graph_reconciled'),
         'global_history_state': global_history, 'global_projection_comparison': global_comparison, 'boards': reports}

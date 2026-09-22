@@ -367,22 +367,40 @@ async def _restore_retirement_graph_candidate(runtime, storage, graphs, run, see
                             )
                             from .retirement_candidate_history import observe_candidate_history
 
-                            executed['historical_observations'] = observe_candidate_history(
-                                stage, snapshot, max_seconds=max_seconds, property_effects=tuple(property_effects),
-                                schema_evolutions=tuple(schema_evolutions))
                             from .retirement_candidate_global_sources import capture_candidate_global_source_inputs
 
                             executed['global_source_inputs'] = await capture_candidate_global_source_inputs(
                                 stage, projection, max_seconds=max_seconds)
-                            executed['format'] = 'retirement-candidate-projection/v4'
+                            from .retirement_candidate_global_materialization import materialize_missing_candidate_global
+
+                            executed['global_materialization'] = materialize_missing_candidate_global(
+                                stage, executed['global_source_inputs'], settings=projection_settings,
+                                generation=document['generation'], require_live=lambda: connection.in_transaction(),
+                                max_seconds=max_seconds)
+                            if executed['global_materialization']['state'] == 'created':
+                                bound = bindings.inspect_global_binding()
+                                routes.append({'scope': 'global_discovery', 'board_id': None,
+                                    'generation': bound.generation, 'binding_sha256': bound.binding_sha256})
+                                native_paths.append(bound.physical_path.relative_to(stage).as_posix())
+                            executed['historical_observations'] = observe_candidate_history(
+                                stage, snapshot, max_seconds=max_seconds, property_effects=tuple(property_effects),
+                                schema_evolutions=tuple(schema_evolutions))
+                            executed['format'] = 'retirement-candidate-projection/v5'
                             executed['schema_evolutions'] = schema_evolutions
                             from .retirement_candidate_global_reconciliation import compare_candidate_global_projection
 
                             global_comparison = compare_candidate_global_projection(stage, executed['global_source_inputs'],
                                 settings=projection_settings, max_seconds=max_seconds)
+                            from .retirement_candidate_global_materialization import verify_candidate_global_materialization
+
+                            verify_candidate_global_materialization(stage, executed['global_source_inputs'],
+                                executed['global_materialization'], settings=projection_settings, generation=document['generation'],
+                                had_global=any(graph['scope'] == 'global_discovery' for graph in projection['graphs']),
+                                comparison=global_comparison, max_seconds=max_seconds)
                             executed['graph_reconciliation'] = verify_candidate_graph_reconciliation(
                                 stage, executed['boards'], projection=projection, deadline=_deadline(max_seconds),
-                                historical_observations=executed['historical_observations'], global_comparison=global_comparison)
+                                historical_observations=executed['historical_observations'], global_comparison=global_comparison,
+                                global_materialization=executed['global_materialization'])
                             projection_receipt = offline._seal(stage / 'projection-receipt', executed)
                             state = 'projected_not_reconciled'
                             # Binding paths are relative, so the final rename does not

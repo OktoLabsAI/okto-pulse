@@ -101,17 +101,19 @@ async def test_authenticated_effects_on_reused_root_preserve_identity_and_remain
         result = await candidate.build_projected_retirement_graph_candidate(*arguments,
             migration_builds=MIGRATION, settings=settings, confirm_original_offline=True, max_seconds=300)
         receipt = json.loads((target / 'projection-receipt/run.json').read_bytes())
-        assert receipt['format'] == 'retirement-candidate-projection/v4'
+        assert receipt['format'] == 'retirement-candidate-projection/v5'
         if source_schema == '0.6.0':
             assert receipt['global_source_inputs']['state'] == 'captured_not_reconciled'
             assert receipt['global_source_inputs']['overlay_revision'] == overlay_revision
             assert receipt['global_source_inputs']['boards'][0]['board_id'] == 'board-a'
             global_comparison = receipt['graph_reconciliation']['global_projection_comparison']
-            assert global_comparison['state'] == 'mismatch' and not global_comparison['materialized']
-            assert global_comparison['missing_nodes'] > 0
+            assert global_comparison['state'] == 'matched' and global_comparison['materialized']
+            assert global_comparison['missing_nodes'] == 0
+            assert receipt['global_materialization']['state'] == 'created'
         else:
             assert receipt['global_source_inputs']['state'] == 'overlay_unavailable'
             assert receipt['graph_reconciliation']['global_projection_comparison']['state'] == 'unavailable'
+            assert receipt['global_materialization']['state'] == 'retained'
         assert result['state'] == 'projected_not_reconciled' and dump(source) == before
         report = receipt['graph_reconciliation']['boards'][0]
         assert report['source_partition_validation'] == report['edge_session_validation'] == 'passed'

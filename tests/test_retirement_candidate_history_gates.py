@@ -70,3 +70,21 @@ def test_property_proof_does_not_authorize_unproved_changes_removals_or_global_s
     with pytest.raises(ValueError, match='prior_changes_unclassified'):
         reconcile.verify_candidate_graph_reconciliation(None, [], projection={}, deadline=_deadline(30),
             historical_observations=observed)
+
+
+@pytest.mark.parametrize('damage', ['no_receipt', 'wrong_hash', 'prior_history', 'wrong_count'])
+def test_new_global_records_require_complete_source_owned_creation(damage):
+    delta = {'changed_nodes': [], 'removed_nodes': [], 'removed_edges': [],
+        'introduced_nodes': [{'node_type': 'Board', 'node_id': 'board', 'fingerprint': 'a' * 64}],
+        'introduced_edges': []}
+    observed = {'format': 'retirement-candidate-history-observations/v4', 'property_composition': [],
+        'graphs': [{'scope': 'global_discovery', 'board_id': None,
+            'history_state': 'preserved_unclassified' if damage == 'prior_history' else 'no_prior_records',
+            'delta': delta}]}
+    comparison = {'state': 'matched', 'expected_sha256': 'b' * 64,
+        'expected_nodes': 2 if damage == 'wrong_count' else 1}
+    creation = None if damage == 'no_receipt' else {'state': 'created',
+        'expected_sha256': 'c' * 64 if damage == 'wrong_hash' else 'b' * 64}
+    with pytest.raises(ValueError, match='global_effects_unowned'):
+        reconcile.verify_candidate_graph_reconciliation(None, [], projection={}, deadline=_deadline(30),
+            historical_observations=observed, global_comparison=comparison, global_materialization=creation)

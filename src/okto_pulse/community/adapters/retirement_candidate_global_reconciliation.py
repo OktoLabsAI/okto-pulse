@@ -49,13 +49,10 @@ def _read(binding, scope, deadline):
             reader.close()
 
 
-def compare_candidate_global_projection(target, source_inputs, *, settings, max_seconds):
-    """Called only under the coordinator's source/candidate offline fences."""
-    if source_inputs['state'] == 'overlay_unavailable':
-        return {'state': 'unavailable', 'reason': source_inputs['reason']}
+def derive_candidate_global_seeds(target, source_inputs, *, settings, deadline):
+    """Derive complete seeds while the caller holds the offline source fences."""
     if source_inputs['state'] not in {'captured_not_reconciled', 'not_applicable'}:
         raise ValueError('retirement_global_source_inputs_invalid')
-    deadline = _deadline(max_seconds)
     bindings, seeds, budget = CommunityGraphBackendBindingStore(target / 'kg-artifacts'), [], 0
     provider = build_community_embedding(settings=settings)
     for payload in source_inputs['boards']:
@@ -72,6 +69,16 @@ def compare_candidate_global_projection(target, source_inputs, *, settings, max_
         if budget > 64 * 1024 * 1024:
             raise ValueError('retirement_global_seed_limit')
         seeds.append(seed)
+    return tuple(seeds)
+
+
+def compare_candidate_global_projection(target, source_inputs, *, settings, max_seconds):
+    """Called only under the coordinator's source/candidate offline fences."""
+    if source_inputs['state'] == 'overlay_unavailable':
+        return {'state': 'unavailable', 'reason': source_inputs['reason']}
+    deadline = _deadline(max_seconds)
+    seeds = derive_candidate_global_seeds(target, source_inputs, settings=settings, deadline=deadline)
+    bindings = CommunityGraphBackendBindingStore(target / 'kg-artifacts')
     try:
         binding = bindings.inspect_global_binding()
     except GraphCapabilityUnavailable as error:
