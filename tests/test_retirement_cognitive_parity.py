@@ -34,6 +34,10 @@ def test_cold_cognitive_source_parity_never_admits_history(tmp_path, state, monk
     assert report['cognitive_source_parity'][0]['state'] == state
     assert report['cognitive_source_parity'][0]['differing_fields'] == (['title'] if state == 'different' else [])
     assert report['history_classification'] == ('pending' if nodes else 'not_applicable')
+    assert len(report['historical_connectivity']) == (1 if nodes else 0)
+    if nodes:
+        # Matching durable content does not repair missing semantic edges.
+        assert report['historical_connectivity'][0]['outcome'] == 'rejected'
     assert json.loads(json.dumps(report)) == report  # Checkpoint replay compares parsed receipts.
     if state == 'missing_node':
         binding = SimpleNamespace(physical_path=path, page_size=8192, backend='grafx',

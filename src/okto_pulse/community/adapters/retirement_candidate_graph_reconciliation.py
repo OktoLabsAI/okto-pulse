@@ -13,6 +13,7 @@ from okto_pulse.core.kg.schema_contract import NODE_TYPES
 from okto_pulse.core.kg.logical_transfer import LOGICAL_NULL, LogicalFingerprintAccumulator
 from okto_pulse.core.ports.consolidation import ExactConsolidationAckReceipt
 from okto_pulse.core.ports.cognitive_projection import compare_cognitive_projection
+from okto_pulse.core.ports.projection_connectivity import observe_projection_connectivity
 from okto_pulse.core.ports.kg_cognitive_source import latest_cognitive_source_records
 from okto_pulse.core.ports.projection_history import (
     ProjectionSourceIdentity, ProjectionSourceRoot, select_projection_source_roots, is_projection_technical_root,
@@ -124,6 +125,7 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
     edges, new_edges, connected, technical_roots = [], [], set(), set()
     roots = tuple(sorted(expected_metadata))
     wanted_roots = set(roots)
+    historical_inventory_nodes, historical_inventory_edges = [], []
     if type(cognitive_rows) is not tuple or len(cognitive_rows) > _MAX_NODES:
         raise ValueError('retirement_candidate_cognitive_source_limit')
     cognitive_sources, cognitive_matches, cognitive_seen = {}, [], set()
@@ -146,6 +148,8 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
             for batch in reader.iter_nodes(batch_size=500):
                 _check_time(deadline)
                 for node in batch:
+                    if prior_nodes:
+                        historical_inventory_nodes.append(node)
                     if node.type_name not in NODE_TYPES:
                         continue  # BoardMeta is authenticated by the complete cold census.
                     identity = node.type_name, node.key
@@ -195,6 +199,8 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
             for batch in reader.iter_relations(batch_size=500):
                 _check_time(deadline)
                 for relation in batch:
+                    if prior_nodes:
+                        historical_inventory_edges.append(relation)
                     source = relation.source_type, relation.source_key
                     target = relation.target_type, relation.target_key
                     if source not in nodes or target not in nodes:
@@ -223,6 +229,9 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
             for identity in sorted(set(cognitive_sources) - cognitive_seen):
                 for record in cognitive_sources[identity]:
                     cognitive_matches.append(_cognitive_parity(reader.schema(), board_id, record, None))
+            connectivity = observe_projection_connectivity(schema=reader.schema(), board_id=board_id,
+                nodes=tuple(historical_inventory_nodes), relations=tuple(historical_inventory_edges),
+                selected=tuple(sorted(preserved_nodes))) if preserved_nodes else ()
         finally:
             reader.close()
     return {'node_count': len(nodes), 'edge_count': len(edges),
@@ -236,6 +245,8 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
         'historical_edge_count': sum(row['count'] for row in delta.get('retained_edges', ())),
         'historical_orphan_count': len(orphans),
         'allowlisted_technical_root_count': len(technical_roots - connected),
+        'historical_connectivity': [{**asdict(item), 'reasons': list(item.reasons),
+            'advisories': list(item.advisories)} for item in connectivity],
         'cognitive_source_parity': sorted(cognitive_matches,
             key=lambda row: (row['node_type'], row['node_id'], row['generation'], row['source_revision'])),
         'history_classification': 'pending' if preserved_nodes or delta.get('retained_edges') else 'not_applicable',
@@ -309,6 +320,6 @@ def verify_candidate_graph_reconciliation(target, boards, *, projection, deadlin
     pending = (any(report['history_classification'] == 'pending' for report in reports)
         or any(item['state'] != 'matched' for report in reports for item in report['cognitive_source_parity'])
         or global_history != 'no_prior_records')
-    return {'format': 'retirement-candidate-graph-reconciliation/v7',
+    return {'format': 'retirement-candidate-graph-reconciliation/v8',
         'state': 'source_projection_reconciled_history_pending' if pending else 'source_graph_reconciled',
         'global_history_state': global_history, 'boards': reports}
