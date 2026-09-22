@@ -1,8 +1,8 @@
 """Read-only, receipt-bound SQL delta audit for a private retirement candidate.
 
-This proves row ownership and detects unclassified changes. Queue-trigger
-revision increments remain explicitly unresolved until their operation trace
-is bound to the installer; this module never authorizes runtime admission.
+This proves row ownership and detects unclassified changes. It also reconciles
+the source-revision increments produced by the exact rebuild protocol; this
+module never authorizes runtime admission.
 """
 
 from collections import Counter, defaultdict
@@ -28,6 +28,11 @@ _INSERT_TABLES = {
     'exact_rebuild_consolidation_ack_journal': ('queue_id', 'queue_id'),
     'global_update_outbox': ('event_id', 'outbox_event_id'),
 }
+# One successful exact ACK owns four queue mutations: enqueue/adopt, claim,
+# the serialized unfenced-claim CAS, and ACK delete/live-intent restore. It
+# also owns one audit insert, one outbox insert and one generation-head write.
+# Each created graph node adds one separately counted node-ref mutation.
+_SOURCE_REVISION_MUTATIONS_PER_ACK = 7
 
 
 def _quote(value):
@@ -84,8 +89,8 @@ def _inserted(changes, table, field, receipts, receipt_field):
 def verify_candidate_sql_delta(baseline_path, candidate_path, receipts, *, deadline):
     """Check complete table bags and classify only rows owned by exact ACKs.
 
-    The legacy source revision's random nonce and total trigger count are
-    observed, not certified; callers must keep the candidate incomplete.
+    This certifies only receipt-owned relational projection effects. Callers
+    must keep the candidate incomplete until graph/source reconciliation.
     """
     if (type(receipts) is not tuple or any(type(ack) is not ExactConsolidationAckReceipt
             for ack in receipts) or len({ack.receipt_sha256 for ack in receipts}) != len(receipts)):
@@ -197,13 +202,23 @@ def verify_candidate_sql_delta(baseline_path, candidate_path, receipts, *, deadl
                     or new['mutation_nonce'] == old['mutation_nonce']):
                 raise ValueError('retirement_candidate_sql_delta_revision_invalid')
             revision_delta = new['revision'] - old['revision']
+            expected_revision_delta = (
+                _SOURCE_REVISION_MUTATIONS_PER_ACK * len(receipts) + len(refs)
+            )
+            if revision_delta != expected_revision_delta:
+                raise ValueError(
+                    'retirement_candidate_sql_delta_revision_delta_unowned'
+                )
         else:
             if revision_added or revision_removed:
                 raise ValueError('retirement_candidate_sql_delta_revision_unowned')
             revision_delta = 0
+            expected_revision_delta = 0
         _sidecars_absent(baseline_path)
         _sidecars_absent(candidate_path)
         return {'format': 'retirement-candidate-sql-delta/v1',
-            'state': 'needs_revision_reconciliation' if receipts else 'no_projection_effects',
+            'state': 'receipt_owned_projection_effects' if receipts else 'no_projection_effects',
             'ack_count': len(receipts), 'node_ref_count': len(refs),
-            'source_revision_delta': revision_delta, 'changed_tables': sorted(changes)}
+            'source_revision_delta': revision_delta,
+            'source_revision_expected_delta': expected_revision_delta,
+            'changed_tables': sorted(changes)}

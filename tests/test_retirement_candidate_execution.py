@@ -114,6 +114,11 @@ async def test_failed_private_execution_can_retry_from_seed_and_keeps_original_p
         seed_document = candidate.read_retirement_candidate_seed(seed)[0]
         acknowledgements = tuple(ExactConsolidationAckReceipt.from_payload(ack)
             for board in receipt['boards'] for ack in board['acks'])
+        verified_delta = verify_candidate_sql_delta(
+            Path(seed_document['snapshot']['directory']) / 'relational/database.sqlite3',
+            target / 'database.sqlite3', acknowledgements, deadline=_deadline(60))
+        assert verified_delta['state'] == 'receipt_owned_projection_effects'
+        assert verified_delta['source_revision_delta'] == verified_delta['source_revision_expected_delta'] == 25
         with pytest.raises(ValueError, match='sql_delta_unclassified:boards'):
             verify_candidate_sql_delta(
                 Path(seed_document['snapshot']['directory']) / 'relational/database.sqlite3',
@@ -125,6 +130,17 @@ async def test_failed_private_execution_can_retry_from_seed_and_keeps_original_p
                 Path(seed_document['snapshot']['directory']) / 'relational/database.sqlite3',
                 changed_sql, acknowledgements, deadline=_deadline(60))
         sidecar.unlink()
+        changed_revision = tmp_path / 'changed-revision.sqlite3'
+        with closing(sqlite3.connect(target / 'database.sqlite3')) as original, closing(
+                sqlite3.connect(changed_revision)) as altered:
+            original.backup(altered)
+            with altered:
+                altered.execute("UPDATE global_discovery_source_revision "
+                    "SET revision=revision+1, mutation_nonce=lower(hex(randomblob(32)))")
+        with pytest.raises(ValueError, match='revision_delta_unowned'):
+            verify_candidate_sql_delta(
+                Path(seed_document['snapshot']['directory']) / 'relational/database.sqlite3',
+                changed_revision, acknowledgements, deadline=_deadline(60))
         marker = target / 'unexpected-payload'
         marker.write_text('candidate changed after checkpoint')
         with pytest.raises(ValueError, match='checkpoint_content_changed'):
