@@ -100,7 +100,13 @@ async def test_authenticated_effects_on_reused_root_preserve_identity_and_remain
         report = receipt['graph_reconciliation']['boards'][0]
         assert report['source_partition_validation'] == report['edge_session_validation'] == 'passed'
         assert report['historical_property_change_count'] == 1
-        assert report['historical_node_count'] == 1 and report['history_classification'] == 'pending'
+        assert report['historical_node_count'] == 1 and report['history_classification'] == 'current_source_reconciled'
+        assert report['history_qualification']['current_source_node_count'] == 1
+        assert report['history_qualification']['unclassified_node_count'] == 0
+        comparison = report['source_relation_comparison']
+        assert comparison['expected_count'] == comparison['matched_count'] == 5
+        assert comparison['missing_count'] == comparison['unresolved_count'] == comparison['unexpected_new_count'] == 0
+        assert receipt['graph_reconciliation']['state'] == 'source_projection_reconciled_history_pending'
         assert report['zero_orphan_validation'] == 'passed'
         if source_schema == '0.5.0':
             assert len(receipt['schema_evolutions']) == 1

@@ -15,9 +15,13 @@ from okto_pulse.core.ports.consolidation import ExactConsolidationAckReceipt
 from okto_pulse.core.ports.cognitive_projection import compare_cognitive_projection
 from okto_pulse.core.ports.projection_connectivity import observe_projection_connectivity
 from okto_pulse.core.ports.projection_relations import compare_projection_relations
+from okto_pulse.core.ports.projection_qualification import (
+    SOURCE_OBSERVATION_FIELDS, ProjectionSourceObservation, qualify_projection_history,
+)
 from okto_pulse.core.ports.kg_cognitive_source import latest_cognitive_source_records
 from okto_pulse.core.ports.projection_history import (
     ProjectionSourceIdentity, ProjectionSourceRoot, select_projection_source_roots, is_projection_technical_root,
+    ProjectionHistoryDelta, ProjectionNodeFingerprint, ProjectionNodeChange, ProjectionEdgeFingerprint,
 )
 
 from .logical_transfer_factories import make_grafx_logical_source
@@ -26,9 +30,9 @@ from .relational_recovery_snapshot import _check_time, _readonly, _sidecars_abse
 
 _MAX_NODES = 100_000
 _MAX_EDGES = 500_000
-_SOURCE_FIELDS = ('source_created_at', 'source_updated_at', 'source_status', 'severity', 'resolved_at')
+_SOURCE_FIELDS = SOURCE_OBSERVATION_FIELDS[:5]
 _DATE_FIELDS = frozenset({'source_created_at', 'source_updated_at', 'resolved_at'})
-_PARTITION_FIELDS = ('graph_layer', 'maturity_status')
+_PARTITION_FIELDS = SOURCE_OBSERVATION_FIELDS[5:]
 
 
 def _digest(value):
@@ -127,6 +131,16 @@ def _partition_expectations(board_plan):
 def _edge_identity(row):
     return (row['edge_type'], row['source_type'], row['source_id'],
         row['target_type'], row['target_id'], row['fingerprint'])
+
+
+def _history_delta(payload):
+    return ProjectionHistoryDelta(
+        **{name: tuple(ProjectionNodeFingerprint(**row) for row in payload.get(name, ()))
+            for name in ('unchanged_nodes', 'introduced_nodes', 'removed_nodes')},
+        changed_nodes=tuple(ProjectionNodeChange(ProjectionNodeFingerprint(**row['before']),
+            ProjectionNodeFingerprint(**row['after'])) for row in payload.get('changed_nodes', ())),
+        **{name: tuple(ProjectionEdgeFingerprint(**row) for row in payload.get(name, ()))
+            for name in ('retained_edges', 'introduced_edges', 'removed_edges')})
 
 
 def _cognitive_parity(schema, board_id, record, node):
@@ -277,6 +291,19 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
             relation_comparison = (compare_projection_relations(document=planned_document, schema=reader.schema(),
                 nodes=tuple(historical_inventory_nodes), relations=tuple(historical_inventory_edges),
                 new_sessions=tuple(sorted(expected_edge_sessions or {}))) if planned_document is not None else None)
+            qualification = None
+            if relation_comparison is not None and expected_partitions is not None and expected_edge_sessions is not None:
+                source_observations = []
+                for root, node in zip(partition_roots, partition_selected, strict=True):
+                    identity = node.node_type, node.node_id
+                    expected_values = expected_metadata.get(root, {})
+                    expected_fields = tuple(_source_value(name, expected_values.get(name)) for name in _SOURCE_FIELDS)
+                    observed_fields = tuple(item.micros if item is not None and name in _DATE_FIELDS else item
+                        for name, item in zip(_SOURCE_FIELDS, metadata[identity], strict=True))
+                    source_observations.append(ProjectionSourceObservation(node,
+                        expected_fields + expected_partitions[root], observed_fields + partitions[identity]))
+                qualification = qualify_projection_history(history=_history_delta(delta),
+                    sources=tuple(source_observations), relations=relation_comparison)
         finally:
             reader.close()
     return {'node_count': len(nodes), 'edge_count': len(edges),
@@ -303,7 +330,10 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
             'advisories': list(item.advisories)} for item in connectivity],
         'cognitive_source_parity': sorted(cognitive_matches,
             key=lambda row: (row['node_type'], row['node_id'], row['generation'], row['source_revision'])),
-        'history_classification': 'pending' if preserved_nodes or delta.get('retained_edges') else 'not_applicable',
+        'history_qualification': ({**asdict(qualification), 'reasons': list(qualification.reasons)}
+            if qualification is not None else None),
+        'history_classification': (qualification.state if qualification is not None else
+            'pending' if preserved_nodes or delta.get('retained_edges') else 'not_applicable'),
         'zero_orphan_validation': 'pending_history_classification' if orphans else 'passed'}
 
 
@@ -379,7 +409,7 @@ def verify_candidate_graph_reconciliation(target, boards, *, projection, deadlin
         or global_history != 'no_prior_records')
     mismatch = any(any(report['source_relation_comparison'][field] for field in
         ('missing_count', 'unresolved_count', 'unexpected_new_count')) for report in reports)
-    return {'format': 'retirement-candidate-graph-reconciliation/v11',
+    return {'format': 'retirement-candidate-graph-reconciliation/v12',
         'state': ('source_projection_mismatch' if mismatch else
             'source_projection_reconciled_history_pending' if pending else 'source_graph_reconciled'),
         'global_history_state': global_history, 'boards': reports}
