@@ -2,6 +2,7 @@
 
 from collections import Counter
 from contextlib import closing
+from dataclasses import asdict
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -11,6 +12,8 @@ from okto_grafx import connect
 from okto_pulse.core.kg.schema_contract import NODE_TYPES
 from okto_pulse.core.kg.logical_transfer import LOGICAL_NULL, LogicalFingerprintAccumulator
 from okto_pulse.core.ports.consolidation import ExactConsolidationAckReceipt
+from okto_pulse.core.ports.cognitive_projection import compare_cognitive_projection
+from okto_pulse.core.ports.kg_cognitive_source import latest_cognitive_source_records
 from okto_pulse.core.ports.projection_history import (
     ProjectionSourceIdentity, ProjectionSourceRoot, select_projection_source_roots,
 )
@@ -100,7 +103,14 @@ def _edge_identity(row):
         row['target_type'], row['target_id'], row['fingerprint'])
 
 
-def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata, deadline, history=None):
+def _cognitive_parity(schema, board_id, record, node):
+    value = asdict(compare_cognitive_projection(schema=schema, board_id=board_id, record=record, node=node))
+    return {**value, 'differing_fields': list(value['differing_fields']),
+        'usage_differences': list(value['usage_differences'])}
+
+
+def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata, deadline, history=None,
+        *, board_id=None, cognitive_rows=()):
     # Prior records qualify by a full fingerprint, preserved or independently
     # reconciled against the authenticated property trace. Both stay unclassified.
     delta = history['delta'] if history is not None else {}
@@ -114,6 +124,13 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
     edges, new_edges, connected = [], [], set()
     roots = tuple(sorted(expected_metadata))
     wanted_roots = set(roots)
+    if type(cognitive_rows) is not tuple or len(cognitive_rows) > _MAX_NODES:
+        raise ValueError('retirement_candidate_cognitive_source_limit')
+    cognitive_sources, cognitive_matches, cognitive_seen = {}, [], set()
+    for record in latest_cognitive_source_records(cognitive_rows):
+        if record.get('board_id') != board_id:
+            raise ValueError('retirement_candidate_cognitive_source_scope')
+        cognitive_sources.setdefault((record['node_type'], record['node_id']), []).append(record)
 
     def value(properties, name):
         item = properties.get(name)
@@ -132,6 +149,9 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
                     if node.type_name not in NODE_TYPES:
                         continue  # BoardMeta is authenticated by the complete cold census.
                     identity = node.type_name, node.key
+                    for record in cognitive_sources.get(identity, ()):
+                        cognitive_matches.append(_cognitive_parity(reader.schema(), board_id, record, node))
+                    cognitive_seen.add(identity)
                     single = LogicalFingerprintAccumulator(schema)
                     single.add_node(node)
                     hashes[identity] = single.digest()
@@ -197,6 +217,9 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
             orphans = set(nodes) - connected
             if orphans - unchanged_nodes or orphans & set(expected_by_identity):
                 raise ValueError('retirement_candidate_graph_orphan_detected')
+            for identity in sorted(set(cognitive_sources) - cognitive_seen):
+                for record in cognitive_sources[identity]:
+                    cognitive_matches.append(_cognitive_parity(reader.schema(), board_id, record, None))
         finally:
             reader.close()
     return {'node_count': len(nodes), 'edge_count': len(edges),
@@ -209,6 +232,8 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
         'historical_property_change_count': len(delta.get('changed_nodes', ())),
         'historical_edge_count': sum(row['count'] for row in delta.get('retained_edges', ())),
         'historical_orphan_count': len(orphans),
+        'cognitive_source_parity': sorted(cognitive_matches,
+            key=lambda row: (row['node_type'], row['node_id'], row['generation'], row['source_revision'])),
         'history_classification': 'pending' if preserved_nodes or delta.get('retained_edges') else 'not_applicable',
         'zero_orphan_validation': 'pending_history_classification' if orphans else 'passed'}
 
@@ -271,14 +296,15 @@ def verify_candidate_graph_reconciliation(target, boards, *, projection, deadlin
         if board_id not in planned:
             raise ValueError('retirement_candidate_graph_boards_invalid')
         report = _board_graph(binding, board_refs, edge_count, _source_expectations(planned[board_id]), deadline,
-            histories.get(board_id))
+            histories.get(board_id), board_id=board_id, cognitive_rows=tuple(planned[board_id]['cognitive_rows']))
         reports.append({'board_id': board_id, 'generation': binding.generation,
             'binding_sha256': binding.binding_sha256, **report})
     _sidecars_absent(database_path)
     if set(histories) - seen_boards:
         raise ValueError('retirement_candidate_history_scope_unplanned')
     pending = (any(report['history_classification'] == 'pending' for report in reports)
+        or any(item['state'] != 'matched' for report in reports for item in report['cognitive_source_parity'])
         or global_history != 'no_prior_records')
-    return {'format': 'retirement-candidate-graph-reconciliation/v5',
+    return {'format': 'retirement-candidate-graph-reconciliation/v6',
         'state': 'source_projection_reconciled_history_pending' if pending else 'source_graph_reconciled',
         'global_history_state': global_history, 'boards': reports}

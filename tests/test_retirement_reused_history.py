@@ -34,6 +34,16 @@ async def test_authenticated_effects_on_reused_root_preserve_identity_and_remain
         (tmp_path / name).mkdir()
     with closing(sqlite3.connect(source)) as connection:
         title = connection.execute("SELECT title FROM specs WHERE id='spec-a'").fetchone()[0]
+        if source_schema == '0.6.0':
+            # Durable knowledge can exist while its graph projection is absent.
+            # The candidate must retain this limitation through checkpoint replay.
+            connection.execute('INSERT INTO kg_cognitive_sources '
+                '(id,board_id,node_id,node_type,generation,payload,evidence_refs,source_session_id,committed_at) '
+                'VALUES (?,?,?,?,?,?,?,?,?)', ('durable-source', 'board-a', 'missing-decision', 'Decision', 0,
+                    json.dumps({'title': 'sealed historical decision', 'generation': 0,
+                        'source_artifact_ref': 'spec:spec-a'}), json.dumps(['spec:spec-a']),
+                    'historical-cognitive-session', '2026-01-01T00:00:00.000000'))
+            connection.commit()
     engine = create_async_engine(f'sqlite+aiosqlite:///{source}')
     runtime = db.CommunityDatabaseRuntime(engine, db.build_community_session_factory(engine))
     storage = CommunityFileSystemStorage(str(tmp_path / 'uploads'))
@@ -102,6 +112,9 @@ async def test_authenticated_effects_on_reused_root_preserve_identity_and_remain
             assert (target / 'graph-0000').is_dir()  # Retained, unbound native predecessor.
         else:
             assert receipt['schema_evolutions'] == []
+            parity = report['cognitive_source_parity']
+            assert len(parity) == 1 and parity[0]['node_id'] == 'missing-decision'
+            assert parity[0]['state'] == 'missing_node'
         proof = receipt['historical_observations']['property_composition'][0]
         assert proof['before']['node_id'] == proof['after']['node_id'] == 'old-spec-root'
         with closing(sqlite3.connect(target / 'database.sqlite3')) as connection:
