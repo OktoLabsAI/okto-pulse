@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from okto_pulse.core.kg.logical_transfer import LOGICAL_NULL, LogicalNode, LogicalRelation
+from okto_pulse.core.kg.logical_transfer import LOGICAL_NULL, LogicalFingerprintAccumulator, LogicalNode, LogicalRelation
 from okto_pulse.core.ports.projection_history import ProjectionSourceRoot
 from okto_pulse.community.adapters import retirement_candidate_graph_reconciliation as reconcile
 from okto_pulse.community.adapters.relational_recovery_snapshot import _deadline
@@ -75,3 +75,18 @@ def test_unclassified_plan_is_not_an_implicit_canonical_default():
     with pytest.raises(ValueError, match='source_partition_invalid'):
         reconcile._partition_expectations({'plans': [{'projection': {'nodes': [
             {'node_type': 'Entity', 'source_artifact_ref': 'spec:s'}]}}]})
+
+
+def test_preserved_current_child_cannot_use_the_unclassified_orphan_exception(monkeypatch):
+    corpus = replace(corpus_with_partition('working', 'working_immature'), relations=())
+    prior = []
+    for node in corpus.nodes:
+        digest = LogicalFingerprintAccumulator.for_schema(corpus.schema)
+        digest.add_node(node)
+        prior.append({'node_type': node.type_name, 'node_id': node.key, 'fingerprint': digest.digest()})
+    monkeypatch.setattr(reconcile, 'connect', lambda *args, **kwargs: nullcontext(object()))
+    monkeypatch.setattr(reconcile, 'make_grafx_logical_source', lambda *args, **kwargs: MaterializedSource(corpus))
+    with pytest.raises(ValueError, match='graph_orphan_detected'):
+        reconcile._board_graph(SimpleNamespace(physical_path='pinned', page_size=8192), {}, 0, {}, _deadline(30),
+            {'delta': {'unchanged_nodes': prior, 'retained_edges': []}}, board_id='board',
+            expected_partitions={ProjectionSourceRoot('Requirement', 'spec:s:fr:r'): ('working', 'working_immature')})

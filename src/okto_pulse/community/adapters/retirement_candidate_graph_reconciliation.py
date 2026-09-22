@@ -37,7 +37,7 @@ def _digest(value):
 
 def _relational_evidence(database_path, receipts):
     sessions = {ack.consolidation_session_id: ack for ack in receipts}
-    refs, edge_count = {}, 0
+    refs, edge_counts = {}, {}
     with closing(_readonly(database_path, immutable=True)) as connection:
         connection.row_factory = sqlite3.Row
         connection.execute('BEGIN')
@@ -56,13 +56,17 @@ def _relational_evidence(database_path, receipts):
         for row in connection.execute('SELECT session_id, edges_added FROM consolidation_audit'):
             session_id = str(row['session_id'])
             if session_id in sessions:
+                if session_id in edge_counts:
+                    raise ValueError('retirement_candidate_graph_audit_duplicate')
                 if type(row['edges_added']) is not int or row['edges_added'] < 0:
                     raise ValueError('retirement_candidate_graph_audit_invalid')
-                edge_count += row['edges_added']
+                edge_counts[session_id] = row['edges_added']
         connection.execute('ROLLBACK')
     if len(refs) != sum(ack.node_ref_count for ack in receipts):
         raise ValueError('retirement_candidate_graph_node_ref_count_changed')
-    return refs, edge_count
+    if set(edge_counts) != set(sessions):
+        raise ValueError('retirement_candidate_graph_audit_missing')
+    return refs, edge_counts
 
 
 def _source_expectations(board_plan):
@@ -131,7 +135,7 @@ def _cognitive_parity(schema, board_id, record, node):
 
 
 def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata, deadline, history=None,
-        *, board_id=None, cognitive_rows=(), expected_partitions=None):
+        *, board_id=None, cognitive_rows=(), expected_partitions=None, expected_edge_sessions=None):
     # Prior records qualify by a full fingerprint, preserved or independently
     # reconciled against the authenticated property trace. Both stay unclassified.
     delta = history['delta'] if history is not None else {}
@@ -143,6 +147,7 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
     prior_edges = Counter({_edge_identity(row): row['count'] for row in delta.get('retained_edges', ())})
     nodes, metadata, identities, hashes, partitions = {}, {}, [], {}, {}
     edges, new_edges, connected, technical_roots = [], [], set(), set()
+    edge_sessions = Counter()
     roots = tuple(sorted(expected_metadata))
     partition_roots = tuple(sorted(expected_partitions or {}))
     wanted_roots = set(roots) | set(partition_roots)
@@ -244,13 +249,21 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
                     actor = value(relation.properties, 'created_by')
                     if type(rule) is not str or not rule or layer != 'deterministic' or type(actor) is not str or not actor:
                         raise ValueError('retirement_candidate_graph_edge_invalid')
+                    if expected_edge_sessions is not None:
+                        session_id = value(relation.properties, 'created_by_session_id')
+                        if type(session_id) is not str or session_id not in expected_edge_sessions:
+                            raise ValueError('retirement_candidate_graph_edge_session_changed')
+                        edge_sessions[session_id] += 1
                     new_edges.append((relation.layout_name, *source, *target, rule, layer, actor))
             if any(prior_edges.values()):
                 raise ValueError('retirement_candidate_prior_edge_changed')
             if len(new_edges) != expected_edge_count or len(new_edges) != len(set(new_edges)):
                 raise ValueError('retirement_candidate_graph_edge_census_changed')
+            if expected_edge_sessions is not None and edge_sessions != Counter(expected_edge_sessions):
+                raise ValueError('retirement_candidate_graph_edge_session_count_changed')
             orphans = set(nodes) - connected - technical_roots
-            if orphans - unchanged_nodes or orphans & set(expected_by_identity):
+            current_nodes = set(expected_by_identity) | {(node.node_type, node.node_id) for node in partition_selected}
+            if orphans - unchanged_nodes or orphans & current_nodes:
                 raise ValueError('retirement_candidate_graph_orphan_detected')
             for identity in sorted(set(cognitive_sources) - cognitive_seen):
                 for record in cognitive_sources[identity]:
@@ -261,6 +274,9 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
         finally:
             reader.close()
     return {'node_count': len(nodes), 'edge_count': len(edges),
+        'edge_session_validation': 'passed' if expected_edge_sessions is not None else 'not_checked',
+        'edge_session_count': len(expected_edge_sessions or {}),
+        'edge_session_sha256': _digest(sorted((expected_edge_sessions or {}).items())),
         'node_sha256': _digest(sorted((kind, key, digest) for (kind, key), digest in hashes.items())),
         'edge_sha256': _digest(sorted(edges)),
         'source_metadata_sha256': _digest([(root.node_type, root.source_artifact_ref, expected_metadata[root])
@@ -335,14 +351,14 @@ def verify_candidate_graph_reconciliation(target, boards, *, projection, deadlin
         binding = bindings.inspect_board_binding(board_id)
         if (binding.backend != 'grafx' or binding.generation != board['binding'].get('generation')):
             raise ValueError('retirement_candidate_graph_binding_changed')
-        refs, edge_count = _relational_evidence(database_path, receipts)
+        refs, edge_sessions = _relational_evidence(database_path, receipts)
         board_refs = {identity: session for identity, session in refs.items()
             if next(ack for ack in receipts if ack.consolidation_session_id == session).board_id == board_id}
         if board_id not in planned:
             raise ValueError('retirement_candidate_graph_boards_invalid')
-        report = _board_graph(binding, board_refs, edge_count, _source_expectations(planned[board_id]), deadline,
+        report = _board_graph(binding, board_refs, sum(edge_sessions.values()), _source_expectations(planned[board_id]), deadline,
             histories.get(board_id), board_id=board_id, cognitive_rows=tuple(planned[board_id]['cognitive_rows']),
-            expected_partitions=_partition_expectations(planned[board_id]))
+            expected_partitions=_partition_expectations(planned[board_id]), expected_edge_sessions=edge_sessions)
         reports.append({'board_id': board_id, 'generation': binding.generation,
             'binding_sha256': binding.binding_sha256, **report})
     _sidecars_absent(database_path)
@@ -351,6 +367,6 @@ def verify_candidate_graph_reconciliation(target, boards, *, projection, deadlin
     pending = (any(report['history_classification'] == 'pending' for report in reports)
         or any(item['state'] != 'matched' for report in reports for item in report['cognitive_source_parity'])
         or global_history != 'no_prior_records')
-    return {'format': 'retirement-candidate-graph-reconciliation/v9',
+    return {'format': 'retirement-candidate-graph-reconciliation/v10',
         'state': 'source_projection_reconciled_history_pending' if pending else 'source_graph_reconciled',
         'global_history_state': global_history, 'boards': reports}

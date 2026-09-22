@@ -44,7 +44,7 @@ def test_cold_cognitive_source_parity_never_admits_history(tmp_path, state, monk
             generation='private', binding_sha256='a' * 64)
         monkeypatch.setattr(reconciliation, 'CommunityGraphBackendBindingStore',
             lambda _: SimpleNamespace(inspect_board_binding=lambda _: binding))
-        monkeypatch.setattr(reconciliation, '_relational_evidence', lambda *_: ({}, 0))
+        monkeypatch.setattr(reconciliation, '_relational_evidence', lambda *_: ({}, {}))
         result = reconciliation.verify_candidate_graph_reconciliation(tmp_path,
             [{'acks': [], 'binding': {'board_id': 'board', 'generation': 'private'}}],
             projection={'boards': [{'projection': {'board_id': 'board', 'plans': [], 'cognitive_rows': [source]}}]},

@@ -98,6 +98,7 @@ async def test_authenticated_effects_on_reused_root_preserve_identity_and_remain
         receipt = json.loads((target / 'projection-receipt/run.json').read_bytes())
         assert result['state'] == 'projected_not_reconciled' and dump(source) == before
         report = receipt['graph_reconciliation']['boards'][0]
+        assert report['source_partition_validation'] == report['edge_session_validation'] == 'passed'
         assert report['historical_property_change_count'] == 1
         assert report['historical_node_count'] == 1 and report['history_classification'] == 'pending'
         assert report['zero_orphan_validation'] == 'passed'
