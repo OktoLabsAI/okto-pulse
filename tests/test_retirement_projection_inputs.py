@@ -129,6 +129,17 @@ async def test_candidate_seed_and_restore_reject_resealed_plan_that_does_not_mat
         artifact.write_bytes(original)
         seed = await candidate.prepare_retirement_candidate_seed(runtime, storage, (), run, handle,
             migration_builds=MIGRATION, recovery_directory=recovery, seed_directory=tmp_path / 'seed')
+        seed_path = seed.directory / 'run.json'
+        original_seed = seed_path.read_bytes()
+        false_census = json.loads(original_seed)
+        false_census['historical_census_sha256'] = '0' * 64
+        false_bytes = inputs._encode(false_census)
+        seed_path.write_bytes(false_bytes)
+        false_seed = candidate.RetirementGraphCandidateSeed(seed.directory, hashlib.sha256(false_bytes).hexdigest())
+        with pytest.raises(ValueError, match='historical_census_mismatch'):
+            candidate.read_retirement_candidate_seed(false_seed)
+        assert seed_path.read_bytes() == false_bytes
+        seed_path.write_bytes(original_seed)
         # Simulate a retained seed with consistent outer/inner hashes. Restore
         # must independently reject the content, not rely on prior preparation.
         artifact.write_bytes(changed)

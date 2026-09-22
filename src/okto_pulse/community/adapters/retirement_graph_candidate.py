@@ -29,6 +29,7 @@ from .native_graph_recovery_snapshot import NativeGraphRecoverySnapshot, verify_
 from .recovery_graph_inventory import read_recovery_graph_inventory
 from .relational_recovery_snapshot import _readonly, _deadline, _check_time
 from .retirement_bootstrap import _snapshot
+from .retirement_historical_graph_census import read_retirement_historical_graph_census
 from .retirement_projection_inputs import (
     RetirementProjectionInputs, projection_destination, read_retirement_projection_inputs,
     revalidate_retirement_projection_inputs,
@@ -36,8 +37,8 @@ from .retirement_projection_inputs import (
 from .sqlalchemy_database import _serialized_schema_lifecycle
 from .sprint_retirement_archive import _encode
 
-_FORMAT = 'retirement-native-candidate-seed/v1'
-_KEYS = {'format', 'offline_run_sha256', 'projection_inputs', 'snapshot', 'generation'}
+_FORMAT = 'retirement-native-candidate-seed/v2'
+_KEYS = {'format', 'offline_run_sha256', 'projection_inputs', 'snapshot', 'generation', 'historical_census_sha256'}
 _STARTUP_MUTEXES = ('.okto-pulse-serve.lock.acquire', 'kg-artifacts/.okto-pulse-serve.lock.acquire')
 
 
@@ -87,6 +88,9 @@ def _validate_seed_document(document):
         raise ValueError('retirement_candidate_projection_mismatch')
     snapshot = JointRecoverySnapshot(Path(document['snapshot']['directory']), document['snapshot']['manifest_sha256'])
     manifest = verify_joint_recovery_snapshot(snapshot)
+    _, historical_digest = read_retirement_historical_graph_census(snapshot)
+    if document['historical_census_sha256'] != historical_digest:
+        raise ValueError('retirement_candidate_historical_census_mismatch')
     if (manifest['builds'] != projection['migration_builds'] or not offline._complete_backup(manifest)
             or _sql_snapshot(snapshot.directory / 'relational/database.sqlite3') != _expected_sql(projection)
             or [{'scope': row['scope'], 'board_id': row['board_id'], 'database_uuid': row['database_uuid'],
@@ -126,7 +130,8 @@ async def prepare_retirement_candidate_seed(runtime, storage, graphs, run, proje
         seed_document = {'format': _FORMAT, 'offline_run_sha256': run.manifest_sha256,
             'projection_inputs': {'directory': str(projection_inputs.directory), 'manifest_sha256': projection_inputs.manifest_sha256},
             'snapshot': {'directory': str(snapshot.directory), 'manifest_sha256': snapshot.manifest_sha256},
-            'generation': 'retirement-' + secrets.token_hex(12)}
+            'generation': 'retirement-' + secrets.token_hex(12),
+            'historical_census_sha256': read_retirement_historical_graph_census(snapshot)[1]}
         _validate_seed_document(seed_document)
         async with runtime.engine.connect() as connection:
             await connection.exec_driver_sql('BEGIN IMMEDIATE')
