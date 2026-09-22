@@ -55,6 +55,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     Story,
 )
 from okto_pulse.core.ports.consolidation import (
+    CardLifecycleTransition,
     ConsolidationPoisonRow,
     ConsolidationProjectionInputs,
     ConsolidationQueueRecord,
@@ -536,6 +537,22 @@ def _apply_queue(row: Any, record: ConsolidationQueueRecord) -> None:
 
 
 class CommunitySqlAlchemyConsolidationPersistence:
+    async def latest_card_transitions(
+        self, context: Any, *, board_id: str, card_id: str,
+    ) -> tuple[CardLifecycleTransition, ...]:
+        rows = (await context.execute(
+            select(DomainEventRow).where(
+                DomainEventRow.board_id == board_id,
+                DomainEventRow.event_type == "card.moved",
+                DomainEventRow.payload_json["card_id"].as_string() == card_id,
+            ).order_by(DomainEventRow.occurred_at.desc(), DomainEventRow.id.desc()).limit(2)
+        )).scalars().all()
+        return tuple(CardLifecycleTransition(
+            event_id=row.id, occurred_at=row.occurred_at,
+            from_status=row.payload_json.get("from_status"),
+            to_status=row.payload_json.get("to_status"),
+        ) for row in rows)
+
     async def _load_code_investigation_receipt(
         self,
         context: Any,

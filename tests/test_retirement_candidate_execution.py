@@ -196,6 +196,62 @@ async def test_failed_private_execution_can_retry_from_seed_and_keeps_original_p
         await runtime.close()
 
 
+@pytest.mark.asyncio
+@pytest.mark.timeout(480)
+async def test_bug_candidate_uses_latest_source_done_event(tmp_path, monkeypatch):
+    import test_retirement_offline_bootstrap as fixture
+
+    restore = fixture.restore_source
+
+    def bug_source(directory):
+        path = restore(directory)
+        # Modify only the disposable predecessor before its signed snapshot.
+        with closing(sqlite3.connect(path)) as connection:
+            with connection:
+                connection.execute("UPDATE cards SET card_type='bug', status='done', "
+                    "severity='critical', origin_task_id='card-b' WHERE id='card-a'")
+                for identity, day, old, new in (
+                    ('first', 2, 'in_progress', 'done'),
+                    ('reopened', 3, 'done', 'in_progress'),
+                    ('last', 4, 'in_progress', 'done'),
+                ):
+                    connection.execute("INSERT INTO domain_events "
+                        "(id,event_type,board_id,payload_json,occurred_at) VALUES (?,?,?,?,?)",
+                        (identity, 'card.moved', 'board-a', json.dumps({
+                            'card_id': 'card-a', 'from_status': old, 'to_status': new,
+                        }), f'2001-01-{day:02d} 00:00:00'))
+        return path
+
+    monkeypatch.setattr(fixture, 'restore_source', bug_source)
+    runtime, storage, run, source = await prepare(tmp_path)
+    try:
+        projection = await offline.prepare_offline_retirement_projection_inputs(runtime, storage, (), run,
+            migration_builds=MIGRATION, projection_directory=tmp_path / 'projection')
+        recovery = tmp_path / 'candidate-backups'
+        recovery.mkdir()
+        seed = await candidate.prepare_retirement_candidate_seed(runtime, storage, (), run,
+            projection['projection_inputs'], migration_builds=MIGRATION,
+            recovery_directory=recovery, seed_directory=tmp_path / 'seed')
+        target = tmp_path / 'projected'
+        before = dump(source)
+        await candidate.build_projected_retirement_graph_candidate(runtime, storage, (), run, seed,
+            target, migration_builds=MIGRATION,
+            settings=CommunitySettings(kg_embedding_mode='stub', kg_embedding_dim=384),
+            confirm_original_offline=True, max_seconds=300)
+        binding = CommunityGraphBackendBindingStore(target / 'kg-artifacts').inspect_board_binding('board-a')
+        with connect(binding.physical_path, page_size=binding.page_size, read_only=True) as graph:
+            rows = graph.execute("MATCH (n:Bug) WHERE n.source_artifact_ref='card:card-a' "
+                "RETURN n.resolved_at, n.source_status, n.severity, n.created_at").rows
+            assert len(rows) == 1
+            resolved, status, severity, created = rows[0]
+            assert resolved.micros == int(datetime(2001, 1, 4, tzinfo=timezone.utc).timestamp() * 1_000_000)
+            assert (status, severity) == ('done', 'critical')
+            assert created.micros != resolved.micros
+        assert dump(source) == before
+    finally:
+        await runtime.close()
+
+
 @pytest.mark.parametrize('lose_at,committed', [(1, False), (3, False), (4, True)])
 def test_enqueue_rechecks_authority_before_and_after_commit(tmp_path, lose_at, committed):
     from test_f06_community_rebuild_effects import _queue_db
