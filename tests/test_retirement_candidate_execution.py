@@ -4,6 +4,7 @@ from contextlib import closing, contextmanager
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import sqlite3
 
 import pytest
@@ -73,6 +74,10 @@ async def test_failed_private_execution_can_retry_from_seed_and_keeps_original_p
         assert receipt['seed_sha256'] == seed.manifest_sha256
         assert receipt['before_sql'] != receipt['after_sql']
         assert len(receipt['boards']) == 1 and len(receipt['boards'][0]['acks']) == 3
+        assert receipt['graph_reconciliation']['state'] == 'source_graph_reconciled'
+        assert receipt['graph_reconciliation']['boards'][0]['node_count'] == 4
+        assert receipt['graph_reconciliation']['boards'][0]['edge_count'] == 5
+        assert receipt['graph_reconciliation']['boards'][0]['zero_orphan_validation'] == 'passed'
         # ACK membership keeps the census task reference; graph roots use card.
         assert {ack['membership_source_ref'] for ack in receipt['boards'][0]['acks']} == {'spec:spec-a', 'task:card-a', 'task:card-b'}
         bindings = CommunityGraphBackendBindingStore(target / 'kg-artifacts')
@@ -141,6 +146,19 @@ async def test_failed_private_execution_can_retry_from_seed_and_keeps_original_p
             verify_candidate_sql_delta(
                 Path(seed_document['snapshot']['directory']) / 'relational/database.sqlite3',
                 changed_revision, acknowledgements, deadline=_deadline(60))
+        from okto_pulse.community.adapters.retirement_candidate_graph_reconciliation import (
+            verify_candidate_graph_reconciliation,
+        )
+
+        changed_graph_evidence = tmp_path / 'changed-graph-evidence'
+        shutil.copytree(target, changed_graph_evidence)
+        with closing(sqlite3.connect(changed_graph_evidence / 'database.sqlite3')) as altered:
+            with altered:
+                altered.execute("UPDATE kuzu_node_refs SET kuzu_node_id='unowned-node' "
+                    "WHERE id=(SELECT id FROM kuzu_node_refs ORDER BY id LIMIT 1)")
+        with pytest.raises(ValueError, match='graph_node_census_changed'):
+            verify_candidate_graph_reconciliation(
+                changed_graph_evidence, receipt['boards'], deadline=_deadline(60))
         marker = target / 'unexpected-payload'
         marker.write_text('candidate changed after checkpoint')
         with pytest.raises(ValueError, match='checkpoint_content_changed'):

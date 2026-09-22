@@ -86,7 +86,8 @@ async def verify_projected_candidate(target, *, seed, seed_document, projection,
             or re.fullmatch(r'[0-9a-f]{64}', checkpoint['content_sha256']) is None):
         raise ValueError('retirement_candidate_checkpoint_invalid')
     projected = _read_sealed(target / 'projection-receipt', receipt['projection_receipt_sha256'])
-    if (set(projected) != {'format', 'seed_sha256', 'state', 'before_sql', 'after_sql', 'boards'}
+    if (set(projected) != {'format', 'seed_sha256', 'state', 'before_sql', 'after_sql',
+            'boards', 'graph_reconciliation'}
             or projected['format'] != 'retirement-candidate-projection/v1'
             or projected['seed_sha256'] != seed.manifest_sha256
             or projected['state'] != 'projected_not_reconciled'
@@ -156,6 +157,13 @@ async def verify_projected_candidate(target, *, seed, seed_document, projection,
 
     verify_candidate_sql_delta(Path(seed_document['snapshot']['directory']) / 'relational/database.sqlite3',
         target / 'database.sqlite3', tuple(all_receipts), deadline=deadline)
+    from .retirement_candidate_graph_reconciliation import (
+        verify_candidate_graph_reconciliation,
+    )
+
+    if verify_candidate_graph_reconciliation(
+            target, projected['boards'], deadline=deadline) != projected['graph_reconciliation']:
+        raise ValueError('retirement_candidate_checkpoint_graph_reconciliation_changed')
     if _inventory_digest(target, native_paths, deadline, published=True) != checkpoint['content_sha256']:
         raise ValueError('retirement_candidate_checkpoint_content_changed')
     return {'state': 'projected_not_reconciled', 'directory': target,
