@@ -27,6 +27,7 @@ _MAX_NODES = 100_000
 _MAX_EDGES = 500_000
 _SOURCE_FIELDS = ('source_created_at', 'source_updated_at', 'source_status', 'severity', 'resolved_at')
 _DATE_FIELDS = frozenset({'source_created_at', 'source_updated_at', 'resolved_at'})
+_PARTITION_FIELDS = ('graph_layer', 'maturity_status')
 
 
 def _digest(value):
@@ -99,6 +100,25 @@ def _source_value(name, value):
     return (delta.days * 86400 + delta.seconds) * 1_000_000 + delta.microseconds
 
 
+def _partition_expectations(board_plan):
+    # The Core planner has already classified the fenced source snapshot. Do
+    # not infer canonical eligibility from a graph status or from its age here.
+    expected = {}
+    for plan in board_plan['plans']:
+        projection = plan['projection']
+        if projection is None:
+            continue
+        for node in projection['nodes']:
+            root = ProjectionSourceRoot(node['node_type'], node['source_artifact_ref'])
+            partition = tuple(node.get(name) for name in _PARTITION_FIELDS)
+            if any(type(item) is not str or not item for item in partition):
+                raise ValueError('retirement_candidate_source_partition_invalid')
+            if root in expected and expected[root] != partition:
+                raise ValueError('retirement_candidate_source_partition_conflict')
+            expected[root] = partition
+    return expected
+
+
 def _edge_identity(row):
     return (row['edge_type'], row['source_type'], row['source_id'],
         row['target_type'], row['target_id'], row['fingerprint'])
@@ -111,7 +131,7 @@ def _cognitive_parity(schema, board_id, record, node):
 
 
 def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata, deadline, history=None,
-        *, board_id=None, cognitive_rows=()):
+        *, board_id=None, cognitive_rows=(), expected_partitions=None):
     # Prior records qualify by a full fingerprint, preserved or independently
     # reconciled against the authenticated property trace. Both stay unclassified.
     delta = history['delta'] if history is not None else {}
@@ -121,10 +141,11 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
     prior_nodes.update({(row['after']['node_type'], row['after']['node_id']): row['after']['fingerprint']
         for row in delta.get('changed_nodes', ())})
     prior_edges = Counter({_edge_identity(row): row['count'] for row in delta.get('retained_edges', ())})
-    nodes, metadata, identities, hashes = {}, {}, [], {}
+    nodes, metadata, identities, hashes, partitions = {}, {}, [], {}, {}
     edges, new_edges, connected, technical_roots = [], [], set(), set()
     roots = tuple(sorted(expected_metadata))
-    wanted_roots = set(roots)
+    partition_roots = tuple(sorted(expected_partitions or {}))
+    wanted_roots = set(roots) | set(partition_roots)
     historical_inventory_nodes, historical_inventory_edges = [], []
     if type(cognitive_rows) is not tuple or len(cognitive_rows) > _MAX_NODES:
         raise ValueError('retirement_candidate_cognitive_source_limit')
@@ -173,12 +194,17 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
                             created_by_agent=fields[2], source_session_id=fields[1]):
                         technical_roots.add(identity)
                     metadata[identity] = tuple(value(node.properties, name) for name in _SOURCE_FIELDS)
+                    partitions[identity] = tuple(value(node.properties, name) for name in _PARTITION_FIELDS)
                     root = (ProjectionSourceRoot(node.type_name, fields[0])
                         if type(fields[0]) is str and fields[0] else None)
                     if not preserved or root in wanted_roots:
                         identities.append(ProjectionSourceIdentity(node.type_name, node.key, fields[0],
                             value(node.properties, 'generation'), value(node.properties, 'superseded_by')))
             selected = select_projection_source_roots(roots=roots, nodes=tuple(identities))
+            partition_selected = select_projection_source_roots(roots=partition_roots, nodes=tuple(identities))
+            for root, node in zip(partition_roots, partition_selected, strict=True):
+                if partitions[(node.node_type, node.node_id)] != expected_partitions[root]:
+                    raise ValueError('retirement_candidate_source_partition_changed')
             expected_by_identity = {(node.node_type, node.node_id): expected_metadata[root]
                 for root, node in zip(roots, selected, strict=True)}
             for identity, values in metadata.items():
@@ -240,6 +266,10 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
         'source_metadata_sha256': _digest([(root.node_type, root.source_artifact_ref, expected_metadata[root])
             for root in roots]),
         'source_metadata_root_count': len(expected_metadata), 'source_metadata_validation': 'passed',
+        'source_partition_count': len(partition_roots),
+        'source_partition_validation': 'passed' if expected_partitions is not None else 'not_checked',
+        'source_partition_sha256': _digest([(root.node_type, root.source_artifact_ref, expected_partitions[root])
+            for root in partition_roots]),
         'historical_node_count': len(preserved_nodes),
         'historical_property_change_count': len(delta.get('changed_nodes', ())),
         'historical_edge_count': sum(row['count'] for row in delta.get('retained_edges', ())),
@@ -311,7 +341,8 @@ def verify_candidate_graph_reconciliation(target, boards, *, projection, deadlin
         if board_id not in planned:
             raise ValueError('retirement_candidate_graph_boards_invalid')
         report = _board_graph(binding, board_refs, edge_count, _source_expectations(planned[board_id]), deadline,
-            histories.get(board_id), board_id=board_id, cognitive_rows=tuple(planned[board_id]['cognitive_rows']))
+            histories.get(board_id), board_id=board_id, cognitive_rows=tuple(planned[board_id]['cognitive_rows']),
+            expected_partitions=_partition_expectations(planned[board_id]))
         reports.append({'board_id': board_id, 'generation': binding.generation,
             'binding_sha256': binding.binding_sha256, **report})
     _sidecars_absent(database_path)
@@ -320,6 +351,6 @@ def verify_candidate_graph_reconciliation(target, boards, *, projection, deadlin
     pending = (any(report['history_classification'] == 'pending' for report in reports)
         or any(item['state'] != 'matched' for report in reports for item in report['cognitive_source_parity'])
         or global_history != 'no_prior_records')
-    return {'format': 'retirement-candidate-graph-reconciliation/v8',
+    return {'format': 'retirement-candidate-graph-reconciliation/v9',
         'state': 'source_projection_reconciled_history_pending' if pending else 'source_graph_reconciled',
         'global_history_state': global_history, 'boards': reports}
