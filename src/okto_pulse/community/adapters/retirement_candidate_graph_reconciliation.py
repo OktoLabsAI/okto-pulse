@@ -14,6 +14,7 @@ from okto_pulse.core.kg.logical_transfer import LOGICAL_NULL, LogicalFingerprint
 from okto_pulse.core.ports.consolidation import ExactConsolidationAckReceipt
 from okto_pulse.core.ports.cognitive_projection import compare_cognitive_projection
 from okto_pulse.core.ports.projection_connectivity import observe_projection_connectivity
+from okto_pulse.core.ports.projection_relations import compare_projection_relations
 from okto_pulse.core.ports.kg_cognitive_source import latest_cognitive_source_records
 from okto_pulse.core.ports.projection_history import (
     ProjectionSourceIdentity, ProjectionSourceRoot, select_projection_source_roots, is_projection_technical_root,
@@ -135,7 +136,7 @@ def _cognitive_parity(schema, board_id, record, node):
 
 
 def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata, deadline, history=None,
-        *, board_id=None, cognitive_rows=(), expected_partitions=None, expected_edge_sessions=None):
+        *, board_id=None, cognitive_rows=(), expected_partitions=None, expected_edge_sessions=None, planned_document=None):
     # Prior records qualify by a full fingerprint, preserved or independently
     # reconciled against the authenticated property trace. Both stay unclassified.
     delta = history['delta'] if history is not None else {}
@@ -151,6 +152,7 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
     roots = tuple(sorted(expected_metadata))
     partition_roots = tuple(sorted(expected_partitions or {}))
     wanted_roots = set(roots) | set(partition_roots)
+    wanted_source_keys = {(root.node_type, root.source_artifact_ref) for root in wanted_roots}
     historical_inventory_nodes, historical_inventory_edges = [], []
     if type(cognitive_rows) is not tuple or len(cognitive_rows) > _MAX_NODES:
         raise ValueError('retirement_candidate_cognitive_source_limit')
@@ -174,7 +176,7 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
             for batch in reader.iter_nodes(batch_size=500):
                 _check_time(deadline)
                 for node in batch:
-                    if prior_nodes:
+                    if prior_nodes or planned_document is not None:
                         historical_inventory_nodes.append(node)
                     if node.type_name not in NODE_TYPES:
                         continue  # BoardMeta is authenticated by the complete cold census.
@@ -201,7 +203,8 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
                     metadata[identity] = tuple(value(node.properties, name) for name in _SOURCE_FIELDS)
                     partitions[identity] = tuple(value(node.properties, name) for name in _PARTITION_FIELDS)
                     root = (ProjectionSourceRoot(node.type_name, fields[0])
-                        if type(fields[0]) is str and fields[0] else None)
+                        if type(fields[0]) is str and fields[0] and
+                        (not preserved or (node.type_name, fields[0]) in wanted_source_keys) else None)
                     if not preserved or root in wanted_roots:
                         identities.append(ProjectionSourceIdentity(node.type_name, node.key, fields[0],
                             value(node.properties, 'generation'), value(node.properties, 'superseded_by')))
@@ -230,7 +233,7 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
             for batch in reader.iter_relations(batch_size=500):
                 _check_time(deadline)
                 for relation in batch:
-                    if prior_nodes:
+                    if prior_nodes or planned_document is not None:
                         historical_inventory_edges.append(relation)
                     source = relation.source_type, relation.source_key
                     target = relation.target_type, relation.target_key
@@ -271,12 +274,17 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
             connectivity = observe_projection_connectivity(schema=reader.schema(), board_id=board_id,
                 nodes=tuple(historical_inventory_nodes), relations=tuple(historical_inventory_edges),
                 selected=tuple(sorted(preserved_nodes))) if preserved_nodes else ()
+            relation_comparison = (compare_projection_relations(document=planned_document, schema=reader.schema(),
+                nodes=tuple(historical_inventory_nodes), relations=tuple(historical_inventory_edges),
+                new_sessions=tuple(sorted(expected_edge_sessions or {}))) if planned_document is not None else None)
         finally:
             reader.close()
     return {'node_count': len(nodes), 'edge_count': len(edges),
         'edge_session_validation': 'passed' if expected_edge_sessions is not None else 'not_checked',
         'edge_session_count': len(expected_edge_sessions or {}),
         'edge_session_sha256': _digest(sorted((expected_edge_sessions or {}).items())),
+        'source_relation_comparison': ({**asdict(relation_comparison), 'issues': list(relation_comparison.issues)}
+            if relation_comparison is not None else None),
         'node_sha256': _digest(sorted((kind, key, digest) for (kind, key), digest in hashes.items())),
         'edge_sha256': _digest(sorted(edges)),
         'source_metadata_sha256': _digest([(root.node_type, root.source_artifact_ref, expected_metadata[root])
@@ -358,7 +366,9 @@ def verify_candidate_graph_reconciliation(target, boards, *, projection, deadlin
             raise ValueError('retirement_candidate_graph_boards_invalid')
         report = _board_graph(binding, board_refs, sum(edge_sessions.values()), _source_expectations(planned[board_id]), deadline,
             histories.get(board_id), board_id=board_id, cognitive_rows=tuple(planned[board_id]['cognitive_rows']),
-            expected_partitions=_partition_expectations(planned[board_id]), expected_edge_sessions=edge_sessions)
+            expected_partitions=_partition_expectations(planned[board_id]), expected_edge_sessions=edge_sessions,
+            planned_document=json.dumps(planned[board_id], ensure_ascii=False, sort_keys=True,
+                separators=(',', ':'), allow_nan=False).encode('utf-8'))
         reports.append({'board_id': board_id, 'generation': binding.generation,
             'binding_sha256': binding.binding_sha256, **report})
     _sidecars_absent(database_path)
@@ -367,6 +377,9 @@ def verify_candidate_graph_reconciliation(target, boards, *, projection, deadlin
     pending = (any(report['history_classification'] == 'pending' for report in reports)
         or any(item['state'] != 'matched' for report in reports for item in report['cognitive_source_parity'])
         or global_history != 'no_prior_records')
-    return {'format': 'retirement-candidate-graph-reconciliation/v10',
-        'state': 'source_projection_reconciled_history_pending' if pending else 'source_graph_reconciled',
+    mismatch = any(any(report['source_relation_comparison'][field] for field in
+        ('missing_count', 'unresolved_count', 'unexpected_new_count')) for report in reports)
+    return {'format': 'retirement-candidate-graph-reconciliation/v11',
+        'state': ('source_projection_mismatch' if mismatch else
+            'source_projection_reconciled_history_pending' if pending else 'source_graph_reconciled'),
         'global_history_state': global_history, 'boards': reports}

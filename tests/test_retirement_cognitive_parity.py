@@ -47,6 +47,8 @@ def test_cold_cognitive_source_parity_never_admits_history(tmp_path, state, monk
         monkeypatch.setattr(reconciliation, '_relational_evidence', lambda *_: ({}, {}))
         result = reconciliation.verify_candidate_graph_reconciliation(tmp_path,
             [{'acks': [], 'binding': {'board_id': 'board', 'generation': 'private'}}],
-            projection={'boards': [{'projection': {'board_id': 'board', 'plans': [], 'cognitive_rows': [source]}}]},
+            projection={'boards': [{'projection': {'format': 'deterministic-board-projection-plan/v3',
+                'board_id': 'board', 'plans': [], 'cognitive_rows': [source], 'source_rows': [],
+                'captured_at': '2026-09-22T00:00:00+00:00', 'census': {}, 'dependency_closure': []}}]},
             deadline=_deadline(60))
         assert result['state'] == 'source_projection_reconciled_history_pending'
