@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from okto_pulse.core.kg.logical_transfer import LogicalFingerprintAccumulator
+from okto_pulse.core.ports.cognitive_projection import cognitive_projection_source_node
 from okto_pulse.community.adapters import retirement_candidate_graph_reconciliation as reconciliation
 from okto_pulse.community.adapters.retirement_candidate_graph_reconciliation import _board_graph
 from okto_pulse.community.adapters.relational_recovery_snapshot import _deadline
@@ -29,6 +30,8 @@ def test_cold_cognitive_source_parity_never_admits_history(tmp_path, state, monk
     source = {'board_id': 'board', 'node_type': 'Decision', 'node_id': node.key, 'generation': 0,
         'source_revision': 0, 'source_session_id': 'session', 'evidence_refs': ['spec:old'],
         'payload': {'title': 'sealed', 'generation': 0, 'source_artifact_ref': 'spec:old'}}
+    literal = cognitive_projection_source_node(schema=schema, board_id='board', record=source)
+    assert literal == replace(node, properties={**node.properties, 'title': 'sealed'})
     report = _board_graph(SimpleNamespace(physical_path=path, page_size=8192), {}, 0, {}, _deadline(60),
         history, board_id='board', cognitive_rows=(source,))
     assert report['cognitive_source_parity'][0]['state'] == state
