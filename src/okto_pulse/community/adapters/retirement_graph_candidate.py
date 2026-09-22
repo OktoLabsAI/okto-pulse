@@ -353,7 +353,8 @@ async def _restore_retirement_graph_candidate(runtime, storage, graphs, run, see
                                 stage, snapshot, max_seconds=max_seconds)
                             executed['format'] = 'retirement-candidate-projection/v2'
                             executed['graph_reconciliation'] = verify_candidate_graph_reconciliation(
-                                stage, executed['boards'], projection=projection, deadline=_deadline(max_seconds))
+                                stage, executed['boards'], projection=projection, deadline=_deadline(max_seconds),
+                                historical_observations=executed['historical_observations'])
                             projection_receipt = offline._seal(stage / 'projection-receipt', executed)
                             state = 'projected_not_reconciled'
                             # Binding paths are relative, so the final rename does not

@@ -12,7 +12,7 @@ import json
 
 from okto_pulse.core.kg.logical_transfer import LogicalFingerprintAccumulator, encode_value
 from okto_pulse.core.ports.projection_history import (
-    ProjectionEdgeFingerprint, ProjectionNodeFingerprint, compare_projection_history,
+    ProjectionEdgeFingerprint, ProjectionNodeFingerprint, classify_projection_history, compare_projection_history,
 )
 
 from .joint_recovery_snapshot import verify_joint_recovery_snapshot
@@ -120,7 +120,7 @@ def compare_retirement_historical_graph_censuses(before_snapshot, after_snapshot
     before, before_digest = read_retirement_historical_graph_census(before_snapshot, max_seconds=max_seconds)
     after, after_digest = read_retirement_historical_graph_census(after_snapshot, max_seconds=max_seconds)
     results = compare_graph_record_censuses(before['graphs'], after['graphs'], deadline=deadline)
-    result = {'format': 'retirement-historical-graph-observations/v1', 'state': 'observed_not_classified',
+    result = {'format': 'retirement-historical-graph-observations/v2', 'state': 'observed_not_classified',
         'before_snapshot_sha256': before_snapshot.manifest_sha256,
         'after_snapshot_sha256': after_snapshot.manifest_sha256,
         'before_census_sha256': before_digest, 'after_census_sha256': after_digest, 'graphs': results}
@@ -152,5 +152,6 @@ def compare_graph_record_censuses(before_graphs, after_graphs, *, deadline):
             before_edges=edges(previous), after_edges=edges(current))
         # Receipts use JSON arrays. Return the same shape before and after sealing
         # so replay compares the evidence, not tuple/list serialization details.
-        results.append({'scope': scope, 'board_id': board, 'delta': json.loads(_encode(asdict(delta)))})
+        results.append({'scope': scope, 'board_id': board, 'history_state': classify_projection_history(delta).value,
+            'delta': json.loads(_encode(asdict(delta)))})
     return results

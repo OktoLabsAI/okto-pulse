@@ -1,5 +1,6 @@
 """Read-only source/graph reconciliation for a private retirement candidate."""
 
+from collections import Counter
 from contextlib import closing
 from datetime import datetime, timezone
 import hashlib
@@ -8,12 +9,13 @@ import sqlite3
 
 from okto_grafx import connect
 from okto_pulse.core.kg.schema_contract import NODE_TYPES
+from okto_pulse.core.kg.logical_transfer import LOGICAL_NULL, LogicalFingerprintAccumulator
 from okto_pulse.core.ports.consolidation import ExactConsolidationAckReceipt
 from okto_pulse.core.ports.projection_history import (
     ProjectionSourceIdentity, ProjectionSourceRoot, select_projection_source_roots,
 )
 
-from .grafx_relationship_layout import PULSE_RELATIONSHIP_LAYOUT
+from .logical_transfer_factories import make_grafx_logical_source
 from .graph_backend_binding import CommunityGraphBackendBindingStore
 from .relational_recovery_snapshot import _check_time, _readonly, _sidecars_absent
 
@@ -93,87 +95,141 @@ def _source_value(name, value):
     return (delta.days * 86400 + delta.seconds) * 1_000_000 + delta.microseconds
 
 
-def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata, deadline):
-    nodes = {}
-    identities, metadata = [], {}
+def _edge_identity(row):
+    return (row['edge_type'], row['source_type'], row['source_id'],
+        row['target_type'], row['target_id'], row['fingerprint'])
+
+
+def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata, deadline, history=None):
+    # Historical records qualify only by their full authenticated fingerprint.
+    # They remain unclassified, even when their literal preservation is proven.
+    delta = history['delta'] if history is not None else {}
+    prior_nodes = {(row['node_type'], row['node_id']): row['fingerprint']
+        for row in delta.get('unchanged_nodes', ())}
+    prior_edges = Counter({_edge_identity(row): row['count'] for row in delta.get('retained_edges', ())})
+    nodes, metadata, identities, hashes = {}, {}, [], {}
+    edges, new_edges, connected = [], [], set()
+    roots = tuple(sorted(expected_metadata))
+    wanted_roots = set(roots)
+
+    def value(properties, name):
+        item = properties.get(name)
+        return None if item is LOGICAL_NULL else item
+
     with connect(binding.physical_path, page_size=binding.page_size, read_only=True) as graph:
-        for node_type in NODE_TYPES:
-            _check_time(deadline)
-            rows = graph.execute(f'MATCH (n:{node_type}) RETURN n.id, '
-                'n.source_artifact_ref, n.source_session_id, n.created_by_agent, '
-                + ', '.join(f'n.{name}' for name in _SOURCE_FIELDS)
-                + ', n.generation, n.superseded_by').rows
-            for row in rows:
-                identity = node_type, str(row[0])
-                if (identity in nodes or not row[1] or not row[2] or not row[3]
-                        or str(row[1]).startswith('sprint:')):
-                    raise ValueError('retirement_candidate_graph_node_invalid')
-                nodes[identity] = (str(row[1]), str(row[2]), str(row[3]))
-                identities.append(ProjectionSourceIdentity(node_type, str(row[0]), str(row[1]), row[-2], row[-1]))
-                metadata[identity] = row[4:4 + len(_SOURCE_FIELDS)]
-                if len(nodes) > _MAX_NODES:
-                    raise ValueError('retirement_candidate_graph_limit')
-        roots = tuple(sorted(expected_metadata))
-        selected = select_projection_source_roots(roots=roots, nodes=tuple(identities))
-        expected_by_identity = {(node.node_type, node.node_id): expected_metadata[root]
-            for root, node in zip(roots, selected, strict=True)}
-        for identity, values in metadata.items():
-            expected = expected_by_identity.get(identity, {})
-            for name, actual in zip(_SOURCE_FIELDS, values, strict=True):
-                wanted = _source_value(name, expected.get(name))
-                observed = (actual.micros if actual is not None and name in _DATE_FIELDS else actual)
-                if observed != wanted:
-                    raise ValueError('retirement_candidate_source_metadata_changed:' + name)
-        if set(nodes) != set(expected_refs):
-            raise ValueError('retirement_candidate_graph_node_census_changed')
-        if any(nodes[identity][1] != session_id
-                for identity, session_id in expected_refs.items()):
-            raise ValueError('retirement_candidate_graph_node_session_changed')
-
-        allowed_edges = {entry.physical_table: entry
-            for entry in PULSE_RELATIONSHIP_LAYOUT.entries}
-        rows = graph.execute('MATCH (a)-[r]->(b) RETURN a.id, b.id, type(r), '
-            'r.rule_id, r.layer, r.created_by').rows
-        if len(rows) > _MAX_EDGES:
-            raise ValueError('retirement_candidate_graph_limit')
-        node_by_id = {}
-        for identity in nodes:
-            if identity[1] in node_by_id:
-                raise ValueError('retirement_candidate_graph_node_identity_ambiguous')
-            node_by_id[identity[1]] = identity[0]
-        edges = []
-        for row in rows:
-            source_id, target_id, physical = str(row[0]), str(row[1]), str(row[2])
-            definition = allowed_edges.get(physical)
-            if (definition is None or node_by_id.get(source_id) != definition.from_type
-                    or node_by_id.get(target_id) != definition.to_type
-                    or type(row[3]) is not str or not row[3]
-                    or row[4] != 'deterministic'
-                    or type(row[5]) is not str or not row[5]):
-                raise ValueError('retirement_candidate_graph_edge_invalid')
-            edges.append((physical, source_id, target_id, str(row[3]), str(row[4]), str(row[5])))
-        if len(edges) != expected_edge_count or len(edges) != len(set(edges)):
-            raise ValueError('retirement_candidate_graph_edge_census_changed')
-
-        connected = set()
-        for _physical, source_id, target_id, *_metadata in edges:
-            connected.add(source_id)
-            connected.add(target_id)
-        if set(node_by_id) - connected:
-            raise ValueError('retirement_candidate_graph_orphan_detected')
-    canonical_nodes = sorted((kind, node_id, *values)
-        for (kind, node_id), values in nodes.items())
+        reader = make_grafx_logical_source(graph, scope='board').open_snapshot()
+        try:
+            schema = LogicalFingerprintAccumulator.for_schema(reader.schema()).schema_hex
+            counts = reader.counts()
+            if counts.nodes > _MAX_NODES or counts.relations > _MAX_EDGES:
+                raise ValueError('retirement_candidate_graph_limit')
+            for batch in reader.iter_nodes(batch_size=500):
+                _check_time(deadline)
+                for node in batch:
+                    if node.type_name not in NODE_TYPES:
+                        continue  # BoardMeta is authenticated by the complete cold census.
+                    identity = node.type_name, node.key
+                    single = LogicalFingerprintAccumulator(schema)
+                    single.add_node(node)
+                    hashes[identity] = single.digest()
+                    preserved = identity in prior_nodes
+                    if preserved and hashes[identity] != prior_nodes[identity]:
+                        raise ValueError('retirement_candidate_prior_node_changed')
+                    fields = tuple(value(node.properties, name) for name in
+                        ('source_artifact_ref', 'source_session_id', 'created_by_agent'))
+                    if identity in nodes or (not preserved and (
+                            any(type(field) is not str or not field for field in fields)
+                            or fields[0].startswith('sprint:'))):
+                        raise ValueError('retirement_candidate_graph_node_invalid')
+                    nodes[identity] = fields
+                    metadata[identity] = tuple(value(node.properties, name) for name in _SOURCE_FIELDS)
+                    root = (ProjectionSourceRoot(node.type_name, fields[0])
+                        if type(fields[0]) is str and fields[0] else None)
+                    if not preserved or root in wanted_roots:
+                        identities.append(ProjectionSourceIdentity(node.type_name, node.key, fields[0],
+                            value(node.properties, 'generation'), value(node.properties, 'superseded_by')))
+            selected = select_projection_source_roots(roots=roots, nodes=tuple(identities))
+            expected_by_identity = {(node.node_type, node.node_id): expected_metadata[root]
+                for root, node in zip(roots, selected, strict=True)}
+            for identity, values in metadata.items():
+                if identity in prior_nodes and identity not in expected_by_identity:
+                    continue  # No current-source chronology is assigned to preserved history.
+                expected = expected_by_identity.get(identity, {})
+                for name, actual in zip(_SOURCE_FIELDS, values, strict=True):
+                    wanted = _source_value(name, expected.get(name))
+                    observed = (actual.micros if actual is not None and name in _DATE_FIELDS else actual)
+                    if observed != wanted:
+                        raise ValueError('retirement_candidate_source_metadata_changed:' + name)
+            preserved_nodes = {(kind, key) for kind, key in prior_nodes if kind in NODE_TYPES}
+            if (set(nodes) != set(expected_refs) | preserved_nodes
+                    or set(expected_refs) & preserved_nodes):
+                raise ValueError('retirement_candidate_graph_node_census_changed')
+            if any(nodes[identity][1] != session_id for identity, session_id in expected_refs.items()):
+                raise ValueError('retirement_candidate_graph_node_session_changed')
+            for batch in reader.iter_relations(batch_size=500):
+                _check_time(deadline)
+                for relation in batch:
+                    source = relation.source_type, relation.source_key
+                    target = relation.target_type, relation.target_key
+                    if source not in nodes or target not in nodes:
+                        raise ValueError('retirement_candidate_graph_edge_invalid')
+                    single = LogicalFingerprintAccumulator(schema)
+                    single.add_relation(relation)
+                    key = (relation.layout_name, *source, *target, single.digest())
+                    edges.append(key)
+                    connected.update((source, target))
+                    if prior_edges[key]:
+                        prior_edges[key] -= 1
+                        continue
+                    rule = value(relation.properties, 'rule_id')
+                    layer = value(relation.properties, 'layer')
+                    actor = value(relation.properties, 'created_by')
+                    if type(rule) is not str or not rule or layer != 'deterministic' or type(actor) is not str or not actor:
+                        raise ValueError('retirement_candidate_graph_edge_invalid')
+                    new_edges.append((relation.layout_name, *source, *target, rule, layer, actor))
+            if any(prior_edges.values()):
+                raise ValueError('retirement_candidate_prior_edge_changed')
+            if len(new_edges) != expected_edge_count or len(new_edges) != len(set(new_edges)):
+                raise ValueError('retirement_candidate_graph_edge_census_changed')
+            orphans = set(nodes) - connected
+            if orphans - preserved_nodes or orphans & set(expected_by_identity):
+                raise ValueError('retirement_candidate_graph_orphan_detected')
+        finally:
+            reader.close()
     return {'node_count': len(nodes), 'edge_count': len(edges),
-        'node_sha256': _digest(canonical_nodes), 'edge_sha256': _digest(sorted(edges)),
+        'node_sha256': _digest(sorted((kind, key, digest) for (kind, key), digest in hashes.items())),
+        'edge_sha256': _digest(sorted(edges)),
         'source_metadata_sha256': _digest([(root.node_type, root.source_artifact_ref, expected_metadata[root])
             for root in roots]),
-        'source_metadata_root_count': len(expected_metadata),
-        'source_metadata_validation': 'passed',
-        'zero_orphan_validation': 'passed'}
+        'source_metadata_root_count': len(expected_metadata), 'source_metadata_validation': 'passed',
+        'historical_node_count': len(preserved_nodes),
+        'historical_edge_count': sum(row['count'] for row in delta.get('retained_edges', ())),
+        'historical_orphan_count': len(orphans),
+        'history_classification': 'pending' if preserved_nodes or delta.get('retained_edges') else 'not_applicable',
+        'zero_orphan_validation': 'pending_history_classification' if orphans else 'passed'}
 
 
-def verify_candidate_graph_reconciliation(target, boards, *, projection, deadline):
-    """Bind every candidate node/edge to exact ACK evidence and reject orphans."""
+def verify_candidate_graph_reconciliation(target, boards, *, projection, deadline, historical_observations=None):
+    """Verify new projection effects; preserved history never receives implicit approval.
+
+    historical_observations must be freshly derived under the caller's offline
+    fences from the retained snapshot. No receipt supplied by a client suffices.
+    """
+    histories, global_history = {}, 'no_prior_records'
+    if historical_observations is not None:
+        if historical_observations.get('format') != 'retirement-candidate-history-observations/v2':
+            raise ValueError('retirement_candidate_history_observations_invalid')
+        for item in historical_observations['graphs']:
+            if item['history_state'] == 'prior_changes_unclassified':
+                raise ValueError('retirement_candidate_prior_changes_unclassified')
+            if item['scope'] == 'global_discovery':
+                global_history = item['history_state']
+                if item['delta']['introduced_nodes'] or item['delta']['introduced_edges']:
+                    raise ValueError('retirement_candidate_global_effects_unowned')
+            else:
+                if item['board_id'] in histories:
+                    raise ValueError('retirement_candidate_history_observations_invalid')
+                histories[item['board_id']] = item
     if type(boards) is not list:
         raise ValueError('retirement_candidate_graph_boards_invalid')
     bindings = CommunityGraphBackendBindingStore(target / 'kg-artifacts')
@@ -204,9 +260,15 @@ def verify_candidate_graph_reconciliation(target, boards, *, projection, deadlin
             if next(ack for ack in receipts if ack.consolidation_session_id == session).board_id == board_id}
         if board_id not in planned:
             raise ValueError('retirement_candidate_graph_boards_invalid')
-        report = _board_graph(binding, board_refs, edge_count, _source_expectations(planned[board_id]), deadline)
+        report = _board_graph(binding, board_refs, edge_count, _source_expectations(planned[board_id]), deadline,
+            histories.get(board_id))
         reports.append({'board_id': board_id, 'generation': binding.generation,
             'binding_sha256': binding.binding_sha256, **report})
     _sidecars_absent(database_path)
-    return {'format': 'retirement-candidate-graph-reconciliation/v3',
-        'state': 'source_graph_reconciled', 'boards': reports}
+    if set(histories) - seen_boards:
+        raise ValueError('retirement_candidate_history_scope_unplanned')
+    pending = (any(report['history_classification'] == 'pending' for report in reports)
+        or global_history != 'no_prior_records')
+    return {'format': 'retirement-candidate-graph-reconciliation/v4',
+        'state': 'source_projection_reconciled_history_pending' if pending else 'source_graph_reconciled',
+        'global_history_state': global_history, 'boards': reports}

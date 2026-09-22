@@ -56,7 +56,7 @@ def observe_candidate_history(target, snapshot, *, max_seconds=180):
     if len(encoded) > _LIMIT:
         raise ValueError('retirement_candidate_history_limit')
     observations = compare_graph_record_censuses(previous['graphs'], graphs, deadline=deadline)
-    result = {'format': 'retirement-candidate-history-observations/v1',
+    result = {'format': 'retirement-candidate-history-observations/v2',
         'state': 'observed_not_classified', 'snapshot_sha256': snapshot.manifest_sha256,
         'before_census_sha256': previous_digest,
         'candidate_census_sha256': hashlib.sha256(encoded).hexdigest(), 'graphs': observations}

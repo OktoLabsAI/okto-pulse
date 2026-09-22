@@ -3,6 +3,7 @@
 from dataclasses import replace
 import json
 import os
+import shutil
 import sqlite3
 
 import pytest
@@ -117,6 +118,19 @@ async def test_native_candidate_is_private_and_preserves_history_after_failed_co
             migration_builds=MIGRATION, settings=projection_settings,
             confirm_original_offline=True, max_seconds=300)
         assert applied['state'] == 'projected_not_reconciled' and dump(source) == before
+        projection_receipt = json.loads((projected / 'projection-receipt/run.json').read_bytes())
+        reconciliation = projection_receipt['graph_reconciliation']
+        assert reconciliation['state'] == 'source_projection_reconciled_history_pending'
+        assert reconciliation['boards'][0]['historical_node_count'] == 1
+        assert reconciliation['boards'][0]['historical_orphan_count'] == 1
+        assert reconciliation['boards'][0]['history_classification'] == 'pending'
+        assert reconciliation['boards'][0]['zero_orphan_validation'] == 'pending_history_classification'
+        projected_engine = create_async_engine(f'sqlite+aiosqlite:///{projected / "database.sqlite3"}')
+        try:
+            with pytest.raises(Exception, match='retirement_cutover_incomplete'):
+                await offline.require_retirement_runtime_admission(projected_engine)
+        finally:
+            await projected_engine.dispose()
         projected_binding = CommunityGraphBackendBindingStore(projected / 'kg-artifacts').inspect_board_binding('board-a')
         with connect(projected_binding.physical_path, page_size=8192, read_only=True) as cold:
             assert cold.identity.database_uuid == original_uuid
@@ -125,6 +139,22 @@ async def test_native_candidate_is_private_and_preserves_history_after_failed_co
             migration_builds=MIGRATION, settings=projection_settings, confirm_original_offline=True,
             confirm_candidate_offline=True, expected_receipt_sha256=applied['receipt_sha256'], max_seconds=300)
         assert verified == applied
+        # Literal preservation is evidence, not permission to rewrite old rows.
+        from okto_pulse.community.adapters.retirement_candidate_history import observe_candidate_history
+        from okto_pulse.community.adapters.retirement_candidate_graph_reconciliation import verify_candidate_graph_reconciliation
+        from okto_pulse.community.adapters.relational_recovery_snapshot import _deadline
+        damaged = tmp_path / 'changed-prior-history'
+        shutil.copytree(projected, damaged)
+        binding = CommunityGraphBackendBindingStore(damaged / 'kg-artifacts').inspect_board_binding('board-a')
+        with connect(binding.physical_path, page_size=8192) as graph_copy:
+            with graph_copy.begin('write') as writer:
+                writer.execute("MATCH (n:Decision {id:'baseline'}) SET n.title='unauthorized history change'")
+            graph_copy.checkpoint()
+        _, source_projection, source_snapshot, _ = candidate.read_retirement_candidate_seed(seed)
+        observations = observe_candidate_history(damaged, source_snapshot)
+        with pytest.raises(ValueError, match='prior_changes_unclassified'):
+            verify_candidate_graph_reconciliation(damaged, projection_receipt['boards'],
+                projection=source_projection, deadline=_deadline(60), historical_observations=observations)
         history_file = restored_binding.physical_path / 'system-history.dat'
         original_history = history_file.read_bytes()
         assert original_history
