@@ -9,6 +9,9 @@ import sqlite3
 from okto_grafx import connect
 from okto_pulse.core.kg.schema_contract import NODE_TYPES
 from okto_pulse.core.ports.consolidation import ExactConsolidationAckReceipt
+from okto_pulse.core.ports.projection_history import (
+    ProjectionSourceIdentity, ProjectionSourceRoot, select_projection_source_roots,
+)
 
 from .grafx_relationship_layout import PULSE_RELATIONSHIP_LAYOUT
 from .graph_backend_binding import CommunityGraphBackendBindingStore
@@ -69,10 +72,14 @@ def _source_expectations(board_plan):
         if set(metadata) != ({root_ref} if root_nodes else set()):
             raise ValueError('retirement_candidate_source_metadata_scope')
         for ref, values in metadata.items():
-            if (ref in expected or type(values) is not dict or set(values) != set(_SOURCE_FIELDS)
+            if (type(values) is not dict or set(values) != set(_SOURCE_FIELDS)
                     or any(value is not None and type(value) is not str for value in values.values())):
                 raise ValueError('retirement_candidate_source_metadata_invalid')
-            expected[ref] = values
+            for node in root_nodes:
+                root = ProjectionSourceRoot(node['node_type'], ref)
+                if root in expected:
+                    raise ValueError('retirement_candidate_source_metadata_invalid')
+                expected[root] = values
     return expected
 
 
@@ -88,34 +95,37 @@ def _source_value(name, value):
 
 def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata, deadline):
     nodes = {}
-    observed_metadata = set()
+    identities, metadata = [], {}
     with connect(binding.physical_path, page_size=binding.page_size, read_only=True) as graph:
         for node_type in NODE_TYPES:
             _check_time(deadline)
             rows = graph.execute(f'MATCH (n:{node_type}) RETURN n.id, '
                 'n.source_artifact_ref, n.source_session_id, n.created_by_agent, '
-                + ', '.join(f'n.{name}' for name in _SOURCE_FIELDS)).rows
+                + ', '.join(f'n.{name}' for name in _SOURCE_FIELDS)
+                + ', n.generation, n.superseded_by').rows
             for row in rows:
                 identity = node_type, str(row[0])
                 if (identity in nodes or not row[1] or not row[2] or not row[3]
                         or str(row[1]).startswith('sprint:')):
                     raise ValueError('retirement_candidate_graph_node_invalid')
                 nodes[identity] = (str(row[1]), str(row[2]), str(row[3]))
-                source_ref = str(row[1])
-                expected = expected_metadata.get(source_ref, {})
-                for name, actual in zip(_SOURCE_FIELDS, row[4:], strict=True):
-                    wanted = _source_value(name, expected.get(name))
-                    observed = (actual.micros if actual is not None and name in _DATE_FIELDS else actual)
-                    if observed != wanted:
-                        raise ValueError('retirement_candidate_source_metadata_changed:' + name)
-                if source_ref in expected_metadata:
-                    observed_metadata.add(source_ref)
+                identities.append(ProjectionSourceIdentity(node_type, str(row[0]), str(row[1]), row[-2], row[-1]))
+                metadata[identity] = row[4:4 + len(_SOURCE_FIELDS)]
                 if len(nodes) > _MAX_NODES:
                     raise ValueError('retirement_candidate_graph_limit')
+        roots = tuple(sorted(expected_metadata))
+        selected = select_projection_source_roots(roots=roots, nodes=tuple(identities))
+        expected_by_identity = {(node.node_type, node.node_id): expected_metadata[root]
+            for root, node in zip(roots, selected, strict=True)}
+        for identity, values in metadata.items():
+            expected = expected_by_identity.get(identity, {})
+            for name, actual in zip(_SOURCE_FIELDS, values, strict=True):
+                wanted = _source_value(name, expected.get(name))
+                observed = (actual.micros if actual is not None and name in _DATE_FIELDS else actual)
+                if observed != wanted:
+                    raise ValueError('retirement_candidate_source_metadata_changed:' + name)
         if set(nodes) != set(expected_refs):
             raise ValueError('retirement_candidate_graph_node_census_changed')
-        if observed_metadata != set(expected_metadata):
-            raise ValueError('retirement_candidate_source_metadata_incomplete')
         if any(nodes[identity][1] != session_id
                 for identity, session_id in expected_refs.items()):
             raise ValueError('retirement_candidate_graph_node_session_changed')
@@ -155,7 +165,8 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
         for (kind, node_id), values in nodes.items())
     return {'node_count': len(nodes), 'edge_count': len(edges),
         'node_sha256': _digest(canonical_nodes), 'edge_sha256': _digest(sorted(edges)),
-        'source_metadata_sha256': _digest(expected_metadata),
+        'source_metadata_sha256': _digest([(root.node_type, root.source_artifact_ref, expected_metadata[root])
+            for root in roots]),
         'source_metadata_root_count': len(expected_metadata),
         'source_metadata_validation': 'passed',
         'zero_orphan_validation': 'passed'}
@@ -197,5 +208,5 @@ def verify_candidate_graph_reconciliation(target, boards, *, projection, deadlin
         reports.append({'board_id': board_id, 'generation': binding.generation,
             'binding_sha256': binding.binding_sha256, **report})
     _sidecars_absent(database_path)
-    return {'format': 'retirement-candidate-graph-reconciliation/v2',
+    return {'format': 'retirement-candidate-graph-reconciliation/v3',
         'state': 'source_graph_reconciled', 'boards': reports}
