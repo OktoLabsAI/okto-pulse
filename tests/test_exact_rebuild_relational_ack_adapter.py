@@ -110,6 +110,7 @@ async def _stage_and_ack(
     expect_receipt: bool | None = None,
     deferred_live: dict[str, object] | None = None,
     created_node_ref_count: int = 4,
+    projection_effects: dict | None = None,
 ) -> ExactConsolidationAckReceipt | None:
     artifact_id = f"artifact-{ordinal}"
     queue_id = f"queue-{ordinal}"
@@ -193,6 +194,7 @@ async def _stage_and_ack(
                     "nodes_updated": 2,
                     "nodes_superseded": 3,
                     "edges_added": 4,
+                    **({'projection_property_effects': projection_effects} if projection_effects is not None else {}),
                 },
                 retry_count=0,
             ),
@@ -1032,3 +1034,52 @@ async def test_exact_ack_snapshot_drift_stages_no_journal_or_queue_delete(exact_
     async with factory() as session:
         assert await session.get(ConsolidationQueue, "queue-1") is not None
         assert await session.get(ExactRebuildConsolidationAckJournal, "queue-1") is None
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('damage', [None, 'hash', 'scope'])
+async def test_exact_ack_accepts_closed_property_effects_without_reusing_delete_refs(exact_store, damage):
+    from okto_pulse.core.ports.projection_effects import ProjectionPropertyEffect, ProjectionPropertyEffects
+
+    factory, adapter = exact_store
+    effects = ProjectionPropertyEffects(OTHER_BOARD_ID if damage == 'scope' else BOARD_ID,
+        'session-1', (ProjectionPropertyEffect.from_values('Entity', 'pre-existing-node',
+            {'title': 'prior'}, {'title': 'current'}),)).to_payload()
+    if damage == 'hash':
+        effects['nodes'][0]['after']['title'] = 'forged'
+    async with factory() as session:
+        if damage is not None:
+            with pytest.raises(ExactConsolidationAckIntegrityError, match='outbox_invalid'):
+                await _stage_and_ack(session, adapter, ordinal=1, previous_generation='unmaterialized-v1',
+                    materialization_generation='mg_1', projection_effects=effects)
+            await session.rollback()
+            assert await session.scalar(select(func.count()).select_from(ExactRebuildConsolidationAckJournal)) == 0
+            return
+        receipt = await _stage_and_ack(session, adapter, ordinal=1, previous_generation='unmaterialized-v1',
+            materialization_generation='mg_1', projection_effects=effects)
+        assert receipt.node_ref_count == 4
+        refs = await _ref_snapshot(session)
+        assert all(row[3] != 'pre-existing-node' for row in refs)
+        await session.commit()
+    for removed in (False, True):
+        async with factory() as session:
+            row = await session.get(GlobalUpdateOutbox, 'outbox-row-1')
+            changed = dict(row.payload)
+            if removed:
+                del changed['projection_property_effects']
+            else:
+                changed['projection_property_effects'] = ProjectionPropertyEffects(BOARD_ID, 'session-1',
+                    (ProjectionPropertyEffect.from_values('Entity', 'pre-existing-node',
+                        {'title': 'prior'}, {'title': 'resealed forgery'}),)).to_payload()
+            row.payload = changed
+            await session.flush()
+            with pytest.raises(ExactConsolidationCompensationError, match='audit_or_refs_changed'):
+                await adapter.compensate_exact_rebuild_commits(session, board_id=BOARD_ID,
+                    source=SOURCE, reservation_lineage_id=LINEAGE, expected_receipts=(receipt,),
+                    reservation_authority_probe=lambda: True)
+            await session.rollback()
+    async with factory() as session:
+        result = await adapter.compensate_exact_rebuild_commits(session, board_id=BOARD_ID,
+            source=SOURCE, reservation_lineage_id=LINEAGE, expected_receipts=(receipt,),
+            reservation_authority_probe=lambda: True)
+        assert result is not None
+        await session.commit()

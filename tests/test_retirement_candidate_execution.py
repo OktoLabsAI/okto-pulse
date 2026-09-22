@@ -87,6 +87,17 @@ async def test_failed_private_execution_can_retry_from_seed_and_keeps_original_p
         assert sorted(node['node_type'] for node in delta['introduced_nodes']) == ['BoardMeta'] + ['Entity'] * 4
         assert len(delta['introduced_edges']) == 5
         assert not delta['removed_nodes'] and not delta['removed_edges'] and not delta['changed_nodes']
+        from okto_pulse.core.ports.projection_effects import ProjectionPropertyEffects
+        with closing(sqlite3.connect(target / 'database.sqlite3')) as sql:
+            effects = [ProjectionPropertyEffects.from_payload(payload['projection_property_effects'])
+                for (raw,) in sql.execute('SELECT payload FROM global_update_outbox')
+                if 'projection_property_effects' in (payload := json.loads(raw))]
+            assert effects  # Later sessions reuse nodes created by earlier sessions.
+            for effect in effects:
+                created = set(sql.execute('SELECT kuzu_node_type, kuzu_node_id FROM kuzu_node_refs WHERE session_id=?',
+                    (effect.session_id,)))
+                assert effect.board_id == 'board-a'
+                assert not created & {(node.node_type, node.node_id) for node in effect.nodes}
         # ACK membership keeps the census task reference; graph roots use card.
         assert {ack['membership_source_ref'] for ack in receipt['boards'][0]['acks']} == {'spec:spec-a', 'task:card-a', 'task:card-b'}
         bindings = CommunityGraphBackendBindingStore(target / 'kg-artifacts')

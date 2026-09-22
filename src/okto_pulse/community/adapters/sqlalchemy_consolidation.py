@@ -14,6 +14,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import aliased, selectinload
 from okto_pulse.core.ports.work_retirement import SUPERSEDED_WORK_STATUS
+from okto_pulse.core.ports.projection_effects import validated_projection_effect_extension
 from okto_pulse.community.adapters.work_retirement_sql import retired_work_origin_exists
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
@@ -154,6 +155,21 @@ def _is_sha256(value: object) -> bool:
     )
 
 
+def _projection_effect_extension(outbox, audit, *, compensation=False):
+    try:
+        extension = validated_projection_effect_extension(
+            outbox.payload if outbox is not None else None,
+            board_id=audit.board_id, session_id=audit.session_id)
+        if extension and audit.agent_id != 'system:historical_consolidation':
+            raise ValueError('projection_effect_actor_invalid')
+        return extension
+    except (TypeError, ValueError) as failure:
+        if compensation:
+            raise ExactConsolidationCompensationError(
+                'exact_consolidation_compensation_integration_fact_changed') from failure
+        raise ExactConsolidationAckIntegrityError('exact_consolidation_ack_outbox_invalid') from failure
+
+
 def _canonical_json(value: object) -> str:
     return json.dumps(
         value,
@@ -178,8 +194,13 @@ def _canonical_node_refs_sha256(
     *,
     audit: ConsolidationAudit,
     refs: Sequence[KuzuNodeRef],
+    projection_effects_sha256: str | None = None,
 ) -> str:
-    """Bind an audit and its complete node-ref multiset to one digest domain."""
+    """Bind audit/created refs and optional property effects to the existing ACK.
+
+    The v1 payload is byte-identical when no extension exists. V2 adds the
+    effects digest without adding reused identities to compensating-delete refs.
+    """
 
     canonical_refs = sorted(
         (
@@ -217,6 +238,11 @@ def _canonical_node_refs_sha256(
         "started_at": _aware_utc(audit.started_at).isoformat(),
         "summary_text": audit.summary_text,
     }
+    if projection_effects_sha256 is not None:
+        if not _is_sha256(projection_effects_sha256):
+            raise ExactConsolidationAckIntegrityError('exact_consolidation_ack_outbox_invalid')
+        payload['schema'] = 'exact_consolidation_node_refs.v2'
+        payload['projection_property_effects_sha256'] = projection_effects_sha256
     rendered = _canonical_json(payload).encode("utf-8")
     digest = hashlib.sha256()
     digest.update(_EXACT_NODE_REFS_DIGEST_DOMAIN)
@@ -1926,6 +1952,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
             "nodes_superseded": audit.nodes_superseded,
             "nodes_updated": audit.nodes_updated,
             "session_id": consolidation_session_id,
+            **_projection_effect_extension(outbox, audit),
         }
         if (
             outbox.board_id != board_id
@@ -2024,7 +2051,8 @@ class CommunitySqlAlchemyConsolidationPersistence:
                 "exact_consolidation_ack_generation_head_invalid"
             )
 
-        node_refs_sha256 = _canonical_node_refs_sha256(audit=audit, refs=refs)
+        node_refs_sha256 = _canonical_node_refs_sha256(audit=audit, refs=refs,
+            projection_effects_sha256=expected_outbox_payload.get('projection_property_effects', {}).get('sha256'))
         receipt = ExactConsolidationAckReceipt.create(
             queue_id=entry_id,
             board_id=board_id,
@@ -2396,6 +2424,8 @@ class CommunitySqlAlchemyConsolidationPersistence:
             refs_must_exist: bool,
         ) -> tuple[dict[str, ConsolidationAudit], dict[str, tuple[KuzuNodeRef, ...]]]:
             audits, refs_by_session = await _load_audits_and_refs()
+            property_outboxes = ({row.session_id: row for row in await _load_target_outboxes()}
+                if refs_must_exist else {})
             if len(audits) != len(ordered):
                 raise ExactConsolidationCompensationError(
                     "exact_consolidation_compensation_audit_missing"
@@ -2447,7 +2477,10 @@ class CommunitySqlAlchemyConsolidationPersistence:
                             or not ref.kuzu_node_type
                             for ref in refs
                         )
-                        or _canonical_node_refs_sha256(audit=audit, refs=refs)
+                        or _canonical_node_refs_sha256(audit=audit, refs=refs,
+                            projection_effects_sha256=_projection_effect_extension(
+                                property_outboxes.get(item.consolidation_session_id), audit, compensation=True
+                            ).get('projection_property_effects', {}).get('sha256'))
                         != item.node_refs_sha256
                     ):
                         raise ExactConsolidationCompensationError(
@@ -2504,6 +2537,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
                 "nodes_superseded": audit.nodes_superseded,
                 "nodes_updated": audit.nodes_updated,
                 "session_id": item.consolidation_session_id,
+                **_projection_effect_extension(outbox, audit, compensation=True),
             }
             expected_event_payload = {
                 "correlation_id": item.consolidation_session_id,

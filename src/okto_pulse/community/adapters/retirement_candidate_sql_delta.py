@@ -14,6 +14,7 @@ import sqlite3
 from types import SimpleNamespace
 
 from okto_pulse.core.ports.consolidation import ExactConsolidationAckReceipt
+from okto_pulse.core.ports.projection_effects import validated_projection_effect_extension
 
 from .global_discovery_recovery import CommunityRelationalRecoverySnapshotFingerprint
 from .materialization_health import materialization_generation_key
@@ -133,14 +134,19 @@ def verify_candidate_sql_delta(baseline_path, candidate_path, receipts, *, deadl
                         'materialization_generation': ack.materialization_generation}):
                 raise ValueError('retirement_candidate_sql_delta_event_changed')
             queued = outbox[ack.outbox_event_id]
+            observed_outbox = json.loads(queued['payload'])
+            effects = validated_projection_effect_extension(observed_outbox,
+                board_id=ack.board_id, session_id=ack.consolidation_session_id)
+            if effects and audited['agent_id'] != 'system:historical_consolidation':
+                raise ValueError('retirement_candidate_sql_delta_outbox_changed')
             if (queued['board_id'] != ack.board_id or queued['session_id'] != ack.consolidation_session_id
                     or queued['event_type'] != 'consolidation_committed'
                     or queued['processed_at'] is not None or queued['retry_count'] != 0
                     or queued['last_error'] is not None
-                    or json.loads(queued['payload']) != {
+                    or observed_outbox != {
                         'artifact_id': ack.artifact_id, 'session_id': ack.consolidation_session_id,
                         'nodes_added': audited['nodes_added'], 'nodes_updated': audited['nodes_updated'],
-                        'nodes_superseded': audited['nodes_superseded'], 'edges_added': audited['edges_added']}):
+                        'nodes_superseded': audited['nodes_superseded'], 'edges_added': audited['edges_added'], **effects}):
                 raise ValueError('retirement_candidate_sql_delta_outbox_changed')
         refs, removed = changes.get('kuzu_node_refs', ([], []))
         if removed or len(refs) != sum(ack.node_ref_count for ack in receipts):
@@ -159,7 +165,9 @@ def verify_candidate_sql_delta(baseline_path, candidate_path, receipts, *, deadl
             for field in ('started_at', 'committed_at'):
                 audited[field] = datetime.fromisoformat(audited[field])
             digest = _canonical_node_refs_sha256(audit=SimpleNamespace(**audited),
-                refs=[SimpleNamespace(**ref) for ref in owned])
+                refs=[SimpleNamespace(**ref) for ref in owned],
+                projection_effects_sha256=json.loads(outbox[ack.outbox_event_id]['payload'])
+                    .get('projection_property_effects', {}).get('sha256'))
             if digest != ack.node_refs_sha256:
                 raise ValueError('retirement_candidate_sql_delta_refs_hash_changed')
         settings_added, settings_removed = changes.get('app_settings', ([], []))
