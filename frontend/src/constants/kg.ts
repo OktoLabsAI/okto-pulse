@@ -15,6 +15,6 @@
  *
  * Both must be kept in sync manually with their backend counterparts.
  */
-export const SCHEMA_VERSION = '0.5.0';
+export const SCHEMA_VERSION = '0.6.0';
 
 export const EXPECTED_KG_HEALTH_SCHEMA_VERSION = '1.1';

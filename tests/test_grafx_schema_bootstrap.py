@@ -47,8 +47,8 @@ from okto_pulse.community.adapters.graph_ddl import (
 
 _BOARD_ID = "board-schema-bootstrap"
 _STAMP = Timestamp(micros=1_788_000_000_123_456)
-_FINGERPRINT = "4a7b425bf4b8c4864be633c1a87f034e5f7f641019dc029015b7d3ca786deb81"
-_LEGACY_DDL_DIGEST = "18a8b1a1b9459d92d61670d734087a4212af29fa4039b0825d6e966ffa181e0e"
+_FINGERPRINT = "3ab6faf0fd8a7fe3694ed7ddd336faa97a6b4af4a1626aafe20c75b0922b2bbe"
+_LEGACY_DDL_DIGEST = "d4121c40b21d316b51c5ea98c4c3c5b4dacdb06ac90f479cdcd739624d0cf64b"
 
 
 def _meta_row(database) -> tuple:
@@ -173,14 +173,14 @@ class _BeginCountingDatabase:
 def test_manifest_is_the_closed_current_pulse_authority() -> None:
     manifest = PULSE_GRAFX_SCHEMA_MANIFEST
 
-    assert manifest.schema_version == "0.5.0"
+    assert manifest.schema_version == "0.6.0"
     assert tuple(table.name for table in manifest.nodes) == NODE_TYPES
     assert len(manifest.nodes) == 11
     assert len(manifest.board_meta.columns) == 5
-    assert len(manifest.relationships) == 69
-    assert len(manifest.tables) == 81
+    assert len(manifest.relationships) == 80
+    assert len(manifest.tables) == 92
     assert len(manifest.spaces) == 11
-    assert all(len(table.columns) == 44 for table in manifest.nodes)
+    assert all(len(table.columns) == 49 for table in manifest.nodes)
     assert all(len(table.columns) == 9 for table in manifest.relationships)
     assert sum(space.node_type in VECTOR_INDEX_TYPES for space in manifest.spaces) == 9
     assert manifest.logical_fingerprint == _FINGERPRINT
@@ -214,12 +214,12 @@ def test_manifest_is_the_closed_current_pulse_authority() -> None:
     assert len(descriptor["relationships"]) == 16
     assert "supersedes__Decision__Decision" not in repr(descriptor)
     descriptor["schema_version"] = "hostile"
-    assert manifest.logical_descriptor["schema_version"] == "0.5.0"
+    assert manifest.logical_descriptor["schema_version"] == "0.6.0"
     assert manifest.logical_fingerprint == _FINGERPRINT
 
 
 def test_structured_ddl_authority_preserves_the_existing_legacy_rendering() -> None:
-    assert len(COMMON_NODE_COLUMNS) == 44
+    assert len(COMMON_NODE_COLUMNS) == 49
     assert tuple(name for name, _type in COMMON_REL_COLUMNS) == (
         "confidence",
         "created_by_session_id",
@@ -272,9 +272,9 @@ def test_empty_bootstrap_is_exact_second_call_is_noop_and_reopen_is_stable(
             bootstrapped_at=_STAMP,
         )
         assert first.changed is True
-        assert first.schema_version == "0.5.0"
+        assert first.schema_version == "0.6.0"
         assert first.logical_fingerprint == _FINGERPRINT
-        assert len(database.catalog.catalog.tables()) == 81
+        assert len(database.catalog.catalog.tables()) == 92
         assert len(database.catalog.catalog.spaces()) == 11
         ordered_indexes = {
             index.name: index
@@ -308,8 +308,12 @@ def test_empty_bootstrap_is_exact_second_call_is_noop_and_reopen_is_stable(
         }
         assert all(index.columns == ("source_artifact_ref",) for index in source_indexes.values())
         from okto_pulse.community.adapters.grafx_schema_evolution import _require_indexes
-        _require_indexes(database, "bootstrap")
-        assert _meta_row(database) == (_BOARD_ID, "0.5.0", _STAMP, None, None)
+        _require_indexes(
+            database,
+            "bootstrap",
+            schema_manifest=PULSE_GRAFX_SCHEMA_MANIFEST,
+        )
+        assert _meta_row(database) == (_BOARD_ID, "0.6.0", _STAMP, None, None)
         assert database.verify("all").findings == ()
 
         catalog_before = database.catalog.catalog
@@ -346,7 +350,7 @@ def test_empty_bootstrap_is_exact_second_call_is_noop_and_reopen_is_stable(
             ).changed
             is False
         )
-        assert _meta_row(reopened) == (_BOARD_ID, "0.5.0", _STAMP, None, None)
+        assert _meta_row(reopened) == (_BOARD_ID, "0.6.0", _STAMP, None, None)
         assert reopened.verify("all").findings == ()
     finally:
         reopened.close()
@@ -395,7 +399,7 @@ def test_partial_exact_catalog_creates_only_missing_objects(tmp_path: Path) -> N
 
         assert result.changed is True
         assert result.logical_fingerprint == _FINGERPRINT
-        assert len(database.catalog.catalog.tables()) == 81
+        assert len(database.catalog.catalog.tables()) == 92
         assert len(database.catalog.catalog.spaces()) == 11
         tables_after = {table.name for table in database.catalog.catalog.tables()}
         spaces_after = {space.name for space in database.catalog.catalog.spaces()}
@@ -406,7 +410,7 @@ def test_partial_exact_catalog_creates_only_missing_objects(tmp_path: Path) -> N
         } == stable_ids
         assert _meta_row(database) == (
             _BOARD_ID,
-            "0.5.0",
+            "0.6.0",
             _STAMP,
             "all-MiniLM-L6-v2",
             384,
@@ -436,7 +440,7 @@ def test_missing_metadata_is_enriched_once_and_never_overwritten(
         assert enriched.changed is True
         assert _meta_row(database) == (
             _BOARD_ID,
-            "0.5.0",
+            "0.6.0",
             _STAMP,
             "all-MiniLM-L6-v2",
             384,
@@ -517,7 +521,7 @@ def test_missing_metadata_is_enriched_once_and_never_overwritten(
                 "MATCH (m:BoardMeta {board_id: $board_id}) "
                 "SET m.schema_version = $value, m.embedding_dimension = $dimension "
                 "RETURN m.board_id",
-                {"board_id": _BOARD_ID, "value": "0.5.0", "dimension": 383},
+                {"board_id": _BOARD_ID, "value": "0.6.0", "dimension": 383},
             )
         assert_refusal_is_inert(reason="board_meta_embedding_mismatch")
     finally:
@@ -836,7 +840,7 @@ def test_a_schema_failure_rolls_back_every_prefix_and_never_stamps_version(
         )
         assert retry.changed is True
         assert retry.logical_fingerprint == _FINGERPRINT
-        assert _meta_row(database) == (_BOARD_ID, "0.5.0", _STAMP, None, None)
+        assert _meta_row(database) == (_BOARD_ID, "0.6.0", _STAMP, None, None)
     finally:
         database.close()
 
@@ -856,7 +860,7 @@ def test_postvalidation_and_metadata_failures_leave_version_absent_and_retry(
             )
 
         assert postvalidation_failure.catalog_calls == 2
-        assert len(database.catalog.catalog.tables()) == 81
+        assert len(database.catalog.catalog.tables()) == 92
         assert len(database.catalog.catalog.spaces()) == 11
         assert database.catalog.catalog.has_table("BoardMeta")
         assert database.execute("MATCH (m:BoardMeta) RETURN m.board_id").rows == ()
@@ -887,7 +891,7 @@ def test_postvalidation_and_metadata_failures_leave_version_absent_and_retry(
         )
         assert retry.changed is True
         assert retry.logical_fingerprint == _FINGERPRINT
-        assert _meta_row(database) == (_BOARD_ID, "0.5.0", _STAMP, None, None)
+        assert _meta_row(database) == (_BOARD_ID, "0.6.0", _STAMP, None, None)
     finally:
         database.close()
 

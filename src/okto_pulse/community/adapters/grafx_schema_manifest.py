@@ -23,6 +23,7 @@ from okto_pulse.core.kg.schema_contract import (
 
 from okto_pulse.community.adapters.grafx_relationship_layout import (
     PULSE_RELATIONSHIP_LAYOUT,
+    RelationshipLayout,
 )
 from okto_pulse.community.adapters.graph_ddl import (
     COMMON_NODE_COLUMNS,
@@ -184,9 +185,17 @@ def _fail_authority(reason: str, **details: object) -> GraphCapabilityUnavailabl
     )
 
 
-def _build_manifest() -> GrafxSchemaManifest:
-    node_property_names = tuple(name for name, _data_type in COMMON_NODE_COLUMNS)
-    expected_property_names = (*STABLE_NODE_PROPERTIES, "embedding")
+def build_grafx_schema_manifest(
+    *,
+    schema_version: str = SCHEMA_VERSION,
+    node_columns: tuple[tuple[str, str], ...] = COMMON_NODE_COLUMNS,
+    expected_node_properties: tuple[str, ...] = STABLE_NODE_PROPERTIES,
+    relationship_layout: RelationshipLayout = PULSE_RELATIONSHIP_LAYOUT,
+) -> GrafxSchemaManifest:
+    """Build one closed manifest, including frozen predecessor contracts."""
+
+    node_property_names = tuple(name for name, _data_type in node_columns)
+    expected_property_names = (*expected_node_properties, "embedding")
     if len(node_property_names) != len(set(node_property_names)) or set(
         node_property_names
     ) != set(expected_property_names):
@@ -214,7 +223,7 @@ def _build_manifest() -> GrafxSchemaManifest:
                     if pulse_type == "DOUBLE[384]"
                     else None,
                 )
-                for name, pulse_type in COMMON_NODE_COLUMNS
+                for name, pulse_type in node_columns
             ),
             primary_key=NODE_PRIMARY_KEY,
         )
@@ -252,12 +261,12 @@ def _build_manifest() -> GrafxSchemaManifest:
             to_table=entry.to_type,
             logical_relationship=entry.logical_type,
         )
-        for entry in PULSE_RELATIONSHIP_LAYOUT.entries
+        for entry in relationship_layout.entries
     )
 
     logical_descriptor: dict[str, object] = {
         "contract": "okto-pulse-board-schema",
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": schema_version,
         "nodes": [
             {
                 "name": table.name,
@@ -277,7 +286,7 @@ def _build_manifest() -> GrafxSchemaManifest:
                 "endpoint_pairs": [list(pair) for pair in definition.endpoint_pairs],
                 "columns": [column.descriptor() for column in relationship_properties],
             }
-            for definition in PULSE_RELATIONSHIP_LAYOUT.logical_definitions
+            for definition in relationship_layout.logical_definitions
         ],
         "spaces": [space.descriptor() for space in spaces],
     }
@@ -289,7 +298,7 @@ def _build_manifest() -> GrafxSchemaManifest:
     )
     fingerprint = hashlib.sha256(descriptor_json.encode("utf-8")).hexdigest()
     return GrafxSchemaManifest(
-        schema_version=SCHEMA_VERSION,
+        schema_version=schema_version,
         spaces=spaces,
         board_meta=board_meta,
         nodes=nodes,
@@ -299,7 +308,7 @@ def _build_manifest() -> GrafxSchemaManifest:
     )
 
 
-PULSE_GRAFX_SCHEMA_MANIFEST = _build_manifest()
+PULSE_GRAFX_SCHEMA_MANIFEST = build_grafx_schema_manifest()
 
 
 __all__ = [
@@ -314,4 +323,5 @@ __all__ = [
     "GrafxSchemaManifest",
     "GrafxSpaceManifest",
     "GrafxTableManifest",
+    "build_grafx_schema_manifest",
 ]

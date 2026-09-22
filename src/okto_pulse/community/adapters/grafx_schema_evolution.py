@@ -33,13 +33,54 @@ from okto_pulse.core.kg.interfaces.graph_errors import (
     GraphError,
     GraphLockContention,
 )
+from okto_pulse.core.kg.schema_contract import STABLE_NODE_PROPERTIES
 
 from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
+from okto_pulse.community.adapters.grafx_relationship_layout import (
+    PULSE_RELATIONSHIP_LAYOUT,
+    RelationshipLayout,
+)
 from okto_pulse.community.adapters.grafx_schema_manifest import (
     EMBEDDING_DIMENSION,
     EMBEDDING_STORAGE_DTYPE,
-    PULSE_GRAFX_SCHEMA_MANIFEST,
     GrafxTableManifest,
+    build_grafx_schema_manifest,
+)
+from okto_pulse.community.adapters.graph_ddl import COMMON_NODE_COLUMNS
+
+_V060_NODE_PROPERTIES = frozenset({
+    "severity", "source_status", "source_created_at", "source_updated_at", "resolved_at",
+})
+_V060_RELATIONSHIP_PAIRS = frozenset({
+    ("supports", "Bug", "Requirement"),
+    ("supports", "Bug", "Constraint"),
+    ("supports", "Bug", "Criterion"),
+    ("supports", "Bug", "TestScenario"),
+    ("supports", "Bug", "APIContract"),
+    ("supports", "Bug", "Decision"),
+    ("violates", "Bug", "Requirement"),
+    ("violates", "Bug", "Criterion"),
+    ("derives_from", "Constraint", "Requirement"),
+    ("derives_from", "Requirement", "Requirement"),
+    ("derives_from", "Decision", "Constraint"),
+})
+_V050_NODE_COLUMNS = tuple(
+    column for column in COMMON_NODE_COLUMNS if column[0] not in _V060_NODE_PROPERTIES
+)
+_V050_NODE_PROPERTIES = tuple(
+    name for name in STABLE_NODE_PROPERTIES if name not in _V060_NODE_PROPERTIES
+)
+_V050_RELATIONSHIP_LAYOUT = RelationshipLayout(
+    (entry.logical_type, entry.from_type, entry.to_type)
+    for entry in PULSE_RELATIONSHIP_LAYOUT.entries
+    if (entry.logical_type, entry.from_type, entry.to_type)
+    not in _V060_RELATIONSHIP_PAIRS
+)
+PULSE_GRAFX_SCHEMA_MANIFEST = build_grafx_schema_manifest(
+    schema_version="0.5.0",
+    node_columns=_V050_NODE_COLUMNS,
+    expected_node_properties=_V050_NODE_PROPERTIES,
+    relationship_layout=_V050_RELATIONSHIP_LAYOUT,
 )
 
 _OPERATION = "rebuild_grafx_schema_candidate"
@@ -1186,7 +1227,12 @@ EXPECTED_INDEX_TOTAL = (
 )
 
 
-def _require_indexes(candidate: Database, phase: str) -> None:
+def _require_indexes(
+    candidate: Database,
+    phase: str,
+    *,
+    schema_manifest=PULSE_GRAFX_SCHEMA_MANIFEST,
+) -> None:
     """Prove the whole index inventory, not merely that nothing was reported stale.
 
     A catalog and a clean digest can both agree while an index file is missing, so the
@@ -1233,11 +1279,17 @@ def _require_indexes(candidate: Database, phase: str) -> None:
     # base inventory. Unknown extras remain subject to the original refusal.
     registered = certified_base_indexes(registered, catalog_tables, phase=phase)
     registered_names = tuple(view.name for view in registered)
-    if len(registered) != EXPECTED_INDEX_TOTAL:
+    expected_index_total = (
+        len(schema_manifest.nodes)
+        + 1
+        + 2 * len(schema_manifest.relationships)
+        + len(schema_manifest.spaces)
+    )
+    if len(registered) != expected_index_total:
         raise _divergence(
             f"candidate_index_count_{phase}",
             phase=boundary_phase,
-            expected=EXPECTED_INDEX_TOTAL,
+            expected=expected_index_total,
             observed=len(registered),
         )
     expected: dict[str, tuple[str, int, str, tuple[int, ...], str, int, str]] = {}
@@ -1262,8 +1314,8 @@ def _require_indexes(candidate: Database, phase: str) -> None:
         )
 
     keyed_tables = (
-        PULSE_GRAFX_SCHEMA_MANIFEST.board_meta,
-        *PULSE_GRAFX_SCHEMA_MANIFEST.nodes,
+        schema_manifest.board_meta,
+        *schema_manifest.nodes,
     )
     for manifest_table in keyed_tables:
         primary_key = manifest_table.primary_key
@@ -1281,7 +1333,7 @@ def _require_indexes(candidate: Database, phase: str) -> None:
             visibility="exact",
             key_derivation="columns",
         )
-    for manifest_table in PULSE_GRAFX_SCHEMA_MANIFEST.relationships:
+    for manifest_table in schema_manifest.relationships:
         expect(
             name=f"ef_{manifest_table.name}",
             table_name=manifest_table.name,
@@ -1296,7 +1348,7 @@ def _require_indexes(candidate: Database, phase: str) -> None:
             visibility="exact",
             key_derivation="columns",
         )
-    for manifest_table in PULSE_GRAFX_SCHEMA_MANIFEST.nodes:
+    for manifest_table in schema_manifest.nodes:
         vector_column = next(
             (column for column in manifest_table.columns if column.vector_space),
             None,

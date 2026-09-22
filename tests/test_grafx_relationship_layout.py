@@ -40,18 +40,18 @@ def _install_layout(database, layout: RelationshipLayout) -> None:
             )
 
 
-def test_closed_pulse_authority_has_16_types_69_pairs_and_unique_names() -> None:
+def test_closed_pulse_authority_has_16_types_80_pairs_and_unique_names() -> None:
     layout = PULSE_RELATIONSHIP_LAYOUT
 
     assert len(layout.logical_definitions) == 16
-    assert len(layout.entries) == 69
+    assert len(layout.entries) == 80
     assert (
         sum(len(definition.endpoint_pairs) for definition in layout.logical_definitions)
-        == 69
+        == 80
     )
 
     physical = tuple(entry.physical_table for entry in layout.entries)
-    assert len(set(physical)) == 69
+    assert len(set(physical)) == 80
     assert max(len(name.encode("ascii")) for name in physical) == 38
     assert all("__" in name for name in physical)
     assert all(

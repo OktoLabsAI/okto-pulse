@@ -40,6 +40,11 @@ COMMON_NODE_COLUMNS: tuple[tuple[str, str], ...] = (
     ("attestation_count", "INT64"),
     ("last_attested_at", "TIMESTAMP"),
     ("kind_of", "STRING"),
+    ("severity", "STRING"),
+    ("source_status", "STRING"),
+    ("source_created_at", "TIMESTAMP"),
+    ("source_updated_at", "TIMESTAMP"),
+    ("resolved_at", "TIMESTAMP"),
     *CODE_TRACEABILITY_COLUMNS,
     ("embedding", "DOUBLE[384]"),
 )
