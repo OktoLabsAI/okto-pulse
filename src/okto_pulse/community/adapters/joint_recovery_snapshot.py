@@ -42,8 +42,8 @@ from okto_pulse.community.adapters.logical_graph_file import verify_logical_grap
 from okto_pulse.community.adapters.logical_graph_transfer import (
     backup_logical_graph_file, restore_logical_graph_file,
 )
-from okto_pulse.community.adapters.logical_transfer_factories import (
-    make_grafx_logical_sink, make_grafx_logical_source,
+from okto_pulse.community.adapters.grafx_recovery_contracts import (
+    make_grafx_recovery_logical_sink, make_grafx_recovery_logical_source,
 )
 from okto_pulse.community.adapters.migration_runtime_fence import offline_migration_window
 from okto_pulse.community.adapters.native_graph_recovery_snapshot import (
@@ -336,7 +336,7 @@ def _capture_joint_recovery_snapshot(
                     filename = f"graph-{index:04d}.jsonl"
                     artifact = stage / filename
                     certificate = backup_logical_graph_file(
-                        artifact, make_grafx_logical_source(graph.database, scope=graph.scope, scan_batch_size=batch_size),
+                        artifact, make_grafx_recovery_logical_source(graph.database, scope=graph.scope, scan_batch_size=batch_size),
                         batch_size=batch_size,
                     )
                     records.append({"file": filename, "scope": graph.scope, "board_id": graph.board_id,
@@ -502,7 +502,7 @@ def verify_joint_recovery_snapshot(snapshot: JointRecoverySnapshot, *, max_secon
 
 
 def _verify_native_logical(database, graph, batch_size, deadline):
-    snapshot = make_grafx_logical_source(database, scope=graph['scope'], scan_batch_size=batch_size).open_snapshot()
+    snapshot = make_grafx_recovery_logical_source(database, scope=graph['scope'], scan_batch_size=batch_size).open_snapshot()
     try:
         measured = LogicalFingerprintAccumulator.for_schema(snapshot.schema())
         for batch in snapshot.iter_nodes(batch_size=batch_size):
@@ -603,7 +603,8 @@ def _staged_joint_recovery_restore(
                     continue
                 report = restore_logical_graph_file(
                     _explicit_path(snapshot.directory / record["file"]),
-                    make_grafx_logical_sink(stage / f"graph-{index:04d}", scope=record["scope"], max_batch_size=batch_size),
+                    make_grafx_recovery_logical_sink(stage / f"graph-{index:04d}", scope=record["scope"],
+                        expected_schema_digest=record['certificate']['schema_digest'], max_batch_size=batch_size),
                     batch_size=batch_size,
                 )
                 certificate = record["certificate"]
