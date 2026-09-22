@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import shutil
 import sqlite3
+from datetime import datetime, timezone
 
 import pytest
 from okto_grafx import connect
@@ -86,6 +87,30 @@ async def test_failed_private_execution_can_retry_from_seed_and_keeps_original_p
         with connect(binding.physical_path, page_size=binding.page_size, read_only=True) as graph:
             refs = {row[0] for row in graph.execute('MATCH (n:Entity) RETURN n.source_artifact_ref').rows}
             assert {'spec:spec-a', 'card:card-a', 'card:card-b'} <= refs
+            with closing(sqlite3.connect(target / 'database.sqlite3')) as sql:
+                expected_dates = {
+                    f'{kind}:{identity}': (created, updated, status)
+                    for kind, table in (('spec', 'specs'), ('card', 'cards'))
+                    for identity, created, updated, status in sql.execute(
+                        f'SELECT id, created_at, updated_at, status FROM {table}')
+                }
+            for ref, created, updated, status in graph.execute(
+                'MATCH (n:Entity) RETURN n.source_artifact_ref, '
+                'n.source_created_at, n.source_updated_at, n.source_status'
+            ).rows:
+                if ref not in expected_dates:
+                    # The Board reference cannot acquire its child's dates.
+                    assert created is None and updated is None and status is None
+                    continue
+                sql_created, sql_updated, sql_status = expected_dates[ref]
+                def micros(value):
+                    stamp = datetime.fromisoformat(value)
+                    if stamp.tzinfo is None:
+                        stamp = stamp.replace(tzinfo=timezone.utc)
+                    return round(stamp.timestamp() * 1_000_000)
+                assert created.micros == micros(sql_created)
+                assert updated.micros == micros(sql_updated)
+                assert status == sql_status
         candidate_engine = create_async_engine(f'sqlite+aiosqlite:///{target / "database.sqlite3"}')
         try:
             with pytest.raises(Exception, match='retirement_cutover_incomplete'):
