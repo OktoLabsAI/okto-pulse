@@ -6,15 +6,19 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from okto_pulse.community.adapters.sqlalchemy_canonical_debt import CommunitySqlAlchemyCanonicalDebtStore
 from okto_pulse.community.adapters.sqlalchemy_models import Base, Board, CanonicalDebt
+from okto_pulse.community.adapters.rebuild_audit_storage import CommunityFileSystemRebuildAuditArtifactStore
+from okto_pulse.community.adapters.retirement_candidate_global_sources import capture_candidate_global_source_inputs
 from okto_pulse.core.composition import isolated_runtime_provider_scope
 from okto_pulse.core.kg.canonical_learning_partition import HISTORICAL_DEBT_REASON
 from okto_pulse.core.ports.canonical_debt import register_canonical_debt_store
-from okto_pulse.core.ports.global_discovery_recovery_control import GlobalDiscoveryRecoveryBoardSeedInputService
+from okto_pulse.core.ports.global_discovery_recovery_control import (
+    CognitivePendingOverlaySnapshotService, GlobalDiscoveryRecoveryBoardSeedInputService,
+)
 
 
 @pytest.mark.asyncio
 async def test_recovery_seed_preserves_all_201_sql_exclusions_and_board_scope(tmp_path):
-    engine = create_async_engine(f'sqlite+aiosqlite:///{tmp_path / "debt.sqlite3"}')
+    engine = create_async_engine(f'sqlite+aiosqlite:///{tmp_path / "database.sqlite3"}')
     try:
         async with engine.begin() as connection:
             await connection.run_sync(lambda sync: Base.metadata.create_all(sync,
@@ -39,5 +43,27 @@ async def test_recovery_seed_preserves_all_201_sql_exclusions_and_board_scope(tm
                 assert dict(captured.overlay_exclusions) == {
                     f'spec:source-{index}': HISTORICAL_DEBT_REASON for index in range(201)}
                 await session.rollback()
+        store = CommunityFileSystemRebuildAuditArtifactStore(tmp_path / 'kg-artifacts')
+        fingerprint = CognitivePendingOverlaySnapshotService(store).current_fingerprint()
+        orphan = tmp_path / 'kg-artifacts/rebuild/global_discovery_recovery/.cognitive_pending_overlay_revision.json.left.tmp'
+        orphan.write_text('retained evidence', encoding='utf-8')
+        before_files = {path.relative_to(tmp_path).as_posix(): path.read_bytes()
+            for path in tmp_path.rglob('*') if path.is_file()}
+        projection = {'boards': [{'metadata': {'board_id': 'board', 'board_name': 'Board', 'board_summary': ''}}]}
+        result = await capture_candidate_global_source_inputs(tmp_path, projection, max_seconds=60)
+        assert result['state'] == 'captured_not_reconciled'
+        assert result['overlay_revision'] == fingerprint
+        assert dict(result['boards'][0]['overlay_exclusions']) == dict(captured.overlay_exclusions)
+        assert await capture_candidate_global_source_inputs(tmp_path, projection, max_seconds=60) == result
+        assert {path.relative_to(tmp_path).as_posix(): path.read_bytes()
+            for path in tmp_path.rglob('*') if path.is_file()} == before_files
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_candidate_missing_overlay_is_unavailable_without_creating_files(tmp_path):
+    projection = {'boards': [{'metadata': {'board_id': 'board', 'board_name': 'Board', 'board_summary': ''}}]}
+    result = await capture_candidate_global_source_inputs(tmp_path, projection, max_seconds=10)
+    assert result['state'] == 'overlay_unavailable' and result['boards'] == []
+    assert list(tmp_path.iterdir()) == []

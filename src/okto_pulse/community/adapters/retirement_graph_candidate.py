@@ -370,7 +370,11 @@ async def _restore_retirement_graph_candidate(runtime, storage, graphs, run, see
                             executed['historical_observations'] = observe_candidate_history(
                                 stage, snapshot, max_seconds=max_seconds, property_effects=tuple(property_effects),
                                 schema_evolutions=tuple(schema_evolutions))
-                            executed['format'] = 'retirement-candidate-projection/v3'
+                            from .retirement_candidate_global_sources import capture_candidate_global_source_inputs
+
+                            executed['global_source_inputs'] = await capture_candidate_global_source_inputs(
+                                stage, projection, max_seconds=max_seconds)
+                            executed['format'] = 'retirement-candidate-projection/v4'
                             executed['schema_evolutions'] = schema_evolutions
                             executed['graph_reconciliation'] = verify_candidate_graph_reconciliation(
                                 stage, executed['boards'], projection=projection, deadline=_deadline(max_seconds),

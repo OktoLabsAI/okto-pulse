@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from okto_pulse.core.kg.logical_transfer import LOGICAL_NULL, LogicalNode, LogicalTimestamp, schema_digest, transfer_logical_graph
 from okto_pulse.core.ports.context_disposition import ContextDispositionPlan
+from okto_pulse.core.ports.global_discovery_recovery_control import CognitivePendingOverlaySnapshotService
 from okto_pulse.community.adapters import retirement_offline_run as offline
 from okto_pulse.community.adapters import retirement_graph_candidate as candidate
 from okto_pulse.community.adapters import sqlalchemy_database as db
@@ -18,6 +19,7 @@ from okto_pulse.community.adapters.grafx_recovery_contracts import predecessor_r
 from okto_pulse.community.adapters.joint_recovery_snapshot import RecoveryGraph
 from okto_pulse.community.adapters.logical_transfer_schema import board_logical_schema
 from okto_pulse.community.adapters.storage import CommunityFileSystemStorage
+from okto_pulse.community.adapters.rebuild_audit_storage import CommunityFileSystemRebuildAuditArtifactStore
 from okto_pulse.community.config import CommunitySettings
 from logical_transfer_matrix_support import Corpus, MaterializedSource, one_node_corpus, seed_generation
 from test_retirement_offline_run import SOURCE, MIGRATION
@@ -32,6 +34,9 @@ async def test_authenticated_effects_on_reused_root_preserve_identity_and_remain
     source = restore_source(tmp_path)
     for name in ('uploads', 'kg', 'backups', 'candidate-backups'):
         (tmp_path / name).mkdir()
+    if source_schema == '0.6.0':
+        overlay_revision = CognitivePendingOverlaySnapshotService(
+            CommunityFileSystemRebuildAuditArtifactStore(tmp_path / 'kg')).current_fingerprint()
     with closing(sqlite3.connect(source)) as connection:
         title = connection.execute("SELECT title FROM specs WHERE id='spec-a'").fetchone()[0]
         if source_schema == '0.6.0':
@@ -96,6 +101,13 @@ async def test_authenticated_effects_on_reused_root_preserve_identity_and_remain
         result = await candidate.build_projected_retirement_graph_candidate(*arguments,
             migration_builds=MIGRATION, settings=settings, confirm_original_offline=True, max_seconds=300)
         receipt = json.loads((target / 'projection-receipt/run.json').read_bytes())
+        assert receipt['format'] == 'retirement-candidate-projection/v4'
+        if source_schema == '0.6.0':
+            assert receipt['global_source_inputs']['state'] == 'captured_not_reconciled'
+            assert receipt['global_source_inputs']['overlay_revision'] == overlay_revision
+            assert receipt['global_source_inputs']['boards'][0]['board_id'] == 'board-a'
+        else:
+            assert receipt['global_source_inputs']['state'] == 'overlay_unavailable'
         assert result['state'] == 'projected_not_reconciled' and dump(source) == before
         report = receipt['graph_reconciliation']['boards'][0]
         assert report['source_partition_validation'] == report['edge_session_validation'] == 'passed'

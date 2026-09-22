@@ -87,8 +87,8 @@ async def verify_projected_candidate(target, *, seed, seed_document, projection,
         raise ValueError('retirement_candidate_checkpoint_invalid')
     projected = _read_sealed(target / 'projection-receipt', receipt['projection_receipt_sha256'])
     if (set(projected) != {'format', 'seed_sha256', 'state', 'before_sql', 'after_sql',
-            'boards', 'graph_reconciliation', 'historical_observations', 'schema_evolutions'}
-            or projected['format'] != 'retirement-candidate-projection/v3'
+            'boards', 'graph_reconciliation', 'historical_observations', 'schema_evolutions', 'global_source_inputs'}
+            or projected['format'] != 'retirement-candidate-projection/v4'
             or type(projected['schema_evolutions']) is not list
             or projected['seed_sha256'] != seed.manifest_sha256
             or projected['state'] != 'projected_not_reconciled'
@@ -171,6 +171,11 @@ async def verify_projected_candidate(target, *, seed, seed_document, projection,
         property_effects=tuple(property_effects), schema_evolutions=tuple(projected['schema_evolutions']))
     if historical_observations != projected['historical_observations']:
         raise ValueError('retirement_candidate_checkpoint_history_observations_changed')
+    from .retirement_candidate_global_sources import capture_candidate_global_source_inputs
+
+    if await capture_candidate_global_source_inputs(target, projection,
+            max_seconds=max_seconds) != projected['global_source_inputs']:
+        raise ValueError('retirement_candidate_checkpoint_global_sources_changed')
     if verify_candidate_graph_reconciliation(
             target, projected['boards'], projection=projection, deadline=deadline,
             historical_observations=historical_observations) != projected['graph_reconciliation']:
