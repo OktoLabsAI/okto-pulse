@@ -36,6 +36,26 @@ def test_current_root_must_not_be_an_orphan_even_when_its_record_is_preserved(mo
         reconcile._board_graph(binding, refs, 0, roots, _deadline(30), prior)
 
 
+def test_declared_board_technical_root_uses_the_existing_zero_orphan_exception(monkeypatch):
+    from okto_pulse.core.kg.connectivity_guard import KGConnectivityRuleRegistry
+    from okto_pulse.core.kg.logical_transfer import LogicalNode
+    corpus = one_node_corpus('board', key='board-root')
+    properties = {prop.name: LOGICAL_NULL for prop in corpus.schema.node_type('Entity').properties}
+    properties.update(id='board-root', source_artifact_ref='board:board', source_session_id='session',
+        created_by_agent='system:historical_consolidation', generation=0)
+    node = LogicalNode('Entity', 'board-root', properties)
+    corpus = replace(corpus, nodes=(node,))
+    assert KGConnectivityRuleRegistry().is_technical_root_allowlisted(node_type='Entity',
+        writer_path='deterministic_worker', source_artifact_ref='board:board')
+    monkeypatch.setattr(reconcile, 'connect', lambda *args, **kwargs: nullcontext(object()))
+    monkeypatch.setattr(reconcile, 'make_grafx_logical_source', lambda *args, **kwargs: MaterializedSource(corpus))
+    roots = {ProjectionSourceRoot('Entity', 'board:board'): {field: None for field in reconcile._SOURCE_FIELDS}}
+    report = reconcile._board_graph(SimpleNamespace(physical_path='pinned', page_size=8192),
+        {('Entity', 'board-root'): 'session'}, 0, roots, _deadline(30))
+    assert report['zero_orphan_validation'] == 'passed'
+    assert report['allowlisted_technical_root_count'] == 1
+
+
 @pytest.mark.parametrize('damage', ['unproved', 'removed_node', 'removed_edge', 'global'])
 def test_property_proof_does_not_authorize_unproved_changes_removals_or_global_scope(damage):
     before = {'node_type': 'Entity', 'node_id': 'old', 'fingerprint': 'a' * 64}

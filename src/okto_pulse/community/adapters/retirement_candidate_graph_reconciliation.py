@@ -15,7 +15,7 @@ from okto_pulse.core.ports.consolidation import ExactConsolidationAckReceipt
 from okto_pulse.core.ports.cognitive_projection import compare_cognitive_projection
 from okto_pulse.core.ports.kg_cognitive_source import latest_cognitive_source_records
 from okto_pulse.core.ports.projection_history import (
-    ProjectionSourceIdentity, ProjectionSourceRoot, select_projection_source_roots,
+    ProjectionSourceIdentity, ProjectionSourceRoot, select_projection_source_roots, is_projection_technical_root,
 )
 
 from .logical_transfer_factories import make_grafx_logical_source
@@ -121,7 +121,7 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
         for row in delta.get('changed_nodes', ())})
     prior_edges = Counter({_edge_identity(row): row['count'] for row in delta.get('retained_edges', ())})
     nodes, metadata, identities, hashes = {}, {}, [], {}
-    edges, new_edges, connected = [], [], set()
+    edges, new_edges, connected, technical_roots = [], [], set(), set()
     roots = tuple(sorted(expected_metadata))
     wanted_roots = set(roots)
     if type(cognitive_rows) is not tuple or len(cognitive_rows) > _MAX_NODES:
@@ -165,6 +165,9 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
                             or fields[0].startswith('sprint:'))):
                         raise ValueError('retirement_candidate_graph_node_invalid')
                     nodes[identity] = fields
+                    if is_projection_technical_root(node_type=node.type_name, source_artifact_ref=fields[0],
+                            created_by_agent=fields[2], source_session_id=fields[1]):
+                        technical_roots.add(identity)
                     metadata[identity] = tuple(value(node.properties, name) for name in _SOURCE_FIELDS)
                     root = (ProjectionSourceRoot(node.type_name, fields[0])
                         if type(fields[0]) is str and fields[0] else None)
@@ -214,7 +217,7 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
                 raise ValueError('retirement_candidate_prior_edge_changed')
             if len(new_edges) != expected_edge_count or len(new_edges) != len(set(new_edges)):
                 raise ValueError('retirement_candidate_graph_edge_census_changed')
-            orphans = set(nodes) - connected
+            orphans = set(nodes) - connected - technical_roots
             if orphans - unchanged_nodes or orphans & set(expected_by_identity):
                 raise ValueError('retirement_candidate_graph_orphan_detected')
             for identity in sorted(set(cognitive_sources) - cognitive_seen):
@@ -232,6 +235,7 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
         'historical_property_change_count': len(delta.get('changed_nodes', ())),
         'historical_edge_count': sum(row['count'] for row in delta.get('retained_edges', ())),
         'historical_orphan_count': len(orphans),
+        'allowlisted_technical_root_count': len(technical_roots - connected),
         'cognitive_source_parity': sorted(cognitive_matches,
             key=lambda row: (row['node_type'], row['node_id'], row['generation'], row['source_revision'])),
         'history_classification': 'pending' if preserved_nodes or delta.get('retained_edges') else 'not_applicable',
@@ -305,6 +309,6 @@ def verify_candidate_graph_reconciliation(target, boards, *, projection, deadlin
     pending = (any(report['history_classification'] == 'pending' for report in reports)
         or any(item['state'] != 'matched' for report in reports for item in report['cognitive_source_parity'])
         or global_history != 'no_prior_records')
-    return {'format': 'retirement-candidate-graph-reconciliation/v6',
+    return {'format': 'retirement-candidate-graph-reconciliation/v7',
         'state': 'source_projection_reconciled_history_pending' if pending else 'source_graph_reconciled',
         'global_history_state': global_history, 'boards': reports}
