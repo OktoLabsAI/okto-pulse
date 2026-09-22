@@ -10,6 +10,9 @@ from dataclasses import asdict
 import hashlib
 
 from okto_pulse.core.kg.logical_transfer import LogicalFingerprintAccumulator, encode_value
+from okto_pulse.core.ports.projection_history import (
+    ProjectionEdgeFingerprint, ProjectionNodeFingerprint, compare_projection_history,
+)
 
 from .joint_recovery_snapshot import verify_joint_recovery_snapshot
 from .logical_graph_transfer import LogicalGraphFileSnapshotSource
@@ -98,3 +101,37 @@ def read_retirement_historical_graph_census(snapshot, *, max_seconds=180):
         raise ValueError('retirement_historical_census_limit')
     _check_time(deadline)
     return result, hashlib.sha256(encoded).hexdigest()
+
+
+def compare_retirement_historical_graph_censuses(before_snapshot, after_snapshot, *, max_seconds=180):
+    """Observe two authenticated snapshots; no delta is implicitly authorized."""
+    deadline = _deadline(max_seconds)
+    before, before_digest = read_retirement_historical_graph_census(before_snapshot, max_seconds=max_seconds)
+    after, after_digest = read_retirement_historical_graph_census(after_snapshot, max_seconds=max_seconds)
+    old = {(row['scope'], row['board_id']): row for row in before['graphs']}
+    new = {(row['scope'], row['board_id']): row for row in after['graphs']}
+
+    def nodes(graph):
+        return tuple(ProjectionNodeFingerprint(row['type'], row['id'], row['sha256'])
+            for row in graph.get('nodes', ()))
+
+    def edges(graph):
+        return tuple(ProjectionEdgeFingerprint(row['name'], row['source_type'], row['source_id'],
+            row['target_type'], row['target_id'], row['sha256'], row['count'])
+            for row in graph.get('relations', ()))
+
+    results = []
+    for scope, board in sorted(old.keys() | new.keys(), key=lambda key: (key[0], key[1] or '')):
+        _check_time(deadline)
+        previous, current = old.get((scope, board), {}), new.get((scope, board), {})
+        delta = compare_projection_history(before_nodes=nodes(previous), after_nodes=nodes(current),
+            before_edges=edges(previous), after_edges=edges(current))
+        results.append({'scope': scope, 'board_id': board, 'delta': asdict(delta)})
+    result = {'format': 'retirement-historical-graph-observations/v1', 'state': 'observed_not_classified',
+        'before_snapshot_sha256': before_snapshot.manifest_sha256,
+        'after_snapshot_sha256': after_snapshot.manifest_sha256,
+        'before_census_sha256': before_digest, 'after_census_sha256': after_digest, 'graphs': results}
+    if len(_encode(result)) > _LIMIT:
+        raise ValueError('retirement_historical_census_limit')
+    _check_time(deadline)
+    return result

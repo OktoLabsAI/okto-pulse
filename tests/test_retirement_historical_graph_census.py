@@ -36,6 +36,21 @@ def test_census_preserves_timestamps_multiplicity_and_retired_source_without_app
         with pytest.raises(ValueError, match='historical_census_limit'):
             census.read_retirement_historical_graph_census(snapshot)
     assert census.read_retirement_historical_graph_census(snapshot) == (document, digest)
+    with sources[1][0].database.begin('write') as writer:
+        writer.execute("MATCH (n:Decision {id:'baseline'}) SET n.title='changed content'")
+    with global_graph.begin('write') as writer:
+        writer.execute("MATCH (n:Topic {id:'baseline'}) "
+            "CREATE (n)-[:TOPIC_RELATES_TO {weight:0.5}]->(n)")
+    after_snapshot = recovery.capture(sources, snapshot_id='after')
+    observations = census.compare_retirement_historical_graph_censuses(snapshot, after_snapshot)
+    assert observations['state'] == 'observed_not_classified'
+    board_delta, global_delta = (row['delta'] for row in observations['graphs'])
+    assert len(board_delta['changed_nodes']) == 1
+    assert not board_delta['introduced_nodes'] and not board_delta['removed_nodes']
+    assert len(global_delta['unchanged_nodes']) == 1
+    assert global_delta['retained_edges'][0]['count'] == 2
+    assert global_delta['introduced_edges'][0]['count'] == 1
+    assert not global_delta['removed_edges']
     artifact = snapshot.directory / 'graph-0000.jsonl'
     artifact.write_bytes(artifact.read_bytes() + b'\n')
     with pytest.raises(ValueError, match='joint_snapshot_'):
