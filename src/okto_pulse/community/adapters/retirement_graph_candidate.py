@@ -16,10 +16,12 @@ import secrets
 import stat
 
 from okto_grafx import connect
+from okto_pulse.core.kg.logical_transfer import schema_digest
 from sqlalchemy import create_engine
 
 from . import retirement_offline_run as offline
 from .graph_backend_binding import CommunityGraphBackendBindingStore
+from .grafx_recovery_contracts import predecessor_recovery_contract
 from .joint_recovery_snapshot import (
     JointRecoverySnapshot, RecoveryBuildPair, _explicit_path, _staged_joint_recovery_restore,
     _verify_native_logical, joint_recovery_lifecycle_window, verify_joint_recovery_snapshot,
@@ -30,6 +32,7 @@ from .recovery_graph_inventory import read_recovery_graph_inventory
 from .relational_recovery_snapshot import _readonly, _deadline, _check_time
 from .retirement_bootstrap import _snapshot
 from .retirement_historical_graph_census import read_retirement_historical_graph_census
+from .retirement_schema_evolution import build_retirement_v060_graph
 from .retirement_projection_inputs import (
     RetirementProjectionInputs, projection_destination, read_retirement_projection_inputs,
     revalidate_retirement_projection_inputs,
@@ -302,7 +305,7 @@ async def _restore_retirement_graph_candidate(runtime, storage, graphs, run, see
                             current_storage_root=uploads, confirm_original_offline=True, max_seconds=max_seconds,
                             publish=not replay) as stage:
                         bindings = CommunityGraphBackendBindingStore(stage / 'kg-artifacts')
-                        routes, native_paths = [], []
+                        routes, native_paths, schema_evolutions = [], [], []
                         for index, graph in enumerate(manifest['graphs']):
                             native = manifest['native_graphs'][index]
                             physical = verify_native_graph_snapshot(NativeGraphRecoverySnapshot(
@@ -311,13 +314,26 @@ async def _restore_retirement_graph_candidate(runtime, storage, graphs, run, see
                             path = (bindings.board_grafx_path(graph['board_id'], generation) if graph['scope'] == 'board'
                                 else bindings.global_grafx_path(generation))
                             path.parent.mkdir(parents=True, exist_ok=True)
-                            (stage / f'graph-{index:04d}').rename(path)
+                            restored = stage / f'graph-{index:04d}'
+                            evolve = (projection_settings is not None and graph['scope'] == 'board'
+                                and graph['certificate']['schema_digest'] == schema_digest(predecessor_recovery_contract().schema))
+                            if evolve:
+                                # Keep the authenticated native predecessor unbound.
+                                # Its complete bytes remain in the candidate checkpoint.
+                                schema_evolutions.append(build_retirement_v060_graph(snapshot, path,
+                                    board_id=graph['board_id'], builds=migration_builds, max_seconds=max_seconds))
+                                page_size = 8192  # Explicit geometry of the fresh logical sink.
+                            else:
+                                restored.rename(path)
+                                page_size = physical['page_size']
                             native_paths.append(path.relative_to(stage).as_posix())
-                            with connect(path, page_size=physical['page_size'],
-                                    partitions_per_table=physical['partitions_per_table'], read_only=True) as cold:
-                                _verify_native_logical(cold, graph, 500, _deadline(max_seconds))
+                            with connect(path, page_size=page_size,
+                                    **({} if evolve else {'partitions_per_table': physical['partitions_per_table']}),
+                                    read_only=True) as cold:
+                                if not evolve:
+                                    _verify_native_logical(cold, graph, 500, _deadline(max_seconds))
                                 options = dict(backend='grafx', generation=generation, physical_path=path,
-                                    page_size=physical['page_size'], database=cold)
+                                    page_size=page_size, database=cold)
                                 bound = (bindings.initialize_board_binding(board_id=graph['board_id'], **options)
                                     if graph['scope'] == 'board' else bindings.initialize_global_binding(**options))
                             routes.append({'scope': graph['scope'], 'board_id': graph['board_id'],
@@ -352,8 +368,10 @@ async def _restore_retirement_graph_candidate(runtime, storage, graphs, run, see
                             from .retirement_candidate_history import observe_candidate_history
 
                             executed['historical_observations'] = observe_candidate_history(
-                                stage, snapshot, max_seconds=max_seconds, property_effects=tuple(property_effects))
-                            executed['format'] = 'retirement-candidate-projection/v2'
+                                stage, snapshot, max_seconds=max_seconds, property_effects=tuple(property_effects),
+                                schema_evolutions=tuple(schema_evolutions))
+                            executed['format'] = 'retirement-candidate-projection/v3'
+                            executed['schema_evolutions'] = schema_evolutions
                             executed['graph_reconciliation'] = verify_candidate_graph_reconciliation(
                                 stage, executed['boards'], projection=projection, deadline=_deadline(max_seconds),
                                 historical_observations=executed['historical_observations'])

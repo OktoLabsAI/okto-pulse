@@ -58,6 +58,36 @@ def plan(database, origins=frozenset({"origin"})):
     return retirement.prepare_sprint_graph_retirement(database, board_id="board", archived_origin_ids=origins)
 
 
+def test_predecessor_removal_keeps_the_same_closed_selection_and_exact_survivors(tmp_path):
+    from okto_pulse.core.kg.logical_transfer import schema_digest, transfer_logical_graph
+    from okto_pulse.community.adapters.grafx_recovery_contracts import (
+        predecessor_recovery_contract, make_grafx_recovery_logical_sink, make_grafx_recovery_logical_source,
+    )
+    from logical_transfer_matrix_support import MaterializedSource
+
+    current = corpus()
+    schema = predecessor_recovery_contract().schema
+    original = Corpus(schema, tuple(replace(node, properties={name: value for name, value in node.properties.items()
+        if name in schema.node_type(node.type_name).property_names()}) for node in current.nodes), current.relations)
+    path = tmp_path / 'predecessor'
+    transfer_logical_graph(MaterializedSource(original), make_grafx_recovery_logical_sink(path,
+        scope='board', expected_schema_digest=schema_digest(schema)))
+    with open_generation_database('grafx', path, 'board', read_only=False) as database:
+        selected = plan(database)
+        assert selected.node_keys == (('Criterion', 'same-id'), ('Entity', 'same-id'))
+        assert selected.before_sha256 == original.fingerprint
+        identity = database.identity.database_uuid
+        expected = Corpus(schema, original.nodes[2:], original.relations[-2:])
+        receipt = retirement.apply_sprint_graph_retirement(database, selected)
+        assert retirement.apply_sprint_graph_retirement(database, selected) == receipt
+        assert database.identity.database_uuid == identity
+        snapshot = make_grafx_recovery_logical_source(database, scope='board').open_snapshot()
+        try:
+            assert graph_retirement_fingerprint(snapshot) == expected.fingerprint == selected.after_sha256
+        finally:
+            snapshot.close()
+
+
 def test_directed_removal_preserves_neighbors_parallel_edges_and_physical_generation(graph):
     database, path, original = graph
     identity = database.identity.database_uuid

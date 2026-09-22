@@ -43,7 +43,7 @@ def test_property_proof_does_not_authorize_unproved_changes_removals_or_global_s
     change = {'before': before, 'after': after}
     delta = {'changed_nodes': [change], 'removed_nodes': [before] if damage == 'removed_node' else [],
         'removed_edges': [{'count': 1}] if damage == 'removed_edge' else []}
-    observed = {'format': 'retirement-candidate-history-observations/v3',
+    observed = {'format': 'retirement-candidate-history-observations/v4',
         'graphs': [{'scope': 'global_discovery' if damage == 'global' else 'board',
             'board_id': 'board', 'history_state': 'prior_changes_unclassified', 'delta': delta}],
         'property_composition': [] if damage == 'unproved' else [{'board_id': 'board', **change}]}

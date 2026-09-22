@@ -21,11 +21,12 @@ from .retirement_historical_graph_census import (
     read_retirement_historical_graph_census,
 )
 from .sprint_retirement_archive import _encode
+from .retirement_schema_baseline import read_retirement_schema_baseline
 
 _LIMIT = 64 * 1024 * 1024
 
 
-def observe_candidate_history(target, snapshot, *, max_seconds=180, property_effects=()):
+def observe_candidate_history(target, snapshot, *, max_seconds=180, property_effects=(), schema_evolutions=()):
     """Read all scopes; effect envelopes must come from complete SQL/ACK validation."""
     deadline = _deadline(max_seconds)
     if (type(property_effects) is not tuple
@@ -34,6 +35,10 @@ def observe_candidate_history(target, snapshot, *, max_seconds=180, property_eff
     wanted = {(effect.board_id, node.node_type, node.node_id)
         for effect in property_effects for node in effect.nodes}
     old_nodes, matched, proofs, retained_bytes = {}, set(), [], [0]
+    if (type(schema_evolutions) is not tuple or any(type(item) is not dict
+            or type(item.get('board_id')) is not str for item in schema_evolutions)):
+        raise ValueError('retirement_candidate_schema_evolutions_invalid')
+    evolved_boards = {item.get('board_id') for item in schema_evolutions}
 
     def before_node(scope, board, schema, node):
         key = board, node.type_name, node.key
@@ -57,8 +62,14 @@ def observe_candidate_history(target, snapshot, *, max_seconds=180, property_eff
         proofs.append({'board_id': board, **asdict(proof)})
         matched.add(key)
 
-    previous, previous_digest = read_retirement_historical_graph_census(snapshot,
-        max_seconds=max_seconds, node_observer=before_node)
+    def original_node(scope, board, schema, node):
+        if board not in evolved_boards:
+            before_node(scope, board, schema, node)
+
+    previous, original_digest = read_retirement_historical_graph_census(snapshot,
+        max_seconds=max_seconds, node_observer=original_node)
+    previous, baseline_digest = read_retirement_schema_baseline(snapshot, previous, original_digest,
+        schema_evolutions, node_observer=before_node, max_seconds=max_seconds)
     sql = target / 'database.sqlite3'
     kg = target / 'kg-artifacts'
     _sidecars_absent(sql)
@@ -93,9 +104,9 @@ def observe_candidate_history(target, snapshot, *, max_seconds=180, property_eff
     observations = compare_graph_record_censuses(previous['graphs'], graphs, deadline=deadline)
     if set(old_nodes) != matched:
         raise ValueError('retirement_candidate_property_effect_node_removed')
-    result = {'format': 'retirement-candidate-history-observations/v3',
+    result = {'format': 'retirement-candidate-history-observations/v4',
         'state': 'observed_not_classified', 'snapshot_sha256': snapshot.manifest_sha256,
-        'before_census_sha256': previous_digest,
+        'before_census_sha256': original_digest, 'projection_baseline_sha256': baseline_digest,
         'candidate_census_sha256': hashlib.sha256(encoded).hexdigest(), 'graphs': observations,
         'property_composition': sorted(proofs, key=lambda row: (row['board_id'], row['before']['node_type'], row['before']['node_id']))}
     if len(_encode(result)) > _LIMIT:

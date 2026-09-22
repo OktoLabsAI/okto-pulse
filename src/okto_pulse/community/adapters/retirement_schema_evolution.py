@@ -115,6 +115,26 @@ class _EvolutionSource:
             raise
 
 
+def evolution_snapshot_source(snapshot, graph, *, deadline):
+    """Read the exact expected baseline; caller authenticates the joint manifest."""
+    previous, current = _schemas()
+    if graph['certificate']['schema_digest'] != schema_digest(previous):
+        raise ValueError('retirement_schema_predecessor_required')
+    return _EvolutionSource(snapshot.directory / graph['file'], previous=previous, current=current,
+        board_id=graph['board_id'], certificate=graph['certificate'], source_sha256=graph['sha256'], deadline=deadline)
+
+
+def schema_evolution_receipt(snapshot, manifest, index, *, scope, counts, fingerprint, schema_digest):
+    graph = manifest['graphs'][index]
+    return {'format': 'retirement-schema-evolution/v2', 'state': 'evolved_not_reconciled',
+        'board_id': graph['board_id'], 'snapshot_sha256': snapshot.manifest_sha256, 'builds': manifest['builds'],
+        'source_database_uuid': graph['database_uuid'], 'native_history': manifest['native_graphs'][index],
+        'before': graph['certificate'], 'after': {'scope': scope, 'counts': counts,
+            'fingerprint': fingerprint, 'schema_digest': schema_digest},
+        'introduced_properties': sorted(_INTRODUCED), 'introduced_relation_layouts': 11,
+        'history_access': 'retained_predecessor_native_backup', 'runtime_admission': 'not_authorized'}
+
+
 def build_retirement_v060_graph(snapshot, target, *, board_id, builds, max_seconds=180, batch_size=500):
     """Apply only the frozen schema delta; caller owns offline publication fences."""
     deadline = _deadline(max_seconds)
@@ -128,20 +148,12 @@ def build_retirement_v060_graph(snapshot, target, *, board_id, builds, max_secon
     if len(selected) != 1:
         raise ValueError('retirement_schema_board_ambiguous')
     index, graph = selected[0]
-    previous, current = _schemas()
-    if graph['certificate']['schema_digest'] != schema_digest(previous):
-        raise ValueError('retirement_schema_predecessor_required')
+    source = evolution_snapshot_source(snapshot, graph, deadline=deadline)
     target = Path(target).resolve()
     for protected in (snapshot.directory.resolve(), Path(graph['source_path']).resolve()):
         if target == protected or target in protected.parents or protected in target.parents:
             raise ValueError('retirement_schema_target_overlaps_source')
-    source = _EvolutionSource(snapshot.directory / graph['file'], previous=previous, current=current,
-        board_id=board_id, certificate=graph['certificate'], source_sha256=graph['sha256'], deadline=deadline)
     report = transfer_logical_graph(source, make_grafx_logical_sink(target, scope='board', max_batch_size=batch_size),
         batch_size=batch_size)
-    return {'format': 'retirement-schema-evolution/v1', 'state': 'evolved_not_reconciled',
-        'board_id': board_id, 'snapshot_sha256': snapshot.manifest_sha256, 'builds': asdict(builds),
-        'source_database_uuid': graph['database_uuid'], 'native_history': manifest['native_graphs'][index],
-        'before': graph['certificate'], 'after': asdict(report),
-        'introduced_properties': sorted(_INTRODUCED), 'introduced_relation_layouts': 11,
-        'history_access': 'retained_predecessor_native_backup', 'runtime_admission': 'not_authorized'}
+    return schema_evolution_receipt(snapshot, manifest, index, scope=report.scope, counts=asdict(report.counts),
+        fingerprint=report.fingerprint, schema_digest=report.schema_digest)

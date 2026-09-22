@@ -12,7 +12,7 @@ from okto_pulse.core.ports.retirement_graph import (
     GraphRetirementPlan, graph_retirement_fingerprint, plan_sprint_graph_retirement,
     verify_graph_retirement_selection,
 )
-from .logical_transfer_factories import logical_transfer_scope, make_grafx_logical_source
+from .grafx_recovery_contracts import grafx_recovery_contract, make_grafx_recovery_logical_source
 from .logical_transfer_grafx import _logical_value, _validate_physical_schema
 
 _MAX_RECORDS = 100_000
@@ -25,7 +25,7 @@ class GraphRetirementReceipt:
 
 
 def prepare_sprint_graph_retirement(database, *, board_id, archived_origin_ids):
-    source = make_grafx_logical_source(database, scope="board")
+    source = make_grafx_recovery_logical_source(database, scope="board")
     snapshot = source.open_snapshot()
     try:
         return plan_sprint_graph_retirement(snapshot, board_id=board_id, archived_origin_ids=archived_origin_ids)
@@ -41,7 +41,7 @@ class _TransactionSnapshot:
     """
 
     def __init__(self, database, transaction, *, scope="board"):
-        contract = logical_transfer_scope(scope)
+        contract = grafx_recovery_contract(database, scope=scope)
         self._schema = contract.schema
         catalog = database.catalog.catalog
         _validate_physical_schema(catalog, contract.schema, contract.relationship_tables)

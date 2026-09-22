@@ -221,7 +221,7 @@ def verify_candidate_graph_reconciliation(target, boards, *, projection, deadlin
     """
     histories, global_history = {}, 'no_prior_records'
     if historical_observations is not None:
-        if historical_observations.get('format') != 'retirement-candidate-history-observations/v3':
+        if historical_observations.get('format') != 'retirement-candidate-history-observations/v4':
             raise ValueError('retirement_candidate_history_observations_invalid')
         proofs = historical_observations['property_composition']
         for item in historical_observations['graphs']:

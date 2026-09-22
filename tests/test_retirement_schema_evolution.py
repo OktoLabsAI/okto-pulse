@@ -10,6 +10,8 @@ from okto_pulse.core.kg.logical_transfer import (
 )
 from okto_pulse.community.adapters import grafx_recovery_contracts as contracts
 from okto_pulse.community.adapters import retirement_schema_evolution as evolution
+from okto_pulse.community.adapters.retirement_historical_graph_census import read_retirement_historical_graph_census
+from okto_pulse.community.adapters.retirement_schema_baseline import read_retirement_schema_baseline
 from okto_pulse.community.adapters.logical_transfer_factories import make_grafx_logical_source
 from logical_transfer_matrix_support import Corpus, MaterializedSource, complete_relation
 import test_joint_recovery_snapshot as recovery
@@ -71,6 +73,15 @@ def test_additive_candidate_keeps_all_old_values_parallel_edges_and_native_backu
     assert reader.commits('board-one') == commits
     assert result['after']['counts']['relations'] == result['before']['counts']['relations'] == 2
     assert result['after']['counts']['properties'] == result['before']['counts']['properties'] + 5
+    census, digest = read_retirement_historical_graph_census(snapshot)
+    baseline, baseline_digest = read_retirement_schema_baseline(snapshot, census, digest, (result,))
+    assert baseline_digest != digest and baseline['original_census_sha256'] == digest
+    assert baseline['schema_evolutions'] == [result]
+    changed = {**result, 'after': {**result['after'], 'fingerprint': '0' * 64}}
+    with pytest.raises(ValueError, match='retirement_schema_evolution_receipt_changed'):
+        read_retirement_schema_baseline(snapshot, census, digest, (changed,))
+    with pytest.raises(ValueError, match='retirement_schema_evolution_scope_invalid'):
+        read_retirement_schema_baseline(snapshot, census, digest, (result, result))
     before_reader = contracts.make_grafx_recovery_logical_source(graph, scope='board').open_snapshot()
     try:
         old = {(node.type_name, node.key): node for batch in before_reader.iter_nodes(batch_size=50) for node in batch}

@@ -44,16 +44,21 @@ def _contracts(scope):
     return (current, predecessor_recovery_contract()) if scope == 'board' else (current,)
 
 
-def make_grafx_recovery_logical_source(database, *, scope, scan_batch_size=500, temporary_parent=None):
-    from .logical_transfer_grafx import CommunityGrafxLogicalSnapshotSource
-
+def grafx_recovery_contract(database, *, scope):
+    """Select a known offline contract; the caller must still validate columns."""
     observed = {(table.kind, table.name) for table in database.catalog.catalog.tables()}
     candidates = [contract for contract in _contracts(scope)
         if observed == ({('node', node.name) for node in contract.schema.node_types}
             | {('rel', table) for table in contract.relationship_tables.values()})]
     if len(candidates) != 1:
         raise LogicalSchemaError('unrecognized recovery catalog contract')
-    contract = candidates[0]
+    return candidates[0]
+
+
+def make_grafx_recovery_logical_source(database, *, scope, scan_batch_size=500, temporary_parent=None):
+    from .logical_transfer_grafx import CommunityGrafxLogicalSnapshotSource
+
+    contract = grafx_recovery_contract(database, scope=scope)
     return CommunityGrafxLogicalSnapshotSource(database, schema=contract.schema,
         relationship_tables=contract.relationship_tables, scan_batch_size=scan_batch_size,
         temporary_parent=temporary_parent)

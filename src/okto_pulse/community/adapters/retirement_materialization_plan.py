@@ -14,7 +14,7 @@ from .global_outbox_retirement import _derive, _rows, _snapshot, prepare_outbox_
 from .grafx_global_retirement import prepare_global_graph_retirement
 from .grafx_sprint_retirement import prepare_sprint_graph_retirement
 from .joint_recovery_snapshot import RecoveryGraph, _explicit_path, _stamp
-from .logical_transfer_factories import make_grafx_logical_source
+from .grafx_recovery_contracts import make_grafx_recovery_logical_source
 from .recovery_graph_inventory import read_recovery_graph_inventory, require_recovery_graph_selection
 from .sprint_retirement_archive import _encode, verify_historical_archive
 
@@ -100,7 +100,7 @@ def require_materialization_states(plan, graphs, *, original=False, retired=Fals
     if plan.graph_plan is not None:
         selections.append((global_db, "global_discovery", plan.graph_plan))
     for database, scope, item in selections:
-        snapshot = make_grafx_logical_source(database, scope=scope).open_snapshot()
+        snapshot = make_grafx_recovery_logical_source(database, scope=scope).open_snapshot()
         try:
             current = graph_retirement_fingerprint(snapshot, scope=scope)
         finally:
@@ -146,7 +146,7 @@ async def prepare_materialization_plan(engine, storage, references, graphs, back
         if event["processed_at"] is None and archived.get(event["board_id"]) and event["board_id"] not in boards:
             raise ValueError("retirement_materialization_missing_board_source_requires_review")
     if global_db is not None:
-        snapshot = make_grafx_logical_source(global_db, scope="global_discovery").open_snapshot()
+        snapshot = make_grafx_recovery_logical_source(global_db, scope="global_discovery").open_snapshot()
         try:
             for batch in snapshot.iter_nodes(batch_size=500):
                 for node in batch:

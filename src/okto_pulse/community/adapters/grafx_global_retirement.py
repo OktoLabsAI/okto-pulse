@@ -13,7 +13,7 @@ from okto_pulse.core.ports.global_retirement_graph import (
 )
 from okto_pulse.core.ports.retirement_graph import graph_retirement_fingerprint
 from .grafx_sprint_retirement import _TransactionSnapshot
-from .logical_transfer_factories import make_grafx_logical_source
+from .grafx_recovery_contracts import make_grafx_recovery_logical_source
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,12 +27,12 @@ def prepare_global_graph_retirement(database, board_sources):
         raise ValueError("global_retirement_board_population_limit")
     facts = []
     for board_database, board_plan in board_sources:
-        snapshot = make_grafx_logical_source(board_database, scope="board").open_snapshot()
+        snapshot = make_grafx_recovery_logical_source(board_database, scope="board").open_snapshot()
         try:
             facts.append(global_retirement_source_facts(snapshot, board_plan))
         finally:
             snapshot.close()
-    snapshot = make_grafx_logical_source(database, scope="global_discovery").open_snapshot()
+    snapshot = make_grafx_recovery_logical_source(database, scope="global_discovery").open_snapshot()
     try:
         return plan_global_graph_retirement(snapshot, tuple(facts))
     finally:
@@ -47,7 +47,7 @@ def _require_retired_board_plans(plans, board_databases):
     if set(board_databases) != {item.board_id for item in plans}:
         raise ValueError("global_retirement_board_population_mismatch")
     for item in plans:
-        snapshot = make_grafx_logical_source(board_databases[item.board_id], scope="board").open_snapshot()
+        snapshot = make_grafx_recovery_logical_source(board_databases[item.board_id], scope="board").open_snapshot()
         try:
             if graph_retirement_fingerprint(snapshot) != item.after_sha256:
                 raise ValueError("global_retirement_board_not_retired")

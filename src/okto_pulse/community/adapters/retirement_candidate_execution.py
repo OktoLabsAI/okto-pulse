@@ -141,6 +141,9 @@ async def execute_candidate_projection(stage, *, seed, seed_document, projection
             if bundle is not None:
                 if drain_kg_health_probes() != 0:
                     raise RuntimeError('retirement_candidate_graph_jobs_still_running')
+                # Global readers have their own pools, outside the shared writer
+                # pool and Board readers. They must release the private stage too.
+                bundle.global_graph.close_all_on_shutdown()
                 bundle.grafx_pool.close_all()
                 for pool in bundle.board.grafx_read_pools:
                     pool.close_all()

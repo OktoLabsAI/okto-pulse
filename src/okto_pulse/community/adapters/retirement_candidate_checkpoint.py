@@ -87,8 +87,9 @@ async def verify_projected_candidate(target, *, seed, seed_document, projection,
         raise ValueError('retirement_candidate_checkpoint_invalid')
     projected = _read_sealed(target / 'projection-receipt', receipt['projection_receipt_sha256'])
     if (set(projected) != {'format', 'seed_sha256', 'state', 'before_sql', 'after_sql',
-            'boards', 'graph_reconciliation', 'historical_observations'}
-            or projected['format'] != 'retirement-candidate-projection/v2'
+            'boards', 'graph_reconciliation', 'historical_observations', 'schema_evolutions'}
+            or projected['format'] != 'retirement-candidate-projection/v3'
+            or type(projected['schema_evolutions']) is not list
             or projected['seed_sha256'] != seed.manifest_sha256
             or projected['state'] != 'projected_not_reconciled'
             or projected['before_sql'] != _expected_sql(projection)
@@ -107,7 +108,7 @@ async def verify_projected_candidate(target, *, seed, seed_document, projection,
                 or route['generation'] != seed_document['generation']):
             raise ValueError('retirement_candidate_checkpoint_route_invalid')
         observed.add((route['scope'], route['board_id']))
-        bound = (bindings.inspect_global_binding() if route['scope'] == 'global'
+        bound = (bindings.inspect_global_binding() if route['scope'] == 'global_discovery'
             else bindings.inspect_board_binding(route['board_id']))
         if bound.binding_sha256 != route['binding_sha256'] or bound.generation != route['generation']:
             raise ValueError('retirement_candidate_checkpoint_route_changed')
@@ -167,7 +168,7 @@ async def verify_projected_candidate(target, *, seed, seed_document, projection,
     snapshot = JointRecoverySnapshot(Path(seed_document['snapshot']['directory']),
         seed_document['snapshot']['manifest_sha256'])
     historical_observations = observe_candidate_history(target, snapshot, max_seconds=max_seconds,
-        property_effects=tuple(property_effects))
+        property_effects=tuple(property_effects), schema_evolutions=tuple(projected['schema_evolutions']))
     if historical_observations != projected['historical_observations']:
         raise ValueError('retirement_candidate_checkpoint_history_observations_changed')
     if verify_candidate_graph_reconciliation(
