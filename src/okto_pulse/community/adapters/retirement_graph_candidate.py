@@ -347,7 +347,11 @@ async def _restore_retirement_graph_candidate(runtime, storage, graphs, run, see
                             from .retirement_candidate_graph_reconciliation import (
                                 verify_candidate_graph_reconciliation,
                             )
+                            from .retirement_candidate_history import observe_candidate_history
 
+                            executed['historical_observations'] = observe_candidate_history(
+                                stage, snapshot, max_seconds=max_seconds)
+                            executed['format'] = 'retirement-candidate-projection/v2'
                             executed['graph_reconciliation'] = verify_candidate_graph_reconciliation(
                                 stage, executed['boards'], projection=projection, deadline=_deadline(max_seconds))
                             projection_receipt = offline._seal(stage / 'projection-receipt', executed)

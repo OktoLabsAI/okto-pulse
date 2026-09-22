@@ -81,6 +81,12 @@ async def test_failed_private_execution_can_retry_from_seed_and_keeps_original_p
         assert receipt['graph_reconciliation']['boards'][0]['zero_orphan_validation'] == 'passed'
         assert receipt['graph_reconciliation']['boards'][0]['source_metadata_validation'] == 'passed'
         assert receipt['graph_reconciliation']['boards'][0]['source_metadata_root_count'] == 3
+        assert receipt['historical_observations']['state'] == 'observed_not_classified'
+        delta = receipt['historical_observations']['graphs'][0]['delta']
+        # The full physical census also retains the BoardMeta schema record.
+        assert sorted(node['node_type'] for node in delta['introduced_nodes']) == ['BoardMeta'] + ['Entity'] * 4
+        assert len(delta['introduced_edges']) == 5
+        assert not delta['removed_nodes'] and not delta['removed_edges'] and not delta['changed_nodes']
         # ACK membership keeps the census task reference; graph roots use card.
         assert {ack['membership_source_ref'] for ack in receipt['boards'][0]['acks']} == {'spec:spec-a', 'task:card-a', 'task:card-b'}
         bindings = CommunityGraphBackendBindingStore(target / 'kg-artifacts')

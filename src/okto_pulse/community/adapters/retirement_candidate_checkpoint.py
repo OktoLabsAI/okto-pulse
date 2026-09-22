@@ -87,8 +87,8 @@ async def verify_projected_candidate(target, *, seed, seed_document, projection,
         raise ValueError('retirement_candidate_checkpoint_invalid')
     projected = _read_sealed(target / 'projection-receipt', receipt['projection_receipt_sha256'])
     if (set(projected) != {'format', 'seed_sha256', 'state', 'before_sql', 'after_sql',
-            'boards', 'graph_reconciliation'}
-            or projected['format'] != 'retirement-candidate-projection/v1'
+            'boards', 'graph_reconciliation', 'historical_observations'}
+            or projected['format'] != 'retirement-candidate-projection/v2'
             or projected['seed_sha256'] != seed.manifest_sha256
             or projected['state'] != 'projected_not_reconciled'
             or projected['before_sql'] != _expected_sql(projection)
@@ -160,7 +160,13 @@ async def verify_projected_candidate(target, *, seed, seed_document, projection,
     from .retirement_candidate_graph_reconciliation import (
         verify_candidate_graph_reconciliation,
     )
+    from .joint_recovery_snapshot import JointRecoverySnapshot
+    from .retirement_candidate_history import observe_candidate_history
 
+    snapshot = JointRecoverySnapshot(Path(seed_document['snapshot']['directory']),
+        seed_document['snapshot']['manifest_sha256'])
+    if observe_candidate_history(target, snapshot, max_seconds=max_seconds) != projected['historical_observations']:
+        raise ValueError('retirement_candidate_checkpoint_history_observations_changed')
     if verify_candidate_graph_reconciliation(
             target, projected['boards'], projection=projection, deadline=deadline) != projected['graph_reconciliation']:
         raise ValueError('retirement_candidate_checkpoint_graph_reconciliation_changed')
