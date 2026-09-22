@@ -335,7 +335,8 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
         'zero_orphan_validation': 'pending_history_classification' if orphans else 'passed'}
 
 
-def verify_candidate_graph_reconciliation(target, boards, *, projection, deadline, historical_observations=None):
+def verify_candidate_graph_reconciliation(target, boards, *, projection, deadline, historical_observations=None,
+        global_comparison=None):
     """Verify new projection effects; preserved history never receives implicit approval.
 
     historical_observations must be freshly derived under the caller's offline
@@ -402,12 +403,14 @@ def verify_candidate_graph_reconciliation(target, boards, *, projection, deadlin
     _sidecars_absent(database_path)
     if set(histories) - seen_boards:
         raise ValueError('retirement_candidate_history_scope_unplanned')
+    if global_comparison is not None and global_comparison['state'] == 'matched' and global_history != 'no_prior_records':
+        global_history = 'current_source_reconciled'
     pending = (any(report['history_classification'] == 'pending' for report in reports)
         or any(item['state'] != 'matched' for report in reports for item in report['cognitive_source_parity'])
-        or global_history != 'no_prior_records')
+        or (global_comparison['state'] != 'matched' if global_comparison is not None else global_history != 'no_prior_records'))
     mismatch = any(any(report['source_relation_comparison'][field] for field in
         ('missing_count', 'unresolved_count', 'unexpected_new_count')) for report in reports)
-    return {'format': 'retirement-candidate-graph-reconciliation/v12',
+    return {'format': 'retirement-candidate-graph-reconciliation/v13',
         'state': ('source_projection_mismatch' if mismatch else
             'source_projection_reconciled_history_pending' if pending else 'source_graph_reconciled'),
-        'global_history_state': global_history, 'boards': reports}
+        'global_history_state': global_history, 'global_projection_comparison': global_comparison, 'boards': reports}

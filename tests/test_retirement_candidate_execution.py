@@ -75,7 +75,8 @@ async def test_failed_private_execution_can_retry_from_seed_and_keeps_original_p
         assert receipt['seed_sha256'] == seed.manifest_sha256
         assert receipt['before_sql'] != receipt['after_sql']
         assert len(receipt['boards']) == 1 and len(receipt['boards'][0]['acks']) == 3
-        assert receipt['graph_reconciliation']['state'] == 'source_graph_reconciled'
+        assert receipt['graph_reconciliation']['state'] == 'source_projection_reconciled_history_pending'
+        assert receipt['graph_reconciliation']['global_projection_comparison']['state'] == 'unavailable'
         assert receipt['graph_reconciliation']['boards'][0]['node_count'] == 4
         assert receipt['graph_reconciliation']['boards'][0]['edge_count'] == 5
         assert receipt['graph_reconciliation']['boards'][0]['zero_orphan_validation'] == 'passed'

@@ -173,12 +173,15 @@ async def verify_projected_candidate(target, *, seed, seed_document, projection,
         raise ValueError('retirement_candidate_checkpoint_history_observations_changed')
     from .retirement_candidate_global_sources import capture_candidate_global_source_inputs
 
-    if await capture_candidate_global_source_inputs(target, projection,
-            max_seconds=max_seconds) != projected['global_source_inputs']:
+    global_inputs = await capture_candidate_global_source_inputs(target, projection, max_seconds=max_seconds)
+    if global_inputs != projected['global_source_inputs']:
         raise ValueError('retirement_candidate_checkpoint_global_sources_changed')
+    from .retirement_candidate_global_reconciliation import compare_candidate_global_projection
+
+    global_comparison = compare_candidate_global_projection(target, global_inputs, settings=settings, max_seconds=max_seconds)
     if verify_candidate_graph_reconciliation(
             target, projected['boards'], projection=projection, deadline=deadline,
-            historical_observations=historical_observations) != projected['graph_reconciliation']:
+            historical_observations=historical_observations, global_comparison=global_comparison) != projected['graph_reconciliation']:
         raise ValueError('retirement_candidate_checkpoint_graph_reconciliation_changed')
     if _inventory_digest(target, native_paths, deadline, published=True) != checkpoint['content_sha256']:
         raise ValueError('retirement_candidate_checkpoint_content_changed')

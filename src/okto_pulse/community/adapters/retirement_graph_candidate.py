@@ -376,9 +376,13 @@ async def _restore_retirement_graph_candidate(runtime, storage, graphs, run, see
                                 stage, projection, max_seconds=max_seconds)
                             executed['format'] = 'retirement-candidate-projection/v4'
                             executed['schema_evolutions'] = schema_evolutions
+                            from .retirement_candidate_global_reconciliation import compare_candidate_global_projection
+
+                            global_comparison = compare_candidate_global_projection(stage, executed['global_source_inputs'],
+                                settings=projection_settings, max_seconds=max_seconds)
                             executed['graph_reconciliation'] = verify_candidate_graph_reconciliation(
                                 stage, executed['boards'], projection=projection, deadline=_deadline(max_seconds),
-                                historical_observations=executed['historical_observations'])
+                                historical_observations=executed['historical_observations'], global_comparison=global_comparison)
                             projection_receipt = offline._seal(stage / 'projection-receipt', executed)
                             state = 'projected_not_reconciled'
                             # Binding paths are relative, so the final rename does not
