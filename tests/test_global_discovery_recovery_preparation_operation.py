@@ -337,7 +337,7 @@ async def test_materialized_seed_releases_checkout_before_blocked_embedding(
         )
         return {}
 
-    monkeypatch.setattr(partition, "canonical_debt_exclusions", capture_debt)
+    monkeypatch.setattr(partition, "capture_canonical_debt_exclusions", capture_debt)
     monkeypatch.setattr(
         GlobalOutboxProcessor,
         "_read_board_digestable_node_types",
