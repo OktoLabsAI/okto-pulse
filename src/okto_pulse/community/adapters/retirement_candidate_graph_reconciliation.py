@@ -12,13 +12,12 @@ from okto_grafx import connect
 from okto_pulse.core.kg.schema_contract import NODE_TYPES
 from okto_pulse.core.kg.logical_transfer import LOGICAL_NULL, LogicalFingerprintAccumulator
 from okto_pulse.core.ports.consolidation import ExactConsolidationAckReceipt
-from okto_pulse.core.ports.cognitive_projection import compare_cognitive_projection
+from okto_pulse.core.ports.cognitive_projection import compare_cognitive_projection, validate_cognitive_projection_sources
 from okto_pulse.core.ports.projection_connectivity import observe_projection_connectivity
 from okto_pulse.core.ports.projection_relations import compare_projection_relations
 from okto_pulse.core.ports.projection_qualification import (
     SOURCE_OBSERVATION_FIELDS, ProjectionSourceObservation, qualify_projection_history,
 )
-from okto_pulse.core.ports.kg_cognitive_source import latest_cognitive_source_records
 from okto_pulse.core.ports.projection_history import (
     ProjectionSourceIdentity, ProjectionSourceRoot, select_projection_source_roots, is_projection_technical_root,
     ProjectionHistoryDelta, ProjectionNodeFingerprint, ProjectionNodeChange, ProjectionEdgeFingerprint,
@@ -171,10 +170,6 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
     if type(cognitive_rows) is not tuple or len(cognitive_rows) > _MAX_NODES:
         raise ValueError('retirement_candidate_cognitive_source_limit')
     cognitive_sources, cognitive_matches, cognitive_seen = {}, [], set()
-    for record in latest_cognitive_source_records(cognitive_rows):
-        if record.get('board_id') != board_id:
-            raise ValueError('retirement_candidate_cognitive_source_scope')
-        cognitive_sources.setdefault((record['node_type'], record['node_id']), []).append(record)
 
     def value(properties, name):
         item = properties.get(name)
@@ -183,6 +178,9 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
     with connect(binding.physical_path, page_size=binding.page_size, read_only=True) as graph:
         reader = make_grafx_logical_source(graph, scope='board').open_snapshot()
         try:
+            for record in validate_cognitive_projection_sources(
+                    schema=reader.schema(), board_id=board_id, records=cognitive_rows):
+                cognitive_sources.setdefault((record['node_type'], record['node_id']), []).append(record)
             schema = LogicalFingerprintAccumulator.for_schema(reader.schema()).schema_hex
             counts = reader.counts()
             if counts.nodes > _MAX_NODES or counts.relations > _MAX_EDGES:

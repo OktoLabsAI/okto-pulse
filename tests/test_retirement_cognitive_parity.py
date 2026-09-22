@@ -39,6 +39,15 @@ def test_cold_cognitive_source_parity_never_admits_history(tmp_path, state, monk
         # Matching durable content does not repair missing semantic edges.
         assert report['historical_connectivity'][0]['outcome'] == 'rejected'
     assert json.loads(json.dumps(report)) == report  # Checkpoint replay compares parsed receipts.
+    old = {**source, 'source_revision': -1}
+    with pytest.raises(ValueError, match='source_invalid'):
+        _board_graph(SimpleNamespace(physical_path=path, page_size=8192), {}, 0, {}, _deadline(60),
+            history, board_id='board', cognitive_rows=(old, source))
+    old = {**source, 'source_revision': 0, 'generation': False}
+    current = {**source, 'source_revision': 1}
+    with pytest.raises(ValueError, match='source_invalid'):
+        _board_graph(SimpleNamespace(physical_path=path, page_size=8192), {}, 0, {}, _deadline(60),
+            history, board_id='board', cognitive_rows=(old, current))
     if state == 'missing_node':
         binding = SimpleNamespace(physical_path=path, page_size=8192, backend='grafx',
             generation='private', binding_sha256='a' * 64)
