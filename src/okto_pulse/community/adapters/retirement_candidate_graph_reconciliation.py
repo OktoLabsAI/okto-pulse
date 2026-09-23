@@ -151,7 +151,9 @@ def _cognitive_parity(schema, board_id, record, node):
 
 
 def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata, deadline, history=None,
-        *, board_id=None, cognitive_rows=(), expected_partitions=None, expected_edge_sessions=None, planned_document=None):
+        *, board_id=None, cognitive_rows=(), expected_partitions=None, expected_edge_sessions=None, planned_document=None,
+        restored_cognitive=None):
+    restored_cognitive = restored_cognitive or {}
     # Prior records qualify by a full fingerprint, preserved or independently
     # reconciled against the authenticated property trace. Both stay unclassified.
     delta = history['delta'] if history is not None else {}
@@ -203,6 +205,8 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
                     preserved = identity in prior_nodes
                     if preserved and hashes[identity] != prior_nodes[identity]:
                         raise ValueError('retirement_candidate_prior_node_changed')
+                    if identity in restored_cognitive and hashes[identity] != restored_cognitive[identity]:
+                        raise ValueError('retirement_candidate_restored_cognitive_changed')
                     fields = tuple(value(node.properties, name) for name in
                         ('source_artifact_ref', 'source_session_id', 'created_by_agent'))
                     if identity in nodes or (not preserved and (
@@ -229,6 +233,8 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
             expected_by_identity = {(node.node_type, node.node_id): expected_metadata[root]
                 for root, node in zip(roots, selected, strict=True)}
             for identity, values in metadata.items():
+                if identity in restored_cognitive:
+                    continue  # Literal durable chronology was independently verified, not regenerated.
                 if identity in prior_nodes and identity not in expected_by_identity:
                     continue  # No current-source chronology is assigned to preserved history.
                 expected = expected_by_identity.get(identity, {})
@@ -238,8 +244,9 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
                     if observed != wanted:
                         raise ValueError('retirement_candidate_source_metadata_changed:' + name)
             preserved_nodes = {(kind, key) for kind, key in prior_nodes if kind in NODE_TYPES}
-            if (set(nodes) != set(expected_refs) | preserved_nodes
-                    or set(expected_refs) & preserved_nodes):
+            if (set(nodes) != set(expected_refs) | preserved_nodes | set(restored_cognitive)
+                    or set(expected_refs) & preserved_nodes
+                    or set(restored_cognitive) & (set(expected_refs) | preserved_nodes)):
                 raise ValueError('retirement_candidate_graph_node_census_changed')
             if any(nodes[identity][1] != session_id for identity, session_id in expected_refs.items()):
                 raise ValueError('retirement_candidate_graph_node_session_changed')
@@ -322,6 +329,7 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
         'source_partition_sha256': _digest([(root.node_type, root.source_artifact_ref, expected_partitions[root])
             for root in partition_roots]),
         'historical_node_count': len(preserved_nodes),
+        'restored_cognitive_node_count': len(restored_cognitive),
         'historical_property_change_count': len(delta.get('changed_nodes', ())),
         'historical_edge_count': sum(row['count'] for row in delta.get('retained_edges', ())),
         'historical_orphan_count': len(orphans),
@@ -340,7 +348,7 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
 
 
 def verify_candidate_graph_reconciliation(target, boards, *, projection, deadline, historical_observations=None,
-        global_comparison=None, global_materialization=None):
+        global_comparison=None, global_materialization=None, restored_cognitive=None):
     """Verify new projection effects; preserved history never receives implicit approval.
 
     historical_observations must be freshly derived under the caller's offline
@@ -404,6 +412,7 @@ def verify_candidate_graph_reconciliation(target, boards, *, projection, deadlin
             raise ValueError('retirement_candidate_graph_boards_invalid')
         report = _board_graph(binding, board_refs, sum(edge_sessions.values()), _source_expectations(planned[board_id]), deadline,
             histories.get(board_id), board_id=board_id, cognitive_rows=tuple(planned[board_id]['cognitive_rows']),
+            restored_cognitive=(restored_cognitive or {}).get(board_id),
             expected_partitions=_partition_expectations(planned[board_id]), expected_edge_sessions=edge_sessions,
             planned_document=json.dumps(planned[board_id], ensure_ascii=False, sort_keys=True,
                 separators=(',', ':'), allow_nan=False).encode('utf-8'))
@@ -415,11 +424,12 @@ def verify_candidate_graph_reconciliation(target, boards, *, projection, deadlin
     if global_comparison is not None and global_comparison['state'] == 'matched' and global_history != 'no_prior_records':
         global_history = 'current_source_reconciled'
     pending = (any(report['history_classification'] == 'pending' for report in reports)
+        or any(report['restored_cognitive_node_count'] for report in reports)
         or any(item['state'] != 'matched' for report in reports for item in report['cognitive_source_parity'])
         or (global_comparison['state'] != 'matched' if global_comparison is not None else global_history != 'no_prior_records'))
     mismatch = any(any(report['source_relation_comparison'][field] for field in
         ('missing_count', 'unresolved_count', 'unexpected_new_count')) for report in reports)
-    return {'format': 'retirement-candidate-graph-reconciliation/v15',
+    return {'format': 'retirement-candidate-graph-reconciliation/v16',
         'state': ('source_projection_mismatch' if mismatch else
             'source_projection_reconciled_history_pending' if pending else 'source_graph_reconciled'),
         'global_history_state': global_history, 'global_projection_comparison': global_comparison, 'boards': reports}

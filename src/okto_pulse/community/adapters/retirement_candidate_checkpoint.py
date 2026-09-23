@@ -88,8 +88,8 @@ async def verify_projected_candidate(target, *, seed, seed_document, projection,
     projected = _read_sealed(target / 'projection-receipt', receipt['projection_receipt_sha256'])
     if (set(projected) != {'format', 'seed_sha256', 'state', 'before_sql', 'after_sql',
             'boards', 'graph_reconciliation', 'historical_observations', 'schema_evolutions', 'global_source_inputs',
-            'global_materialization'}
-            or projected['format'] != 'retirement-candidate-projection/v5'
+            'global_materialization', 'cognitive_restoration'}
+            or projected['format'] != 'retirement-candidate-projection/v6'
             or type(projected['global_materialization']) is not dict
             or type(projected['schema_evolutions']) is not list
             or projected['seed_sha256'] != seed.manifest_sha256
@@ -177,6 +177,10 @@ async def verify_projected_candidate(target, *, seed, seed_document, projection,
         property_effects=tuple(property_effects), schema_evolutions=tuple(projected['schema_evolutions']))
     if historical_observations != projected['historical_observations']:
         raise ValueError('retirement_candidate_checkpoint_history_observations_changed')
+    from .retirement_candidate_cognitive_restoration import verify_candidate_cognitive_restoration
+
+    restored_cognitive = verify_candidate_cognitive_restoration(target, projection,
+        projected['cognitive_restoration'], historical_observations, max_seconds=max_seconds)
     from .retirement_candidate_global_sources import capture_candidate_global_source_inputs
 
     global_inputs = await capture_candidate_global_source_inputs(target, projection, max_seconds=max_seconds)
@@ -193,7 +197,7 @@ async def verify_projected_candidate(target, *, seed, seed_document, projection,
     if verify_candidate_graph_reconciliation(
             target, projected['boards'], projection=projection, deadline=deadline,
             historical_observations=historical_observations, global_comparison=global_comparison,
-            global_materialization=projected['global_materialization']) != projected['graph_reconciliation']:
+            global_materialization=projected['global_materialization'], restored_cognitive=restored_cognitive) != projected['graph_reconciliation']:
         raise ValueError('retirement_candidate_checkpoint_graph_reconciliation_changed')
     if _inventory_digest(target, native_paths, deadline, published=True) != checkpoint['content_sha256']:
         raise ValueError('retirement_candidate_checkpoint_content_changed')

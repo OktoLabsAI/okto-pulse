@@ -48,6 +48,14 @@ async def test_authenticated_effects_on_reused_root_preserve_identity_and_remain
                     json.dumps({'title': 'sealed historical decision', 'generation': 0,
                         'source_artifact_ref': 'spec:spec-a'}), json.dumps(['spec:spec-a']),
                     'historical-cognitive-session', '2026-01-01T00:00:00.000000'))
+            connection.execute('INSERT INTO kg_cognitive_sources '
+                '(id,board_id,node_id,node_type,generation,payload,evidence_refs,source_session_id,committed_at) '
+                'VALUES (?,?,?,?,?,?,?,?,?)', ('durable-report', 'board-a', 'restored-report', 'Decision', 0,
+                    json.dumps({'title': 'literal historical report', 'generation': 0,
+                        'source_artifact_ref': 'final_report:historical', 'created_by_agent': 'agent-a',
+                        'graph_layer': 'canonical', 'maturity_status': 'canonical_eligible',
+                        'created_at': '2026-01-01T00:00:00.123456Z'}),
+                    json.dumps(['final_report:historical']), 'kgses_historical', '2026-01-01T00:00:00.000000'))
             connection.commit()
     engine = create_async_engine(f'sqlite+aiosqlite:///{source}')
     runtime = db.CommunityDatabaseRuntime(engine, db.build_community_session_factory(engine))
@@ -101,7 +109,7 @@ async def test_authenticated_effects_on_reused_root_preserve_identity_and_remain
         result = await candidate.build_projected_retirement_graph_candidate(*arguments,
             migration_builds=MIGRATION, settings=settings, confirm_original_offline=True, max_seconds=300)
         receipt = json.loads((target / 'projection-receipt/run.json').read_bytes())
-        assert receipt['format'] == 'retirement-candidate-projection/v5'
+        assert receipt['format'] == 'retirement-candidate-projection/v6'
         if source_schema == '0.6.0':
             assert receipt['global_source_inputs']['state'] == 'captured_not_reconciled'
             assert receipt['global_source_inputs']['overlay_revision'] == overlay_revision
@@ -137,9 +145,13 @@ async def test_authenticated_effects_on_reused_root_preserve_identity_and_remain
             assert (target / 'graph-0000').is_dir()  # Retained, unbound native predecessor.
         else:
             assert receipt['schema_evolutions'] == []
-            parity = report['cognitive_source_parity']
-            assert len(parity) == 1 and parity[0]['node_id'] == 'missing-decision'
-            assert parity[0]['state'] == 'missing_node'
+            parity = {row['node_id']: row for row in report['cognitive_source_parity']}
+            assert set(parity) == {'missing-decision', 'restored-report'}
+            assert parity['missing-decision']['state'] == 'missing_node'
+            assert parity['restored-report']['state'] == 'matched'
+            assert report['restored_cognitive_node_count'] == 1
+            created, = receipt['cognitive_restoration']['boards'][0]['created']
+            assert created['node_id'] == 'restored-report' and created['literal_fingerprint']
             restoration, = report['cognitive_restoration']
             assert restoration['node_id'] == 'missing-decision'
             assert restoration['state'] == 'connectivity_rejected' and restoration['reasons']
@@ -147,6 +159,7 @@ async def test_authenticated_effects_on_reused_root_preserve_identity_and_remain
         assert proof['before']['node_id'] == proof['after']['node_id'] == 'old-spec-root'
         with closing(sqlite3.connect(target / 'database.sqlite3')) as connection:
             assert connection.execute("SELECT count(*) FROM kuzu_node_refs WHERE kuzu_node_id='old-spec-root'").fetchone()[0] == 0
+            assert connection.execute("SELECT count(*) FROM kuzu_node_refs WHERE kuzu_node_id='restored-report'").fetchone()[0] == 0
         replay = await candidate.build_projected_retirement_graph_candidate(*arguments,
             migration_builds=MIGRATION, settings=settings, confirm_original_offline=True,
             confirm_candidate_offline=True, expected_receipt_sha256=result['receipt_sha256'], max_seconds=300)

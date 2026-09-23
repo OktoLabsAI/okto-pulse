@@ -366,6 +366,12 @@ async def _restore_retirement_graph_candidate(runtime, storage, graphs, run, see
                                 verify_candidate_graph_reconciliation,
                             )
                             from .retirement_candidate_history import observe_candidate_history
+                            from .retirement_candidate_cognitive_restoration import (
+                                restore_candidate_cognitive_nodes, verify_candidate_cognitive_restoration,
+                            )
+
+                            executed['cognitive_restoration'] = restore_candidate_cognitive_nodes(stage, projection,
+                                require_live=lambda: connection.in_transaction(), max_seconds=max_seconds)
 
                             from .retirement_candidate_global_sources import capture_candidate_global_source_inputs
 
@@ -385,7 +391,9 @@ async def _restore_retirement_graph_candidate(runtime, storage, graphs, run, see
                             executed['historical_observations'] = observe_candidate_history(
                                 stage, snapshot, max_seconds=max_seconds, property_effects=tuple(property_effects),
                                 schema_evolutions=tuple(schema_evolutions))
-                            executed['format'] = 'retirement-candidate-projection/v5'
+                            restored_cognitive = verify_candidate_cognitive_restoration(stage, projection,
+                                executed['cognitive_restoration'], executed['historical_observations'], max_seconds=max_seconds)
+                            executed['format'] = 'retirement-candidate-projection/v6'
                             executed['schema_evolutions'] = schema_evolutions
                             from .retirement_candidate_global_reconciliation import compare_candidate_global_projection
 
@@ -400,7 +408,7 @@ async def _restore_retirement_graph_candidate(runtime, storage, graphs, run, see
                             executed['graph_reconciliation'] = verify_candidate_graph_reconciliation(
                                 stage, executed['boards'], projection=projection, deadline=_deadline(max_seconds),
                                 historical_observations=executed['historical_observations'], global_comparison=global_comparison,
-                                global_materialization=executed['global_materialization'])
+                                global_materialization=executed['global_materialization'], restored_cognitive=restored_cognitive)
                             projection_receipt = offline._seal(stage / 'projection-receipt', executed)
                             state = 'projected_not_reconciled'
                             # Binding paths are relative, so the final rename does not
