@@ -21,7 +21,10 @@ async def read_card_resume(store, query, *, actor_id):
     generation = await store._delivery_revision(scope)
     version = (card.policy_version, spec.version, card.status)
     plan = await store._execution_plan(spec)
-    snapshot = await store.load_card_snapshot(scope, plan=plan)
+    # Reuse only within this read. The final generation/version fence still
+    # rejects concurrent changes; no cross-request or cross-principal cache.
+    records = await store._card_records(scope)
+    snapshot = await store.load_card_snapshot(scope, plan=plan, records=records)
     verification = card_verification_plan(plan, scope.card_id)
     scenario_ids = {row["scenario_id"] for row in verification["items"]}
     test_card_ids = sorted({identity for row in verification["items"] for identity in row["test_card_ids"]})
@@ -35,10 +38,10 @@ async def read_card_resume(store, query, *, actor_id):
         tests_by_id.update((fact.id, fact) for fact in related.tests if fact.scenario_id in scenario_ids)
     if plan is not None:
         snapshot = replace(snapshot, tests=tuple(tests_by_id.values()), complete=snapshot.complete and related_complete)
-        snapshot = store._with_effective_context(snapshot, plan, await store._card_records(scope), spec, card)
+        snapshot = store._with_effective_context(snapshot, plan, records, spec, card)
     evaluation = evaluate_delivery_coverage(snapshot)
     progress = await store.progress_history(query.model_copy(update={"view": "progress"}), actor_id=actor_id)
-    impact = await store._accumulated_impact(scope)
+    impact = await store._accumulated_impact(scope, records=records)
     target_filters = (
         Target.board_id == scope.board_id, Target.card_id == scope.card_id,
         Target.lifecycle_status == "active",

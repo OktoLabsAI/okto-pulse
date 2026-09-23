@@ -44,3 +44,21 @@ async def test_frozen_resume_preserves_history_without_enabling_progress(db, sta
     assert result["progress"]["total"] == 1
     assert not result["progress_state_eligible"]
     assert result["follow_up"]["transition_gates"]["card_id"] == "c"
+
+
+@pytest.mark.asyncio
+async def test_shared_history_does_not_hide_a_late_append(db, monkeypatch):
+    _, session, store = db
+    await record(store, command())
+    await session.commit()
+    original = store._accumulated_impact
+
+    async def append_after_snapshot(scope, *, records=None):
+        assert records is not None and len(records) == 1
+        await record(store, command(idempotency_key="late", justification="New pending work"))
+        await session.commit()
+        return await original(scope, records=records)
+
+    monkeypatch.setattr(store, "_accumulated_impact", append_after_snapshot)
+    with pytest.raises(ValueError, match="delivery_resume_changed_retry"):
+        await store.card_resume(query(), actor_id="successor")

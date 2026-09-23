@@ -729,9 +729,9 @@ class CommunityDeliveryEvidenceStore:
             ).all()
         )
 
-    async def load_card_snapshot(self, scope: CardDeliveryScope, *, plan=None, prospective_report=None):
+    async def load_card_snapshot(self, scope: CardDeliveryScope, *, plan=None, prospective_report=None, records=None):
         card, spec, spec_scope = await self._card_scope_guard(scope)
-        records = await self._card_records(scope)
+        records = await self._card_records(scope) if records is None else records
         revoked = {
             r.payload.get("record_id")
             for r in records
@@ -905,13 +905,13 @@ class CommunityDeliveryEvidenceStore:
                     progress.impact_base_revision, progress.source_state.declared_revision, progress.impact_delta))
         return tuple(claims)
 
-    async def _accumulated_impact(self, scope):
+    async def _accumulated_impact(self, scope, *, records=None):
         """All active declared deltas, independently of a frozen report selection.
 
         This read-only preview does not authenticate source bases, change the
         report's impact claim or decide readiness. Revoked entries remain history.
         """
-        records = await self._card_records(scope)
+        records = await self._card_records(scope) if records is None else records
         revoked = {row.payload.get("record_id") for row in records
                    if row.kind == "revoke" and row.actor_kind in {"human", "user"}}
         return compose_delivery_impact(self._impact_claims([row for row in records if row.id not in revoked]))
