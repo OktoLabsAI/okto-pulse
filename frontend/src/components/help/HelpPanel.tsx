@@ -799,7 +799,6 @@ Additional status: \`cancelled\`
 | **Knowledge Base** | Attach reference documents, technical notes, research, or file content |
 | **Q&A** | Text questions, choice boards (single/multi-select), free-text responses |
 | **Cards** | View all derived task cards, link/unlink cards |
-| **Sprints** | Create and manage sprints, assign cards, use sprint suggestion algorithm |
 | **History** | Full change log with field-level diffs |
 
 ### Negative scenario outcomes
@@ -1346,8 +1345,6 @@ Marking a test scenario as \`automated\`, \`passed\`, or \`failed\` requires **p
 
 When evidence is present, an inline **EvidenceBadge** (✓ green) appears next to the status. Without evidence the badge is **? gray** and the gate blocks the transition unless \`skip_test_evidence_global\` is ON. When the skip flag is active, an app-wide amber banner reminds operators that the gate is bypassed.
 
-The same evidence is required by the **sprint close** gate as defense-in-depth — a sprint cannot move to \`closed\` if any of its scoped scenarios lack evidence (and the skip flag is off).
-
 ### Cognitive Closeout Gate
 
 Specs and refinements cannot transition to \`done\` while they (or their decisions) have **active cognitive consolidation items** (\`pending\` / \`in_progress\` / \`failed\`) in the current KG generation — the knowledge debt must be worked or explicitly skipped first. The "Pending cognitive consolidation" badge on list cards shows exactly which entities hold the debt.
@@ -1374,13 +1371,12 @@ In the dual-agent workflow the spec is validated **twice**: a content **preview*
 
 ### Open Q&A badge
 
-Ideations, refinements, specs, sprints and cards show an **"N open Q&A"** badge while they have unanswered questions (\`answered_at\` not set). Answered Q&A inherited from a parent entity carries its answer timestamp, so it never counts as open.
+Ideations, refinements, specs and cards show an **"N open Q&A"** badge while they have unanswered questions (\`answered_at\` not set). Answered Q&A inherited from a parent entity carries its answer timestamp, so it never counts as open.
 
 ### Overrides
 
 All coverage checks can be bypassed:
 - **Per spec** — Toggle \`skip_test_coverage\`, \`skip_rules_coverage\`, \`skip_trs_coverage\`, or \`skip_contract_coverage\` on the spec
-- **Per sprint** — Override validation thresholds per sprint
 - **Per board** — Toggle global overrides in **Board Settings** (menu)
 
 ### Dependencies
@@ -1390,76 +1386,13 @@ All coverage checks can be bypassed:
 `,
     },
     {
-      id: 'sprints',
-      title: 'Sprints',
-      icon: <GitBranch size={16} />,
-      content: `
-## Sprints — Incremental delivery
-
-Sprints break a spec into incremental deliverables. Each sprint groups a subset of tasks with a clear objective, expected outcome, and timeline.
-
-### Creating sprints
-
-Sprints are created within a spec. Go to the **Sprints** tab in the spec modal:
-- Click **"+ New Sprint"** to create manually
-- Or use **"Suggest Sprints"** to let the AI suggest an optimal breakdown based on task dependencies and complexity
-
-### Sprint lifecycle
-
-\`draft\` → \`active\` → \`review\` → \`closed\`
-
-- **Draft** — Define objective, assign tasks, set timeline
-- **Active** — Work in progress; tasks are being executed
-- **Review** — Sprint work complete; evaluating outcomes
-- **Closed** — Sprint done; evaluation captured
-
-Additional status: \`cancelled\`
-
-### Sprint properties
-
-| Property | Description |
-|----------|-------------|
-| **Objective** | What this sprint aims to achieve |
-| **Expected Outcome** | Concrete deliverables |
-| **Start / End Date** | Timeline boundaries |
-| **Scoped Test Scenarios** | Which test scenarios apply to this sprint |
-| **Scoped Business Rules** | Which business rules apply |
-
-### Assigning tasks to sprints
-
-Tasks are assigned to sprints from the sprint detail view or from the spec's Sprints tab. A task can only belong to one sprint at a time.
-
-### Sprint evaluations
-
-When a sprint moves to **review** or **closed**, an evaluation can be submitted:
-- Qualitative assessment of the sprint's outcome
-- Scores for delivery quality
-- Notes on what went well and what needs improvement
-- Multiple evaluations can be submitted (by different agents or team members)
-
-### Sprint suggestion algorithm
-
-The **"Suggest Sprints"** feature analyzes the spec's tasks, dependencies, and complexity to propose an optimal sprint breakdown. It considers:
-- Task dependencies (dependent tasks go in later sprints)
-- Task complexity (balance load across sprints)
-- Test coverage (each sprint should be independently testable)
-
-### Skip flags per sprint
-
-Each sprint can override validation settings:
-- \`skip_test_coverage\` — Skip test scenario coverage checks
-- \`skip_rules_coverage\` — Skip business rules coverage checks
-- \`skip_qualitative_validation\` — Skip sprint evaluation requirement
-`,
-    },
-    {
       id: 'knowledge-graph',
       title: 'Knowledge Graph',
       icon: <Network size={16} />,
       content: `
 ## Knowledge Graph — Structured project intelligence
 
-The Knowledge Graph (KG) extracts decisions, constraints, learnings, and relationships from your specs, cards, and sprints into a searchable, interactive graph.
+The Knowledge Graph (KG) projects project knowledge from Specs and Cards into a searchable, interactive graph. The source records remain authoritative; graph availability does not replace delivery evidence or governance gates.
 
 ### Accessing the Knowledge Graph
 
@@ -1470,9 +1403,11 @@ Click the **Knowledge Graph** tab in the main navigation. The KG page has 6 sub-
 | **Graph** | Interactive visualization with pan/zoom, node filtering, and edge rendering |
 | **Audit Log** | History of all consolidation sessions — who added what and when |
 | **Pending Queue** | Consolidation entries waiting to be processed |
-| **KG Health** | Provider/model status, schema version, queue depth, **manual tick** trigger, dedup snapshot |
-| **Settings** | KG configuration (GraphDB / Event Queue / Decay Tick tabs), provider status, danger zone |
-| **Global Search** | Cross-board semantic search by natural language query |
+| **Pending Tree** | Consolidation dependencies and progress |
+| **Settings** | Read-only configuration and provider information |
+| **Global Discovery** | Cross-board semantic search by natural language query |
+
+Open **KG Health** from the main menu for component availability and aggregate diagnostics. Its observations do not authorize repair operations.
 
 ### Node types (11)
 
@@ -1496,8 +1431,7 @@ Click the **Knowledge Graph** tab in the main navigation. The KG page has 6 sub-
 
 ### How consolidation works
 
-1. **Continuous consolidation** — When a card or sprint completes, the system automatically extracts entities and relationships into the graph
-2. **Historical consolidation** — Process existing specs and sprints retroactively (enable in Settings → "Enable Historical Consolidation")
+Source changes feed automatic structural projection. Semantic consolidation records reviewed knowledge through its existing authorized workflow. A failed projection remains visible as unavailable or pending; it does not establish that delivery or verification succeeded.
 
 Each consolidation session creates an audit trail: nodes added, updated, superseded, and edges created.
 
@@ -1520,15 +1454,14 @@ Clicking a node reveals:
 
 ### KG Health
 
-The **KG Health** sub-view exposes runtime diagnostics:
+The **KG Health** panel exposes runtime diagnostics:
 
 - **Overall state** — \`healthy\`, \`at_risk\`, or \`recovery_needed\`. **\`at_risk\` is a preventive warning** (scheduler debt, dead-letter backlog, unavailable telemetry) — it is *not* corruption. \`recovery_needed\` identifies an unavailable component; it does not authorize repair.
 - **Provider / model** — embedder backend (sentence-transformers or stub fallback)
-- **Schema version** — current graph schema (auto-migrated on hot path)
+- **Schema version** — current graph schema and compatibility status
 - **Queue depth / dead letters** — pending consolidation entries and DLQ count
 - **\`tick_in_progress\`** — \`true\` when the global advisory lock \`kg_daily_tick\` is held
-- **Dedup snapshot** — entity counts and recent dedup actions
-- **Orphan integrity** — zero-orphan projection (orphan count by type, samples); additive observability that never masks hard recovery signals
+- **Integrity** — aggregate projection health; unavailable telemetry never means that integrity has been verified
 
 ### Component availability
 
@@ -1570,7 +1503,7 @@ MCP agents can query **and curate** the Knowledge Graph via 25+ tools:
 
 **Cognitive ledger** — \`kg_list_cognitive_pending_items\`, \`kg_update_cognitive_pending_item\`
 
-**Operate** — \`kg_health\`, \`kg_migrate_schema\` / \`kg_orphan_report\` / \`kg_orphan_backfill\`, \`kg_schema_info\`
+**Observe** — \`kg_health\` reports availability and limitations. Health is not an alternate path to migrate, backfill, or repair storage.
 `,
     },
     {

@@ -30,6 +30,7 @@ from okto_pulse.core.ports.mcp_resources import (
 
 
 RETIRED = (
+    "okto_pulse_kg_migrate_schema",
     *(f"okto_pulse_kg_rebuild_{action}" for action in ("preflight", "confirm", "run")),
     *(f"okto_pulse_kg_global_discovery_recovery_{action}" for action in (
         "preflight", "confirm", "run", "status", "cancel", "resume",
@@ -139,6 +140,7 @@ async def test_materialized_mcp_transport_rejects_removed_tools_before_handlers(
                 "dead_letter_ids": ["historical-row"], "process_now": True,
                 "force_full_rebuild": True,
                 "scope": "code_traceability",
+                "all_boards": True,
             }):
                 result = await client.call_tool(name, arguments, raise_on_error=False)
                 assert result.is_error
@@ -148,12 +150,12 @@ async def test_materialized_mcp_transport_rejects_removed_tools_before_handlers(
 def test_removed_permissions_are_absent_from_registry_and_presets():
     assert not any(flag.startswith((
         "kg.operations.rebuild.", "kg.operations.global_recovery.", "kg.operations.quarantine.",
-        "kg.operations.global_outbox.", "kg.operations.tick.",
+        "kg.operations.global_outbox.", "kg.operations.tick.", "kg.operations.schema.",
     )) for flag in ALL_FLAGS)
     assert {policy.tool_name for policy in MCP_TOOL_PERMISSION_POLICIES}.isdisjoint(RETIRED)
     for preset in get_builtin_presets():
         operations = preset["flags"].get("kg", {}).get("operations", {})
-        assert {"rebuild", "global_recovery", "quarantine", "global_outbox", "tick"}.isdisjoint(operations)
+        assert {"rebuild", "global_recovery", "quarantine", "global_outbox", "tick", "schema"}.isdisjoint(operations)
 
 
 def test_distributed_instructions_do_not_advertise_retired_recovery_tools():

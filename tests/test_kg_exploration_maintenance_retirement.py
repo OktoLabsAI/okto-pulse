@@ -41,3 +41,24 @@ def test_handlers_models_and_admin_dispatch_are_removed():
     app.include_router(api_router)
     schemas = app.openapi()["components"]["schemas"]
     assert not {"PrepareRequest", "HistoryActivation", "HistoryPrune"}.intersection(schemas)
+
+
+@pytest.mark.parametrize("board", ["missing", "foreign", "owned"])
+@pytest.mark.parametrize("body", [{}, {"all_boards": True, "force": True}])
+def test_schema_migration_has_no_public_rest_fallback(monkeypatch, board, body):
+    def forbidden(*args, **kwargs):
+        pytest.fail("Retired schema migration reached authority or storage")
+
+    kg = exploration.kg
+    assert not hasattr(kg, "post_migrate_schema")
+    assert not hasattr(kg, "MigrateSchemaResponse")
+    app = FastAPI()
+    app.include_router(api_router)
+    for dependency in (kg.require_kg_board_actor, kg.require_kg_board_writer_actor, kg.get_unit_of_work):
+        app.dependency_overrides[dependency] = forbidden
+    with TestClient(app) as client:
+        response = client.post(f"/api/v1/kg/{board}/migrate-schema", json=body)
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Not Found"}
+    assert "/api/v1/kg/{board_id}/migrate-schema" not in app.openapi()["paths"]
+    assert "MigrateSchemaResponse" not in app.openapi()["components"]["schemas"]
