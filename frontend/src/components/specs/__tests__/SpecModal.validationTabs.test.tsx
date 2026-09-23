@@ -18,6 +18,7 @@ const apiMock = vi.hoisted(() => ({
   getValidationTechnicalAudit: vi.fn(),
   getSpecChecklistState: vi.fn(),
   getCurrentSpecValidation: vi.fn(),
+  listSpecEvaluations: vi.fn(),
   listSprints: vi.fn(),
   getArchitectureCandidates: vi.fn(),
   getArchitectureClassifications: vi.fn(),
@@ -360,6 +361,7 @@ describe('SpecModal validation navigation', () => {
       remaining_actions: [],
     });
     apiMock.getValidationTechnicalAudit.mockResolvedValue(null);
+    apiMock.listSpecEvaluations.mockResolvedValue({ current_edition: 1, active_count: 0, previous_count: 0, evaluations: [] });
     apiMock.getCurrentSpecValidation.mockResolvedValue({
       spec_id: baseSpec.id,
       edition: 1,
@@ -395,6 +397,29 @@ describe('SpecModal validation navigation', () => {
     expect(apiMock.getArchitectureClassifications).toHaveBeenCalledExactlyOnceWith(
       baseSpec.board_id, baseSpec.id, expect.any(AbortSignal), { offset: 0, limit: 25 },
     );
+  });
+
+  it('loads decomposition history lazily for an evaluation-only reader', async () => {
+    permissionMock.allowAll = false;
+    permissionMock.allowed = new Set(['spec.entity.read', 'spec.evaluations.read']);
+    renderSpec('draft');
+    await screen.findByText(baseSpec.title);
+    expect(apiMock.listSpecEvaluations).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('tab', { name: 'Validation' }));
+    await screen.findByText(/No current evaluation/);
+    expect(apiMock.listSpecEvaluations).toHaveBeenCalledExactlyOnceWith(baseSpec.id, expect.any(AbortSignal));
+    expect(apiMock.getCurrentSpecValidation).not.toHaveBeenCalled();
+  });
+
+  it('does not borrow validation read authority for decomposition history', async () => {
+    permissionMock.allowAll = false;
+    permissionMock.allowed = new Set(['spec.entity.read', 'spec.validation.read']);
+    renderSpec('draft');
+    await screen.findByText(baseSpec.title);
+    fireEvent.click(screen.getByRole('tab', { name: 'Validation' }));
+    await screen.findByTestId('spec-validation-current');
+    expect(screen.queryByRole('region', { name: 'Decomposition evaluations' })).not.toBeInTheDocument();
+    expect(apiMock.listSpecEvaluations).not.toHaveBeenCalled();
   });
 
   it.each(['review', 'approved', 'validated', 'in_progress', 'done'] as SpecStatus[])(

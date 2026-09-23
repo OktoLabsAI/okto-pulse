@@ -1355,6 +1355,10 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       return apiClient.fetchJson<Spec>(`/specs/${specId}`);
     },
 
+    async listSpecEvaluations(specId: string, signal?: AbortSignal): Promise<import('@/types').SpecEvaluationList> {
+      return apiClient.fetchJson(`/specs/${encodeURIComponent(specId)}/evaluations`, { signal });
+    },
+
     async classifyArchitectureCandidates(boardId: string, specId: string, batch: ArchitectureClassificationBatch): Promise<ArchitectureClassificationReceipt> {
       return apiClient.fetchJson<ArchitectureClassificationReceipt>(
         `/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/architecture-classifications`,

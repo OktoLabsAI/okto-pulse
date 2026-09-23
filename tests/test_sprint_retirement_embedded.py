@@ -10,6 +10,7 @@ from okto_pulse.community.adapters.sprint_retirement_embedded import SprintEmbed
 from okto_pulse.community.adapters.sprint_retirement_archive import capture_sprint_retirement_archive, verify_historical_archive
 from okto_pulse.community.adapters.storage import CommunityFileSystemStorage
 from okto_pulse.community.adapters.sqlalchemy_models import Base
+from legacy_sprint_schema import SprintHistory
 import test_sprint_retirement_inventory as relational
 from test_sprint_retirement_archive import decoded_rows
 
@@ -54,7 +55,7 @@ async def test_nested_cognitive_evidence_is_found_and_archived_without_rewriting
 async def test_parent_scoped_history_adds_roles_without_copying_owned_row_twice(database, tmp_path):
     engine, _ = database
     async with engine.begin() as connection:
-        await connection.execute(insert(Base.metadata.tables["sprint_history"]).values(id="history", sprint_id="sprint",
+        await connection.execute(insert(SprintHistory.__table__).values(id="history", sprint_id="sprint",
             action="changed", actor_id="author", actor_type="user", actor_name="Author",
             changes=[{"field": "origin_sprint_id", "old_value": "past", "new_value": None}]))
         await connection.execute(insert(Base.metadata.tables["spec_knowledge_bases"]).values(id="kb", spec_id="spec-a",

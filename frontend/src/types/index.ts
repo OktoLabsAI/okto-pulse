@@ -4347,3 +4347,20 @@ export interface KanbanColumn {
   label: string;
   cards: CardSummary[];
 }
+
+export interface SpecEvaluationList {
+  current_edition: number;
+  active_count: number;
+  previous_count: number;
+  evaluations: Array<{
+    id: string;
+    evaluator_name?: string;
+    evaluator_id: string;
+    spec_edition?: number;
+    overall_score: number;
+    overall_justification: string;
+    recommendation: string;
+    lifecycle_state: 'current' | 'previous';
+    created_at: string;
+  }>;
+}
