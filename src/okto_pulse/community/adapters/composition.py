@@ -98,6 +98,9 @@ def _apply_graph_providers(
     )
 
     effective_settings = _community_settings_snapshot(settings)
+    from .retirement_activation import require_retirement_activation_roots
+
+    require_retirement_activation_roots(effective_settings)
     bundle = routed_graph or build_community_routed_graph_composition(
         settings=effective_settings,
     )
@@ -298,6 +301,9 @@ def build_community_kg_composition(
     embedding + base registry (Onda A in-memory + Onda C graph adapters) and
     register the Community CrossEncoder factory with the core rerank registry."""
     s = _community_settings_snapshot(settings)
+    from .retirement_activation import require_retirement_activation_roots
+
+    require_retirement_activation_roots(s, upload_dir=upload_dir)
     embedding = build_community_embedding(settings=s)
     base = build_community_base_registry(embedding=embedding, settings=s)
     _apply_source_reader(base)

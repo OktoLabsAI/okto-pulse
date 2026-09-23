@@ -175,7 +175,7 @@ async def test_max7_schema_receipt_is_verified_before_journal_expansion(tmp_path
         assert result['state'] == 'bootstrap_complete' and result['schema'] == old['schema']
         with sqlite3.connect(path) as connection:
             ddl = connection.execute("SELECT sql FROM sqlite_schema WHERE name='retirement_data_checkpoints'").fetchone()[0]
-            assert 'ordinal <= 8' in ddl
+            assert 'ordinal <= 9' in ddl
         stable = dump(path)
         assert await resume(runtime, storage, run) == result
         assert dump(path) == stable

@@ -1,8 +1,11 @@
 """Real worker effects reconcile a reused historical root without admitting it."""
 
 from contextlib import closing
+import asyncio
 import json
 import sqlite3
+import subprocess
+import sys
 
 import pytest
 from okto_grafx import connect
@@ -30,7 +33,7 @@ from test_card_context_retirement import dump
 @pytest.mark.asyncio
 @pytest.mark.timeout(600)
 @pytest.mark.parametrize('source_schema,with_cognitive', [('0.6.0', True), ('0.6.0', False), ('0.5.0', False)])
-async def test_authenticated_effects_on_reused_root_preserve_identity_and_require_complete_evidence(tmp_path, source_schema, with_cognitive):
+async def test_authenticated_effects_on_reused_root_preserve_identity_and_require_complete_evidence(tmp_path, source_schema, with_cognitive, monkeypatch):
     source = restore_source(tmp_path)
     for name in ('uploads', 'kg', 'backups', 'candidate-backups'):
         (tmp_path / name).mkdir()
@@ -172,6 +175,95 @@ async def test_authenticated_effects_on_reused_root_preserve_identity_and_requir
             expected_receipt_sha256=result['receipt_sha256'], max_seconds=300)
         if complete:
             assert await candidate.verify_reconciled_retirement_graph_candidate(*arguments, **completion_arguments) == result
+            from okto_pulse.community.adapters import retirement_activation_installation as installation
+            with monkeypatch.context() as scoped:
+                def interrupt_publication(*_):
+                    raise RuntimeError('interrupted before activation publication')
+                scoped.setattr(installation, '_publish', interrupt_publication)
+                with pytest.raises(RuntimeError, match='interrupted before activation'):
+                    await candidate.activate_retirement_graph_candidate(*arguments, tmp_path / 'installation',
+                        **completion_arguments)
+            assert not (tmp_path / 'installation').exists()
+            assert not list(tmp_path.glob('.installation.*.activation')) and dump(source) == before
+            activated = await candidate.activate_retirement_graph_candidate(*arguments, tmp_path / 'installation',
+                **completion_arguments)
+            assert activated['state'] == 'activated' and dump(source) == before
+            assert await installation.resume_retirement_activation(activated['directory'],
+                expected_candidate_receipt_sha256=result['receipt_sha256'], confirm_installation_offline=True) == activated
+            with pytest.raises(ValueError, match='offline_required'):
+                await installation.resume_retirement_activation(activated['directory'],
+                    expected_candidate_receipt_sha256=result['receipt_sha256'])
+            with pytest.raises(ValueError, match='receipt_mismatch'):
+                await installation.resume_retirement_activation(activated['directory'],
+                    expected_candidate_receipt_sha256='0' * 64, confirm_installation_offline=True)
+            installed_engine = create_async_engine(f'sqlite+aiosqlite:///{activated["database"]}')
+            try:
+                await offline.require_retirement_runtime_admission(installed_engine)
+                script = '''
+import asyncio, sys, site, sysconfig
+from pathlib import Path
+# The validation venv inherits third-party dependencies from user-site. Keep
+# -I (no checkout/PYTHONPATH injection), append that dependency path explicitly,
+# and independently require both application packages from this venv's wheels.
+sys.path.append(site.getusersitepackages())
+import okto_pulse.core, okto_pulse.community
+installed = Path(sysconfig.get_path('purelib')).resolve()
+assert Path(okto_pulse.core.__file__).resolve().is_relative_to(installed)
+assert Path(okto_pulse.community.__file__).resolve().is_relative_to(installed)
+from okto_pulse.core import configure_settings, configure_storage
+from okto_pulse.community.config import CommunitySettings
+from okto_pulse.community.adapters.storage import CommunityFileSystemStorage
+from okto_pulse.community.adapters import sqlalchemy_database as db
+from okto_pulse.community.adapters.relational_schema_lifecycle import register_community_relational_schema_lifecycle
+async def main():
+    root = Path(sys.argv[1])
+    settings = CommunitySettings(database_url=f'sqlite+aiosqlite:///{root / "database.sqlite3"}',
+        data_dir=str(root), kg_base_dir=str(root / 'kg-artifacts'), upload_dir=str(root / 'uploads'),
+        kg_embedding_mode='stub', kg_embedding_dim=384)
+    configure_settings(settings)
+    configure_storage(CommunityFileSystemStorage(settings.upload_dir))
+    runtime = db.configure_community_database(settings.database_url)
+    register_community_relational_schema_lifecycle()
+    try:
+        await db.init_db()
+        print('activated runtime ready')
+    finally:
+        await runtime.close()
+asyncio.run(main())
+'''
+                booted = await asyncio.to_thread(subprocess.run,
+                    [sys.executable, '-I', '-c', script, str(activated['directory'])],
+                    capture_output=True, text=True, timeout=180)
+                assert booted.returncode == 0, booted.stderr
+                assert booted.stdout.strip().endswith('activated runtime ready')
+                async with installed_engine.begin() as connection:
+                    await connection.exec_driver_sql("UPDATE cards SET title=title || ' after activation'")
+                # Admission checks retained proof, never the old hash of mutable user data.
+                await offline.require_retirement_runtime_admission(installed_engine)
+                with pytest.raises(Exception, match='retirement_cutover_incomplete'):
+                    await offline.require_retirement_not_started(installed_engine)
+                from okto_pulse.community.adapters.retirement_activation import require_retirement_activation_roots
+                installed_settings = settings.model_copy(update={'database_url': str(installed_engine.url),
+                    'data_dir': str(activated['directory']), 'kg_base_dir': str(activated['kg']),
+                    'upload_dir': str(activated['storage'])})
+                require_retirement_activation_roots(installed_settings)
+                with pytest.raises(ValueError, match='runtime_roots_mismatch'):
+                    require_retirement_activation_roots(installed_settings.model_copy(update={'kg_base_dir': str(tmp_path / 'kg')}))
+                proof_path = activated['directory'] / 'retirement-activation/run.json'
+                proof_bytes = proof_path.read_bytes()
+                try:
+                    proof_path.write_bytes(proof_bytes + b' ')
+                    with pytest.raises(Exception, match='retirement_cutover_incomplete'):
+                        await offline.require_retirement_runtime_admission(installed_engine)
+                finally:
+                    proof_path.write_bytes(proof_bytes)
+                await offline.require_retirement_runtime_admission(installed_engine)
+            finally:
+                await installed_engine.dispose()
+            mutated = dump(activated['database'])
+            assert await installation.resume_retirement_activation(activated['directory'],
+                expected_candidate_receipt_sha256=result['receipt_sha256'], confirm_installation_offline=True) == activated
+            assert dump(activated['database']) == mutated
         else:
             with pytest.raises(ValueError, match='completion_.*pending'):
                 await candidate.verify_reconciled_retirement_graph_candidate(*arguments, **completion_arguments)

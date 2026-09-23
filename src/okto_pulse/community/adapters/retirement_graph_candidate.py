@@ -241,7 +241,7 @@ def _require_private_replay_mutexes(target):
 async def _restore_retirement_graph_candidate(runtime, storage, graphs, run, seed, destination, *,
         migration_builds: RecoveryBuildPair, confirm_original_offline=False,
         confirm_candidate_offline=False, max_seconds=180, projection_settings=None,
-        expected_receipt_sha256=None, require_complete=False):
+        expected_receipt_sha256=None, require_complete=False, activation_destination=None):
     """Build a new private generation; do not publish any original route.
 
     The explicit assertion covers ALL participants, including native writers
@@ -252,6 +252,8 @@ async def _restore_retirement_graph_candidate(runtime, storage, graphs, run, see
     """
     if confirm_original_offline is not True:
         raise ValueError('retirement_candidate_original_offline_required')
+    if activation_destination is not None and not require_complete:
+        raise ValueError('retirement_activation_completion_required')
     document, projection, snapshot, manifest = read_retirement_candidate_seed(seed)
     original, _, permission, data, _, roots = offline.read_offline_retirement_run(run)
     source, uploads = offline._binding(runtime, storage)
@@ -302,6 +304,12 @@ async def _restore_retirement_graph_candidate(runtime, storage, graphs, run, see
                             expected_receipt_sha256=expected_receipt_sha256, max_seconds=max_seconds,
                             require_complete=require_complete)
                         _require_routes(source, kg, manifest['routing_inventory'])
+                        if activation_destination is not None:
+                            from .retirement_activation_installation import install_verified_candidate
+
+                            return await install_verified_candidate(target, activation_destination, result=result,
+                                seed_document=document, projection=projection, snapshot=snapshot, data_run=data,
+                                uploads=uploads, protected=protected, max_seconds=max_seconds)
                         return result
                     reference = target.with_name(f'.{target.name}.{secrets.token_hex(12)}.replay') if replay else target
                     with _staged_joint_recovery_restore(snapshot, reference, builds=migration_builds,
@@ -492,3 +500,22 @@ async def verify_reconciled_retirement_graph_candidate(runtime, storage, graphs,
         migration_builds=migration_builds, confirm_original_offline=confirm_original_offline,
         confirm_candidate_offline=confirm_candidate_offline, max_seconds=max_seconds,
         projection_settings=settings, expected_receipt_sha256=expected_receipt_sha256, require_complete=True)
+
+
+async def activate_retirement_graph_candidate(runtime, storage, graphs, run, seed, candidate_directory, destination, *,
+        migration_builds: RecoveryBuildPair, settings, expected_receipt_sha256,
+        confirm_original_offline=False, confirm_candidate_offline=False, max_seconds=180):
+    """Installer-only publication of a separately admitted runtime data set.
+
+    Does not switch a live process/configuration or overwrite an existing output.
+    Select the returned SQL/KG/storage roots together and retain original rollback.
+    """
+    from okto_pulse.community.config import CommunitySettings
+
+    if not isinstance(settings, CommunitySettings):
+        raise TypeError('retirement_candidate_explicit_settings_required')
+    return await _restore_retirement_graph_candidate(runtime, storage, graphs, run, seed, candidate_directory,
+        migration_builds=migration_builds, confirm_original_offline=confirm_original_offline,
+        confirm_candidate_offline=confirm_candidate_offline, max_seconds=max_seconds,
+        projection_settings=settings, expected_receipt_sha256=expected_receipt_sha256, require_complete=True,
+        activation_destination=destination)

@@ -51,6 +51,23 @@ async def test_absent_or_empty_journal_is_admitted_without_writing(tmp_path, jou
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('journal', [False, True])
+async def test_activation_artifact_without_journal_cannot_become_a_fresh_install(tmp_path, journal):
+    engine, path = await _empty(tmp_path)
+    try:
+        if journal:
+            async with engine.begin() as connection:
+                await connection.run_sync(RetirementDataCheckpoint.__table__.create)
+        (tmp_path / 'retirement-activation').mkdir()
+        before = dump(path)
+        with pytest.raises(SchemaMigrationError, match='retirement_cutover_incomplete'):
+            await require_retirement_runtime_admission(engine)
+        assert dump(path) == before
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("schema", ["view", "wrong_columns", "extra_column"])
 async def test_invalid_journal_structure_cannot_appear_as_an_empty_ready_database(tmp_path, schema):
     engine, path = await _empty(tmp_path)
@@ -120,7 +137,9 @@ async def test_all_retained_prefixes_block_every_lifecycle_path_before_plan_or_s
                 await connection.exec_driver_sql("INSERT INTO retirement_data_checkpoints VALUES (?, ?, ?, ?)",
                     ("opaque-private-id", value, json.dumps({"runtime_ready": True, "state": "complete"}), "f" * 64))
         runtime = db.CommunityDatabaseRuntime(engine, async_sessionmaker(engine))
-        monkeypatch.setattr(db, "get_engine", lambda: engine)
+        # get_engine resolves this provider dynamically. Replacing the function
+        # itself could be captured by a lifecycle module's first lazy import and
+        # leak this test's disposable database into later bootstrap tests.
         monkeypatch.setattr(db, "resolve_community_database_runtime", lambda: runtime)
         orchestrator = register_community_relational_schema_lifecycle()
         def forbidden(*args, **kwargs):

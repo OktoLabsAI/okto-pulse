@@ -19,7 +19,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import DomainEventRow, Reti
 
 _TABLE = RetirementDataCheckpoint.__table__
 _FORMAT = "retirement-data-journal/v1"
-_STAGES = ("prepared", "context", "cards", "work", "graph_intent", "graphs", "permissions", "schema", "bootstrap")
+_STAGES = ("prepared", "context", "cards", "work", "graph_intent", "graphs", "permissions", "schema", "bootstrap", "activation")
 _MAX_BYTES = 64 * 1024 * 1024
 
 
@@ -89,10 +89,11 @@ def _receipt(stage, payload):
     from okto_pulse.community.adapters.permission_retirement_cleanup import PermissionRetirementCleanup
     from okto_pulse.community.adapters.retirement_schema_cutover import SchemaRetirementCheckpoint
     from okto_pulse.community.adapters.retirement_bootstrap import BootstrapRetirementCheckpoint
+    from okto_pulse.community.adapters.retirement_activation import RetirementActivationCheckpoint
     contract = {"context": ContextDispositionReceipt, "cards": CardValidationRetirementReceipt, "work": WorkRetirementReceipt,
         "graph_intent": MaterializationCheckpoint, "graphs": MaterializationCheckpoint,
         "permissions": PermissionRetirementCleanup, "schema": SchemaRetirementCheckpoint,
-        "bootstrap": BootstrapRetirementCheckpoint}[stage]
+        "bootstrap": BootstrapRetirementCheckpoint, "activation": RetirementActivationCheckpoint}[stage]
     try:
         result = contract(**payload)
     except (TypeError, ValueError) as exc:

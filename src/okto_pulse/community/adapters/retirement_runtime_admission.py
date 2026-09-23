@@ -1,9 +1,9 @@
 """Refuse runtime schema initialization over an unfinished retirement cutover.
 
-The existing data journal is durable evidence of an installer-owned run. None
-of its checkpoints proves schema/graph/permission completion. In particular
-`work` means data_preserved, not runtime_ready. A future full cutover must provide
-and verify its terminal contract before this gate can admit that schema.
+The existing data journal is durable evidence of an installer-owned run. Its
+data-only checkpoints do not prove schema/graph/permission completion. In particular
+`work` means data_preserved, not runtime_ready. Only a complete terminal
+installation proof can admit a retained journal; mutable user data is not frozen.
 """
 
 from okto_pulse.core.ports import SchemaMigrationError
@@ -31,7 +31,8 @@ async def require_retirement_runtime_admission(engine):
     """Read only bounded structure/presence, before any migration or seed.
 
     Empty/absent journals admit only when no transformation receipts remain.
-    Any retained run blocks, including corrupt records and a completed data-only prefix.
+    Retained runs require the terminal proof; corrupt records and data-only
+    prefixes remain blocked.
     This is startup admission, not exclusion of concurrent raw database writers.
     The installer must still own its continuous runtime/schema writer window.
     """
@@ -48,6 +49,7 @@ async def _require_admission(engine, *, runtime):
         raise _refuse("retirement_runtime_backend_unsupported")
     async with engine.connect() as connection:
         await connection.exec_driver_sql("BEGIN")
+        activated = False
         if await _table_present(connection, "retirement_data_checkpoints"):
             columns = (await connection.exec_driver_sql(
                 'PRAGMA main.table_info("retirement_data_checkpoints")'
@@ -63,7 +65,15 @@ async def _require_admission(engine, *, runtime):
             present = (await connection.exec_driver_sql(
                 "SELECT 1 FROM main.retirement_data_checkpoints LIMIT 1")).scalar()
             if present is not None:
-                raise _refuse("retirement_cutover_incomplete")
+                if not runtime:
+                    raise _refuse("retirement_cutover_incomplete")
+                from .retirement_activation import verify_retirement_activation
+
+                try:
+                    await verify_retirement_activation(connection, engine.url.database)
+                except Exception as error:
+                    raise _refuse("retirement_cutover_incomplete") from error
+                activated = True
         # Losing the coordinator journal cannot erase the meaning of retained
         # effects. This is a negative signal only, never a replacement receipt.
         # event_type is indexed; private payloads are neither loaded nor parsed.
@@ -73,7 +83,12 @@ async def _require_admission(engine, *, runtime):
                     "migration.context_dispositions_committed", "historical_context.bound",
                     "migration.card_validation_preserved", "migration.work_superseded", "migration.work_retirement_completed",
                 ))).scalar()
-            if effects is not None:
+            if effects is not None and not activated:
+                raise _refuse("retirement_cutover_incomplete")
+        if not activated and engine.url.database and engine.url.database != ':memory:':
+            from pathlib import Path
+
+            if (Path(engine.url.database).resolve().parent / 'retirement-activation').exists():
                 raise _refuse("retirement_cutover_incomplete")
         if runtime:
             legacy = (await connection.exec_driver_sql("SELECT 1 FROM main.sqlite_schema WHERE "
