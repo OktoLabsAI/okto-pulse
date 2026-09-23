@@ -35,15 +35,21 @@ def progress_item(record, revoked, *, detail=False):
 async def read_progress_history(store, query, *, actor_id):
     session = store.session
     spec = await store._spec(query.board_id, query.spec_id)
-    scope = CardDeliveryScope(query.board_id, query.card_id, query.spec_id, int(spec.edition))
-    card, spec, _ = await store._card_scope_guard(scope)
-    version = (spec.version, card.policy_version, card.status)
+    current_edition = int(spec.edition)
+    requested_edition = query.edition if query.edition is not None else current_edition
+    if requested_edition > current_edition:
+        raise ValueError("delivery_history_edition_unavailable")
+    scope = CardDeliveryScope(query.board_id, query.card_id, query.spec_id, requested_edition)
+    card = await store._card(query.board_id, query.card_id)
+    if card.spec_id != query.spec_id:
+        raise ValueError("delivery_history_scope_unavailable")
+    version = (spec.version, card.policy_version, card.status, current_edition)
     generation = await store._delivery_revision(scope)
     binding = [query.board_id, query.card_id, query.spec_id, scope.spec_edition,
-               actor_id, query.limit, generation, *version]
+               actor_id, query.limit, generation, query.view, *version]
     filters = (Record.board_id == scope.board_id, Record.card_id == scope.card_id,
                Record.spec_id == scope.spec_id, Record.spec_edition == scope.spec_edition)
-    progress_filters = (*filters, Record.kind == "progress")
+    progress_filters = (*filters, Record.kind == "progress") if query.view == "progress" else filters
     total = await session.scalar(select(func.count()).select_from(Record).where(*progress_filters))
     statement = select(Record).where(*progress_filters)
     if query.cursor:
@@ -75,18 +81,44 @@ async def read_progress_history(store, query, *, actor_id):
         Record.payload["record_id"].as_string().in_([row.id for row in records]),
     ))).all()) if records else set()
     # A concurrent append/revoke or edition change must not yield a mixed page.
-    card, spec, _ = await store._card_scope_guard(scope)
-    if generation != await store._delivery_revision(scope) or version != (spec.version, card.policy_version, card.status):
+    card = await store._card(query.board_id, query.card_id)
+    spec = await store._spec(query.board_id, query.spec_id)
+    if card.spec_id != query.spec_id or generation != await store._delivery_revision(scope) or version != (spec.version, card.policy_version, card.status, int(spec.edition)):
         raise ValueError("delivery_history_changed_retry")
     cursor = None
     if more:
         cursor = base64.urlsafe_b64encode(json.dumps({"v": 1, "scope": binding,
             "last": records[-1].id}, separators=(",", ":")).encode()).decode()
-    return {
+    result = {
         "board_id": scope.board_id, "card_id": scope.card_id, "spec_id": scope.spec_id,
         "edition": scope.spec_edition, "card_version": card.policy_version,
-        "status": card.status, "delivery_revision": generation,
+        "current_edition": current_edition, "historical": scope.spec_edition != current_edition,
+        "status": card.status, "status_scope": "current_card", "delivery_revision": generation,
         "total": total, "next_cursor": cursor, "recovery_verified": False,
         "order": "newest_first", "detail": bool(query.record_id),
-        "items": [progress_item(row, revoked, detail=bool(query.record_id)) for row in records],
+        "items": [progress_item(row, revoked, detail=bool(query.record_id)) if query.view == "progress"
+                  else ledger_item(row, revoked, detail=bool(query.record_id)) for row in records],
     }
+    # Explicit detail is bounded separately from the default short manifest.
+    result["response_limit_bytes"] = 512 * 1024 if query.record_id else 128 * 1024
+    if len(json.dumps(result, ensure_ascii=False).encode()) > result["response_limit_bytes"]:
+        raise ValueError("delivery_history_response_limit")
+    return result
+
+
+def ledger_item(record, revoked, *, detail):
+    """Original declarations, with no claim that old records are current proof."""
+    payload = record.payload
+    summary = payload.get("justification", "")
+    bindings = payload.get("bindings", [])
+    result = {"id": record.id, "kind": record.kind, "actor_id": record.actor_id,
+        "actor_kind": record.actor_kind, "created_at": record.created_at.isoformat(),
+        "revoked": record.id in revoked, "summary": summary if detail else summary[:1000],
+        "text_truncated": not detail and len(summary) > 1000,
+        "obligation_refs": [row["obligation_ref"] for row in bindings[:10]],
+        "obligation_total": len(bindings), "obligations_truncated": len(bindings) > 10,
+        "currentness": "not_evaluated"}
+    if detail:
+        result["payload"] = {key: value for key, value in payload.items() if not key.startswith("_")}
+        result["omitted_internal_fields"] = sorted(key for key in payload if key.startswith("_"))
+    return result

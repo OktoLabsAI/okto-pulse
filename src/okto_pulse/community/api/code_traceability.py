@@ -1291,13 +1291,14 @@ async def get_delivery_evidence(board_id: str, spec_id: str, response: Response,
     cursor: str | None = Query(default=None, min_length=1, max_length=8192),
     record_id: str | None = Query(default=None, min_length=1, max_length=512),
     limit: int = Query(default=20, ge=1, le=20),
-    view: Literal["progress", "resume"] = Query(default="progress"),
+    view: Literal["progress", "ledger", "resume"] = Query(default="progress"),
+    edition: int | None = Query(default=None, ge=1),
     principal: Principal = Depends(require_principal), uow: PulseUnitOfWork = Depends(get_unit_of_work)) -> object:
     response.headers["Cache-Control"] = "no-store"
-    if (card_id is None and (cursor or record_id or limit != 20 or view != "progress")) or (cursor and record_id) or (view == "resume" and (cursor or record_id)):
+    if (card_id is None and (cursor or record_id or limit != 20 or view != "progress" or edition is not None)) or (cursor and record_id) or (view == "resume" and (cursor or record_id or edition is not None)):
         raise HTTPException(status_code=422, detail="delivery_history_scope_invalid")
     command = DeliveryEvidenceReadQuery(board_id=board_id, spec_id=spec_id,
-        card_id=card_id, cursor=cursor, record_id=record_id, limit=limit, view=view)
+        card_id=card_id, cursor=cursor, record_id=record_id, limit=limit, view=view, edition=edition)
     return await _execute(GetDeliveryEvidenceUseCase(), command, board_id=board_id, principal=principal, uow=uow)
 
 

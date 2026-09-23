@@ -85,6 +85,8 @@ async def read_card_resume(store, query, *, actor_id):
         "pending_work": {"source": "declared_progress", "resolution_inferred": False,
             "history_truncated": progress["next_cursor"] is not None},
         "follow_up": {
+            "ledger": {"tool": "okto_pulse_get_delivery_evidence", "board_id": scope.board_id,
+                "spec_id": scope.spec_id, "card_id": scope.card_id, "view": "ledger"},
             "progress": {"tool": "okto_pulse_get_delivery_evidence", "board_id": scope.board_id,
                 "spec_id": scope.spec_id, "card_id": scope.card_id, "view": "progress"},
             "spec_rollup": {"tool": "okto_pulse_get_delivery_evidence", "board_id": scope.board_id,

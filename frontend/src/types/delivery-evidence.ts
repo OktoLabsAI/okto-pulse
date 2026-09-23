@@ -146,6 +146,20 @@ export interface CardDeliveryResume {
   actions: { record_progress: boolean; final_transitions: 'not_evaluated'; mutation_reauthorization_required: true };
 }
 
+export interface CardLedgerPage {
+  board_id: string; card_id: string; spec_id: string; edition: number;
+  current_edition: number; historical: boolean; total: number;
+  next_cursor: string | null;
+  items: Array<{ id: string; kind: string; actor_id: string; created_at: string;
+    revoked: boolean; summary: string; text_truncated: boolean;
+    obligation_refs: string[]; obligations_truncated: boolean;
+    currentness: 'not_evaluated';
+    payload?: { contributions?: Array<{ obligation_ref: string; contribution: string }>;
+      execution_id?: string; scenario_id?: string; test_result?: string;
+      progress?: { remaining: string; source_state: { workspace_state: string; recoverability: string } } };
+  }>;
+}
+
 export interface DeliveryPerCard {
   card_id: string;
   title: string;

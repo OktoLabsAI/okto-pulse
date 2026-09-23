@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useDashboardApi } from '@/services/api';
+import { CardLedgerPanel } from './CardLedgerPanel';
 import type { CardDeliveryResume } from '@/types/delivery-evidence';
 
 export function CardResumePanel({ boardId, cardId, specId, edition }: {
@@ -30,6 +31,7 @@ export function CardResumePanel({ boardId, cardId, specId, edition }: {
   }
   return <section aria-label="Accumulated delivery context" className="space-y-2 border-t pt-2">
     <button type="button" disabled={busy} onClick={read}>Read accumulated delivery context</button>
+    <CardLedgerPanel key={`${boardId}:${cardId}:${specId}:${edition}`} boardId={boardId} cardId={cardId} specId={specId} edition={edition} />
     {error && <p role="alert">{error}</p>}
     {data && <>
       <p>{data.title} · Edition {data.edition} · {data.status}</p>

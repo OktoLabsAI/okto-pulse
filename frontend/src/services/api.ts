@@ -581,6 +581,13 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
 
     // ==================== CODE TRACEABILITY ====================
 
+    async getCardDeliveryLedger(boardId: string, cardId: string, specId: string, edition: number, options: { cursor?: string; recordId?: string } = {}, signal?: AbortSignal): Promise<import('@/types/delivery-evidence').CardLedgerPage> {
+      const query = new URLSearchParams({ card_id: cardId, view: 'ledger', edition: String(edition) });
+      if (options.cursor) query.set('cursor', options.cursor);
+      if (options.recordId) query.set('record_id', options.recordId);
+      return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/delivery-evidence?${query}`, { signal });
+    },
+
     async getCardDeliveryResume(boardId: string, cardId: string, specId: string, signal?: AbortSignal): Promise<import('@/types/delivery-evidence').CardDeliveryResume> {
       const query = new URLSearchParams({ card_id: cardId, view: 'resume' });
       return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/delivery-evidence?${query}`, { signal });

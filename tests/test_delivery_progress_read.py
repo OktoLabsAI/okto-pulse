@@ -86,7 +86,7 @@ async def test_no_foreign_detail_and_no_graph_or_whole_spec_read(db, monkeypatch
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("view", ["progress", "resume"])
+@pytest.mark.parametrize("view", ["progress", "resume", "ledger"])
 async def test_rest_mcp_read_parity_and_no_cache(db, monkeypatch, view):
     from contextlib import asynccontextmanager
     from types import SimpleNamespace
