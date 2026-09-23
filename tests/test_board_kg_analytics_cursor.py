@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -17,9 +19,49 @@ from okto_pulse.core.ports.analytics_foundation import (
     AnalyticsUtcWindow,
 )
 from okto_pulse.core.ports.board_kg_analytics import BoardKgAnalyticsQuery
+from okto_pulse.core.ports.board_kg_analytics import (
+    BoardKgAnalyticsResultState,
+    BoardKgHealthState,
+)
 
 
 OBSERVED_AT = datetime(2026, 8, 22, 12, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("board_id", ("board-1", "board-2"))
+async def test_operational_diagnostics_link_to_health_without_losing_debt(board_id):
+    # Feed distinct populations through the actual evidence composer. Retiring
+    # an inspector must not hide its debt, severity, age or Board scope.
+    populations = [[OBSERVED_AT] * count for count in (4, 1, 2, 3)]
+    results = [
+        SimpleNamespace(scalars=lambda rows=rows: SimpleNamespace(all=lambda: rows))
+        for rows in populations
+    ]
+    adapter = CommunitySqlAlchemyBoardKgAnalyticsEvidence(
+        SimpleNamespace(execute=AsyncMock(side_effect=results))
+    )
+    adapter._cognitive_items = AsyncMock(return_value=((), None, None))
+    adapter._health = AsyncMock(return_value=(
+        BoardKgHealthState.HEALTHY, BoardKgAnalyticsResultState.AVAILABLE,
+        "within_operational_policy", (), (),
+    ))
+    query = BoardKgAnalyticsQuery(foundation=AnalyticsFoundationQuery(
+        board_id=board_id, actor_scope_ref=f"board:{board_id}",
+        window=AnalyticsUtcWindow(datetime(2026, 8, 1, tzinfo=UTC), OBSERVED_AT),
+        as_of=OBSERVED_AT,
+    ))
+    evidence = await adapter.load(None, query=query)
+    domains = {item.domain.value: item for item in evidence.domains}
+    diagnostics = {item.domain: item for item in evidence.diagnostics}
+    for name, count, severity in (("active_queue", 4, "at_risk"), ("technical_dlq", 1, "blocking")):
+        item = domains[name]
+        assert item.count == count
+        assert item.severity.value == severity
+        assert item.age.sample_count == count
+        assert item.drill_down.allowed
+        assert item.drill_down.target == f"/api/v1/kg/health?board_id={board_id}"
+        assert diagnostics[name].next_step == item.drill_down
 
 
 def _item(

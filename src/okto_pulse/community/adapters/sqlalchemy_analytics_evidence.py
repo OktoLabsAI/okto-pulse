@@ -466,14 +466,14 @@ class CommunitySqlAlchemyBoardKgAnalyticsEvidence:
                 BoardKgDomain.ACTIVE_QUEUE,
                 timestamps=queue_rows,
                 observed_at=observed_at,
-                target=f"/api/v1/kg/queue/drilldown?board_id={board_id}",
+                target=f"/api/v1/kg/health?board_id={board_id}",
                 severity=BoardKgDomainSeverity.AT_RISK,
             ),
             _operational_domain(
                 BoardKgDomain.TECHNICAL_DLQ,
                 timestamps=dlq_rows,
                 observed_at=observed_at,
-                target=f"/api/v1/kg/queue/dead-letter?board_id={board_id}",
+                target=f"/api/v1/kg/health?board_id={board_id}",
                 severity=BoardKgDomainSeverity.BLOCKING,
             ),
             _operational_domain(
