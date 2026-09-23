@@ -241,7 +241,7 @@ def _require_private_replay_mutexes(target):
 async def _restore_retirement_graph_candidate(runtime, storage, graphs, run, seed, destination, *,
         migration_builds: RecoveryBuildPair, confirm_original_offline=False,
         confirm_candidate_offline=False, max_seconds=180, projection_settings=None,
-        expected_receipt_sha256=None):
+        expected_receipt_sha256=None, require_complete=False):
     """Build a new private generation; do not publish any original route.
 
     The explicit assertion covers ALL participants, including native writers
@@ -262,6 +262,8 @@ async def _restore_retirement_graph_candidate(runtime, storage, graphs, run, see
     _closed_originals(graphs, manifest)
     target = _explicit_path(destination)
     replay = target.exists()
+    if require_complete and (not replay or expected_receipt_sha256 is None or projection_settings is None):
+        raise ValueError('retirement_completion_published_checkpoint_required')
     if not replay and expected_receipt_sha256 is not None:
         raise ValueError('retirement_candidate_checkpoint_target_missing')
     if replay and projection_settings is not None and expected_receipt_sha256 is None:
@@ -297,7 +299,8 @@ async def _restore_retirement_graph_candidate(runtime, storage, graphs, run, see
 
                         result = await verify_projected_candidate(target, seed=seed, seed_document=document,
                             projection=projection, settings=projection_settings, membership=membership,
-                            expected_receipt_sha256=expected_receipt_sha256, max_seconds=max_seconds)
+                            expected_receipt_sha256=expected_receipt_sha256, max_seconds=max_seconds,
+                            require_complete=require_complete)
                         _require_routes(source, kg, manifest['routing_inventory'])
                         return result
                     reference = target.with_name(f'.{target.name}.{secrets.token_hex(12)}.replay') if replay else target
@@ -470,3 +473,22 @@ async def build_projected_retirement_graph_candidate(runtime, storage, graphs, r
         migration_builds=migration_builds, confirm_original_offline=confirm_original_offline,
         confirm_candidate_offline=confirm_candidate_offline, max_seconds=max_seconds,
         projection_settings=settings, expected_receipt_sha256=expected_receipt_sha256)
+
+
+async def verify_reconciled_retirement_graph_candidate(runtime, storage, graphs, run, seed, destination, *,
+        migration_builds: RecoveryBuildPair, settings, expected_receipt_sha256,
+        confirm_original_offline=False, confirm_candidate_offline=False, max_seconds=180):
+    """Recheck the entire frozen candidate and require completion inside its fences.
+
+    This installer-only precondition performs no activation. Its returned
+    checkpoint is still the immutable private candidate; deployment must retain
+    that evidence and establish its own terminal installation identity.
+    """
+    from okto_pulse.community.config import CommunitySettings
+
+    if not isinstance(settings, CommunitySettings):
+        raise TypeError('retirement_candidate_explicit_settings_required')
+    return await _restore_retirement_graph_candidate(runtime, storage, graphs, run, seed, destination,
+        migration_builds=migration_builds, confirm_original_offline=confirm_original_offline,
+        confirm_candidate_offline=confirm_candidate_offline, max_seconds=max_seconds,
+        projection_settings=settings, expected_receipt_sha256=expected_receipt_sha256, require_complete=True)

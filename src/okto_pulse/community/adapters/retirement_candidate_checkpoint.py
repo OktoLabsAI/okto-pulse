@@ -66,7 +66,7 @@ def seal_candidate_checkpoint(stage, native_paths, *, seed_sha256, max_seconds):
 
 
 async def verify_projected_candidate(target, *, seed, seed_document, projection,
-        settings, membership, expected_receipt_sha256, max_seconds):
+        settings, membership, expected_receipt_sha256, max_seconds, require_complete=False):
     """Verify one externally anchored published result under offline fences."""
     from .retirement_graph_candidate import _sql_snapshot, _expected_sql
 
@@ -201,5 +201,9 @@ async def verify_projected_candidate(target, *, seed, seed_document, projection,
         raise ValueError('retirement_candidate_checkpoint_graph_reconciliation_changed')
     if _inventory_digest(target, native_paths, deadline, published=True) != checkpoint['content_sha256']:
         raise ValueError('retirement_candidate_checkpoint_content_changed')
+    if require_complete:
+        from .retirement_candidate_completion import require_candidate_projection_completion
+
+        require_candidate_projection_completion(projection, projected['graph_reconciliation'])
     return {'state': 'projected_not_reconciled', 'directory': target,
         'receipt_sha256': expected_receipt_sha256, 'seed': seed}

@@ -29,8 +29,8 @@ from test_card_context_retirement import dump
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(600)
-@pytest.mark.parametrize('source_schema', ['0.6.0', '0.5.0'])
-async def test_authenticated_effects_on_reused_root_preserve_identity_and_remain_history_pending(tmp_path, source_schema):
+@pytest.mark.parametrize('source_schema,with_cognitive', [('0.6.0', True), ('0.6.0', False), ('0.5.0', False)])
+async def test_authenticated_effects_on_reused_root_preserve_identity_and_require_complete_evidence(tmp_path, source_schema, with_cognitive):
     source = restore_source(tmp_path)
     for name in ('uploads', 'kg', 'backups', 'candidate-backups'):
         (tmp_path / name).mkdir()
@@ -39,7 +39,7 @@ async def test_authenticated_effects_on_reused_root_preserve_identity_and_remain
             CommunityFileSystemRebuildAuditArtifactStore(tmp_path / 'kg')).current_fingerprint()
     with closing(sqlite3.connect(source)) as connection:
         title = connection.execute("SELECT title FROM specs WHERE id='spec-a'").fetchone()[0]
-        if source_schema == '0.6.0':
+        if with_cognitive:
             # Durable knowledge can exist while its graph projection is absent.
             # The candidate must retain this limitation through checkpoint replay.
             connection.execute('INSERT INTO kg_cognitive_sources '
@@ -132,7 +132,9 @@ async def test_authenticated_effects_on_reused_root_preserve_identity_and_remain
         comparison = report['source_relation_comparison']
         assert comparison['expected_count'] == comparison['matched_count'] == 5
         assert comparison['missing_count'] == comparison['unresolved_count'] == comparison['unexpected_new_count'] == 0
-        assert receipt['graph_reconciliation']['state'] == 'source_projection_reconciled_history_pending'
+        complete = source_schema == '0.6.0' and not with_cognitive
+        assert receipt['graph_reconciliation']['state'] == (
+            'source_graph_reconciled' if complete else 'source_projection_reconciled_history_pending')
         assert report['zero_orphan_validation'] == 'passed'
         if source_schema == '0.5.0':
             assert len(receipt['schema_evolutions']) == 1
@@ -145,6 +147,7 @@ async def test_authenticated_effects_on_reused_root_preserve_identity_and_remain
             assert (target / 'graph-0000').is_dir()  # Retained, unbound native predecessor.
         else:
             assert receipt['schema_evolutions'] == []
+        if with_cognitive:
             parity = {row['node_id']: row for row in report['cognitive_source_parity']}
             assert set(parity) == {'missing-decision', 'restored-report'}
             assert parity['missing-decision']['state'] == 'missing_node'
@@ -164,6 +167,14 @@ async def test_authenticated_effects_on_reused_root_preserve_identity_and_remain
             migration_builds=MIGRATION, settings=settings, confirm_original_offline=True,
             confirm_candidate_offline=True, expected_receipt_sha256=result['receipt_sha256'], max_seconds=300)
         assert replay == result
+        completion_arguments = dict(migration_builds=MIGRATION, settings=settings,
+            confirm_original_offline=True, confirm_candidate_offline=True,
+            expected_receipt_sha256=result['receipt_sha256'], max_seconds=300)
+        if complete:
+            assert await candidate.verify_reconciled_retirement_graph_candidate(*arguments, **completion_arguments) == result
+        else:
+            with pytest.raises(ValueError, match='completion_.*pending'):
+                await candidate.verify_reconciled_retirement_graph_candidate(*arguments, **completion_arguments)
         candidate_engine = create_async_engine(f'sqlite+aiosqlite:///{target / "database.sqlite3"}')
         try:
             with pytest.raises(Exception, match='retirement_cutover_incomplete'):
