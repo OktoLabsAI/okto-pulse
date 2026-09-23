@@ -4,6 +4,14 @@ import { describe, expect, it, vi } from 'vitest';
 import { HelpPanel } from '../HelpPanel';
 
 describe('HelpPanel after maintenance CLI retirement', () => {
+  it('documents Board policy without offering retired runtime tuning', () => {
+    render(<HelpPanel initialSectionId="board-settings" onClose={vi.fn()} />);
+    const dialog = screen.getByRole('dialog', { name: 'Help Guide' });
+    expect(dialog).toHaveTextContent(/Task Validation Gate thresholds/i);
+    expect(dialog).toHaveTextContent(/Per-spec overrides/i);
+    expect(dialog).not.toHaveTextContent(/Runtime Settings Panel|Menu → Settings|GraphDB|Event Queue|Decay Tick/i);
+  });
+
   it('explains schema unavailability without directing the user to a removed CLI', () => {
     render(<HelpPanel initialSectionId="knowledge-graph" onClose={vi.fn()} />);
     const dialog = screen.getByRole('dialog', { name: 'Help Guide' });

@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -34,14 +35,17 @@ def test_ts24_release_harness_freezes_installed_inventory_and_provenance() -> No
     live_resource_count = len(core_mcp_server.resource_registry_projection())
 
     assert Path(core_mcp_server.__file__).resolve().is_relative_to(module.CORE_REPO)
-    assert module.EXPECTED_VERSION == "0.3.3"
+    for repo in (REPO, module.CORE_REPO):
+        with (repo / "pyproject.toml").open("rb") as stream:
+            assert module.EXPECTED_VERSION == tomllib.load(stream)["project"]["version"]
+    assert module.EXPECTED_VERSION == "0.3.4"
     assert module.EXPECTED_GRAFX_VERSION == "0.0.7"
     assert module.GRAFX_WHEEL_ENV == "OKTO_E2E_GRAFX_WHEEL"
     assert module.GRAFX_REPO_ENV == "OKTO_E2E_GRAFX_REPO"
-    assert module.EXPECTED_MCP_TOOL_COUNT == live_tool_count == 340
-    assert module.EXPECTED_CANONICAL_TOOL_COUNT == live_canonical_count == 332
-    assert module.EXPECTED_TOOL_ALIAS_COUNT == live_alias_count == 8
-    assert module.EXPECTED_RESOURCE_COUNT == live_resource_count == 56
+    assert module.EXPECTED_MCP_TOOL_COUNT == live_tool_count == 301
+    assert module.EXPECTED_CANONICAL_TOOL_COUNT == live_canonical_count == 294
+    assert module.EXPECTED_TOOL_ALIAS_COUNT == live_alias_count == 7
+    assert module.EXPECTED_RESOURCE_COUNT == live_resource_count == 54
     assert module.MINIMUM_SUPPORTED_PYTHON == (3, 11)
     assert module._is_core_checkout(module.CORE_REPO)
     assert "site-packages" not in str(module.CORE_REPO).lower()

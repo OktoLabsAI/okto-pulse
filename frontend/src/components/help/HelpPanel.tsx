@@ -1555,18 +1555,6 @@ These flags bypass specific coverage checks for the entire board:
 | \`skip_cognitive_consolidation\` | false | Allow \`done\` transitions even when cognitive consolidation is pending — badges and KG Health pending lists remain visible |
 | \`dlq_auto_drain_enabled\` | false | Automatically re-queue dead-lettered consolidation entries for reprocessing |
 
-### Runtime Settings Panel
-
-Beyond the static board settings above, the **Runtime Settings Panel** (Menu → Settings) exposes hot-reload knobs grouped into 3 tabs:
-
-| Tab | Controls |
-|-----|----------|
-| **GraphDB** | Grafx buffer budget, independent read participants, descriptor validation and advanced options |
-| **Event Queue** | \`kg_queue_min_interval_ms\` (0–1000), batch size, retry policy |
-| **Decay Tick** | \`interval_minutes\` (5–10080), \`staleness_days\` (1–365), \`max_age_days\` (0–365) |
-
-Changes apply without restarting the server. The Decay Tick tab also polls \`/kg/health\` every 5s while open to surface \`tick_in_progress\` and disable conflicting buttons.
-
 ### Per-spec overrides
 
 Individual specs can override board-level settings. Toggle the skip flags directly on the spec to bypass specific checks for that spec only.

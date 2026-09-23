@@ -94,12 +94,6 @@ vi.mock('@/hooks/usePermissions', () => ({
   }),
 }));
 
-vi.mock('@/components/layout/RuntimeSettingsPanel', () => ({
-  RuntimeSettingsPanel: ({ initialTab }: { initialTab?: string }) => (
-    <div data-testid="runtime-settings-panel">runtime settings tab: {initialTab}</div>
-  ),
-}));
-
 vi.mock('@/components/knowledge', () => ({
   KnowledgeGraphPage: () => <div>Graph content</div>,
 }));
@@ -703,29 +697,31 @@ describe('Header Board settings resource automation', () => {
     );
   });
 
-  it('opens runtime settings on Decay Tick tab from the global KG Health handoff event', async () => {
+  it.each(['graphdb', 'eventqueue', 'decaytick'])(
+    'ignores retired runtime handoff for %s even with the old permission',
+    (initialTab) => {
+      const listener = vi.spyOn(window, 'addEventListener');
+      render(<Header />);
+      act(() => {
+        window.dispatchEvent(new CustomEvent('okto:open-runtime-settings', {
+          detail: { initialTab },
+        }));
+      });
+      expect(listener.mock.calls.some(([name]) => name === 'okto:open-runtime-settings')).toBe(false);
+      expect(screen.queryByTestId('runtime-settings-panel')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('menu-settings')).not.toBeInTheDocument();
+      listener.mockRestore();
+    },
+  );
+
+  it('keeps Board and Metrics in the menu without runtime tuning', () => {
     render(<Header />);
-
-    act(() => {
-      window.dispatchEvent(new CustomEvent('okto:open-runtime-settings', {
-        detail: { initialTab: 'decaytick' },
-      }));
-    });
-
-    expect(screen.getByTestId('runtime-settings-panel')).toHaveTextContent(
-      'runtime settings tab: decaytick',
-    );
-  });
-
-  it('opens runtime settings on Graph DB tab from the standard menu path', async () => {
-    render(<Header />);
-
     fireEvent.click(screen.getAllByRole('button')[1]);
-    fireEvent.click(screen.getByTestId('menu-settings'));
-
-    expect(screen.getByTestId('runtime-settings-panel')).toHaveTextContent(
-      'runtime settings tab: graphdb',
-    );
+    expect(screen.queryByTestId('menu-settings')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Board' })).toBeInTheDocument();
+    expect(screen.getByTestId('menu-metrics')).toBeInTheDocument();
+    expect(screen.queryByText('Event Queue')).not.toBeInTheDocument();
+    expect(screen.queryByText('Decay Tick')).not.toBeInTheDocument();
   });
 
   it('does not update board settings without board.admin.edit', () => {

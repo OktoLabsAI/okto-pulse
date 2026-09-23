@@ -5,7 +5,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { authAdapter, portalAdapter } from '@/adapters';
-import { Plus, Users, Share2, RefreshCw, PanelLeftClose, PanelLeftOpen, Moon, Sun, Settings, SlidersHorizontal, BookOpen, BarChart3, Menu, ChevronDown, HelpCircle, Info, X, Shield, Network, Activity, Trash2, AlertTriangle, Palette } from 'lucide-react';
+import { Plus, Users, Share2, RefreshCw, PanelLeftClose, PanelLeftOpen, Moon, Sun, Settings, BookOpen, BarChart3, Menu, ChevronDown, HelpCircle, Info, X, Shield, Network, Activity, Trash2, AlertTriangle, Palette } from 'lucide-react';
 import { GuidelinesPanel } from '@/components/guidelines';
 import { DefaultBoardConfigPanel } from '@/components/board/DefaultBoardConfigPanel';
 import { DesignSystemPanel } from '@/components/board/DesignSystemPanel';
@@ -23,7 +23,6 @@ import {
 } from '@/components/help';
 import { PresetListModal } from '@/components/permissions';
 import { KnowledgeGraphPage } from '@/components/knowledge';
-import { RuntimeSettingsPanel } from '@/components/layout/RuntimeSettingsPanel';
 import { GrafxBranding } from '@/components/shared/GrafxBranding';
 import { MetricsSettingsPanel } from '@/components/layout/MetricsSettingsPanel';
 import { useCurrentBoard } from '@/store/dashboard';
@@ -87,10 +86,6 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
     policyAuthorityReady
     && permissions.has('metrics.local.summary.read')
   );
-  const canReadRuntime = (
-    policyAuthorityReady
-    && permissions.has('runtime.settings.read')
-  );
   const canReadKGHealth = (
     policyAuthorityReady
     && permissions.has('kg.operations.health.read')
@@ -120,9 +115,6 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
   const api = useDashboardApi();
   const [showSettings, setShowSettings] = useState(false);
   const [boardSettingsTab, setBoardSettingsTab] = useState<'board' | 'global'>('board');
-  const [showRuntimeSettings, setShowRuntimeSettings] = useState(false);
-  const [runtimeSettingsInitialTab, setRuntimeSettingsInitialTab] =
-    useState<'graphdb' | 'eventqueue' | 'decaytick'>('graphdb');
   const [showMetricsSettings, setShowMetricsSettings] = useState(false);
   const [showGuidelines, setShowGuidelines] = useState(false);
   const [showDesignSystem, setShowDesignSystem] = useState(false);
@@ -183,7 +175,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
     return () => document.removeEventListener('mousedown', handler);
   }, [showSettings, showMenu]);
 
-  // NC-9 Wave 2 frontend: open the Board panel (not the RuntimeSettingsPanel)
+  // Open the Board panel
   // when the EvidenceGateSkipBanner link is clicked. The banner lives in
   // App.tsx and dispatches this event globally. The skip_test_evidence_global
   // toggle now lives inside the Board panel alongside the other skip toggles.
@@ -195,17 +187,6 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
     window.addEventListener('okto:open-board-settings', handler);
     return () => window.removeEventListener('okto:open-board-settings', handler);
   }, []);
-
-  useEffect(() => {
-    const handler = (event: Event) => {
-      if (!canReadRuntime) return;
-      const detail = (event as CustomEvent<{ initialTab?: 'graphdb' | 'eventqueue' | 'decaytick' }>).detail;
-      setRuntimeSettingsInitialTab(detail?.initialTab ?? 'graphdb');
-      setShowRuntimeSettings(true);
-    };
-    window.addEventListener('okto:open-runtime-settings', handler);
-    return () => window.removeEventListener('okto:open-runtime-settings', handler);
-  }, [canReadRuntime]);
 
   useEffect(() => {
     if (
@@ -532,34 +513,13 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                       Presets
                     </button>
 
-                    {/* Board (was "Settings" in ≤0.1.3 — renamed in 0.1.4 to
-                        free the "Settings" label for runtime config) */}
+                    {/* Product settings for the current Board. */}
                     <button
                       onClick={() => { setShowMenu(false); setBoardSettingsTab('board'); setShowSettings(true); }}
                       className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"
                     >
                       <Settings size={14} />
                       Board
-                    </button>
-
-                    {/* Settings (new in 0.1.4 — runtime graph database tuning) */}
-                    <button
-                      onClick={() => {
-                        setShowMenu(false);
-                        setRuntimeSettingsInitialTab('graphdb');
-                        setShowRuntimeSettings(true);
-                      }}
-                      disabled={!canReadRuntime}
-                      title={canReadRuntime ? 'Settings' : 'Requires runtime.settings.read'}
-                      className={`w-full text-left px-4 py-2 text-sm flex items-center gap-2 ${
-                        canReadRuntime
-                          ? 'text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700'
-                          : 'cursor-not-allowed text-gray-300 dark:text-gray-600'
-                      }`}
-                      data-testid="menu-settings"
-                    >
-                      <SlidersHorizontal size={14} />
-                      Settings
                     </button>
 
                     <button
@@ -778,14 +738,6 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
         <HelpPanel
           initialSectionId={helpInitialSection}
           onClose={() => setShowHelp(false)}
-        />
-      )}
-
-      {showRuntimeSettings && (
-        <RuntimeSettingsPanel
-          key={runtimeSettingsInitialTab}
-          initialTab={runtimeSettingsInitialTab}
-          onClose={() => setShowRuntimeSettings(false)}
         />
       )}
 

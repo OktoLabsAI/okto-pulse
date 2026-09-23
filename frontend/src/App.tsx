@@ -306,7 +306,7 @@ function App() {
 
   // NC-9 Wave 2 frontend (spec 5cb09dbc): poll board settings to drive the
   // EvidenceGateSkipBanner. Re-runs when the active board changes or when
-  // the operator toggles via the Board tab in RuntimeSettingsPanel (custom
+  // the operator toggles via the Board settings panel (custom
   // event refreshes the flag without a reload).
   //
   // Bug fix (board d0f6bab2): always reset to false on (re-)mount and on
