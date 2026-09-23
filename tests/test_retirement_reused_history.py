@@ -32,12 +32,14 @@ from test_card_context_retirement import dump
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(600)
-@pytest.mark.parametrize('source_schema,with_cognitive', [('0.6.0', True), ('0.6.0', False), ('0.5.0', False)])
-async def test_authenticated_effects_on_reused_root_preserve_identity_and_require_complete_evidence(tmp_path, source_schema, with_cognitive, monkeypatch):
+@pytest.mark.parametrize('source_schema,with_cognitive,complete_overlay', [
+    ('0.6.0', True, True), ('0.6.0', False, True), ('0.5.0', False, False), ('0.5.0', False, True)],
+    ids=['current-cognitive-pending', 'current-complete', 'predecessor-global-pending', 'predecessor-complete'])
+async def test_authenticated_effects_on_reused_root_preserve_identity_and_require_complete_evidence(tmp_path, source_schema, with_cognitive, complete_overlay, monkeypatch):
     source = restore_source(tmp_path)
     for name in ('uploads', 'kg', 'backups', 'candidate-backups'):
         (tmp_path / name).mkdir()
-    if source_schema == '0.6.0':
+    if complete_overlay:
         overlay_revision = CognitivePendingOverlaySnapshotService(
             CommunityFileSystemRebuildAuditArtifactStore(tmp_path / 'kg')).current_fingerprint()
     with closing(sqlite3.connect(source)) as connection:
@@ -86,7 +88,7 @@ async def test_authenticated_effects_on_reused_root_preserve_identity_and_requir
     try:
         bindings.initialize_board_binding(board_id='board-a', backend='grafx', generation='original',
             physical_path=path, page_size=8192, database=graph)
-        if source_schema == '0.5.0':
+        if source_schema == '0.5.0' and not complete_overlay:
             global_path = bindings.global_grafx_path('original')
             global_path.parent.mkdir(parents=True, exist_ok=True)
             seed_generation('grafx', global_path, one_node_corpus('global_discovery'))
@@ -113,7 +115,7 @@ async def test_authenticated_effects_on_reused_root_preserve_identity_and_requir
             migration_builds=MIGRATION, settings=settings, confirm_original_offline=True, max_seconds=300)
         receipt = json.loads((target / 'projection-receipt/run.json').read_bytes())
         assert receipt['format'] == 'retirement-candidate-projection/v6'
-        if source_schema == '0.6.0':
+        if complete_overlay:
             assert receipt['global_source_inputs']['state'] == 'captured_not_reconciled'
             assert receipt['global_source_inputs']['overlay_revision'] == overlay_revision
             assert receipt['global_source_inputs']['boards'][0]['board_id'] == 'board-a'
@@ -135,7 +137,7 @@ async def test_authenticated_effects_on_reused_root_preserve_identity_and_requir
         comparison = report['source_relation_comparison']
         assert comparison['expected_count'] == comparison['matched_count'] == 5
         assert comparison['missing_count'] == comparison['unresolved_count'] == comparison['unexpected_new_count'] == 0
-        complete = source_schema == '0.6.0' and not with_cognitive
+        complete = complete_overlay and not with_cognitive
         assert receipt['graph_reconciliation']['state'] == (
             'source_graph_reconciled' if complete else 'source_projection_reconciled_history_pending')
         assert report['zero_orphan_validation'] == 'passed'
