@@ -342,18 +342,6 @@ Args:
 Returns:
     JSON health snapshot, or {"error": "..."} on auth/not-found.
 
-## `okto_pulse_kg_digest_layer_mismatch_list`
-
-List nodes whose digest/materialization layer metadata is inconsistent.
-
-Args:
-    board_id: Board ID.
-    limit: Max rows to return.
-    offset: Page offset.
-
-Returns:
-    JSON with mismatch rows, expected/actual layer fields, and counts.
-
 
 ## `okto_pulse_kg_takedown_status`
 

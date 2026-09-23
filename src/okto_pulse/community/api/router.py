@@ -40,9 +40,6 @@ from okto_pulse.community.api.kg_canonical_debt import (
 from okto_pulse.community.api.kg_canonical_partition_integrity import (
     router as kg_canonical_partition_integrity_router,
 )
-from okto_pulse.community.api.kg_digest_layer_mismatch import (
-    router as kg_digest_layer_mismatch_router,
-)
 from okto_pulse.community.api.kg_cognitive_pending import (
     router as kg_cognitive_pending_router,
 )
@@ -124,10 +121,6 @@ api_router.include_router(kg_projection_repair_router, tags=["kg-projection-repa
 api_router.include_router(
     kg_canonical_partition_integrity_router,
     tags=["kg-canonical-partition-integrity"],
-)
-api_router.include_router(
-    kg_digest_layer_mismatch_router,
-    tags=["kg-digest-layer-mismatch"],
 )
 api_router.include_router(kg_cognitive_pending_router, tags=["kg-cognitive-pending"])
 api_router.include_router(bug_cognitive_closure_router, tags=["bug-cognitive-closure"])
