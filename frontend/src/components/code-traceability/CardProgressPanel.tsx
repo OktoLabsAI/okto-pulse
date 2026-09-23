@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useDashboardApi } from '@/services/api';
 import { CardProgressHistory } from './CardProgressHistory';
+import { CardResumePanel } from './CardResumePanel';
 import type { CardDeliveryBatchInput, CardDeliveryBatchDraft, DeliveryPerCard } from '@/types/delivery-evidence';
 
 export function CardProgressPanel({ boardId, specId, edition, card, canWrite, onSaved, onStage }: {
@@ -60,6 +61,7 @@ export function CardProgressPanel({ boardId, specId, edition, card, canWrite, on
     </article>)}
     {card.progress?.truncated && <p>Showing recent records from {card.progress.total} saved checkpoints. This is an incomplete history.</p>}
     {!onStage && !!card.progress?.total && <CardProgressHistory key={`${boardId}:${card.card_id}:${specId}:${edition}:${card.delivery_revision}`} boardId={boardId} cardId={card.card_id} specId={specId} edition={edition} />}
+    {!onStage && <CardResumePanel key={`${boardId}:${card.card_id}:${specId}:${edition}:${card.delivery_revision}`} boardId={boardId} cardId={card.card_id} specId={specId} edition={edition} />}
     {error && <p role="alert">{error}</p>}
     {writable ? <div className="space-y-2">
       <label className="block">Work recorded<textarea aria-label="Work recorded" value={summary} maxLength={20000} onChange={e => setSummary(e.target.value)} disabled={busy} className="block w-full border bg-transparent" /></label>

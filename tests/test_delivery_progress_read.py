@@ -86,7 +86,8 @@ async def test_no_foreign_detail_and_no_graph_or_whole_spec_read(db, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_rest_mcp_read_parity_and_no_cache(db, monkeypatch):
+@pytest.mark.parametrize("view", ["progress", "resume"])
+async def test_rest_mcp_read_parity_and_no_cache(db, monkeypatch, view):
     from contextlib import asynccontextmanager
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
@@ -107,7 +108,7 @@ async def test_rest_mcp_read_parity_and_no_cache(db, monkeypatch):
     rest = _projection_rest_app(uow)
     rest.dependency_overrides[api.require_principal] = lambda: Principal(subject="reader", realm_id="local", actor_kind="agent")
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=rest), base_url="http://test") as client:
-        response = await client.get("/boards/b/specs/s/delivery-evidence?card_id=c")
+        response = await client.get(f"/boards/b/specs/s/delivery-evidence?card_id=c&view={view}")
         assert response.status_code == 200, response.text
         assert response.headers["cache-control"] == "no-store"
         invalid = await client.get("/boards/b/specs/s/delivery-evidence?cursor=wrong")
@@ -123,7 +124,7 @@ async def test_rest_mcp_read_parity_and_no_cache(db, monkeypatch):
     catalog = CoreMcpCatalog(name="history", version="1")
     register_code_traceability_tools(catalog, get_board_agent=agent, get_uow=lambda: scope, get_settings=SimpleNamespace)
     tool = await catalog.get_tool("okto_pulse_get_delivery_evidence")
-    result = await tool.fn(board_id="b", spec_id="s", card_id="c")
+    result = await tool.fn(board_id="b", spec_id="s", card_id="c", view=view)
     assert not result.is_error, result
     assert result.payload == response.json()
     assert authorize.await_count == 2

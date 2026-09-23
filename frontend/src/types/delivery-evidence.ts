@@ -125,6 +125,27 @@ export interface DeliveryProgressHistory {
   items: NonNullable<DeliveryPerCard['progress']>['items'];
 }
 
+export interface CardDeliveryResume {
+  board_id: string; card_id: string; spec_id: string; edition: number;
+  status: string; title: string; response_truncated: boolean;
+  latest_checkpoint: DeliveryProgressHistory['items'][number] | null;
+  progress: DeliveryProgressHistory;
+  accumulated_impact: { status: string; history_count: number; detail_omitted?: boolean };
+  obligations: { complete: boolean; total: number; truncated: boolean; items: Array<{
+    ref: string; title: string; implementation_satisfied: boolean; test_satisfied: boolean;
+  }> };
+  implementation_proofs: { total: number; truncated: boolean; items: Array<{
+    record_id: string; actor_id: string; source_ref: string; result_revision: string;
+    relative_path: string; current_obligation_refs: string[]; bindings_truncated: boolean;
+    declaration_origin: string; contributions: Array<{ obligation_ref: string; declaration: string }>;
+  }> };
+  tests: { scope: 'this_card'; total: number; truncated: boolean; items: Array<{
+    record_id: string; scenario_id: string; actor_id: string; result: string; current_verified_run: boolean;
+  }> };
+  targets: { truncated: boolean; items: Array<{ id: string; revision: number; source_ref: string; relative_path: string | null }> };
+  actions: { record_progress: boolean; final_transitions: 'not_evaluated'; mutation_reauthorization_required: true };
+}
+
 export interface DeliveryPerCard {
   card_id: string;
   title: string;

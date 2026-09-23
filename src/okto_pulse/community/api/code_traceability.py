@@ -21,7 +21,7 @@ from enum import Enum
 import hashlib
 import hmac
 import json
-from typing import Mapping
+from typing import Literal, Mapping
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, create_model
@@ -1291,12 +1291,13 @@ async def get_delivery_evidence(board_id: str, spec_id: str, response: Response,
     cursor: str | None = Query(default=None, min_length=1, max_length=8192),
     record_id: str | None = Query(default=None, min_length=1, max_length=512),
     limit: int = Query(default=20, ge=1, le=20),
+    view: Literal["progress", "resume"] = Query(default="progress"),
     principal: Principal = Depends(require_principal), uow: PulseUnitOfWork = Depends(get_unit_of_work)) -> object:
     response.headers["Cache-Control"] = "no-store"
-    if (card_id is None and (cursor or record_id or limit != 20)) or (cursor and record_id):
+    if (card_id is None and (cursor or record_id or limit != 20 or view != "progress")) or (cursor and record_id) or (view == "resume" and (cursor or record_id)):
         raise HTTPException(status_code=422, detail="delivery_history_scope_invalid")
     command = DeliveryEvidenceReadQuery(board_id=board_id, spec_id=spec_id,
-        card_id=card_id, cursor=cursor, record_id=record_id, limit=limit)
+        card_id=card_id, cursor=cursor, record_id=record_id, limit=limit, view=view)
     return await _execute(GetDeliveryEvidenceUseCase(), command, board_id=board_id, principal=principal, uow=uow)
 
 

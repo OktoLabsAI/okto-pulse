@@ -1333,6 +1333,11 @@ class CommunityDeliveryEvidenceStore:
             ).all()
         )
 
+    async def card_resume(self, query, *, actor_id):
+        from okto_pulse.community.adapters.delivery_resume_reader import read_card_resume
+
+        return await read_card_resume(self, query, actor_id=actor_id)
+
     async def progress_history(self, query, *, actor_id):
         from okto_pulse.community.adapters.delivery_progress_reader import read_progress_history
 
