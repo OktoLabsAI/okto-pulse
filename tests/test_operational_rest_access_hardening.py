@@ -49,9 +49,6 @@ from okto_pulse.community.api.kg_routes import (
     require_kg_board_actor,
     require_kg_board_writer_actor,
 )
-from okto_pulse.community.api.kg_stale_canonical_parity import (
-    router as stale_canonical_parity_router,
-)
 from okto_pulse.community.api.settings import router as settings_router
 from okto_pulse.core.domain.realm import LOCAL_REALM_ID
 from okto_pulse.core.ports.authentication import Principal
@@ -174,7 +171,6 @@ def _client(uow: _Uow, *, claims=None) -> TestClient:
         canonical_debt_router,
         canonical_partition_router,
         digest_layer_mismatch_router,
-        stale_canonical_parity_router,
         cognitive_badges_router,
         cognitive_candidate_commands_router,
         cognitive_candidates_router,
@@ -240,7 +236,6 @@ BOARD_SURFACES = [
         None,
     ),
     ("GET", "/api/v1/kg/board-b/digest-layer-mismatch", None),
-    ("GET", "/api/v1/kg/board-b/stale-canonical-parity", None),
     (
         "GET",
         "/api/v1/kg/cognitive-pending/candidate-decisions?board_id=board-b",
@@ -358,7 +353,6 @@ WRITE_SURFACES = [
         "canonical-partition-list",
         "canonical-partition-detail",
         "digest-layer-mismatch",
-        "stale-canonical-parity",
         "cognitive-candidates",
         "cognitive-badges",
         "cognitive-pending",

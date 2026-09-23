@@ -354,20 +354,6 @@ Args:
 Returns:
     JSON with mismatch rows, expected/actual layer fields, and counts.
 
-## `okto_pulse_kg_stale_canonical_parity_list`
-
-List canonical nodes whose parity with working/source materialization is stale.
-
-Use this after migrations or rebuilds to inspect stale canonical parity without
-mutating the graph.
-
-Args:
-    board_id: Board ID.
-    limit: Max rows to return.
-    offset: Page offset.
-
-Returns:
-    JSON with stale parity rows and diagnostic metadata.
 
 ## `okto_pulse_kg_takedown_status`
 

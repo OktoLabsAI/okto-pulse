@@ -35,6 +35,7 @@ RETIRED = (
     "okto_pulse_kg_orphan_backfill",
     "okto_pulse_kg_provenance_drift",
     "okto_pulse_kg_originates_from_contract_audit",
+    "okto_pulse_kg_stale_canonical_parity_list",
     *(f"okto_pulse_kg_rebuild_{action}" for action in ("preflight", "confirm", "run")),
     *(f"okto_pulse_kg_global_discovery_recovery_{action}" for action in (
         "preflight", "confirm", "run", "status", "cancel", "resume",
@@ -53,6 +54,8 @@ RETIRED = (
 def test_removed_modules_and_console_entrypoint_are_not_distributed():
     for name in ("kg_recovery_only", "api.kg_rebuild", "api.dead_letter", "api.queue_health", "api.kg_tick", "api.kg_orphan_integrity"):
         assert importlib.util.find_spec(f"okto_pulse.community.{name}") is None
+    assert importlib.util.find_spec("okto_pulse.community.api.kg_stale_canonical_parity") is None
+    assert importlib.util.find_spec("okto_pulse.core.application.use_cases.list_stale_canonical_parity") is None
     for name in ("dlq_reprocess", "list_dead_letter_rows", "queue_health"):
         assert importlib.util.find_spec(f"okto_pulse.core.application.use_cases.{name}") is None
     assert "okto-pulse-kg-recovery-only" not in {
@@ -61,6 +64,24 @@ def test_removed_modules_and_console_entrypoint_are_not_distributed():
     scripts = Path(sysconfig.get_path("scripts"))
     assert not (scripts / "okto-pulse-kg-recovery-only.exe").exists()
     assert not (scripts / "okto-pulse-kg-recovery-only").exists()
+
+
+@pytest.mark.parametrize("board", ["missing", "foreign", "owned"])
+def test_stale_parity_rest_report_is_absent_before_authority_and_storage(board):
+    from okto_pulse.community.api.auth_deps import require_user
+
+    def forbidden():
+        pytest.fail("Retired parity report resolved authority or storage")
+
+    app = FastAPI()
+    app.include_router(api_router)
+    app.dependency_overrides[get_unit_of_work] = forbidden
+    app.dependency_overrides[require_user] = forbidden
+    with TestClient(app) as client:
+        response = client.get(f"/api/v1/kg/{board}/stale-canonical-parity", params={"limit": 200, "offset": 0})
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Not Found"}
+    assert "/api/v1/kg/{board_id}/stale-canonical-parity" not in app.openapi()["paths"]
 
 
 @pytest.mark.parametrize("action", ["preflight", "confirm", "run"])
