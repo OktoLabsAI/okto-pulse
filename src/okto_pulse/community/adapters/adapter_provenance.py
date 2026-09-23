@@ -38,6 +38,8 @@ _CROSS_EDITION_CONTRACT_EXPECTATION: tuple[str, ...] = (
     "okto_pulse.core.get_settings",
     "okto_pulse.core.get_storage_provider",
     "okto_pulse.core.register_package_version_provider",
+    "okto_pulse.core.resolve_package_version",
+    "okto_pulse.core.__version__",
     "okto_pulse.core.register_relational_schema_lifecycle_orchestrator",
     "okto_pulse.core.reset_auth_for_tests",
     "okto_pulse.core.reset_package_version_provider_for_tests",

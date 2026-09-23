@@ -17,6 +17,7 @@ from okto_pulse.community.adapters.embedding import (
 from okto_pulse.community.adapters.telemetry_effect_config import (
     COMMUNITY_DEFAULT_METRICS_BEACON_URL,
 )
+from okto_pulse.community.adapters.package_version import default_core_version
 
 DataDirOrigin = Literal["explicit", "DATA_DIR", "OKTO_PULSE_HOME", "default"]
 GraphBackend = Literal["grafx"]
@@ -78,6 +79,7 @@ class CommunitySettings(CoreSettings, BaseSettings):
     )
 
     debug: bool = False
+    app_version: str = Field(default_factory=default_core_version)
     environment: str = "development"
     host: str = "127.0.0.1"  # Community is local-only — bind to loopback
     port: int = 8100
@@ -89,7 +91,7 @@ class CommunitySettings(CoreSettings, BaseSettings):
     metrics_dir: str = ""
     metrics_beacon_url: str = COMMUNITY_DEFAULT_METRICS_BEACON_URL
     mcp_server_name: str = "okto-pulse"
-    mcp_server_version: str = "0.3.3"
+    mcp_server_version: str = Field(default_factory=default_core_version)
     mcp_port: int = 8101
     # MCP and API/UI share one event loop.  Keep tool-call bursts bounded while
     # leaving transport sessions, streams and every REST route outside the gate.

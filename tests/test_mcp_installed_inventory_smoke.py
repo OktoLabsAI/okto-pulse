@@ -8,7 +8,9 @@ from importlib.metadata import version
 import pytest
 from fastmcp import Client
 from okto_pulse.core.mcp import server
-from okto_pulse.core.mcp.manifest import tool_inventory_sha256
+from okto_pulse.core.mcp.manifest import tool_inventory_document, tool_inventory_sha256
+from okto_pulse.core import __version__ as core_version
+from okto_pulse.community import __version__ as community_version
 from okto_pulse.core.mcp.ska_tool_manifest import build_ska_tool_manifest
 
 from okto_pulse.community.adapters.mcp_host import CommunityMcpHostProvider
@@ -42,14 +44,18 @@ async def test_live_catalog_initialize_tools_list_and_manifest_agree(
     aliases = manifest["tool_inventory"]["aliases"]
     frozen_ska_tools = {entry["name"] for entry in build_ska_tool_manifest()["tools"]}
 
-    assert initialized.serverInfo.version == "0.3.3"
+    assert initialized.serverInfo.version == core_version == community_version
     assert version("okto-pulse-core") == initialized.serverInfo.version
     assert version("okto-pulse") == initialized.serverInfo.version
-    assert len(names) == manifest["tool_inventory"]["count"] == 340
-    assert len(names) - len(aliases) == 332
-    assert len(aliases) == 8
-    # Code Traceability exposes its canonical protocol and typed tool-doc family.
-    assert len(listed_resources) == 56
+    expected = tool_inventory_document(server.mcp)
+    assert names == expected["tools"]
+    assert aliases == expected["aliases"]
+    assert len(names) == len(set(names)) == manifest["tool_inventory"]["count"]
+    assert sorted(str(resource.uri) for resource in listed_resources) == sorted(
+        str(spec.uri) for spec in frozen_resources.specs()
+    )
+    assert manifest["server"]["version"] == initialized.serverInfo.version
+    assert not any("sprint" in name for name in names)
     assert manifest["tool_inventory"]["sha256"] == tool_inventory_sha256(
         {"tools": names, "aliases": aliases}
     )
