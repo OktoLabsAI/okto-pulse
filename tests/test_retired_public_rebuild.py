@@ -34,6 +34,7 @@ RETIRED = (
     "okto_pulse_kg_orphan_report",
     "okto_pulse_kg_orphan_backfill",
     "okto_pulse_kg_provenance_drift",
+    "okto_pulse_kg_originates_from_contract_audit",
     *(f"okto_pulse_kg_rebuild_{action}" for action in ("preflight", "confirm", "run")),
     *(f"okto_pulse_kg_global_discovery_recovery_{action}" for action in (
         "preflight", "confirm", "run", "status", "cancel", "resume",
