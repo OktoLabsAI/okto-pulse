@@ -180,26 +180,21 @@ participants. They never bypass saga policy or overwrite route bindings.
 REST prefix: `/api/v1/kg/boards/{board_id}/exploration`. Blocking native work and
 query embedding run outside the event loop via the existing cancellation-draining
 graph-I/O boundary. Existing board access is checked before capability dispatch.
-Reads require `kg.query.related_context` (legacy `board:read`); administrative
-actions require `kg.operations.schema.migrate` (legacy `kg.admin.settings_write`)
-and the board writer actor. Native failures retain neutral error mapping, not
-HTTP 200 with empty data; invalid requests are 400/422.
-Administrative HTTP calls also use Core's `guarded_board_write`, renewing the
-real writer token through the native operation and completing the existing
-checkpoint/flush/fsync lifecycle before acknowledgment. Lease or lifecycle
-failure is not automatically retried. Direct port callers must supply the same
-application write authority; adapter revalidation never creates that authority.
+Reads require `kg.query.related_context` (legacy `board:read`). Native failures
+retain neutral error mapping, not HTTP 200 with empty data; invalid requests
+are 400/422. Public index preparation, history activation and history pruning
+were retired under Pulse v1.3 F4. Their former routes return 404 before
+authorization or storage dispatch. Historical reads retain their additional
+audit and Code Traceability permissions. Internal adapter capabilities do not
+grant public write authority or cause reads to prepare missing storage.
 
 | Method / suffix | Input | Result / effect |
 | --- | --- | --- |
 | GET `search/readiness/{node_type}` | Supported Pulse node type | `supported`, `ready`, available `modes`; never builds an index. |
-| POST `search/prepare` | `node_type`, nonblank `reason` (1–1024 chars) | Explicit idempotent index preparation; validates same-name definitions and refuses stale/conflicting indexes. |
 | POST `search` | `SearchRequest` below | Ranked `hits` with qualified business `node_type`/`node_id`, title, independent lexical/vector scores, ranking regime, snapshot and `complete`. |
-| POST `history/activate` | `node_types`, `relationship_types=[]`, `reason`, `acknowledge_one_way=true` | Explicit durable identity/commit/system-time activation for the selected scope. |
 | GET `history/commits` | `after` opaque token optional, `limit=100` (1–1000) | Ascending verified commits, metadata, observed/ordered time, tracked-after boundary, snapshot, `has_more`, `next_after`. |
 | POST `history/as-of` | scope, `at` opaque commit token; bounds below | Historical nodes and edges with business IDs, properties and qualified opaque row lineages. |
 | POST `history/diff` | same as as-of plus `before` token; `at` is the after coordinate | Native row/schema changes, before/after business entities, label/property changes and complete bounded result. |
-| POST `history/prune` | scope, `before`, `reason`, `max_bytes`, `acknowledge_history_loss=true` | Removes closed retained version payloads below the boundary, respecting native retention pins; does not delete live nodes. |
 | POST `analytics` | selected node/relationship types and algorithm/options below | Bounded induced-graph components, cycles or dependency impact; explicit scope and snapshot. |
 
 ### Text and hybrid retrieval
@@ -272,7 +267,7 @@ not this scheduling gate, remains data authority.
 
 ### Provenance, historical reads and retention
 
-Activation is one-way and scoped to explicit Pulse node types and logical
+The internal adapter activation capability is one-way and scoped to explicit Pulse node types and logical
 relationship names. Only physical endpoint pairs wholly inside the selected node
 scope are selected; requesting a relationship with no such pair is refused. All
 three native activation phases are independently atomic/idempotent; the whole
@@ -294,8 +289,8 @@ are refused. Delete/recreate produces different lineages even for the same busin
 ID. All history HTTP operations require full CT authority and the existing
 `kg.operations.audit.read` permission (legacy `kg.admin.settings_read`), because
 they intentionally include historical/tombstoned/superseded values and commit
-metadata. Activation/prune additionally require the administrative write authority
-described above. Denial occurs before native access. Embedding payloads are
+metadata. Activation and pruning have no public HTTP route after F4 retirement.
+Denial of a retained read occurs before native access. Embedding payloads are
 explicitly omitted; historical business IDs and relationship endpoints are retained.
 
 As-of/diff bounds: `max_rows=1000` (1–10000), `max_bytes=16777216`
@@ -305,12 +300,12 @@ applies to each bounded native call, not their sum or process RSS. All use one
 reader snapshot. Separate HTTP commit-history pages observe fresh snapshots;
 `next_after` is keyset continuation, not a retained server-side snapshot session.
 
-Retention accepts a before token and byte cap (same default/range). It respects
+The internal retention capability accepts a before token and byte cap (same default/range). It respects
 native pins and reports logical redaction, not secure erasure or disk shrinkage.
 Physical bytes reclaimed are normally zero. It never compacts online, schedules
-background deletion, restores SQLite or runs backfill. Keep required historical
-consumers/backup policy in mind before requesting retention. API activation/prune
-reasons are operationally logged; no cross-database atomic audit claim is made.
+background deletion, restores SQLite or runs backfill. This adapter description
+does not expose an agent-callable retention operation or authorize data loss.
+No cross-database atomic audit claim is made.
 
 ### Bounded diagnostics
 
