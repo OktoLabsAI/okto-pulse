@@ -158,8 +158,14 @@ async def test_first_start_checks_real_shared_plan_without_requiring_execution(l
         authored.info["realm_scope"] = RealmScope.local()
         authored.add(design("new-contract", owner_id=signed.SPEC_ID, board_id=signed.BOARD_ID))
         await authored.commit()
-    with pytest.raises(ValueError, match="spec_architecture_classification_incomplete"):
+    from okto_pulse.core.services.gate_contracts import GateContractError
+    with pytest.raises(GateContractError, match="spec_architecture_classification_incomplete") as blocked:
         await service.require_execution_contract_ready(spec)
+    assert blocked.value.details["blocking_candidate_count"] == 1
+    assert len(blocked.value.details["blocking_candidate_ids"]) == 1
+    assert blocked.value.details["blocking_candidates_truncated"] is False
+    assert blocked.value.details["source_complete"] is True
+    assert blocked.value.details["required_tool"] == "okto_pulse_list_architecture_classifications"
     await db.execute(update(Spec).where(Spec.id == signed.SPEC_ID).values(execution_contract=None))
     await db.commit()
     with pytest.raises(ValueError, match="spec_execution_contract_adoption_required"):

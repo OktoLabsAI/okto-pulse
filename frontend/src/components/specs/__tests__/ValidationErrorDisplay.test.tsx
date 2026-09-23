@@ -3,6 +3,29 @@ import { describe, expect, it } from 'vitest';
 import { ValidationErrorDisplay, parseValidationErrorMessage } from '../ValidationErrorDisplay';
 
 describe('ValidationErrorDisplay', () => {
+  it('shows architecture blocker IDs, truncation and governed revision guidance', () => {
+    const error = JSON.stringify({detail: {
+      error: 'spec_architecture_classification_incomplete',
+      message: 'Review architecture classifications before first start.',
+      details: {
+        gate_type: 'spec_architecture_classification',
+        blocking_candidate_ids: ['candidate-page-2', null, 12],
+        blocking_candidates_truncated: true,
+        blocked_transition: 'in_progress',
+        operator_action: 'Reopen to Draft for an authorized revision, then revalidate.',
+        required_tool: 'okto_pulse_list_architecture_classifications',
+      },
+    }});
+    render(<ValidationErrorDisplay error={error} />);
+    expect(screen.getByText('Architecture Classification')).toBeInTheDocument();
+    expect(screen.getByText('candidate-page-2')).toBeInTheDocument();
+    expect(screen.getByText(/More candidates require review/)).toBeInTheDocument();
+    expect(screen.getByText(/Reopen to Draft/)).toBeInTheDocument();
+    expect(screen.getByText('okto_pulse_list_architecture_classifications')).toBeInTheDocument();
+    expect(parseValidationErrorMessage(error).blockingCandidateIds).toEqual(['candidate-page-2']);
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+  });
+
   it('renders structured Resource Gate uncovered resources', () => {
     const error = JSON.stringify({
       error: 'resource_gate_spec_task_coverage',

@@ -26,6 +26,8 @@ interface ParsedValidationError {
   // True when the backend supplied a structured gate contract (R4): the UI then
   // renders the REAL gate instead of inferring one from the message text.
   structured: boolean;
+  blockingCandidateIds: string[];
+  blockingCandidatesTruncated: boolean;
 }
 
 const RESOURCE_LABELS: Record<string, string> = {
@@ -39,6 +41,7 @@ const RESOURCE_LABELS: Record<string, string> = {
 // cognitive-readiness / test-card block.
 const GATE_TYPE_LABELS: Record<string, string> = {
   spec_validation: 'Spec Validation',
+  spec_architecture_classification: 'Architecture Classification',
   spec_qualitative_evaluation: 'Qualitative Evaluation',
   test_card_completion: 'Test Card Completion',
   resource_gate: 'Resource Coverage',
@@ -98,6 +101,8 @@ const _EMPTY: Omit<ParsedValidationError, 'gateType' | 'gateTypeCode' | 'issue' 
   enforcementMode: null,
   enforcementActive: null,
   wouldBlockDone: null,
+  blockingCandidateIds: [],
+  blockingCandidatesTruncated: false,
 };
 
 export function parseValidationErrorMessage(error: string): ParsedValidationError {
@@ -172,6 +177,12 @@ export function parseValidationErrorMessage(error: string): ParsedValidationErro
       enforcementActive,
       wouldBlockDone: _bool(fromDetails('would_block_done')),
       structured: true,
+      blockingCandidateIds: gateTypeCode === 'spec_architecture_classification'
+        && Array.isArray(fromDetails('blocking_candidate_ids'))
+        ? (fromDetails('blocking_candidate_ids') as unknown[])
+          .filter((id): id is string => typeof id === 'string' && id.length > 0).slice(0, 25)
+        : [],
+      blockingCandidatesTruncated: fromDetails('blocking_candidates_truncated') === true,
     };
   }
 
@@ -264,6 +275,14 @@ export function ValidationErrorDisplay({ error }: { error: string }) {
           {parsed.issue}
         </p>
       </div>
+
+      {parsed.blockingCandidateIds.length > 0 && (
+        <div className="text-xs text-gray-700 dark:text-gray-300">
+          <p>Architecture candidates requiring review</p>
+          <ul>{parsed.blockingCandidateIds.map((id) => <li key={id}><code>{id}</code></li>)}</ul>
+          {parsed.blockingCandidatesTruncated && <p>More candidates require review. Open Architecture Classifications for the full list.</p>}
+        </div>
+      )}
 
       {parsed.resources.length > 0 && (
         <div className="bg-gray-50 dark:bg-gray-900/40 border border-gray-200 dark:border-gray-700 rounded-lg p-3 space-y-2">
