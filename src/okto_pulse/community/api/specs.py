@@ -774,6 +774,14 @@ class ScenarioEvidenceExecutionRequest(BaseModel):
     manifest_ref: str = Field(..., min_length=1)
 
 
+from okto_pulse.core.domain.verification_report import VerificationReport
+
+
+class ScenarioVerificationReportRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    report: VerificationReport
+
+
 STRUCTURED_SPEC_ENTITY_DEPRECATION_WARNING = (
     "Spec child entity edits should use /api/v1/specs/{spec_id}/structured-entities/"
     "{entity_type}; legacy whole-spec child list updates are compatibility-only."
@@ -2225,6 +2233,28 @@ async def execute_test_scenario_evidence(
             detail=str(exc),
         ) from exc
     return {"evidence": result.evidence}
+
+
+@router.post("/specs/{spec_id}/scenarios/{scenario_id}/evidence/reports", status_code=200)
+async def admit_test_verification_report(
+    spec_id: str, scenario_id: str, body: ScenarioVerificationReportRequest,
+    user_id: str = Depends(require_user), uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Authenticate a supplied observation; does not execute or change scenario state."""
+    from okto_pulse.core.application.use_cases.spec_crud import AdmitTestVerificationReportCommand, AdmitTestVerificationReportUseCase
+    try:
+        result = await AdmitTestVerificationReportUseCase().execute(
+            AdmitTestVerificationReportCommand(spec_id, scenario_id, body.report.model_dump(mode="json")),
+            actor=RESTAdapterContract.actor(user_id), uow=uow)
+    except EntityNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Spec not found" if exc.entity_type == "spec" else "Scenario not found") from exc
+    except PermissionDeniedError as exc:
+        raise HTTPException(status_code=403, detail=exc.message) from exc
+    except SubjectEditRequiresDraftError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"evidence": result.evidence, "scenario_persisted": False}
 
 
 @router.patch(

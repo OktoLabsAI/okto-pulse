@@ -1649,6 +1649,12 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       );
     },
 
+    async admitTestVerificationReport(specId: string, scenarioId: string, report: Record<string, unknown>): Promise<{ evidence: import('@/types').TestScenarioEvidence }> {
+      return apiClient.fetchJson(`/specs/${encodeURIComponent(specId)}/scenarios/${encodeURIComponent(scenarioId)}/evidence/reports`, {
+        method: 'POST', body: JSON.stringify({ report }), maxRetries: 0,
+      });
+    },
+
     async linkTaskToSpecItem(
       specId: string,
       field: StructuredSpecItemField,

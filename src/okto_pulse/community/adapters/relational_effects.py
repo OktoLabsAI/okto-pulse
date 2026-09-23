@@ -40,6 +40,7 @@ from okto_pulse.core.ports.bug_cognitive_context import (
 )
 from okto_pulse.core.ports.test_evidence import (
     register_test_evidence_execution_issuer,
+    register_test_verification_report_issuer,
     register_test_evidence_write_verifier,
 )
 from okto_pulse.core.ports.queue_health import register_queue_health_read_port
@@ -514,6 +515,8 @@ def register_community_relational_effects(
     register_test_evidence_write_verifier(
         CommunityTestEvidenceWriteVerifier(ledger=evidence_ledger)
     )
+    from okto_pulse.community.adapters.test_evidence import CommunityTestVerificationReportIssuer
+    register_test_verification_report_issuer(CommunityTestVerificationReportIssuer(ledger=evidence_ledger))
     register_test_evidence_execution_issuer(
         CommunityTestEvidenceExecutionIssuer(
             ledger=evidence_ledger,

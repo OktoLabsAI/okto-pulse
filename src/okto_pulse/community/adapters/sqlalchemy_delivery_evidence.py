@@ -329,6 +329,8 @@ class CommunityDeliveryEvidenceStore:
         if valid:
             try:
                 require_supported_test_verification_method(scenario.get("verification_method"))
+                from okto_pulse.core.domain.verification_report import require_evidence_method_binding
+                require_evidence_method_binding(scenario.get("verification_method"), evidence)
             except ValueError:
                 valid = False
         if valid:
@@ -358,7 +360,9 @@ class CommunityDeliveryEvidenceStore:
             )
             try:
                 executed_at = datetime.fromisoformat(
-                    evidence["execution_attestation"]["executed_at"].replace(
+                    (evidence["verification_report"]["observed_at"]
+                     if evidence.get("evidence_class") == "verification_report"
+                     else evidence["execution_attestation"]["executed_at"]).replace(
                         "Z", "+00:00"
                     )
                 )

@@ -1518,7 +1518,8 @@ export type EvidenceClass =
   | 'mcp_replay_manifest'
   | 'manual_checklist'
   | 'run_log'
-  | 'non_replayable_justified';
+  | 'non_replayable_justified'
+  | 'verification_report';
 
 export interface TestEvidenceAssertionV2 {
   name: string;
@@ -1549,6 +1550,9 @@ export interface TestExecutionAttestationV2 {
 }
 
 export interface TestScenarioEvidence {
+  /** External observation; receipt authenticates submission, not independent approval. */
+  verification_report?: { method: string; report_id: string; result: 'passed' | 'failed'; conclusion: string; observed_at: string; observations: Array<{ criterion_id: string; expected: string; observed: string; observation_ref: string }> } | null;
+  report_author_id?: string | null;
   // Legacy / minimal fields (NC-9).
   test_file_path?: string | null;
   test_function?: string | null;

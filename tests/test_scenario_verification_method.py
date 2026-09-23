@@ -243,7 +243,7 @@ async def test_real_http_replay_receipt_binds_method_and_rejects_reinterpretatio
         )
     )
     evidence = dict(result.evidence)
-    assert verifier.verification_methods == frozenset({"automated_test"})
+    assert verifier.verification_methods == frozenset({"automated_test", "static_analysis", "inspection", "demonstration"})
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:

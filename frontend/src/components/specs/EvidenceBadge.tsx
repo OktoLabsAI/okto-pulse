@@ -31,6 +31,7 @@ const REPLAYABLE_CLASSES = new Set<EvidenceClass>([
 ]);
 
 const CLASS_LABELS: Record<EvidenceClass, string> = {
+  verification_report: 'verification report',
   automated_test_pointer: 'auto test',
   replay_command: 'replay cmd',
   mcp_replay_manifest: 'MCP replay',
@@ -116,6 +117,15 @@ export function EvidenceBadge({ scenario }: EvidenceBadgeProps) {
   const hasEvidence = hasAnyEvidence(evidence);
   const tooltip = buildTooltip(evidence);
   const evidenceClass = evidence?.evidence_class ?? null;
+
+  if (evidenceClass === 'verification_report') {
+    const report = evidence?.verification_report;
+    return <span data-testid="evidence-badge-report" data-replayable="false"
+      className="inline-flex rounded border border-blue-200 bg-blue-50 px-2 py-0.5 text-[10px] text-blue-700"
+      title={`${report?.method || 'Unknown method'} · ${report?.report_id || 'Missing report'} · author: ${evidence?.report_author_id || 'unknown'} · ${report?.conclusion || ''} · ${evidence?.execution_receipt ? 'Submission receipt attached; approval remains separate.' : 'Missing submission receipt; unverified.'}`}>
+      {report?.method?.replace(/_/g, ' ') || 'verification report'}{!evidence?.execution_receipt && ' · unverified'}
+    </span>;
+  }
 
   // Historical manifest strings/objects remain readable, but they are not a
   // verified execution and must never look green in the UI.

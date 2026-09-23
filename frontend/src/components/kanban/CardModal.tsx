@@ -36,6 +36,7 @@ import { CancellationDetails, CancellationReasonDialog } from '@/components/shar
 import { ActivityLogList } from '@/components/shared/ActivityLogList';
 import { HistoricalContextPanel } from '@/components/shared/HistoricalContextPanel';
 import { EvidenceBadge } from '@/components/specs/EvidenceBadge';
+import { VerificationReportDetails } from '@/components/specs/VerificationReportDetails';
 import { ScenarioTypeBadge } from '@/components/specs/ScenarioTypeBadge';
 import { EditableField } from '@/components/shared/EditableField';
 import { openLineageGraph } from '@/components/traceability';
@@ -3118,6 +3119,7 @@ export function TestEvidenceTab({ scenarios }: { scenarios: TestScenario[] }) {
                     </span>
                     <ScenarioTypeBadge scenarioType={scenario.scenario_type} />
                     <EvidenceBadge scenario={scenario} />
+                    <VerificationReportDetails evidence={evidence} />
                   </div>
                   <h3 className="mt-2 text-sm font-semibold text-gray-900 dark:text-gray-100 break-words">{scenario.title}</h3>
                   <p className="mt-1 text-xs text-gray-500 dark:text-gray-400 break-words">

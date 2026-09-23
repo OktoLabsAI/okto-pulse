@@ -2277,6 +2277,18 @@ describe('TestEvidenceTab — re-executable evidence visibility (spec 9e0bf979)'
     } as TestScenario;
   }
 
+  it('shows external report evidence on the Test Card without claiming independent approval', () => {
+    render(<TestEvidenceTab scenarios={[scenario({ id: 'report', verification_method: 'inspection', evidence: {
+      evidence_class: 'verification_report', report_author_id: 'inspector', execution_receipt: 'opaque',
+      verification_report: { method: 'inspection', report_id: 'inspection-1', result: 'passed',
+        observed_at: '2026-09-23T10:00:00Z', conclusion: 'Imports observed through public ports', observations: [] },
+    } })]} />);
+    expect(screen.getByText('Submission author: inspector')).toBeInTheDocument();
+    expect(screen.getByText(/Imports observed through public ports/)).toBeInTheDocument();
+    expect(screen.getByText(/Independent approval is separate/)).toBeInTheDocument();
+    expect(screen.getByTestId('evidence-badge-report')).toHaveAttribute('data-replayable', 'false');
+  });
+
   it('renders the new re-executable evidence fields for a replay_command scenario', () => {
     render(
       <TestEvidenceTab

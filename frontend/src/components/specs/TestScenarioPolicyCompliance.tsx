@@ -7,6 +7,7 @@ import {
   usePolicyTransitionAuthority,
 } from '@/components/policy-compliance';
 import { useDashboardApi } from '@/services/api';
+import { VerificationReportSubmission } from './VerificationReportSubmission';
 import type {
   AllowedTransition,
   Spec,
@@ -64,6 +65,7 @@ export interface TestScenarioPolicyComplianceProps {
   specArchived: boolean;
   scenario: TestScenario;
   canReadPolicyCompliance: boolean;
+  canSubmitVerificationReport?: boolean;
   refreshKey: number;
   onSpecRefreshed: (spec: Spec) => void;
 }
@@ -82,6 +84,7 @@ export function TestScenarioPolicyCompliance({
   specArchived,
   scenario,
   canReadPolicyCompliance,
+  canSubmitVerificationReport = false,
   refreshKey,
   onSpecRefreshed,
 }: TestScenarioPolicyComplianceProps) {
@@ -226,10 +229,15 @@ export function TestScenarioPolicyCompliance({
             {evidenceTransitions
               .map((transition) => transition.label)
               .join(', ')}
-            . These edges are preview-only here.
+            . A supported report can supply an external observation below.
           </span>
         </p>
       )}
+
+      <VerificationReportSubmission specId={specId} scenario={scenario}
+        canSubmit={canSubmitVerificationReport && !specArchived && movingTo === null}
+        allowedResults={evidenceTransitions.map(transition => transition.to_status)}
+        onSaved={refreshWholeSpec} onRejected={authority.handleTransitionError} />
 
       {canReadPolicyCompliance && (
         <div

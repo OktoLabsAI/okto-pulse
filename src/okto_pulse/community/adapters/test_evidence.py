@@ -49,6 +49,7 @@ COMMUNITY_EVIDENCE_ADAPTER = "okto_pulse.community.adapters.test_evidence"
 COMMUNITY_MANIFEST_SCHEMA = "okto-pulse-http-replay/v1"
 COMMUNITY_MANIFEST_PURPOSE = "test_scenario_evidence"
 COMMUNITY_RECEIPT_SCHEMA = "okto-pulse-evidence-receipt/v1"
+COMMUNITY_REPORT_RECEIPT_SCHEMA = "okto-pulse-verification-receipt/v1"
 COMMUNITY_MAX_LEDGER_RECEIPTS = 10_000
 COMMUNITY_MAX_MANIFEST_BYTES = 1024 * 1024
 _RECEIPT_RE = re.compile(r"^ev2r\.([0-9a-f]{32})\.([0-9a-f]{64})$")
@@ -78,6 +79,9 @@ _RECEIPT_RECORD_KEYS = frozenset(
     }
 )
 _LEGACY_RECEIPT_RECORD_KEYS = _RECEIPT_RECORD_KEYS - {"scenario_sha256"}
+_REPORT_RECEIPT_RECORD_KEYS = (_RECEIPT_RECORD_KEYS - {
+    'manifest_ref', 'manifest_sha256', 'attestation_sha256', 'run_id',
+}) | {'verification_method', 'report_sha256'}
 
 
 class CommunityTestEvidenceError(ValueError):
@@ -793,12 +797,13 @@ class CommunityEvidenceLedger:
         record: Mapping[str, Any], *, allow_legacy: bool = False
     ) -> bool:
         record_keys = set(record)
+        report_record = record_keys == _REPORT_RECEIPT_RECORD_KEYS
         legacy_non_authoritative = record_keys == _LEGACY_RECEIPT_RECORD_KEYS
-        if record_keys != _RECEIPT_RECORD_KEYS and not (
+        if not report_record and record_keys != _RECEIPT_RECORD_KEYS and not (
             allow_legacy and legacy_non_authoritative
         ):
             return False
-        if record.get("schema_version") != COMMUNITY_RECEIPT_SCHEMA:
+        if record.get("schema_version") != (COMMUNITY_REPORT_RECEIPT_SCHEMA if report_record else COMMUNITY_RECEIPT_SCHEMA):
             return False
         if not isinstance(
             record.get("receipt_id"), str
@@ -813,19 +818,21 @@ class CommunityEvidenceLedger:
             return False
         if parsed_issued_at.tzinfo is None or parsed_issued_at.utcoffset() is None:
             return False
-        for field in (
+        identity_fields = (
             "board_id",
             "spec_id",
             "scenario_id",
             "actor_id",
-            "manifest_ref",
-            "run_id",
-        ):
+        ) + (() if report_record else ('manifest_ref', 'run_id'))
+        for field in identity_fields:
             if not isinstance(record.get(field), str) or not record[field].strip():
                 return False
         if record.get("status") not in {"passed", "automated", "failed"}:
             return False
-        digest_fields = [
+        if report_record and (record.get('verification_method') not in {'static_analysis', 'inspection', 'demonstration'}
+                or record.get('status') not in {'passed', 'failed'}):
+            return False
+        digest_fields = ['report_sha256', 'evidence_sha256'] if report_record else [
             "manifest_sha256",
             "attestation_sha256",
             "evidence_sha256",
@@ -1037,13 +1044,33 @@ class CommunityEvidenceLedger:
         actor_id: str,
         evidence: Mapping[str, Any],
     ) -> str:
+        attestation = _plain(evidence.get('execution_attestation')) or {}
+        return self._issue_record(board_id=board_id, spec_id=spec_id, scenario_id=scenario_id,
+            scenario_sha256=scenario_sha256, status=status, actor_id=actor_id, evidence=evidence,
+            schema_version=COMMUNITY_RECEIPT_SCHEMA, proof_metadata={
+                'manifest_ref': evidence.get('manifest_ref'), 'manifest_sha256': attestation.get('manifest_sha256'),
+                'attestation_sha256': attestation.get('attestation_sha256'), 'run_id': attestation.get('run_id')})
+
+    def issue_verification_report(self, *, board_id, spec_id, scenario_id, scenario_sha256, status, actor_id, evidence):
+        """Called only after authorized report/context validation, never an execution claim."""
+        from okto_pulse.core.domain.verification_report import parse_verification_report
+
+        report = parse_verification_report(evidence['verification_report'])
+        if report.result != status or evidence.get('report_author_id') != actor_id:
+            raise CommunityTestEvidenceError('verification_report_author_or_result_mismatch')
+        return self._issue_record(board_id=board_id, spec_id=spec_id, scenario_id=scenario_id,
+            scenario_sha256=scenario_sha256, status=status, actor_id=actor_id, evidence=evidence,
+            schema_version=COMMUNITY_REPORT_RECEIPT_SCHEMA, proof_metadata={
+                'verification_method': report.method, 'report_sha256': _sha256_json(evidence['verification_report'])})
+
+    def _issue_record(self, *, board_id, spec_id, scenario_id, scenario_sha256, status, actor_id, evidence,
+            schema_version, proof_metadata):
         key = self._secret(create=True)
         key_fingerprint = hashlib.sha256(key).hexdigest()
         key_id = key_fingerprint[:16]
         self._assert_secure_layout()
         _ensure_secure_directory(self.receipt_root)
         history_fingerprint = self._validate_existing_receipts(key)
-        attestation = _plain(evidence.get("execution_attestation")) or {}
         unsigned_evidence = {
             name: value
             for name, value in evidence.items()
@@ -1052,7 +1079,7 @@ class CommunityEvidenceLedger:
         for _attempt in range(5):
             receipt_id = secrets.token_hex(16)
             record: dict[str, Any] = {
-                "schema_version": COMMUNITY_RECEIPT_SCHEMA,
+                "schema_version": schema_version,
                 "receipt_id": receipt_id,
                 "issued_at": datetime.now(timezone.utc).isoformat(),
                 "board_id": board_id,
@@ -1061,10 +1088,7 @@ class CommunityEvidenceLedger:
                 "scenario_sha256": scenario_sha256,
                 "status": status,
                 "actor_id": actor_id,
-                "manifest_ref": evidence.get("manifest_ref"),
-                "manifest_sha256": attestation.get("manifest_sha256"),
-                "attestation_sha256": attestation.get("attestation_sha256"),
-                "run_id": attestation.get("run_id"),
+                **proof_metadata,
                 "evidence_sha256": _sha256_json(unsigned_evidence),
                 "secret_key_id": key_id,
             }
@@ -1180,6 +1204,16 @@ class CommunityEvidenceLedger:
                 reasons.append(f"evidence_v2.receipt_{field}_binding_mismatch")
         if actor_id is not None and record.get("actor_id") != actor_id:
             reasons.append("evidence_v2.receipt_actor_id_binding_mismatch")
+        if record['schema_version'] == COMMUNITY_REPORT_RECEIPT_SCHEMA:
+            report = evidence.get('verification_report')
+            if (not isinstance(report, dict) or record.get('verification_method') != report.get('method')
+                    or record.get('report_sha256') != _sha256_json(report)
+                    or record.get('actor_id') != evidence.get('report_author_id')):
+                reasons.append('verification_report.receipt_report_binding_mismatch')
+            if record.get('evidence_sha256') != _sha256_json({name: value for name, value in evidence.items()
+                    if name != 'execution_receipt'}):
+                reasons.append('evidence_v2.receipt_evidence_tampered')
+            return tuple(reasons)
         attestation = _plain(evidence.get("execution_attestation")) or {}
         for field, expected in (
             ("manifest_ref", evidence.get("manifest_ref")),
@@ -1685,9 +1719,7 @@ class CommunityTestEvidenceWriteVerifier:
 
     @property
     def verification_methods(self) -> frozenset[str]:
-        # Authenticated V2 executions have a real replay, assertions, environment
-        # and a bound scenario definition. No inspection/report fallback exists.
-        return frozenset({"automated_test"})
+        return frozenset({"automated_test", "static_analysis", "inspection", "demonstration"})
 
     def verify(
         self,
@@ -1700,6 +1732,17 @@ class CommunityTestEvidenceWriteVerifier:
         actor_id: str | None,
         evidence: object,
     ) -> TestEvidenceWriteVerification:
+        if isinstance(evidence, dict) and evidence.get("evidence_class") == "verification_report":
+            from okto_pulse.core.domain.verification_report import VerificationReportEvidence
+            try:
+                parsed = VerificationReportEvidence.model_validate(evidence)
+                if parsed.verification_report.result != status or parsed.scenario_sha256 != scenario_sha256:
+                    raise ValueError("verification_report_binding_mismatch")
+            except (TypeError, ValueError):
+                return TestEvidenceWriteVerification(False, ("verification_report_invalid",))
+            reasons = self._ledger.verify(board_id=board_id, spec_id=spec_id, status=status,
+                scenario_id=scenario_id, scenario_sha256=scenario_sha256, actor_id=actor_id, evidence=evidence)
+            return TestEvidenceWriteVerification(not reasons, tuple(reasons))
         verdict = verify_community_evidence_v2(
             board_id=board_id,
             spec_id=spec_id,
@@ -1714,6 +1757,32 @@ class CommunityTestEvidenceWriteVerifier:
             verified=verdict.verified,
             reason_codes=verdict.reason_codes,
         )
+
+
+class CommunityTestVerificationReportIssuer:
+    """Sign an external submission using the same installation's evidence ledger.
+
+    Does not execute commands, fetch references, infer observations or confer
+    independent approval. Scope and permission are resolved by the Core use case.
+    """
+    def __init__(self, *, ledger: CommunityEvidenceLedger) -> None:
+        self._ledger = ledger
+
+    async def admit(self, request):
+        from okto_pulse.core.domain.verification_report import parse_verification_report, VerificationReportEvidence
+        report = parse_verification_report(request.report)
+        evidence = {
+            "evidence_class": "verification_report",
+            "verification_report": report.model_dump(mode="json"),
+            "report_author_id": request.actor_id,
+            "scenario_sha256": request.scenario_sha256,
+        }
+        # Validate the complete envelope before touching the key or ledger.
+        VerificationReportEvidence.model_validate({**evidence, "execution_receipt": "ev2r." + "0" * 32 + "." + "0" * 64})
+        evidence["execution_receipt"] = self._ledger.issue_verification_report(
+            board_id=request.board_id, spec_id=request.spec_id, scenario_id=request.scenario_id,
+            scenario_sha256=request.scenario_sha256, status=report.result, actor_id=request.actor_id, evidence=evidence)
+        return TestEvidenceExecutionResult(evidence=evidence)
 
 
 class CommunityTestEvidenceExecutionIssuer:
