@@ -798,52 +798,6 @@ same information:
 `{"error":"permission_denied","message":"...","required_permission":"board.read"}`.
 
 
-## `okto_pulse_kg_digest_layer_reconcile`
-
-Administrative board-scoped WRITE for the specific case where
-`okto_pulse_kg_digest_layer_mismatch_list` still reports DecisionDigest layer
-drift while health reports an idle queue. It enqueues a
-durable `consolidation_committed` event with `nodes_added=0`; the event contains
-no graph-node reference rows and does not require a consolidation-session audit
-parent (its `session_id` is correlation metadata only). It reuses the normal
-Global Discovery parity reconciler, does not rebuild the graph, and does not
-change either read-only diagnostic tool.
-
-The worker treats the per-board graph as authoritative and keyset-paginates
-every publishable digest source type (`embedding IS NOT NULL`), grouped by ID;
-any physical source count other than one fails closed. It rechecks that source
-inventory after reconciliation and again after flush before ACK, so concurrent
-insert/remove or embedding eligibility changes are retried rather than pruned
-from an inconsistent snapshot. It prunes vanished/unembedded global rows only
-after a complete guard proves no `DECISION_MENTIONS_ENTITY` or
-`DECISION_DERIVES_FROM` relationship would be lost, repairs duplicate or corrupt
-physical identities, and backfills missing identities.
-
-A repair is acknowledged only after close/fsync/reopen and a fresh-handle read verifies
-exactly one stable digest, one edge from the correct Board, and one total inbound `CONTAINS_DECISION`
-edge per source; invalid cross-board links are
-removed without deleting digest or clustering relationships. Verification is
-isolated per board after the batch-global flush, so one corrupt board does not
-retry healthy boards. Board `decision_count` is written from the absolute
-authoritative inventory and remains idempotent across retries. Structured logs
-report `duplicate_count`, `repaired_count`, `backfilled_count`,
-`layer_corrected_count`, `link_repaired_count`,
-`invalid_link_pruned_count` and `verified_count`.
-
-Repeated calls are idempotent by effect: each request receives a distinct audit
-event ID, while a converged source/global set produces no further graph change.
-Requires `kg.admin.historical_consolidation`.
-
-Args:
-    board_id: Board ID. Authentication, board access, realm and command scope
-        must all resolve to this same board.
-    reason: Required 3-128 character audit code. Use lowercase letters, digits,
-        `.`, `:`, `_` or `-`; do not put free-form prose or sensitive data here.
-
-Returns:
-    MCP Outcome V2 success with board_id, event_id, session_id, normalized
-    reason, enqueued=true and effect_idempotent=true. Authentication, permission,
-    board-scope and validation failures use structured error outcomes.
 
 ## `okto_pulse_kg_export_jsonld`
 

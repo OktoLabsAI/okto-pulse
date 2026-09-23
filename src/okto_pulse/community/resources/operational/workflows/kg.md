@@ -342,18 +342,9 @@ For adopted semantic guidelines, assessment receipts, governed exceptions,
 projection identity and rebuild behavior, read the single canonical
 protocol at `okto-pulse://reference/policy-compliance`.
 
-When KG Health reports `digest_vs_board_layer_mismatch` after all operational
-queues are idle, inspect the rows with
-`okto_pulse_kg_digest_layer_mismatch_list`. An authorized KG administrator may
-then call `okto_pulse_kg_digest_layer_reconcile` with a bounded audit reason and
-wait for the outbox to return to idle before verifying the mismatch list again.
-This is a parity sync, not a rebuild. The worker keyset-inventories authoritative
-publishable board sources with physical duplicate detection, guards stale prune
-against derived clustering relationships, repairs identities and Board links,
-and backfills missing identities. It revalidates the source inventory before a
-board-isolated ACK and requires a post-flush fresh-handle proof of one stable
-digest, the correct Board edge, and exactly one total inbound Board edge per
-source.
+KG Health aggregates publication-layer mismatch signals. Automatic internal
+workers reconcile projection debt; no public manual repair command is available.
+Substantive decisions and their applicable gates remain unchanged.
 
 ### Cognitive Provenance — Learning Taxonomy (S-KG-01)
 

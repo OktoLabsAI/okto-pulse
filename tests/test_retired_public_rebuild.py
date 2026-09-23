@@ -30,6 +30,7 @@ from okto_pulse.core.ports.mcp_resources import (
 
 
 RETIRED = (
+    "okto_pulse_kg_digest_layer_reconcile",
     "okto_pulse_kg_migrate_schema",
     "okto_pulse_kg_orphan_report",
     "okto_pulse_kg_orphan_backfill",
@@ -176,6 +177,7 @@ async def test_materialized_mcp_transport_rejects_removed_tools_before_handlers(
 
 def test_removed_permissions_are_absent_from_registry_and_presets():
     assert "kg.operations.integrity.backfill" not in ALL_FLAGS
+    assert "kg.operations.integrity.reconcile" not in ALL_FLAGS
     assert not any(flag.startswith((
         "kg.operations.rebuild.", "kg.operations.global_recovery.", "kg.operations.quarantine.",
         "kg.operations.global_outbox.", "kg.operations.tick.", "kg.operations.schema.",
@@ -183,7 +185,7 @@ def test_removed_permissions_are_absent_from_registry_and_presets():
     assert {policy.tool_name for policy in MCP_TOOL_PERMISSION_POLICIES}.isdisjoint(RETIRED)
     for preset in get_builtin_presets():
         operations = preset["flags"].get("kg", {}).get("operations", {})
-        assert "backfill" not in operations.get("integrity", {})
+        assert {"backfill", "reconcile"}.isdisjoint(operations.get("integrity", {}))
         assert {"rebuild", "global_recovery", "quarantine", "global_outbox", "tick", "schema"}.isdisjoint(operations)
 
 
