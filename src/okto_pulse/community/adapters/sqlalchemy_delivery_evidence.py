@@ -42,6 +42,7 @@ from okto_pulse.core.domain.delivery_evidence import (
 )
 from okto_pulse.core.domain.enums import CardType, CardStatus, TestScenarioStatus
 from okto_pulse.core.domain.execution_contract import execution_contract
+from okto_pulse.core.domain.verification_report import parse_verification_report, verification_report_passing_criteria
 from okto_pulse.core.domain.effective_delivery_coverage import (
     EffectiveDeliveryContext, ScopedTestFact, read_scoped_implementation, implementation_scope_current,
 )
@@ -111,11 +112,22 @@ class CommunityDeliveryEvidenceStore:
             if (not isinstance(criteria, (tuple, list))
                 or any(not isinstance(value, str) or not value for value in criteria)):
                 return replace(snapshot, complete=False, effective_context=False)
-        tests = tuple(ScopedTestFact(fact,
-            tuple(scenarios.get(fact.scenario_id, {}).get('linked_criteria') or ()),
-            scenarios.get(fact.scenario_id, {}).get('verification_method') or '') for fact in snapshot.tests)
+        tests = []
+        for fact in snapshot.tests:
+            scenario = scenarios.get(fact.scenario_id, {})
+            evidence = scenario.get('evidence') or {}
+            passing = None
+            if isinstance(evidence, dict) and evidence.get('evidence_class') == 'verification_report':
+                passing = ()
+                if fact.current_verified_run:
+                    try:
+                        passing = verification_report_passing_criteria(parse_verification_report(evidence.get('verification_report')))
+                    except (TypeError, ValueError):
+                        pass  # Malformed facts never acquire criterion credit.
+            tests.append(ScopedTestFact(fact, tuple(scenario.get('linked_criteria') or ()),
+                scenario.get('verification_method') or '', passing))
         return replace(snapshot, complete=snapshot.complete and plan.complete,
-            effective_context=EffectiveDeliveryContext(inventory, scoped, tests, supported_test_verification_methods()))
+            effective_context=EffectiveDeliveryContext(inventory, scoped, tuple(tests), supported_test_verification_methods()))
 
     async def _get(self, model, identity):
         if identity is None:

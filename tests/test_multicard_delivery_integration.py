@@ -202,12 +202,13 @@ async def test_failed_authorization_remains_visible_beside_passing_ui(ledger, tm
 
 
 @pytest.mark.asyncio
-async def test_ui_result_cannot_name_authorization_proof_to_gain_its_criterion(ledger, tmp_path):
+@pytest.mark.parametrize('obligation_ref', ['fr:fr', 'ac:ac-auth'], ids=['requirement', 'criterion'])
+async def test_ui_result_cannot_name_authorization_proof_to_gain_its_criterion(ledger, tmp_path, obligation_ref):
     session, store = await setup(ledger)
     ui = await delivery.record(store, implementation())
     authorization = await delivery.record(store, implementation("authorization"))
     with pytest.raises(ValueError, match="delivery_current_verified_test_and_implementation_required"):
-        await bind_test(session, store, tmp_path, "ui", [ui["id"], authorization["id"]], refs=["fr:fr"])
+        await bind_test(session, store, tmp_path, "ui", [ui["id"], authorization["id"]], refs=[obligation_ref])
     await session.commit()
     projection = await store.projection(BOARD, SPEC)
     assert not projection["allowed"]
@@ -262,3 +263,69 @@ async def test_two_partial_authorization_records_never_sum_to_the_inherited_obli
     assert not projection["allowed"] and scope["ac:ac-ui"]["test_satisfied"]
     assert scope["br:br"]["missing_card_ids"] == ("authorization",)
     assert not scope["fr:fr"]["implementation_satisfied"]
+
+
+@pytest.mark.asyncio
+async def test_one_signed_report_preserves_distinct_criterion_verdicts(ledger, tmp_path):
+    from okto_pulse.community.adapters.test_evidence import CommunityTestVerificationReportIssuer
+    from okto_pulse.core.ports.test_evidence import TestVerificationReportRequest as ReportRequest
+    from test_verification_report_admission import report
+
+    session, store = await setup(ledger)
+    spec = await session.get(Spec, SPEC)
+    scenario = {**spec.test_scenarios[0], 'verification_method': 'inspection',
+                'linked_criteria': ['ac-ui', 'ac-auth']}
+    await session.execute(update(Spec).where(Spec.id == SPEC).values(test_scenarios=[scenario]))
+    await session.execute(update(Card).where(Card.id == 'test').values(test_scenario_ids=[scenario['id']]))
+    await session.commit()
+    ui = await delivery.record(store, implementation())
+    authorization = await delivery.record(store, implementation('authorization'))
+    value = report()
+    value['observed_at'] = datetime.now(timezone.utc).isoformat()
+    value['result'] = 'failed'
+    value['observations'] = [
+        {**value['observations'][0], 'criterion_id': 'ac-ui', 'outcome': 'passed'},
+        {**value['observations'][0], 'observation_id': 'o2', 'criterion_id': 'ac-auth', 'outcome': 'failed'},
+    ]
+    evidence_ledger = CommunityEvidenceLedger(evidence_root=tmp_path / 'mixed-report')
+    issuer = CommunityTestVerificationReportIssuer(ledger=evidence_ledger)
+    register_test_evidence_write_verifier(CommunityTestEvidenceWriteVerifier(ledger=evidence_ledger))
+    digest = compute_test_scenario_semantic_sha256(board_id=BOARD, spec_id=SPEC,
+        scenario=scenario, acceptance_criteria=spec.acceptance_criteria)
+    issued = await issuer.admit(ReportRequest(board_id=BOARD, spec_id=SPEC,
+        scenario_id=scenario['id'], scenario_sha256=digest, actor_id='tester', report=value))
+    await session.execute(update(Spec).where(Spec.id == SPEC).values(
+        test_scenarios=[{**scenario, 'status': 'failed', 'evidence': dict(issued.evidence)}]))
+    await session.commit()
+    result = await delivery.record(store, delivery.command('test', scenario_id=scenario['id'],
+        idempotency_key='mixed-report', implementation_ids=[ui['id'], authorization['id']],
+        obligation_refs=list(dict.fromkeys(UI_REFS + AUTH_REFS))))
+    await session.commit()
+    projection = await store.projection(BOARD, SPEC)
+    scope = rows(projection)
+    assert scope['ac:ac-ui']['test_satisfied']
+    assert not scope['ac:ac-auth']['test_satisfied'] and not scope['br:br']['test_satisfied']
+    assert scope['fr:fr']['missing_criteria'] == ((authorization['id'], 'ac-auth'),)
+    assert not projection['allowed']
+    records = list(await session.scalars(select(CardDeliveryEvidenceRecordRow).where(CardDeliveryEvidenceRecordRow.kind == 'test')))
+    assert len(records) == 1 and records[0].id == result['id']
+    assert records[0].payload['test_result'] == 'failed'
+    assert len(list(evidence_ledger.receipt_root.glob('*.json'))) == 1
+    historical_payload = deepcopy(records[0].payload)
+    tampered = deepcopy(dict(issued.evidence))
+    tampered['verification_report']['observations'][1]['outcome'] = 'passed'
+    tampered['verification_report']['result'] = 'passed'
+    await session.execute(update(Spec).where(Spec.id == SPEC).values(
+        test_scenarios=[{**scenario, 'status': 'passed', 'evidence': tampered}]))
+    await session.commit()
+    assert not any(row['test_satisfied'] for row in (await store.projection(BOARD, SPEC))['rows'])
+    # A later applicable failure cannot be hidden by selecting the old binding.
+    value['observations'][0]['outcome'] = 'failed'
+    value['observed_at'] = datetime.now(timezone.utc).isoformat()
+    later = await issuer.admit(ReportRequest(board_id=BOARD, spec_id=SPEC,
+        scenario_id=scenario['id'], scenario_sha256=digest, actor_id='tester', report=value))
+    await session.execute(update(Spec).where(Spec.id == SPEC).values(
+        test_scenarios=[{**scenario, 'status': 'failed', 'evidence': dict(later.evidence)}]))
+    await session.commit()
+    assert not any(row['test_satisfied'] for row in (await store.projection(BOARD, SPEC))['rows'])
+    assert (await session.get(CardDeliveryEvidenceRecordRow, result['id'])).payload == historical_payload

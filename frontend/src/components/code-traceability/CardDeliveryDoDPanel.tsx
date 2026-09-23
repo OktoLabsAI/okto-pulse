@@ -180,7 +180,7 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
         </ul>
         <p className="mt-3 text-xs text-gray-400 dark:text-gray-500">
           {isTest
-            ? 'Save authenticated passed or failed results during execution. Delivery credit still requires a current passing run and completed cards.'
+            ? 'Save authenticated passed or failed results during execution. Delivery credit requires current passing evidence for every required criterion and completed cards.'
             : "Test-phase verification is aggregated at the Spec rollup; this card's DoD requires implementation proof only."}
         </p>
       </div>

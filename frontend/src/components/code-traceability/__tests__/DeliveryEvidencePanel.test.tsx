@@ -92,10 +92,22 @@ it('renders per-card grouping with proof counts and DoD statuses', async () => {
   expect(screen.getByText('TASK-143 — Rollup aggregation query')).toBeTruthy();
   expect(screen.getByText('1/2 obligations with proof · 1 unproven')).toBeTruthy();
   expect(screen.getByText('TEST-21 — DoD rejection scenario')).toBeTruthy();
-  expect(screen.getByText('Test card · records authenticated outcomes; delivery requires a current passing run')).toBeTruthy();
+  expect(screen.getByText('Test card · records authenticated outcomes; delivery requires current passing evidence for every required criterion')).toBeTruthy();
   expect(screen.getAllByText('Satisfied').length).toBe(1);
   expect(screen.getByText('In progress')).toBeTruthy();
   expect(screen.getByText('Excluded from DoD gate')).toBeTruthy();
+});
+
+it('keeps a mixed report partial when only its functional criterion passes', async () => {
+  const data = projection();
+  data.rows[0] = { ...data.rows[0], test_ids: ['shared-report'] };
+  data.rows[1] = { ...data.rows[1], test_ids: ['shared-report'], missing_criteria: [['impl', 'ac-timeout']] };
+  api.getDeliveryEvidence.mockResolvedValue(data);
+  render(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  expect(await screen.findByText('Blocked')).toBeInTheDocument();
+  expect(screen.getAllByTitle('Current passing evidence for this obligation')).toHaveLength(1);
+  expect(screen.getAllByTitle('Missing / stale')).toHaveLength(1);
+  expect(screen.getByText('Implementation impl: missing verification of ac-timeout')).toBeInTheDocument();
 });
 
 it('is strictly informational: no recording controls exist on this surface', async () => {

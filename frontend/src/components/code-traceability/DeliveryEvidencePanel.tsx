@@ -122,7 +122,7 @@ export function DeliveryEvidencePanel({ boardId, specId, skipDeliveryEvidence = 
                   <td className="px-2 text-green-600 dark:text-green-400" title={waivedImpl ? 'Explicitly waived — human authorization' : row.implementation_satisfied ? 'Accepted proof recorded' : 'No accepted proof'}>
                     {row.implementation_satisfied || waivedImpl ? '✓' : <span className="text-amber-500">◌</span>}
                   </td>
-                  <td className="px-2 text-green-600 dark:text-green-400" title={waivedTest ? 'Explicitly waived — human authorization' : row.test_satisfied ? 'Verified passing run' : 'Missing / stale'}>
+                  <td className="px-2 text-green-600 dark:text-green-400" title={waivedTest ? 'Explicitly waived — human authorization' : row.test_satisfied ? 'Current passing evidence for this obligation' : 'Missing / stale'}>
                     {row.test_satisfied || waivedTest ? '✓' : <span className="text-amber-500">◌</span>}
                   </td>
                 </tr>;
@@ -144,7 +144,7 @@ export function DeliveryEvidencePanel({ boardId, specId, skipDeliveryEvidence = 
                   <div className="truncate text-sm font-medium text-gray-700 dark:text-gray-200">{card.title}</div>
                   <div className="text-xs text-gray-400 dark:text-gray-500">
                     {isTest
-                      ? 'Test card · records authenticated outcomes; delivery requires a current passing run'
+                      ? 'Test card · records authenticated outcomes; delivery requires current passing evidence for every required criterion'
                       : card.obligations.length === 0
                         ? 'No derived obligations'
                         : proven === card.obligations.length
