@@ -533,7 +533,7 @@ async def get_kg_health_readiness_endpoint(
     board_id: str = Query(..., description="Board ID (uuid)"),
     profile: str = Query("summary", description="summary | full"),
     artifact_ref: str | None = Query(
-        None, description="Optional type:id ref to scope non_maskable_items"
+        None, description="Deprecated compatibility input; technical signals remain Board-scoped"
     ),
     user_id: str = Depends(require_user),
     db: PulseUnitOfWork = Depends(get_unit_of_work),
@@ -546,7 +546,8 @@ async def get_kg_health_readiness_endpoint(
     vs ``would_block_done`` + ``reasons`` + ``policy_reason``), the top-level
     ``cognitive_enforcement_mode`` / ``enforcement_active`` and
     ``non_maskable_items`` are exposed in BOTH the summary and full profiles — a
-    summary view never masks a technical blocker or its drill_down_tool. The full
+    summary view never masks a technical blocker; items are bounded Board aggregates,
+    without row IDs, raw errors or maintenance actions. The full
     profile only ADDS the prose ``health_issues`` + ``root_cause``. Read-only."""
     from okto_pulse.core.services.kg_health_readiness_service import InvalidProfileError
 
