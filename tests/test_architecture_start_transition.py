@@ -23,10 +23,7 @@ adopted_context = classification.adopted_context
 classified_context = classification.classified_context
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("candidate_count", [3, 31])
-async def test_pending_architecture_blocks_actual_start_without_workflow_mutation(classified_context, tmp_path, candidate_count):
-    db = classified_context
+async def complete_start_fixture(db, tmp_path, candidate_count=3):
     register_community_relational_effects(settings=SimpleNamespace(data_dir=str(tmp_path), port=1, environment="test"))
     provenance = DirectSpecDeliveryContextProvenance(
         value=DeliveryContext.GREENFIELD, source_spec_id="spec", source_spec_version=1)
@@ -78,6 +75,14 @@ async def test_pending_architecture_blocks_actual_start_without_workflow_mutatio
         "status": "not_started", "archived": False, "test_scenario_ids": ["scenario"]}],
         admitted_methods=supported_test_verification_methods())
     assert plan.complete, (plan.qualification, plan.inventory)
+    return app, planned, fields
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("candidate_count", [3, 31])
+async def test_pending_architecture_blocks_actual_start_without_workflow_mutation(classified_context, tmp_path, candidate_count):
+    db = classified_context
+    app, planned, fields = await complete_start_fixture(db, tmp_path, candidate_count)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         population = await read(db)
         assert len(population.candidates) == candidate_count
