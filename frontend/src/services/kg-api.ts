@@ -250,17 +250,7 @@ export function isHistoricalProgressTerminal(progress: HistoricalProgress | null
   return progress.status === 'inactive' && progress.progress >= progress.total;
 }
 
-export async function startHistorical(boardId: string) {
-  return kgFetch<{ status: string; total_artifacts?: number; board_id?: string }>(`/boards/${boardId}/historical-consolidation/start`, {
-    method: 'POST',
-  });
-}
 
-export async function cancelHistorical(boardId: string) {
-  return kgFetch<{ status: string; board_id?: string; removed?: number }>(`/boards/${boardId}/historical-consolidation/cancel`, {
-    method: 'POST',
-  });
-}
 
 export async function getHistoricalProgress(boardId: string) {
   return kgFetch<HistoricalProgress>(

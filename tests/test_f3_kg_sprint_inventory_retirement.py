@@ -8,7 +8,6 @@ from okto_pulse.community.adapters.kg_operational import (
     CommunitySqlAlchemyKGOperationalReadModel,
     CommunitySqlAlchemyKGWorkerQueue,
 )
-from okto_pulse.community.adapters.sqlalchemy_kg_governance import CommunitySqlAlchemyKGGovernanceStore
 from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import CommunitySemanticSession
 from okto_pulse.community.adapters.sqlalchemy_models import Board, ConsolidationDeadLetter, ConsolidationQueue, Spec
 from legacy_sprint_schema import Card as LegacyCard, Base, Sprint
@@ -53,8 +52,6 @@ async def test_inventory_and_recursive_retry_use_spec_card_without_sprint_querie
     event.listen(engine.sync_engine, "before_cursor_execute", capture)
     try:
         async with factory() as db:
-            facts = await CommunitySqlAlchemyKGGovernanceStore().list_historical_artifacts(db, board_id="b")
-            assert {(fact.artifact_type, fact.artifact_id) for fact in facts} == {("spec", "spec"), ("card", "card"), ("card", "orphan")}
             tree = await CommunitySqlAlchemyKGOperationalReadModel().build_pending_tree(db, board_id="b")
             assert set(tree["levels"]) == {"ideations", "refinements", "specs", "cards"}
             assert tree["tree"][0]["children"][0]["id"] == "card"

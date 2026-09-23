@@ -701,14 +701,11 @@ Required permission by affected family:
 | Cypher / natural / reflective query | `kg.power.cypher` / `kg.power.natural` |
 | schema info | `kg.power.schema_info` |
 | schema info with `include_internal=true` | additionally `kg.admin.settings_read` |
-| grounding / provenance drift / JSON-LD export | `board.read` |
-| health / health-readiness / canonical debt / partition integrity / digest mismatch / stale parity | `board.read` |
-| cognitive-readiness evaluations and lists / cognitive DLQ / bug cognitive closure evaluation | `board.read` |
-| orphan report / dead-letter list | `board.read` |
-| originates-from audit / takedown status / queue drill-down / connectivity DLQ diagnose and verify | `board.read` |
-| orphan backfill | `board.read` for `dry_run=true`; `kg.admin.historical_consolidation` for apply |
-| manual KG tick | `kg.admin.historical_consolidation` (board-effective for one board; global effective context for all boards) |
-| rebuild preflight / confirm / run | `kg.admin.wipe_board` |
+| grounding | `board.read` |
+| JSON-LD export | `board.read` and `kg.query.global` |
+| health / health-readiness | `board.read` and `kg.operations.health.read` |
+| cognitive-readiness evaluations and lists / bug cognitive closure evaluation | `board.read` and `kg.operations.cognitive.read` |
+| takedown status | `board.read` and `kg.operations.audit.read` |
 
 Board overrides are honored because checks use the resolved board context, not
 the global agent object. Explicit legacy flat principals retain their historical

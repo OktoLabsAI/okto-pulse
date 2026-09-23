@@ -74,8 +74,6 @@ from okto_pulse.community.adapters.kg_events import poll_community_kg_events
 from okto_pulse.core.application.use_cases.kg_routes_crud import (
     BoostNodeCommand,
     BoostNodeUseCase,
-    CancelHistoricalCommand,
-    CancelHistoricalUseCase,
     DeleteBoardKgCommand,
     DeleteBoardKgUseCase,
     GetHistoricalProgressCommand,
@@ -90,8 +88,6 @@ from okto_pulse.core.application.use_cases.kg_routes_crud import (
     ListPendingUseCase,
     RetryPendingEntryCommand,
     RetryPendingEntryUseCase,
-    StartHistoricalCommand,
-    StartHistoricalUseCase,
 )
 
 router = APIRouter(prefix="/kg", tags=["knowledge-graph"])
@@ -1574,40 +1570,8 @@ async def global_search(
         raise RESTAdapterContract.http_error(exc, not_found_detail="Board not found")
 
 
-@router.post("/boards/{board_id}/historical-consolidation/start")
-async def start_historical(
-    board_id: str,
-    actor: ActorContext = Depends(require_kg_board_writer_actor),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-):
-    """Start historical backfill."""
-    try:
-        result = await StartHistoricalUseCase().execute(
-            StartHistoricalCommand(board_id),
-            actor=actor,
-            uow=uow,
-        )
-    except (PermissionDeniedError, EntityNotFoundError) as exc:
-        raise RESTAdapterContract.http_error(exc, not_found_detail="Board not found")
-    return result.payload
 
 
-@router.post("/boards/{board_id}/historical-consolidation/cancel")
-async def cancel_historical_endpoint(
-    board_id: str,
-    actor: ActorContext = Depends(require_kg_board_writer_actor),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-):
-    """Cancel historical backfill."""
-    try:
-        result = await CancelHistoricalUseCase().execute(
-            CancelHistoricalCommand(board_id),
-            actor=actor,
-            uow=uow,
-        )
-    except (PermissionDeniedError, EntityNotFoundError) as exc:
-        raise RESTAdapterContract.http_error(exc, not_found_detail="Board not found")
-    return result.payload
 
 
 @router.get("/boards/{board_id}/historical-consolidation/progress")

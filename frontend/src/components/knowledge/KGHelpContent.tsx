@@ -130,7 +130,7 @@ function ConnectionTypesCatalog(): ReactNode {
 const OVERVIEW_MD = `## What is the Knowledge Graph?
 
 The Knowledge Graph (KG) is the structural memory of your board. Every time
-you create or update an ideation, a refinement, a spec, a sprint, a card, or
+you create or update an ideation, a refinement, a spec, a card, or
 a decision, a background pipeline consolidates that artifact into a graph of
 typed nodes connected by typed edges. You read the graph as a second view
 on top of your work — one that highlights dependencies, contradictions,
@@ -141,7 +141,7 @@ list.
 
 A flat kanban answers "what's on my plate?". The KG answers the harder
 questions: _What covers this requirement? Which decisions are still active?
-Who depends on this card? What did we supersede last sprint?_ The agent uses
+Who depends on this card? What did we supersede in earlier work?_ The agent uses
 these queries via MCP tools. This screen exposes the same power to humans.
 
 ## Who is this for?
@@ -160,7 +160,7 @@ happens in the background, so creating a card or updating a spec stays fast.
 
 ### 1. Event
 
-A write to any SDLC artifact (ideation, refinement, spec, sprint, card,
+A write to any SDLC artifact (ideation, refinement, spec, card,
 decision) publishes a domain event on the same transaction. If the write
 commits, the event is durably persisted; if it rolls back, no event fires.
 This is the **outbox pattern** — no chance of a silent split between what
@@ -175,8 +175,7 @@ at any time. Rows move through \`pending → in_progress → done\` (or
 
 ### 3. Worker
 
-A background worker polls the queue every few seconds (configurable in
-Settings) and claims a batch. It resolves the artifact's current content,
+A background worker claims a batch from the queue. It resolves the artifact's current content,
 computes a content hash, and skips the consolidation entirely if the hash
 matches a previously-committed version — this is what makes retry cheap
 and safe.
@@ -199,12 +198,9 @@ refreshes or the live-events indicator fires.
 
 ### When something goes wrong
 
-If a consolidation fails the row stays in \`failed\` state with the error
-text. Use the **Pending Queue** view's retry button to reprocess a single
-row, or **Historical Consolidation** (Settings) to backfill a whole board.
-For artifacts that never entered the queue at all (created before the
-pipeline existed, or via an import), the badge reads **\`not_queued\`** and
-only a historical backfill can pick them up.`;
+Open **Health** to see availability and limitations when knowledge is
+unavailable. Graph availability does not change the status of your work
+or satisfy delivery requirements.`;
 
 const HOW_TO_EXPLORE_MD = `The KG screen is a read-only visual query tool — you cannot mutate the
 graph here, only see it and ask questions of it.
@@ -257,10 +253,9 @@ Other sub-views reachable from the left nav:
 - **Pending Queue** — live state of the consolidation worker: what is
   waiting, what is running, what failed.
 - **Pending Tree** — the same info organized by SDLC hierarchy
-  (ideation → refinement → spec → sprint → card) with a status badge per
+  (ideation → refinement → spec → card) with a status badge per
   artifact.
-- **Settings** — toggle consolidation, pick an embedding provider, or
-  trigger historical backfill.`;
+- **Health** — availability, aggregate signals, and limitations.`;
 
 export const KG_HELP_SECTIONS: KGHelpSection[] = [
   {

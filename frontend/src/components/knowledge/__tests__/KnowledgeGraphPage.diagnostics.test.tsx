@@ -266,15 +266,12 @@ describe('KnowledgeGraphPage — historical completion release', () => {
     expect(graph).toHaveBeenCalledTimes(2);
   });
 
-  it('does not refresh from an onboarding request after it was unmounted', async () => {
-    let release!: () => void;
-    vi.spyOn(kgApi, 'getHistoricalProgress').mockImplementation(() => new Promise((resolve) => {
-      release = () => resolve(completedHistorical);
-    }));
+  it('does not start an onboarding request or refresh after unmount', () => {
+    const historical = vi.spyOn(kgApi, 'getHistoricalProgress');
     const onRefresh = vi.fn();
     const { unmount } = render(<EmptyState boardId="board-123" onRefresh={onRefresh} />);
     unmount();
-    await act(async () => { release(); });
+    expect(historical).not.toHaveBeenCalled();
     expect(onRefresh).not.toHaveBeenCalled();
   });
 

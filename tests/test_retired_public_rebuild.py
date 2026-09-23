@@ -118,6 +118,25 @@ def test_registered_rest_app_returns_uniform_absence_without_authorization_or_da
     assert response.json() == {"detail": "Not Found"}
 
 
+@pytest.mark.parametrize("action", ["start", "cancel"])
+@pytest.mark.parametrize("board", ["missing", "foreign", "owned"])
+def test_historical_writers_are_absent_before_authority_or_storage(action, board):
+    from okto_pulse.community.api.kg_routes import require_kg_board_writer_actor
+
+    def forbidden():
+        pytest.fail("Retired historical control resolved authority or storage")
+
+    app = FastAPI()
+    app.include_router(api_router)
+    app.dependency_overrides[get_unit_of_work] = forbidden
+    app.dependency_overrides[require_kg_board_writer_actor] = forbidden
+    with TestClient(app) as client:
+        response = client.post(f"/api/v1/kg/boards/{board}/historical-consolidation/{action}")
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Not Found"}
+    assert f"/api/v1/kg/boards/{{board_id}}/historical-consolidation/{action}" not in app.openapi()["paths"]
+
+
 @pytest.mark.parametrize(("method", "path"), [
     ("GET", "/api/v1/kg/canonical-debt"),
     ("POST", "/api/v1/kg/canonical-debt/debt-1/retry"),
@@ -194,6 +213,8 @@ def test_removed_permissions_are_absent_from_registry_and_presets():
     assert "kg.operations.integrity.backfill" not in ALL_FLAGS
     assert "kg.operations.integrity.reconcile" not in ALL_FLAGS
     assert "kg.operations.integrity.read" not in ALL_FLAGS
+    assert "kg.operations.historical.start" not in ALL_FLAGS
+    assert "kg.operations.historical.cancel" not in ALL_FLAGS
     assert not any(flag.startswith((
         "kg.operations.rebuild.", "kg.operations.global_recovery.", "kg.operations.quarantine.",
         "kg.operations.global_outbox.", "kg.operations.tick.", "kg.operations.schema.",
