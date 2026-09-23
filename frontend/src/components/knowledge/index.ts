@@ -4,6 +4,5 @@ export { NodeDetailPanel } from './NodeDetailPanel';
 export { GraphControlsPanel } from './GraphControlsPanel';
 export { EmptyState } from './EmptyState';
 export { AuditLogView } from './AuditLogView';
-export { PendingQueueView } from './PendingQueueView';
 export { PrivacyView } from './PrivacyView';
 export { GlobalSearchView } from './GlobalSearchView';

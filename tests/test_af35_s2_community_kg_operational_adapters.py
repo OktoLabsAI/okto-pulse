@@ -224,9 +224,6 @@ async def test_af35_s2_community_kg_operational_adapters_register_and_persist(
             "claimed": 2,
             "pending": 1,
         }
-        tree = await read_model.build_pending_tree(session, board_id=board_id, depth=4)
-        assert tree["total_pending"] == 1
-        assert tree["tree"][0]["id"] == "spec-tree"
         assert await read_model.graph_node_ref_operation_counts(
             session,
             board_id=board_id,
@@ -260,12 +257,6 @@ async def test_af35_s2_community_kg_operational_adapters_register_and_persist(
             ),
             errors=[{"attempt": 2, "message": "final"}],
         )
-        retry_result = await queue.retry_pending_entry(
-            session,
-            board_id=board_id,
-            queue_entry_id="queue-retry",
-            recursive=True,
-        )
         await get_kg_worker_audit_port().emit_outbox_event(
             session,
             event_id="evt-emitted",
@@ -290,17 +281,7 @@ async def test_af35_s2_community_kg_operational_adapters_register_and_persist(
         await session.commit()
 
         assert dlq_row.original_queue_id == "queue-dlq"
-        assert retry_result == {
-            "board_id": board_id,
-            "queue_entry_id": "queue-retry",
-            "recursive": True,
-            "reopened_count": 1,
-            "reopened_ids": ["queue-retry"],
-        }
         assert await session.get(ConsolidationQueue, "queue-dlq") is None
-        retry_row = await session.get(ConsolidationQueue, "queue-retry")
-        assert retry_row is not None and retry_row.status == "pending"
-        assert retry_row.source == "retry_from_ui"
         assert (
             await session.execute(
                 select(GlobalUpdateOutbox).where(

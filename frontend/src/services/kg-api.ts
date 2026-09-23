@@ -208,68 +208,6 @@ export async function globalSearch(
   );
 }
 
-// Pending queue
-export async function listPending(boardId: string) {
-  return kgFetch<{
-    entries: Array<{
-      id: string;
-      board_id: string;
-      artifact_id: string;
-      artifact_type: string;
-      priority: string;
-      source: string;
-      status: string;
-      triggered_at: string | null;
-      claimed_by_session_id: string | null;
-    }>;
-    count: number;
-  }>(`/boards/${boardId}/pending`);
-}
-
-// Pending queue — hierarchical tree (spec f33eb9ca)
-export interface PendingTreeNode {
-  id: string;
-  type: 'ideation' | 'refinement' | 'spec' | 'card';
-  title: string;
-  status: string;
-  queue_entry_id?: string | null;
-  retry_count?: number;
-  age_seconds?: number;
-  layer?: string;
-  last_error?: string | null;
-  children: PendingTreeNode[];
-}
-
-export interface PendingTreeLevels {
-  ideations: { pending: number; in_progress: number; done: number; failed: number };
-  refinements: PendingTreeLevels['ideations'];
-  specs: PendingTreeLevels['ideations'];
-  cards: PendingTreeLevels['ideations'];
-}
-
-export async function getPendingTree(boardId: string, depth = 4) {
-  return kgFetch<{
-    board_id: string;
-    depth: number;
-    total_pending: number;
-    levels: PendingTreeLevels;
-    tree: PendingTreeNode[];
-  }>(`/boards/${boardId}/pending/tree?depth=${depth}`);
-}
-
-export async function retryPending(boardId: string, queueEntryId: string, recursive = false) {
-  return kgFetch<{
-    board_id: string;
-    queue_entry_id: string;
-    recursive: boolean;
-    reopened_count: number;
-    reopened_ids: string[];
-  }>(
-    `/boards/${boardId}/pending/${queueEntryId}/retry?recursive=${recursive}`,
-    { method: 'POST' },
-  );
-}
-
 // Delete KG (right-to-erasure)
 export async function deleteKG(boardId: string) {
   return kgFetch<void>(`/boards/${boardId}/kg`, { method: 'DELETE' });

@@ -29,7 +29,6 @@ from okto_pulse.community.api.architecture import router as architecture_router
 from okto_pulse.community.api.presets import router as presets_router
 from okto_pulse.community.api.kg_routes import router as kg_router
 from okto_pulse.community.api.kg_exploration import router as kg_exploration_router
-from okto_pulse.community.api.kg_projection_repair import router as kg_projection_repair_router
 from okto_pulse.community.api.me import router as me_router
 from okto_pulse.community.api.discovery import router as discovery_router
 from okto_pulse.community.api.settings import router as settings_router
@@ -110,7 +109,6 @@ api_router.include_router(me_router, tags=["me"])
 api_router.include_router(discovery_router, tags=["discovery"])
 api_router.include_router(settings_router, tags=["settings"])
 api_router.include_router(kg_health_router, tags=["kg-health"])
-api_router.include_router(kg_projection_repair_router, tags=["kg-projection-repair"])
 api_router.include_router(kg_cognitive_pending_router, tags=["kg-cognitive-pending"])
 api_router.include_router(bug_cognitive_closure_router, tags=["bug-cognitive-closure"])
 api_router.include_router(amendment_revisions_router, tags=["amendment-revisions"])

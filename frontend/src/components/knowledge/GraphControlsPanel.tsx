@@ -23,7 +23,7 @@ import {
 import { usePermissions } from '@/hooks/usePermissions';
 import { RelevanceHistogram } from './RelevanceHistogram';
 
-type SubView = 'graph' | 'audit' | 'pending' | 'pending_tree' | 'privacy' | 'global';
+type SubView = 'graph' | 'audit' | 'privacy' | 'global';
 
 export interface Filters {
   types: KGNodeType[];
@@ -64,8 +64,6 @@ const SUB_VIEWS: { key: SubView; label: string }[] = [
   { key: 'graph', label: 'Graph' },
   { key: 'global', label: 'Global Discovery' },
   { key: 'audit', label: 'Audit Log' },
-  { key: 'pending', label: 'Pending Queue' },
-  { key: 'pending_tree', label: 'Pending Tree' },
   { key: 'privacy', label: 'Privacy' },
 ];
 
@@ -91,8 +89,6 @@ const CODE_TRACEABILITY_FACETS: Array<{
 const SUB_VIEW_GATES: Partial<Record<SubView, string>> = {
   audit: 'kg.operations.audit.read',
   privacy: 'kg.operations.board.erase',
-  pending: 'kg.operations.queue.read',
-  pending_tree: 'kg.operations.queue.read',
   global: 'kg.query.global',
 };
 

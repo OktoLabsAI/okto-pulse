@@ -168,10 +168,8 @@ the board says and what the graph eventually shows.
 
 ### 2. Queue
 
-Each event is translated into a consolidation-queue row. The queue is a
-plain Postgres/SQLite table so you can inspect it in the Pending Queue view
-at any time. Rows move through \`pending → in_progress → done\` (or
-\`failed\` on error, with an explicit \`last_error\` column for debugging).
+Events are processed automatically in the background. Health reports aggregate
+queue status and delays when available.
 
 ### 3. Worker
 
@@ -245,17 +243,13 @@ persisted to localStorage so your preference survives reloads.
 
 ### Beyond the canvas
 
-Other sub-views reachable from the left nav:
+Product views and diagnostics:
 
 - **Global Discovery** — semantic search across boards you can access.
 - **Audit Log** — every consolidation session the worker committed, with
   counts of nodes/edges added or superseded.
-- **Pending Queue** — live state of the consolidation worker: what is
-  waiting, what is running, what failed.
-- **Pending Tree** — the same info organized by SDLC hierarchy
-  (ideation → refinement → spec → card) with a status badge per
-  artifact.
-- **Health** — availability, aggregate signals, and limitations.`;
+- **Privacy** — deletion of Board KG data with the dedicated erasure permission.
+- **Health** — availability, aggregate signals, and limitations, from the main menu.`;
 
 export const KG_HELP_SECTIONS: KGHelpSection[] = [
   {

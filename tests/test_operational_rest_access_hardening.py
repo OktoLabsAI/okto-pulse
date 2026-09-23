@@ -233,11 +233,6 @@ BOARD_SURFACES = [
     ),
     ("DELETE", "/api/v1/kg/boards/board-b/kg", None),
     ("POST", "/api/v1/kg/boards/board-b/cypher", None),
-    (
-        "POST",
-        "/api/v1/kg/boards/board-b/pending/queue-1/retry",
-        None,
-    ),
     ("POST", "/api/v1/kg/boards/board-b/nodes/node-1/boost", None),
     (
         "POST",
@@ -271,11 +266,6 @@ WRITE_SURFACES = [
         },
     ),
     ("DELETE", "/api/v1/kg/boards/board-b/kg", None),
-    (
-        "POST",
-        "/api/v1/kg/boards/board-b/pending/queue-1/retry",
-        None,
-    ),
     ("POST", "/api/v1/kg/boards/board-b/nodes/node-1/boost", None),
     (
         "POST",
@@ -302,7 +292,6 @@ WRITE_SURFACES = [
         "candidate-command",
         "delete-board-kg",
         "cypher",
-        "retry-pending",
         "boost-node",
         "audit-undo",
     ],
@@ -338,7 +327,6 @@ def test_board_surface_returns_same_404_before_downstream_access(
         "cognitive-clear",
         "candidate-command",
         "delete-board-kg",
-        "retry-pending",
         "boost-node",
         "audit-undo",
     ],

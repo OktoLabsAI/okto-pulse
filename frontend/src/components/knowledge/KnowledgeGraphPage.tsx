@@ -22,8 +22,6 @@ import { GraphControlsPanel } from './GraphControlsPanel';
 import type { Filters } from './GraphControlsPanel';
 import { EmptyState } from './EmptyState';
 import { AuditLogView } from './AuditLogView';
-import { PendingQueueView } from './PendingQueueView';
-import { PendingQueueTree } from './PendingQueueTree';
 import { KGSyncIndicator } from './KGSyncIndicator';
 import { PrivacyView } from './PrivacyView';
 import { GlobalSearchView } from './GlobalSearchView';
@@ -63,7 +61,7 @@ export function resolveGraphTotalNodeCount(
     : undefined;
 }
 
-type SubView = 'graph' | 'audit' | 'pending' | 'pending_tree' | 'privacy' | 'global';
+type SubView = 'graph' | 'audit' | 'privacy' | 'global';
 
 // 500 (era 100): com a projeção paginada, edges só materializam quando as
 // duas pontas chegam ao cliente — páginas pequenas deixavam o grafo
@@ -688,10 +686,6 @@ export function KnowledgeGraphPage({ boardId }: Props) {
           </>
         ) : subView === 'audit' ? (
           <AuditLogView boardId={boardId} />
-        ) : subView === 'pending' ? (
-          <PendingQueueView boardId={boardId} />
-        ) : subView === 'pending_tree' ? (
-          <PendingQueueTree boardId={boardId} />
         ) : subView === 'privacy' ? (
           <PrivacyView boardId={boardId} />
         ) : subView === 'global' ? (

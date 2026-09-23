@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import uuid
-from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
@@ -18,21 +17,16 @@ from okto_pulse.community.adapters.code_traceability_kg_sql import (
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
     Board,
-    Card,
     CanonicalDebt,
     ConsolidationAudit,
     ConsolidationDeadLetter,
     ConsolidationQueue,
     GlobalUpdateOutbox,
-    Ideation,
     KuzuNodeRef,
-    Refinement,
-    Spec,
 )
 from okto_pulse.core.domain.code_traceability_kg import (
     CODE_TRACEABILITY_KG_SUBTYPES,
     KGDeadLetterReprocessScope,
-    is_code_traceability_artifact_type,
 )
 from okto_pulse.core.ports.kg_operational import (
     KGCanonicalDebtSignal,
@@ -103,215 +97,7 @@ class CommunitySqlAlchemyKGOperationalReadModel(KGOperationalReadModelPort):
         rows = (await context.execute(select(Board.id).limit(limit))).scalars().all()
         return list(rows)
 
-    async def list_pending_entries(
-        self,
-        context: Any,
-        *,
-        board_id: str,
-        include_code_traceability: bool = True,
-    ) -> Sequence[Mapping[str, Any]]:
-        statement = select(ConsolidationQueue).where(
-            ConsolidationQueue.board_id == board_id
-        )
-        if not include_code_traceability:
-            statement = statement.where(
-                ConsolidationQueue.artifact_type.not_in(
-                    CODE_TRACEABILITY_KG_SUBTYPES
-                )
-            )
-        rows = (
-            await context.execute(
-                statement.order_by(ConsolidationQueue.triggered_at.desc()).limit(100)
-            )
-        ).scalars().all()
-        return [
-            {
-                "id": row.id,
-                "board_id": row.board_id,
-                "artifact_id": row.artifact_id,
-                "artifact_type": row.artifact_type,
-                "priority": row.priority,
-                "source": row.source,
-                "status": row.status,
-                "triggered_at": (
-                    row.triggered_at.isoformat() if row.triggered_at else None
-                ),
-                "claimed_by_session_id": row.claimed_by_session_id,
-            }
-            for row in rows
-        ]
 
-    async def build_pending_tree(
-        self,
-        context: Any,
-        *,
-        board_id: str,
-        depth: int = 4,
-    ) -> Mapping[str, Any]:
-        q_rows = (
-            await context.execute(
-                select(ConsolidationQueue).where(
-                    ConsolidationQueue.board_id == board_id
-                )
-            )
-        ).scalars().all()
-        q_by_artifact: dict[tuple[str, str], ConsolidationQueue] = {
-            (row.artifact_type, row.artifact_id): row for row in q_rows
-        }
-
-        def _queue_meta(artifact_type: str, artifact_id: str) -> dict[str, Any]:
-            entry = q_by_artifact.get((artifact_type, artifact_id))
-            if entry is None:
-                return {
-                    "status": "not_queued",
-                    "queued_age_seconds": None,
-                    "retry_count": 0,
-                    "layer": None,
-                    "last_error": None,
-                }
-            age = None
-            if entry.triggered_at is not None:
-                triggered_at = entry.triggered_at
-                if triggered_at.tzinfo is None:
-                    triggered_at = triggered_at.replace(tzinfo=timezone.utc)
-                age = (datetime.now(timezone.utc) - triggered_at).total_seconds()
-            return {
-                "status": entry.status,
-                "queued_age_seconds": int(age) if age is not None else None,
-                "retry_count": 0,
-                "layer": entry.source or "unknown",
-                "last_error": None,
-            }
-
-        ideas = (
-            await context.execute(select(Ideation).where(Ideation.board_id == board_id))
-        ).scalars().all()
-        refinements = (
-            await context.execute(
-                select(Refinement).where(Refinement.board_id == board_id)
-            )
-        ).scalars().all()
-        specs = (
-            await context.execute(select(Spec).where(Spec.board_id == board_id))
-        ).scalars().all()
-        cards = (
-            await context.execute(select(Card).where(Card.board_id == board_id))
-        ).scalars().all()
-
-        refinements_by_ideation: dict[str, list[Any]] = defaultdict(list)
-        for row in refinements:
-            refinements_by_ideation[row.ideation_id or ""].append(row)
-        specs_by_refinement: dict[str, list[Any]] = defaultdict(list)
-        specs_orphan: list[Any] = []
-        for row in specs:
-            if row.refinement_id:
-                specs_by_refinement[row.refinement_id].append(row)
-            else:
-                specs_orphan.append(row)
-        cards_by_spec: dict[str, list[Any]] = defaultdict(list)
-        for row in cards:
-            cards_by_spec[row.spec_id].append(row)
-
-        levels_counter = {
-            level: {
-                "pending": 0,
-                "in_progress": 0,
-                "done": 0,
-                "failed": 0,
-                "not_queued": 0,
-            }
-            for level in ("ideations", "refinements", "specs", "cards")
-        }
-
-        def _tally(level: str, artifact_type: str, artifact_id: str) -> None:
-            status = _queue_meta(artifact_type, artifact_id)["status"]
-            levels_counter[level][status] = levels_counter[level].get(status, 0) + 1
-
-        def _card_node(row: Any) -> dict[str, Any]:
-            meta = _queue_meta("card", row.id)
-            _tally("cards", "card", row.id)
-            return {
-                "id": row.id,
-                "type": "card",
-                "title": row.title,
-                "card_type": (
-                    str(row.card_type) if getattr(row, "card_type", None) else "normal"
-                ),
-                **meta,
-                "children": [],
-            }
-
-        def _spec_node(row: Any) -> dict[str, Any]:
-            meta = _queue_meta("spec", row.id)
-            _tally("specs", "spec", row.id)
-            direct_cards = [
-                _card_node(card) for card in cards_by_spec.get(row.id, [])
-            ]
-            if depth < 4:
-                direct_cards = []
-            return {
-                "id": row.id,
-                "type": "spec",
-                "title": row.title,
-                **meta,
-                "children": direct_cards,
-            }
-
-        def _refinement_node(row: Any) -> dict[str, Any]:
-            meta = _queue_meta("refinement", row.id)
-            _tally("refinements", "refinement", row.id)
-            spec_children = [
-                _spec_node(spec) for spec in specs_by_refinement.get(row.id, [])
-            ]
-            if depth < 3:
-                spec_children = []
-            return {
-                "id": row.id,
-                "type": "refinement",
-                "title": row.title,
-                **meta,
-                "children": spec_children,
-            }
-
-        tree: list[dict[str, Any]] = []
-        for row in ideas:
-            meta = _queue_meta("ideation", row.id)
-            _tally("ideations", "ideation", row.id)
-            children = [
-                _refinement_node(refinement)
-                for refinement in refinements_by_ideation.get(row.id, [])
-            ]
-            if depth < 2:
-                children = []
-            tree.append({
-                "id": row.id,
-                "type": "ideation",
-                "title": row.title,
-                **meta,
-                "children": children,
-            })
-        for row in specs_orphan:
-            tree.append(_spec_node(row))
-        # A Card may legitimately have no Spec, even when legacy metadata
-        # named a Sprint. Keep it at Board scope without inventing a parent.
-        for row in cards_by_spec.get(None, []):
-            tree.append(_card_node(row))
-
-        total_pending = sum(
-            sum(
-                value
-                for key, value in counts.items()
-                if key in ("pending", "in_progress")
-            )
-            for counts in levels_counter.values()
-        )
-        return {
-            "board_id": board_id,
-            "depth": depth,
-            "total_pending": total_pending,
-            "levels": levels_counter,
-            "tree": tree,
-        }
 
     async def queue_status_counts(
         self,
@@ -709,137 +495,6 @@ class CommunitySqlAlchemyKGWorkerQueue(KGWorkerQueuePort):
             "idempotency_key": "board_id+artifact_type+artifact_id",
         }
 
-    async def retry_pending_entry(
-        self,
-        context: Any,
-        *,
-        board_id: str,
-        queue_entry_id: str,
-        recursive: bool = False,
-        include_code_traceability: bool = True,
-    ) -> Mapping[str, Any] | None:
-        entry = await context.get(ConsolidationQueue, queue_entry_id, populate_existing=True)
-        if entry is None or entry.board_id != board_id or entry.artifact_type == "sprint" or entry.status == SUPERSEDED_WORK_STATUS:
-            return None
-        if await context.scalar(select(retired_work_origin_exists(entry.board_id, entry.artifact_type, entry.artifact_id))):
-            return None
-        if (
-            not include_code_traceability
-            and is_code_traceability_artifact_type(entry.artifact_type)
-        ):
-            return None
-
-        now = datetime.now(timezone.utc)
-
-        def _reopen(row: ConsolidationQueue, *, source: str) -> None:
-            row.status = "pending"
-            row.source = source
-            row.last_error = None
-            row.next_retry_at = now
-            row.claimed_at = None
-            row.claim_timeout_at = None
-            row.worker_id = None
-            row.claimed_by_session_id = None
-            row.claim_token = None
-
-        _reopen(entry, source="retry_from_ui")
-        reopened = [str(entry.id)]
-
-        if recursive:
-            descendants: list[tuple[str, str]] = []
-            spec_ids: list[str] = []
-
-            if entry.artifact_type == "ideation":
-                refinement_ids = list(
-                    (
-                        await context.execute(
-                            select(Refinement.id).where(
-                                Refinement.board_id == board_id,
-                                Refinement.ideation_id == entry.artifact_id,
-                            )
-                        )
-                    ).scalars().all()
-                )
-                descendants.extend(
-                    ("refinement", refinement_id)
-                    for refinement_id in refinement_ids
-                )
-                direct_spec_ids = list(
-                    (
-                        await context.execute(
-                            select(Spec.id).where(
-                                Spec.board_id == board_id,
-                                Spec.ideation_id == entry.artifact_id,
-                            )
-                        )
-                    ).scalars().all()
-                )
-                spec_ids.extend(direct_spec_ids)
-                if refinement_ids:
-                    spec_ids.extend(
-                        (
-                            await context.execute(
-                                select(Spec.id).where(
-                                    Spec.board_id == board_id,
-                                    Spec.refinement_id.in_(refinement_ids),
-                                )
-                            )
-                        ).scalars().all()
-                    )
-            elif entry.artifact_type == "refinement":
-                spec_ids.extend(
-                    (
-                        await context.execute(
-                            select(Spec.id).where(
-                                Spec.board_id == board_id,
-                                Spec.refinement_id == entry.artifact_id,
-                            )
-                        )
-                    ).scalars().all()
-                )
-            elif entry.artifact_type == "spec":
-                spec_ids.append(str(entry.artifact_id))
-
-            spec_ids = list(dict.fromkeys(spec_ids))
-            descendants.extend(("spec", spec_id) for spec_id in spec_ids)
-
-            if spec_ids:
-                card_ids = list(
-                    (
-                        await context.execute(
-                            select(Card.id).where(
-                                Card.board_id == board_id,
-                                Card.spec_id.in_(spec_ids),
-                            )
-                        )
-                    ).scalars().all()
-                )
-                descendants.extend(("card", card_id) for card_id in card_ids)
-            for artifact_type, artifact_id in dict.fromkeys(descendants):
-                row = (
-                    await context.execute(
-                        select(ConsolidationQueue).where(
-                            ConsolidationQueue.board_id == board_id,
-                            ConsolidationQueue.artifact_type == artifact_type,
-                            ConsolidationQueue.artifact_id == artifact_id,
-                            ConsolidationQueue.status != SUPERSEDED_WORK_STATUS,
-                            ~retired_work_origin_exists(ConsolidationQueue.board_id, ConsolidationQueue.artifact_type, ConsolidationQueue.artifact_id),
-                        )
-                    )
-                ).scalar_one_or_none()
-                if row is None or row.id in reopened or row.status == SUPERSEDED_WORK_STATUS:
-                    continue
-                _reopen(row, source="retry_from_ui_recursive")
-                reopened.append(str(row.id))
-
-        await context.commit()
-        return {
-            "board_id": board_id,
-            "queue_entry_id": queue_entry_id,
-            "recursive": recursive,
-            "reopened_count": len(reopened),
-            "reopened_ids": reopened,
-        }
 
 
 class CommunitySqlAlchemyKGWorkerAudit(KGWorkerAuditPort):

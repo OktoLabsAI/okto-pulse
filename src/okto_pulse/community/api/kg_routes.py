@@ -80,12 +80,6 @@ from okto_pulse.core.application.use_cases.kg_routes_crud import (
     GlobalSearchUseCase,
     ListAuditCommand,
     ListAuditUseCase,
-    ListPendingCommand,
-    ListPendingTreeCommand,
-    ListPendingTreeUseCase,
-    ListPendingUseCase,
-    RetryPendingEntryCommand,
-    RetryPendingEntryUseCase,
 )
 
 router = APIRouter(prefix="/kg", tags=["knowledge-graph"])
@@ -1695,63 +1689,8 @@ async def schema_info(
         return _graph_problem(exc)
 
 
-@router.get("/boards/{board_id}/pending")
-async def list_pending(
-    board_id: str,
-    actor: ActorContext = Depends(require_kg_board_actor),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-):
-    """List pending consolidation queue entries."""
-    try:
-        result = await ListPendingUseCase().execute(
-            ListPendingCommand(board_id),
-            actor=actor,
-            uow=uow,
-        )
-        return {"entries": result.entries, "count": len(result.entries)}
-    except (PermissionDeniedError, EntityNotFoundError) as exc:
-        raise RESTAdapterContract.http_error(exc, not_found_detail="Board not found")
-    except Exception:
-        return {"entries": [], "count": 0}
 
 
-@router.get("/boards/{board_id}/pending/tree")
-async def list_pending_tree(
-    board_id: str,
-    depth: int = Query(4, ge=1, le=4),
-    actor: ActorContext = Depends(require_kg_board_actor),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-):
-    """Hierarchical pending-queue view (spec f33eb9ca — Layer 4 Pending Queue UI).
-
-    Returns a 4-level tree: Ideations → Refinements → Specs →
-    Cards, each level annotated with aggregate status counters drawn from
-    `consolidation_queue`. The UI renders this via
-    `frontend/src/components/knowledge/PendingQueueTree.tsx` with lazy
-    expansion by level (BR `Tree Lazy Fetch por Nível`).
-
-    Payload shape (stable — consumed by React component):
-        {
-          "board_id": str,
-          "total_pending": int,
-          "levels": {ideations: {pending,in_progress,done,failed},
-                     refinements: ..., specs: ..., cards: ...},
-          "tree": [ideation-nodes with nested children]
-        }
-
-    The queue-state fetch + in-Python hierarchy join lives in
-    ``kg/dashboard_readers.build_pending_tree`` (a service reader) so this
-    endpoint holds no relational symbol; the use case returns the payload verbatim.
-    """
-    try:
-        result = await ListPendingTreeUseCase().execute(
-            ListPendingTreeCommand(board_id, depth=depth),
-            actor=actor,
-            uow=uow,
-        )
-    except (PermissionDeniedError, EntityNotFoundError) as exc:
-        raise RESTAdapterContract.http_error(exc, not_found_detail="Board not found")
-    return result.payload
 
 
 # ---------------------------------------------------------------------------
@@ -2053,40 +1992,6 @@ async def stream_kg_events(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/boards/{board_id}/pending/{queue_entry_id}/retry")
-async def retry_pending_entry(
-    board_id: str,
-    queue_entry_id: str,
-    recursive: bool = Query(False, description="Also re-enqueue descendant entries"),
-    actor: ActorContext = Depends(require_kg_board_writer_actor),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-):
-    """Re-queue a failed/done ConsolidationQueue entry so the worker
-    reprocesses it. `recursive=true` also re-enqueues descendants below
-    the artifact in the Ideation→Refinement→Spec→Card hierarchy.
-
-    Idempotency: content_hash BR still owns "nothing actually changed"
-    no-op behaviour downstream, so retrying an unchanged artifact is a
-    cheap round-trip that touches the outbox once.
-
-    The mutation + recursive sweep + commit + worker signal live in
-    ``kg/governance.retry_pending_entry`` (a service write); a missing entry comes
-    back as ``EntityNotFoundError`` which this adapter maps to the legacy 404
-    ("queue entry not found").
-    """
-    try:
-        result = await RetryPendingEntryUseCase().execute(
-            RetryPendingEntryCommand(board_id, queue_entry_id, recursive=recursive),
-            actor=actor,
-            uow=uow,
-        )
-    except EntityNotFoundError as exc:
-        raise RESTAdapterContract.http_error(
-            exc, not_found_detail="queue entry not found"
-        )
-    except PermissionDeniedError as exc:
-        raise RESTAdapterContract.http_error(exc)
-    return result.payload
 
 
 @router.post("/boards/{board_id}/nodes/{node_id}/boost")

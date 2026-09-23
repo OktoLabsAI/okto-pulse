@@ -16,7 +16,8 @@ describe('HelpPanel after maintenance CLI retirement', () => {
     expect(dialog).not.toHaveTextContent(/run tick now|save & run now|kg_tick_run_now|manual tick|danger zone/i);
     expect(dialog).not.toHaveTextContent(/kg_migrate_schema|kg_orphan_report|kg_orphan_backfill|sprints?/i);
     expect(dialog).toHaveTextContent(/source records remain authoritative/i);
-    expect(dialog).toHaveTextContent(/read-only configuration and provider information/i);
+    expect(dialog).toHaveTextContent(/delete Board KG data with the dedicated erasure permission/i);
+    expect(dialog).not.toHaveTextContent(/Pending Queue|Pending Tree|read-only configuration and provider information/i);
     expect(dialog).toHaveTextContent(/open KG Health from the main menu/i);
     expect(screen.getByRole('heading', { name: 'Component availability' })).toBeInTheDocument();
     expect(dialog).toHaveTextContent(/unavailable Global Discovery cache can coexist with a healthy Board graph/i);

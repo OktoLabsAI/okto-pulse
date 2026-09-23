@@ -75,13 +75,7 @@ vi.mock('../AuditLogView', () => ({
   AuditLogView: () => <div data-testid="mock-audit" />,
 }));
 
-vi.mock('../PendingQueueView', () => ({
-  PendingQueueView: () => <div data-testid="mock-pending" />,
-}));
 
-vi.mock('../PendingQueueTree', () => ({
-  PendingQueueTree: () => <div data-testid="mock-pending-tree" />,
-}));
 
 vi.mock('../PrivacyView', () => ({
   PrivacyView: () => <div data-testid="mock-privacy" />,

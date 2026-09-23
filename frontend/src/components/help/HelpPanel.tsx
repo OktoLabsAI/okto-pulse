@@ -1396,15 +1396,13 @@ The Knowledge Graph (KG) projects project knowledge from Specs and Cards into a 
 
 ### Accessing the Knowledge Graph
 
-Click the **Knowledge Graph** tab in the main navigation. The KG page has 6 sub-views, selectable from the left panel:
+Click the **Knowledge Graph** tab in the main navigation. The KG page has four views, shown according to your permissions in the left panel:
 
 | View | Purpose |
 |------|---------|
 | **Graph** | Interactive visualization with pan/zoom, node filtering, and edge rendering |
 | **Audit Log** | History of all consolidation sessions — who added what and when |
-| **Pending Queue** | Consolidation entries waiting to be processed |
-| **Pending Tree** | Consolidation dependencies and progress |
-| **Settings** | Read-only configuration and provider information |
+| **Privacy** | Delete Board KG data with the dedicated erasure permission |
 | **Global Discovery** | Cross-board semantic search by natural language query |
 
 Open **KG Health** from the main menu for component availability and aggregate diagnostics. Its observations do not authorize repair operations.

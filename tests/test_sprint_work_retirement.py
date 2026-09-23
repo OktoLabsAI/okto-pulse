@@ -205,8 +205,6 @@ async def test_surviving_delivery_may_progress_but_retired_work_cannot_reopen(da
             # An archived empty origin never had a queue row to protect.
             assert not await effects.upsert_consolidation_queue_unless_tombstoned(session,
                 ConsolidationQueueUpsert("board-b", "sprint", "empty", "high", "live", "late", coalesce_active=coalesce))
-        assert await CommunitySqlAlchemyKGWorkerQueue().retry_pending_entry(session,
-            board_id="board-a", queue_entry_id="queue") is None
         persistence = CommunitySqlAlchemyConsolidationPersistence()
         with pytest.raises(ValueError, match="artifact_work_retired"):
             await persistence.persist_reconcile_intent(session,

@@ -1,11 +1,10 @@
 """F3: inventory/retry preserve Card work without reading or reviving Sprint."""
 
 import pytest
-from sqlalchemy import event, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from okto_pulse.community.adapters.kg_operational import (
-    CommunitySqlAlchemyKGOperationalReadModel,
     CommunitySqlAlchemyKGWorkerQueue,
 )
 from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import CommunitySemanticSession
@@ -41,32 +40,6 @@ async def database(tmp_path):
         await engine.dispose()
 
 
-@pytest.mark.asyncio
-async def test_inventory_and_recursive_retry_use_spec_card_without_sprint_queries(database):
-    engine, factory = database
-    statements = []
-
-    def capture(_conn, _cursor, statement, _parameters, _context, _executemany):
-        statements.append(statement.lower())
-
-    event.listen(engine.sync_engine, "before_cursor_execute", capture)
-    try:
-        async with factory() as db:
-            tree = await CommunitySqlAlchemyKGOperationalReadModel().build_pending_tree(db, board_id="b")
-            assert set(tree["levels"]) == {"ideations", "refinements", "specs", "cards"}
-            assert tree["tree"][0]["children"][0]["id"] == "card"
-            assert [(row["type"], row["id"]) for row in tree["tree"]] == [("spec", "spec"), ("card", "orphan")]
-            assert tree["levels"]["cards"]["failed"] == 1
-            assert tree["levels"]["cards"]["not_queued"] == 1
-            queue = CommunitySqlAlchemyKGWorkerQueue()
-            assert await queue.retry_pending_entry(db, board_id="b", queue_entry_id="q-sprint", recursive=True) is None
-            result = await queue.retry_pending_entry(db, board_id="b", queue_entry_id="q-spec", recursive=True)
-            assert set(result["reopened_ids"]) == {"q-spec", "q-card"}
-            old = await db.get(ConsolidationQueue, "q-sprint")
-            assert (old.status, old.source, old.last_error) == ("failed", "original", "original failure")
-        assert not any("from sprints" in sql or "join sprints" in sql for sql in statements)
-    finally:
-        event.remove(engine.sync_engine, "before_cursor_execute", capture)
 
 
 @pytest.mark.asyncio
