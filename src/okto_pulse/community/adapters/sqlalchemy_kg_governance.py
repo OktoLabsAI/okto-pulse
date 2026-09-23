@@ -89,7 +89,6 @@ from okto_pulse.core.ports.kg_governance import (
     BoardErasureJobFact,
     BoostAuditRecord,
     GovernanceUndoFact,
-    HistoricalBoardRecord,
 )
 
 
@@ -174,44 +173,8 @@ async def _count_where(context: Any, model: Any, predicate: Any) -> int:
 
 
 class CommunitySqlAlchemyKGGovernanceStore:
-    async def get_board(
-        self, context: Any, *, board_id: str
-    ) -> HistoricalBoardRecord | None:
-        # Never materialize the Board ORM graph for a two-column governance
-        # lookup.  Its eager relationships can load thousands of unrelated
-        # rows and keep a SQLite snapshot open across the following write.
-        row = (
-            (
-                await context.execute(
-                    select(
-                        Board.id.label("id"), Board.settings.label("settings")
-                    ).where(Board.id == board_id)
-                )
-            )
-            .mappings()
-            .one_or_none()
-        )
-        return (
-            HistoricalBoardRecord(
-                id=str(row["id"]), settings=dict(row["settings"] or {})
-            )
-            if row is not None
-            else None
-        )
 
 
-    async def queue_counts(self, context: Any, *, board_id: str) -> dict[str, int]:
-        rows = (
-            await context.execute(
-                select(ConsolidationQueue.status, func.count())
-                .where(
-                    ConsolidationQueue.board_id == board_id,
-                    ConsolidationQueue.source == "historical_backfill",
-                )
-                .group_by(ConsolidationQueue.status)
-            )
-        ).all()
-        return {str(status): int(count) for status, count in rows}
 
 
 

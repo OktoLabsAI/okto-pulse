@@ -7,7 +7,6 @@ vi.mock('./KGHelpModal', () => ({ KGHelpModal: ({ onClose }: { onClose: () => vo
 
 describe('Empty graph after maintenance retirement', () => {
   it('offers product guidance and help without starting jobs or polling historical progress', async () => {
-    const progress = vi.spyOn(kgApi, 'getHistoricalProgress');
     const refresh = vi.fn();
     render(<EmptyState boardId="board-1" onRefresh={refresh} />);
     expect(screen.getByText('Knowledge Graph is empty')).toBeInTheDocument();
@@ -18,8 +17,7 @@ describe('Empty graph after maintenance retirement', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Learn How It Works' }));
     expect(screen.getByRole('button', { name: 'Close help' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Close help' }));
-    expect(progress).not.toHaveBeenCalled();
+    expect('getHistoricalProgress' in kgApi).toBe(false);
     expect(refresh).not.toHaveBeenCalled();
-    progress.mockRestore();
   });
 });

@@ -7,7 +7,6 @@ import type {
   KGNode,
   KGEdge,
   KGStats,
-  KGSettings,
   AuditEntry,
   GraphLayerMode,
 } from '@/types/knowledge-graph';
@@ -206,55 +205,6 @@ export async function globalSearch(
     graph_layer?: GraphLayerMode;
   }>(
     `/global/search?q=${encodeURIComponent(query)}&limit=${limit}&min_similarity=${minSimilarity}&graph_layer=${graphLayer}`
-  );
-}
-
-// Settings
-export async function getKGSettings(boardId: string) {
-  return kgFetch<KGSettings>(`/boards/${boardId}/settings`);
-}
-
-export async function updateKGSettings(boardId: string, settings: Partial<KGSettings>) {
-  return kgFetch<{ success: boolean }>(`/boards/${boardId}/settings`, {
-    method: 'PUT',
-    body: JSON.stringify(settings),
-  });
-}
-
-// Historical consolidation
-export interface HistoricalProgress {
-  enabled: boolean;
-  status: string;
-  total: number;
-  progress: number;
-  pending?: number;
-  claimed?: number;
-  paused?: number;
-  failed?: number;
-}
-
-export function isHistoricalProgressActive(progress: HistoricalProgress | null | undefined) {
-  if (!progress) return false;
-  return (
-    progress.status === 'in_progress' ||
-    (progress.pending ?? 0) > 0 ||
-    (progress.claimed ?? 0) > 0 ||
-    (progress.paused ?? 0) > 0
-  );
-}
-
-export function isHistoricalProgressTerminal(progress: HistoricalProgress | null | undefined) {
-  if (!progress || !progress.enabled || progress.total <= 0) return false;
-  if (progress.status === 'cancelled' || isHistoricalProgressActive(progress)) return false;
-  if (progress.status === 'completed' || progress.status === 'completed_with_errors') return true;
-  return progress.status === 'inactive' && progress.progress >= progress.total;
-}
-
-
-
-export async function getHistoricalProgress(boardId: string) {
-  return kgFetch<HistoricalProgress>(
-    `/boards/${boardId}/historical-consolidation/progress`
   );
 }
 

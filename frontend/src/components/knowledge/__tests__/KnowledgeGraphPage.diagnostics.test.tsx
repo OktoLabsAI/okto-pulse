@@ -83,8 +83,8 @@ vi.mock('../PendingQueueTree', () => ({
   PendingQueueTree: () => <div data-testid="mock-pending-tree" />,
 }));
 
-vi.mock('../SettingsView', () => ({
-  SettingsView: () => <div data-testid="mock-settings" />,
+vi.mock('../PrivacyView', () => ({
+  PrivacyView: () => <div data-testid="mock-privacy" />,
 }));
 
 vi.mock('../GlobalSearchView', () => ({
@@ -139,16 +139,6 @@ const metadata: GraphMetadata = {
   edges_returned: 0,
 };
 
-const completedHistorical: kgApi.HistoricalProgress = {
-  enabled: true,
-  status: 'completed',
-  total: 1,
-  progress: 1,
-  pending: 0,
-  claimed: 0,
-  paused: 0,
-  failed: 0,
-};
 
 beforeEach(() => {
   vi.restoreAllMocks();
@@ -182,7 +172,7 @@ describe('GraphVisibilityMismatchState', () => {
   });
 });
 
-describe('KnowledgeGraphPage — historical completion release', () => {
+describe('KnowledgeGraphPage — independent diagnostics', () => {
   it('uses the graph-layer stats census when health metrics are unavailable', () => {
     expect(resolveGraphTotalNodeCount({
       schema_version: '1.0',
@@ -218,7 +208,6 @@ describe('KnowledgeGraphPage — historical completion release', () => {
     vi.spyOn(kgApi, 'getStats').mockImplementation(() => new Promise((resolve) => {
       releaseStats = () => resolve(stats);
     }));
-    vi.spyOn(kgApi, 'getHistoricalProgress').mockResolvedValue(completedHistorical);
     vi.spyOn(kgHealthApi, 'getKGHealth').mockResolvedValue({ ...health, total_nodes: 1 });
 
     render(<KnowledgeGraphPage boardId="board-123" />);
@@ -249,7 +238,6 @@ describe('KnowledgeGraphPage — historical completion release', () => {
       avg_confidence: 0,
       pending_queue_count: 0,
     });
-    vi.spyOn(kgApi, 'getHistoricalProgress').mockResolvedValue(completedHistorical);
     const healthRead = vi.spyOn(kgHealthApi, 'getKGHealth').mockResolvedValue(health);
 
     const { rerender } = render(<KnowledgeGraphPage boardId="board-123" />);
@@ -267,11 +255,10 @@ describe('KnowledgeGraphPage — historical completion release', () => {
   });
 
   it('does not start an onboarding request or refresh after unmount', () => {
-    const historical = vi.spyOn(kgApi, 'getHistoricalProgress');
     const onRefresh = vi.fn();
     const { unmount } = render(<EmptyState boardId="board-123" onRefresh={onRefresh} />);
     unmount();
-    expect(historical).not.toHaveBeenCalled();
+    expect('getHistoricalProgress' in kgApi).toBe(false);
     expect(onRefresh).not.toHaveBeenCalled();
   });
 
@@ -293,7 +280,6 @@ describe('KnowledgeGraphPage — historical completion release', () => {
         releaseOld = () => resolve(stats(99));
       }))
       .mockResolvedValue(stats(2));
-    vi.spyOn(kgApi, 'getHistoricalProgress').mockResolvedValue(completedHistorical);
     vi.spyOn(kgHealthApi, 'getKGHealth').mockImplementation(() => new Promise(() => {}));
 
     const { rerender } = render(<KnowledgeGraphPage boardId="board-old" />);
@@ -307,22 +293,12 @@ describe('KnowledgeGraphPage — historical completion release', () => {
     expect(screen.getByTestId('mock-graph-controls')).toHaveTextContent('counts: 2; total: 2');
   });
 
-  it('renders the KG shell instead of the historical onboarding once backfill is terminal', async () => {
+  it('keeps navigation available for an empty graph without historical progress', async () => {
     vi.spyOn(kgApi, 'getSubgraph').mockResolvedValue({
       nodes: [],
       edges: [],
       metadata: { edge_read_status: 'ok' },
       next_cursor: null,
-    });
-    vi.spyOn(kgApi, 'getHistoricalProgress').mockResolvedValue({
-      enabled: true,
-      status: 'completed',
-      total: 42,
-      progress: 42,
-      pending: 0,
-      claimed: 0,
-      paused: 0,
-      failed: 0,
     });
     vi.spyOn(kgHealthApi, 'getKGHealth').mockResolvedValue({
       ...health,
@@ -331,9 +307,9 @@ describe('KnowledgeGraphPage — historical completion release', () => {
 
     render(<KnowledgeGraphPage boardId="board-123" />);
 
-    expect(await screen.findByTestId('mock-graph-canvas')).toHaveTextContent('canvas nodes: 0');
+    expect(await screen.findByTestId('kg-empty-yet')).toBeInTheDocument();
     expect(screen.getByTestId('mock-graph-controls')).toHaveTextContent('controls: graph');
-    expect(screen.queryByTestId('kg-empty-yet')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('mock-graph-canvas')).not.toBeInTheDocument();
   });
 
   it('removes Code Traceability nodes, incident edges and counts after permission loss', async () => {
@@ -383,16 +359,6 @@ describe('KnowledgeGraphPage — historical completion release', () => {
       ],
       metadata: { edge_read_status: 'ok' },
       next_cursor: null,
-    });
-    vi.spyOn(kgApi, 'getHistoricalProgress').mockResolvedValue({
-      enabled: true,
-      status: 'completed',
-      total: 2,
-      progress: 2,
-      pending: 0,
-      claimed: 0,
-      paused: 0,
-      failed: 0,
     });
     vi.spyOn(kgHealthApi, 'getKGHealth').mockResolvedValue({ ...health, total_nodes: 2 });
     vi.spyOn(kgApi, 'getStats').mockResolvedValue({

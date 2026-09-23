@@ -25,7 +25,7 @@ import { AuditLogView } from './AuditLogView';
 import { PendingQueueView } from './PendingQueueView';
 import { PendingQueueTree } from './PendingQueueTree';
 import { KGSyncIndicator } from './KGSyncIndicator';
-import { SettingsView } from './SettingsView';
+import { PrivacyView } from './PrivacyView';
 import { GlobalSearchView } from './GlobalSearchView';
 import { KGRefreshButton } from './KGRefreshButton';
 import { NodeDetailModal } from './NodeDetailModal';
@@ -63,7 +63,7 @@ export function resolveGraphTotalNodeCount(
     : undefined;
 }
 
-type SubView = 'graph' | 'audit' | 'pending' | 'pending_tree' | 'settings' | 'global';
+type SubView = 'graph' | 'audit' | 'pending' | 'pending_tree' | 'privacy' | 'global';
 
 // 500 (era 100): com a projeção paginada, edges só materializam quando as
 // duas pontas chegam ao cliente — páginas pequenas deixavam o grafo
@@ -165,14 +165,11 @@ export function KnowledgeGraphPage({ boardId }: Props) {
     && !permissions.ownerReviewRequired
   );
   const canReadHealth = policyReady && permissions.has('kg.operations.health.read');
-  const canReadHistorical = policyReady && permissions.has('kg.operations.historical.read');
   const [nodes, setNodes] = useState<KGNode[]>([]);
   const [edges, setEdges] = useState<KGEdge[]>([]);
   const [graphMetadata, setGraphMetadata] = useState<kgApi.GraphMetadata | null>(null);
   const [healthSnapshot, setHealthSnapshot] = useState<KGHealth | null>(null);
   const [statsSnapshot, setStatsSnapshot] = useState<KGStats | null>(null);
-  const [historicalProgress, setHistoricalProgress] = useState<kgApi.HistoricalProgress | null>(null);
-  const [historicalLoading, setHistoricalLoading] = useState(true);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<KGNode | null>(null);
   const [modalNode, setModalNode] = useState<KGNode | null>(null);
@@ -298,22 +295,9 @@ export function KnowledgeGraphPage({ boardId }: Props) {
 
   const loadDiagnostics = useCallback(async () => {
     const request = ++diagnosticsRequest.current;
-    setHistoricalLoading(canReadHistorical);
-    await Promise.all([
-      (canReadHealth ? getKGHealth(boardId).catch(() => null) : Promise.resolve(null))
-        .then((health) => {
-          if (request === diagnosticsRequest.current) setHealthSnapshot(health);
-        }),
-      (canReadHistorical
-        ? kgApi.getHistoricalProgress(boardId).catch(() => null)
-        : Promise.resolve(null))
-        .then((historical) => {
-          if (request !== diagnosticsRequest.current) return;
-          setHistoricalProgress(historical);
-          setHistoricalLoading(false);
-        }),
-    ]);
-  }, [boardId, canReadHealth, canReadHistorical]);
+    const health = canReadHealth ? await getKGHealth(boardId).catch(() => null) : null;
+    if (request === diagnosticsRequest.current) setHealthSnapshot(health);
+  }, [boardId, canReadHealth]);
 
   // Health permissions hydrate independently of the graph census. Do not start
   // another expensive census when those unrelated permissions become ready.
@@ -483,9 +467,8 @@ export function KnowledgeGraphPage({ boardId }: Props) {
     else setModalNode(node);
   };
 
-  // Do not mount onboarding (which can auto-refresh completed backfills) before
-  // its status is known. Non-empty graphs never wait for diagnostics.
-  if (loading || (!error && nodes.length === 0 && canReadHistorical && historicalLoading)) {
+  // Graph rendering is independent of technical diagnostics.
+  if (loading) {
     return (
       <div
         className="flex items-center justify-center h-full"
@@ -529,13 +512,6 @@ export function KnowledgeGraphPage({ boardId }: Props) {
             metadata={graphMetadata}
             onRefresh={refreshGraph}
           />
-        </div>
-      );
-    }
-    if (!kgApi.isHistoricalProgressTerminal(historicalProgress)) {
-      return (
-        <div data-empty-state="yet" data-testid="kg-empty-yet" className="h-full">
-          <EmptyState boardId={boardId} onRefresh={refreshGraph} />
         </div>
       );
     }
@@ -693,7 +669,11 @@ export function KnowledgeGraphPage({ boardId }: Props) {
                 </div>
               </div>
             )}
-            <GraphCanvas
+            {nodes.length === 0 ? (
+              <div data-testid="kg-empty-yet" className="h-full">
+                <EmptyState boardId={boardId} onRefresh={refreshGraph} />
+              </div>
+            ) : <GraphCanvas
               nodes={authorityNodes}
               edges={authorityEdges}
               filters={filters}
@@ -704,7 +684,7 @@ export function KnowledgeGraphPage({ boardId }: Props) {
               boardId={boardId}
               onShowDetails={handleShowDetails}
               refitTrigger={refitTrigger}
-            />
+            />}
           </>
         ) : subView === 'audit' ? (
           <AuditLogView boardId={boardId} />
@@ -712,8 +692,8 @@ export function KnowledgeGraphPage({ boardId }: Props) {
           <PendingQueueView boardId={boardId} />
         ) : subView === 'pending_tree' ? (
           <PendingQueueTree boardId={boardId} />
-        ) : subView === 'settings' ? (
-          <SettingsView boardId={boardId} />
+        ) : subView === 'privacy' ? (
+          <PrivacyView boardId={boardId} />
         ) : subView === 'global' ? (
           <GlobalSearchView boardId={boardId} />
         ) : null}

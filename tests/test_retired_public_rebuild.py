@@ -56,6 +56,43 @@ RETIRED = (
 )
 
 
+@pytest.mark.parametrize("board", ["missing", "foreign", "owned"])
+@pytest.mark.parametrize("method,suffix", [
+    ("GET", "historical-consolidation/progress"),
+    ("GET", "settings"), ("PUT", "settings"),
+])
+def test_retired_settings_and_progress_never_resolve_authority_or_storage(board, method, suffix):
+    from okto_pulse.community.api.auth_deps import require_user
+
+    def forbidden():
+        pytest.fail("Retired technical reader resolved authority or storage")
+
+    app = FastAPI()
+    app.include_router(api_router)
+    app.dependency_overrides[get_unit_of_work] = forbidden
+    app.dependency_overrides[require_user] = forbidden
+    paths = app.openapi()["paths"]
+    assert f"/api/v1/kg/boards/{{board_id}}/{suffix}" not in paths
+    assert "/api/v1/kg/settings" not in paths
+    with TestClient(app) as client:
+        assert client.request(method, f"/api/v1/kg/boards/{board}/{suffix}").status_code == 404
+        assert client.get("/api/v1/kg/settings").status_code == 404
+
+
+def test_retired_progress_contract_is_absent_and_erasure_remains():
+    from okto_pulse.core.kg import governance
+    from okto_pulse.core.ports import application_services
+    from okto_pulse.core.application import use_cases
+
+    assert not hasattr(governance, "get_historical_progress")
+    assert not hasattr(application_services.KnowledgeGraphOperations, "get_historical_progress")
+    assert not hasattr(use_cases, "GetHistoricalProgressUseCase")
+    assert hasattr(use_cases, "DeleteBoardKgUseCase")
+    for flag in ("kg.operations.historical.read", "kg.operations.settings.read", "kg.operations.settings.write"):
+        assert flag not in ALL_FLAGS
+    assert "kg.operations.board.erase" in ALL_FLAGS
+
+
 def test_removed_modules_and_console_entrypoint_are_not_distributed():
     for name in ("kg_recovery_only", "api.kg_rebuild", "api.dead_letter", "api.queue_health", "api.kg_tick", "api.kg_orphan_integrity"):
         assert importlib.util.find_spec(f"okto_pulse.community.{name}") is None

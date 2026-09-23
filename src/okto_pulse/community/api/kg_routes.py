@@ -18,7 +18,7 @@ from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -76,8 +76,6 @@ from okto_pulse.core.application.use_cases.kg_routes_crud import (
     BoostNodeUseCase,
     DeleteBoardKgCommand,
     DeleteBoardKgUseCase,
-    GetHistoricalProgressCommand,
-    GetHistoricalProgressUseCase,
     GlobalSearchCommand,
     GlobalSearchUseCase,
     ListAuditCommand,
@@ -1574,22 +1572,6 @@ async def global_search(
 
 
 
-@router.get("/boards/{board_id}/historical-consolidation/progress")
-async def historical_progress_endpoint(
-    board_id: str,
-    actor: ActorContext = Depends(require_kg_board_actor),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-):
-    """Historical consolidation progress."""
-    try:
-        result = await GetHistoricalProgressUseCase().execute(
-            GetHistoricalProgressCommand(board_id),
-            actor=actor,
-            uow=uow,
-        )
-    except (PermissionDeniedError, EntityNotFoundError) as exc:
-        raise RESTAdapterContract.http_error(exc, not_found_detail="Board not found")
-    return result.progress
 
 
 @router.delete("/boards/{board_id}/kg")
@@ -1610,100 +1592,12 @@ async def delete_board_kg(
     return Response(status_code=204)
 
 
-def _describe_embedding_provider(provider: Any) -> dict[str, Any]:
-    """Introspect the registered embedding provider WITHOUT triggering a load.
-
-    Delegates to the metadata-driven describer in the embedding port (R13-A):
-    this common API surface no longer imports or ``isinstance``-checks
-    concrete provider classes — provider description is driven by capability
-    metadata. Reads ``_model`` directly (never calls
-    ``_get_model()``) so /kg/settings can report the live state for a health
-    banner without paying the model-load cost. See TR-4 of spec
-    `sentence-transformers como dep obrigatoria` and R13-A fr_r13a_provider_metadata.
-    """
-    from okto_pulse.core.kg.interfaces.embedding import describe_embedding_provider
-
-    return describe_embedding_provider(provider)
 
 
-@router.get("/settings")
-async def get_global_kg_settings(
-    _actor: ActorContext = Depends(require_kg_actor),
-):
-    """Return process-global KG settings (no board context required).
-
-    Exposes the embedding-provider state so the Dashboard Settings banner and
-    smoke-test tooling can tell stub-mode apart from a healthy load without
-    needing to pick a board. MUST NOT trigger a model load (TR-4).
-    """
-    await _require_kg_operation(
-        _actor,
-        operation="kg.operations.settings.read",
-        legacy_operation="kg.admin.settings_read",
-    )
-    snapshot = snapshot_kg_runtime()
-    payload = {
-        "graph_store": snapshot.graph_store_name,
-        "session_ttl_seconds": snapshot.session_ttl_seconds,
-        "kg_base_dir": snapshot.kg_base_dir,
-    }
-    payload.update(_describe_embedding_provider(snapshot.embedding_provider))
-    return payload
 
 
-@router.get("/boards/{board_id}/settings")
-async def get_settings(
-    board_id: str,
-    actor: ActorContext = Depends(require_kg_board_actor),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-):
-    """Get KG settings for a board."""
-    await _require_kg_operation(
-        actor,
-        operation="kg.operations.settings.read",
-        legacy_operation="kg.admin.settings_read",
-        uow=uow,
-        board_id=board_id,
-    )
-    snapshot = snapshot_kg_runtime(board_id=board_id)
-
-    # Check historical consolidation status (the only relational read in this
-    # handler; the registry/embedding introspection below is not DB-bound).
-    try:
-        progress = await uow.services.kg.get_historical_progress(board_id)
-    except (PermissionDeniedError, EntityNotFoundError) as exc:
-        raise RESTAdapterContract.http_error(exc, not_found_detail="Board not found")
-
-    payload = {
-        "consolidation_enabled": True,
-        "enable_historical_consolidation": progress.get("enabled", False),
-        "kg_initialized": snapshot.graph_initialized,
-        # Preserved for backwards compatibility with older clients.
-        "embedding_provider": type(snapshot.embedding_provider).__name__,
-        "graph_store": snapshot.graph_store_name,
-        "session_ttl_seconds": snapshot.session_ttl_seconds,
-        "kg_base_dir": snapshot.kg_base_dir,
-    }
-    payload.update(_describe_embedding_provider(snapshot.embedding_provider))
-    return payload
 
 
-@router.put("/boards/{board_id}/settings")
-async def update_settings(
-    board_id: str,
-    request: Request,
-    actor: ActorContext = Depends(require_kg_board_writer_actor),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-):
-    """Update KG settings for a board."""
-    await _require_kg_operation(
-        actor,
-        operation="kg.operations.settings.write",
-        legacy_operation="kg.admin.settings_write",
-        uow=uow,
-        board_id=board_id,
-    )
-    return {"success": True}
 
 
 @router.post("/boards/{board_id}/cypher")

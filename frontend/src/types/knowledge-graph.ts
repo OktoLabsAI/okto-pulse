@@ -82,11 +82,7 @@ export interface AuditEntry {
   undo_status: 'none' | 'undone' | 'undo_blocked';
 }
 
-export interface KGSettings {
-  consolidation_enabled: boolean;
-  enable_historical_consolidation: boolean;
-  retention_days?: number;
-}
+
 
 export interface KGStats {
   schema_version: string;
