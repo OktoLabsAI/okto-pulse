@@ -42,6 +42,8 @@ from okto_pulse.core.domain.quality_canonicalization import (
 )
 from okto_pulse.core.ports.kg_cognitive_source import (
     canonical_cognitive_source_fingerprint,
+    CognitiveSourceConflict,
+    latest_cognitive_source_records,
 )
 from okto_pulse.core.services.quality_projection_currentness import (
     evaluate_quality_projection_currentness,
@@ -1541,38 +1543,36 @@ def read_realm_cognitive_source_snapshot(
             "source.generation ASC"
         )
     else:
-        # Resolve one latest full snapshot per immutable parent.  The
-        # correlated MAX is backed by the child (source, revision) index and
-        # keeps the reader compatible with SQLite versions lacking windows.
+        # Audit the complete immutable history before selecting current heads.
+        # MAX(revision) here used to hide corrupt unselected revisions from
+        # rebuild/upgrade consumers. Preserve raw JSON cells in the projection.
         query = (
             "SELECT source.board_id, source.node_id, source.node_type, "
-            "source.generation, "
-            "CASE WHEN revision.id IS NULL THEN source.payload "
-            "ELSE revision.payload END AS payload, "
-            "CASE WHEN revision.id IS NULL THEN source.evidence_refs "
-            "ELSE revision.evidence_refs END AS evidence_refs, "
-            "CASE WHEN revision.id IS NULL THEN source.source_session_id "
-            "ELSE revision.source_session_id END AS source_session_id, "
-            "CASE WHEN revision.id IS NULL THEN source.committed_at "
-            "ELSE revision.committed_at END AS committed_at, "
-            "COALESCE(revision.source_revision, 0) AS source_revision, "
-            "revision.record_fingerprint AS record_fingerprint "
+            "source.generation, source.payload, source.evidence_refs, "
+            "source.source_session_id, source.committed_at, "
+            "0 AS source_revision, NULL AS record_fingerprint "
             "FROM kg_cognitive_sources AS source "
             "INNER JOIN boards AS board ON board.id = source.board_id "
-            "LEFT JOIN kg_cognitive_source_revisions AS revision "
-            "ON revision.cognitive_source_id = source.id "
-            "AND revision.source_revision = ("
-            "SELECT MAX(candidate.source_revision) "
-            "FROM kg_cognitive_source_revisions AS candidate "
-            "WHERE candidate.cognitive_source_id = source.id"
-            ") "
             "WHERE board.realm_id = ? "
-            "ORDER BY source.board_id COLLATE BINARY, "
-            "COALESCE(revision.committed_at, source.committed_at) ASC, "
-            "source.node_id COLLATE BINARY, source.generation ASC"
+            "UNION ALL "
+            "SELECT source.board_id, source.node_id, source.node_type, source.generation, "
+            "revision.payload, revision.evidence_refs, revision.source_session_id, "
+            "revision.committed_at, revision.source_revision, revision.record_fingerprint "
+            "FROM kg_cognitive_source_revisions AS revision "
+            "INNER JOIN kg_cognitive_sources AS source ON source.id = revision.cognitive_source_id "
+            "INNER JOIN boards AS board ON board.id = source.board_id "
+            "WHERE board.realm_id = ? "
+            "ORDER BY board_id COLLATE BINARY, committed_at ASC, node_id COLLATE BINARY, generation ASC, source_revision ASC"
         )
-    rows = connection.execute(query, (normalized_realm_id,)).fetchall()
-    for row in rows:
+    parameters = (normalized_realm_id,) * (1 if revision_table_exists is None else 2)
+    total_bytes = 0
+    for ordinal, row in enumerate(connection.execute(query, parameters), start=1):
+        total_bytes += len(json.dumps(dict(row), ensure_ascii=False).encode('utf-8'))
+        if ordinal > 100_000 or total_bytes > 64 * 1024 * 1024:
+            raise ValueError('cognitive source snapshot limit exceeded')
+        if (type(row['generation']) is not int or row['generation'] < 0
+                or type(row['source_revision']) is not int or row['source_revision'] < 0):
+            raise ValueError('cognitive source generation or revision invalid')
         raw_payload = row["payload"]
         payload = json.loads(raw_payload) if isinstance(raw_payload, str) else raw_payload
         if not isinstance(payload, dict):
@@ -1583,7 +1583,7 @@ def read_realm_cognitive_source_snapshot(
             if isinstance(raw_evidence_refs, str)
             else raw_evidence_refs
         )
-        if not isinstance(evidence_refs, (list, tuple)):
+        if not isinstance(evidence_refs, (list, tuple)) or any(type(ref) is not str for ref in evidence_refs):
             raise ValueError("cognitive source evidence_refs must be a JSON array")
         canonical_fingerprint = canonical_cognitive_source_fingerprint(
             board_id=str(row["board_id"]),
@@ -1600,7 +1600,7 @@ def read_realm_cognitive_source_snapshot(
         ):
             raise ValueError(
                 "cognitive source record_fingerprint does not match its "
-                "latest immutable revision"
+                "immutable revision"
             )
         record_fingerprint = canonical_fingerprint
         captured[str(row["board_id"])].append(
@@ -1617,9 +1617,10 @@ def read_realm_cognitive_source_snapshot(
                 "record_fingerprint": str(record_fingerprint),
             }
         )
-    return {
-        board_id: tuple(records) for board_id, records in captured.items()
-    }
+    try:
+        return {board_id: latest_cognitive_source_records(records) for board_id, records in captured.items()}
+    except CognitiveSourceConflict as exc:
+        raise ValueError('cognitive source immutable revision conflict: ' + exc.failure_reason) from exc
 
 
 @dataclass(frozen=True, slots=True)

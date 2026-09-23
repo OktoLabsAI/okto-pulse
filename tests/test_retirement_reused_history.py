@@ -32,10 +32,11 @@ from test_card_context_retirement import dump
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(600)
-@pytest.mark.parametrize('source_schema,with_cognitive,complete_overlay', [
-    ('0.6.0', True, True), ('0.6.0', False, True), ('0.5.0', False, False), ('0.5.0', False, True)],
-    ids=['current-cognitive-pending', 'current-complete', 'predecessor-global-pending', 'predecessor-complete'])
-async def test_authenticated_effects_on_reused_root_preserve_identity_and_require_complete_evidence(tmp_path, source_schema, with_cognitive, complete_overlay, monkeypatch):
+@pytest.mark.parametrize('source_schema,cognitive_case,complete_overlay', [
+    ('0.6.0', 'unresolved', True), ('0.6.0', 'none', True), ('0.5.0', 'none', False),
+    ('0.5.0', 'none', True), ('0.6.0', 'technical-report', True)],
+    ids=['current-cognitive-pending', 'current-complete', 'predecessor-global-pending', 'predecessor-complete', 'durable-technical-report'])
+async def test_authenticated_effects_on_reused_root_preserve_identity_and_require_complete_evidence(tmp_path, source_schema, cognitive_case, complete_overlay, monkeypatch):
     source = restore_source(tmp_path)
     for name in ('uploads', 'kg', 'backups', 'candidate-backups'):
         (tmp_path / name).mkdir()
@@ -44,15 +45,16 @@ async def test_authenticated_effects_on_reused_root_preserve_identity_and_requir
             CommunityFileSystemRebuildAuditArtifactStore(tmp_path / 'kg')).current_fingerprint()
     with closing(sqlite3.connect(source)) as connection:
         title = connection.execute("SELECT title FROM specs WHERE id='spec-a'").fetchone()[0]
-        if with_cognitive:
+        if cognitive_case != 'none':
             # Durable knowledge can exist while its graph projection is absent.
             # The candidate must retain this limitation through checkpoint replay.
-            connection.execute('INSERT INTO kg_cognitive_sources '
-                '(id,board_id,node_id,node_type,generation,payload,evidence_refs,source_session_id,committed_at) '
-                'VALUES (?,?,?,?,?,?,?,?,?)', ('durable-source', 'board-a', 'missing-decision', 'Decision', 0,
-                    json.dumps({'title': 'sealed historical decision', 'generation': 0,
-                        'source_artifact_ref': 'spec:spec-a'}), json.dumps(['spec:spec-a']),
-                    'historical-cognitive-session', '2026-01-01T00:00:00.000000'))
+            if cognitive_case == 'unresolved':
+                connection.execute('INSERT INTO kg_cognitive_sources '
+                    '(id,board_id,node_id,node_type,generation,payload,evidence_refs,source_session_id,committed_at) '
+                    'VALUES (?,?,?,?,?,?,?,?,?)', ('durable-source', 'board-a', 'missing-decision', 'Decision', 0,
+                        json.dumps({'title': 'sealed historical decision', 'generation': 0,
+                            'source_artifact_ref': 'spec:spec-a'}), json.dumps(['spec:spec-a']),
+                        'historical-cognitive-session', '2026-01-01T00:00:00.000000'))
             connection.execute('INSERT INTO kg_cognitive_sources '
                 '(id,board_id,node_id,node_type,generation,payload,evidence_refs,source_session_id,committed_at) '
                 'VALUES (?,?,?,?,?,?,?,?,?)', ('durable-report', 'board-a', 'restored-report', 'Decision', 0,
@@ -137,7 +139,7 @@ async def test_authenticated_effects_on_reused_root_preserve_identity_and_requir
         comparison = report['source_relation_comparison']
         assert comparison['expected_count'] == comparison['matched_count'] == 5
         assert comparison['missing_count'] == comparison['unresolved_count'] == comparison['unexpected_new_count'] == 0
-        complete = complete_overlay and not with_cognitive
+        complete = complete_overlay and cognitive_case != 'unresolved'
         assert receipt['graph_reconciliation']['state'] == (
             'source_graph_reconciled' if complete else 'source_projection_reconciled_history_pending')
         assert report['zero_orphan_validation'] == 'passed'
@@ -152,17 +154,23 @@ async def test_authenticated_effects_on_reused_root_preserve_identity_and_requir
             assert (target / 'graph-0000').is_dir()  # Retained, unbound native predecessor.
         else:
             assert receipt['schema_evolutions'] == []
-        if with_cognitive:
+        if cognitive_case != 'none':
             parity = {row['node_id']: row for row in report['cognitive_source_parity']}
-            assert set(parity) == {'missing-decision', 'restored-report'}
-            assert parity['missing-decision']['state'] == 'missing_node'
+            assert set(parity) == ({'missing-decision', 'restored-report'} if cognitive_case == 'unresolved' else {'restored-report'})
             assert parity['restored-report']['state'] == 'matched'
             assert report['restored_cognitive_node_count'] == 1
+            qualified, = report['restored_cognitive_qualification']
+            assert qualified['state'] == 'durable_replay_reconciled' and not qualified['reasons']
+            assert report['unqualified_restored_cognitive_node_count'] == 0
             created, = receipt['cognitive_restoration']['boards'][0]['created']
             assert created['node_id'] == 'restored-report' and created['literal_fingerprint']
-            restoration, = report['cognitive_restoration']
-            assert restoration['node_id'] == 'missing-decision'
-            assert restoration['state'] == 'connectivity_rejected' and restoration['reasons']
+            if cognitive_case == 'unresolved':
+                assert parity['missing-decision']['state'] == 'missing_node'
+                restoration, = report['cognitive_restoration']
+                assert restoration['node_id'] == 'missing-decision'
+                assert restoration['state'] == 'connectivity_rejected' and restoration['reasons']
+            else:
+                assert report['cognitive_restoration'] == []
         proof = receipt['historical_observations']['property_composition'][0]
         assert proof['before']['node_id'] == proof['after']['node_id'] == 'old-spec-root'
         with closing(sqlite3.connect(target / 'database.sqlite3')) as connection:

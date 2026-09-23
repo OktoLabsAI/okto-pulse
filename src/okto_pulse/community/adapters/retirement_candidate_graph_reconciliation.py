@@ -14,6 +14,7 @@ from okto_pulse.core.kg.logical_transfer import LOGICAL_NULL, LogicalFingerprint
 from okto_pulse.core.ports.consolidation import ExactConsolidationAckReceipt
 from okto_pulse.core.ports.cognitive_projection import (
     compare_cognitive_projection, validate_cognitive_projection_sources, observe_cognitive_restoration,
+    qualify_cognitive_replay,
 )
 from okto_pulse.core.ports.projection_connectivity import observe_projection_connectivity
 from okto_pulse.core.ports.projection_relations import compare_projection_relations
@@ -295,6 +296,9 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
                 selected=tuple(sorted(preserved_nodes))) if preserved_nodes else ()
             restoration = observe_cognitive_restoration(schema=reader.schema(), board_id=board_id,
                 records=cognitive_rows, nodes=tuple(historical_inventory_nodes), relations=tuple(historical_inventory_edges)) if cognitive_rows else ()
+            replay_qualification = qualify_cognitive_replay(schema=reader.schema(), board_id=board_id,
+                records=cognitive_rows, nodes=tuple(historical_inventory_nodes), relations=tuple(historical_inventory_edges),
+                restored=tuple(sorted(restored_cognitive))) if restored_cognitive else ()
             relation_comparison = (compare_projection_relations(document=planned_document, schema=reader.schema(),
                 nodes=tuple(historical_inventory_nodes), relations=tuple(historical_inventory_edges),
                 new_sessions=tuple(sorted(expected_edge_sessions or {}))) if planned_document is not None else None)
@@ -330,6 +334,8 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
             for root in partition_roots]),
         'historical_node_count': len(preserved_nodes),
         'restored_cognitive_node_count': len(restored_cognitive),
+        'restored_cognitive_qualification': [{**asdict(item), 'reasons': list(item.reasons)} for item in replay_qualification],
+        'unqualified_restored_cognitive_node_count': sum(item.state != 'durable_replay_reconciled' for item in replay_qualification),
         'historical_property_change_count': len(delta.get('changed_nodes', ())),
         'historical_edge_count': sum(row['count'] for row in delta.get('retained_edges', ())),
         'historical_orphan_count': len(orphans),
@@ -424,12 +430,12 @@ def verify_candidate_graph_reconciliation(target, boards, *, projection, deadlin
     if global_comparison is not None and global_comparison['state'] == 'matched' and global_history != 'no_prior_records':
         global_history = 'current_source_reconciled'
     pending = (any(report['history_classification'] == 'pending' for report in reports)
-        or any(report['restored_cognitive_node_count'] for report in reports)
+        or any(report['unqualified_restored_cognitive_node_count'] for report in reports)
         or any(item['state'] != 'matched' for report in reports for item in report['cognitive_source_parity'])
         or (global_comparison['state'] != 'matched' if global_comparison is not None else global_history != 'no_prior_records'))
     mismatch = any(any(report['source_relation_comparison'][field] for field in
         ('missing_count', 'unresolved_count', 'unexpected_new_count')) for report in reports)
-    return {'format': 'retirement-candidate-graph-reconciliation/v16',
+    return {'format': 'retirement-candidate-graph-reconciliation/v17',
         'state': ('source_projection_mismatch' if mismatch else
             'source_projection_reconciled_history_pending' if pending else 'source_graph_reconciled'),
         'global_history_state': global_history, 'global_projection_comparison': global_comparison, 'boards': reports}
