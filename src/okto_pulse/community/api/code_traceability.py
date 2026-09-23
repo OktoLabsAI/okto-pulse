@@ -10,7 +10,7 @@ invoke only those governance operations.
 """
 
 from __future__ import annotations
-from okto_pulse.core.models.delivery_evidence import card_delivery_command, DeliveryBatchEntryError, DeliveryEvidenceInput, DeliveryEvidenceCommand, DeliveryEvidenceQuery
+from okto_pulse.core.models.delivery_evidence import card_delivery_command, DeliveryBatchEntryError, DeliveryEvidenceInput, DeliveryEvidenceCommand, DeliveryEvidenceReadQuery
 from okto_pulse.core.models.delivery_report import CardDeliveryRecordInput, DeliveryReportRejected
 from okto_pulse.core.application.use_cases.delivery_evidence import GetDeliveryEvidenceUseCase, RecordCardDeliveryEvidenceUseCase, RecordDeliveryEvidenceUseCase
 
@@ -23,7 +23,7 @@ import hmac
 import json
 from typing import Mapping
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, create_model
 
 from okto_pulse.community.api.auth_deps import require_principal
@@ -1286,8 +1286,18 @@ async def get_code_traceability_projection(
 
 
 @router.get("/{board_id}/specs/{spec_id}/delivery-evidence")
-async def get_delivery_evidence(board_id: str, spec_id: str, principal: Principal = Depends(require_principal), uow: PulseUnitOfWork = Depends(get_unit_of_work)) -> object:
-    return await _execute(GetDeliveryEvidenceUseCase(), DeliveryEvidenceQuery(board_id=board_id, spec_id=spec_id), board_id=board_id, principal=principal, uow=uow)
+async def get_delivery_evidence(board_id: str, spec_id: str, response: Response,
+    card_id: str | None = Query(default=None, min_length=1, max_length=512),
+    cursor: str | None = Query(default=None, min_length=1, max_length=8192),
+    record_id: str | None = Query(default=None, min_length=1, max_length=512),
+    limit: int = Query(default=20, ge=1, le=20),
+    principal: Principal = Depends(require_principal), uow: PulseUnitOfWork = Depends(get_unit_of_work)) -> object:
+    response.headers["Cache-Control"] = "no-store"
+    if (card_id is None and (cursor or record_id or limit != 20)) or (cursor and record_id):
+        raise HTTPException(status_code=422, detail="delivery_history_scope_invalid")
+    command = DeliveryEvidenceReadQuery(board_id=board_id, spec_id=spec_id,
+        card_id=card_id, cursor=cursor, record_id=record_id, limit=limit)
+    return await _execute(GetDeliveryEvidenceUseCase(), command, board_id=board_id, principal=principal, uow=uow)
 
 
 @router.post("/{board_id}/specs/{spec_id}/delivery-evidence")

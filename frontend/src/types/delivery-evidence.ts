@@ -117,6 +117,14 @@ export interface DeliveryPerCardObligation {
   implementation_satisfied: boolean;
 }
 
+export interface DeliveryProgressHistory {
+  board_id: string; card_id: string; spec_id: string; edition: number;
+  card_version: number; delivery_revision: number; status: string;
+  total: number; next_cursor: string | null; recovery_verified: false;
+  order: 'newest_first'; detail: boolean;
+  items: NonNullable<DeliveryPerCard['progress']>['items'];
+}
+
 export interface DeliveryPerCard {
   card_id: string;
   title: string;

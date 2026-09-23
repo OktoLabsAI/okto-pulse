@@ -581,6 +581,13 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
 
     // ==================== CODE TRACEABILITY ====================
 
+    async getCardProgressHistory(boardId: string, cardId: string, specId: string, options: { cursor?: string; recordId?: string } = {}, signal?: AbortSignal): Promise<import('@/types/delivery-evidence').DeliveryProgressHistory> {
+      const query = new URLSearchParams({ card_id: cardId });
+      if (options.cursor) query.set('cursor', options.cursor);
+      if (options.recordId) query.set('record_id', options.recordId);
+      return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/delivery-evidence?${query}`, { signal });
+    },
+
     async getDeliveryEvidence(boardId: string, specId: string, signal?: AbortSignal): Promise<DeliveryEvidenceProjection> {
       return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/delivery-evidence`, { signal });
     },

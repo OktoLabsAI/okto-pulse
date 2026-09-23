@@ -1333,6 +1333,11 @@ class CommunityDeliveryEvidenceStore:
             ).all()
         )
 
+    async def progress_history(self, query, *, actor_id):
+        from okto_pulse.community.adapters.delivery_progress_reader import read_progress_history
+
+        return await read_progress_history(self, query, actor_id=actor_id)
+
     async def _progress_summary(self, scope):
         """Bounded history for resumption; currentness reads the full population."""
         filters = (
