@@ -140,6 +140,9 @@ async def test_authenticated_effects_on_reused_root_preserve_identity_and_remain
             parity = report['cognitive_source_parity']
             assert len(parity) == 1 and parity[0]['node_id'] == 'missing-decision'
             assert parity[0]['state'] == 'missing_node'
+            restoration, = report['cognitive_restoration']
+            assert restoration['node_id'] == 'missing-decision'
+            assert restoration['state'] == 'connectivity_rejected' and restoration['reasons']
         proof = receipt['historical_observations']['property_composition'][0]
         assert proof['before']['node_id'] == proof['after']['node_id'] == 'old-spec-root'
         with closing(sqlite3.connect(target / 'database.sqlite3')) as connection:

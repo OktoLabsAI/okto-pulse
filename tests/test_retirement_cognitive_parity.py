@@ -37,6 +37,12 @@ def test_cold_cognitive_source_parity_never_admits_history(tmp_path, state, monk
     assert report['cognitive_source_parity'][0]['state'] == state
     assert report['cognitive_source_parity'][0]['differing_fields'] == (['title'] if state == 'different' else [])
     assert report['history_classification'] == ('pending' if nodes else 'not_applicable')
+    if nodes:
+        assert report['cognitive_restoration'] == []
+    else:
+        restoration, = report['cognitive_restoration']
+        assert restoration['state'] == 'connectivity_rejected' and restoration['reasons']
+        assert restoration['node_id'] == node.key and len(restoration['literal_fingerprint']) == 64
     assert len(report['historical_connectivity']) == (1 if nodes else 0)
     if nodes:
         # Matching durable content does not repair missing semantic edges.
