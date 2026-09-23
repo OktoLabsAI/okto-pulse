@@ -1,6 +1,7 @@
 """Card resume projection over canonical relational facts, without a graph read."""
 
 import json
+from dataclasses import replace
 
 from sqlalchemy import func, select
 
@@ -10,6 +11,7 @@ from okto_pulse.core.domain.delivery_evidence import (
 )
 from okto_pulse.core.domain.effective_delivery_coverage import implementation_scope_current
 from okto_pulse.core.domain.delivery_progress import require_delivery_progress_mutable
+from okto_pulse.core.domain.execution_plan import card_verification_plan
 
 
 async def read_card_resume(store, query, *, actor_id):
@@ -18,7 +20,22 @@ async def read_card_resume(store, query, *, actor_id):
     card, spec, _ = await store._card_scope_guard(scope)
     generation = await store._delivery_revision(scope)
     version = (card.policy_version, spec.version, card.status)
-    snapshot = await store.load_card_snapshot(scope)
+    plan = await store._execution_plan(spec)
+    snapshot = await store.load_card_snapshot(scope, plan=plan)
+    verification = card_verification_plan(plan, scope.card_id)
+    scenario_ids = {row["scenario_id"] for row in verification["items"]}
+    test_card_ids = sorted({identity for row in verification["items"] for identity in row["test_card_ids"]})
+    tests_by_id = {fact.id: fact for fact in snapshot.tests}
+    related_complete = verification["complete"] and plan is not None and plan.complete and len(test_card_ids) <= 20
+    for test_card_id in test_card_ids[:20]:
+        if test_card_id == scope.card_id:
+            continue
+        related = await store.load_card_snapshot(CardDeliveryScope(scope.board_id, test_card_id, scope.spec_id, scope.spec_edition), plan=plan)
+        related_complete = related_complete and related.complete
+        tests_by_id.update((fact.id, fact) for fact in related.tests if fact.scenario_id in scenario_ids)
+    if plan is not None:
+        snapshot = replace(snapshot, tests=tuple(tests_by_id.values()), complete=snapshot.complete and related_complete)
+        snapshot = store._with_effective_context(snapshot, plan, await store._card_records(scope), spec, card)
     evaluation = evaluate_delivery_coverage(snapshot)
     progress = await store.progress_history(query.model_copy(update={"view": "progress"}), actor_id=actor_id)
     impact = await store._accumulated_impact(scope)
@@ -71,10 +88,19 @@ async def read_card_resume(store, query, *, actor_id):
         },
         "implementation_proofs": {"total": len(snapshot.implementations),
             "truncated": len(snapshot.implementations) > 20, "items": proofs},
-        "tests": {"scope": "this_card", "total": len(snapshot.tests),
+        "verification_plan": {"complete": verification["complete"], "status": verification["status"],
+            "total": len(verification["items"]), "truncated": len(verification["items"]) > 100,
+            "test_card_total": len(test_card_ids), "test_cards_truncated": len(test_card_ids) > 20,
+            "items": [{**row, "criterion_ids": row["criterion_ids"][:20], "test_card_ids": row["test_card_ids"][:20],
+                "links_truncated": len(row["criterion_ids"]) > 20 or len(row["test_card_ids"]) > 20}
+                for row in verification["items"][:100]]},
+        "tests": {"scope": "card_and_related_obligations" if plan is not None else "this_card", "total": len(snapshot.tests),
+            "total_exact": related_complete if plan is not None else False,
             "truncated": len(snapshot.tests) > 20,
             "items": [{"record_id": fact.id, "scenario_id": fact.scenario_id,
+                "card_id": fact.card_id,
                 "actor_id": fact.actor_id, "result": fact.result,
+                "observes_this_card": bool(set(fact.verified_implementation_ids).intersection(item.id for item in snapshot.implementations)),
                 "current_verified_run": fact.current_verified_run} for fact in snapshot.tests[:20]]},
         "targets": {"total": target_total, "truncated": len(targets) > 100,
             "items": [{"id": target.id, "revision": target.revision, "source_ref": target.source_ref,
@@ -85,6 +111,10 @@ async def read_card_resume(store, query, *, actor_id):
         "pending_work": {"source": "declared_progress", "resolution_inferred": False,
             "history_truncated": progress["next_cursor"] is not None},
         "follow_up": {
+            "targets": {"tool": "okto_pulse_list_implementation_targets", "board_id": scope.board_id,
+                "card_id": scope.card_id, "lifecycle_status": "active", "limit": 50},
+            "test_card_ledgers": [{"tool": "okto_pulse_get_delivery_evidence", "board_id": scope.board_id,
+                "spec_id": scope.spec_id, "card_id": identity, "view": "ledger"} for identity in test_card_ids[:20]],
             "ledger": {"tool": "okto_pulse_get_delivery_evidence", "board_id": scope.board_id,
                 "spec_id": scope.spec_id, "card_id": scope.card_id, "view": "ledger"},
             "progress": {"tool": "okto_pulse_get_delivery_evidence", "board_id": scope.board_id,
@@ -102,7 +132,7 @@ async def read_card_resume(store, query, *, actor_id):
     def oversized():
         # Reserve room for the use case's caller-specific action metadata.
         return len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > result["response_limit_bytes"] - 1024
-    for name in ("targets", "obligations", "implementation_proofs", "tests"):
+    for name in ("targets", "obligations", "implementation_proofs", "tests", "verification_plan"):
         while result[name]["items"] and oversized():
             result[name]["items"].pop()
             result[name]["truncated"] = True

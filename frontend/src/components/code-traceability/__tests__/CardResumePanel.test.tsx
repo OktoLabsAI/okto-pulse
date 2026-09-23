@@ -40,6 +40,23 @@ it('clears old data on refresh failure instead of treating it as empty success',
   expect(screen.queryByText(/Latest checkpoint by author-A/)).not.toBeInTheDocument();
 });
 
+it('shows planned responsibility and relevant test history without treating a plan as a passing result', async () => {
+  api.getCardDeliveryResume.mockResolvedValue({ ...result,
+    verification_plan: { complete: true, items: [{ scenario_id: 'auth-test', method: 'automated_test',
+      criterion_ids: ['auth-criterion'], test_card_ids: ['test-card'], blockers: [] }] },
+    tests: { scope: 'card_and_related_obligations', total: 1, total_exact: true, items: [
+      { record_id: 'run', card_id: 'test-card', scenario_id: 'auth-test', result: 'failed', current_verified_run: true, observes_this_card: true },
+    ] },
+  });
+  render(<CardResumePanel {...props} />);
+  fireEvent.click(screen.getByText('Read accumulated delivery context'));
+  await screen.findByText(/Planned scenario: auth-test/);
+  expect(screen.getByText('Responsible Test Cards: test-card.')).toBeInTheDocument();
+  expect(screen.getByText('auth-test: failed; authentication current.')).toBeInTheDocument();
+  expect(screen.getByText('History of Test Card test-card')).toBeInTheDocument();
+  expect(screen.getByText(/1 test records related to this Card/)).toBeInTheDocument();
+});
+
 it('rejects another edition and cancels pending requests after unmount', async () => {
   api.getCardDeliveryResume.mockResolvedValueOnce({ ...result, edition: 2 });
   const view = render(<CardResumePanel {...props} />);

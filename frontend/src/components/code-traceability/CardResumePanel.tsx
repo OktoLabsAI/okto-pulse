@@ -50,10 +50,26 @@ export function CardResumePanel({ boardId, cardId, specId, edition }: {
         {proof.declaration_origin === 'legacy_unknown' && <p>Legacy contribution declaration is unknown.</p>}
         {proof.bindings_truncated && <p>This proof’s binding list is shortened.</p>}
       </article>)}
-      <p>{data.tests.total} test records owned by this Card. Consult the Spec rollup for tests owned by other Cards.</p>
-      {data.tests.items.map(test => <p key={test.record_id}>{test.scenario_id}: {test.result}; authentication {test.current_verified_run ? 'current' : 'not current'}.</p>)}
+      {data.verification_plan && <>
+        {!data.verification_plan.complete && <p>The related verification plan is unavailable or incomplete.</p>}
+        {data.verification_plan.items.map(row => <article key={row.scenario_id}>
+          <p>Planned scenario: {row.scenario_id} · {row.method || 'Unknown method'} · criteria {row.criterion_ids.join(', ')}</p>
+          <p>Responsible Test Cards: {row.test_card_ids.join(', ') || 'Missing'}.</p>
+          {!!row.blockers.length && <p>Planning blockers: {row.blockers.join(', ')}</p>}
+          {row.links_truncated && <p>This scenario’s references are shortened.</p>}
+        </article>)}
+      </>}
+      <p>{data.tests.total_exact === false ? 'At least ' : ''}{data.tests.total} test records {data.tests.scope === 'card_and_related_obligations' ? 'related to this Card’s obligations' : 'owned by this Card'}.</p>
+      {data.tests.total_exact === false && <p>The related test population is incomplete or unavailable; this does not mean zero pending verification.</p>}
+      {data.tests.items.map(test => <article key={test.record_id}>
+        <p>{test.scenario_id}: {test.result}; authentication {test.current_verified_run ? 'current' : 'not current'}.</p>
+        {test.observes_this_card === false && <p>This record does not reference an implementation binding owned by this Card.</p>}
+      </article>)}
+      {[...new Set(data.tests.items.map(test => test.card_id).filter((id): id is string => !!id && id !== cardId))].map(id => <details key={id}><summary>History of Test Card {id}</summary>
+        <CardLedgerPanel boardId={boardId} cardId={id} specId={specId} edition={edition} />
+      </details>)}
       <ul>{data.targets.items.map(target => <li key={target.id}>{target.relative_path || target.id} · {target.source_ref} · Target revision {target.revision}</li>)}</ul>
-      {(data.response_truncated || data.obligations.truncated || data.implementation_proofs.truncated || data.tests.truncated || data.targets.truncated || data.accumulated_impact.detail_omitted) && <p>This context is shortened. Use the scoped detail reads and Spec rollup before relying on omitted facts.</p>}
+      {(data.response_truncated || data.obligations.truncated || data.implementation_proofs.truncated || data.tests.truncated || data.targets.truncated || data.accumulated_impact.detail_omitted || data.verification_plan?.truncated || data.verification_plan?.test_cards_truncated) && <p>This context is shortened. Use the scoped detail reads and Spec rollup before relying on omitted facts.</p>}
     </>}
   </section>;
 }

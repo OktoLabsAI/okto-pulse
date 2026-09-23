@@ -17,7 +17,7 @@ async def test_multibyte_manifest_is_capped_without_skipping_progress_cursor(db,
         await record(store, command(idempotency_key=f"note-{i}", justification="界" * 1000))
     await session.commit()
     obligations = tuple(DeliveryObligation(DeliveryBinding(f"fr-{i}", "a" * 64), "界" * 500) for i in range(100))
-    async def synthetic_inventory(scope):
+    async def synthetic_inventory(scope, *, plan=None):
         return DeliveryEvidenceSnapshot(DeliveryScope("b", "s", 1), obligations, complete=True)
     monkeypatch.setattr(store, "load_card_snapshot", synthetic_inventory)
     query = DeliveryEvidenceReadQuery(board_id="b", spec_id="s", card_id="c", view="resume")

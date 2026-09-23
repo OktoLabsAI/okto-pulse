@@ -139,8 +139,10 @@ export interface CardDeliveryResume {
     relative_path: string; current_obligation_refs: string[]; bindings_truncated: boolean;
     declaration_origin: string; contributions: Array<{ obligation_ref: string; declaration: string }>;
   }> };
-  tests: { scope: 'this_card'; total: number; truncated: boolean; items: Array<{
-    record_id: string; scenario_id: string; actor_id: string; result: string; current_verified_run: boolean;
+  verification_plan?: { complete: boolean; status: string; total: number; truncated: boolean; test_cards_truncated: boolean;
+    items: Array<{ scenario_id: string; method: string | null; criterion_ids: string[]; test_card_ids: string[]; blockers: string[]; links_truncated: boolean }> };
+  tests: { scope: 'this_card' | 'card_and_related_obligations'; total: number; total_exact?: boolean; truncated: boolean; items: Array<{
+    record_id: string; card_id?: string; scenario_id: string; actor_id: string; result: string; current_verified_run: boolean; observes_this_card?: boolean;
   }> };
   targets: { truncated: boolean; items: Array<{ id: string; revision: number; source_ref: string; relative_path: string | null }> };
   actions: { record_progress: boolean; final_transitions: 'not_evaluated'; mutation_reauthorization_required: true };
