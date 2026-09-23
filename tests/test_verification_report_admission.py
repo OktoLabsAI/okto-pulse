@@ -10,6 +10,9 @@ from okto_pulse.community.adapters.sqlalchemy_models import Spec
 from okto_pulse.community.adapters.test_evidence import CommunityEvidenceLedger, CommunityTestVerificationReportIssuer, CommunityTestEvidenceWriteVerifier
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.core.mcp import server
+from okto_pulse.core.domain.realm import RealmScope
+from okto_pulse.core.models.schemas import SpecCreate, SpecUpdate
+from okto_pulse.core.services.main import SpecService
 from okto_pulse.core.ports.permission_policy import set_permission_flag
 from okto_pulse.core.ports.test_evidence import register_test_verification_report_issuer, register_test_evidence_write_verifier, reset_test_verification_report_issuer_for_tests, reset_test_evidence_write_verifier_for_tests
 from okto_pulse.core.services.test_scenario_lifecycle import scenario_has_authenticated_required_evidence
@@ -126,6 +129,62 @@ async def test_report_denials_happen_before_receipt_and_preserve_scope(classifie
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('outcome', ['inconclusive', 'aborted', 'unavailable'])
+async def test_nonconclusive_report_is_authenticated_pending_work_not_test_credit(classified_context, monkeypatch, tmp_path, outcome):
+    db = classified_context
+    app, _, _ = await setup(db, monkeypatch, tmp_path, 'inspection')
+    value = report()
+    value['result'] = value['observations'][0]['outcome'] = outcome
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+        admitted = await client.post('/api/v1/specs/spec/scenarios/ts/evidence/reports', json={'report': value})
+        assert admitted.status_code == 200, admitted.text
+        evidence = admitted.json()['evidence']
+        unsigned = {key: item for key, item in evidence.items() if key != 'execution_receipt'}
+        rejected = await client.patch('/api/v1/specs/spec/scenarios/ts/status', json={'status': 'ready', 'evidence': unsigned})
+        assert rejected.status_code == 422, rejected.text
+        rejected = await client.patch('/api/v1/specs/spec/scenarios/ts/status', json={'status': 'passed', 'evidence': evidence})
+        assert rejected.status_code == 422, rejected.text
+        saved = await client.patch('/api/v1/specs/spec/scenarios/ts/status', json={'status': 'ready', 'evidence': evidence})
+        assert saved.status_code == 200, saved.text
+    persisted = await db.get(Spec, 'spec', populate_existing=True)
+    observed = persisted.test_scenarios[0]
+    assert observed['status'] == 'ready'
+    assert observed['evidence']['verification_report']['result'] == outcome
+    # Authenticity is independent of passing credit: consumers also check status.
+    assert scenario_has_authenticated_required_evidence(board_id='board', spec_id='spec',
+        scenario=observed, acceptance_criteria=CRITERIA)
+    cold = CommunityTestEvidenceWriteVerifier(ledger=CommunityEvidenceLedger(evidence_root=tmp_path / 'evidence'))
+    assert cold.verify(board_id='board', spec_id='spec', status='ready', scenario_id='ts',
+        scenario_sha256=evidence['scenario_sha256'], actor_id='author', evidence=evidence).verified
+
+
+@pytest.mark.asyncio
+async def test_bulk_ready_report_writes_cannot_bypass_authentication(classified_context, monkeypatch, tmp_path):
+    db = classified_context
+    app, scenario, _ = await setup(db, monkeypatch, tmp_path, 'inspection')
+    value = report()
+    value['result'] = value['observations'][0]['outcome'] = 'inconclusive'
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+        admitted = await client.post('/api/v1/specs/spec/scenarios/ts/evidence/reports', json={'report': value})
+        assert admitted.status_code == 200, admitted.text
+    evidence = admitted.json()['evidence']
+    db.info['realm_scope'] = RealmScope.local()
+    service = SpecService(db)
+    unsigned = {key: item for key, item in evidence.items() if key != 'execution_receipt'}
+    with pytest.raises(ValueError, match='verification_evidence_authenticated_result_required'):
+        await service.update_spec('spec', 'author', SpecUpdate(test_scenarios=[{**scenario, 'evidence': unsigned}]))
+    forged = deepcopy(evidence)
+    forged['verification_report']['conclusion'] = 'Unobserved conclusion'
+    with pytest.raises(ValueError, match='evidence_unverified: verification_report_invalid'):
+        await service.update_spec('spec', 'author', SpecUpdate(test_scenarios=[{**scenario, 'evidence': forged}]))
+    with pytest.raises(ValueError, match='test_scenario_status_requires_scoped_update'):
+        await service.create_spec('board', 'author', SpecCreate(title='Cannot copy signed identity',
+            delivery_context='brownfield', test_scenarios=[{**scenario, 'evidence': evidence}]))
+    observed = await db.get(Spec, 'spec', populate_existing=True)
+    assert observed.test_scenarios == [scenario]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('method', ['inspection', 'static_analysis', 'demonstration'])
 async def test_report_reuses_test_card_delivery_chain_and_revokes_stale_credit(ledger, tmp_path, method):
     from okto_pulse.core.ports.test_evidence import TestVerificationReportRequest as ReportRequest
@@ -163,6 +222,19 @@ async def test_report_reuses_test_card_delivery_chain_and_revokes_stale_credit(l
         await delivery.record(store, delivery.command('test', idempotency_key='stale-report', implementation_ids=[implementation['id']]))
     await session.rollback()
     assert not (await store.projection(delivery.BOARD_ID, delivery.SPEC_ID))['allowed']
+    for outcome in ('inconclusive', 'aborted', 'unavailable'):
+        pending_value = deepcopy(value)
+        pending_value['result'] = pending_value['observations'][0]['outcome'] = outcome
+        pending = await issuer.admit(ReportRequest(board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID,
+            scenario_id=scenario['id'], scenario_sha256=digest, actor_id='agent-1', report=pending_value))
+        await session.execute(update(Spec).where(Spec.id == delivery.SPEC_ID).values(
+            test_scenarios=[{**scenario, 'status': 'ready', 'evidence': dict(pending.evidence)}]))
+        await session.commit()
+        assert not (await store.projection(delivery.BOARD_ID, delivery.SPEC_ID))['allowed']
+        with pytest.raises(ValueError, match='current_verified_test'):
+            await delivery.record(store, delivery.command('test', idempotency_key=f'pending-{outcome}',
+                implementation_ids=[implementation['id']]))
+        await session.rollback()
     # An external report never closes a Spec, and a failed fresh report removes coverage.
     value['result'] = 'failed'
     value['observations'][0]['outcome'] = 'failed'

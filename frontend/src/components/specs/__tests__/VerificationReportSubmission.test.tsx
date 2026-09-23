@@ -63,3 +63,22 @@ it('marks an unsigned historical report as unverified', () => {
   render(<EvidenceBadge scenario={{ status: 'passed', evidence: { ...evidence, execution_receipt: null } }} />);
   expect(screen.getByTestId('evidence-badge-report')).toHaveTextContent('unverified');
 });
+
+it.each(['inconclusive', 'aborted', 'unavailable'])('retains %s as a report result and submits only ready', async outcome => {
+  const incomplete = { ...report, result: outcome };
+  const pendingEvidence = { ...evidence, verification_report: incomplete };
+  api.admitTestVerificationReport.mockResolvedValue({ evidence: pendingEvidence });
+  render(<VerificationReportSubmission {...props({ allowedResults: ['ready'] })} />);
+  fill(incomplete); submit();
+  await waitFor(() => expect(onSaved).toHaveBeenCalledOnce());
+  expect(api.admitTestVerificationReport).toHaveBeenCalledExactlyOnceWith('spec', 'ts', incomplete);
+  expect(api.updateTestScenarioStatus).toHaveBeenCalledExactlyOnceWith('spec', 'ts', { status: 'ready', evidence: pendingEvidence });
+});
+
+it('does not reinterpret an unavailable result as passing when ready is not allowed', async () => {
+  render(<VerificationReportSubmission {...props()} />);
+  fill({ ...report, result: 'unavailable' }); submit();
+  expect(await screen.findByRole('alert')).toHaveTextContent('transition is not available');
+  expect(api.admitTestVerificationReport).not.toHaveBeenCalled();
+  expect(api.updateTestScenarioStatus).not.toHaveBeenCalled();
+});

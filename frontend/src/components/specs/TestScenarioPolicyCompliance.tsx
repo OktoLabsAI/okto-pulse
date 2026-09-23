@@ -236,8 +236,16 @@ export function TestScenarioPolicyCompliance({
 
       <VerificationReportSubmission specId={specId} scenario={scenario}
         canSubmit={canSubmitVerificationReport && !specArchived && movingTo === null}
-        allowedResults={evidenceTransitions.map(transition => transition.to_status)}
+        allowedResults={[
+          ...evidenceTransitions.map(transition => transition.to_status),
+          ...executableTransitions.filter(transition => transition.to_status === 'ready').map(transition => transition.to_status),
+          ...(scenario.status === 'ready' && authority.preview.status === 'ready' ? ['ready'] : []),
+        ]}
         onSaved={refreshWholeSpec} onRejected={authority.handleTransitionError} />
+
+      {scenario.evidence?.verification_report && (
+        <p className="text-xs">Reported outcome: {scenario.evidence.verification_report.result}. {scenario.evidence.verification_report.conclusion}</p>
+      )}
 
       {canReadPolicyCompliance && (
         <div

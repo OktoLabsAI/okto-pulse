@@ -827,10 +827,10 @@ class CommunityEvidenceLedger:
         for field in identity_fields:
             if not isinstance(record.get(field), str) or not record[field].strip():
                 return False
-        if record.get("status") not in {"passed", "automated", "failed"}:
+        if record.get("status") not in ({"ready", "passed", "failed"} if report_record else {"passed", "automated", "failed"}):
             return False
         if report_record and (record.get('verification_method') not in {'static_analysis', 'inspection', 'demonstration'}
-                or record.get('status') not in {'passed', 'failed'}):
+                or record.get('status') not in {'ready', 'passed', 'failed'}):
             return False
         digest_fields = ['report_sha256', 'evidence_sha256'] if report_record else [
             "manifest_sha256",
@@ -1053,10 +1053,10 @@ class CommunityEvidenceLedger:
 
     def issue_verification_report(self, *, board_id, spec_id, scenario_id, scenario_sha256, status, actor_id, evidence):
         """Called only after authorized report/context validation, never an execution claim."""
-        from okto_pulse.core.domain.verification_report import parse_verification_report
+        from okto_pulse.core.domain.verification_report import parse_verification_report, verification_report_scenario_status
 
         report = parse_verification_report(evidence['verification_report'])
-        if report.result != status or evidence.get('report_author_id') != actor_id:
+        if verification_report_scenario_status(report) != status or evidence.get('report_author_id') != actor_id:
             raise CommunityTestEvidenceError('verification_report_author_or_result_mismatch')
         return self._issue_record(board_id=board_id, spec_id=spec_id, scenario_id=scenario_id,
             scenario_sha256=scenario_sha256, status=status, actor_id=actor_id, evidence=evidence,
@@ -1733,10 +1733,10 @@ class CommunityTestEvidenceWriteVerifier:
         evidence: object,
     ) -> TestEvidenceWriteVerification:
         if isinstance(evidence, dict) and evidence.get("evidence_class") == "verification_report":
-            from okto_pulse.core.domain.verification_report import VerificationReportEvidence
+            from okto_pulse.core.domain.verification_report import VerificationReportEvidence, verification_report_scenario_status
             try:
                 parsed = VerificationReportEvidence.model_validate(evidence)
-                if parsed.verification_report.result != status or parsed.scenario_sha256 != scenario_sha256:
+                if verification_report_scenario_status(parsed.verification_report) != status or parsed.scenario_sha256 != scenario_sha256:
                     raise ValueError("verification_report_binding_mismatch")
             except (TypeError, ValueError):
                 return TestEvidenceWriteVerification(False, ("verification_report_invalid",))
@@ -1769,7 +1769,7 @@ class CommunityTestVerificationReportIssuer:
         self._ledger = ledger
 
     async def admit(self, request):
-        from okto_pulse.core.domain.verification_report import parse_verification_report, VerificationReportEvidence
+        from okto_pulse.core.domain.verification_report import parse_verification_report, VerificationReportEvidence, verification_report_scenario_status
         report = parse_verification_report(request.report)
         evidence = {
             "evidence_class": "verification_report",
@@ -1781,7 +1781,7 @@ class CommunityTestVerificationReportIssuer:
         VerificationReportEvidence.model_validate({**evidence, "execution_receipt": "ev2r." + "0" * 32 + "." + "0" * 64})
         evidence["execution_receipt"] = self._ledger.issue_verification_report(
             board_id=request.board_id, spec_id=request.spec_id, scenario_id=request.scenario_id,
-            scenario_sha256=request.scenario_sha256, status=report.result, actor_id=request.actor_id, evidence=evidence)
+            scenario_sha256=request.scenario_sha256, status=verification_report_scenario_status(report), actor_id=request.actor_id, evidence=evidence)
         return TestEvidenceExecutionResult(evidence=evidence)
 
 

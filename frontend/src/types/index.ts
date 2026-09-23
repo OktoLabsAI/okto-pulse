@@ -1510,6 +1510,7 @@ export type TestScenarioType =
   | 'manual'
   | 'negative';
 export type TestScenarioStatus = 'draft' | 'ready' | 'automated' | 'passed' | 'failed';
+export type VerificationReportResult = 'passed' | 'failed' | 'inconclusive' | 'aborted' | 'unavailable';
 
 // Re-executable validation evidence contract (spec 9e0bf979).
 export type EvidenceClass =
@@ -1551,7 +1552,7 @@ export interface TestExecutionAttestationV2 {
 
 export interface TestScenarioEvidence {
   /** External observation; receipt authenticates submission, not independent approval. */
-  verification_report?: { method: string; report_id: string; result: 'passed' | 'failed'; conclusion: string; observed_at: string; observations: Array<{ criterion_id: string; expected: string; observed: string; observation_ref: string }> } | null;
+  verification_report?: { method: string; report_id: string; result: VerificationReportResult; conclusion: string; observed_at: string; observations: Array<{ criterion_id: string; expected: string; observed: string; observation_ref: string }> } | null;
   report_author_id?: string | null;
   // Legacy / minimal fields (NC-9).
   test_file_path?: string | null;
