@@ -895,27 +895,3 @@ Paged by a stable `node_id` cursor: pass `next_cursor` until
 `last_page=true`; the concatenation of pages is the full export. An
 unreadable graph returns `kg_export_failed` and never a partial document.
 The former CLI graph export is removed. REST is absent.
-
-## `okto_pulse_kg_provenance_drift`
-
-Read-only artifact→node drift report (spec MKG-B-S1 / FR7).
-
-Compares each node's persisted `source_content_hash` (stamped at commit
-with the session recipe) against the latest consolidation audit of the
-same artifact and the artifact's current existence via the board source
-reader. Reasons: `content_changed` (anchor stale vs last consolidated
-state, or artifact edited after the last consolidation) and
-`artifact_missing` (source deleted — terminal). The remedy is a normal
-re-consolidation (the NC-8 provenance restamp clears the flag); the
-tool never mutates the graph.
-
-Args:
-    board_id: Board ID.
-    node_type: Optional — narrow the scan to one node table.
-
-Returns:
-    JSON: `checked_count`, `skipped_count`, `drifted_count`,
-    `drifted_by_reason` (`content_changed` / `artifact_missing`),
-    `drifted` (node_id, node_type, source_artifact_ref,
-    persisted_hash, current_hash, reason; capped at 200 with
-    `truncated` flag).
