@@ -31,6 +31,8 @@ from okto_pulse.core.ports.mcp_resources import (
 
 RETIRED = (
     "okto_pulse_kg_migrate_schema",
+    "okto_pulse_kg_orphan_report",
+    "okto_pulse_kg_orphan_backfill",
     *(f"okto_pulse_kg_rebuild_{action}" for action in ("preflight", "confirm", "run")),
     *(f"okto_pulse_kg_global_discovery_recovery_{action}" for action in (
         "preflight", "confirm", "run", "status", "cancel", "resume",
@@ -47,7 +49,7 @@ RETIRED = (
 
 
 def test_removed_modules_and_console_entrypoint_are_not_distributed():
-    for name in ("kg_recovery_only", "api.kg_rebuild", "api.dead_letter", "api.queue_health", "api.kg_tick"):
+    for name in ("kg_recovery_only", "api.kg_rebuild", "api.dead_letter", "api.queue_health", "api.kg_tick", "api.kg_orphan_integrity"):
         assert importlib.util.find_spec(f"okto_pulse.community.{name}") is None
     for name in ("dlq_reprocess", "list_dead_letter_rows", "queue_health"):
         assert importlib.util.find_spec(f"okto_pulse.core.application.use_cases.{name}") is None
@@ -141,6 +143,8 @@ async def test_materialized_mcp_transport_rejects_removed_tools_before_handlers(
                 "force_full_rebuild": True,
                 "scope": "code_traceability",
                 "all_boards": True,
+                "dry_run": False,
+                "node_ids": ["legacy-orphan"],
             }):
                 result = await client.call_tool(name, arguments, raise_on_error=False)
                 assert result.is_error
@@ -148,6 +152,7 @@ async def test_materialized_mcp_transport_rejects_removed_tools_before_handlers(
 
 
 def test_removed_permissions_are_absent_from_registry_and_presets():
+    assert "kg.operations.integrity.backfill" not in ALL_FLAGS
     assert not any(flag.startswith((
         "kg.operations.rebuild.", "kg.operations.global_recovery.", "kg.operations.quarantine.",
         "kg.operations.global_outbox.", "kg.operations.tick.", "kg.operations.schema.",
@@ -155,6 +160,7 @@ def test_removed_permissions_are_absent_from_registry_and_presets():
     assert {policy.tool_name for policy in MCP_TOOL_PERMISSION_POLICIES}.isdisjoint(RETIRED)
     for preset in get_builtin_presets():
         operations = preset["flags"].get("kg", {}).get("operations", {})
+        assert "backfill" not in operations.get("integrity", {})
         assert {"rebuild", "global_recovery", "quarantine", "global_outbox", "tick", "schema"}.isdisjoint(operations)
 
 

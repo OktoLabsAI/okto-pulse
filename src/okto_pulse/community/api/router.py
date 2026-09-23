@@ -46,9 +46,6 @@ from okto_pulse.community.api.kg_digest_layer_mismatch import (
 from okto_pulse.community.api.kg_stale_canonical_parity import (
     router as kg_stale_canonical_parity_router,
 )
-from okto_pulse.community.api.kg_orphan_integrity import (
-    router as kg_orphan_integrity_router,
-)
 from okto_pulse.community.api.kg_cognitive_pending import (
     router as kg_cognitive_pending_router,
 )
@@ -139,7 +136,6 @@ api_router.include_router(
     kg_stale_canonical_parity_router,
     tags=["kg-stale-canonical-parity"],
 )
-api_router.include_router(kg_orphan_integrity_router, tags=["kg-orphan-integrity"])
 api_router.include_router(kg_cognitive_pending_router, tags=["kg-cognitive-pending"])
 api_router.include_router(bug_cognitive_closure_router, tags=["bug-cognitive-closure"])
 api_router.include_router(amendment_revisions_router, tags=["amendment-revisions"])

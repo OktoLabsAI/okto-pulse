@@ -378,42 +378,7 @@ includes ordered states, retry metadata, board-only SLO aggregates and
 fail-closed board/Global Discovery parity health. It never retries, rearms or
 mutates queue work.
 
-## `okto_pulse_kg_orphan_report`
 
-Return a bounded safe orphan-node report for a board KG.
-
-The payload intentionally exposes safe identifiers and aggregate diagnostics
-only: board_id, generation_id, orphan counts, safe samples, unresolved reasons,
-backfill summary, and correlation_id. It does not return raw node text,
-embeddings, prompts, or payload bodies.
-
-Args:
-    board_id: Board ID.
-    generation_id: Optional KG generation id.
-    limit: Max safe sample count, clamped by the server.
-
-Returns:
-    JSON safe orphan report, or a structured graph-unavailable payload.
-
-## `okto_pulse_kg_orphan_backfill`
-
-Run explicit orphan backfill for structurally resolvable nodes.
-
-Defaults to dry_run=true. The tool refuses writes when KG Health is
-`recovery_needed` or `quarantined`, so operators use the recovery flow instead
-of mutating a degraded graph.
-
-Args:
-    board_id: Board ID.
-    generation_id: Optional KG generation id.
-    dry_run: true to preview, false to write resolvable edges.
-    node_ids: Optional multi-value node IDs as a native list, JSON array, or
-        pipe-separated string.
-    limit: Max nodes to inspect, clamped by the server.
-
-Returns:
-    JSON backfill summary with dry_run, detected, connected, unresolved,
-    ambiguous, semantic_pending, and correlation_id.
 
 ## `okto_pulse_kg_list_alternatives`
 

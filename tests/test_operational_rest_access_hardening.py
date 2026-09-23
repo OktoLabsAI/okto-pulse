@@ -44,9 +44,6 @@ from okto_pulse.community.api.kg_digest_layer_mismatch import (
     router as digest_layer_mismatch_router,
 )
 from okto_pulse.community.api.kg_health import router as kg_health_router
-from okto_pulse.community.api.kg_orphan_integrity import (
-    router as orphan_integrity_router,
-)
 from okto_pulse.community.api.kg_routes import router as kg_routes_router
 from okto_pulse.community.api.kg_routes import (
     require_kg_board_actor,
@@ -178,7 +175,6 @@ def _client(uow: _Uow, *, claims=None) -> TestClient:
         canonical_partition_router,
         digest_layer_mismatch_router,
         stale_canonical_parity_router,
-        orphan_integrity_router,
         cognitive_badges_router,
         cognitive_candidate_commands_router,
         cognitive_candidates_router,
@@ -245,12 +241,6 @@ BOARD_SURFACES = [
     ),
     ("GET", "/api/v1/kg/board-b/digest-layer-mismatch", None),
     ("GET", "/api/v1/kg/board-b/stale-canonical-parity", None),
-    ("GET", "/api/v1/kg/orphan-integrity/report?board_id=board-b", None),
-    (
-        "POST",
-        "/api/v1/kg/orphan-integrity/backfill",
-        {"board_id": "board-b"},
-    ),
     (
         "GET",
         "/api/v1/kg/cognitive-pending/candidate-decisions?board_id=board-b",
@@ -319,11 +309,6 @@ WRITE_SURFACES = [
     ),
     (
         "POST",
-        "/api/v1/kg/orphan-integrity/backfill",
-        {"board_id": "board-b"},
-    ),
-    (
-        "POST",
         "/api/v1/kg/cognitive-pending/candidate-decisions/candidate-1/command",
         {
             "board_id": "board-b",
@@ -374,8 +359,6 @@ WRITE_SURFACES = [
         "canonical-partition-detail",
         "digest-layer-mismatch",
         "stale-canonical-parity",
-        "orphan-report",
-        "orphan-backfill",
         "cognitive-candidates",
         "cognitive-badges",
         "cognitive-pending",
@@ -519,7 +502,6 @@ def test_canonical_debt_valid_filters_preserve_rest_pagination() -> None:
         "cognitive-skip",
         "cognitive-clear",
         "canonical-debt-retry",
-        "orphan-backfill",
         "candidate-command",
         "historical-start",
         "historical-cancel",
