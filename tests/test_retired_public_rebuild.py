@@ -30,6 +30,7 @@ from okto_pulse.core.ports.mcp_resources import (
 
 
 RETIRED = (
+    "okto_pulse_kg_list_cognitive_dlq",
     "okto_pulse_kg_canonical_debt_list",
     "okto_pulse_kg_canonical_partition_integrity_list",
     "okto_pulse_kg_digest_layer_mismatch_list",
@@ -64,7 +65,7 @@ def test_removed_modules_and_console_entrypoint_are_not_distributed():
     assert importlib.util.find_spec("okto_pulse.community.api.kg_canonical_debt") is None
     assert importlib.util.find_spec("okto_pulse.core.application.use_cases.mcp_kg_crud") is None
     assert importlib.util.find_spec("okto_pulse.core.application.use_cases.list_stale_canonical_parity") is None
-    for name in ("dlq_reprocess", "list_dead_letter_rows", "queue_health"):
+    for name in ("dlq_reprocess", "list_dead_letter_rows", "queue_health", "list_cognitive_dlq"):
         assert importlib.util.find_spec(f"okto_pulse.core.application.use_cases.{name}") is None
     assert "okto-pulse-kg-recovery-only" not in {
         entry.name for entry in importlib.metadata.distribution("okto-pulse").entry_points

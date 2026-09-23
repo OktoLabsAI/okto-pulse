@@ -452,18 +452,6 @@ Args:
 Returns:
     JSON with updated readiness/skip state.
 
-## `okto_pulse_kg_list_cognitive_dlq`
-
-List cognitive-readiness dead-letter or failed extraction items.
-
-Args:
-    board_id: Board ID.
-    limit: Max rows.
-    offset: Page offset.
-
-Returns:
-    JSON with cognitive DLQ rows, error reason codes, and counts.
-
 
 ## `okto_pulse_kg_propose_reconciliation`
 
