@@ -110,7 +110,13 @@ def _derive(graph_plan, archived_origins, original, board_plans=None):
     audits = {row["session_id"]: row for row in _rows(document["consolidation_audit"])}
     refs = {}
     for row in _rows(document["kuzu_node_refs"]):
-        refs.setdefault(row["session_id"], []).append(row)
+        # Translate retained physical column names at the adapter boundary.
+        # The original snapshot and its byte-level recovery proof stay intact.
+        refs.setdefault(row["session_id"], []).append({
+            "board_id": row["board_id"], "session_id": row["session_id"],
+            "node_type": row["kuzu_node_type"], "node_id": row["kuzu_node_id"],
+            "operation": row["operation"],
+        })
     plans = {item.board_id: item for item in board_plans}
     origins = {owner: frozenset(ids) for owner, ids in archived_origins}
     selected = []
