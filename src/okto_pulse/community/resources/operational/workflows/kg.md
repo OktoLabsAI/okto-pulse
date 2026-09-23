@@ -305,7 +305,7 @@ KG Health surfaces four **distinct** operational signals — never merged into o
 | `cognitive_consolidation_pending` | Cognitive items awaiting agent action (pending/in_progress/failed) | `okto_pulse_kg_list_cognitive_pending_items` |
 | `dead_letter_backlog` | Consolidation rows that exhausted retries | Health reports the affected component; unavailable delivery remains a technical limitation. |
 | `global_outbox_dead_letter_backlog` | Terminal Global Discovery outbox deliveries | Health reports the cause and affected delivery remains unavailable; no public repair action |
-| `canonical_debt_open` | Artifacts still outside canonical consolidation | `okto_pulse_kg_canonical_debt_list` |
+| `canonical_debt_open` | Artifacts still outside canonical consolidation | `okto_pulse_kg_health` |
 
 The signals have separate counters. Do not infer cognitive readiness from active queue depth or treat a technical failure as completed work.
 

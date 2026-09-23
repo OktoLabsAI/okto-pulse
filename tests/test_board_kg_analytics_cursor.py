@@ -54,7 +54,7 @@ async def test_operational_diagnostics_link_to_health_without_losing_debt(board_
     evidence = await adapter.load(None, query=query)
     domains = {item.domain.value: item for item in evidence.domains}
     diagnostics = {item.domain: item for item in evidence.diagnostics}
-    for name, count, severity in (("active_queue", 4, "at_risk"), ("technical_dlq", 1, "blocking")):
+    for name, count, severity in (("active_queue", 4, "at_risk"), ("technical_dlq", 1, "blocking"), ("canonical_debt", 2, "at_risk")):
         item = domains[name]
         assert item.count == count
         assert item.severity.value == severity

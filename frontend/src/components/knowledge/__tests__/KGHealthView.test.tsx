@@ -190,6 +190,7 @@ describe('TS1 — mount inicial dispara 1 fetch e renderiza cards principais', (
       expect(screen.queryByTestId('kg-cpi-inspect')).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: /inspect/i })).not.toBeInTheDocument();
       expect('getCanonicalPartitionIntegrity' in kgHealthApi).toBe(false);
+      expect('getCanonicalDebt' in kgHealthApi).toBe(false);
     },
   );
 

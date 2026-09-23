@@ -34,9 +34,6 @@ from okto_pulse.community.api.kg_cognitive_candidates import (
 from okto_pulse.community.api.kg_cognitive_pending import (
     router as cognitive_pending_router,
 )
-from okto_pulse.community.api.kg_canonical_debt import (
-    router as canonical_debt_router,
-)
 from okto_pulse.community.api.kg_health import router as kg_health_router
 from okto_pulse.community.api.kg_routes import router as kg_routes_router
 from okto_pulse.community.api.kg_routes import (
@@ -162,7 +159,6 @@ def _client(uow: _Uow, *, claims=None) -> TestClient:
     for router in (
         cognitive_action_center_router,
         kg_health_router,
-        canonical_debt_router,
         cognitive_badges_router,
         cognitive_candidate_commands_router,
         cognitive_candidates_router,
@@ -213,12 +209,6 @@ BOARD_SURFACES = [
     (
         "GET",
         "/api/v1/kg/cognitive-effectiveness/inventory?board_id=board-b",
-        None,
-    ),
-    ("GET", "/api/v1/kg/canonical-debt?board_id=board-b", None),
-    (
-        "POST",
-        "/api/v1/kg/canonical-debt/debt-1/retry?board_id=board-b",
         None,
     ),
     (
@@ -284,11 +274,6 @@ WRITE_SURFACES = [
     ),
     (
         "POST",
-        "/api/v1/kg/canonical-debt/debt-1/retry?board_id=board-b",
-        None,
-    ),
-    (
-        "POST",
         "/api/v1/kg/cognitive-pending/candidate-decisions/candidate-1/command",
         {
             "board_id": "board-b",
@@ -333,8 +318,6 @@ WRITE_SURFACES = [
         "kg-health",
         "kg-health-readiness",
         "cognitive-effectiveness",
-        "canonical-debt-list",
-        "canonical-debt-retry",
         "cognitive-candidates",
         "cognitive-badges",
         "cognitive-pending",
@@ -368,107 +351,8 @@ def test_board_surface_returns_same_404_before_downstream_access(
     assert uow.events == expected
 
 
-@pytest.mark.parametrize(
-    ("params", "invalid_field"),
-    [
-        ({"artifact_type": "bogus_artifact"}, "artifact_type"),
-        ({"artifact_type": "SPEC"}, "artifact_type"),
-        ({"artifact_type": " spec "}, "artifact_type"),
-        ({"state": "bogus_state"}, "state"),
-        ({"state": "FAILED"}, "state"),
-        ({"state": " failed "}, "state"),
-        (
-            {"artifact_type": "SPEC", "state": "FAILED"},
-            "artifact_type",
-        ),
-    ],
-)
-def test_canonical_debt_invalid_filters_return_typed_422_before_uow_access(
-    params: dict[str, str],
-    invalid_field: str,
-) -> None:
-    uow = _Uow(board=None)
-
-    response = _client(uow).get(
-        "/api/v1/kg/canonical-debt",
-        params={"board_id": "board-b", **params},
-    )
-
-    assert response.status_code == 422
-    detail = response.json()["detail"]
-    assert detail["error"] == detail["code"] == "invalid_filter"
-    assert detail["field"] == invalid_field
-    assert detail["value"] == params[invalid_field]
-    assert isinstance(detail["allowed"], list)
-    assert uow.events == []
 
 
-def test_canonical_debt_valid_filters_preserve_rest_pagination() -> None:
-    uow = _Uow(board=OWN_BOARD)
-    captured: list[dict[str, object]] = []
-
-    class _CanonicalDebtReader:
-        async def list_canonical_debt(self, **kwargs):
-            captured.append(kwargs)
-            return SimpleNamespace(
-                items=[
-                    {
-                        "artifact_type": "spec",
-                        "artifact_id": "spec-page-3",
-                        "canonical_state": "failed",
-                    }
-                ],
-                counts={"open_count": 3},
-                total=3,
-            )
-
-    async def _resolved_permissions(_actor_id: str, _board_id: str):
-        return {
-            "kg": {
-                "operations": {"integrity": {"read": True}},
-                "admin": {"settings_read": True},
-            }
-        }
-
-    uow.services.kg = _CanonicalDebtReader()
-    uow.services.resolve_user_permissions = _resolved_permissions
-    response = _client(uow).get(
-        "/api/v1/kg/canonical-debt",
-        params={
-            "board_id": "board-b",
-            "artifact_type": "spec",
-            "state": "failed",
-            "limit": 1,
-            "offset": 2,
-        },
-    )
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "board_id": "board-b",
-        "items": [
-            {
-                "artifact_type": "spec",
-                "artifact_id": "spec-page-3",
-                "canonical_state": "failed",
-            }
-        ],
-        "counts": {"open_count": 3},
-        "total": 3,
-        "limit": 1,
-        "offset": 2,
-    }
-    assert captured == [
-        {
-            "board_id": "board-b",
-            "artifact_type": "spec",
-            "state": "failed",
-            "limit": 1,
-            "offset": 2,
-            "include_code_traceability": False,
-        }
-    ]
-    assert uow.events == ["board:board-b"]
 
 
 @pytest.mark.parametrize(
@@ -477,7 +361,6 @@ def test_canonical_debt_valid_filters_preserve_rest_pagination() -> None:
     ids=[
         "cognitive-skip",
         "cognitive-clear",
-        "canonical-debt-retry",
         "candidate-command",
         "historical-start",
         "historical-cancel",

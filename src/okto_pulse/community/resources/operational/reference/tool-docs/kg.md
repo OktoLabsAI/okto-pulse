@@ -112,28 +112,6 @@ Args:
 Returns:
     JSON with session_id, status=committed, counts, committed_at
 
-## `okto_pulse_kg_canonical_debt_list`
-
-List canonical-debt ledger rows for a board.
-
-Use this when `okto_pulse_kg_health` reports `canonical_debt.open_count > 0`
-and an agent needs to inspect which artifacts are pending, blocked, failed,
-or retry-scheduled. The tool is read-only and mirrors the REST canonical-debt
-list projection.
-
-Args:
-    board_id: Board UUID.
-    artifact_type: Optional filter such as `spec`, `task`, `test`, or `bug`.
-    state: Optional canonical_state filter such as `pending`, `failed`,
-        `blocked`, or `retry_scheduled`.
-    limit: Max rows to return (1-200, default 50).
-    offset: Skip first N rows (>=0, default 0).
-
-Returns:
-    JSON `{board_id, items, counts, total, limit, offset}`. Each item includes
-    artifact identity, source_ref, target_status, canonical_state, failure
-    reason, last_error, retry metadata, queue/DLQ refs, and evidence_ref.
-
 
 ## `okto_pulse_kg_health_readiness`
 

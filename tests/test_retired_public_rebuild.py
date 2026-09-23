@@ -30,6 +30,7 @@ from okto_pulse.core.ports.mcp_resources import (
 
 
 RETIRED = (
+    "okto_pulse_kg_canonical_debt_list",
     "okto_pulse_kg_canonical_partition_integrity_list",
     "okto_pulse_kg_digest_layer_mismatch_list",
     "okto_pulse_kg_digest_layer_reconcile",
@@ -60,6 +61,8 @@ def test_removed_modules_and_console_entrypoint_are_not_distributed():
     assert importlib.util.find_spec("okto_pulse.community.api.kg_stale_canonical_parity") is None
     assert importlib.util.find_spec("okto_pulse.community.api.kg_digest_layer_mismatch") is None
     assert importlib.util.find_spec("okto_pulse.community.api.kg_canonical_partition_integrity") is None
+    assert importlib.util.find_spec("okto_pulse.community.api.kg_canonical_debt") is None
+    assert importlib.util.find_spec("okto_pulse.core.application.use_cases.mcp_kg_crud") is None
     assert importlib.util.find_spec("okto_pulse.core.application.use_cases.list_stale_canonical_parity") is None
     for name in ("dlq_reprocess", "list_dead_letter_rows", "queue_health"):
         assert importlib.util.find_spec(f"okto_pulse.core.application.use_cases.{name}") is None
@@ -115,6 +118,8 @@ def test_registered_rest_app_returns_uniform_absence_without_authorization_or_da
 
 
 @pytest.mark.parametrize(("method", "path"), [
+    ("GET", "/api/v1/kg/canonical-debt"),
+    ("POST", "/api/v1/kg/canonical-debt/debt-1/retry"),
     ("GET", "/api/v1/kg/queue/dead-letter"),
     ("POST", "/api/v1/kg/queue/dead-letter/redrive"),
     ("POST", "/api/v1/kg/tick/run-now"),
@@ -123,6 +128,8 @@ def test_registered_rest_app_returns_uniform_absence_without_authorization_or_da
 ])
 @pytest.mark.parametrize("board", ["missing", "foreign", "owned"])
 def test_retired_queue_rest_routes_are_absent_before_storage(method, path, board):
+    from okto_pulse.community.api.auth_deps import require_user
+
     app = FastAPI()
     app.include_router(api_router)
 
@@ -131,6 +138,7 @@ def test_retired_queue_rest_routes_are_absent_before_storage(method, path, board
         yield  # pragma: no cover
 
     app.dependency_overrides[get_unit_of_work] = forbidden_uow
+    app.dependency_overrides[require_user] = lambda: pytest.fail("retired route resolved authority")
     with TestClient(app) as client:
         assert path not in client.get("/openapi.json").json()["paths"]
         response = client.request(method, path, params={"board_id": board}, json={
@@ -184,6 +192,7 @@ async def test_materialized_mcp_transport_rejects_removed_tools_before_handlers(
 def test_removed_permissions_are_absent_from_registry_and_presets():
     assert "kg.operations.integrity.backfill" not in ALL_FLAGS
     assert "kg.operations.integrity.reconcile" not in ALL_FLAGS
+    assert "kg.operations.integrity.read" not in ALL_FLAGS
     assert not any(flag.startswith((
         "kg.operations.rebuild.", "kg.operations.global_recovery.", "kg.operations.quarantine.",
         "kg.operations.global_outbox.", "kg.operations.tick.", "kg.operations.schema.",

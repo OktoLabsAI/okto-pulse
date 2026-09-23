@@ -46,7 +46,7 @@ describe('Analytics KG panels', () => {
       next_cursor: null,
     };
 
-    for (const domain of data.domains.filter((item) => ['active_queue', 'technical_dlq'].includes(item.domain))) {
+    for (const domain of data.domains.filter((item) => ['active_queue', 'technical_dlq', 'canonical_debt'].includes(item.domain))) {
       domain.drill_down = { allowed: true, target: '/api/v1/kg/health?board_id=board-1' };
     }
     render(<KgEffectivenessPanel data={data} loading={false} error={null} exporting={false} from="2026-08-01" to="2026-08-21" onRetry={vi.fn()} onExport={vi.fn()} />);
@@ -58,7 +58,7 @@ describe('Analytics KG panels', () => {
     expect(within(panel).getByText('2.5h')).toBeInTheDocument();
     expect(within(panel).getByRole('row', { name: /Policy Projection Debt.*3/ })).toBeInTheDocument();
     expect(within(panel).getByText('One Item Requires Recovery')).toBeInTheDocument();
-    for (const name of [/Active Queue.*4/, /Technical Dlq.*1/]) {
+    for (const name of [/Active Queue.*4/, /Technical Dlq.*1/, /Canonical Debt.*2/]) {
       const row = within(panel).getByRole('row', { name });
       expect(within(row).getByRole('link', { name: 'Open domain' })).toHaveAttribute('href', '/api/v1/kg/health?board_id=board-1');
     }

@@ -155,7 +155,7 @@ def _guideline_adoption_preview_required() -> HTTPException:
 
 @router.get("/guidelines", response_model=list[GuidelineResponse])
 async def list_guidelines(
-    # ``le=PAGE_OFFSET_MAX``: see kg_canonical_debt — an offset above SQLite's
+    # ``le=PAGE_OFFSET_MAX``: an offset above SQLite's
     # signed 64-bit INTEGER reached the SQL OFFSET bind and surfaced as an
     # uncaught OverflowError (HTTP 500 text/plain). Bounded here it becomes the
     # canonical typed 422 JSON.

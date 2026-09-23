@@ -480,7 +480,7 @@ class CommunitySqlAlchemyBoardKgAnalyticsEvidence:
                 BoardKgDomain.CANONICAL_DEBT,
                 timestamps=debt_rows,
                 observed_at=observed_at,
-                target=f"/api/v1/kg/canonical-debt?board_id={board_id}",
+                target=f"/api/v1/kg/health?board_id={board_id}",
                 severity=BoardKgDomainSeverity.AT_RISK,
             ),
             _operational_domain(
