@@ -134,20 +134,6 @@ Returns:
     artifact identity, source_ref, target_status, canonical_state, failure
     reason, last_error, retry metadata, queue/DLQ refs, and evidence_ref.
 
-## `okto_pulse_kg_canonical_partition_integrity_list`
-
-List canonical/working partition integrity issues for a board.
-
-Use this when KG health reports partition drift or when validating that working
-nodes have not leaked into canonical-only surfaces.
-
-Args:
-    board_id: Board ID.
-    limit: Max rows to return.
-    offset: Page offset.
-
-Returns:
-    JSON with partition issue rows and bounded counts.
 
 ## `okto_pulse_kg_health_readiness`
 

@@ -30,6 +30,7 @@ from okto_pulse.core.ports.mcp_resources import (
 
 
 RETIRED = (
+    "okto_pulse_kg_canonical_partition_integrity_list",
     "okto_pulse_kg_digest_layer_mismatch_list",
     "okto_pulse_kg_digest_layer_reconcile",
     "okto_pulse_kg_migrate_schema",
@@ -58,6 +59,7 @@ def test_removed_modules_and_console_entrypoint_are_not_distributed():
         assert importlib.util.find_spec(f"okto_pulse.community.{name}") is None
     assert importlib.util.find_spec("okto_pulse.community.api.kg_stale_canonical_parity") is None
     assert importlib.util.find_spec("okto_pulse.community.api.kg_digest_layer_mismatch") is None
+    assert importlib.util.find_spec("okto_pulse.community.api.kg_canonical_partition_integrity") is None
     assert importlib.util.find_spec("okto_pulse.core.application.use_cases.list_stale_canonical_parity") is None
     for name in ("dlq_reprocess", "list_dead_letter_rows", "queue_health"):
         assert importlib.util.find_spec(f"okto_pulse.core.application.use_cases.{name}") is None
@@ -70,7 +72,7 @@ def test_removed_modules_and_console_entrypoint_are_not_distributed():
 
 
 @pytest.mark.parametrize("board", ["missing", "foreign", "owned"])
-@pytest.mark.parametrize("report", ["stale-canonical-parity", "digest-layer-mismatch"])
+@pytest.mark.parametrize("report", ["stale-canonical-parity", "digest-layer-mismatch", "canonical-partition-integrity", "canonical-partition-integrity/node-1"])
 def test_parity_rest_reports_are_absent_before_authority_and_storage(board, report):
     from okto_pulse.community.api.auth_deps import require_user
 
@@ -85,7 +87,8 @@ def test_parity_rest_reports_are_absent_before_authority_and_storage(board, repo
         response = client.get(f"/api/v1/kg/{board}/{report}", params={"limit": 200, "offset": 0})
     assert response.status_code == 404
     assert response.json() == {"detail": "Not Found"}
-    assert f"/api/v1/kg/{{board_id}}/{report}" not in app.openapi()["paths"]
+    template = report.replace("/node-1", "/{node_id}")
+    assert f"/api/v1/kg/{{board_id}}/{template}" not in app.openapi()["paths"]
 
 
 @pytest.mark.parametrize("action", ["preflight", "confirm", "run"])

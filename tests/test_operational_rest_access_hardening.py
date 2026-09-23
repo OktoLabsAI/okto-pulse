@@ -37,9 +37,6 @@ from okto_pulse.community.api.kg_cognitive_pending import (
 from okto_pulse.community.api.kg_canonical_debt import (
     router as canonical_debt_router,
 )
-from okto_pulse.community.api.kg_canonical_partition_integrity import (
-    router as canonical_partition_router,
-)
 from okto_pulse.community.api.kg_health import router as kg_health_router
 from okto_pulse.community.api.kg_routes import router as kg_routes_router
 from okto_pulse.community.api.kg_routes import (
@@ -166,7 +163,6 @@ def _client(uow: _Uow, *, claims=None) -> TestClient:
         cognitive_action_center_router,
         kg_health_router,
         canonical_debt_router,
-        canonical_partition_router,
         cognitive_badges_router,
         cognitive_candidate_commands_router,
         cognitive_candidates_router,
@@ -223,12 +219,6 @@ BOARD_SURFACES = [
     (
         "POST",
         "/api/v1/kg/canonical-debt/debt-1/retry?board_id=board-b",
-        None,
-    ),
-    ("GET", "/api/v1/kg/board-b/canonical-partition-integrity", None),
-    (
-        "GET",
-        "/api/v1/kg/board-b/canonical-partition-integrity/node-1",
         None,
     ),
     (
@@ -345,8 +335,6 @@ WRITE_SURFACES = [
         "cognitive-effectiveness",
         "canonical-debt-list",
         "canonical-debt-retry",
-        "canonical-partition-list",
-        "canonical-partition-detail",
         "cognitive-candidates",
         "cognitive-badges",
         "cognitive-pending",

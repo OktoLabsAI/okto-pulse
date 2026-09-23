@@ -37,9 +37,6 @@ from okto_pulse.community.api.kg_health import router as kg_health_router
 from okto_pulse.community.api.kg_canonical_debt import (
     router as kg_canonical_debt_router,
 )
-from okto_pulse.community.api.kg_canonical_partition_integrity import (
-    router as kg_canonical_partition_integrity_router,
-)
 from okto_pulse.community.api.kg_cognitive_pending import (
     router as kg_cognitive_pending_router,
 )
@@ -118,10 +115,6 @@ api_router.include_router(settings_router, tags=["settings"])
 api_router.include_router(kg_health_router, tags=["kg-health"])
 api_router.include_router(kg_canonical_debt_router, tags=["kg-canonical-debt"])
 api_router.include_router(kg_projection_repair_router, tags=["kg-projection-repair"])
-api_router.include_router(
-    kg_canonical_partition_integrity_router,
-    tags=["kg-canonical-partition-integrity"],
-)
 api_router.include_router(kg_cognitive_pending_router, tags=["kg-cognitive-pending"])
 api_router.include_router(bug_cognitive_closure_router, tags=["bug-cognitive-closure"])
 api_router.include_router(amendment_revisions_router, tags=["amendment-revisions"])

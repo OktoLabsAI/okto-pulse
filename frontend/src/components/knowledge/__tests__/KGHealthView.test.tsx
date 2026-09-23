@@ -170,6 +170,29 @@ afterEach(() => {
 });
 
 describe('TS1 — mount inicial dispara 1 fetch e renderiza cards principais', () => {
+  it.each([undefined, 'okto_pulse_kg_canonical_partition_integrity_list'])(
+    'keeps partition counts without reopening the retired inspector (%s)', async (legacyTool) => {
+      mockBoard('b1');
+      mockApi(() => Promise.resolve({
+        ...baseHealth,
+        health_issues: [{
+          code: 'canonical_partition_integrity', component: 'canonical_graph',
+          severity: 'warning', reason: 'canonical_partition_integrity_open_gt_zero',
+          description: 'Canonical publication has three pending integrity signals.',
+          operator_action: 'inspect_kg_health',
+          counts: { cognitive_pending: 1, canonical_debt: 2 },
+          drill_down_tool: legacyTool,
+        }],
+      }));
+      render(<KGHealthView onClose={() => {}} />);
+      expect(await screen.findByText('3 signals')).toBeInTheDocument();
+      expect(screen.getByText('Canonical partition integrity')).toBeInTheDocument();
+      expect(screen.queryByTestId('kg-cpi-inspect')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /inspect/i })).not.toBeInTheDocument();
+      expect('getCanonicalPartitionIntegrity' in kgHealthApi).toBe(false);
+    },
+  );
+
   it('orders observation sections without a recovery workflow', async () => {
     mockBoard('b1');
     mockApi(() => Promise.resolve({ ...baseHealth, overall_state: 'healthy' }));

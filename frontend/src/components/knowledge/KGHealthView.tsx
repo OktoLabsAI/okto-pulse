@@ -32,7 +32,6 @@ import {
 
 import { useDashboardStore } from '@/store/dashboard';
 import { EXPECTED_KG_HEALTH_SCHEMA_VERSION } from '@/constants/kg';
-import { CanonicalPartitionIntegrityInspectorModal } from './CanonicalPartitionIntegrityInspectorModal';
 import {
   getKGHealth,
   type KGHealth,
@@ -253,7 +252,6 @@ export function KGHealthView({
                     avgRelevance={data.avg_relevance}
                     contradictWarnCount={data.contradict_warn_count}
                     metricStatus={data.metric_status ?? null}
-                    boardId={boardId}
                     healthIssues={data.health_issues ?? []}
                   />
                   <StorageFootprintCard proxy={data.storage_footprint_proxy ?? null} />
@@ -661,7 +659,6 @@ interface KGHealthCardProps {
   avgRelevance: number;
   contradictWarnCount: number;
   metricStatus: string | null;
-  boardId: string;
   healthIssues: Array<{
     code: string;
     component: string;
@@ -680,17 +677,9 @@ function KGHealthCard({
   avgRelevance,
   contradictWarnCount,
   metricStatus,
-  boardId,
   healthIssues,
 }: KGHealthCardProps) {
-  const [showPartitionInspector, setShowPartitionInspector] = useState(false);
-  // R7 IMP4: the aggregate canonical_partition_integrity issue links to a
-  // read-only drilldown (NO skip/resolve affordance — those are human-only).
-  const partitionIssue = healthIssues.find(
-    (issue) =>
-      issue.drill_down_tool ===
-      'okto_pulse_kg_canonical_partition_integrity_list',
-  );
+  const partitionIssue = healthIssues.find((issue) => issue.code === 'canonical_partition_integrity');
   const contradictClass =
     contradictWarnCount === 0
       ? 'text-emerald-600 dark:text-emerald-400'
@@ -741,27 +730,14 @@ function KGHealthCard({
       </Row>
       {partitionIssue && (
         <Row label="Canonical partition integrity">
-          <button
-            type="button"
-            onClick={() => setShowPartitionInspector(true)}
-            className="text-xs px-2 py-0.5 rounded-lg bg-violet-600 hover:bg-violet-700 text-white"
-            data-testid="kg-cpi-inspect"
-            title={partitionIssue.description ?? 'Inspect canonical partition integrity'}
-          >
-            Inspect
+          <span className="text-sm font-semibold text-amber-700 dark:text-amber-400" title={partitionIssue.description}>
             {partitionIssue.counts
-              ? ` (${Object.values(partitionIssue.counts).reduce((a, b) => a + b, 0)})`
-              : ''}
-          </button>
+              ? `${Object.values(partitionIssue.counts).reduce((a, b) => a + b, 0)} signals`
+              : 'Attention required'}
+          </span>
         </Row>
       )}
     </Card>
-    {showPartitionInspector && (
-      <CanonicalPartitionIntegrityInspectorModal
-        boardId={boardId}
-        onClose={() => setShowPartitionInspector(false)}
-      />
-    )}
     </>
   );
 }
