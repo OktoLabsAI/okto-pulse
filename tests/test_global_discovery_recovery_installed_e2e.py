@@ -1858,11 +1858,11 @@ def _mutate_authoritative_board(runtime: InstalledRuntime, index: int) -> None:
         connection.commit()
 
 
-def _seed_terminal_outbox(runtime: InstalledRuntime) -> str:
+def _seed_terminal_outbox(runtime: InstalledRuntime, request) -> str:
     dead_letter_id = "installed-e2e-global-dlq"
     with sqlite3.connect(runtime.database_path, timeout=30) as connection:
         connection.execute(
-            "INSERT OR REPLACE INTO global_update_outbox "
+            "INSERT INTO global_update_outbox "
             "(id, event_id, board_id, session_id, event_type, payload, "
             " created_at, processed_at, retry_count, last_error) "
             "VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, NULL, -1, ?)",
@@ -1877,6 +1877,27 @@ def _seed_terminal_outbox(runtime: InstalledRuntime) -> str:
             ),
         )
         connection.commit()
+        original = connection.execute(
+            "SELECT * FROM global_update_outbox WHERE id = ?", (dead_letter_id,),
+        ).fetchone()
+
+    def remove_owned_injection():
+        # The public-refusal assertions must preserve this entire row. Remove
+        # only our unchanged synthetic injection at test teardown: the next
+        # installed case shares the DB and must not inherit a fabricated DLQ.
+        with sqlite3.connect(runtime.database_path, timeout=30) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            observed = connection.execute(
+                "SELECT * FROM global_update_outbox WHERE id = ?", (dead_letter_id,),
+            ).fetchone()
+            assert observed == original, "terminal outbox fixture changed"
+            deleted = connection.execute(
+                "DELETE FROM global_update_outbox WHERE id = ?", (dead_letter_id,),
+            )
+            assert deleted.rowcount == 1
+            connection.commit()
+
+    request.addfinalizer(remove_owned_injection)
     return dead_letter_id
 
 
@@ -2026,6 +2047,7 @@ async def test_installed_wheels_serve_exact_frozen_resource_manifest_over_real_h
 @pytest.mark.asyncio
 async def test_installed_internal_recovery_and_public_dlq_retirement(
     installed_runtime: InstalledRuntime,
+    request: pytest.FixtureRequest,
 ) -> None:
     runtime = installed_runtime
     assert runtime.origin_report["versions"] == {
@@ -2362,7 +2384,7 @@ async def test_installed_internal_recovery_and_public_dlq_retirement(
     # Restart from the same installed wheels/data directory and prove the
     # durable control-plane state plus public DLQ operations survive it.
     runtime.clock_file.write_text("0", encoding="ascii")
-    dead_letter_id = _seed_terminal_outbox(runtime)
+    dead_letter_id = _seed_terminal_outbox(runtime, request)
     run_id = accepted_start["run_id"]
     partial_epoch = int(accepted_start["epoch"])
     resume_arguments = {

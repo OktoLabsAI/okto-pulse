@@ -111,7 +111,7 @@
     {
       "id": "terminal-global-outbox-row",
       "surface": "SQLite outbox fixture setup",
-      "justification": "Create one terminal delivery, then prove all retired public DLQ calls are refused over real HTTP and preserve the exact row. No manual DLQ replay workflow remains."
+      "justification": "Create one terminal delivery, then prove all retired public DLQ calls are refused over real HTTP and preserve the exact row. Test teardown removes only this unchanged synthetic row under a write transaction; identity collisions or any row mutation fail instead of overwriting/deleting evidence. Later installed cases retain the same runtime but do not inherit this injected DLQ. No manual DLQ replay workflow remains."
     },
     {
       "id": "global-discovery-total-loss-reapplied",
