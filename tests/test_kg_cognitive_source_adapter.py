@@ -82,6 +82,35 @@ async def test_adapter_satisfies_port_protocol(store):
     assert isinstance(adapter, ConditionalCognitiveSourceWriter)
 
 
+async def test_semantic_capture_survives_sql_roundtrip_and_is_not_a_literal_restore_candidate(store):
+    from dataclasses import asdict
+    from okto_pulse.community.adapters.retirement_candidate_cognitive_restoration import _plan
+    from okto_pulse.core.kg.logical_transfer import LogicalSchema, LogicalNodeType, LogicalPropertyDef
+    adapter, factory = store
+    payload = {'capture_format': 'learning-capture/v1', 'capture_id': 'capture-sql',
+        'author_id': 'author-a', 'captured_at': '2026-09-24T12:00:00+00:00',
+        'content': 'Retry idempotent operations only.', 'context': 'Worker retries',
+        'applicability': 'Operations with a verified idempotency key',
+        'source': {'board_id': BOARD, 'bug_id': 'bug-a', 'policy_version': 2,
+            'digest': 'a' * 64, 'evidence_refs': ['test_task:test-a']},
+        'intent': {'kind': 'create', 'target_node_id': None, 'target_generation': None,
+            'expected_fingerprint': None, 'reason': None}}
+    record = CognitiveSourceRecord(board_id=BOARD, node_type='Learning', node_id='capture-learning',
+        generation=0, payload=payload, evidence_refs=('test_task:test-a',))
+    async with factory() as session:
+        await adapter.append_many_if_current_in_context(session, (record,), expected_fingerprints=(None,))
+        await session.commit()
+    stored, = await adapter.enumerate(BOARD)
+    assert stored.payload == payload and stored.record_fingerprint == record.record_fingerprint
+    schema = LogicalSchema('board', (LogicalNodeType('Learning', 'id', (LogicalPropertyDef('id', 'string', False),)),))
+    selected, observations = _plan(schema, BOARD, (asdict(stored),), (), ())
+    assert selected == []
+    assert observations == [{'node_type': 'Learning', 'node_id': 'capture-learning',
+        'state': 'capture_pending_materialization', 'generations': [0],
+        'reasons': ['learning_capture_materialization_required'], 'literal_fingerprint': None}]
+    assert (await adapter.enumerate(BOARD))[0].record_fingerprint == stored.record_fingerprint
+
+
 async def test_conditional_append_compares_current_head_and_preserves_caller_transaction(store):
     adapter, factory = store
     first = _record('learning_cas')
