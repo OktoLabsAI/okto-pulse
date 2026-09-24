@@ -18,6 +18,18 @@ import time
 import traceback
 
 
+def _read_request_bytes(path: Path, *, max_seconds: float = 5.0) -> bytes:
+    """Retry only transient Windows read sharing, strictly before admission."""
+    deadline = time.monotonic() + max_seconds
+    while True:
+        try:
+            return path.read_bytes()
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.01)
+
+
 def install() -> None:
     from okto_pulse.community.adapters.global_discovery_recovery_worker import (
         CommunityRecoveryRuntime,
@@ -76,7 +88,7 @@ def install() -> None:
                     if response.exists():
                         continue
                     try:
-                        raw = path.read_bytes()
+                        raw = _read_request_bytes(path)
                         assert len(raw) <= 65536
                         result = execute(json.loads(raw))
                         envelope = {'result': result}

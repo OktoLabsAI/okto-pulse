@@ -326,7 +326,7 @@ async def test_retained_singular_plan_requires_fresh_preparation_without_rewriti
                 projection = plan['projection']
                 if projection is not None:
                     intents = projection.pop('relational_projection_active_set_intents')
-                    old = [intent for intent in intents if intent['namespace'] != 'scenario_criteria']
+                    old = [intent for intent in intents if intent['namespace'] in {'dependencies', 'rdl'}]
                     assert len(old) <= 1
                     projection['relational_projection_active_set_intent'] = old[0] if old else None
             board['sha256'] = hashlib.sha256(inputs._encode(board['projection'])).hexdigest()
