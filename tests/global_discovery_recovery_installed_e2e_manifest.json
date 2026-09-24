@@ -44,7 +44,7 @@
       "kind": "installed-process-test-monkeypatch",
       "target": "okto_pulse.community.adapters.grafx_global_discovery_recovery.write_json_atomic (and global_discovery_layout.write_json_atomic)",
       "scope": "building-gate server lifecycle only (hard-kill adoption test)",
-      "justification": "After production's REAL atomic Grafx active_generation.json pointer switch has returned durable, record its path in a signal file and block the native worker thread so the test can hard-kill the exact child process. The hook also recognizes the historical phase=building shape, but the current assertion requires the Grafx pointer. Nothing is skipped or mocked; the write itself is the unmodified production write."
+      "justification": "After production's REAL atomic Grafx active_generation.json pointer switch has returned durable, record its path in a signal file and block the native worker thread so the test can hard-kill its owned child tree (taskkill /PID /T /F on Windows includes the venv launcher descendants). The harness observes for 660s, covering the unchanged 600s productive attempt budget plus bounded margin. The hook also recognizes the historical phase=building shape, but the current assertion requires the Grafx pointer. Nothing is skipped or mocked; the write itself is the unmodified production write."
     },
     {
       "id": "writer-fence-loss-at-durable-building",
@@ -169,7 +169,7 @@
       {
         "id": "hard-kill-adoption",
         "surface": "Installed internal-control E2E over the hash-pinned wheel pair",
-        "proves": "A real child process.kill() at the atomically written Grafx active-generation pointer is adopted on restart with the same wheels/data: attempt_count +1, changed worker/token, bounded lease takeover on persisted ground truth (adopted claimed_at >= old claim expiry and <= max(old claim expiry, restarted poller first entry) + poll interval + fixed margin), typed orphan isolation, and cumulative_active_ms crash charge."
+        "proves": "A real owned process-tree kill at the atomically written Grafx active-generation pointer is adopted on restart with the same wheels/data: attempt_count +1, changed worker/token, bounded lease takeover on persisted ground truth (adopted claimed_at >= old claim expiry and <= max(old claim expiry, restarted poller first entry) + poll interval + fixed margin), typed orphan isolation, and cumulative_active_ms crash charge."
       }
     ]
   }

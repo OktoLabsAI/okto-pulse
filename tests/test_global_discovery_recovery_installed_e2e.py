@@ -1577,6 +1577,21 @@ class RunningServer:
         return ""
 
 
+def _kill_owned_server_tree(server: RunningServer) -> None:
+    """Kill the test's live child tree, including Windows venv launchers."""
+    process = server.process
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            check=True, capture_output=True, text=True, timeout=30,
+        )
+    else:
+        process.kill()
+    process.wait(timeout=30)
+
+
 def _stop_server(server: RunningServer) -> None:
     process = server.process
     if process.poll() is not None:
@@ -1588,13 +1603,7 @@ def _stop_server(server: RunningServer) -> None:
             process.terminate()
         process.wait(timeout=90)
     except (OSError, subprocess.TimeoutExpired):
-        with contextlib.suppress(OSError):
-            process.terminate()
-        try:
-            process.wait(timeout=15)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=15)
+        _kill_owned_server_tree(server)
 
 
 @contextmanager
@@ -2965,11 +2974,9 @@ async def test_installed_hard_kill_at_building_is_adopted_charged_and_completes(
             assert accepted["outcome"] == "accepted"
 
             # The gate fires at the durable cutover boundary of the native
-            # rebuild; a cold total-loss rebuild (schema + full digest sync +
-            # embedding writes) legitimately takes minutes on a loaded host,
-            # so this budget matches the other terminal waits (300s) rather
-            # than the old 180s Kuzu-era figure.
-            deadline = time.monotonic() + 300
+            # rebuild. Observe the existing 600s product budget plus a bounded
+            # margin; do not fail the harness halfway through that budget.
+            deadline = time.monotonic() + 660
             while not runtime.building_gate_signal_file.exists():
                 assert time.monotonic() < deadline, "building gate never signaled"
                 assert server.process.poll() is None, server.log_tail()
@@ -3024,8 +3031,7 @@ async def test_installed_hard_kill_at_building_is_adopted_charged_and_completes(
         assert Path(runtime.root).is_absolute()
         assert "global-recovery-installed-e2e" in runtime.root.as_posix()
         assert server.process.poll() is None
-        server.process.kill()
-        server.process.wait(timeout=30)
+        _kill_owned_server_tree(server)
 
     claim_expires_raw = str(pre["claim_expires_at"])
     claim_expires = datetime.fromisoformat(claim_expires_raw.replace(" ", "T"))
