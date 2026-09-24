@@ -114,16 +114,19 @@ LEGACY_CORE_SCHEMA_SHA256 = (
 # per-Spec Delivery Evidence skip added by the card-delivery release.
 # v0.4 adds the nullable Card migrated_validation_policy and the Spec
 # architecture_adoption/execution_contract JSON columns. Removing exactly those
-# three additions reproduces the preceding 8b43b7a2... contract; the inherited
-# population remains 65 tables. Additive authority/architecture tables are below.
+# three additions reproduces the preceding 8b43b7a2... contract. F3 then retires
+# all four Sprint tables and cards.sprint_id (including its FK/index), and
+# records permission_migration_review on agents, agent_boards and permission_presets.
+# The inherited population is now 61 tables. The new retirement checkpoint is
+# a Community extension, not part of the pre-extraction inherited population.
 # Keep the pre-extraction hash above immutable so migration provenance remains
 # independently verifiable.
 CURRENT_COMMUNITY_INHERITED_SCHEMA_SHA256 = (
-    "6ca27edf72476258f107e4411466efe6aed99769f3406a14804d680e80bb1c9d"
+    "e6ae97ce00d0a176bb2159fa1c3541c69b0e9df8ca3e41b3992c97d319353469"
 )
 
 # Additive Community-owned tables introduced after the F01 extraction. They
-# are intentionally excluded when proving that the inherited 65-table Core
+# are intentionally excluded when proving that the surviving inherited Core
 # schema matches the governed Community contract.
 COMMUNITY_SCHEMA_EXTENSION_TABLES = frozenset(
     {
@@ -131,6 +134,7 @@ COMMUNITY_SCHEMA_EXTENSION_TABLES = frozenset(
         "architecture_candidate_decisions",
         "architecture_classification_receipts",
         "historical_archive_grants",
+        "retirement_data_checkpoints",
         "artifact_deletion_tombstones",
         "global_discovery_delivery_ledger",
         "global_discovery_delivery_redrive_control",

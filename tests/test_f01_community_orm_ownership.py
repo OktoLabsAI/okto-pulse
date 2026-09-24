@@ -50,8 +50,14 @@ def test_community_metadata_matches_governed_inherited_schema_contract() -> None
     assert table_names & COMMUNITY_SCHEMA_EXTENSION_TABLES == (
         COMMUNITY_SCHEMA_EXTENSION_TABLES
     )
-    assert len(legacy_table_names) == 65
-    assert len(table_names) == 65 + len(COMMUNITY_SCHEMA_EXTENSION_TABLES)
+    # F3 retired four inherited Sprint tables. Its new migration checkpoint
+    # belongs to Community extensions, never to the inherited population.
+    assert not table_names & {
+        "sprints", "sprint_history", "sprint_qa_items", "sprint_activation_baselines",
+    }
+    assert "retirement_data_checkpoints" in COMMUNITY_SCHEMA_EXTENSION_TABLES
+    assert len(legacy_table_names) == 61
+    assert len(table_names) == 61 + len(COMMUNITY_SCHEMA_EXTENSION_TABLES)
     assert (
         schema_contract_sha256(
             Base.metadata,
