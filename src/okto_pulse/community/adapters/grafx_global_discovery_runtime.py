@@ -188,12 +188,19 @@ class CommunityGrafxGlobalDiscoveryRuntime:
                 observed_at=observed_at,
             )
         try:
-            active = read_safe_active_generation(legacy)
+            from okto_pulse.community.adapters.filesystem_observation import FilesystemObservationBudget
+
+            observation = None
+            if self._query_timeout is not None and self._query_timeout() is not None:
+                observation = FilesystemObservationBudget(self._query_timeout)
+            active = read_safe_active_generation(legacy, observation=observation)
             if active is not None:
                 if not has_grafx_identity(active.graph_path):
                     raise GlobalDiscoveryLayoutError(
                         "active_generation_identity_missing"
                     )
+                if observation is not None:
+                    observation.check()
                 return self._state_value(
                     GraphRuntimeObservationState.PRESENT_READABLE_CANDIDATE,
                     generation=generation or active.generation_id,
@@ -205,13 +212,17 @@ class CommunityGrafxGlobalDiscoveryRuntime:
                     },
                 )
             if has_grafx_identity(legacy):
+                if observation is not None:
+                    observation.check()
                 return self._state_value(
                     GraphRuntimeObservationState.PRESENT_READABLE_CANDIDATE,
                     generation=generation,
                     reason_code="global_discovery_legacy_primary_present",
                     observed_at=observed_at,
                 )
-            residues = global_layout_targets(legacy)
+            residues = global_layout_targets(legacy, observation=observation)
+            if observation is not None:
+                observation.check()
             if residues:
                 return self._state_value(
                     GraphRuntimeObservationState.PRESENT_UNREADABLE_OR_ERROR,

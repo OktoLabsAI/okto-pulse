@@ -10,6 +10,7 @@ import stat
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from okto_pulse.community.adapters.filesystem_observation import FilesystemObservationBudget
 from typing import Any
 
 from okto_grafx import Database, Timestamp, VectorValue
@@ -136,14 +137,17 @@ def safe_global_generation_graph_path(
     return safe_global_generation_dir(legacy, generation_id) / legacy.name
 
 
-def _plain_json_document(path: Path, *, reason: str) -> dict[str, object]:
+def _plain_json_document(path: Path, *, reason: str, observation: FilesystemObservationBudget | None = None) -> dict[str, object]:
     try:
         reject_filesystem_alias_ancestry(path.parent)
         metadata = path.lstat()
         if is_filesystem_alias(path) or not stat.S_ISREG(metadata.st_mode):
             raise OSError(reason)
-        with path.open("r", encoding="utf-8") as stream:
-            raw = json.load(stream)
+        if observation is not None:
+            raw = json.loads(observation.read_text(path, max_file_bytes=4 * 1024 * 1024))
+        else:
+            with path.open("r", encoding="utf-8") as stream:
+                raw = json.load(stream)
     except FileNotFoundError:
         raise
     except (OSError, ValueError, TypeError) as exc:
@@ -153,7 +157,7 @@ def _plain_json_document(path: Path, *, reason: str) -> dict[str, object]:
     return raw
 
 
-def read_safe_active_generation(legacy_path: Path) -> ActiveGeneration | None:
+def read_safe_active_generation(legacy_path: Path, *, observation: FilesystemObservationBudget | None = None) -> ActiveGeneration | None:
     """Authenticate pointer and manifest without following filesystem aliases."""
 
     legacy = Path(legacy_path)
@@ -162,6 +166,7 @@ def read_safe_active_generation(legacy_path: Path) -> ActiveGeneration | None:
         pointer_document = _plain_json_document(
             pointer,
             reason="active_pointer_unreadable",
+            observation=observation,
         )
     except FileNotFoundError:
         return None
@@ -186,6 +191,7 @@ def read_safe_active_generation(legacy_path: Path) -> ActiveGeneration | None:
     manifest = _plain_json_document(
         manifest_path,
         reason="generation_manifest_unreadable",
+        observation=observation,
     )
     supplied_manifest_sha = str(manifest.get("manifest_sha256") or "")
     manifest_binding = {
@@ -198,6 +204,8 @@ def read_safe_active_generation(legacy_path: Path) -> ActiveGeneration | None:
         or manifest.get("generation_id") != generation_id
     ):
         raise GlobalDiscoveryLayoutError("generation_manifest_hash_mismatch")
+    if observation is not None:
+        observation.check()
     return ActiveGeneration(
         generation_id=generation_id,
         graph_path=safe_global_generation_graph_path(legacy, generation_id),
@@ -220,7 +228,7 @@ def has_grafx_identity(path: Path) -> bool:
     return not is_filesystem_alias(identity_path) and stat.S_ISREG(identity.st_mode)
 
 
-def global_layout_targets(legacy_path: Path) -> tuple[Path, ...]:
+def global_layout_targets(legacy_path: Path, *, observation: FilesystemObservationBudget | None = None) -> tuple[Path, ...]:
     """Return the exact layout artifacts owned by one Global Discovery anchor."""
 
     legacy = Path(legacy_path)
@@ -231,7 +239,7 @@ def global_layout_targets(legacy_path: Path) -> tuple[Path, ...]:
             sorted(
                 (
                     child
-                    for child in legacy.parent.iterdir()
+                    for child in (observation.children(legacy.parent) if observation is not None else legacy.parent.iterdir())
                     if child.name.startswith(f"{legacy.name}.")
                 ),
                 key=lambda child: child.name,

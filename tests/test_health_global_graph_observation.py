@@ -71,6 +71,33 @@ def test_cold_global_health_never_opens_a_writable_participant(global_observatio
     assert all(opened_modes), f"Health opened native participants with read_only={opened_modes}"
 
 
+def test_global_health_bounds_authenticated_manifest_reads(global_observation_bundle):
+    import shutil
+    from okto_pulse.community.adapters.global_discovery_layout import (
+        generation_graph_path, switch_active_generation, write_generation_manifest,
+    )
+
+    bundle, _clock, opened_modes = global_observation_bundle
+    anchor = bundle.global_graph.resolver.inspect_global_route().anchor_path
+    target = generation_graph_path(anchor, "gdr_health_metadata_volume")
+    shutil.copytree(anchor, target)
+    digest, _ = write_generation_manifest(
+        anchor, generation_id="gdr_health_metadata_volume",
+        payload={"historical_metadata": "x" * (4 * 1024 * 1024)},
+    )
+    switch_active_generation(anchor, generation_id="gdr_health_metadata_volume", manifest_sha256=digest)
+    assert bundle.global_graph.runtime.state().state.value == "present_readable_candidate"
+    with bundle.board.graph_health_observation.scope("board", timeout_seconds=5):
+        try:
+            observed = bundle.global_graph.runtime.state()
+        except GraphError:
+            pass  # An incomplete observation must remain unavailable.
+        else:
+            assert observed.state.value == "present_unreadable_or_error"
+    assert opened_modes == []
+    assert bundle.global_graph.runtime.state().state.value == "present_readable_candidate"
+
+
 def test_warm_global_health_receives_native_deadline(global_observation_bundle):
     bundle, clock, _opened_modes = global_observation_bundle
     query = "MATCH (n:DecisionDigest) RETURN count(n)"

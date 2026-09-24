@@ -665,6 +665,7 @@ class _ComposedRoutedGlobalDiscoveryRecovery(CommunityRoutedGlobalDiscoveryRecov
 def _grafx_state(
     snapshot: CommunityGraphRouteSnapshot,
     generation: str | None,
+    observation_timeout: Callable[[], float | None] | None = None,
 ) -> Any:
     def no_database() -> Any:
         raise AssertionError("Grafx state must not open a database")
@@ -674,6 +675,7 @@ def _grafx_state(
         lambda: snapshot.anchor_path,
         lambda: None,
         lambda _phase: None,
+        query_timeout=observation_timeout,
     )
     return runtime.state(generation=generation)
 
@@ -1274,6 +1276,8 @@ def build_community_routed_global_graph_composition(
     if global_lock is None:
         raise TypeError("global_lock is required")
     revalidate = revalidate_write_fence or _default_fence_revalidator
+    if observation_timeout is not None:
+        resolver.bind_observation_timeout(observation_timeout)
     grafx = _GrafxGlobalPoolManager(grafx_pool)
     administration = _GlobalAdministrationBinding()
     grafx_sessions = _GrafxRuntimeSessionFactory(
@@ -1332,7 +1336,7 @@ def build_community_routed_global_graph_composition(
         statement_is_write=statement_is_write,
         grafx_session_factory=grafx_sessions,
         grafx_read_session_factory=read_factory,
-        grafx_state=_grafx_state,
+        grafx_state=lambda snapshot, generation: _grafx_state(snapshot, generation, observation_timeout),
         grafx_materialization_paths=_grafx_materialization_paths,
         grafx_close_unguarded=lambda _snapshot: grafx.close_all(),
         grafx_purge_unguarded=purge,

@@ -11,6 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+from okto_pulse.community.adapters.filesystem_observation import (
+    FilesystemObservationBudget, FilesystemObservationLimit,
+)
+
 
 ACTIVE_GENERATION_FILENAME = "active_generation.json"
 GENERATIONS_DIRNAME = "discovery.generations"
@@ -129,11 +133,14 @@ def _load_generation_manifest(
     legacy_path: Path,
     generation_id: str,
     expected_sha256: str,
+    *,
+    observation: FilesystemObservationBudget | None = None,
 ) -> dict[str, Any]:
     path = generation_dir(legacy_path, generation_id) / GENERATION_MANIFEST_FILENAME
     try:
-        with path.open("r", encoding="utf-8") as stream:
-            raw = json.load(stream)
+        raw = _read_json(path, observation)
+    except FilesystemObservationLimit:
+        raise
     except (OSError, ValueError, TypeError) as exc:
         raise GlobalDiscoveryLayoutError("generation_manifest_unreadable") from exc
     if not isinstance(raw, dict):
@@ -151,13 +158,23 @@ def _load_generation_manifest(
     return raw
 
 
-def read_active_generation(legacy_path: Path) -> ActiveGeneration | None:
+def _read_json(path: Path, observation: FilesystemObservationBudget | None):
+    if observation is not None:
+        return json.loads(observation.read_text(path, max_file_bytes=4 * 1024 * 1024))
+    with path.open("r", encoding="utf-8") as stream:
+        return json.load(stream)
+
+
+def read_active_generation(
+    legacy_path: Path, *, observation: FilesystemObservationBudget | None = None,
+) -> ActiveGeneration | None:
     pointer = active_pointer_path(legacy_path)
     if not pointer.exists():
         return None
     try:
-        with pointer.open("r", encoding="utf-8") as stream:
-            raw = json.load(stream)
+        raw = _read_json(pointer, observation)
+    except FilesystemObservationLimit:
+        raise
     except (OSError, ValueError, TypeError) as exc:
         raise GlobalDiscoveryLayoutError("active_pointer_unreadable") from exc
     if not isinstance(raw, dict):
@@ -172,7 +189,9 @@ def read_active_generation(legacy_path: Path) -> ActiveGeneration | None:
     manifest_sha256 = str(raw.get("manifest_sha256") or "")
     if not re.fullmatch(r"[0-9a-f]{64}", manifest_sha256):
         raise GlobalDiscoveryLayoutError("active_pointer_manifest_hash_invalid")
-    _load_generation_manifest(legacy_path, generation_id, manifest_sha256)
+    _load_generation_manifest(legacy_path, generation_id, manifest_sha256, observation=observation)
+    if observation is not None:
+        observation.check()
     return ActiveGeneration(
         generation_id=generation_id,
         graph_path=generation_graph_path(legacy_path, generation_id),

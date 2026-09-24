@@ -914,6 +914,7 @@ def build_community_routed_board_graph_composition(
         connect=connector,
         read_pools=grafx_read_pools,
     )
+    resolver.bind_observation_timeout(lambda: access.health_query_timeout("global"))
     if shared_store is None:
         local_adoption_opener[0] = access.open_for_adoption
     else:

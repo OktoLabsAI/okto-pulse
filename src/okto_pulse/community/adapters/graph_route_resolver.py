@@ -52,6 +52,9 @@ from okto_pulse.community.adapters.graph_backend_binding import (
     admit_grafx_database,
 )
 from okto_pulse.community.config import validate_grafx_page_size
+from okto_pulse.community.adapters.filesystem_observation import (
+    FilesystemObservationBudget, FilesystemObservationLimit,
+)
 
 _INITIAL_GENERATION = "generation-1"
 _ROUTE_LOCK_FILENAME = ".graph_route_initialization.lock"
@@ -192,6 +195,7 @@ class CommunityGraphRouteResolver:
         self._global_backend = global_backend
         self._grafx_page_size = validate_grafx_page_size(grafx_page_size)
         self._open_grafx_database = open_grafx_database
+        self._observation_timeout: Callable[[], float | None] | None = None
         if (
             isinstance(lock_timeout_seconds, bool)
             or not isinstance(lock_timeout_seconds, (int, float))
@@ -201,6 +205,10 @@ class CommunityGraphRouteResolver:
         self._lock_timeout_seconds = float(lock_timeout_seconds)
 
     # -- read-only routing -------------------------------------------------
+
+    def bind_observation_timeout(self, callback: Callable[[], float | None]) -> None:
+        """Composition supplies the thread-local Health deadline; None is foreground."""
+        self._observation_timeout = callback
 
     def inspect_board_route(self, board_id: str) -> CommunityGraphRouteSnapshot:
         binding = self._store.inspect_board_binding(board_id)
@@ -1105,7 +1113,15 @@ class CommunityGraphRouteResolver:
         # too late: the reparse target would already have been opened.
         self._require_no_alias(generation_root, scope=scope, scope_id=scope_id)
         try:
-            active = read_active_generation(anchor)
+            observation = None
+            if self._observation_timeout is not None and self._observation_timeout() is not None:
+                observation = FilesystemObservationBudget(self._observation_timeout)
+            active = read_active_generation(anchor, observation=observation)
+        except FilesystemObservationLimit as failure:
+            raise _capability(
+                failure.reason, operation="observe_global_route",
+                scope=scope, scope_id=scope_id,
+            ) from failure
         except GlobalDiscoveryLayoutError as failure:
             raise _corruption(
                 "global_route_pointer_or_manifest_invalid",

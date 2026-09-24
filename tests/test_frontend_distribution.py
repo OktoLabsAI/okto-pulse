@@ -35,6 +35,24 @@ def test_windows_checkout_preserves_packaged_asset_bytes(tmp_path):
     require_compatible_frontend(output / relative)
 
 
+def test_tracked_frontend_bytes_match_the_distribution_manifest(tmp_path):
+    """Changing attributes must also migrate previously normalized Git blobs."""
+    from okto_pulse.community.adapters.frontend_distribution import require_compatible_frontend
+
+    repo = Path(__file__).resolve().parents[1]
+    relative = Path("src/okto_pulse/community/frontend_dist")
+    manifest_name = "pulse-frontend-contract.json"
+    manifest = json.loads((repo / relative / manifest_name).read_text(encoding="utf-8"))
+    names = [manifest_name, *(entry["path"] for entry in manifest["files"])]
+    subprocess.run(
+        ["git", "-C", str(repo), "checkout-index", "--stdin", "-z",
+         f"--prefix={tmp_path.as_posix()}/"],
+        input=b"".join((relative / name).as_posix().encode("utf-8") + b"\0" for name in names),
+        check=True, capture_output=True,
+    )
+    require_compatible_frontend(tmp_path / relative)
+
+
 def test_incompatible_frontend_refuses_before_runtime_state(tmp_path, monkeypatch):
     from okto_pulse.community import main
 
