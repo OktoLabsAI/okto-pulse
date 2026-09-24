@@ -18,7 +18,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Awaitable, Callable
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import LargeBinary, case, cast, func, or_, select
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
     AmendmentHotfixRevision,
@@ -60,6 +60,8 @@ _BOARD_STAT_PROBE = "materialization_board_stat"
 _DISCOVERY_STAT_PROBE = "materialization_discovery_stat"
 _CENSUS_SESSION_CLEANUP_TIMEOUT_SECONDS = 2.0
 _CENSUS_SESSION_CLEANUP_CANCEL_DRAIN_TIMEOUT_SECONDS = 1.0
+_CENSUS_MAX_SPEC_ROWS = 1000
+_CENSUS_MAX_SPEC_BYTES = 4 * 1024 * 1024
 
 
 def _utcnow() -> datetime:
@@ -361,6 +363,47 @@ class CommunitySqlAlchemyMaterializationCensus:
     def __init__(self, session_factory: Callable[..., Any]) -> None:
         self._sf = session_factory
 
+    @staticmethod
+    def _bounded_specs(board_id: str) -> Any:
+        # Keep only IDs and byte lengths in the window. Do not materialize JSON
+        # to count it, and do not check a budget after the driver has decoded it.
+        # One extra candidate distinguishes a complete observation from a prefix.
+        payload_bytes = sum(
+            func.coalesce(func.length(cast(column, LargeBinary)), 0)
+            for column in (Spec.id, Spec.title, Spec.decisions)
+        ) + 64  # Fixed allowance for version and timestamp.
+        candidates = (
+            select(Spec.id, payload_bytes.label("payload_bytes"))
+            .where(Spec.board_id == board_id)
+            .order_by(Spec.id)
+            .limit(_CENSUS_MAX_SPEC_ROWS + 1)
+            .subquery()
+        )
+        budget = select(
+            candidates.c.id,
+            func.count().over().label("observed_rows"),
+            func.sum(candidates.c.payload_bytes).over().label("observed_bytes"),
+        ).subquery()
+        admitted = (budget.c.observed_rows <= _CENSUS_MAX_SPEC_ROWS) & (
+            budget.c.observed_bytes <= _CENSUS_MAX_SPEC_BYTES
+        )
+        # Budget and payload share one SQL snapshot: a concurrent edit cannot
+        # slip an oversized value between a size preflight and a later fetch.
+        return (
+            select(
+                *(
+                    case((admitted, column), else_=None).label(column.key)
+                    for column in (
+                        Spec.id, Spec.version, Spec.title, Spec.created_at, Spec.decisions
+                    )
+                ),
+                budget.c.observed_rows,
+                budget.c.observed_bytes,
+            )
+            .select_from(budget)
+            .join(Spec, Spec.id == budget.c.id)
+        )
+
     async def snapshot(
         self,
         board_id: str,
@@ -449,18 +492,18 @@ class CommunitySqlAlchemyMaterializationCensus:
             if deadline.expired(now=time.monotonic()):
                 raise TimeoutError
             specs = (
-                await session.execute(
-                    select(
-                        Spec.id,
-                        Spec.version,
-                        Spec.title,
-                        Spec.created_at,
-                        Spec.decisions,
-                    ).where(Spec.board_id == board_id)
-                )
+                await session.execute(self._bounded_specs(board_id))
             ).all()
             if deadline.expired(now=time.monotonic()):
                 raise TimeoutError
+            if specs and (
+                specs[0].observed_rows > _CENSUS_MAX_SPEC_ROWS
+                or specs[0].observed_bytes > _CENSUS_MAX_SPEC_BYTES
+            ):
+                return _unavailable_census(
+                    generation=generation,
+                    reason_code="board_census_volume_exceeded",
+                )
 
         source_count = sum(
             int(row[model.__tablename__] or 0) for model in self._SOURCE_MODELS

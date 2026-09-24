@@ -57,8 +57,9 @@ from okto_pulse.core.ports.global_outbox import (
 async def _database(
     tmp_path: Path,
     name: str,
+    **engine_options,
 ) -> tuple[object, async_sessionmaker[AsyncSession]]:
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / name}")
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / name}", **engine_options)
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
