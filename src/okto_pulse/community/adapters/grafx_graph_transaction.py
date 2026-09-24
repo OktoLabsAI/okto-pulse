@@ -51,6 +51,7 @@ from okto_pulse.community.adapters.cypher_statement_policy import (
     strip_comments_and_literals,
 )
 from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
+from okto_pulse.core.ports.spec_projection import is_scenario_criterion_writer
 from okto_pulse.community.adapters.grafx_query_values import normalize_query_value as _normalize_value
 from okto_pulse.community.adapters.grafx_relationship_layout import (
     resolve_relationship_table,
@@ -2045,6 +2046,9 @@ class _GrafxTransactionScope:
         """
 
         rule_id = str(edge.attrs.get("rule_id") or "")
+        if (edge.edge_type == "tests" and edge.from_type == "TestScenario" and edge.to_type == "Criterion"
+                and is_scenario_criterion_writer(rule_id=rule_id, layer=edge.attrs.get("layer"), created_by=edge.attrs.get("created_by"))):
+            return rule_id
         if (
             edge.edge_type == _SPEC_DEPENDENCY_EDGE_TYPE
             and edge.from_type == _PROJECTION_OWNER_NODE_TYPE
@@ -2153,6 +2157,9 @@ class _GrafxTransactionScope:
         if rule_id is not None:
             predicate += " AND r.rule_id = $rule_id"
             params["rule_id"] = rule_id
+            if edge.edge_type == "tests":
+                predicate += " AND r.layer = $layer AND r.created_by = $writer"
+                params.update(layer=edge.attrs.get("layer"), writer=edge.attrs.get("created_by"))
         projection = ", ".join(f"r.{name}" for name in properties) or "a.id"
         result = self._query(
             f"MATCH (a:{edge.from_type})-[r:{physical}]->(b:{edge.to_type}) "
@@ -2700,6 +2707,9 @@ class _GrafxTransactionScope:
         # The whole intent is validated, and every before-image captured, before the first
         # mutation: a refusal must not be able to leave half an active set staged.
         self._fence("reconcile_projection_active_set")
+        if intent.owner_type == "spec" and intent.namespace == "scenario_criteria":
+            from okto_pulse.community.adapters.grafx_scenario_projection import reconcile_scenario_criteria
+            return reconcile_scenario_criteria(self, intent)
         if intent.owner_type == "spec" and intent.namespace == "dependencies":
             return self._reconcile_spec_dependency_edges(intent)
         if intent.owner_type != "refinement" or intent.namespace != "rdl":
