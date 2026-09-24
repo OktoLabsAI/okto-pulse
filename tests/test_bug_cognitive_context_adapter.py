@@ -37,6 +37,103 @@ class _CanonicalBugReader:
         return self.result
 
 
+@pytest.mark.asyncio
+async def test_semantic_source_snapshot_is_versioned_before_done_without_graph_io(tmp_path):
+    engine, session_factory = await _runtime(tmp_path / 'semantic-source.db')
+    graph = _CanonicalBugReader(fail=True)
+    try:
+        await _seed_full_context(session_factory)
+        async with session_factory() as session:
+            card = await session.get(Card, 'bug-context')
+            card.status = 'in_progress'
+            card.policy_version = 7
+            await session.commit()
+        async with session_factory() as session:
+            source = await CommunityBugCognitiveContextAssembler(graph).assemble_semantic(
+                session, board_id='board-bug-context', bug_id='bug-context')
+        assert source.card_exists and source.verified
+        assert source.status == 'in_progress'
+        assert source.source_policy_version == 7
+        assert source.contract_version == 'bug-semantic-context/v1'
+        assert source.canonical_bug_present is None
+        assert source.eligible_for_closeout is False
+        assert source.action_plan and source.conclusions and source.test_scenarios
+        assert source.linked_test_tasks[0].card_id == 'regression-test'
+        assert source.load_errors == ()
+        assert not any(ref.startswith('kg:') for ref in source.provenance_refs)
+        assert graph.calls == []
+        # A fresh source read observes a concurrent/reopen fence change; it is
+        # not reconstructed from the submitted or previously captured context.
+        async with session_factory() as session:
+            card = await session.get(Card, 'bug-context')
+            card.policy_version = 8
+            await session.commit()
+        async with session_factory() as session:
+            fresh = await CommunityBugCognitiveContextAssembler(graph).assemble_semantic(
+                session, board_id='board-bug-context', bug_id='bug-context')
+        assert fresh.source_policy_version == 8
+        assert source.source_policy_version == 7
+        assert graph.calls == []
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('damage,error', [
+    ('spec', 'bug_spec_source_unavailable'),
+    ('test', 'bug_linked_test_source_unavailable'),
+    ('type', 'bug_source_type_invalid'),
+    ('version', 'bug_source_version_unavailable'),
+])
+async def test_semantic_snapshot_does_not_certify_incomplete_relational_source(tmp_path, damage, error):
+    engine, session_factory = await _runtime(tmp_path / 'semantic-incomplete.db')
+    graph = _CanonicalBugReader(fail=True)
+    try:
+        await _seed_full_context(session_factory)
+        async with session_factory() as session:
+            card = await session.get(Card, 'bug-context')
+            if damage == 'spec':
+                parent = await session.get(Spec, card.spec_id)
+                session.add(Board(id='foreign-board', name='Foreign', owner_id='other'))
+                await session.flush()
+                parent.board_id = 'foreign-board'
+            elif damage == 'test':
+                card.linked_test_task_ids = ['missing-test']
+            elif damage == 'type':
+                card.card_type = 'normal'
+            else:
+                card.policy_version = 0
+            await session.commit()
+        async with session_factory() as session:
+            source = await CommunityBugCognitiveContextAssembler(graph).assemble_semantic(
+                session, board_id='board-bug-context', bug_id='bug-context')
+        assert source.card_exists and not source.verified
+        assert error in source.load_errors
+        assert graph.calls == []
+        if damage == 'spec':
+            assert source.test_scenarios == source.acceptance_criteria == ()
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('board_id,bug_id', [('foreign-board', 'bug-context'), ('board-bug-context', 'absent')])
+async def test_semantic_snapshot_never_loads_foreign_or_missing_bug(tmp_path, board_id, bug_id):
+    engine, session_factory = await _runtime(tmp_path / 'semantic-scope.db')
+    graph = _CanonicalBugReader(fail=True)
+    try:
+        await _seed_full_context(session_factory)
+        async with session_factory() as session:
+            source = await CommunityBugCognitiveContextAssembler(graph).assemble_semantic(
+                session, board_id=board_id, bug_id=bug_id)
+        assert not source.card_exists and not source.verified
+        assert source.source_policy_version is None
+        assert source.title is None and source.conclusions == ()
+        assert graph.calls == []
+    finally:
+        await engine.dispose()
+
+
 async def _runtime(path: Path):  # noqa: ANN202
     engine = build_community_engine(f"sqlite+aiosqlite:///{path}")
     async with engine.begin() as connection:

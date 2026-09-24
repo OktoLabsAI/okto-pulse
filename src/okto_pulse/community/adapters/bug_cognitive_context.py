@@ -19,6 +19,7 @@ from okto_pulse.core.ports.bug_cognitive_context import (
     BugLinkedTestTask,
     CanonicalBugNodeReadPort,
     freeze_mapping_sequence,
+    qualify_bug_semantic_context,
 )
 
 logger = logging.getLogger("okto_pulse.community.bug_cognitive_context")
@@ -92,6 +93,18 @@ class CommunityBugCognitiveContextAssembler:
         board_id: str,
         bug_id: str,
     ) -> BugCognitiveContext:
+        return await self._assemble(context, board_id=board_id, bug_id=bug_id, include_projection=True)
+
+    async def assemble_semantic(
+        self, context: Any, *, board_id: str, bug_id: str,
+    ) -> BugCognitiveContext:
+        source = await self._assemble(context, board_id=board_id, bug_id=bug_id, include_projection=False)
+        return qualify_bug_semantic_context(source)
+
+    async def _assemble(
+        self, context: Any, *, board_id: str, bug_id: str, include_projection: bool,
+    ) -> BugCognitiveContext:
+        contract_version = 'bug-cognitive-context/v1' if include_projection else 'bug-semantic-context/v1'
         card = await context.get(Card, bug_id)
         if card is None or str(card.board_id) != str(board_id):
             return BugCognitiveContext(
@@ -99,6 +112,7 @@ class CommunityBugCognitiveContextAssembler:
                 bug_id=bug_id,
                 card_exists=False,
                 provenance_refs=(f"sql:cards/{bug_id}",),
+                contract_version=contract_version,
             )
 
         comments_result = await context.execute(
@@ -223,27 +237,33 @@ class CommunityBugCognitiveContextAssembler:
         )
 
         load_errors: list[str] = []
-        canonical_bug_present: bool | None
-        try:
-            canonical_bug_present = await self._canonical_bug_reader.exists(
-                board_id=board_id,
-                bug_id=bug_id,
-            )
-        except Exception as exc:  # the policy receives an explicit unknown state
-            canonical_bug_present = None
-            load_errors.append("canonical_bug_probe_failed")
-            logger.warning(
-                "bug_cognitive_context.canonical_probe_failed board=%s bug=%s error=%s",
-                board_id,
-                bug_id,
-                type(exc).__name__,
-                extra={
-                    "event": "bug_cognitive_context.canonical_probe_failed",
-                    "board_id": board_id,
-                    "bug_id": bug_id,
-                    "error_type": type(exc).__name__,
-                },
-            )
+        source_policy_version = card.policy_version
+        if not include_projection:
+            if card.spec_id and spec is None:
+                load_errors.append('bug_spec_source_unavailable')
+            if set(linked_ids) - rows_by_id.keys():
+                load_errors.append('bug_linked_test_source_unavailable')
+        canonical_bug_present: bool | None = None
+        if include_projection:
+            try:
+                canonical_bug_present = await self._canonical_bug_reader.exists(
+                    board_id=board_id,
+                    bug_id=bug_id,
+                )
+            except Exception as exc:  # the policy receives an explicit unknown state
+                load_errors.append("canonical_bug_probe_failed")
+                logger.warning(
+                    "bug_cognitive_context.canonical_probe_failed board=%s bug=%s error=%s",
+                    board_id,
+                    bug_id,
+                    type(exc).__name__,
+                    extra={
+                        "event": "bug_cognitive_context.canonical_probe_failed",
+                        "board_id": board_id,
+                        "bug_id": bug_id,
+                        "error_type": type(exc).__name__,
+                    },
+                )
 
         provenance = [f"sql:cards/{bug_id}"]
         if card.spec_id:
@@ -282,6 +302,8 @@ class CommunityBugCognitiveContextAssembler:
             canonical_bug_present=canonical_bug_present,
             provenance_refs=tuple(provenance),
             load_errors=tuple(load_errors),
+            contract_version=contract_version,
+            source_policy_version=source_policy_version,
         )
 
 
