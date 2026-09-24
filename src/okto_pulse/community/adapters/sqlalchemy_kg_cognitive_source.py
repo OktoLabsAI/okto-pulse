@@ -9,11 +9,12 @@ one short transaction for the complete batch.
 from __future__ import annotations
 
 import logging
+import json
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from sqlalchemy import false, select, text, tuple_, update
+from sqlalchemy import false, select, text, tuple_, update, or_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
@@ -427,6 +428,67 @@ class CommunitySqlAlchemyCognitiveSourceStore:
 
         await session.flush()
         return tuple(resolved_ids)
+
+    async def read_capture_history_in_context(
+        self, context: object, *, board_id: str, bug_id: str,
+        cursor: str | None = None, limit: int = 20,
+    ):
+        from okto_pulse.core.ports.learning_capture import (
+            LearningCaptureHistoryPage, validate_learning_capture_payload,
+        )
+        if (type(limit) is not int or not 1 <= limit <= 50
+                or (cursor is not None and (type(cursor) is not str or not 1 <= len(cursor) <= 4096))):
+            raise ValueError('learning_capture_page_invalid')
+
+        def matches(payload):
+            return (payload['source']['bug_id'].as_string() == bug_id) & (
+                payload['capture_format'].as_string().is_not(None))
+
+        try:
+            revised = select(KGCognitiveSourceRevision.cognitive_source_id).where(
+                matches(KGCognitiveSourceRevision.payload))
+            query = select(KGCognitiveSource).where(
+                KGCognitiveSource.board_id == board_id, KGCognitiveSource.node_type == 'Learning',
+                or_(matches(KGCognitiveSource.payload), KGCognitiveSource.id.in_(revised)))
+            if cursor is not None:
+                query = query.where(KGCognitiveSource.id > cursor)
+            bases = list((await context.execute(query.order_by(KGCognitiveSource.id).limit(limit + 1)
+                .execution_options(populate_existing=True))).scalars().all())
+            more = len(bases) > limit
+            bases = bases[:limit]
+            if not bases:
+                return LearningCaptureHistoryPage((), None)
+            by_id = {str(base.id): base for base in bases}
+            revisions = list((await context.execute(select(KGCognitiveSourceRevision).where(
+                KGCognitiveSourceRevision.cognitive_source_id.in_(tuple(by_id)))
+                .order_by(KGCognitiveSourceRevision.cognitive_source_id, KGCognitiveSourceRevision.source_revision)
+                .limit(201).execution_options(populate_existing=True))).scalars().all())
+            if len(bases) + len(revisions) > 200:
+                raise CognitiveSourceError('learning_capture_history_limit', board_id=board_id)
+            history = tuple([_base_record(base) for base in bases] + [
+                _revision_record(by_id[str(row.cognitive_source_id)], row) for row in revisions])
+            # Audit the complete selected history, not just matching captures.
+            latest_cognitive_source_records(history)
+            captures = []
+            size = 0
+            for record in history:
+                payload = dict(record.payload)
+                if not validate_learning_capture_payload(payload, board_id=board_id,
+                        node_type=record.node_type, node_id=record.node_id, generation=record.generation,
+                        evidence_refs=record.evidence_refs):
+                    continue
+                if payload['source']['bug_id'] != bug_id:
+                    continue
+                size += len(json.dumps(payload, ensure_ascii=False).encode('utf-8'))
+                if size > 8 * 1024 * 1024:
+                    raise CognitiveSourceError('learning_capture_history_limit', board_id=board_id)
+                captures.append(record)
+            captures.sort(key=lambda row: (row.node_id, row.generation, row.source_revision))
+            return LearningCaptureHistoryPage(tuple(captures), str(bases[-1].id) if more else None)
+        except CognitiveSourceError:
+            raise
+        except SQLAlchemyError as exc:
+            raise CognitiveSourceError('learning_capture_history_unavailable', board_id=board_id) from exc
 
     async def read_latest_in_context(
         self, context: object, *, board_id: str, node_id: str, generation: int,

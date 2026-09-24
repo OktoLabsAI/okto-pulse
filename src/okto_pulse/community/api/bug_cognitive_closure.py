@@ -28,7 +28,7 @@ from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.core.kg.cognitive_readiness import CognitiveReadinessError
 from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.core.application.use_cases.learning_capture import (
-    CreateLearningCaptureUseCase, GetLearningCaptureSourceUseCase,
+    CreateLearningCaptureUseCase, GetLearningCaptureSourceUseCase, ListLearningCapturesUseCase,
 )
 from okto_pulse.core.application.use_cases.base import EntityNotFoundError, PermissionDeniedError
 from okto_pulse.core.models.learning_capture import LearningCaptureCreateRequest
@@ -52,6 +52,7 @@ def _capture_error(exc):
     if not unavailable and not conflict and code not in {
         'learning_capture_request_invalid', 'learning_capture_payload_invalid', 'learning_capture_payload_limit',
         'learning_capture_evidence_ambiguous', 'learning_capture_evidence_not_authenticated',
+        'learning_capture_page_invalid',
     }:
         return HTTPException(status_code=503, detail={'code': 'learning_capture_unavailable'})
     return HTTPException(status_code=503 if unavailable else 409 if conflict else 422, detail={'code': code})
@@ -79,6 +80,20 @@ async def create_learning_capture(
             actor=RESTAdapterContract.actor(actor), uow=uow)
         return {'capture_id': record.payload['capture_id'], 'learning_id': record.node_id,
             'fingerprint': record.record_fingerprint, 'status': 'captured_pending_materialization'}
+    except (EntityNotFoundError, PermissionDeniedError, ValueError, CognitiveSourceError, RuntimeError) as exc:
+        raise _capture_error(exc) from exc
+
+
+@router.get('/bugs/{bug_id}/learning-captures', tags=['bug-learning'])
+async def list_learning_captures(
+    bug_id: str, board_id: str = Query(min_length=1, max_length=4096),
+    cursor: str | None = Query(default=None, min_length=1, max_length=4096),
+    limit: int = Query(default=20, ge=1, le=50),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work), actor: str = Depends(require_user),
+) -> dict[str, Any]:
+    try:
+        return await ListLearningCapturesUseCase().execute(board_id=board_id, bug_id=bug_id,
+            actor=RESTAdapterContract.actor(actor), uow=uow, cursor=cursor, limit=limit)
     except (EntityNotFoundError, PermissionDeniedError, ValueError, CognitiveSourceError, RuntimeError) as exc:
         raise _capture_error(exc) from exc
 

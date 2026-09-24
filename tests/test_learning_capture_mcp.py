@@ -85,3 +85,23 @@ async def test_mcp_missing_auth_and_bug_do_not_write_or_leak(mcp_capture, monkey
     error = json.loads(await read(board_id=writer.BOARD, bug_id=body['bug_id']))
     assert error == {'error': 'learning_capture_unavailable', 'code': 'learning_capture_unavailable'}
     assert await store.enumerate(writer.BOARD) == ()
+
+
+async def test_mcp_history_requires_cognitive_read_authority_and_returns_persisted_capture(mcp_capture):
+    _, create, body, store, flags = mcp_capture
+    listing = (await server.mcp.get_tools())['okto_pulse_kg_list_learning_captures'].fn
+    assert json.loads(await create(**body))['status'] == 'captured_pending_materialization'
+    # Historical absent flags retain their compatibility default. Exercise an
+    # explicit denial rather than changing that established authority rule.
+    set_permission_flag(flags, 'kg.query.learning_from_bugs', False)
+    denied = json.loads(await listing(board_id=writer.BOARD, bug_id=body['bug_id']))
+    assert denied['code'] == 'permission_denied'
+    set_permission_flag(flags, 'kg.query.learning_from_bugs', True)
+    page = json.loads(await listing(board_id=writer.BOARD, bug_id=body['bug_id'], limit=1))
+    item, = page['items']
+    assert item['capture']['content'] == body['content']
+    assert item['capture']['author_id'] == 'author'
+    assert page['next_cursor'] is None
+    bad = json.loads(await listing(board_id=writer.BOARD, bug_id=body['bug_id'], limit=0))
+    assert bad['code'] == 'learning_capture_page_invalid'
+    assert len(await store.enumerate(writer.BOARD)) == 1
