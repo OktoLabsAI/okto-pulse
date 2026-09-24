@@ -48,8 +48,8 @@ async def test_cleanup_preserves_authority_and_retains_exact_before_after_withou
     checkpoint = await capture_permission_retirement_checkpoint(engine, migration_id="cleanup")
     before = await documents(engine)
     receipt = await cleanup.retire_permission_documents(engine, checkpoint, retired_flags=RETIRED)
-    assert len(RETIRED) == 58  # 25 maintenance operations and 33 Sprint leaves.
-    assert receipt.changed_documents == 5 and receipt.removed_entries == 62 and receipt.review_markers == 6
+    assert len(RETIRED) == 60  # 27 maintenance operations and 33 Sprint leaves.
+    assert receipt.changed_documents == 5 and receipt.removed_entries == 64 and receipt.review_markers == 6
     after = await documents(engine)
     async with engine.connect() as connection:
         evidence = (await connection.execute(select(PermissionIntroductionAudit.details).where(

@@ -9,7 +9,6 @@ from okto_pulse.community.adapters import sqlalchemy_runtime_settings_service as
 from okto_pulse.community.adapters.runtime_composition import (
     build_community_runtime_composition,
 )
-from okto_pulse.community.api.settings import RuntimeSettingsResponse
 from okto_pulse.community.config import CommunitySettings
 from okto_pulse.core import get_settings
 from okto_pulse.core.composition import RuntimeComposition, runtime_composition_scope
@@ -117,4 +116,3 @@ async def test_runtime_settings_preserve_effective_contract_and_expose_desired(
     assert result["desired_values"]["kg_grafx_page_size"] == 16384
     assert result["desired_values"]["kg_grafx_descriptor_revalidation"] == "strict"
     assert result["restart_required"] is True
-    RuntimeSettingsResponse(**result)

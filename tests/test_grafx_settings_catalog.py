@@ -20,11 +20,7 @@ from okto_pulse.community.adapters.grafx_settings_catalog import (
     validate_options,
 )
 from okto_pulse.community.adapters.sqlalchemy_models import AppSetting
-from okto_pulse.community.api.settings import (
-    RuntimeSettingsPayload,
-    RuntimeSettingsResponse,
-)
-from okto_pulse.community.config import CommunitySettings
+from okto_pulse.community.config import CommunitySettings, validate_grafx_page_size, validate_grafx_read_participants
 
 
 def test_every_native_config_option_has_one_reviewed_ui_policy_and_help():
@@ -74,13 +70,13 @@ def test_v005_memory_controls_are_editable_and_zero_cache_is_not_null():
 ])
 def test_v005_memory_controls_refuse_invalid_configuration(options):
     with pytest.raises(ValidationError):
-        RuntimeSettingsPayload(kg_grafx_options=options)
+        CommunitySettings(_env_file=None, kg_grafx_options=options)
 
 
 @pytest.mark.parametrize("value", [0, 9, -1, True, 2.0, "2"])
-def test_read_participant_api_refuses_invalid_or_coerced_values(value):
-    with pytest.raises(ValidationError):
-        RuntimeSettingsPayload(kg_grafx_read_participants=value)
+def test_read_participant_validator_refuses_invalid_or_coerced_values(value):
+    with pytest.raises(ValueError):
+        validate_grafx_read_participants(value)
 
 
 def test_read_participant_env_and_persistence_keep_bounded_integer_contract(monkeypatch):
@@ -113,7 +109,7 @@ def test_read_participant_env_and_persistence_keep_bounded_integer_contract(monk
 )
 def test_invalid_or_managed_options_are_refused_before_save(options):
     with pytest.raises(ValidationError):
-        RuntimeSettingsPayload(kg_grafx_options=options)
+        CommunitySettings(_env_file=None, kg_grafx_options=options)
     with pytest.raises(ValidationError):
         CommunitySettings(_env_file=None, kg_grafx_options=options)
 
@@ -133,9 +129,9 @@ def test_env_json_and_nullable_limits_are_validated(monkeypatch):
 
 
 @pytest.mark.parametrize("value", [True, False, 8192.0, 8192.5, "8192"])
-def test_page_geometry_requires_integer_json_without_coercion(value):
-    with pytest.raises(ValidationError):
-        RuntimeSettingsPayload(kg_grafx_page_size=value)
+def test_page_geometry_validator_requires_integer_without_coercion(value):
+    with pytest.raises(ValueError):
+        validate_grafx_page_size(value)
     if not isinstance(value, str):
         with pytest.raises(ValueError):
             service._validate_runtime_setting_value("kg_grafx_page_size", value)
@@ -143,7 +139,7 @@ def test_page_geometry_requires_integer_json_without_coercion(value):
 
 def test_page_geometry_persisted_text_keeps_its_integer_contract():
     assert service._validate_runtime_setting_value("kg_grafx_page_size", "8192") == 8192
-    assert RuntimeSettingsPayload(kg_grafx_page_size=8192).kg_grafx_page_size == 8192
+    assert CommunitySettings(_env_file=None, kg_grafx_page_size=8192).kg_grafx_page_size == 8192
     with pytest.raises(ValueError):
         service._validate_runtime_setting_value("kg_grafx_page_size", "8192.5")
 
@@ -180,7 +176,6 @@ async def test_save_read_restart_and_clear_options_without_mutating_active_snaps
                     "kg_grafx_options": desired,
                 },
             )
-            RuntimeSettingsResponse(**response)
             assert response["kg_grafx_options"] == {}
             assert response["desired_values"]["kg_grafx_options"] == desired
             assert response["restart_required"] is True

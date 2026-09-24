@@ -73,10 +73,6 @@ def test_settings_only_publish_supported_backend_and_constructor_knobs(tmp_path)
         CommunitySettings(
             _env_file=None, data_dir=str(tmp_path), kg_graph_backend="ladybug"
         )
-    from okto_pulse.community.api.settings import (
-        RuntimeSettingsResponse,
-        RuntimeSettingsPayload,
-    )
     from okto_pulse.community.adapters.sqlalchemy_runtime_settings_service import (
         GRAPH_DB_KEYS,
     )
@@ -87,13 +83,10 @@ def test_settings_only_publish_supported_backend_and_constructor_knobs(tmp_path)
         "kg_wal_only_recovery_enabled",
     }
     for keys in (
-        RuntimeSettingsResponse.model_fields,
-        RuntimeSettingsPayload.model_fields,
+        CommunitySettings.model_fields,
         GRAPH_DB_KEYS,
     ):
         assert not any("ladybug" in k or "kuzu" in k or k in retired for k in keys)
-    with pytest.raises(ValidationError):
-        RuntimeSettingsPayload(kg_kuzu_buffer_pool_mb=256)
 
 
 def test_budget_is_a_valid_rest_projection_without_invented_database_limit(tmp_path):

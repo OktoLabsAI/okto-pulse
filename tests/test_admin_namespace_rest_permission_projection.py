@@ -8,7 +8,7 @@ import json
 import pytest
 from fastapi import HTTPException
 
-from okto_pulse.community.api import agents, boards, design_systems, presets, settings
+from okto_pulse.community.api import agents, boards, design_systems, presets
 from okto_pulse.core.application.use_cases import PermissionDeniedError
 
 
@@ -93,8 +93,6 @@ def test_admin_endpoint_cannot_bypass_core_denial_projection(endpoint) -> None:
 @pytest.mark.parametrize(
     "endpoint",
     (
-        settings.get_runtime,
-        settings.put_runtime,
         boards.create_board,
         boards.update_board,
         boards.delete_board,

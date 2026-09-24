@@ -40,7 +40,6 @@ from okto_pulse.community.api.kg_routes import (
     require_kg_board_actor,
     require_kg_board_writer_actor,
 )
-from okto_pulse.community.api.settings import router as settings_router
 from okto_pulse.core.domain.realm import LOCAL_REALM_ID
 from okto_pulse.core.ports.authentication import Principal
 
@@ -106,27 +105,6 @@ class _Downstream:
         return {"board_id": board_id, "total_active_depth": 0}
 
 
-def _runtime_settings(**updates):
-    values = {
-        "kg_graph_backend": "grafx",
-        "kg_global_graph_backend": "grafx",
-        "kg_grafx_page_size": 8192,
-        "kg_grafx_descriptor_revalidation": "generation",
-        "kg_connection_pool_size": 4,
-        "kg_wal_salvage_enabled": False,
-        "kg_wal_only_recovery_enabled": False,
-        "kg_queue_max_concurrent_workers": 2,
-        "kg_queue_min_interval_ms": 100,
-        "kg_queue_claim_timeout_s": 300,
-        "kg_queue_max_attempts": 3,
-        "kg_queue_alert_threshold": 1000,
-        "kg_decay_tick_interval_minutes": 60,
-        "kg_decay_tick_staleness_days": 7,
-        "kg_decay_tick_max_age_days": 30,
-        "restart_required": False,
-    }
-    values.update(updates)
-    return values
 
 
 class _Services:
@@ -135,9 +113,6 @@ class _Services:
         self.shares = _Shares(permission, events)
         self.kg = _Downstream(events)
 
-    async def put_runtime_settings(self, values, **kwargs):
-        self._events.append(f"put-runtime:{kwargs['actor_id']}")
-        return _runtime_settings(**values)
 
     def __getattr__(self, name: str):
         async def _unexpected_call(*args, **kwargs):
@@ -164,7 +139,6 @@ def _client(uow: _Uow, *, claims=None) -> TestClient:
         cognitive_candidates_router,
         cognitive_pending_router,
         kg_routes_router,
-        settings_router,
     ):
         app.include_router(router, prefix="/api/v1")
 
@@ -425,45 +399,3 @@ def test_direct_cognitive_readers_require_exact_permission_before_store(
     assert detail["error"] == "permission_denied"
     assert detail["required_permission"] == "kg.operations.cognitive.read"
     assert uow.events == ["board:board-b"]
-
-
-def test_runtime_settings_viewer_gets_403_before_writer() -> None:
-    uow = _Uow(board=None)
-
-    response = _client(uow, claims={"roles": ["viewer"]}).put(
-        "/api/v1/settings/runtime",
-        json={"kg_queue_max_attempts": 5},
-    )
-
-    assert response.status_code == 403
-    assert response.json() == {
-        "detail": "Runtime settings write requires an admin or operator capability"
-    }
-    assert uow.events == []
-
-
-@pytest.mark.parametrize(
-    "claims",
-    [
-        {"roles": ["admin"]},
-        {"roles": ["operator"]},
-        {
-            "permissions": {
-                "runtime": {"settings": {"write": True}},
-                "kg": {"admin": {"settings_write": True}},
-            }
-        },
-    ],
-    ids=["admin", "operator", "capability"],
-)
-def test_runtime_settings_authorized_principal_reaches_writer(claims) -> None:
-    uow = _Uow(board=None)
-
-    response = _client(uow, claims=claims).put(
-        "/api/v1/settings/runtime",
-        json={"kg_queue_max_attempts": 5},
-    )
-
-    assert response.status_code == 200
-    assert response.json()["kg_queue_max_attempts"] == 5
-    assert uow.events == ["put-runtime:user-a"]
