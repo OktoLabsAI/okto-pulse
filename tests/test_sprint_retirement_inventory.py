@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
@@ -15,6 +16,17 @@ from okto_pulse.community.adapters.sprint_retirement_inventory import (
 )
 from okto_pulse.community.adapters.sqlalchemy_models import Board, Spec
 from legacy_sprint_schema import Base, Card, Sprint
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dialect", ["postgresql", "mysql", "unknown"])
+async def test_inventory_refuses_non_community_backend_before_connection(dialect):
+    def forbidden():
+        pytest.fail("unsupported backend connection attempted")
+
+    engine = SimpleNamespace(dialect=SimpleNamespace(name=dialect), connect=forbidden)
+    with pytest.raises(SprintRetirementInspectionError, match="backend_unsupported"):
+        await read_sprint_retirement_inventory(engine)
 
 
 @pytest_asyncio.fixture

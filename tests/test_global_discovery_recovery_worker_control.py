@@ -2,13 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import time
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Event
-from types import SimpleNamespace
 
 import pytest
 
@@ -385,13 +383,15 @@ def test_operator_cannot_supersede_physical_epoch_before_journal_reconciliation(
 
 
 @pytest.mark.asyncio
-async def test_actual_fastmcp_run_and_status_outlive_blocked_native_work(
+async def test_internal_worker_lifecycle_outlives_blocked_native_without_public_mcp(
     tmp_path: Path,
     recovery_store_factory,
     prepared_recovery_admitter,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """ts_b64807fb: prove the real FastMCP wrappers, not only control."""
+    """F4 retires transport; internal heartbeat/fencing/replay remain required."""
+
+    tools = await server.mcp.get_tools()
+    assert not any("global_discovery_recovery" in name for name in tools)
 
     native_entered = Event()
     release_native = Event()
@@ -435,52 +435,26 @@ async def test_actual_fastmcp_run_and_status_outlive_blocked_native_work(
             confirmation_fingerprint=confirmation_fingerprint,
             manifest_ref="global_discovery_manifest_fixture",
             preflight_hash="fixture-preflight",
-            reason="controlled FastMCP blocked-native integration",
+            reason="controlled internal blocked-native integration",
         ),
         started_at=datetime.now(timezone.utc),
         counts=RecoveryProgressCounts(sources_total=1),
     )
     prepared_recovery_admitter(store, command)
 
-    async def authorized(*_args, **_kwargs):
-        return SimpleNamespace(agent_id="agent-test"), None
-
-    class RecoveryService:
-        @staticmethod
-        def current_snapshot_fingerprint() -> str:
-            return "sha256:fixture-current-snapshot"
-
-        @staticmethod
-        def prepare_durable_start(**_kwargs):
-            return command
-
-    monkeypatch.setattr(server, "_global_recovery_authorize", authorized)
-    monkeypatch.setattr(server, "_global_recovery_service", RecoveryService)
     register_recovery_control_plane(control)
 
     async def status_payload() -> dict[str, object]:
-        return json.loads(
-            await server.okto_pulse_kg_global_discovery_recovery_status.fn(
-                run_id=command.binding.run_id
-            )
-        )
+        return control.status(command.binding.run_id).to_dict()
 
     try:
         before = time.monotonic()
-        accepted = json.loads(
-            await server.okto_pulse_kg_global_discovery_recovery_run.fn(
-                confirmation_id=confirmation_id,
-                manifest_ref=command.binding.manifest_ref,
-                preflight_hash=command.binding.preflight_hash,
-                reason=command.binding.reason,
-            )
-        )
+        accepted = control.start(command).to_dict()
         start_elapsed = time.monotonic() - before
 
         assert start_elapsed < 2.0
         assert accepted["run_id"] == command.binding.run_id
         assert accepted["state"] in {"pending", "running"}
-        assert accepted["idempotent_replay"] is False
         assert await asyncio.to_thread(native_entered.wait, 1.0)
         assert release_native.is_set() is False
 
@@ -499,17 +473,10 @@ async def test_actual_fastmcp_run_and_status_outlive_blocked_native_work(
         assert str(advanced["heartbeat_at"]) > str(first["heartbeat_at"])
         assert release_native.is_set() is False
 
-        replay = json.loads(
-            await server.okto_pulse_kg_global_discovery_recovery_run.fn(
-                confirmation_id=confirmation_id,
-                manifest_ref=command.binding.manifest_ref,
-                preflight_hash=command.binding.preflight_hash,
-                reason=command.binding.reason,
-            )
-        )
+        replay = control.start(command).to_dict()
         assert replay["run_id"] == command.binding.run_id
         assert replay["epoch"] == 1
-        assert replay["idempotent_replay"] is True
+        assert replay["attempt_id"] == accepted["attempt_id"]
     finally:
         reset_recovery_control_plane()
         release_native.set()

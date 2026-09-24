@@ -203,21 +203,16 @@ async def read_sprint_retirement_inventory(
     """Read-only internal preparation; does not open paths or user runtime state.
 
     SQLite's legacy driver does not start a snapshot for SELECT after a Python
-    begin(), so issue BEGIN explicitly. PostgreSQL uses REPEATABLE READ and a
-    read-only transaction. The caller must supply an explicitly selected engine.
+    begin(), so issue BEGIN explicitly. The caller must supply an explicitly
+    selected Community SQLite engine.
     """
     if type(max_rows) is not int or max_rows < 1:
         raise ValueError("sprint_retirement_row_limit_invalid")
+    if engine.dialect.name != "sqlite":
+        raise SprintRetirementInspectionError("sprint_retirement_backend_unsupported")
     async with engine.connect() as connection:
         try:
-            if engine.dialect.name == "sqlite":
-                await connection.exec_driver_sql("BEGIN")
-            elif engine.dialect.name == "postgresql":
-                connection = await connection.execution_options(isolation_level="REPEATABLE READ")
-                await connection.begin()
-                await connection.exec_driver_sql("SET TRANSACTION READ ONLY")
-            else:
-                raise SprintRetirementInspectionError("sprint_retirement_backend_unsupported")
+            await connection.exec_driver_sql("BEGIN")
             return await connection.run_sync(lambda sync: _inspect_snapshot(sync, max_rows=max_rows))
         finally:
             await connection.rollback()

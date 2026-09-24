@@ -78,8 +78,8 @@ def inspect_sprint_retirement_work(
             raise SprintRetirementWorkError("sprint_retirement_work_row_limit")
 
     def rows(query):
-        # Async SQLite adapters otherwise buffer fetchall; PostgreSQL drivers can
-        # do the same. Stream a bounded batch and fetch one overflow sentinel.
+        # Async SQLite adapters otherwise buffer fetchall. Stream a bounded
+        # batch and fetch one overflow sentinel.
         statement = text(query + " LIMIT :inventory_limit").execution_options(stream_results=True, yield_per=16)
         with connection.execute(statement, {"inventory_limit": remaining_rows - consumed + 1}) as result:
             yield from result.mappings()

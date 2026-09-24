@@ -32,6 +32,7 @@ def test_retired_schema_writers_are_not_in_the_active_migration_plan():
     ids = {step.step_id for step in build_community_migration_ledger()}
     retired = {"_migrate_add_card_sprint_id", "_migrate_add_sprint_scope_fields", "_migrate_add_sprint_lane_fields"}
     assert not ids & retired
+    assert all(not hasattr(steps, name) for name in retired)
     assert "sprints" not in live.GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES
     assert live.GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION == "gdsr-trigger-manifest-v9"
 

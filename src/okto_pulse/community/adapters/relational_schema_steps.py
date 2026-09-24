@@ -10933,21 +10933,6 @@ async def _migrate_story_ideation_single_link() -> None:
         )
 
 
-async def _migrate_add_card_sprint_id() -> None:
-    """Add sprint_id FK column to cards table."""
-    from sqlalchemy import text as sa_text
-
-    async with get_engine().begin() as conn:
-        try:
-            await conn.execute(
-                sa_text(
-                    "ALTER TABLE cards ADD COLUMN sprint_id VARCHAR(36) REFERENCES sprints(id) ON DELETE SET NULL"
-                )
-            )
-        except Exception:
-            pass
-
-
 async def _migrate_add_card_knowledge_bases() -> None:
     """Add knowledge_bases JSON column to cards table."""
     from sqlalchemy import text as sa_text
@@ -12041,51 +12026,6 @@ async def _migrate_knowledge_propagation_v2_schema() -> str | None:
             )
 
     return None if changed else "skipped"
-
-
-async def _migrate_add_sprint_scope_fields() -> None:
-    """Add objective and expected_outcome columns to sprints table."""
-    from sqlalchemy import text as sa_text
-
-    async with get_engine().begin() as conn:
-        for col in ["objective", "expected_outcome"]:
-            try:
-                await conn.execute(
-                    sa_text(f"ALTER TABLE sprints ADD COLUMN {col} TEXT")
-                )
-            except Exception:
-                pass
-
-
-async def _migrate_add_sprint_lane_fields() -> None:
-    """Add sprint lane metadata for normal and post-closure hotfix lanes."""
-    from sqlalchemy import text as sa_text
-
-    async with get_engine().begin() as conn:
-        try:
-            await conn.execute(
-                sa_text(
-                    "ALTER TABLE sprints ADD COLUMN lane_type VARCHAR(50) NOT NULL DEFAULT 'normal'"
-                )
-            )
-        except Exception:
-            pass
-        for col in ["origin_sprint_id", "origin_bug_id"]:
-            try:
-                await conn.execute(
-                    sa_text(f"ALTER TABLE sprints ADD COLUMN {col} VARCHAR(36)")
-                )
-            except Exception:
-                pass
-
-        try:
-            await conn.execute(
-                sa_text(
-                    "UPDATE sprints SET lane_type = 'normal' WHERE lane_type IS NULL"
-                )
-            )
-        except Exception:
-            pass
 
 
 async def _migrate_agent_boards() -> None:
