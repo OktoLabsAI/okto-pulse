@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
-from typing import Any
+from typing import Any, NoReturn
 
 from okto_pulse.core.kg.interfaces.graph_errors import (
     GraphCapabilityUnavailable,
@@ -289,17 +289,15 @@ class CommunityGrafxGlobalDiscoveryRuntime:
         write: bool,
     ) -> GraphStatementResult:
         remaining = self._query_timeout() if self._query_timeout is not None else None
-        if write and remaining is not None:
-            self._fence(operation)
+        if remaining is not None:
+            if write:
+                self._fence(operation)
+            return self._observe_query(database, statement, params, remaining)
         transaction = database.begin("write" if write else "read")
         try:
             if write:
                 self._fence(operation)
-            native = (
-                transaction.execute(statement, params or {})
-                if remaining is None
-                else transaction.execute(statement, params or {}, timeout_seconds=remaining)
-            )
+            native = transaction.execute(statement, params or {})
             result = GraphStatementResult.from_rows(
                 (
                     tuple(normalize_grafx_value(value) for value in row)
@@ -325,6 +323,61 @@ class CommunityGrafxGlobalDiscoveryRuntime:
             if transaction.active:
                 transaction.rollback()
             raise
+
+    def _observe_query(
+        self, database: Any, statement: str, params: dict[str, Any] | None,
+        timeout_seconds: float,
+    ) -> GraphStatementResult:
+        """Bound accumulated Health results while owning just one read snapshot.
+
+        A native cursor detaches one row at a time. Its native value limits still
+        govern that row and its operators; this budget bounds our aggregate,
+        not every temporary allocation inside the engine or a blocked OS call.
+        """
+        max_rows, max_bytes = 1000, 4 * 1024 * 1024
+        assert self._query_timeout is not None
+
+        def refuse(reason: str = "graph_health_result_limit_exceeded") -> NoReturn:
+            raise GraphCapabilityUnavailable(
+                "Global Health could not observe a complete bounded result.",
+                details={"reason": reason},
+            )
+
+        def size(value: object, remaining: int) -> int:
+            if type(value) is str:
+                if len(value) > remaining:
+                    refuse()
+                return len(value.encode("utf-8")) + 8
+            if value is None or type(value) in (bool, int, float):
+                return 8
+            # Health's global inputs are flat scalar columns, not arbitrary
+            # detached graph entities or containers whose size is unproven.
+            refuse("graph_health_result_shape_unavailable")
+
+        rows = []
+        with database.query(statement, params or {}).cursor(
+            batch_size=1, timeout_seconds=timeout_seconds,
+        ) as cursor:
+            columns = cursor.columns
+            if len(columns) > 64:
+                refuse()
+            total = 0
+            for column in columns:
+                total += size(column, max_bytes - total)
+                if total > max_bytes:
+                    refuse()
+            for row in cursor:
+                if len(rows) >= max_rows:
+                    refuse()
+                total += 16
+                for value in row:
+                    total += size(value, max_bytes - total)
+                    if total > max_bytes:
+                        refuse()
+                self._query_timeout()
+                rows.append(row)
+            self._query_timeout()
+            return GraphStatementResult.from_rows(rows, columns=columns, affected_count=0)
 
     def execute(
         self,

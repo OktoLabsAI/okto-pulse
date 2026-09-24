@@ -98,3 +98,49 @@ def test_health_parity_distinguishes_unobserved_from_confirmed_empty(global_obse
     assert result["status"] == ("available" if warm else "unavailable")
     assert result["reason"] == ("no_digests" if warm else "global_discovery_read_failed")
     assert opened_modes == opened_before
+
+
+@pytest.mark.parametrize("query,params", [
+    ("UNWIND range(1, 1001) AS n RETURN n", {}),
+    ("UNWIND range(1, 600) AS n RETURN $value", {"value": "x" * 8192}),
+    ("UNWIND range(1, 600) AS n RETURN $value", {"value": "é" * 4096}),
+])
+def test_global_health_refuses_result_volume_instead_of_returning_prefix(global_observation_bundle, query, params):
+    bundle, _clock, _opened_modes = global_observation_bundle
+    for _ in range(2):
+        bundle.global_graph.runtime.execute("RETURN 1")
+    with bundle.board.graph_health_observation.scope("board", timeout_seconds=5):
+        with pytest.raises(GraphError) as failure:
+            bundle.global_graph.runtime.execute(query, params)
+    assert failure.value.details.get("reason") == "graph_health_result_limit_exceeded", failure.value.details
+
+
+def test_global_health_accepts_exact_row_bound_and_preserves_foreground(global_observation_bundle):
+    bundle, _clock, _opened_modes = global_observation_bundle
+    query = "UNWIND range(1, 1000) AS n RETURN n"
+    for _ in range(2):
+        bundle.global_graph.runtime.execute("RETURN 1")
+    with bundle.board.graph_health_observation.scope("board", timeout_seconds=5):
+        observed = bundle.global_graph.runtime.execute(query)
+    assert observed.rows == tuple((n,) for n in range(1, 1001))
+    assert len(bundle.global_graph.runtime.execute("UNWIND range(1, 1001) AS n RETURN n").rows) == 1001
+
+
+def test_global_health_closes_cursor_at_first_row_overflow(global_observation_bundle, monkeypatch):
+    from okto_grafx.engine.database import QueryCursor
+
+    bundle, _clock, _opened_modes = global_observation_bundle
+    for _ in range(2):
+        bundle.global_graph.runtime.execute("RETURN 1")
+    original = QueryCursor.__next__
+    observed = []
+
+    def next_row(cursor):
+        observed.append(cursor)
+        return original(cursor)
+
+    monkeypatch.setattr(QueryCursor, "__next__", next_row)
+    with bundle.board.graph_health_observation.scope("board", timeout_seconds=5), pytest.raises(GraphError):
+        bundle.global_graph.runtime.execute("UNWIND range(1, 100000) AS n RETURN n")
+    assert len(observed) == 1001
+    assert all(cursor.closed for cursor in observed)
