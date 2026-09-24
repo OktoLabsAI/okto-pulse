@@ -428,6 +428,21 @@ class CommunitySqlAlchemyCognitiveSourceStore:
         await session.flush()
         return tuple(resolved_ids)
 
+    async def read_latest_in_context(
+        self, context: object, *, board_id: str, node_id: str, generation: int,
+    ) -> CognitiveSourceRecord | None:
+        bases = await _load_base_rows(context, ((node_id, generation),))
+        base = bases.get((node_id, generation))
+        if base is None:
+            return None
+        if str(base.board_id) != board_id:
+            raise CognitiveSourceConflict('cognitive_source_scope_conflict', board_id=board_id, node_id=node_id)
+        history = [_base_record(base)]
+        for row in await _load_revision_rows(context, (str(base.id),)):
+            history.append(_revision_record(base, row))
+        latest, = latest_cognitive_source_records(tuple(history))
+        return latest
+
     async def append_many_if_current_in_context(
         self, context: object, records: tuple[CognitiveSourceRecord, ...], *,
         expected_fingerprints: tuple[str | None, ...],
