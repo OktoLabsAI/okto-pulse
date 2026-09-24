@@ -349,6 +349,50 @@ def _unavailable_census(
     )
 
 
+@asynccontextmanager
+async def _native_census_deadline(session: Any, deadline: HealthProbeDeadline):
+    """Bound SQLite VM work and lock waits on this exclusively borrowed session.
+
+    Coroutine cancellation alone waits for aiosqlite's worker to finish SQL.
+    Restore connection-local settings before returning a surviving connection
+    to the pool; an invalidated connection has already been discarded.
+    """
+    connection = await session.connection()
+    if connection.dialect.name != "sqlite" or connection.dialect.driver != "aiosqlite":
+        raise RuntimeError("census_native_deadline_unsupported")
+    raw = await connection.get_raw_connection()
+    driver = raw.driver_connection
+    previous_busy_timeout = None
+    try:
+        await driver.set_progress_handler(
+            lambda: int(deadline.expired(now=time.monotonic())), 1000
+        )
+        async with driver.execute("PRAGMA busy_timeout") as cursor:
+            previous_busy_timeout = int((await cursor.fetchone())[0])
+        remaining = deadline.remaining_seconds(now=time.monotonic())
+        if remaining <= 0:
+            raise TimeoutError
+        async with driver.execute(f"PRAGMA busy_timeout={max(0, int(remaining * 1000))}"):
+            pass
+        try:
+            yield
+        except Exception as exc:
+            if deadline.expired(now=time.monotonic()):
+                raise TimeoutError from exc
+            raise
+    finally:
+        if not connection.invalidated and not connection.closed:
+            try:
+                await driver.set_progress_handler(None, 0)
+                if previous_busy_timeout is not None:
+                    async with driver.execute(f"PRAGMA busy_timeout={previous_busy_timeout}"):
+                        pass
+            except BaseException:
+                # Never return a partially restored observer to the shared pool.
+                await connection.invalidate()
+                raise
+
+
 class CommunitySqlAlchemyMaterializationCensus:
     """Authoritative board-scoped source/queue/DLQ read model."""
 
@@ -487,7 +531,10 @@ class CommunitySqlAlchemyMaterializationCensus:
             count(GlobalUpdateOutbox, *terminal_outbox_filter).label("outbox_terminal"),
         )
 
-        async with _cancel_safe_census_session_scope(self._sf) as session:
+        async with (
+            _cancel_safe_census_session_scope(self._sf) as session,
+            _native_census_deadline(session, deadline),
+        ):
             row = (await session.execute(statement)).one()._mapping
             if deadline.expired(now=time.monotonic()):
                 raise TimeoutError

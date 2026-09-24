@@ -276,6 +276,9 @@ async def test_relational_census_cancellation_drains_checked_out_session(
             query_started.set()
             await asyncio.Event().wait()
 
+        async def connection(self):
+            return await self._session.connection()
+
         def in_transaction(self) -> bool:
             assert self._session is not None
             return bool(self._session.in_transaction())
@@ -367,6 +370,9 @@ async def test_cancellation_resistant_cleanup_is_bounded_through_real_asyncio_ru
                 async def execute(self, _statement):
                     query_started.set()
                     await asyncio.Event().wait()
+
+                async def connection(self):
+                    return await self._session.connection()
 
                 def in_transaction(self) -> bool:
                     assert self._session is not None
