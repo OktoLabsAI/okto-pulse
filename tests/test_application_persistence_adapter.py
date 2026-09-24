@@ -180,7 +180,7 @@ async def test_card_policy_compatibility_survives_bounded_sql_projection(tmp_pat
                 "id": "card", "board_id": "board", "title": "Task", "created_by": "owner",
                 "migrated_validation_policy": policy, "description": "Not selected"}))
             await adapter.commit(session)
-        fields = ("id", "board_id", "sprint_id", "migrated_validation_policy")
+        fields = ("id", "board_id", "migrated_validation_policy")
         async with factory() as session:
             rows = await adapter.list(session, ApplicationQuery(entity="card",
                 filters=(ApplicationFilter("id", "eq", "card"),), select_fields=fields, limit=1))

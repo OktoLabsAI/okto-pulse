@@ -1,4 +1,4 @@
-"""C5 — the six existing REST lists over the real Core/Community stack.
+"""C5 — the four surviving REST lists over the real Core/Community stack.
 
 The suite uses an isolated SQLite file and a real ``CommunityUnitOfWork``.
 It covers the opt-in envelope, DR9 legacy branch, two totals, stable windows,
@@ -101,7 +101,6 @@ async def _build_engine(path: Path) -> AsyncEngine:
                             "ideation",
                             "refinement",
                             "spec",
-                            "sprint",
                         )
                     }
                 )
@@ -230,52 +229,10 @@ async def _build_engine(path: Path) -> AsyncEngine:
         await conn.execute(
             text("UPDATE refinements SET edition = 5, version = 43 WHERE id = 'r00'")
         )
-        await conn.execute(
-            text(
-                "INSERT INTO sprints "
-                "(id, spec_id, board_id, title, spec_version, status, lane_type, "
-                "version, created_by, archived, updated_at) VALUES "
-                "(:id, :spec_id, :board_id, :title, 1, :status, 'normal', 1, "
-                ":created_by, :archived, '2026-07-20 00:00:00')"
-            ),
-            [
-                {
-                    "id": f"q{i:02d}",
-                    "spec_id": "p00" if i < 15 else "p01",
-                    "board_id": "b1",
-                    "title": f"Sprint {i}",
-                    "status": "draft" if i % 2 == 0 else "active",
-                    "created_by": "u",
-                    "archived": i in {12, 13, 14, 28, 29},
-                }
-                for i in range(30)
-            ]
-            + [
-                {
-                    "id": "qx",
-                    "spec_id": "px",
-                    "board_id": "b2",
-                    "title": "Secret sprint",
-                    "status": "draft",
-                    "created_by": "other",
-                    "archived": False,
-                },
-                {
-                    "id": "q-corrupt",
-                    "spec_id": "p00",
-                    "board_id": "b2",
-                    "title": "Cross-board inconsistent sprint",
-                    "status": "draft",
-                    "created_by": "other",
-                    "archived": False,
-                },
-            ],
-        )
         for table, parent_field, parent_id in (
             ("ideation_qa_items", "ideation_id", "i00"),
             ("refinement_qa_items", "refinement_id", "r00"),
             ("spec_qa_items", "spec_id", "p00"),
-            ("sprint_qa_items", "sprint_id", "q00"),
         ):
             await conn.execute(
                 text(
@@ -386,7 +343,7 @@ def client(tmp_path: Path):
 
 
 @pytest.mark.parametrize(("path", "active_total"), LIST_CASES)
-def test_six_routes_opt_in_to_exact_envelope(
+def test_four_routes_opt_in_to_exact_envelope(
     client: TestClient, path: str, active_total: int
 ) -> None:
     response = client.get(f"{path}?offset=0&limit=25")
@@ -400,7 +357,7 @@ def test_six_routes_opt_in_to_exact_envelope(
 
 
 @pytest.mark.parametrize(("path", "_active_total"), LIST_CASES)
-def test_six_routes_preserve_successful_legacy_list_shape(
+def test_four_routes_preserve_successful_legacy_list_shape(
     client: TestClient, path: str, _active_total: int
 ) -> None:
     response = client.get(path)
@@ -474,7 +431,7 @@ def test_story_relational_and_converted_filters_are_server_side(
 def test_consumer_search_is_applied_before_the_window(
     client: TestClient, path: str, expected_id: str
 ) -> None:
-    entity_name = {"i": "ideation", "p": "spec", "q": "sprint"}[expected_id[0]]
+    entity_name = {"i": "ideation", "p": "spec"}[expected_id[0]]
     statements = client.app.state.sql_statements
     statements.clear()
 

@@ -2,8 +2,37 @@
 
 import json
 import hashlib
+from pathlib import Path
+import shutil
+import subprocess
 
 import pytest
+
+
+def test_windows_checkout_preserves_packaged_asset_bytes(tmp_path):
+    """Git must not change the bytes authenticated by the SPA manifest."""
+    from okto_pulse.community.adapters.frontend_distribution import require_compatible_frontend
+
+    repo = Path(__file__).resolve().parents[1]
+    relative = Path("src/okto_pulse/community/frontend_dist")
+    bundle = tmp_path / relative
+    bundle.parent.mkdir(parents=True)
+    shutil.copytree(repo / relative, bundle)
+    shutil.copyfile(repo / ".gitattributes", tmp_path / ".gitattributes")
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(tmp_path), *args], check=True,
+                       capture_output=True)
+
+    git("init", "--quiet")
+    git("config", "core.autocrlf", "true")
+    git("config", "core.safecrlf", "false")
+    git("add", ".gitattributes", relative.as_posix())
+    # Fresh checkout from the index, with the Windows conversion enabled.
+    output = tmp_path / "checkout"
+    output.mkdir()
+    git("checkout-index", "--all", "--force", f"--prefix={output.as_posix()}/")
+    require_compatible_frontend(output / relative)
 
 
 def test_incompatible_frontend_refuses_before_runtime_state(tmp_path, monkeypatch):

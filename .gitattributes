@@ -1,1 +1,4 @@
 *.sh text eol=lf
+# Generated assets are authenticated byte-for-byte by the distribution manifest.
+# Preserve their exact bytes even in Windows checkouts with core.autocrlf=true.
+/src/okto_pulse/community/frontend_dist/** -text

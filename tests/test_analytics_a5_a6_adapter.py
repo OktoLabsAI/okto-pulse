@@ -72,7 +72,7 @@ async def test_delivery_card_cohort_through_real_uow_without_sprints():
             ):
                 session.add(Card(id=name, board_id=board_id, title=name, created_by="user-1",
                                  status=CardStatus.DONE, created_at=created, updated_at=NOW,
-                                 archived=archived, sprint_id=None, validations=[]))
+                                 archived=archived, validations=[]))
             await session.commit()
             result = await DeliveryIntelligenceUseCase().execute(
                 DeliveryIntelligenceCommand(board_id=BOARD_ID, window=AnalyticsUtcWindow(lower, NOW), as_of=NOW),

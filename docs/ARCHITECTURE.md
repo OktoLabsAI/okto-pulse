@@ -87,10 +87,10 @@ consume public core facades such as `okto_pulse.core.services.application_kg`,
 `core.kg.tier_power`, `core.kg.scoring`, `core.kg.session_manager` and
 `core.kg.global_discovery.schema`; direct reach-ins to ORM, database lifecycle,
 KG workers/registry, `services.main`, private MCP server symbols, private core
-helper symbols or core-owned concrete DDL constants must be removed or ledgered
-with owner, reason, target public surface, removal path and withdrawal
-criterion. Stale ledger entries fail the same gate, so deleting the last
-reach-in for a dependency requires deleting its exception too.
+helper symbols or core-owned concrete DDL constants must be removed. The
+current exception budget is zero; historical ledgers record the completed
+removal and cannot authorize a new exception. Stale ledger entries fail the
+same gate.
 Community database lifecycle and session composition must use
 `okto_pulse.core.ports.relational_runtime`, not `core.infra.database`.
 
@@ -103,8 +103,8 @@ release oracle is:
 | Historical private reach-in baseline | `32` |
 | Current private reach-in budget | `0` |
 | Current governed private reach-ins | `0` |
-| Current full Community->Core import inventory | `1227` |
-| Inventory classification | `public_contract=1227`, `governed_temporary_reach_in=0` |
+| Current full Community->Core import inventory | `1195` |
+| Inventory classification | `public_contract=1195`, `governed_temporary_reach_in=0` |
 | Boundary violations | `0` violations, `0` stale ledger entries, `0` incomplete ledger entries, `0` baseline-growth violations |
 | Burn-down progression | `32 -> 21 -> 10 -> 0` after AF42 inventory, lifecycle/auth/MCP, then complete Community ORM ownership |
 | Community release command | `python -m pytest tests/test_af21_core_import_boundary.py tests/test_af25_docs_truthfulness.py tests/test_af33_capstone_community_readiness.py tests/test_af35_s1_community_adapters.py tests/test_af35_s2_community_kg_operational_adapters.py tests/test_af41_runtime_dependency_ownership.py tests/test_af41_serving_boundary.py tests/test_r06_mcp_auth_context_community.py tests/test_r08a_mcp_auth_adapter.py tests/test_cli_init.py tests/test_cli_kg_backfill.py tests/test_hnd2_credential_surface_gate.py tests/test_r01c_imp4_schema_lifecycle_orchestrator.py tests/test_r16b_relational_schema_migrator.py tests/test_r16c_data_bootstrapper.py -q` -> `105 passed` |
