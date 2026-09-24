@@ -595,6 +595,23 @@ describe('KG-HS.3 — scheduler debt and storage-footprint clarity', () => {
     expect(rendered).not.toContain('raw buffer pressure');
   });
 
+  it.each(['observation_entry_limit', 'observation_depth_limit', 'observation_timeout'])(
+    'shows an unknown file size when the observation stops at %s', async (reason) => {
+      mockBoard('b1');
+      mockApi(() => Promise.resolve({ ...baseHealth, storage_footprint_proxy: {
+        ...baseHealth.storage_footprint_proxy!, status: 'unavailable',
+        total_bytes: null, primary_bytes: null, sidecar_bytes: null,
+        percentage: null, high_water_mark_pct: null, unavailable_reason: reason,
+      } }));
+      render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
+      const unknownSize = await screen.findByText('file size unavailable');
+      const card = unknownSize.closest('[data-testid="kg-health-card"]') as HTMLElement;
+      expect(unknownSize).toBeInTheDocument();
+      expect(within(card).queryByText('0 B')).not.toBeInTheDocument();
+      expect(within(card).queryByText('0.0%')).not.toBeInTheDocument();
+    },
+  );
+
   it('separates telemetry, DLQ backlog and scheduler debt from recovery-needed messaging', async () => {
     mockBoard('b1');
     mockApi(() =>

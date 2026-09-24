@@ -25,6 +25,7 @@ from okto_pulse.community.adapters.grafx_board_operational import (
 )
 from okto_pulse.community.adapters.grafx_board_storage import (
     GrafxBoardPrivacyScope,
+    GrafxDirectoryObservationLimit,
     erase_grafx_board_privacy_storage,
     grafx_board_storage_ref,
     grafx_board_privacy_scope,
@@ -418,14 +419,17 @@ class CommunityGrafxGraphRuntimeStore:
             )
         try:
             total = grafx_directory_size(path)
-        except OSError:
+        except OSError as failure:
             return GraphStorageFootprint(
                 board_id=board_id,
                 storage_ref=grafx_board_storage_ref(board_id),
                 status="unavailable",
                 source="runtime_capability",
                 configured_max_bytes=maximum,
-                unavailable_reason="stat_failed",
+                unavailable_reason=(
+                    failure.reason if isinstance(failure, GrafxDirectoryObservationLimit)
+                    else "stat_failed"
+                ),
             )
         percentage = None
         if maximum is not None:

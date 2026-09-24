@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import secrets
 import stat
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -994,20 +996,58 @@ def quarantine_grafx_board_storage(
     )
 
 
-def grafx_directory_size(path: Path) -> int:
-    """Measure a directory tree without following links or opening Grafx."""
+class GrafxDirectoryObservationLimit(OSError):
+    """A complete diagnostic measurement cannot fit its observation budget."""
 
-    def measure(candidate: Path) -> int:
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def grafx_directory_size(
+    path: Path, *, max_entries: int = 2000, max_depth: int = 32,
+    timeout_seconds: float = 0.35,
+) -> int:
+    """Measure Health footprint completely or refuse, without following links.
+
+    Bounds apply to visited directory entries, path depth and cooperative time
+    checks around metadata I/O. A blocked OS syscall cannot be preempted here.
+    This helper has no privacy/recovery caller and performs no maintenance.
+    """
+    if type(max_entries) is not int or not 1 <= max_entries <= 10000:
+        raise ValueError("invalid_footprint_entry_budget")
+    if type(max_depth) is not int or not 0 <= max_depth <= 64:
+        raise ValueError("invalid_footprint_depth_budget")
+    if (type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds)
+            or not 0 < timeout_seconds <= 5):
+        raise ValueError("invalid_footprint_timeout")
+    deadline = time.monotonic() + timeout_seconds
+    visited = 0
+
+    def check(depth: int) -> None:
+        if depth > max_depth:
+            raise GrafxDirectoryObservationLimit("observation_depth_limit")
+        if time.monotonic() >= deadline:
+            raise GrafxDirectoryObservationLimit("observation_timeout")
+
+    def measure(candidate: Path, depth: int) -> int:
+        nonlocal visited
+        check(depth)
         metadata = candidate.lstat()
         if is_filesystem_alias(candidate) or not stat.S_ISDIR(metadata.st_mode):
+            check(depth)
             return int(metadata.st_size)
         total = 0
         with os.scandir(candidate) as entries:
             for entry in entries:
-                total += measure(Path(entry.path))
+                visited += 1
+                if visited > max_entries:
+                    raise GrafxDirectoryObservationLimit("observation_entry_limit")
+                total += measure(Path(entry.path), depth + 1)
+        check(depth)
         return total
 
-    return measure(path)
+    return measure(path, 0)
 
 
 __all__ = [
