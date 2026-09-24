@@ -7,6 +7,9 @@ advance the durable generation inside their audit/outbox transaction.
 
 from __future__ import annotations
 from okto_pulse.community.adapters.work_retirement_sql import retired_work_origin_exists
+from okto_pulse.community.adapters.materialization_health_observability import (
+    FilesystemMetadataSnapshot, FilesystemMutationGuardResult,
+)
 
 import asyncio
 import hashlib
@@ -632,6 +635,20 @@ class CommunityMaterializationEvidenceProbe:
     async def current_generation(self, board_id: str) -> str:
         return await self._generation_store.current(board_id)
 
+    async def _observe_guard(self, request, *, phase, build, fallback):
+        # The fixed Core pool bounds blocked OS calls. A snapshot belongs only
+        # to this invocation: cached/coalesced results from another request
+        # cannot establish that this request did not mutate storage.
+        observation_id = uuid.uuid4().hex
+        result = await run_bounded_health_probe(
+            name=f"materialization_guard_{phase}", board_id=request.board_id,
+            generation_id=request.generation, build=lambda: (observation_id, build()),
+            fallback=(observation_id, fallback), deadline_at=request.deadline.deadline_at,
+            ttl_s=0.0,
+        )
+        identity, value = result.value
+        return value if identity == observation_id else fallback
+
     async def probe(
         self,
         request: MaterializationEvidenceRequest,
@@ -639,21 +656,27 @@ class CommunityMaterializationEvidenceProbe:
         if self._mutation_guard is None:
             return await self._collect_evidence(request)
 
-        before = self._mutation_guard.capture(request.board_id, deadline_at=request.deadline.deadline_at)
+        before = await self._observe_guard(
+            request, phase="before",
+            build=lambda: self._mutation_guard.capture(request.board_id, deadline_at=request.deadline.deadline_at),
+            fallback=FilesystemMetadataSnapshot(None, (), "mutation_guard_observation_unavailable"),
+        )
+
+        async def finish_guard():
+            return await self._observe_guard(
+                request, phase="after",
+                build=lambda: self._mutation_guard.complete(
+                    board_id=request.board_id, before=before, deadline_at=request.deadline.deadline_at,
+                ),
+                fallback=FilesystemMutationGuardResult("unavailable", before.sha256, None, ()),
+            )
+
         try:
             evidence = await self._collect_evidence(request)
         except BaseException:
-            self._mutation_guard.complete(
-                board_id=request.board_id,
-                before=before,
-                deadline_at=request.deadline.deadline_at,
-            )
+            await finish_guard()
             raise
-        guard_result = self._mutation_guard.complete(
-            board_id=request.board_id,
-            before=before,
-            deadline_at=request.deadline.deadline_at,
-        )
+        guard_result = await finish_guard()
         if guard_result.outcome == "violation":
             evidence = replace(
                 evidence,

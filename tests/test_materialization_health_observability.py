@@ -157,6 +157,83 @@ def test_mutation_guard_discards_late_stat_and_does_not_report_clean(tmp_path, m
 
 
 @pytest.mark.asyncio
+async def test_blocked_guard_metadata_does_not_block_the_health_event_loop(tmp_path):
+    import asyncio
+    import threading
+
+    release = threading.Event()
+    finished = threading.Event()
+    entered = threading.Event()
+
+    def blocked_paths(_board):
+        entered.set()
+        try:
+            assert release.wait(2)
+            return ()
+        finally:
+            finished.set()
+
+    guard = CommunityFilesystemMutationGuard(
+        board_paths=blocked_paths, discovery_paths=lambda: (),
+        graph_health_observation=_Observation(),
+    )
+    probe = CommunityMaterializationEvidenceProbe(
+        board_store=_BoardStore(tmp_path / "graph", mutate=False),
+        discovery_store=_DiscoveryStore(), census=_ZeroCensus(),
+        generation_store=_GenerationStore(), graph_health_observation=_Observation(),
+        mutation_guard=guard,
+    )
+    timer = threading.Timer(0.6, release.set)
+    timer.start()
+    try:
+        started = time.monotonic()
+        await probe.probe(MaterializationEvidenceRequest(
+            board_id="guard-blocked-syscall", generation="generation-1",
+            deadline=HealthProbeDeadline(started + 0.05),
+        ))
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+        timer.cancel()
+        if entered.is_set():
+            assert await asyncio.to_thread(finished.wait, 2)
+    assert elapsed < 0.3, f"Health event loop blocked for {elapsed:.3f}s"
+
+
+@pytest.mark.asyncio
+async def test_previous_request_guard_result_cannot_attribute_a_mutation(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from okto_pulse.community.adapters import materialization_health as module
+    from okto_pulse.community.adapters.materialization_health_observability import (
+        FilesystemMetadataSnapshot, FilesystemMutationGuardResult,
+    )
+
+    async def cached_probe(*, name, build, **_kwargs):
+        if name == "materialization_guard_before":
+            value = ("previous-request", FilesystemMetadataSnapshot("old", ()))
+        elif name == "materialization_guard_after":
+            value = ("previous-request", FilesystemMutationGuardResult("violation", "old", "new", ("foreign",)))
+        else:
+            value = build()
+        return SimpleNamespace(value=value, reason="ok")
+
+    monkeypatch.setattr(module, "run_bounded_health_probe", cached_probe)
+    probe = CommunityMaterializationEvidenceProbe(
+        board_store=_BoardStore(tmp_path / "graph", mutate=False), discovery_store=_DiscoveryStore(),
+        census=_ZeroCensus(), generation_store=_GenerationStore(), graph_health_observation=_Observation(),
+        mutation_guard=CommunityFilesystemMutationGuard(
+            board_paths=lambda _board: (), discovery_paths=lambda: (), graph_health_observation=_Observation(),
+        ),
+    )
+    evidence = await probe.probe(MaterializationEvidenceRequest(
+        board_id="guard-cache-identity", generation="generation-1",
+        deadline=HealthProbeDeadline(time.monotonic() + 2),
+    ))
+    assert evidence.census.status is CensusStatus.AVAILABLE
+    assert evidence.census.reason_code != "health_read_side_mutation_detected"
+
+
+@pytest.mark.asyncio
 async def test_missing_observation_capability_never_calls_graph_providers():
     class Forbidden:
         def graph_state(self, *_args, **_kwargs):

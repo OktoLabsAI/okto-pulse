@@ -66,7 +66,7 @@ def _read_fence(connection: sqlite3.Connection) -> tuple[int, str]:
 
 def test_qa_tables_and_normative_columns_are_in_the_closed_source_census() -> None:
     assert GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION == (
-        "gdsr-trigger-manifest-v8"
+        "gdsr-trigger-manifest-v9"
     )
     for table_name, parent_column, _parent_id in _QA_BINDINGS:
         assert table_name in GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES
@@ -74,6 +74,8 @@ def test_qa_tables_and_normative_columns_are_in_the_closed_source_census() -> No
         assert _REQUIRED_SOURCE_COLUMNS[table_name] == (
             _NORMATIVE_QA_COLUMNS | {parent_column}
         )
+    assert "sprint_qa_items" not in GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES
+    assert "sprint_qa_items" not in _REQUIRED_SOURCE_TABLES
 
 
 def test_each_qa_insert_update_delete_rotates_revision_and_nonce(
