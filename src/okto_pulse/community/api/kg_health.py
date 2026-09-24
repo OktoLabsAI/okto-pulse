@@ -327,18 +327,15 @@ def _graph_storage_snapshot_from_bundle(
     )
 
 
-def _graph_storage_snapshot(board_id: str) -> GraphStorageSnapshot:
-    try:
-        from okto_pulse.community.adapters.composition import (
-            require_community_routed_graph_composition,
-        )
+async def _graph_storage_snapshot(board_id: str) -> GraphStorageSnapshot:
+    from okto_pulse.community.adapters.health_route_observation import (
+        observe_graph_route_metadata,
+    )
 
-        bundle = require_community_routed_graph_composition()
-        return _graph_storage_snapshot_from_bundle(bundle, board_id)
-    except (AttributeError, RuntimeError):
-        # Health remains available even before routing composition exists.  It
-        # must not guess Ladybug or Grafx when no authenticated route is known.
-        return GraphStorageSnapshot()
+    return await observe_graph_route_metadata(
+        board_id, render=_graph_storage_snapshot_from_bundle,
+        unavailable=GraphStorageSnapshot(),
+    )
 
 
 class KGHealthResponse(BaseModel):
@@ -506,7 +503,7 @@ async def get_kg_health_endpoint(
         if "graph_primary_bytes" in footprint:
             footprint["graph_lbug_bytes"] = footprint.pop("graph_primary_bytes")
         data["storage_footprint_proxy"] = footprint
-        data["graph_storage"] = _graph_storage_snapshot(board_id)
+        data["graph_storage"] = await _graph_storage_snapshot(board_id)
     except PermissionDeniedError as exc:
         raise RESTAdapterContract.http_error(exc) from exc
     except (AccessBoardNotFoundError, KgBoardNotFoundError) as exc:
