@@ -219,23 +219,11 @@ class NativeRuntimeBudget(BaseModel):
     unavailable_reason: str | None = None
 
 
-class OrphanIntegritySample(BaseModel):
-    node_id: str
-    node_type: str
-    writer_path: str
-    source_artifact_ref: str | None = None
-    source_resolution_status: str
-    generation_id: str | None = None
-    reason: str
-    correlation_id: str
-
-
 class OrphanIntegrityProjection(BaseModel):
     classification_delta: str = "none"
     integrity_warning: bool = False
     orphan_count: int = 0
     orphan_count_by_type: dict[str, int] = Field(default_factory=dict)
-    samples: list[OrphanIntegritySample] = Field(default_factory=list)
     unresolved_reasons: dict[str, int] = Field(default_factory=dict)
     allowlisted_root_count: int = 0
     generation_id: str | None = None

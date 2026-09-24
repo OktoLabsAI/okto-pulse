@@ -12,6 +12,7 @@ from okto_pulse.community.api.kg_health import (
     GraphStorageRoute,
     _graph_storage_route,
     _graph_storage_snapshot_from_bundle,
+    OrphanIntegrityProjection,
 )
 
 
@@ -26,6 +27,8 @@ def test_response_model_owns_the_atomic_schema_1_1_fields() -> None:
     assert "native_runtime_budget" in fields
     assert "graph_storage" in fields
     assert list(fields).count("global_outbox_dead_letter_count") == 1
+    assert "samples" not in OrphanIntegrityProjection.model_fields
+    assert "OrphanIntegritySample" not in str(KGHealthResponse.model_json_schema())
 
 
 def test_materialization_contract_defaults_fail_closed() -> None:
