@@ -391,12 +391,12 @@ class KGHealthResponse(BaseModel):
     oldest_pending_age_s: float | None
     dead_letter_count: int
     global_outbox_dead_letter_count: int = 0
-    total_nodes: int
-    default_score_count: int
-    default_score_ratio: float
-    avg_relevance: float
+    total_nodes: int | None
+    default_score_count: int | None
+    default_score_ratio: float | None
+    avg_relevance: float | None
     schema_version: str
-    health_schema_version: str = "1.2"
+    health_schema_version: str = "1.3"
     graph_schema_version: str | None = None
     source_count: int | None = None
     contradict_warn_count: int

@@ -122,10 +122,10 @@ export interface KGHealth {
   dead_letter_count: number;
   global_outbox_dead_letter_count: number;
   operational_domains?: Record<string, KGOperationalDomain>;
-  total_nodes: number;
-  default_score_count: number;
-  default_score_ratio: number;
-  avg_relevance: number;
+  total_nodes: number | null;
+  default_score_count: number | null;
+  default_score_ratio: number | null;
+  avg_relevance: number | null;
   top_disconnected_nodes: TopDisconnectedNode[];
   schema_version: string;
   graph_schema_version?: string | null;

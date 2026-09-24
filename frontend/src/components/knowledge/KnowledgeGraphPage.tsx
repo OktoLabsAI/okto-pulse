@@ -56,7 +56,7 @@ export function resolveGraphTotalNodeCount(
     ), 0);
   }
   const healthTotal = health?.total_nodes;
-  return typeof healthTotal === 'number' && healthTotal >= 0
+  return health?.metric_status === 'available' && typeof healthTotal === 'number' && healthTotal >= 0
     ? healthTotal
     : undefined;
 }
@@ -112,7 +112,7 @@ export function GraphVisibilityMismatchState({
           <h2 className="text-base font-semibold">KG data exists, graph view is empty</h2>
         </div>
         <p className="text-sm text-surface-700 dark:text-surface-300">
-          Health reports {health.total_nodes.toLocaleString()} node(s) for this board, but
+          Health reports {health.total_nodes?.toLocaleString() ?? 'an unavailable count of'} node(s) for this board, but
           the visualization endpoint returned no nodes.
         </p>
         <div className="mt-4 grid grid-cols-1 gap-2 text-xs text-surface-600 dark:text-surface-400 sm:grid-cols-2">
@@ -501,7 +501,8 @@ export function KnowledgeGraphPage({ boardId }: Props) {
 
   if (nodes.length === 0 && subView === 'graph') {
     const mismatchHealth = healthSnapshot;
-    if (mismatchHealth && mismatchHealth.total_nodes > 0) {
+    if (mismatchHealth && mismatchHealth.metric_status === 'available'
+      && mismatchHealth.total_nodes != null && mismatchHealth.total_nodes > 0) {
       return (
         <div data-testid="kg-empty-mismatch" className="h-full">
           <GraphVisibilityMismatchState

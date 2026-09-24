@@ -26,7 +26,7 @@ vi.mock('@/services/kg-health-api');
 vi.mock('@/store/dashboard');
 
 const baseHealth: KGHealth = {
-  health_schema_version: '1.2',
+  health_schema_version: '1.3',
   materialization_state: 'materialized',
   materialization_generation: 'generation-1',
   probe_reason_codes: {
@@ -168,6 +168,22 @@ afterEach(() => {
 });
 
 describe('TS1 — mount inicial dispara 1 fetch e renderiza cards principais', () => {
+  it.each([null, 0])('does not render incomplete graph measurements as numbers (%s)', async (value) => {
+    mockBoard('b1');
+    mockApi(() => Promise.resolve({
+      ...baseHealth, metric_status: 'unavailable', total_nodes: value,
+      default_score_count: value, default_score_ratio: value, avg_relevance: value,
+    }));
+    render(<KGHealthView onClose={() => {}} />);
+    const title = await screen.findByText('KG Health', { selector: 'h3' });
+    const card = title.closest('[data-testid="kg-health-card"]')! as HTMLElement;
+    for (const label of ['Total nodes', 'Default score ratio', 'Avg relevance']) {
+      const row = within(card).getByText(label).parentElement!;
+      expect(within(row).getByText('Unavailable')).toBeInTheDocument();
+    }
+    expect(screen.getByText('Not measured')).toBeInTheDocument();
+  });
+
   it.each(['missing', 'unavailable', 'null'] as const)(
     'keeps unknown canonical debt visibly unavailable (%s)', async (state) => {
       mockBoard('b1');
@@ -247,16 +263,16 @@ describe('TS1 — mount inicial dispara 1 fetch e renderiza cards principais', (
     expect(screen.queryByText('Powered by Okto Grafx')).not.toBeInTheDocument();
   });
 
-  it('fixa o contrato frontend em health schema 1.2', () => {
-    expect(EXPECTED_KG_HEALTH_SCHEMA_VERSION).toBe('1.2');
+  it('fixa o contrato frontend em health schema 1.3', () => {
+    expect(EXPECTED_KG_HEALTH_SCHEMA_VERSION).toBe('1.3');
   });
 
-  it('aceita health schema 1.2 sem comparar o alias legado schema_version', async () => {
+  it('aceita health schema 1.3 sem comparar o alias legado schema_version', async () => {
     mockBoard('b1');
     mockApi(() => Promise.resolve({
       ...baseHealth,
       schema_version: '1.0',
-      health_schema_version: '1.2',
+      health_schema_version: '1.3',
     }));
 
     render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
@@ -463,7 +479,7 @@ describe('TS6 — schema banner', () => {
     mockApi(() => Promise.resolve({
       ...baseHealth,
       schema_version: '1.0',
-      health_schema_version: '1.2',
+      health_schema_version: '1.3',
     }));
 
     render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
@@ -483,7 +499,7 @@ describe('TS6 — schema banner', () => {
       const alert = screen.getByRole('alert');
       expect(alert).toBeInTheDocument();
       expect(alert).toHaveTextContent(/Schema outdated/);
-      expect(alert).toHaveTextContent(/1\.2/);
+      expect(alert).toHaveTextContent(/1\.3/);
       expect(alert).toHaveTextContent(/2\.0/);
     });
   });

@@ -107,12 +107,13 @@ const health: KGHealth = {
   dead_letter_count: 0,
   global_outbox_dead_letter_count: 0,
   total_nodes: 140,
+  metric_status: 'available',
   default_score_count: 0,
   default_score_ratio: 0,
   avg_relevance: 0.0057,
   top_disconnected_nodes: [],
   schema_version: '1.0',
-  health_schema_version: '1.2',
+  health_schema_version: '1.3',
   graph_schema_version: '0.3.3',
   contradict_warn_count: 0,
   last_decay_tick_at: null,
@@ -157,7 +158,7 @@ describe('GraphVisibilityMismatchState', () => {
     expect(screen.getByText('KG data exists, graph view is empty')).toBeInTheDocument();
     expect(screen.getByText(/Health reports 140 node\(s\)/)).toBeInTheDocument();
     expect(screen.getByText('Graph schema 0.3.3')).toBeInTheDocument();
-    expect(screen.getByText('Health schema 1.2')).toBeInTheDocument();
+    expect(screen.getByText('Health schema 1.3')).toBeInTheDocument();
     expect(screen.getByText('Last tick: failed')).toBeInTheDocument();
     expect(screen.getByText('Status partial_failure')).toBeInTheDocument();
 
@@ -167,6 +168,10 @@ describe('GraphVisibilityMismatchState', () => {
 });
 
 describe('KnowledgeGraphPage — independent diagnostics', () => {
+  it.each([null, 140])('does not infer a graph total from unavailable Health (%s)', (count) => {
+    expect(resolveGraphTotalNodeCount(null, { ...health, metric_status: 'unavailable', total_nodes: count })).toBeUndefined();
+  });
+
   it('uses the graph-layer stats census when health metrics are unavailable', () => {
     expect(resolveGraphTotalNodeCount({
       schema_version: '1.0',

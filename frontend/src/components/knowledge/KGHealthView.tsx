@@ -653,10 +653,10 @@ function QueueDeadLetterCard({
 }
 
 interface KGHealthCardProps {
-  totalNodes: number;
-  defaultScoreCount: number;
-  defaultScoreRatio: number;
-  avgRelevance: number;
+  totalNodes: number | null;
+  defaultScoreCount: number | null;
+  defaultScoreRatio: number | null;
+  avgRelevance: number | null;
   contradictWarnCount: number;
   metricStatus: string | null;
   healthIssues: Array<{
@@ -684,7 +684,8 @@ function KGHealthCard({
     contradictWarnCount === 0
       ? 'text-emerald-600 dark:text-emerald-400'
       : 'text-amber-600 dark:text-amber-400';
-  const ratioPct = (defaultScoreRatio * 100).toFixed(1);
+  const metricsAvailable = metricStatus === 'available';
+  const ratioPct = defaultScoreRatio == null ? null : (defaultScoreRatio * 100).toFixed(1);
   const telemetryClass =
     metricStatus === 'available'
       ? 'text-emerald-700 dark:text-emerald-400'
@@ -699,17 +700,18 @@ function KGHealthCard({
     <Card title="KG Health" testId="kg-health-card" icon={<Activity className="w-4 h-4" aria-hidden />}>
       <Row label="Total nodes">
         <span className="text-2xl font-bold text-surface-900 dark:text-white">
-          {totalNodes.toLocaleString()}
+          {metricsAvailable && totalNodes != null ? totalNodes.toLocaleString() : 'Unavailable'}
         </span>
       </Row>
       <Row label="Default score ratio">
         <span className="text-sm text-surface-700 dark:text-surface-300">
-          {ratioPct}% ({defaultScoreCount.toLocaleString()} nodes)
+          {metricsAvailable && ratioPct != null && defaultScoreCount != null
+            ? `${ratioPct}% (${defaultScoreCount.toLocaleString()} nodes)` : 'Unavailable'}
         </span>
       </Row>
       <Row label="Avg relevance">
         <span className="text-sm font-mono text-surface-700 dark:text-surface-300">
-          {avgRelevance.toFixed(3)}
+          {metricsAvailable && avgRelevance != null ? avgRelevance.toFixed(3) : 'Unavailable'}
         </span>
       </Row>
       <Row label="Contradict warnings">

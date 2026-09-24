@@ -44,7 +44,7 @@ export function KGHealthOverview({ health, stale }: { health: KGHealth; stale: b
         </div>
         <div className="grid divide-y divide-slate-200 border-t border-slate-200 dark:divide-slate-800 dark:border-slate-800 sm:grid-cols-3 sm:divide-x sm:divide-y-0">
           <SummaryMetric icon={<Database className="h-4 w-4" aria-hidden />} label="Indexed nodes"
-            value={metricsAvailable ? health.total_nodes.toLocaleString() : 'Not measured'}
+            value={metricsAvailable && health.total_nodes != null ? health.total_nodes.toLocaleString() : 'Not measured'}
             detail={metricsAvailable ? 'Reported by the graph snapshot' : 'Graph metrics are unavailable'}
             help="Node counts are shown only when the backend marks graph metrics as available. An unavailable reading is not zero nodes and does not establish data loss." />
           <SummaryMetric icon={<Inbox className="h-4 w-4" aria-hidden />} label="Processing queue"
