@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -93,6 +94,117 @@ class _DiscoveryStore:
         )
 
 
+class _Observation:
+    def scope(self, _board_id, *, timeout_seconds):
+        assert 0 < timeout_seconds <= 0.35
+        return nullcontext()
+
+
+@pytest.mark.asyncio
+async def test_missing_observation_capability_never_calls_graph_providers():
+    class Forbidden:
+        def graph_state(self, *_args, **_kwargs):
+            pytest.fail("unscoped Board observation")
+
+        def state(self, **_kwargs):
+            pytest.fail("unscoped Global observation")
+
+    probe = CommunityMaterializationEvidenceProbe(
+        board_store=Forbidden(), discovery_store=Forbidden(),
+        census=_ZeroCensus(), generation_store=_GenerationStore(),
+    )
+    evidence = await probe.probe(MaterializationEvidenceRequest(
+        board_id="missing-observation-capability", generation="generation-1",
+        deadline=HealthProbeDeadline(time.monotonic() + 2),
+    ))
+    for observed in (evidence.board_store, evidence.discovery_store):
+        assert observed.status == "unavailable"
+        assert observed.reason_code == "graph_health_observation_unavailable"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_board", [False, True])
+async def test_each_materialization_worker_enters_and_restores_its_scope(fail_board):
+    from contextlib import contextmanager
+    from contextvars import ContextVar
+    from threading import get_ident
+
+    active = ContextVar("materialization_test_active", default=False)
+    main_thread = get_ident()
+    events = []
+
+    class Observation:
+        @contextmanager
+        def scope(self, board_id, *, timeout_seconds):
+            assert get_ident() != main_thread
+            assert 0 < timeout_seconds <= 0.35
+            token = active.set(True)
+            events.append(("enter", get_ident()))
+            try:
+                yield
+            finally:
+                active.reset(token)
+                events.append(("exit", get_ident()))
+
+    class Board:
+        def graph_state(self, board_id, *, generation):
+            assert active.get()
+            if fail_board:
+                raise OSError("test provider failure")
+            return _state(board_id, generation, GraphRuntimeObservationState.CONFIRMED_ABSENT, "absent")
+
+    class Discovery:
+        def state(self, *, generation):
+            assert active.get()
+            return _state("_global", generation, GraphRuntimeObservationState.CONFIRMED_ABSENT, "absent")
+
+    probe = CommunityMaterializationEvidenceProbe(
+        board_store=Board(), discovery_store=Discovery(), census=_ZeroCensus(),
+        generation_store=_GenerationStore(), graph_health_observation=Observation(),
+    )
+    evidence = await probe.probe(MaterializationEvidenceRequest(
+        board_id=f"worker-scope-{fail_board}", generation="generation-1",
+        deadline=HealthProbeDeadline(time.monotonic() + 2),
+    ))
+    assert evidence.board_store.status == ("unavailable" if fail_board else "absent")
+    assert evidence.discovery_store.status == "absent"
+    assert sorted(events) == sorted([("enter", thread) for phase, thread in events if phase == "exit"] +
+                                    [("exit", thread) for phase, thread in events if phase == "enter"])
+    assert len(events) == 4
+    assert not active.get()
+
+
+@pytest.mark.asyncio
+async def test_materialization_worker_keeps_graph_observation_bounded(tmp_path):
+    from types import SimpleNamespace
+    from okto_pulse.community.adapters.routed_board_graph_composition import (
+        build_community_routed_board_graph_composition,
+    )
+
+    board_id = "materialization-worker-volume"
+    root = tmp_path / "graph"
+    board_root = root / "boards" / board_id
+    board_root.mkdir(parents=True)
+    for index in range(2001):
+        (board_root / f"unrelated-{index}").touch()
+    bundle = build_community_routed_board_graph_composition(settings=SimpleNamespace(
+        kg_base_dir=str(root), kg_graph_backend="grafx",
+        kg_global_graph_backend="grafx", kg_grafx_page_size=4096,
+    ))
+    probe = CommunityMaterializationEvidenceProbe(
+        board_store=bundle.graph_runtime_store, census=_ZeroCensus(),
+        discovery_store=_DiscoveryStore(), generation_store=_GenerationStore(),
+        graph_health_observation=bundle.graph_health_observation,
+    )
+    evidence = await probe.probe(MaterializationEvidenceRequest(
+        board_id=board_id, generation="generation-1",
+        deadline=HealthProbeDeadline(time.monotonic() + 2),
+    ))
+    assert evidence.board_store.status == "unavailable"
+    assert bundle.graph_runtime_store.graph_state(board_id).status == "absent"
+    assert bundle.grafx_pool.pooled_paths() == ()
+
+
 @pytest.fixture(autouse=True)
 def _reset_observability():
     reset_materialization_observability_for_tests()
@@ -113,6 +225,7 @@ async def test_probe_records_clean_filesystem_guard_without_creating_paths(
     )
     probe = CommunityMaterializationEvidenceProbe(
         board_store=_BoardStore(graph_path, mutate=False),
+        graph_health_observation=_Observation(),
         census=_ZeroCensus(),
         discovery_store=_DiscoveryStore(),
         generation_store=_GenerationStore(),
@@ -148,6 +261,7 @@ async def test_probe_metadata_change_cannot_be_attributed_without_writer_evidenc
     )
     probe = CommunityMaterializationEvidenceProbe(
         board_store=_BoardStore(graph_path, mutate=True),
+        graph_health_observation=_Observation(),
         census=_ZeroCensus(),
         discovery_store=_DiscoveryStore(),
         generation_store=_GenerationStore(),

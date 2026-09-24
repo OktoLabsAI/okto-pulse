@@ -56,18 +56,6 @@ async def _build_engine(path: Path) -> AsyncEngine:
                 "('s3', 'b1', 'S3', 'draft', 1, 'owner', 0)"
             )
         )
-        await connection.execute(
-            text(
-                "INSERT INTO sprints "
-                "(id, spec_id, board_id, title, spec_version, status, lane_type, "
-                "version, created_by, archived) VALUES "
-                "('sp1', 's1', 'b1', 'Sprint 1', 1, 'active', 'normal', 1, "
-                "'owner', 0), "
-                "('sp2', 's1', 'b1', 'Sprint 2', 1, 'active', 'normal', 1, "
-                "'owner', 0)"
-            )
-        )
-
         rows: list[dict[str, object]] = []
         for index in range(30):
             labels = ["blue" if index % 2 == 0 else "green"]
@@ -94,7 +82,6 @@ async def _build_engine(path: Path) -> AsyncEngine:
                     "id": f"c{index:03d}",
                     "board_id": "b1",
                     "spec_id": ("s1", "s2", None)[index % 3],
-                    "sprint_id": "sp1",
                     "title": title,
                     "description": description,
                     "status": "in_progress",
@@ -109,12 +96,11 @@ async def _build_engine(path: Path) -> AsyncEngine:
                 }
             )
 
-        # Each row violates exactly one active filter of the full request.
+        # Each decoy violates one filter except d-unfiltered, which remains included.
         decoys = (
             (
                 "d-status",
                 "s1",
-                "sp1",
                 "not_started",
                 "high",
                 "normal",
@@ -125,7 +111,6 @@ async def _build_engine(path: Path) -> AsyncEngine:
             (
                 "d-spec",
                 "s3",
-                "sp1",
                 "in_progress",
                 "high",
                 "normal",
@@ -134,9 +119,8 @@ async def _build_engine(path: Path) -> AsyncEngine:
                 "Needle",
             ),
             (
-                "d-sprint",
+                "d-unfiltered",
                 "s1",
-                "sp2",
                 "in_progress",
                 "high",
                 "normal",
@@ -147,7 +131,6 @@ async def _build_engine(path: Path) -> AsyncEngine:
             (
                 "d-priority",
                 "s1",
-                "sp1",
                 "in_progress",
                 "low",
                 "normal",
@@ -158,7 +141,6 @@ async def _build_engine(path: Path) -> AsyncEngine:
             (
                 "d-type",
                 "s1",
-                "sp1",
                 "in_progress",
                 "high",
                 "bug",
@@ -169,7 +151,6 @@ async def _build_engine(path: Path) -> AsyncEngine:
             (
                 "d-assignee",
                 "s1",
-                "sp1",
                 "in_progress",
                 "high",
                 "normal",
@@ -180,7 +161,6 @@ async def _build_engine(path: Path) -> AsyncEngine:
             (
                 "d-label",
                 "s1",
-                "sp1",
                 "in_progress",
                 "high",
                 "normal",
@@ -191,7 +171,6 @@ async def _build_engine(path: Path) -> AsyncEngine:
             (
                 "d-search",
                 "s1",
-                "sp1",
                 "in_progress",
                 "high",
                 "normal",
@@ -204,7 +183,6 @@ async def _build_engine(path: Path) -> AsyncEngine:
             (
                 card_id,
                 spec_id,
-                sprint_id,
                 card_status,
                 priority,
                 card_type,
@@ -217,7 +195,6 @@ async def _build_engine(path: Path) -> AsyncEngine:
                     "id": card_id,
                     "board_id": "b1",
                     "spec_id": spec_id,
-                    "sprint_id": sprint_id,
                     "title": title,
                     "description": "plain",
                     "status": card_status,
@@ -235,10 +212,10 @@ async def _build_engine(path: Path) -> AsyncEngine:
         await connection.execute(
             text(
                 "INSERT INTO cards "
-                "(id, board_id, spec_id, sprint_id, title, description, status, "
+                "(id, board_id, spec_id, title, description, status, "
                 "priority, card_type, position, assignee_id, labels, archived, "
                 "created_by, validations, conclusions, created_at, updated_at) "
-                "VALUES (:id, :board_id, :spec_id, :sprint_id, :title, "
+                "VALUES (:id, :board_id, :spec_id, :title, "
                 ":description, :status, :priority, :card_type, :position, "
                 ":assignee_id, :labels, :archived, 'owner', :validations, "
                 ":conclusions, '2026-07-20 10:00:00', '2026-07-20 10:00:00')"
@@ -362,7 +339,7 @@ def test_complete_filter_set_is_pre_limit_and_pages_without_gaps(
     assert len(statements) <= 6
 
     ids = [item["id"] for item in first_body["items"] + second_body["items"]]
-    assert ids == ["d-sprint", *[f"c{index:03d}" for index in range(29, -1, -1)]]
+    assert ids == ["d-unfiltered", *[f"c{index:03d}" for index in range(29, -1, -1)]]
     assert len(ids) == len(set(ids))
     assert {item["labels"][0] for item in first_body["items"]} == {
         "blue",

@@ -102,19 +102,10 @@ async def _seed(engine: AsyncEngine) -> None:
                 "('s1', 'b1', 'i1', 'r1', 'Spec', 'draft', 1, 'u', 0)"
             )
         )
-        await connection.execute(
-            text(
-                "INSERT INTO sprints "
-                "(id, spec_id, board_id, title, spec_version, status, lane_type, "
-                "version, created_by, archived) VALUES "
-                "('sp1', 's1', 'b1', 'Sprint', 1, 'draft', 'normal', 1, 'u', 0)"
-            )
-        )
         for table, parent_field, parent_id in (
             ("ideation_qa_items", "ideation_id", "i1"),
             ("refinement_qa_items", "refinement_id", "r1"),
             ("spec_qa_items", "spec_id", "s1"),
-            ("sprint_qa_items", "sprint_id", "sp1"),
         ):
             await connection.execute(
                 text(
@@ -284,7 +275,6 @@ async def test_open_qa_count_is_a_correlated_single_statement_projection(rig) ->
         ("ideation", "i1"),
         ("refinement", "r1"),
         ("spec", "s1"),
-        ("sprint", "sp1"),
     ),
 )
 async def test_all_qa_families_count_only_answered_at_null_in_one_statement(

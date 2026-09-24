@@ -464,6 +464,7 @@ def configure_community_kg_registry(
         register_materialization_evidence_port(
             CommunityMaterializationEvidenceProbe(
                 board_store=base.graph_runtime_store,
+                graph_health_observation=base.graph_health_observation,
                 census=CommunitySqlAlchemyMaterializationCensus(session_factory),
                 discovery_store=base.global_discovery_runtime,
                 generation_store=generation_store,

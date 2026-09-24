@@ -37,6 +37,7 @@ from okto_pulse.core.kg.interfaces.graph_runtime_store import (
     GraphRuntimeObservationState,
     GraphRuntimeState,
 )
+from okto_pulse.core.kg.interfaces.graph_health_observation import GraphHealthObservation
 from okto_pulse.core.kg.interfaces.storage_ref import StorageRef
 from okto_pulse.core.ports.materialization_health import (
     BoardHealthCensus,
@@ -605,12 +606,28 @@ class CommunityMaterializationEvidenceProbe:
         discovery_store: Any,
         generation_store: Any,
         mutation_guard: Any | None = None,
+        graph_health_observation: GraphHealthObservation | None = None,
     ) -> None:
         self._board_store = board_store
         self._census = census
         self._discovery_store = discovery_store
         self._generation_store = generation_store
         self._mutation_guard = mutation_guard
+        self._graph_health_observation = graph_health_observation
+
+    def _observe_graph(self, request, build, fallback):
+        # Enter inside the worker: no caller is required to provide a scope,
+        # and a queued worker cannot renew the request's absolute deadline.
+        if self._graph_health_observation is None:
+            return replace(fallback, reason_code="graph_health_observation_unavailable",
+                           unavailable_reason="graph_health_observation_unavailable")
+        remaining = request.deadline.remaining_seconds(now=time.monotonic())
+        if remaining <= 0:
+            return fallback
+        with self._graph_health_observation.scope(
+            request.board_id, timeout_seconds=min(0.35, remaining),
+        ):
+            return build()
 
     async def current_generation(self, board_id: str) -> str:
         return await self._generation_store.current(board_id)
@@ -676,9 +693,10 @@ class CommunityMaterializationEvidenceProbe:
                 name=_BOARD_STAT_PROBE,
                 board_id=request.board_id,
                 generation_id=generation,
-                build=lambda: self._board_store.graph_state(
-                    request.board_id,
-                    generation=generation,
+                build=lambda: self._observe_graph(
+                    request, lambda: self._board_store.graph_state(
+                        request.board_id, generation=generation,
+                    ), board_fallback,
                 ),
                 fallback=board_fallback,
                 deadline_at=request.deadline.deadline_at,
@@ -689,7 +707,10 @@ class CommunityMaterializationEvidenceProbe:
                 name=_DISCOVERY_STAT_PROBE,
                 board_id=request.board_id,
                 generation_id=generation,
-                build=lambda: self._discovery_store.state(generation=generation),
+                build=lambda: self._observe_graph(
+                    request, lambda: self._discovery_store.state(generation=generation),
+                    discovery_fallback,
+                ),
                 fallback=discovery_fallback,
                 deadline_at=request.deadline.deadline_at,
             )
