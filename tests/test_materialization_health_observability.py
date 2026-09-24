@@ -100,6 +100,62 @@ class _Observation:
         return nullcontext()
 
 
+def test_mutation_guard_missing_scope_or_expired_deadline_never_calls_paths():
+    def forbidden(*_args):
+        pytest.fail("unbounded metadata path lookup")
+
+    missing = CommunityFilesystemMutationGuard(board_paths=forbidden, discovery_paths=forbidden)
+    assert missing.capture("missing").sha256 is None
+    expired = CommunityFilesystemMutationGuard(
+        board_paths=forbidden, discovery_paths=forbidden, graph_health_observation=_Observation(),
+    )
+    snapshot = expired.capture("expired", deadline_at=time.monotonic() - 1)
+    assert snapshot.sha256 is None
+    assert snapshot.unavailable_reason == "TimeoutError"
+
+
+def test_mutation_guard_bounds_consumed_paths_even_when_duplicated(tmp_path, monkeypatch):
+    from okto_pulse.community.adapters import materialization_health_observability as module
+
+    monkeypatch.setattr(module.time, "monotonic", lambda: 100.0)
+    consumed = []
+
+    def paths(_board):
+        for index in range(5000):
+            consumed.append(index)
+            yield tmp_path
+
+    guard = CommunityFilesystemMutationGuard(
+        board_paths=paths, discovery_paths=lambda: (), graph_health_observation=_Observation(),
+    )
+    snapshot = guard.capture("volume")
+    assert snapshot.sha256 is None
+    assert snapshot.entries == ()
+    assert len(consumed) == 2001
+
+
+def test_mutation_guard_discards_late_stat_and_does_not_report_clean(tmp_path, monkeypatch):
+    from okto_pulse.community.adapters import materialization_health_observability as module
+
+    clock = [100.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    guard = CommunityFilesystemMutationGuard(
+        board_paths=lambda _board: (tmp_path,), discovery_paths=lambda: (),
+        graph_health_observation=_Observation(),
+    )
+    before = guard.capture("late")
+    assert before.sha256 is not None
+
+    def slow_stat(_path):
+        clock[0] += 1
+        return ("absent",)
+
+    monkeypatch.setattr(guard, "_metadata", slow_stat)
+    after = guard.complete(board_id="late", before=before)
+    assert after.after_sha256 is None
+    assert after.outcome == "unavailable"
+
+
 @pytest.mark.asyncio
 async def test_missing_observation_capability_never_calls_graph_providers():
     class Forbidden:
@@ -222,6 +278,7 @@ async def test_probe_records_clean_filesystem_guard_without_creating_paths(
     guard = CommunityFilesystemMutationGuard(
         board_paths=lambda _board_id: (graph_path,),
         discovery_paths=lambda: (discovery_path,),
+        graph_health_observation=_Observation(),
     )
     probe = CommunityMaterializationEvidenceProbe(
         board_store=_BoardStore(graph_path, mutate=False),
@@ -258,6 +315,7 @@ async def test_probe_metadata_change_cannot_be_attributed_without_writer_evidenc
     guard = CommunityFilesystemMutationGuard(
         board_paths=lambda _board_id: (graph_path,),
         discovery_paths=lambda: (discovery_path,),
+        graph_health_observation=_Observation(),
     )
     probe = CommunityMaterializationEvidenceProbe(
         board_store=_BoardStore(graph_path, mutate=True),

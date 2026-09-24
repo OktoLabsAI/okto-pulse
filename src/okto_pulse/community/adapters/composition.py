@@ -469,6 +469,7 @@ def configure_community_kg_registry(
                 discovery_store=base.global_discovery_runtime,
                 generation_store=generation_store,
                 mutation_guard=CommunityFilesystemMutationGuard.from_runtime_stores(
+                    graph_health_observation=base.graph_health_observation,
                     board_store=base.graph_runtime_store,
                     discovery_store=base.global_discovery_runtime,
                 ),

@@ -639,18 +639,20 @@ class CommunityMaterializationEvidenceProbe:
         if self._mutation_guard is None:
             return await self._collect_evidence(request)
 
-        before = self._mutation_guard.capture(request.board_id)
+        before = self._mutation_guard.capture(request.board_id, deadline_at=request.deadline.deadline_at)
         try:
             evidence = await self._collect_evidence(request)
         except BaseException:
             self._mutation_guard.complete(
                 board_id=request.board_id,
                 before=before,
+                deadline_at=request.deadline.deadline_at,
             )
             raise
         guard_result = self._mutation_guard.complete(
             board_id=request.board_id,
             before=before,
+            deadline_at=request.deadline.deadline_at,
         )
         if guard_result.outcome == "violation":
             evidence = replace(

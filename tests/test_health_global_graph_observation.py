@@ -71,13 +71,12 @@ def test_cold_global_health_never_opens_a_writable_participant(global_observatio
     assert all(opened_modes), f"Health opened native participants with read_only={opened_modes}"
 
 
-def test_global_health_bounds_authenticated_manifest_reads(global_observation_bundle):
+def _install_large_global_manifest(bundle):
     import shutil
     from okto_pulse.community.adapters.global_discovery_layout import (
         generation_graph_path, switch_active_generation, write_generation_manifest,
     )
 
-    bundle, _clock, opened_modes = global_observation_bundle
     anchor = bundle.global_graph.resolver.inspect_global_route().anchor_path
     target = generation_graph_path(anchor, "gdr_health_metadata_volume")
     shutil.copytree(anchor, target)
@@ -86,6 +85,11 @@ def test_global_health_bounds_authenticated_manifest_reads(global_observation_bu
         payload={"historical_metadata": "x" * (4 * 1024 * 1024)},
     )
     switch_active_generation(anchor, generation_id="gdr_health_metadata_volume", manifest_sha256=digest)
+
+
+def test_global_health_bounds_authenticated_manifest_reads(global_observation_bundle):
+    bundle, _clock, opened_modes = global_observation_bundle
+    _install_large_global_manifest(bundle)
     assert bundle.global_graph.runtime.state().state.value == "present_readable_candidate"
     with bundle.board.graph_health_observation.scope("board", timeout_seconds=5):
         try:
@@ -96,6 +100,22 @@ def test_global_health_bounds_authenticated_manifest_reads(global_observation_bu
             assert observed.state.value == "present_unreadable_or_error"
     assert opened_modes == []
     assert bundle.global_graph.runtime.state().state.value == "present_readable_candidate"
+
+
+def test_materialization_guard_does_not_read_unbounded_global_manifest(global_observation_bundle):
+    from okto_pulse.community.adapters.materialization_health_observability import CommunityFilesystemMutationGuard
+
+    bundle, _clock, opened_modes = global_observation_bundle
+    _install_large_global_manifest(bundle)
+    guard = CommunityFilesystemMutationGuard.from_runtime_stores(
+        board_store=SimpleNamespace(materialization_observation_paths=lambda _board: ()),
+        discovery_store=bundle.global_graph.runtime,
+        graph_health_observation=bundle.board.graph_health_observation,
+    )
+    observed = guard.capture("guard-global-metadata")
+    assert observed.sha256 is None
+    assert observed.unavailable_reason == "GraphCapabilityUnavailable"
+    assert opened_modes == []
 
 
 def test_warm_global_health_receives_native_deadline(global_observation_bundle):
