@@ -2317,7 +2317,12 @@ async def test_installed_internal_recovery_and_public_dlq_retirement(
                 client,
                 accepted_start["run_id"],
                 {"terminal"},
-                timeout=300,
+                # The productive attempt already owns a 600-second budget.
+                # Observe that complete budget plus bounded polling/shutdown
+                # slack; a 300-second harness deadline cut off a still-valid
+                # Grafx cutover before the real fence-loss injection ran.
+                # The partial outcome/reason assertions below remain strict.
+                timeout=660,
                 poll_interval=1.0,
             )
             assert partial["state"] == "partial"
