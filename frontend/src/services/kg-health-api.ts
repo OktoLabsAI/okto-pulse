@@ -102,7 +102,6 @@ export interface KGGraphStorageRoute {
   scope: 'board' | 'global';
   backend: 'ladybug' | 'grafx' | null;
   binding_status: 'bound' | 'missing' | 'unavailable';
-  physical_path: string | null;
   generation: string | null;
   page_size: number | null;
 }

@@ -252,7 +252,6 @@ class GraphStorageRoute(BaseModel):
     scope: Literal["board", "global"]
     backend: Literal["ladybug", "grafx"] | None = None
     binding_status: Literal["bound", "missing", "unavailable"] = "unavailable"
-    physical_path: str | None = None
     generation: str | None = None
     page_size: int | None = None
 
@@ -301,7 +300,9 @@ def _graph_storage_route(
         return _unavailable_graph_storage(scope, binding_status=status)
 
     try:
-        physical_path = snapshot.active_path.relative_to(storage_root).as_posix()
+        # Retain the route consistency check without publishing even a relative
+        # storage path. Public Health carries availability, not filesystem layout.
+        snapshot.active_path.relative_to(storage_root)
     except (AttributeError, TypeError, ValueError):
         # A path outside the configured storage root is never disclosed.  The
         # route authority is inconsistent, so Health reports it fail-closed.
@@ -311,7 +312,6 @@ def _graph_storage_route(
         scope=scope,
         backend=snapshot.backend,
         binding_status="bound",
-        physical_path=physical_path,
         generation=snapshot.generation,
         page_size=snapshot.page_size,
     )
@@ -496,10 +496,9 @@ async def get_kg_health_endpoint(
 ) -> KGHealthResponse:
     """Return the live KG health snapshot for ``board_id``.
 
-    Compute is in-process: SQL aggregations on the app DB and
-    per-node-type queries against the board's Kùzu graph. Kùzu errors
-    degrade gracefully (zeros), so the endpoint stays available even when
-    Kùzu hasn't been bootstrapped or is under a transient lock.
+    Observations come from the edition's bounded Health providers. Route
+    metadata is inspected without opening storage; absent or inconsistent
+    bindings remain explicitly missing or unavailable.
 
     Per contract api_3ed9037f the endpoint MUST NOT mutate graph or
     discovery storage. It is read-only.
