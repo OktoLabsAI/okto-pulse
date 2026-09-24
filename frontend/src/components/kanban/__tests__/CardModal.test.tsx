@@ -84,6 +84,8 @@ const policyComplianceMock = vi.hoisted(() => ({
 }));
 const historicalContextApi = vi.hoisted(() => ({ read: vi.fn() }));
 vi.mock('@/services/historical-context-api', () => ({ useHistoricalContextApi: () => historicalContextApi }));
+const learningCaptureApi = vi.hoisted(() => ({ source: vi.fn(), history: vi.fn(), create: vi.fn() }));
+vi.mock('@/services/learning-capture-api', () => ({ useLearningCaptureApi: () => learningCaptureApi }));
 
 vi.mock('@/services/api', () => ({
   useDashboardApi: () => apiMock,
@@ -479,6 +481,9 @@ describe('CardModal', () => {
   });
 
   beforeEach(() => {
+    learningCaptureApi.source.mockReset().mockResolvedValue({ source_digest: 'a'.repeat(64), source_policy_version: 1, scenarios: [] });
+    learningCaptureApi.history.mockReset().mockResolvedValue({ items: [], next_cursor: null });
+    learningCaptureApi.create.mockReset();
     vi.clearAllMocks();
     historicalContextApi.read.mockReset().mockResolvedValue({ items: [{ binding_id: 'binding', origin: { kind: 'sprint', id: 'original' },
       archive_id: 'archive', section: 'qa', field: null, record: { question: 'Original Card question', asked_by: 'original-author', answer: null } }], next_offset: null });
@@ -659,6 +664,23 @@ describe('CardModal', () => {
       ).toBeInTheDocument();
     },
   );
+
+  it('loads Learning authorship lazily for a Bug and retains text across modal tabs', async () => {
+    const selected = cardForType('bug');
+    storeMock.selectedCardId = selected.id;
+    apiMock.getCard.mockResolvedValue(selected);
+    render(<CardModal boardId="board-1" />);
+    const tabs = await screen.findByRole('tablist', { name: 'Card sections' });
+    expect(learningCaptureApi.source).not.toHaveBeenCalled();
+    fireEvent.click(within(tabs).getByRole('tab', { name: /^Validation/ }));
+    const input = await screen.findByLabelText('Learning', { exact: true });
+    fireEvent.change(input, { target: { value: 'Keep this draft while inspecting details' } });
+    fireEvent.click(within(tabs).getByRole('tab', { name: /^Details$/ }));
+    fireEvent.click(within(tabs).getByRole('tab', { name: /^Validation/ }));
+    expect(screen.getByLabelText('Learning', { exact: true })).toHaveValue('Keep this draft while inspecting details');
+    expect(learningCaptureApi.source.mock.calls[0].slice(0, 2)).toEqual(['board-1', selected.id]);
+    expect(learningCaptureApi.source).toHaveBeenCalledTimes(1);
+  });
 
   it.each(['normal', 'bug', 'test'] as const)('applies the Done Spec content restriction only to %s normal work', async (cardType) => {
     const selected = cardForType(cardType);

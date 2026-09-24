@@ -22,6 +22,7 @@ import {
 import type { Card, CardStatus, CardPriority, Comment, TestScenario, TestScenarioEvidence, BugSeverity, Spec, BugRegressionScenarioPreview, BugWorkflowRemediationMessage, AmendmentRevisionListResponse, ValidationEntry, ImpactEvidence, ProjectStructureProjectionResponse } from '@/types';
 import { CARD_STATUSES, STATUS_LABELS, PRIORITY_LABELS, CARD_PRIORITIES, BUG_SEVERITY_LABELS } from '@/types';
 import { PathBRemediationPanel } from '@/components/kanban/PathBRemediationPanel';
+import { LearningCapturePanel } from '@/components/kanban/LearningCapturePanel';
 import {
   ImpactEvidenceEditor,
 } from '@/components/cards/ImpactEvidenceEditor';
@@ -2373,6 +2374,7 @@ export function CardModal({
                   idBase={`${tabIdBase}-card-${card.id}`}
                   tabId="validation"
                   value={activeTab}
+                  mount="lazy-keep"
                 >
                   <div className="space-y-4">
                     <AccessibleTabList
@@ -2413,8 +2415,12 @@ export function CardModal({
                         idBase={`${tabIdBase}-card-${card.id}-validation`}
                         tabId="execution-report"
                         value={validationTab}
+                        mount="lazy-keep"
                       >
                         <ExecutionReportsPanel card={card} />
+                        {card.card_type === 'bug' && card.id === selectedCardId && card.board_id === boardId && (
+                          <LearningCapturePanel boardId={boardId} bugId={card.id} />
+                        )}
                       </AccessibleTabPanel>
                     )}
 
