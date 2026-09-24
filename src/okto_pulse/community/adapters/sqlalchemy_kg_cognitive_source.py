@@ -2,7 +2,7 @@
 
 ``kg_cognitive_sources`` is the immutable revision-zero compatibility table.
 Later full snapshots are appended to ``kg_cognitive_source_revisions``.  The
-adapter keeps the relational write outside the Ladybug writer scope and uses
+adapter keeps the relational write outside the Grafx writer scope and uses
 one short transaction for the complete batch.
 """
 
@@ -13,7 +13,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from sqlalchemy import select, text, tuple_
+from sqlalchemy import false, select, text, tuple_, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
@@ -28,6 +28,7 @@ from okto_pulse.core.ports.kg_cognitive_source import (
     canonical_cognitive_source_fingerprint,
     decide_cognitive_source_append,
     latest_cognitive_source_records,
+    require_cognitive_source_head,
 )
 
 logger = logging.getLogger("okto_pulse.community.kg_cognitive_source")
@@ -233,19 +234,19 @@ def _new_revision_row(
 async def _load_base_rows(
     session: Any,
     keys: tuple[SemanticKey, ...],
+    *, for_update: bool = False,
 ) -> dict[SemanticKey, KGCognitiveSource]:
     if not keys:
         return {}
-    rows = (
-        await session.execute(
-            select(KGCognitiveSource).where(
+    statement = select(KGCognitiveSource).where(
                 tuple_(
                     KGCognitiveSource.node_id,
                     KGCognitiveSource.generation,
                 ).in_(keys)
-            )
-        )
-    ).scalars().all()
+            ).order_by(KGCognitiveSource.node_id, KGCognitiveSource.generation)
+    if for_update:
+        statement = statement.with_for_update()
+    rows = (await session.execute(statement)).scalars().all()
     return {_row_key(row): row for row in rows}
 
 
@@ -338,7 +339,7 @@ class CommunitySqlAlchemyCognitiveSourceStore:
         # yet installed the additive revision ledger.
         await session.execute(select(KGCognitiveSourceRevision.id).limit(1))
 
-        bases = await _load_base_rows(session, semantic_keys)
+        bases = await _load_base_rows(session, semantic_keys, for_update=True)
         seed_by_key: dict[SemanticKey, CognitiveSourceRecord] = {}
         for record in records:
             seed_by_key.setdefault(_record_key(record), record)
@@ -426,6 +427,42 @@ class CommunitySqlAlchemyCognitiveSourceStore:
 
         await session.flush()
         return tuple(resolved_ids)
+
+    async def append_many_if_current_in_context(
+        self, context: object, records: tuple[CognitiveSourceRecord, ...], *,
+        expected_fingerprints: tuple[str | None, ...],
+    ) -> tuple[str, ...]:
+        """Serialize head comparison with append, within the caller's UOW."""
+        if (type(records) is not tuple or type(expected_fingerprints) is not tuple
+                or len(records) != len(expected_fingerprints)
+                or len({_record_key(record) for record in records}) != len(records)):
+            raise ValueError('cognitive_source_precondition_batch_invalid')
+        if not records:
+            return ()
+        try:
+            dialect = str(context.get_bind().dialect.name)
+            if dialect == 'sqlite':
+                # Acquire the writer slot even when the caller has already
+                # started a deferred/read transaction. Unlike BEGIN IMMEDIATE,
+                # this never nests a transaction; the false predicate changes
+                # no immutable row and fires no row-level update trigger.
+                await context.execute(update(KGCognitiveSource).where(false()).values(id=KGCognitiveSource.id))
+            bases = await _load_base_rows(context, tuple(_record_key(record) for record in records), for_update=True)
+            histories = {key: [_base_record(base)] for key, base in bases.items()}
+            by_id = {str(base.id): base for base in bases.values()}
+            for row in await _load_revision_rows(context, tuple(by_id)):
+                base = by_id[str(row.cognitive_source_id)]
+                histories[_row_key(base)].append(_revision_record(base, row))
+            # Verify the entire batch before staging any source row.
+            for record, expected in zip(records, expected_fingerprints, strict=True):
+                require_cognitive_source_head(record, expected_fingerprint=expected,
+                    history=tuple(histories.get(_record_key(record), ())))
+            return await self.append_many_in_context(context, records)
+        except CognitiveSourceError:
+            raise
+        except SQLAlchemyError as exc:
+            raise CognitiveSourceError('cognitive_source_conditional_write_failed',
+                board_id=records[0].board_id, node_id=records[0].node_id) from exc
 
     async def append_many_in_context(
         self,

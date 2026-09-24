@@ -25,6 +25,7 @@ from okto_pulse.core.ports.kg_cognitive_source import (
     CognitiveSourceError,
     CognitiveSourceRecord,
     CognitiveSourceStore,
+    ConditionalCognitiveSourceWriter,
     latest_cognitive_source_records,
 )
 
@@ -78,6 +79,103 @@ async def store(tmp_path):
 async def test_adapter_satisfies_port_protocol(store):
     adapter, _ = store
     assert isinstance(adapter, CognitiveSourceStore)
+    assert isinstance(adapter, ConditionalCognitiveSourceWriter)
+
+
+async def test_conditional_append_compares_current_head_and_preserves_caller_transaction(store):
+    adapter, factory = store
+    first = _record('learning_cas')
+    async with factory() as session:
+        ids = await adapter.append_many_if_current_in_context(session, (first,), expected_fingerprints=(None,))
+        assert len(ids) == 1
+        await session.commit()
+    changed = replace(first, payload={**first.payload, 'content': 'Revised applicability'}, record_fingerprint='')
+    async with factory() as session:
+        await adapter.append_many_if_current_in_context(session, (changed,),
+            expected_fingerprints=(first.record_fingerprint,))
+        await session.commit()
+    before = await adapter.enumerate(BOARD)
+    async with factory() as session:
+        with pytest.raises(CognitiveSourceConflict, match='cognitive_source_head_changed'):
+            await adapter.append_many_if_current_in_context(session,
+                (replace(changed, payload={**changed.payload, 'content': 'stale write'}, record_fingerprint=''),),
+                expected_fingerprints=(first.record_fingerprint,))
+        await session.rollback()
+    assert await adapter.enumerate(BOARD) == before
+
+    async with factory() as session:
+        await adapter.append_many_if_current_in_context(session,
+            (replace(changed, payload={**changed.payload, 'content': 'rolled back'}, record_fingerprint=''),),
+            expected_fingerprints=(changed.record_fingerprint,))
+        await session.rollback()
+    assert await adapter.enumerate(BOARD) == before
+
+
+async def test_conditional_batch_refuses_stale_member_before_creating_any_source(store):
+    adapter, factory = store
+    first = _record('learning_batch_old')
+    await adapter.append(first)
+    current = _record('learning_batch_old', title='Current')
+    await adapter.append(current)
+    before = await adapter.enumerate(BOARD)
+    async with factory() as session:
+        with pytest.raises(CognitiveSourceConflict, match='cognitive_source_head_changed'):
+            await adapter.append_many_if_current_in_context(session,
+                (_record('learning_batch_new'), _record('learning_batch_old', title='Rejected')),
+                expected_fingerprints=(None, first.record_fingerprint))
+        # Even an outer commit cannot publish the earlier member of this
+        # rejected batch: all preconditions precede source staging.
+        await session.commit()
+    assert await adapter.enumerate(BOARD) == before
+
+
+async def test_conditional_replay_accepts_current_but_never_resurrects_historical_payload(store):
+    adapter, factory = store
+    old = _record('learning_replay')
+    current = _record('learning_replay', title='Current')
+    await adapter.append(old)
+    current_id = await adapter.append(current)
+    before = await adapter.enumerate(BOARD)
+    async with factory() as session:
+        assert await adapter.append_many_if_current_in_context(session, (current,),
+            expected_fingerprints=(current.record_fingerprint,)) == (current_id,)
+        await session.commit()
+    async with factory() as session:
+        with pytest.raises(CognitiveSourceConflict, match='cognitive_source_non_head_replay'):
+            await adapter.append_many_if_current_in_context(session, (old,),
+                expected_fingerprints=(current.record_fingerprint,))
+        await session.rollback()
+    assert await adapter.enumerate(BOARD) == before
+
+
+async def test_conditional_writers_race_from_same_head_has_exactly_one_winner(store):
+    import asyncio
+    adapter, factory = store
+    first = _record('learning_race')
+    await adapter.append(first)
+    ready = asyncio.Event()
+    arrivals = 0
+    async def writer(title):
+        nonlocal arrivals
+        async with factory() as session:
+            arrivals += 1
+            if arrivals == 2:
+                ready.set()
+            await ready.wait()
+            try:
+                await adapter.append_many_if_current_in_context(session,
+                    (_record('learning_race', title=title),),
+                    expected_fingerprints=(first.record_fingerprint,))
+                await session.commit()
+                return 'committed'
+            except CognitiveSourceConflict as exc:
+                await session.rollback()
+                return exc.failure_reason
+    outcomes = await asyncio.wait_for(asyncio.gather(writer('First'), writer('Second')), timeout=20)
+    assert sorted(outcomes) == ['cognitive_source_head_changed', 'committed']
+    durable = await adapter.enumerate(BOARD)
+    assert len(durable) == 2
+    assert latest_cognitive_source_records(durable)[0].payload['title'] in {'First', 'Second'}
 
 
 async def test_append_persists_full_record(store):
