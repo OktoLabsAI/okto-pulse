@@ -1466,15 +1466,6 @@ async def list_audit(
     return {"entries": result.entries, "next_cursor": None}
 
 
-@router.post("/boards/{board_id}/audit/{session_id}/undo")
-async def undo_session(
-    board_id: str,
-    session_id: str,
-    force: bool = False,
-    _actor: ActorContext = Depends(require_kg_board_writer_actor),
-):
-    """Undo a consolidation session."""
-    return _problem(501, "Not Implemented", "Undo will be available in governance sprint")
 
 
 @router.get("/boards/{board_id}/audit/export")

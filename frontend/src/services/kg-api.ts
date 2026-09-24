@@ -130,13 +130,6 @@ export async function listAudit(boardId: string, limit = 50) {
   );
 }
 
-export async function undoSession(boardId: string, sessionId: string, force = false) {
-  return kgFetch<Record<string, unknown>>(`/boards/${boardId}/audit/${sessionId}/undo`, {
-    method: 'POST',
-    body: JSON.stringify({ force }),
-  });
-}
-
 // Similar nodes
 export async function findSimilar(boardId: string, topic: string, topK = 10) {
   return kgFetch<{

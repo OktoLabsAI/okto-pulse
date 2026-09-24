@@ -88,7 +88,6 @@ from okto_pulse.core.ports.kg_events import HISTORICAL_PROGRESS_SETTINGS_KEY
 from okto_pulse.core.ports.kg_governance import (
     BoardErasureJobFact,
     BoostAuditRecord,
-    GovernanceUndoFact,
 )
 
 
@@ -183,59 +182,7 @@ class CommunitySqlAlchemyKGGovernanceStore:
 
 
 
-    async def get_undo_fact(
-        self, context: Any, *, board_id: str, session_id: str
-    ) -> GovernanceUndoFact | None:
-        audit = (
-            (
-                await context.execute(
-                    select(ConsolidationAudit).where(
-                        ConsolidationAudit.session_id == session_id,
-                        ConsolidationAudit.board_id == board_id,
-                    )
-                )
-            )
-            .scalars()
-            .first()
-        )
-        if audit is None:
-            return None
-        refs = (
-            (
-                await context.execute(
-                    select(KuzuNodeRef).where(KuzuNodeRef.session_id == session_id)
-                )
-            )
-            .scalars()
-            .all()
-        )
-        node_ids = tuple(str(row.kuzu_node_id) for row in refs)
-        blockers: tuple[str, ...] = ()
-        if node_ids:
-            rows = (
-                (
-                    await context.execute(
-                        select(KuzuNodeRef.session_id).where(
-                            KuzuNodeRef.kuzu_node_id.in_(node_ids),
-                            KuzuNodeRef.session_id != session_id,
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            blockers = tuple(sorted({str(value) for value in rows}))
-        return GovernanceUndoFact(
-            session_id, str(audit.undo_status), node_ids, blockers
-        )
 
-    async def mark_session_undone(
-        self, context: Any, *, session_id: str, undone_at
-    ) -> None:
-        row = await context.get(ConsolidationAudit, session_id)
-        if row is not None:
-            row.undo_status = "undone"
-            row.undone_at = undone_at
 
     async def purge_expired_audit(self, context: Any, *, board_id: str, cutoff) -> int:
         result = await context.execute(

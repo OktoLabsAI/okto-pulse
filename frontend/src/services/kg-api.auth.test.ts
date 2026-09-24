@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { initAuthFetch } from '@/lib/authFetch';
 import { getNodeSource } from '@/services/kg-api';
+import * as kgApi from '@/services/kg-api';
 
 describe('KG API authenticated transport', () => {
   const fetchMock = vi.fn();
@@ -14,6 +15,12 @@ describe('KG API authenticated transport', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it('does not export the retired manual undo client and keeps audit reads', () => {
+    expect('undoSession' in kgApi).toBe(false);
+    expect(typeof kgApi.listAudit).toBe('function');
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('uses the configured authenticated client for node source resolution', async () => {
