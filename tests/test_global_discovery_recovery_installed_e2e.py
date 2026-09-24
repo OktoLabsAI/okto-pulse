@@ -1083,9 +1083,9 @@ def inspect(binding):
 
 board_tables = inspect(board)
 global_tables = inspect(global_route)
-assert PULSE_GRAFX_SCHEMA_MANIFEST.schema_version == "0.6.0"
+assert PULSE_GRAFX_SCHEMA_MANIFEST.schema_version == "0.7.0"
 assert board_tables == sorted(table.name for table in PULSE_GRAFX_SCHEMA_MANIFEST.tables)
-assert len(board_tables) == 92, board_tables
+assert len(board_tables) == 94, board_tables
 assert {"BoardMeta", "Entity", "Decision"} <= set(board_tables)
 assert {"violates__Bug__Requirement", "violates__Bug__Criterion"} <= set(board_tables)
 assert len(global_tables) == 11, global_tables
@@ -1136,7 +1136,7 @@ print(json.dumps({
     assert report["backends"] == {"board": "grafx", "global": "grafx"}
     assert report["grafx_version"] == EXPECTED_GRAFX_VERSION
     assert report["grafx_direct_url"] == grafx_wheel.as_uri()
-    assert report["board_table_count"] == 92
+    assert report["board_table_count"] == 94
     assert report["global_table_count"] == 11
     assert _sha256(core_wheel) == core_wheel_sha256
     assert _sha256(community_wheel) == community_wheel_sha256

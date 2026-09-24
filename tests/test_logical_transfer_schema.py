@@ -30,7 +30,7 @@ class TestBoardScope:
     def test_the_derived_schema_matches_its_frozen_census(self) -> None:
         schema = board_logical_schema()
         assert len(schema.node_types) == BOARD_CENSUS.node_types == 12
-        assert len(schema.relation_layouts) == BOARD_CENSUS.relation_layouts == 80
+        assert len(schema.relation_layouts) == BOARD_CENSUS.relation_layouts == 82
         assert len(schema.vector_spaces) == BOARD_CENSUS.vector_spaces == 11
 
     def test_board_meta_is_carried_with_its_own_key(self) -> None:
@@ -58,7 +58,7 @@ class TestBoardScope:
     def test_one_layout_name_spans_several_endpoint_pairs(self) -> None:
         layouts = board_logical_schema().relation_layouts
         names = {layout.name for layout in layouts}
-        assert len(layouts) == 80
+        assert len(layouts) == 82
         assert len(names) == 16
         supersedes = {
             layout.identity for layout in layouts if layout.name == "supersedes"

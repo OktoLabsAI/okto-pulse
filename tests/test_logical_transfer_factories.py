@@ -71,7 +71,7 @@ class TestTheScopeContract:
         contract = logical_transfer_scope(SCOPE_BOARD)
 
         assert contract.schema == board_logical_schema()
-        assert len(contract.relationship_tables) == BOARD_RELATIONSHIP_TABLES == 80
+        assert len(contract.relationship_tables) == BOARD_RELATIONSHIP_TABLES == 82
         # Exactly the layout authority's own manifest, not a re-derivation.
         assert contract.relationship_tables == {
             (entry.logical_type, entry.from_type, entry.to_type): entry.physical_table
@@ -125,14 +125,14 @@ class TestDriftIsRefused:
         with pytest.raises(LogicalSchemaError) as caught:
             logical_transfer_scope(SCOPE_BOARD)
         assert "frozen census" in str(caught.value)
-        assert "79 tables, expected 80" in str(caught.value)
+        assert "81 tables, expected 82" in str(caught.value)
 
     def test_an_extra_layout_is_refused(self, monkeypatch) -> None:
         entries = PULSE_RELATIONSHIP_LAYOUT.entries
         self._patched(monkeypatch, (*entries, _stowaway()))
         with pytest.raises(LogicalSchemaError) as caught:
             logical_transfer_scope(SCOPE_BOARD)
-        assert "81 tables, expected 80" in str(caught.value)
+        assert "83 tables, expected 82" in str(caught.value)
 
     def test_a_swapped_layout_keeps_the_count_and_is_still_refused(
         self, monkeypatch

@@ -6,7 +6,7 @@ import hashlib
 from .joint_recovery_snapshot import verify_joint_recovery_snapshot
 from .relational_recovery_snapshot import _deadline, _check_time
 from .retirement_historical_graph_census import read_graph_record_census
-from .retirement_schema_evolution import evolution_snapshot_source, schema_evolution_receipt
+from .retirement_schema_evolution import evolution_snapshot_source, schema_evolution_receipt, evolution_target_version
 from .sprint_retirement_archive import _encode
 
 
@@ -33,7 +33,8 @@ def read_retirement_schema_baseline(snapshot, original, original_digest, evoluti
         if len(matches) != 1 or ('board', board) not in graphs:
             raise ValueError('retirement_schema_evolution_scope_invalid')
         index, graph = matches[0]
-        reader = evolution_snapshot_source(snapshot, graph, deadline=deadline).open_snapshot()
+        target_version = evolution_target_version(receipt)
+        reader = evolution_snapshot_source(snapshot, graph, deadline=deadline, target_version=target_version).open_snapshot()
         try:
             measured, records = read_graph_record_census(reader, deadline=deadline, budget=budget,
                 node_observer=(lambda schema, node: node_observer('board', board, schema, node))
@@ -41,7 +42,7 @@ def read_retirement_schema_baseline(snapshot, original, original_digest, evoluti
         finally:
             reader.close()
         expected = schema_evolution_receipt(snapshot, manifest, index, scope='board', counts=asdict(measured.counts()),
-            fingerprint=measured.digest(), schema_digest=measured.schema_hex)
+            fingerprint=measured.digest(), schema_digest=measured.schema_hex, target_version=target_version)
         if _encode(expected) != _encode(receipt):
             raise ValueError('retirement_schema_evolution_receipt_changed')
         verified.append(expected)

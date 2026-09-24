@@ -21,7 +21,7 @@ from sqlalchemy import create_engine
 
 from . import retirement_offline_run as offline
 from .graph_backend_binding import CommunityGraphBackendBindingStore
-from .grafx_recovery_contracts import predecessor_recovery_contract
+from .grafx_recovery_contracts import predecessor_recovery_contract, v060_recovery_contract
 from .joint_recovery_snapshot import (
     JointRecoverySnapshot, RecoveryBuildPair, _explicit_path, _staged_joint_recovery_restore,
     _verify_native_logical, joint_recovery_lifecycle_window, verify_joint_recovery_snapshot,
@@ -32,7 +32,7 @@ from .recovery_graph_inventory import read_recovery_graph_inventory
 from .relational_recovery_snapshot import _readonly, _deadline, _check_time
 from .retirement_bootstrap import _snapshot
 from .retirement_historical_graph_census import read_retirement_historical_graph_census
-from .retirement_schema_evolution import build_retirement_v060_graph
+from .retirement_schema_evolution import build_retirement_v070_graph
 from .retirement_projection_inputs import (
     RetirementProjectionInputs, projection_destination, read_retirement_projection_inputs,
     revalidate_retirement_projection_inputs,
@@ -327,11 +327,13 @@ async def _restore_retirement_graph_candidate(runtime, storage, graphs, run, see
                             path.parent.mkdir(parents=True, exist_ok=True)
                             restored = stage / f'graph-{index:04d}'
                             evolve = (projection_settings is not None and graph['scope'] == 'board'
-                                and graph['certificate']['schema_digest'] == schema_digest(predecessor_recovery_contract().schema))
+                                and graph['certificate']['schema_digest'] in {
+                                    schema_digest(predecessor_recovery_contract().schema),
+                                    schema_digest(v060_recovery_contract().schema)})
                             if evolve:
                                 # Keep the authenticated native predecessor unbound.
                                 # Its complete bytes remain in the candidate checkpoint.
-                                schema_evolutions.append(build_retirement_v060_graph(snapshot, path,
+                                schema_evolutions.append(build_retirement_v070_graph(snapshot, path,
                                     board_id=graph['board_id'], builds=migration_builds, max_seconds=max_seconds))
                                 page_size = 8192  # Explicit geometry of the fresh logical sink.
                             else:

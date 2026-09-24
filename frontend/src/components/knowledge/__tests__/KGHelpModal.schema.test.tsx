@@ -8,9 +8,9 @@ vi.mock('@/hooks/useEscapeToClose', () => ({ useEscapeToClose: vi.fn() }));
 describe('KGHelpModal schema contract', () => {
   afterEach(cleanup);
 
-  it('shows the coordinated 0.6.0 graph schema version', () => {
+  it('shows the coordinated 0.7.0 graph schema version', () => {
     render(<KGHelpModal onClose={vi.fn()} />);
-    expect(screen.getByText('Schema version: 0.6.0')).toBeInTheDocument();
+    expect(screen.getByText('Schema version: 0.7.0')).toBeInTheDocument();
   });
 
   it.each(['overview', 'consolidation-process', 'how-to-explore'])(

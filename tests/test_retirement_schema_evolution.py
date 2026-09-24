@@ -14,25 +14,27 @@ from okto_pulse.community.adapters import grafx_recovery_contracts as contracts
 from okto_pulse.community.adapters import retirement_schema_evolution as evolution
 from okto_pulse.community.adapters.retirement_historical_graph_census import read_retirement_historical_graph_census
 from okto_pulse.community.adapters.retirement_schema_baseline import read_retirement_schema_baseline
-from okto_pulse.community.adapters.logical_transfer_factories import make_grafx_logical_source
+from okto_pulse.community.adapters.grafx_recovery_contracts import make_grafx_recovery_logical_source
 from logical_transfer_matrix_support import Corpus, MaterializedSource, complete_relation
 import test_joint_recovery_snapshot as recovery
 from test_joint_recovery_native_history import capture, history
 
 
 @pytest.fixture
-def sources(tmp_path, monkeypatch):
+def sources(tmp_path, monkeypatch, request):
     original_corpus, original_seed = recovery.one_node_corpus, recovery.seed_generation
+    source_version = getattr(request, 'param', '0.5.0')
 
     def corpus(scope):
         sample = original_corpus(scope)
         if scope != 'board':
             return sample
-        schema = contracts.predecessor_recovery_contract().schema
+        schema = (contracts.predecessor_recovery_contract() if source_version == '0.5.0'
+            else contracts.v060_recovery_contract()).schema
         original = sample.nodes[0]
         node = replace(original, properties={name: value for name, value in original.properties.items()
             if name in schema.node_type(original.type_name).property_names()})
-        metadata = LogicalNode('BoardMeta', 'board-one', {'board_id': 'board-one', 'schema_version': '0.5.0',
+        metadata = LogicalNode('BoardMeta', 'board-one', {'board_id': 'board-one', 'schema_version': source_version,
             'bootstrapped_at': LogicalTimestamp(0), 'embedding_model': 'retained-fixture', 'embedding_dimension': 384})
         relation = complete_relation(schema, schema.relation_layout('supersedes', 'Decision', 'Decision'),
             node.key, node.key, 7)
@@ -43,7 +45,7 @@ def sources(tmp_path, monkeypatch):
             return original_seed(backend, path, value)
         # The shared recovery fixture deliberately retains just its first domain
         # node when assigning retired provenance. Evolution also needs BoardMeta.
-        metadata = LogicalNode('BoardMeta', 'board-one', {'board_id': 'board-one', 'schema_version': '0.5.0',
+        metadata = LogicalNode('BoardMeta', 'board-one', {'board_id': 'board-one', 'schema_version': source_version,
             'bootstrapped_at': LogicalTimestamp(0), 'embedding_model': 'retained-fixture', 'embedding_dimension': 384})
         value = replace(value, nodes=(*value.nodes, metadata))
         sink = contracts.make_grafx_recovery_logical_sink(path, scope='board', expected_schema_digest=schema_digest(value.schema))
@@ -55,6 +57,36 @@ def sources(tmp_path, monkeypatch):
 
 
 stored_sources = recovery.stored_sources
+
+
+@pytest.mark.parametrize('sources', ['0.5.0', '0.6.0'], indirect=True)
+@pytest.mark.timeout(180)
+def test_v070_candidate_preserves_sources_and_revalidates_exact_versioned_receipt(stored_sources, tmp_path):
+    graph = stored_sources[0][1][0].database
+    source_version = graph.execute('MATCH (m:BoardMeta) RETURN m.schema_version').rows[0][0]
+    snapshot = capture(stored_sources)
+    target = tmp_path / 'v070'
+    receipt = evolution.build_retirement_v070_graph(snapshot, target, board_id='board-one', builds=recovery.BUILDS)
+    assert receipt['format'] == 'retirement-schema-evolution/v3'
+    assert receipt['source_version'] == source_version
+    assert receipt['target_version'] == '0.7.0'
+    assert receipt['runtime_admission'] == 'not_authorized'
+    assert receipt['introduced_relation_layouts'] == (13 if source_version == '0.5.0' else 2)
+    assert receipt['introduced_properties'] == (sorted(evolution._INTRODUCED) if source_version == '0.5.0' else [])
+    assert receipt['after']['counts']['relations'] == receipt['before']['counts']['relations'] == 2
+    assert graph.execute('MATCH (m:BoardMeta) RETURN m.schema_version').rows == ((source_version,),)
+    census, digest = read_retirement_historical_graph_census(snapshot)
+    baseline, _ = read_retirement_schema_baseline(snapshot, census, digest, (receipt,))
+    assert baseline['schema_evolutions'] == [receipt]
+    with pytest.raises(ValueError, match='version_invalid'):
+        read_retirement_schema_baseline(snapshot, census, digest, ({**receipt, 'target_version': '0.8.0'},))
+    with connect(target, page_size=8192, read_only=True) as candidate:
+        assert candidate.identity.database_uuid != graph.identity.database_uuid
+        assert candidate.execute('MATCH (m:BoardMeta) RETURN m.schema_version').rows == (('0.7.0',),)
+        contract = contracts.grafx_recovery_contract(candidate, scope='board')
+        assert len(contract.schema.relation_layouts) == 82
+        assert contract.schema.relation_layout('derives_from', 'Requirement', 'Constraint')
+        assert contract.schema.relation_layout('derives_from', 'Constraint', 'Constraint')
 
 
 @pytest.mark.timeout(180)
@@ -91,7 +123,7 @@ def test_additive_candidate_keeps_all_old_values_parallel_edges_and_native_backu
         before_reader.close()
     with connect(target, page_size=8192, read_only=True) as candidate:
         assert candidate.identity.database_uuid != graph.identity.database_uuid
-        after_reader = make_grafx_logical_source(candidate, scope='board').open_snapshot()
+        after_reader = make_grafx_recovery_logical_source(candidate, scope='board').open_snapshot()
         try:
             for batch in after_reader.iter_nodes(batch_size=50):
                 for node in batch:

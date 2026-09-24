@@ -1,4 +1,4 @@
-"""Build an unbound 0.6.0 graph from an authenticated 0.5.0 recovery snapshot.
+"""Build unbound graphs using exact, versioned, additive recovery contracts.
 
 Only the frozen additive schema delta is applied. Native history remains in the
 authenticated predecessor backup; logical import does not claim its UUID/cursors.
@@ -13,22 +13,26 @@ from okto_pulse.core.kg.logical_transfer import (
     schema_digest, transfer_logical_graph,
 )
 
-from .grafx_recovery_contracts import predecessor_recovery_contract
+from .grafx_recovery_contracts import (
+    predecessor_recovery_contract, v060_recovery_contract, make_grafx_recovery_logical_sink,
+)
 from .grafx_schema_manifest import PULSE_GRAFX_SCHEMA_MANIFEST
+from .grafx_schema_v060 import V060_MANIFEST
 from .joint_recovery_snapshot import RecoveryBuildPair, verify_joint_recovery_snapshot
 from .logical_graph_transfer import LogicalGraphFileSnapshotSource
-from .logical_transfer_factories import logical_transfer_scope, make_grafx_logical_sink
+from .logical_transfer_factories import logical_transfer_scope
 from .relational_recovery_snapshot import _check_time, _deadline, _digest
 
 _TARGET_FINGERPRINT = '3ab6faf0fd8a7fe3694ed7ddd336faa97a6b4af4a1626aafe20c75b0922b2bbe'
+_V070_FINGERPRINT = '099a8da29e07ccd0002a2000a5c5135d439e83cb15d4a84c8e2a71c001340a32'
 _INTRODUCED = frozenset({'severity', 'source_status', 'source_created_at', 'source_updated_at', 'resolved_at'})
 
 
 def _schemas():
     previous = predecessor_recovery_contract().schema
-    current = logical_transfer_scope('board').schema
-    if (PULSE_GRAFX_SCHEMA_MANIFEST.schema_version != '0.6.0'
-            or PULSE_GRAFX_SCHEMA_MANIFEST.logical_fingerprint != _TARGET_FINGERPRINT):
+    current = v060_recovery_contract().schema
+    if (V060_MANIFEST.schema_version != '0.6.0'
+            or V060_MANIFEST.logical_fingerprint != _TARGET_FINGERPRINT):
         raise LogicalSchemaError('retirement schema target contract changed')
     if previous.vector_spaces != current.vector_spaces or {node.name for node in previous.node_types} != {node.name for node in current.node_types}:
         raise LogicalSchemaError('retirement schema nonadditive node or vector delta')
@@ -47,8 +51,46 @@ def _schemas():
     return previous, current
 
 
+def _contract(source_digest, target_version):
+    previous, v060 = _schemas()
+    if target_version == '0.6.0':
+        if source_digest != schema_digest(previous):
+            raise ValueError('retirement_schema_predecessor_required')
+        return previous, v060, '0.5.0', _INTRODUCED, 11
+    if target_version != '0.7.0':
+        raise ValueError('retirement_schema_evolution_version_invalid')
+    if (PULSE_GRAFX_SCHEMA_MANIFEST.schema_version != '0.7.0'
+            or PULSE_GRAFX_SCHEMA_MANIFEST.logical_fingerprint != _V070_FINGERPRINT):
+        raise LogicalSchemaError('retirement schema target contract changed')
+    current = logical_transfer_scope('board').schema
+    if current.node_types != v060.node_types or current.vector_spaces != v060.vector_spaces:
+        raise LogicalSchemaError('retirement schema unexpected node or vector delta')
+    old = {layout.identity: layout for layout in v060.relation_layouts}
+    new = {layout.identity: layout for layout in current.relation_layouts}
+    if (any(new.get(key) != value for key, value in old.items())
+            or new.keys() - old.keys() != {
+                ('derives_from', 'Constraint', 'Constraint'),
+                ('derives_from', 'Requirement', 'Constraint')}):
+        raise LogicalSchemaError('retirement schema unexpected relation delta')
+    if source_digest == schema_digest(previous):
+        return previous, current, '0.5.0', _INTRODUCED, 13
+    if source_digest == schema_digest(v060):
+        return v060, current, '0.6.0', frozenset(), 2
+    raise ValueError('retirement_schema_predecessor_required')
+
+
+def evolution_target_version(receipt):
+    if receipt.get('format') == 'retirement-schema-evolution/v2':
+        return '0.6.0'
+    if (receipt.get('format') == 'retirement-schema-evolution/v3'
+            and receipt.get('target_version') == '0.7.0'):
+        return '0.7.0'
+    raise ValueError('retirement_schema_evolution_version_invalid')
+
+
 class _EvolutionSnapshot:
-    def __init__(self, source, *, previous, current, board_id, certificate, source_path, source_sha256, deadline):
+    def __init__(self, source, *, previous, current, board_id, certificate, source_path, source_sha256, deadline,
+                 source_version, target_version, introduced):
         self.source, self.current = source, current
         self.board_id, self.certificate = board_id, certificate
         self.source_path, self.source_sha256, self.deadline = source_path, source_sha256, deadline
@@ -56,6 +98,7 @@ class _EvolutionSnapshot:
             raise LogicalSchemaError('retirement schema predecessor artifact changed')
         self.measured = LogicalFingerprintAccumulator.for_schema(previous)
         self.metadata_count = 0
+        self.source_version, self.target_version, self.introduced = source_version, target_version, introduced
 
     def schema(self):
         return self.current
@@ -64,7 +107,7 @@ class _EvolutionSnapshot:
         old = self.source.counts()
         if old.nodes < 1:
             raise LogicalSchemaError('retirement schema board metadata missing')
-        return replace(old, properties=old.properties + len(_INTRODUCED) * (old.nodes - 1))
+        return replace(old, properties=old.properties + len(self.introduced) * (old.nodes - 1))
 
     def iter_nodes(self, *, batch_size):
         for batch in self.source.iter_nodes(batch_size=batch_size):
@@ -75,11 +118,11 @@ class _EvolutionSnapshot:
                 if node.type_name == 'BoardMeta':
                     self.metadata_count += 1
                     if (self.metadata_count != 1 or node.key != self.board_id
-                            or node.properties.get('schema_version') != '0.5.0'):
+                            or node.properties.get('schema_version') != self.source_version):
                         raise LogicalSchemaError('retirement schema board metadata ambiguous')
-                    properties = {**node.properties, 'schema_version': '0.6.0'}
+                    properties = {**node.properties, 'schema_version': self.target_version}
                 else:
-                    properties = {**node.properties, **{name: LOGICAL_NULL for name in _INTRODUCED}}
+                    properties = {**node.properties, **{name: LOGICAL_NULL for name in self.introduced}}
                 transformed.append(replace(node, properties=properties))
             yield tuple(transformed)
         if self.metadata_count != 1:
@@ -115,27 +158,40 @@ class _EvolutionSource:
             raise
 
 
-def evolution_snapshot_source(snapshot, graph, *, deadline):
+def evolution_snapshot_source(snapshot, graph, *, deadline, target_version='0.6.0'):
     """Read the exact expected baseline; caller authenticates the joint manifest."""
-    previous, current = _schemas()
-    if graph['certificate']['schema_digest'] != schema_digest(previous):
-        raise ValueError('retirement_schema_predecessor_required')
+    previous, current, source_version, introduced, _ = _contract(graph['certificate']['schema_digest'], target_version)
     return _EvolutionSource(snapshot.directory / graph['file'], previous=previous, current=current,
-        board_id=graph['board_id'], certificate=graph['certificate'], source_sha256=graph['sha256'], deadline=deadline)
+        board_id=graph['board_id'], certificate=graph['certificate'], source_sha256=graph['sha256'], deadline=deadline,
+        source_version=source_version, target_version=target_version, introduced=introduced)
 
 
-def schema_evolution_receipt(snapshot, manifest, index, *, scope, counts, fingerprint, schema_digest):
+def schema_evolution_receipt(snapshot, manifest, index, *, scope, counts, fingerprint, schema_digest,
+                             target_version='0.6.0'):
     graph = manifest['graphs'][index]
-    return {'format': 'retirement-schema-evolution/v2', 'state': 'evolved_not_reconciled',
+    _, _, source_version, introduced, layouts = _contract(graph['certificate']['schema_digest'], target_version)
+    version = ({'format': 'retirement-schema-evolution/v2'} if target_version == '0.6.0' else
+        {'format': 'retirement-schema-evolution/v3', 'source_version': source_version, 'target_version': target_version})
+    return {**version, 'state': 'evolved_not_reconciled',
         'board_id': graph['board_id'], 'snapshot_sha256': snapshot.manifest_sha256, 'builds': manifest['builds'],
         'source_database_uuid': graph['database_uuid'], 'native_history': manifest['native_graphs'][index],
         'before': graph['certificate'], 'after': {'scope': scope, 'counts': counts,
             'fingerprint': fingerprint, 'schema_digest': schema_digest},
-        'introduced_properties': sorted(_INTRODUCED), 'introduced_relation_layouts': 11,
+        'introduced_properties': sorted(introduced), 'introduced_relation_layouts': layouts,
         'history_access': 'retained_predecessor_native_backup', 'runtime_admission': 'not_authorized'}
 
 
 def build_retirement_v060_graph(snapshot, target, *, board_id, builds, max_seconds=180, batch_size=500):
+    return _build(snapshot, target, board_id=board_id, builds=builds,
+        max_seconds=max_seconds, batch_size=batch_size, target_version='0.6.0')
+
+
+def build_retirement_v070_graph(snapshot, target, *, board_id, builds, max_seconds=180, batch_size=500):
+    return _build(snapshot, target, board_id=board_id, builds=builds,
+        max_seconds=max_seconds, batch_size=batch_size, target_version='0.7.0')
+
+
+def _build(snapshot, target, *, board_id, builds, max_seconds, batch_size, target_version):
     """Apply only the frozen schema delta; caller owns offline publication fences."""
     deadline = _deadline(max_seconds)
     manifest = verify_joint_recovery_snapshot(snapshot, max_seconds=max_seconds)
@@ -148,12 +204,14 @@ def build_retirement_v060_graph(snapshot, target, *, board_id, builds, max_secon
     if len(selected) != 1:
         raise ValueError('retirement_schema_board_ambiguous')
     index, graph = selected[0]
-    source = evolution_snapshot_source(snapshot, graph, deadline=deadline)
+    source = evolution_snapshot_source(snapshot, graph, deadline=deadline, target_version=target_version)
     target = Path(target).resolve()
     for protected in (snapshot.directory.resolve(), Path(graph['source_path']).resolve()):
         if target == protected or target in protected.parents or protected in target.parents:
             raise ValueError('retirement_schema_target_overlaps_source')
-    report = transfer_logical_graph(source, make_grafx_logical_sink(target, scope='board', max_batch_size=batch_size),
+    _, current, _, _, _ = _contract(graph['certificate']['schema_digest'], target_version)
+    report = transfer_logical_graph(source, make_grafx_recovery_logical_sink(target, scope='board',
+        expected_schema_digest=schema_digest(current), max_batch_size=batch_size),
         batch_size=batch_size)
     return schema_evolution_receipt(snapshot, manifest, index, scope=report.scope, counts=asdict(report.counts),
-        fingerprint=report.fingerprint, schema_digest=report.schema_digest)
+        fingerprint=report.fingerprint, schema_digest=report.schema_digest, target_version=target_version)

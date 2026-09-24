@@ -18,7 +18,7 @@ from okto_pulse.community.adapters import retirement_offline_run as offline
 from okto_pulse.community.adapters import retirement_graph_candidate as candidate
 from okto_pulse.community.adapters import sqlalchemy_database as db
 from okto_pulse.community.adapters.graph_backend_binding import CommunityGraphBackendBindingStore
-from okto_pulse.community.adapters.grafx_recovery_contracts import predecessor_recovery_contract, make_grafx_recovery_logical_sink
+from okto_pulse.community.adapters.grafx_recovery_contracts import predecessor_recovery_contract, v060_recovery_contract, make_grafx_recovery_logical_sink
 from okto_pulse.community.adapters.joint_recovery_snapshot import RecoveryGraph
 from okto_pulse.community.adapters.logical_transfer_schema import board_logical_schema
 from okto_pulse.community.adapters.storage import CommunityFileSystemStorage
@@ -33,9 +33,9 @@ from test_card_context_retirement import dump
 @pytest.mark.asyncio
 @pytest.mark.timeout(600)
 @pytest.mark.parametrize('source_schema,cognitive_case,complete_overlay', [
-    ('0.6.0', 'unresolved', True), ('0.6.0', 'none', True), ('0.5.0', 'none', False),
-    ('0.5.0', 'none', True), ('0.6.0', 'technical-report', True)],
-    ids=['current-cognitive-pending', 'current-complete', 'predecessor-global-pending', 'predecessor-complete', 'durable-technical-report'])
+    ('0.7.0', 'unresolved', True), ('0.7.0', 'none', True), ('0.5.0', 'none', False),
+    ('0.5.0', 'none', True), ('0.7.0', 'technical-report', True), ('0.6.0', 'none', True)],
+    ids=['current-cognitive-pending', 'current-complete', 'predecessor-global-pending', 'predecessor-complete', 'durable-technical-report', 'v060-predecessor-complete'])
 async def test_authenticated_effects_on_reused_root_preserve_identity_and_require_complete_evidence(tmp_path, source_schema, cognitive_case, complete_overlay, monkeypatch):
     source = restore_source(tmp_path)
     for name in ('uploads', 'kg', 'backups', 'candidate-backups'):
@@ -70,15 +70,16 @@ async def test_authenticated_effects_on_reused_root_preserve_identity_and_requir
     bindings = CommunityGraphBackendBindingStore(tmp_path / 'kg')
     path = bindings.board_grafx_path('board-a', 'original')
     path.parent.mkdir(parents=True)
-    schema = board_logical_schema() if source_schema == '0.6.0' else predecessor_recovery_contract().schema
+    schema = (board_logical_schema() if source_schema == '0.7.0' else
+        v060_recovery_contract().schema if source_schema == '0.6.0' else predecessor_recovery_contract().schema)
     props = {prop.name: LOGICAL_NULL for prop in schema.node_type('Entity').properties}
     props.update(id='old-spec-root', title=title, content='prior projection content',
         source_artifact_ref='spec:spec-a', source_session_id='historical-session',
         created_by_agent='system:historical_consolidation', graph_layer='deterministic',
         human_curated=False, generation=0, created_at=LogicalTimestamp(0), attestation_count=1)
     nodes = (LogicalNode('Entity', 'old-spec-root', props),)
-    if source_schema == '0.5.0':
-        nodes += (LogicalNode('BoardMeta', 'board-a', {'board_id': 'board-a', 'schema_version': '0.5.0',
+    if source_schema != '0.7.0':
+        nodes += (LogicalNode('BoardMeta', 'board-a', {'board_id': 'board-a', 'schema_version': source_schema,
             'bootstrapped_at': LogicalTimestamp(0), 'embedding_model': 'historical-fixture', 'embedding_dimension': 384}),)
         transfer_logical_graph(MaterializedSource(Corpus(schema, nodes, ())),
             make_grafx_recovery_logical_sink(path, scope='board', expected_schema_digest=schema_digest(schema)))
@@ -143,14 +144,19 @@ async def test_authenticated_effects_on_reused_root_preserve_identity_and_requir
         assert receipt['graph_reconciliation']['state'] == (
             'source_graph_reconciled' if complete else 'source_projection_reconciled_history_pending')
         assert report['zero_orphan_validation'] == 'passed'
-        if source_schema == '0.5.0':
+        if source_schema in {'0.5.0', '0.6.0'}:
             assert len(receipt['schema_evolutions']) == 1
+            evolution = receipt['schema_evolutions'][0]
+            assert evolution['format'] == 'retirement-schema-evolution/v3'
+            assert evolution['source_version'] == source_schema
+            assert evolution['target_version'] == '0.7.0'
+            assert evolution['introduced_relation_layouts'] == (13 if source_schema == '0.5.0' else 2)
             observed = receipt['historical_observations']
             assert observed['before_census_sha256'] != observed['projection_baseline_sha256']
             bound = CommunityGraphBackendBindingStore(target / 'kg-artifacts').inspect_board_binding('board-a')
             with connect(bound.physical_path, page_size=8192, read_only=True) as current:
                 assert current.identity.database_uuid != original_uuid
-                assert current.execute('MATCH (m:BoardMeta) RETURN m.schema_version').rows == (('0.6.0',),)
+                assert current.execute('MATCH (m:BoardMeta) RETURN m.schema_version').rows == (('0.7.0',),)
             assert (target / 'graph-0000').is_dir()  # Retained, unbound native predecessor.
         else:
             assert receipt['schema_evolutions'] == []

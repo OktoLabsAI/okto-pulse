@@ -10,10 +10,13 @@ from okto_pulse.community.adapters.grafx_schema_v060 import V060_MANIFEST, V060_
 from logical_transfer_matrix_support import Corpus, MaterializedSource, complete_node
 
 
-def test_frozen_contracts_are_exact_and_current_v060_is_not_ambiguous():
+def test_frozen_contracts_are_exact_and_current_v060_is_not_ambiguous(monkeypatch):
     assert V060_MANIFEST.logical_fingerprint == V060_FINGERPRINT
     assert len(contracts.v060_recovery_contract().schema.relation_layouts) == 80
     assert len(contracts.predecessor_recovery_contract().schema.relation_layouts) == 69
+    assert len(contracts._contracts('board')) == 3
+    frozen = contracts.v060_recovery_contract()
+    monkeypatch.setattr(contracts, 'logical_transfer_scope', lambda scope: frozen)
     candidates = contracts._contracts('board')
     assert len(candidates) == 2
     assert len({schema_digest(candidate.schema) for candidate in candidates}) == 2

@@ -45,7 +45,7 @@ SCOPES: Final[tuple[str, ...]] = (SCOPE_BOARD, SCOPE_GLOBAL_DISCOVERY)
 # Frozen, and deliberately not derived from the maps they police: computing the
 # expectation from the authority would make the two move together, so a layout
 # added upstream would satisfy a count that had silently followed it.
-BOARD_RELATIONSHIP_TABLES: Final[int] = 80
+BOARD_RELATIONSHIP_TABLES: Final[int] = 82
 GLOBAL_RELATIONSHIP_TABLES: Final[int] = 7
 
 _DEFAULT_SCAN_BATCH_SIZE: Final[int] = 500
