@@ -408,7 +408,7 @@ class KGHealthResponse(BaseModel):
     default_score_ratio: float
     avg_relevance: float
     schema_version: str
-    health_schema_version: str = "1.1"
+    health_schema_version: str = "1.2"
     graph_schema_version: str | None = None
     source_count: int | None = None
     contradict_warn_count: int

@@ -9,7 +9,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
 import { KGHealthView } from '../KGHealthView';
 import * as kgHealthApi from '@/services/kg-health-api';
@@ -26,7 +26,7 @@ vi.mock('@/services/kg-health-api');
 vi.mock('@/store/dashboard');
 
 const baseHealth: KGHealth = {
-  health_schema_version: '1.1',
+  health_schema_version: '1.2',
   materialization_state: 'materialized',
   materialization_generation: 'generation-1',
   probe_reason_codes: {
@@ -168,6 +168,39 @@ afterEach(() => {
 });
 
 describe('TS1 — mount inicial dispara 1 fetch e renderiza cards principais', () => {
+  it.each(['missing', 'unavailable', 'null'] as const)(
+    'keeps unknown canonical debt visibly unavailable (%s)', async (state) => {
+      mockBoard('b1');
+      const summary = state === 'missing' ? undefined : {
+        ...baseHealth.canonical_debt!,
+        status: state === 'unavailable' ? 'unavailable' : 'available',
+        open_count: state === 'null' ? null : 0,
+      };
+      mockApi(() => Promise.resolve({
+        ...baseHealth, canonical_debt: summary,
+        kg_layer_counts: { status: 'unavailable', by_layer: {}, by_maturity_status: {} },
+      }));
+      render(<KGHealthView onClose={() => {}} />);
+      const title = await screen.findByText('Canonical Debt');
+      const card = title.closest('[data-testid="kg-health-card"]')! as HTMLElement;
+      const openRow = within(card).getByText('Open debt').parentElement!;
+      const value = within(openRow).getByText('Unavailable');
+      expect(value).not.toHaveClass('text-emerald-700');
+      expect(within(openRow).queryByText('0')).not.toBeInTheDocument();
+      expect(within(card).getByText('canonical unavailable · working unavailable')).toBeInTheDocument();
+      expect(within(card).queryByText('Rebuild Complete')).not.toBeInTheDocument();
+    },
+  );
+
+  it('distinguishes an observed zero from unavailable debt', async () => {
+    mockBoard('b1');
+    mockApi(() => Promise.resolve(baseHealth));
+    render(<KGHealthView onClose={() => {}} />);
+    const title = await screen.findByText('Canonical Debt');
+    const card = title.closest('[data-testid="kg-health-card"]')! as HTMLElement;
+    const row = within(card).getByText('Open debt').parentElement!;
+    expect(within(row).getByText('0')).toHaveClass('text-emerald-700');
+  });
   it.each([undefined, 'okto_pulse_kg_canonical_partition_integrity_list'])(
     'keeps partition counts without reopening the retired inspector (%s)', async (legacyTool) => {
       mockBoard('b1');
@@ -214,16 +247,16 @@ describe('TS1 — mount inicial dispara 1 fetch e renderiza cards principais', (
     expect(screen.queryByText('Powered by Okto Grafx')).not.toBeInTheDocument();
   });
 
-  it('fixa o contrato frontend em health schema 1.1', () => {
-    expect(EXPECTED_KG_HEALTH_SCHEMA_VERSION).toBe('1.1');
+  it('fixa o contrato frontend em health schema 1.2', () => {
+    expect(EXPECTED_KG_HEALTH_SCHEMA_VERSION).toBe('1.2');
   });
 
-  it('aceita health schema 1.1 sem comparar o alias legado schema_version', async () => {
+  it('aceita health schema 1.2 sem comparar o alias legado schema_version', async () => {
     mockBoard('b1');
     mockApi(() => Promise.resolve({
       ...baseHealth,
       schema_version: '1.0',
-      health_schema_version: '1.1',
+      health_schema_version: '1.2',
     }));
 
     render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
@@ -430,7 +463,7 @@ describe('TS6 — schema banner', () => {
     mockApi(() => Promise.resolve({
       ...baseHealth,
       schema_version: '1.0',
-      health_schema_version: '1.1',
+      health_schema_version: '1.2',
     }));
 
     render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
@@ -450,7 +483,7 @@ describe('TS6 — schema banner', () => {
       const alert = screen.getByRole('alert');
       expect(alert).toBeInTheDocument();
       expect(alert).toHaveTextContent(/Schema outdated/);
-      expect(alert).toHaveTextContent(/1\.1/);
+      expect(alert).toHaveTextContent(/1\.2/);
       expect(alert).toHaveTextContent(/2\.0/);
     });
   });

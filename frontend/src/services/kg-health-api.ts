@@ -72,18 +72,18 @@ export interface KGLayerCounts {
 }
 
 export interface CanonicalDebtSummary {
-  open_count: number;
-  retryable_count: number;
-  blocked_count: number;
-  retry_scheduled_count: number;
-  terminal_count: number;
+  open_count: number | null;
+  retryable_count: number | null;
+  blocked_count: number | null;
+  retry_scheduled_count: number | null;
+  terminal_count: number | null;
   by_state: Record<string, number>;
   status?: string;
 }
 
 export interface RebuildDiagnostics {
   last_outcome: string;
-  canonical_open_debt_count: number;
+  canonical_open_debt_count: number | null;
   layer_counts_status: string;
   operator_action: string;
 }
@@ -91,7 +91,8 @@ export interface RebuildDiagnostics {
 export interface KGOperationalDomain {
   domain?: string;
   semantics?: string;
-  count: number;
+  count: number | null;
+  status?: 'available' | 'unavailable';
   classification?: string;
   oldest_age_seconds?: number;
   drill_down_tool?: string;

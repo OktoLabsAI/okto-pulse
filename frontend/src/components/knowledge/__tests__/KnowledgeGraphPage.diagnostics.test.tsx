@@ -112,7 +112,7 @@ const health: KGHealth = {
   avg_relevance: 0.0057,
   top_disconnected_nodes: [],
   schema_version: '1.0',
-  health_schema_version: '1.1',
+  health_schema_version: '1.2',
   graph_schema_version: '0.3.3',
   contradict_warn_count: 0,
   last_decay_tick_at: null,
@@ -157,7 +157,7 @@ describe('GraphVisibilityMismatchState', () => {
     expect(screen.getByText('KG data exists, graph view is empty')).toBeInTheDocument();
     expect(screen.getByText(/Health reports 140 node\(s\)/)).toBeInTheDocument();
     expect(screen.getByText('Graph schema 0.3.3')).toBeInTheDocument();
-    expect(screen.getByText('Health schema 1.1')).toBeInTheDocument();
+    expect(screen.getByText('Health schema 1.2')).toBeInTheDocument();
     expect(screen.getByText('Last tick: failed')).toBeInTheDocument();
     expect(screen.getByText('Status partial_failure')).toBeInTheDocument();
 

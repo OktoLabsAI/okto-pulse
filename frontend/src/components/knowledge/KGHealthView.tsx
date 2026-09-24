@@ -753,18 +753,23 @@ function CanonicalDebtCard({
   layerCounts,
   diagnostics,
 }: CanonicalDebtCardProps) {
-  const openCount = summary?.open_count ?? 0;
-  const canonicalCount = layerCounts?.by_layer?.canonical ?? 0;
-  const workingCount = layerCounts?.by_layer?.working ?? 0;
-  const retryable = summary?.retryable_count ?? 0;
-  const blocked = summary?.blocked_count ?? 0;
+  const debtAvailable = summary != null
+    && (summary.status == null || summary.status === 'available' || summary.status === 'ok');
+  const openCount = debtAvailable ? summary.open_count : null;
+  const layersAvailable = layerCounts?.status === 'ok' || layerCounts?.status === 'available';
+  const canonicalCount = layersAvailable ? layerCounts?.by_layer?.canonical : null;
+  const workingCount = layersAvailable ? layerCounts?.by_layer?.working : null;
+  const retryable = debtAvailable ? summary.retryable_count : null;
+  const blocked = debtAvailable ? summary.blocked_count : null;
   const debtClass =
-    openCount === 0
+    openCount == null
+      ? 'text-surface-600 dark:text-surface-400'
+      : openCount === 0
       ? 'text-emerald-700 dark:text-emerald-400'
-      : blocked > 0
+      : blocked != null && blocked > 0
       ? 'text-rose-700 dark:text-rose-400'
       : 'text-amber-700 dark:text-amber-400';
-  const outcome = diagnostics?.last_outcome ?? 'unknown';
+  const outcome = openCount == null ? 'unavailable' : diagnostics?.last_outcome ?? 'unknown';
   return (
     <Card
       title="Canonical Debt"
@@ -773,17 +778,17 @@ function CanonicalDebtCard({
     >
       <Row label="Open debt">
         <span className={`text-2xl font-bold ${debtClass}`}>
-          {openCount.toLocaleString()}
+          {openCount == null ? 'Unavailable' : openCount.toLocaleString()}
         </span>
       </Row>
       <Row label="Retryable / blocked">
         <span className="text-sm text-surface-700 dark:text-surface-300">
-          {retryable.toLocaleString()} / {blocked.toLocaleString()}
+          {retryable == null ? 'Unavailable' : retryable.toLocaleString()} / {blocked == null ? 'Unavailable' : blocked.toLocaleString()}
         </span>
       </Row>
       <Row label="Graph layers">
         <span className="text-xs text-right text-surface-600 dark:text-surface-400">
-          canonical {canonicalCount.toLocaleString()} · working {workingCount.toLocaleString()}
+          canonical {canonicalCount == null ? 'unavailable' : canonicalCount.toLocaleString()} · working {workingCount == null ? 'unavailable' : workingCount.toLocaleString()}
         </span>
       </Row>
       <Row label="Layer status">

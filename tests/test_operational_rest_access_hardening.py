@@ -161,6 +161,41 @@ def _client(uow: _Uow, *, claims=None) -> TestClient:
 FOREIGN_BOARD = SimpleNamespace(id="board-b", owner_id="user-b")
 OWN_BOARD = SimpleNamespace(id="board-b", owner_id="user-a")
 
+
+@pytest.mark.parametrize("profile", ["summary", "full", "legacy"])
+def test_health_readiness_transports_unknown_debt_without_numeric_coercion(monkeypatch, profile):
+    from okto_pulse.core.application.use_cases.kg_health import (
+        GetKgHealthReadinessResult, GetKgHealthReadinessUseCase,
+    )
+    from okto_pulse.core.application.use_cases.code_traceability_kg_access import EvaluateCodeTraceabilityKGReadAccessUseCase
+    from okto_pulse.core.domain.code_traceability_kg import (
+        CODE_TRACEABILITY_KG_READ_PERMISSIONS, code_traceability_kg_read_decision,
+    )
+
+    async def traceability_access(self, **kwargs):
+        return code_traceability_kg_read_decision(CODE_TRACEABILITY_KG_READ_PERMISSIONS)
+
+    async def result(self, command, *, actor, uow):
+        assert command.board_id == "board-b"
+        assert command.profile == profile
+        return GetKgHealthReadinessResult(data={
+            "board_id": command.board_id, "health_schema_version": "1.2",
+            "technical_signals": {"canonical_debt_open_count": None},
+            "readiness": {"blocking": None, "would_block_done": None,
+                          "canonical_debt_observation_status": "unavailable"},
+        })
+
+    # Transport oracle only; real Board/permission denials below remain active.
+    monkeypatch.setattr(GetKgHealthReadinessUseCase, "execute", result)
+    monkeypatch.setattr(EvaluateCodeTraceabilityKGReadAccessUseCase, "execute", traceability_access)
+    with _client(_Uow(board=OWN_BOARD)) as client:
+        response = client.get(f"/api/v1/kg/health-readiness?board_id=board-b&profile={profile}")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["technical_signals"]["canonical_debt_open_count"] is None
+    assert payload["readiness"]["blocking"] is None
+    assert payload["readiness"]["would_block_done"] is None
+
 BOARD_SURFACES = [
     ("GET", "/api/v1/kg/board-b/cognitive-readiness/items", None),
     (
