@@ -38,6 +38,67 @@ class _CanonicalBugReader:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('finish', ['commit', 'rollback'])
+async def test_semantic_write_snapshot_serializes_related_evidence_until_caller_commit(tmp_path, finish):
+    from sqlalchemy import text, update
+    from sqlalchemy.exc import OperationalError
+    engine, factory = await _runtime(tmp_path / 'semantic-serialized.db')
+    graph = _CanonicalBugReader(fail=True)
+    assembler = CommunityBugCognitiveContextAssembler(graph)
+    from okto_pulse.core.ports.bug_cognitive_context import BugSemanticWriteSnapshotReader
+    assert isinstance(assembler, BugSemanticWriteSnapshotReader)
+    try:
+        await _seed_full_context(factory)
+        async with factory() as capture:
+            # A prior read must not make the writer boundary issue nested BEGIN.
+            held = await capture.get(Card, 'bug-context')
+            source = await assembler.assemble_semantic_for_write(
+                capture, board_id='board-bug-context', bug_id='bug-context')
+            assert source.verified and held.id == 'bug-context'
+            async with factory() as writer:
+                await writer.execute(text('PRAGMA busy_timeout=50'))
+                with pytest.raises(OperationalError, match='locked'):
+                    await writer.execute(update(Card).where(Card.id == 'regression-test').values(
+                        conclusions=[{'text': 'Concurrent evidence correction.'}]))
+                await writer.rollback()
+            same = await assembler.assemble_semantic(
+                capture, board_id='board-bug-context', bug_id='bug-context')
+            assert same.source_digest == source.source_digest
+            await getattr(capture, finish)()
+        async with factory() as writer:
+            await writer.execute(update(Card).where(Card.id == 'regression-test').values(
+                conclusions=[{'text': 'Concurrent evidence correction.'}]))
+            await writer.commit()
+        async with factory() as reader:
+            changed = await assembler.assemble_semantic(
+                reader, board_id='board-bug-context', bug_id='bug-context')
+            assert changed.source_digest != source.source_digest
+            assert changed.source_policy_version == source.source_policy_version
+        assert graph.calls == []
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('dialect,error', [
+    ('postgresql', 'bug_semantic_source_serialization_unsupported'),
+    ('sqlite', 'bug_semantic_source_serialization_failed'),
+])
+async def test_semantic_write_snapshot_has_no_unserialized_fallback(monkeypatch, dialect, error):
+    from types import SimpleNamespace
+    from sqlalchemy.exc import OperationalError
+    assembler = CommunityBugCognitiveContextAssembler(_CanonicalBugReader(fail=True))
+    async def forbidden(*args, **kwargs):
+        pytest.fail('source read must not run without serialization')
+    async def failed(*args, **kwargs):
+        raise OperationalError('writer fence', {}, RuntimeError('database is locked'))
+    context = SimpleNamespace(get_bind=lambda: SimpleNamespace(dialect=SimpleNamespace(name=dialect)), execute=failed)
+    monkeypatch.setattr(assembler, 'assemble_semantic', forbidden)
+    with pytest.raises(RuntimeError, match=error):
+        await assembler.assemble_semantic_for_write(context, board_id='board', bug_id='bug')
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('model,identity,field,new_value', [
     (Card, 'bug-context', 'policy_version', 12),
     (Card, 'regression-test', 'conclusions', [{'text': 'Corrected test outcome.'}]),

@@ -6,7 +6,8 @@ import logging
 from collections.abc import Mapping
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import false, select, update
+from sqlalchemy.exc import SQLAlchemyError
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
     AmendmentHotfixRevision,
@@ -100,6 +101,24 @@ class CommunityBugCognitiveContextAssembler:
     ) -> BugCognitiveContext:
         source = await self._assemble(context, board_id=board_id, bug_id=bug_id, include_projection=False)
         return qualify_bug_semantic_context(source)
+
+    async def assemble_semantic_for_write(
+        self, context: Any, *, board_id: str, bug_id: str,
+    ) -> BugCognitiveContext:
+        if context.get_bind().dialect.name != 'sqlite':
+            # A Bug row lock cannot fence linked Test Cards, scenario changes,
+            # comments or lineage insertions. Qualify another edition mechanism
+            # explicitly instead of offering a weaker serialization contract.
+            raise RuntimeError('bug_semantic_source_serialization_unsupported')
+        try:
+            # SQLite's writer slot covers all relational sources until the
+            # caller commits/rolls back. Zero rows change and no row trigger
+            # fires. This works inside an existing deferred/read transaction;
+            # failed snapshot upgrades propagate instead of reading unguarded.
+            await context.execute(update(Card).where(false()).values(id=Card.id))
+        except SQLAlchemyError as exc:
+            raise RuntimeError('bug_semantic_source_serialization_failed') from exc
+        return await self.assemble_semantic(context, board_id=board_id, bug_id=bug_id)
 
     async def _assemble(
         self, context: Any, *, board_id: str, bug_id: str, include_projection: bool,
