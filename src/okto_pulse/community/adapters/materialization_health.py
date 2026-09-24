@@ -610,13 +610,35 @@ class CommunityMaterializationEvidenceProbe:
         generation_store: Any,
         mutation_guard: Any | None = None,
         graph_health_observation: GraphHealthObservation | None = None,
+        internal_recovery_observation: bool = False,
     ) -> None:
+        if type(internal_recovery_observation) is not bool:
+            raise ValueError('internal_recovery_observation must be bool')
         self._board_store = board_store
         self._census = census
         self._discovery_store = discovery_store
         self._generation_store = generation_store
         self._mutation_guard = mutation_guard
         self._graph_health_observation = graph_health_observation
+        self._internal_recovery_observation = internal_recovery_observation
+
+    def for_internal_recovery(self) -> CommunityMaterializationEvidenceProbe:
+        """Observe under recovery's existing deadline without changing Health.
+
+        This is composition only, never a public request option. The internal
+        preparer still owns its absolute per-Board/attempt deadlines and gates.
+        Separate cache keys prevent either caller borrowing the other's result.
+        """
+        return type(self)(
+            board_store=self._board_store, census=self._census,
+            discovery_store=self._discovery_store, generation_store=self._generation_store,
+            mutation_guard=self._mutation_guard,
+            graph_health_observation=self._graph_health_observation,
+            internal_recovery_observation=True,
+        )
+
+    def _probe_name(self, name: str) -> str:
+        return f'internal_recovery_{name}' if self._internal_recovery_observation else name
 
     def _observe_graph(self, request, build, fallback):
         # Enter inside the worker: no caller is required to provide a scope,
@@ -628,7 +650,9 @@ class CommunityMaterializationEvidenceProbe:
         if remaining <= 0:
             return fallback
         with self._graph_health_observation.scope(
-            request.board_id, timeout_seconds=min(0.35, remaining),
+            request.board_id, timeout_seconds=min(
+                5.0 if self._internal_recovery_observation else 0.35, remaining,
+            ),
         ):
             return build()
 
@@ -641,7 +665,7 @@ class CommunityMaterializationEvidenceProbe:
         # cannot establish that this request did not mutate storage.
         observation_id = uuid.uuid4().hex
         result = await run_bounded_health_probe(
-            name=f"materialization_guard_{phase}", board_id=request.board_id,
+            name=self._probe_name(f"materialization_guard_{phase}"), board_id=request.board_id,
             generation_id=request.generation, build=lambda: (observation_id, build()),
             fallback=(observation_id, fallback), deadline_at=request.deadline.deadline_at,
             ttl_s=0.0,
@@ -715,7 +739,7 @@ class CommunityMaterializationEvidenceProbe:
 
         async def board_probe() -> Any:
             return await run_bounded_health_probe(
-                name=_BOARD_STAT_PROBE,
+                name=self._probe_name(_BOARD_STAT_PROBE),
                 board_id=request.board_id,
                 generation_id=generation,
                 build=lambda: self._observe_graph(
@@ -729,7 +753,7 @@ class CommunityMaterializationEvidenceProbe:
 
         async def discovery_probe() -> Any:
             return await run_bounded_health_probe(
-                name=_DISCOVERY_STAT_PROBE,
+                name=self._probe_name(_DISCOVERY_STAT_PROBE),
                 board_id=request.board_id,
                 generation_id=generation,
                 build=lambda: self._observe_graph(

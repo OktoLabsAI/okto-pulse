@@ -521,6 +521,19 @@ def test_build_is_read_only_and_every_board_port_shares_one_route_identity(
     assert not root.exists()
 
 
+def test_health_proves_unbound_empty_board_absent_without_opening_or_writing(tmp_path):
+    from okto_pulse.core.kg.interfaces.graph_runtime_store import GraphRuntimeObservationState
+
+    connector = _GrafxConnector()
+    bundle = _build(tmp_path, connector)
+    before = sorted(str(path.relative_to(tmp_path)) for path in tmp_path.rglob('*'))
+    with bundle.graph_health_observation.scope('e2e-board-0001'):
+        state = bundle.graph_runtime_store.graph_state('e2e-board-0001', generation='unmaterialized-v1')
+    assert state.normalized_state is GraphRuntimeObservationState.CONFIRMED_ABSENT, state
+    assert connector.calls == []
+    assert sorted(str(path.relative_to(tmp_path)) for path in tmp_path.rglob('*')) == before
+
+
 def test_board_reader_lanes_are_distinct_from_the_writer_participant(
     tmp_path: Path,
 ) -> None:

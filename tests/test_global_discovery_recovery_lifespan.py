@@ -46,7 +46,15 @@ def test_recovery_runtime_composition_uses_live_registry_and_database_url(
     revoker = object()
     operation = object()
     uow_factory = object()
-    evidence_port = object()
+    from okto_pulse.community.adapters.materialization_health import CommunityMaterializationEvidenceProbe
+
+    internal_evidence_port = object()
+
+    class EvidenceProbe(CommunityMaterializationEvidenceProbe):
+        def for_internal_recovery(self):
+            return internal_evidence_port
+
+    evidence_port = EvidenceProbe(board_store=None, census=None, discovery_store=None, generation_store=None)
     database_path = Path("installed-worker.sqlite3").resolve()
     database_resolutions: list[int] = []
     calls: list[tuple[str, object]] = []
@@ -171,8 +179,8 @@ def test_recovery_runtime_composition_uses_live_registry_and_database_url(
         ("bind_fingerprint", composite_fingerprint),
         ("provider", artifact_store),
         ("revoker", {"artifact_store": artifact_store}),
-        ("uow_factory", None),
         ("evidence_port", None),
+        ("uow_factory", None),
         (
             "preparation_operation",
             {
@@ -180,7 +188,7 @@ def test_recovery_runtime_composition_uses_live_registry_and_database_url(
                 "artifact_store": artifact_store,
                 "db_path_provider": calls[0][1]["db_path_provider"],
                 "unit_of_work_factory": uow_factory,
-                "materialization_evidence_port": evidence_port,
+                "materialization_evidence_port": internal_evidence_port,
                 "relational_fingerprint": fingerprint,
                 "overlay_snapshot_service": overlay,
                 "snapshot_fingerprint": composite_fingerprint,

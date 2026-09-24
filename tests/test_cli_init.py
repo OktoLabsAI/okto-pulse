@@ -82,6 +82,7 @@ def test_init_subparser_no_args_shows_help(tmp_path):
     env = dict(os.environ)
     env["DATA_DIR"] = str(tmp_path / "data")
     env["OKTO_PULSE_HOME"] = str(tmp_path / "home")
+    env["PYTHONIOENCODING"] = "utf-8"
     result = subprocess.run(
         [
             sys.executable,
@@ -93,8 +94,10 @@ def test_init_subparser_no_args_shows_help(tmp_path):
         text=True,
         timeout=30,
         env=env,
+        encoding="utf-8",
     )
     assert result.returncode == 1
+    assert result.stdout or result.stderr
 
 
 def test_init_registers_community_kg_before_demo_skip_and_fails_closed(
@@ -628,9 +631,9 @@ def _expected_init_message(observation, code: str) -> str:
     if code == "global_discovery_init_refused_marker_present":
         return (
             "global_discovery_init_refused: incomplete-bootstrap"
-            " marker with a present/partial primary requires the"
-            " recovery ceremony before re-running init (zero"
-            " mutation)"
+            " marker with a present/partial primary requires an"
+            " authorized external support/release recovery procedure"
+            " before re-running init (zero mutation)"
         )
     if code == "global_discovery_init_release_failed":
         return (
@@ -648,8 +651,8 @@ def _expected_init_message(observation, code: str) -> str:
         return (
             "global_discovery_init_refused: refusing to bootstrap over"
             f" unreadable/residual state={obs_state.value if obs_state else 'unknown'}"
-            f"{reason}; resolve interrupted recovery through the recovery"
-            " ceremony before re-running init (zero mutation)"
+            f"{reason}; use an authorized external support/release"
+            " recovery procedure before re-running init (zero mutation)"
         )
     raise AssertionError(f"no literal template for code {code!r}")
 

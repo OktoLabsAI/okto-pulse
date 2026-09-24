@@ -832,12 +832,19 @@ def _compose_global_discovery_recovery_runtime(settings: CommunitySettings):
     prepared_revoker = CommunityPreparedRecoveryRevoker(
         artifact_store=artifact_store,
     )
+    from okto_pulse.community.adapters.materialization_health import (
+        CommunityMaterializationEvidenceProbe,
+    )
+
+    materialization_probe = get_materialization_evidence_port()
+    if not isinstance(materialization_probe, CommunityMaterializationEvidenceProbe):
+        raise RuntimeError('community_recovery_materialization_probe_unavailable')
     preparation_operation = CommunityGlobalDiscoveryRecoveryPreparationOperation(
         recovery=recovery,
         artifact_store=artifact_store,
         db_path_provider=recovery_database_path,
         unit_of_work_factory=resolve_unit_of_work_factory(),
-        materialization_evidence_port=get_materialization_evidence_port(),
+        materialization_evidence_port=materialization_probe.for_internal_recovery(),
         relational_fingerprint=relational_fingerprint,
         overlay_snapshot_service=overlay_snapshot,
         snapshot_fingerprint=snapshot_fingerprint,

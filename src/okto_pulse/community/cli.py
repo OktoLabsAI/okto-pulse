@@ -607,17 +607,17 @@ def _bootstrap_global_discovery_graph() -> str:
                 elif observation.reason_code == BOOTSTRAP_INCOMPLETE_REASON:
                     raise GlobalDiscoveryInitError(
                         "global_discovery_init_refused: incomplete-bootstrap"
-                        " marker with a present/partial primary requires the"
-                        " recovery ceremony before re-running init (zero"
-                        " mutation)",
+                        " marker with a present/partial primary requires an"
+                        " authorized external support/release recovery procedure"
+                        " before re-running init (zero mutation)",
                         code="global_discovery_init_refused_marker_present",
                     )
                 else:
                     raise GlobalDiscoveryInitError(
                         "global_discovery_init_refused: refusing to bootstrap over"
                         f" unreadable/residual state={obs_state.value if obs_state else 'unknown'}"
-                        f"{reason}; resolve interrupted recovery through the recovery"
-                        " ceremony before re-running init (zero mutation)",
+                        f"{reason}; use an authorized external support/release"
+                        " recovery procedure before re-running init (zero mutation)",
                         code="global_discovery_init_refused",
                     )
     except BaseException as exc:
