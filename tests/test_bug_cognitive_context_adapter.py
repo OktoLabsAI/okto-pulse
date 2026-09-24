@@ -54,6 +54,7 @@ async def test_semantic_source_snapshot_is_versioned_before_done_without_graph_i
         assert source.card_exists and source.verified
         assert source.status == 'in_progress'
         assert source.source_policy_version == 7
+        assert len(source.source_digest) == 64
         assert source.contract_version == 'bug-semantic-context/v1'
         assert source.canonical_bug_present is None
         assert source.eligible_for_closeout is False
@@ -73,6 +74,16 @@ async def test_semantic_source_snapshot_is_versioned_before_done_without_graph_i
                 session, board_id='board-bug-context', bug_id='bug-context')
         assert fresh.source_policy_version == 8
         assert source.source_policy_version == 7
+        assert fresh.source_digest != source.source_digest
+        async with session_factory() as session:
+            related = await session.get(Card, 'regression-test')
+            related.conclusions = [{'text': 'The previous test evidence was corrected.'}]
+            await session.commit()
+        async with session_factory() as session:
+            evidence_changed = await CommunityBugCognitiveContextAssembler(graph).assemble_semantic(
+                session, board_id='board-bug-context', bug_id='bug-context')
+        assert evidence_changed.source_policy_version == fresh.source_policy_version
+        assert evidence_changed.source_digest != fresh.source_digest
         assert graph.calls == []
     finally:
         await engine.dispose()
