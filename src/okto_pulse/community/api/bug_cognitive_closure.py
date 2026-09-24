@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from okto_pulse.community.api.deps import get_unit_of_work
@@ -27,8 +27,60 @@ from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.core.kg.cognitive_readiness import CognitiveReadinessError
 from okto_pulse.core.repositories import PulseUnitOfWork
+from okto_pulse.core.application.use_cases.learning_capture import (
+    CreateLearningCaptureUseCase, GetLearningCaptureSourceUseCase,
+)
+from okto_pulse.core.application.use_cases.base import EntityNotFoundError, PermissionDeniedError
+from okto_pulse.core.models.learning_capture import LearningCaptureCreateRequest
+from okto_pulse.core.ports.kg_cognitive_source import CognitiveSourceError, CognitiveSourceConflict
+from okto_pulse.community.api.permission_errors import permission_denied_http_error
 
 router = APIRouter()
+
+
+def _capture_error(exc):
+    if isinstance(exc, PermissionDeniedError):
+        return permission_denied_http_error(exc)
+    if isinstance(exc, EntityNotFoundError):
+        return HTTPException(status_code=404, detail={'code': 'bug_not_found'})
+    if isinstance(exc, CognitiveSourceConflict):
+        return HTTPException(status_code=409, detail={'code': exc.failure_reason})
+    code = str(exc)
+    unavailable = code in {'learning_capture_transaction_capability_unavailable',
+        'bug_semantic_source_serialization_unsupported', 'bug_semantic_source_serialization_failed'}
+    conflict = code in {'learning_capture_source_changed_or_unavailable', 'learning_capture_idempotency_conflict'}
+    if not unavailable and not conflict and code not in {
+        'learning_capture_request_invalid', 'learning_capture_payload_invalid', 'learning_capture_payload_limit',
+        'learning_capture_evidence_ambiguous', 'learning_capture_evidence_not_authenticated',
+    }:
+        return HTTPException(status_code=503, detail={'code': 'learning_capture_unavailable'})
+    return HTTPException(status_code=503 if unavailable else 409 if conflict else 422, detail={'code': code})
+
+
+@router.get('/bugs/{bug_id}/learning-capture-context', tags=['bug-learning'])
+async def get_learning_capture_context(
+    bug_id: str, board_id: str = Query(min_length=1, max_length=4096),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work), actor: str = Depends(require_user),
+) -> dict[str, Any]:
+    try:
+        return await GetLearningCaptureSourceUseCase().execute(board_id=board_id, bug_id=bug_id,
+            actor=RESTAdapterContract.actor(actor), uow=uow)
+    except (EntityNotFoundError, PermissionDeniedError, ValueError, CognitiveSourceError, RuntimeError) as exc:
+        raise _capture_error(exc) from exc
+
+
+@router.post('/bugs/{bug_id}/learning-captures', tags=['bug-learning'])
+async def create_learning_capture(
+    bug_id: str, payload: LearningCaptureCreateRequest,
+    uow: PulseUnitOfWork = Depends(get_unit_of_work), actor: str = Depends(require_user),
+) -> dict[str, Any]:
+    try:
+        record = await CreateLearningCaptureUseCase().execute(payload.command(bug_id),
+            actor=RESTAdapterContract.actor(actor), uow=uow)
+        return {'capture_id': record.payload['capture_id'], 'learning_id': record.node_id,
+            'fingerprint': record.record_fingerprint, 'status': 'captured_pending_materialization'}
+    except (EntityNotFoundError, PermissionDeniedError, ValueError, CognitiveSourceError, RuntimeError) as exc:
+        raise _capture_error(exc) from exc
 
 
 class BugCognitiveClosureEvaluateRequest(BaseModel):
