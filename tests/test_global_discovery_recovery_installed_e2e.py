@@ -1,9 +1,10 @@
-"""Installed-wheel, real-HTTP acceptance for recovery and Global Outbox DLQ.
+"""Installed-wheel internal recovery and real-HTTP public retirement acceptance.
 
 This is intentionally artifact-first.  It builds the current Pulse worktrees plus
 the pinned Grafx candidate, installs only those wheels into isolated virtual
 environments, starts the installed CLI's dual API/MCP server on loopback ports, and
-drives the public Streamable HTTP MCP surface.  Controlled fixture injections are
+drives recovery through a test-only local control channel. Public inventory,
+resources and refusal of retired DLQ tools use real Streamable HTTP. Controlled fixture injections are
 declared in the sibling JSON manifest; there are no direct FastMCP ``.fn`` calls in
 this harness.
 """
@@ -430,7 +431,11 @@ def installed_runtime(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> Iterator[InstalledRuntime]:
     manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
-    assert manifest["transport"] == "real-streamable-http"
+    assert manifest["transport"] == (
+        "real-streamable-http for public inventory/resources/refusals; "
+        "test-only local filesystem channel for internal recovery"
+    )
+    assert any(item["id"] == "internal-recovery-control-channel" for item in manifest["runtime_injections"])
     assert manifest["direct_fastmcp_fn_calls"] == []
 
     uv = shutil.which("uv")
@@ -1363,7 +1368,7 @@ def _server_launcher(
     elif mode == "resume-gate":
         # Cooperative N+1 gate (S4.0R ruling): hold the REAL native operation
         # for the exact target run/epoch AFTER the durable resume admission so
-        # the public resume replay can be exercised strictly before terminal.
+        # the internal resume replay can be exercised strictly before terminal.
         # The claim/heartbeat side stays fully productive during the hold; the
         # release always arrives from the test's finally (or the bounded
         # timeout proceeds WITHOUT fabricating any error, leaving a marker the
@@ -1547,6 +1552,8 @@ def _server_launcher(
             )
     statements.extend(
         [
+            "import runpy as _runpy",
+            "_runpy.run_path(os.environ['OKTO_E2E_INTERNAL_CONTROL_HELPER'])['install']()",
             "from okto_pulse.community.cli import main as _main",
             "_main()",
         ]
@@ -1560,6 +1567,7 @@ class RunningServer:
     api_url: str
     mcp_url: str
     log_path: Path
+    control_dir: Path
 
     def log_tail(self, length: int = 12_000) -> str:
         with contextlib.suppress(OSError):
@@ -1607,9 +1615,16 @@ def _running_server(
     while mcp_port == api_port:
         mcp_port = _free_port()
     log_path = runtime.root / f"server-{mode}-{api_port}-{mcp_port}.log"
+    control_dir = runtime.root / f"internal-control-{api_port}-{mcp_port}"
+    control_dir.mkdir()
+    control_helper = control_dir / "driver.py"
+    shutil.copy2(Path(__file__).with_name("installed_recovery_control_channel.py"), control_helper)
     log_stream = log_path.open("w", encoding="utf-8")
     env = {
         **runtime.env,
+        "OKTO_E2E_INTERNAL_CONTROL_HELPER": str(control_helper),
+        "OKTO_E2E_INTERNAL_CONTROL_DIR": str(control_dir),
+        "OKTO_E2E_INTERNAL_CONTROL_ACTORS": json.dumps([runtime.actor_id, runtime.peer_actor_id]),
         "OKTO_E2E_CONFIRMATION_CLOCK_FILE": str(runtime.clock_file),
         "OKTO_E2E_FAIL_ONCE_MARKER": str(runtime.fail_once_marker),
         "OKTO_E2E_PREPARATION_RELEASE_FILE": str(runtime.preparation_release_file),
@@ -1659,6 +1674,7 @@ def _running_server(
         api_url=f"http://127.0.0.1:{api_port}",
         mcp_url=f"http://127.0.0.1:{mcp_port}/mcp",
         log_path=log_path,
+        control_dir=control_dir,
     )
     try:
         deadline = time.monotonic() + 180
@@ -1709,48 +1725,65 @@ def _authenticated_mcp_url(
     return f"{server.mcp_url}?api_key={quote(credential, safe='')}"
 
 
-async def _tool_payload(
-    client: Client,
-    name: str,
+class _InternalControlClient:
+    """Fixture-owned internal admission plus a real MCP inventory reader."""
+
+    def __init__(self, runtime: InstalledRuntime, server: RunningServer, *, peer=False):
+        self.server = server
+        self.actor_id = runtime.peer_actor_id if peer else runtime.actor_id
+        self.mcp = Client(
+            _authenticated_mcp_url(runtime, server, api_key=runtime.peer_api_key if peer else runtime.api_key),
+            timeout=45, init_timeout=45,
+        )
+
+    async def __aenter__(self):
+        await self.mcp.__aenter__()
+        return self
+
+    async def __aexit__(self, *args):
+        return await self.mcp.__aexit__(*args)
+
+    def __getattr__(self, name):
+        return getattr(self.mcp, name)
+
+
+async def _internal_payload(
+    client: _InternalControlClient, operation: str,
     arguments: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    result = await client.call_tool(
-        name,
-        arguments or {},
-        timeout=45,
-        raise_on_error=False,
-    )
-    envelope = result.data
-    assert isinstance(envelope, dict), (name, result)
-    assert result.structured_content == envelope
-    assert {
-        "outcome",
-        "data",
-        "error_code",
-        "message",
-        "retryable",
-        "next_action",
-        "meta",
-    } <= envelope.keys(), (name, envelope)
-    outcome = envelope["outcome"]
-    assert outcome in {"success", "action_required", "error"}, (name, envelope)
-    assert result.is_error is (outcome == "error"), (name, result, envelope)
-    assert isinstance(envelope["retryable"], bool), (name, envelope)
-    if outcome == "success":
-        assert envelope["error_code"] is None, (name, envelope)
-    else:
-        assert isinstance(envelope["error_code"], str), (name, envelope)
-        assert envelope["error_code"], (name, envelope)
-    assert envelope["message"] is None or isinstance(envelope["message"], str)
-    assert envelope["next_action"] is None or isinstance(envelope["next_action"], dict)
-    assert envelope["meta"] == {
-        "contract": "okto-pulse.mcp-tool-outcome",
-        "contract_version": "2.0",
-        "tool": name,
-    }
-    domain_data = envelope["data"]
-    assert isinstance(domain_data, dict), (name, envelope)
-    return domain_data
+    root = client.server.control_dir
+    identity = secrets.token_hex(16)
+    request = root / f"{identity}.request.json"
+    response = root / f"{identity}.response.json"
+    staged = request.with_suffix('.tmp')
+    staged.write_text(json.dumps({
+        'actor_id': client.actor_id, 'operation': operation, 'arguments': arguments or {},
+    }), encoding='utf-8')
+    staged.replace(request)
+    deadline = time.monotonic() + 45
+    last_read_error = None
+    while time.monotonic() < deadline:
+        if response.exists():
+            try:
+                raw = response.read_text(encoding='utf-8')
+            except PermissionError as exc:
+                # Windows may expose an atomically renamed file before a
+                # competing handle permits reading it. Retry only the read,
+                # never the admitted operation, within the original deadline.
+                last_read_error = exc
+            else:
+                envelope = json.loads(raw)
+                assert 'unexpected_error' not in envelope, envelope
+                result = envelope['result']
+                assert isinstance(result, dict), result
+                return result
+        assert client.server.process.poll() is None, client.server.log_tail()
+        await asyncio.sleep(0.02)
+    raise AssertionError(
+        f'internal {operation} timed out: {client.server.log_tail()}'
+    ) from last_read_error
+
+
 
 
 async def _wait_for_phase(
@@ -1764,9 +1797,9 @@ async def _wait_for_phase(
     deadline = time.monotonic() + timeout
     last: dict[str, Any] | None = None
     while time.monotonic() < deadline:
-        last = await _tool_payload(
+        last = await _internal_payload(
             client,
-            "okto_pulse_kg_global_discovery_recovery_status",
+            'status',
             {"run_id": run_id},
         )
         assert "error" not in last, last
@@ -1845,15 +1878,6 @@ def _seed_terminal_outbox(runtime: InstalledRuntime) -> str:
     return dead_letter_id
 
 
-def _mark_outbox_applied(runtime: InstalledRuntime, dead_letter_id: str) -> None:
-    with sqlite3.connect(runtime.database_path, timeout=30) as connection:
-        changed = connection.execute(
-            "UPDATE global_update_outbox SET processed_at = CURRENT_TIMESTAMP "
-            "WHERE id = ?",
-            (dead_letter_id,),
-        )
-        assert changed.rowcount == 1
-        connection.commit()
 
 
 async def _assert_served_about(server: RunningServer) -> None:
@@ -1998,7 +2022,7 @@ async def test_installed_wheels_serve_exact_frozen_resource_manifest_over_real_h
 
 
 @pytest.mark.asyncio
-async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
+async def test_installed_internal_recovery_and_public_dlq_retirement(
     installed_runtime: InstalledRuntime,
 ) -> None:
     runtime = installed_runtime
@@ -2015,39 +2039,33 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
     with _running_server(runtime, mode="paused") as server:
         await _assert_served_about(server)
         async with (
-            Client(
-                _authenticated_mcp_url(runtime, server), timeout=45, init_timeout=45
-            ) as client,
-            Client(
-                _authenticated_mcp_url(runtime, server, api_key=runtime.peer_api_key),
-                timeout=45,
-                init_timeout=45,
-            ) as peer_client,
+            _InternalControlClient(runtime, server, peer=False) as client,
+            _InternalControlClient(runtime, server, peer=True) as peer_client,
         ):
             await _assert_mcp_inventory(client, runtime.resource_manifest)
-            queued = await _tool_payload(
+            queued = await _internal_payload(
                 client,
-                "okto_pulse_kg_global_discovery_recovery_preflight",
+                'prepare',
             )
             assert "phase" in queued, queued
             assert queued["phase"] == "queued"
             assert queued["actor_id"] == runtime.actor_id
-            queued_replay = await _tool_payload(
+            queued_replay = await _internal_payload(
                 peer_client,
-                "okto_pulse_kg_global_discovery_recovery_preflight",
+                'prepare',
             )
             assert queued_replay["run_id"] == queued["run_id"]
             assert queued_replay["idempotent_replay"] is True
             assert queued_replay["actor_id"] == runtime.actor_id
-            peer_status = await _tool_payload(
+            peer_status = await _internal_payload(
                 peer_client,
-                "okto_pulse_kg_global_discovery_recovery_status",
+                'status',
                 {"run_id": queued["run_id"]},
             )
             assert peer_status["actor_id"] == runtime.actor_id
-            cancelled = await _tool_payload(
+            cancelled = await _internal_payload(
                 peer_client,
-                "okto_pulse_kg_global_discovery_recovery_cancel",
+                'cancel',
                 {
                     "run_id": queued["run_id"],
                     "expected_epoch": queued["epoch"],
@@ -2064,28 +2082,22 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
     start_arguments: dict[str, Any]
     with _running_server(runtime, mode="controlled-clock-fence-loss") as server:
         async with (
-            Client(
-                _authenticated_mcp_url(runtime, server), timeout=45, init_timeout=45
-            ) as client,
-            Client(
-                _authenticated_mcp_url(runtime, server, api_key=runtime.peer_api_key),
-                timeout=45,
-                init_timeout=45,
-            ) as peer_client,
+            _InternalControlClient(runtime, server, peer=False) as client,
+            _InternalControlClient(runtime, server, peer=True) as peer_client,
         ):
             # Run 1: observe real preparing/prepared replay, then refuse stale
             # fingerprint at confirm and cancel the prepared attempt.
-            first = await _tool_payload(
+            first = await _internal_payload(
                 client,
-                "okto_pulse_kg_global_discovery_recovery_preflight",
+                'prepare',
             )
             assert first["actor_id"] == runtime.actor_id
             preparing = await _wait_for_phase(
                 peer_client, first["run_id"], {"preparing"}
             )
-            preparing_replay = await _tool_payload(
+            preparing_replay = await _internal_payload(
                 peer_client,
-                "okto_pulse_kg_global_discovery_recovery_preflight",
+                'prepare',
             )
             assert preparing_replay["run_id"] == first["run_id"]
             assert preparing_replay["phase"] == "preparing"
@@ -2102,16 +2114,16 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
             assert prepared["counts"]["boards_total"] == BOARD_CENSUS_SIZE
             assert preparing["epoch"] == prepared["epoch"] == 1
             assert prepared["actor_id"] == runtime.actor_id
-            prepared_replay = await _tool_payload(
+            prepared_replay = await _internal_payload(
                 peer_client,
-                "okto_pulse_kg_global_discovery_recovery_preflight",
+                'prepare',
             )
             assert prepared_replay["run_id"] == first["run_id"]
             assert prepared_replay["phase"] == "prepared"
             _mutate_authoritative_board(runtime, 1)
-            stale_confirm = await _tool_payload(
+            stale_confirm = await _internal_payload(
                 peer_client,
-                "okto_pulse_kg_global_discovery_recovery_confirm",
+                'confirm',
                 {
                     "run_id": prepared["run_id"],
                     "manifest_ref": prepared["manifest_ref"],
@@ -2120,9 +2132,9 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
             )
             assert stale_confirm["error"] == "manifest_stale"
             prepared_cancel_reason = "installed E2E stale confirm cancellation"
-            prepared_cancel = await _tool_payload(
+            prepared_cancel = await _internal_payload(
                 peer_client,
-                "okto_pulse_kg_global_discovery_recovery_cancel",
+                'cancel',
                 {
                     "run_id": prepared["run_id"],
                     "expected_epoch": prepared["epoch"],
@@ -2139,9 +2151,9 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
 
             # Run 2: confirmation hash error, confirmation-token TTL expiry at
             # start, then a fresh token refused after source-fingerprint drift.
-            second = await _tool_payload(
+            second = await _internal_payload(
                 client,
-                "okto_pulse_kg_global_discovery_recovery_preflight",
+                'prepare',
             )
             second_prepared = await _wait_for_phase(
                 client,
@@ -2150,9 +2162,9 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
                 timeout=480,
                 poll_interval=1.0,
             )
-            wrong_hash = await _tool_payload(
+            wrong_hash = await _internal_payload(
                 client,
-                "okto_pulse_kg_global_discovery_recovery_confirm",
+                'confirm',
                 {
                     "run_id": second_prepared["run_id"],
                     "manifest_ref": second_prepared["manifest_ref"],
@@ -2160,9 +2172,9 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
                 },
             )
             assert wrong_hash["error"] == "preflight_hash_mismatch"
-            confirmation = await _tool_payload(
+            confirmation = await _internal_payload(
                 peer_client,
-                "okto_pulse_kg_global_discovery_recovery_confirm",
+                'confirm',
                 {
                     "run_id": second_prepared["run_id"],
                     "manifest_ref": second_prepared["manifest_ref"],
@@ -2177,18 +2189,18 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
                 "reason": "installed E2E expired confirmation",
             }
             runtime.clock_file.write_text("600", encoding="ascii")
-            expired_start = await _tool_payload(
+            expired_start = await _internal_payload(
                 peer_client,
-                "okto_pulse_kg_global_discovery_recovery_run",
+                'start',
                 ttl_arguments,
             )
             assert expired_start["error"] == "confirmation_refused"
             assert "expired" in expired_start["reason"]
             runtime.clock_file.write_text("0", encoding="ascii")
 
-            fresh_confirmation = await _tool_payload(
+            fresh_confirmation = await _internal_payload(
                 client,
-                "okto_pulse_kg_global_discovery_recovery_confirm",
+                'confirm',
                 {
                     "run_id": second_prepared["run_id"],
                     "manifest_ref": second_prepared["manifest_ref"],
@@ -2196,9 +2208,9 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
                 },
             )
             _mutate_authoritative_board(runtime, 2)
-            stale_start = await _tool_payload(
+            stale_start = await _internal_payload(
                 client,
-                "okto_pulse_kg_global_discovery_recovery_run",
+                'start',
                 {
                     "confirmation_id": fresh_confirmation["confirmation_id"],
                     "manifest_ref": second_prepared["manifest_ref"],
@@ -2208,9 +2220,9 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
             )
             assert stale_start["error"] == "manifest_stale"
             second_cancel_reason = "installed E2E stale start cancellation"
-            second_cancel = await _tool_payload(
+            second_cancel = await _internal_payload(
                 client,
-                "okto_pulse_kg_global_discovery_recovery_cancel",
+                'cancel',
                 {
                     "run_id": second_prepared["run_id"],
                     "expected_epoch": second_prepared["epoch"],
@@ -2226,9 +2238,9 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
             )
 
             # Run 3: fresh confirmation/start and exact public replay.
-            third = await _tool_payload(
+            third = await _internal_payload(
                 client,
-                "okto_pulse_kg_global_discovery_recovery_preflight",
+                'prepare',
             )
             third_prepared = await _wait_for_phase(
                 client,
@@ -2249,9 +2261,9 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
                 ),
                 encoding="utf-8",
             )
-            third_confirmation = await _tool_payload(
+            third_confirmation = await _internal_payload(
                 peer_client,
-                "okto_pulse_kg_global_discovery_recovery_confirm",
+                'confirm',
                 {
                     "run_id": third_prepared["run_id"],
                     "manifest_ref": third_prepared["manifest_ref"],
@@ -2264,16 +2276,16 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
                 "preflight_hash": third_prepared["preflight_hash"],
                 "reason": "installed E2E fresh recovery",
             }
-            crashed_start = await _tool_payload(
+            crashed_start = await _internal_payload(
                 peer_client,
-                "okto_pulse_kg_global_discovery_recovery_run",
+                'start',
                 start_arguments,
             )
             assert crashed_start["error"] == "global_discovery_recovery_run_failed"
             assert runtime.fail_once_marker.read_text(encoding="ascii") == "1"
-            accepted_start = await _tool_payload(
+            accepted_start = await _internal_payload(
                 client,
-                "okto_pulse_kg_global_discovery_recovery_run",
+                'start',
                 start_arguments,
             )
             assert accepted_start["outcome"] == "accepted"
@@ -2283,9 +2295,9 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
             assert accepted_start["epoch"] == third_prepared["epoch"]
             assert accepted_start["actor_id"] == runtime.actor_id
             assert accepted_start["confirmed_by_actor_id"] == runtime.peer_actor_id
-            replayed_start = await _tool_payload(
+            replayed_start = await _internal_payload(
                 peer_client,
-                "okto_pulse_kg_global_discovery_recovery_run",
+                'start',
                 start_arguments,
             )
             assert replayed_start["run_id"] == accepted_start["run_id"]
@@ -2360,14 +2372,12 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
         encoding="utf-8",
     )
     with _running_server(runtime, mode="resume-gate") as restarted:
-        async with Client(
-            _authenticated_mcp_url(runtime, restarted), timeout=45, init_timeout=45
-        ) as client:
+        async with _InternalControlClient(runtime, restarted, peer=False) as client:
             try:
-                # Explicit public resume #1 with an auditable reason.
-                resumed = await _tool_payload(
+                # Explicit internal resume #1 with an auditable reason.
+                resumed = await _internal_payload(
                     client,
-                    "okto_pulse_kg_global_discovery_recovery_resume",
+                    'resume',
                     resume_arguments,
                 )
                 assert "error" not in resumed, resumed
@@ -2394,9 +2404,9 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
                 # return without error and preserve the exact persisted N+1
                 # identity; ONLY the documented live-projection fields may
                 # advance (v5 ruling). ZERO epoch N+2.
-                replayed_resume = await _tool_payload(
+                replayed_resume = await _internal_payload(
                     client,
-                    "okto_pulse_kg_global_discovery_recovery_resume",
+                    'resume',
                     resume_arguments,
                 )
                 assert "error" not in replayed_resume, replayed_resume
@@ -2512,67 +2522,32 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
             assert recovery_dispatches[0]["attempt_id"] == successor_attempt_id
             assert recovery_dispatches[0]["state"] == "done"
 
-            invalid_classification = await _tool_payload(
-                client,
-                "okto_pulse_kg_global_outbox_dead_letter_list",
-                {"limit": 10, "classification": "not-a-classification"},
-            )
-            assert invalid_classification["error"] == "invalid_classification"
-            empty_selection = await _tool_payload(
-                client,
-                "okto_pulse_kg_global_outbox_dead_letter_reprocess",
-                {
-                    "dead_letter_ids": [],
-                    "reason": "installed E2E empty selection",
-                    "process_now": False,
-                },
-            )
-            assert empty_selection == {"error": "no_dlq_selected", "mutated": False}
+            # F4 removed manual DLQ commands. The installed public transport
+            # must refuse them without changing the terminal evidence.
+            def terminal_row():
+                with sqlite3.connect(
+                    runtime.database_path.as_uri() + "?mode=ro", uri=True,
+                ) as connection:
+                    return connection.execute(
+                        "SELECT * FROM global_update_outbox WHERE id = ?",
+                        (dead_letter_id,),
+                    ).fetchone()
 
-            listed = await _tool_payload(
-                client,
-                "okto_pulse_kg_global_outbox_dead_letter_list",
-                {"limit": 10},
-            )
-            assert [item["dead_letter_id"] for item in listed["items"]] == [
-                dead_letter_id
-            ]
-            reprocessed = await _tool_payload(
-                client,
-                "okto_pulse_kg_global_outbox_dead_letter_reprocess",
-                {
+            before = terminal_row()
+            assert before is not None
+            for name, arguments in (
+                ("okto_pulse_kg_global_outbox_dead_letter_list", {"limit": 10}),
+                ("okto_pulse_kg_global_outbox_dead_letter_reprocess", {
                     "dead_letter_ids": [dead_letter_id],
-                    "reason": "installed E2E operator replay",
-                    "process_now": False,
-                },
-            )
-            assert reprocessed["requeued_ids"] == [dead_letter_id]
-            assert reprocessed["worker_signaled"] is False
-            replayed = await _tool_payload(
-                client,
-                "okto_pulse_kg_global_outbox_dead_letter_reprocess",
-                {
+                    "reason": "retired transport must not mutate", "process_now": False,
+                }),
+                ("okto_pulse_kg_global_outbox_dead_letter_verify", {
                     "dead_letter_ids": [dead_letter_id],
-                    "reason": "installed E2E operator replay",
-                    "process_now": False,
-                },
-            )
-            assert replayed["already_queued_ids"] == [dead_letter_id]
-            verified = await _tool_payload(
-                client,
-                "okto_pulse_kg_global_outbox_dead_letter_verify",
-                {"dead_letter_ids": [dead_letter_id, "installed-e2e-missing"]},
-            )
-            by_id = {item["dead_letter_id"]: item for item in verified["items"]}
-            assert by_id[dead_letter_id]["state"] == "queued"
-            assert by_id["installed-e2e-missing"]["state"] == "absent"
-            _mark_outbox_applied(runtime, dead_letter_id)
-            applied = await _tool_payload(
-                client,
-                "okto_pulse_kg_global_outbox_dead_letter_verify",
-                {"dead_letter_ids": [dead_letter_id]},
-            )
-            assert applied["items"][0]["state"] == "applied"
+                }),
+            ):
+                refused = await client.mcp.call_tool(name, arguments, raise_on_error=False)
+                assert refused.is_error, (name, refused)
+                assert terminal_row() == before
 
     manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
     assert manifest["direct_fastmcp_fn_calls"] == []
@@ -2803,9 +2778,9 @@ async def _prepare_confirm(
     """Drive a fresh admission to prepared + issued confirmation over real
     HTTP and return (prepared_status, confirmation)."""
 
-    admitted = await _tool_payload(
+    admitted = await _internal_payload(
         client,
-        "okto_pulse_kg_global_discovery_recovery_preflight",
+        'prepare',
     )
     prepared = await _wait_for_phase(
         peer_client,
@@ -2814,9 +2789,9 @@ async def _prepare_confirm(
         timeout=480,
         poll_interval=1.0,
     )
-    confirmation = await _tool_payload(
+    confirmation = await _internal_payload(
         peer_client,
-        "okto_pulse_kg_global_discovery_recovery_confirm",
+        'confirm',
         {
             "run_id": prepared["run_id"],
             "manifest_ref": prepared["manifest_ref"],
@@ -2859,14 +2834,8 @@ async def test_installed_z2_unusable_worker_inputs_terminalize_failed(
         assert not stale.exists(), stale
     with _running_server(runtime, mode="z2-tamper") as server:
         async with (
-            Client(
-                _authenticated_mcp_url(runtime, server), timeout=45, init_timeout=45
-            ) as client,
-            Client(
-                _authenticated_mcp_url(runtime, server, api_key=runtime.peer_api_key),
-                timeout=45,
-                init_timeout=45,
-            ) as peer_client,
+            _InternalControlClient(runtime, server, peer=False) as client,
+            _InternalControlClient(runtime, server, peer=True) as peer_client,
         ):
             prepared, confirmation = await _prepare_confirm(client, peer_client)
             run_id = prepared["run_id"]
@@ -2880,9 +2849,9 @@ async def test_installed_z2_unusable_worker_inputs_terminalize_failed(
             )
             pre_run_tree = _global_tree_snapshot(runtime)
 
-            accepted = await _tool_payload(
+            accepted = await _internal_payload(
                 client,
-                "okto_pulse_kg_global_discovery_recovery_run",
+                'start',
                 {
                     "confirmation_id": confirmation["confirmation_id"],
                     "manifest_ref": prepared["manifest_ref"],
@@ -2937,7 +2906,7 @@ async def test_installed_hard_kill_at_building_is_adopted_charged_and_completes(
     installed_runtime: InstalledRuntime,
 ) -> None:
     """Real hard-kill adoption on the SAME installed wheels/data: kill the
-    server child at an atomically durable phase=building journal, restart,
+    server child at the atomically durable Grafx active-generation switch, restart,
     and prove same-run adoption (attempt_count +1, changed worker/token,
     bounded takeover, positive non-double crash charge) through to SUCCESS."""
 
@@ -2949,20 +2918,14 @@ async def test_installed_hard_kill_at_building_is_adopted_charged_and_completes(
 
     with _running_server(runtime, mode="building-gate") as server:
         async with (
-            Client(
-                _authenticated_mcp_url(runtime, server), timeout=45, init_timeout=45
-            ) as client,
-            Client(
-                _authenticated_mcp_url(runtime, server, api_key=runtime.peer_api_key),
-                timeout=45,
-                init_timeout=45,
-            ) as peer_client,
+            _InternalControlClient(runtime, server, peer=False) as client,
+            _InternalControlClient(runtime, server, peer=True) as peer_client,
         ):
             prepared, confirmation = await _prepare_confirm(client, peer_client)
             run_id = prepared["run_id"]
-            accepted = await _tool_payload(
+            accepted = await _internal_payload(
                 client,
-                "okto_pulse_kg_global_discovery_recovery_run",
+                'start',
                 {
                     "confirmation_id": confirmation["confirmation_id"],
                     "manifest_ref": prepared["manifest_ref"],
@@ -3198,9 +3161,7 @@ async def test_installed_hard_kill_at_building_is_adopted_charged_and_completes(
         finally:
             runtime.submit_gate_release_file.write_text("release", encoding="ascii")
 
-        async with Client(
-            _authenticated_mcp_url(runtime, restarted), timeout=45, init_timeout=45
-        ) as client:
+        async with _InternalControlClient(runtime, restarted, peer=False) as client:
             terminal = await _wait_for_phase(
                 client, run_id, {"terminal"}, timeout=600, poll_interval=1.0
             )
