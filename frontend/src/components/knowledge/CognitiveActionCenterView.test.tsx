@@ -152,6 +152,20 @@ function mockList(items: CognitiveReadinessItem[], enforcement = false) {
   vi.spyOn(api, "getReadinessMetrics").mockResolvedValue(METRICS);
 }
 
+test("pending projection points to observation and external support without a repair action", async () => {
+  mockList([item({
+    signal: "open_canonical_debt",
+    signal_source: "canonical_debt",
+    error_cause: "canonical_debt_open",
+    readiness_effect: "blocking_technical",
+  })]);
+  render(<CognitiveActionCenterView boardId="b" onClose={vi.fn()} />);
+  expect(await screen.findByText(/Health shows status and observation limits/)).toBeInTheDocument();
+  expect(screen.getByText(/Recovery requires authorized external support/)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /repair|rebuild|reprocess/i })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /record waiver/i })).not.toBeInTheDocument();
+});
+
 test('retains a legacy Sprint reference without a live entity lookup or navigation', async () => {
   mockList([item({ artifact_id: 'sprint:retired', source_ref_original: 'sprint:retired', aliases: ['sprint:retired'] })]);
   render(<CognitiveActionCenterView boardId="b" onClose={vi.fn()} />);

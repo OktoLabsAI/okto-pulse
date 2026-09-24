@@ -106,7 +106,7 @@ function advice(item: CognitiveReadinessItem) {
   if (item.signal === "open_canonical_debt")
     return {
       label: "Graph update still pending",
-      text: "The authoritative graph update has not finished. Inspect Knowledge Graph Health and its recovery diagnostics; do not waive a technical failure.",
+      text: "The graph projection has not finished. Knowledge Graph Health shows status and observation limits. Recovery requires authorized external support; a waiver cannot resolve a technical failure.",
       tone: "border-l-rose-500 dark:border-l-rose-400",
     };
   if (item.readiness_effect === "blocking_technical")

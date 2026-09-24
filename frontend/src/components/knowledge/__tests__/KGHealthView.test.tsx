@@ -268,6 +268,8 @@ describe('TS1 — mount inicial dispara 1 fetch e renderiza cards principais', (
       expect(sections[i - 1].compareDocumentPosition(sections[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     }
     expect(screen.getByRole('navigation', { name: 'KG Health sections' })).toBeInTheDocument();
+    expect(screen.getByText('Observe graph availability, pending work and the limits of each measurement.')).toBeInTheDocument();
+    expect(screen.queryByText(/recover with confidence/i)).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /^Recovery$/ })).not.toBeInTheDocument();
     expect(screen.getByText('Powered by Okto Grafx')).toBeInTheDocument();
   });

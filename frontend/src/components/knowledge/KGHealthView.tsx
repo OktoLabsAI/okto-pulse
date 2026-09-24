@@ -411,7 +411,7 @@ function HeaderBar({ boardName, pollIntervalMs, lastFetchAt, onRefresh, onClose,
       <div className="min-w-0 flex-1 basis-80">
           <p className="mb-1 flex items-center gap-2 text-xs font-semibold text-sky-700 dark:text-sky-400"><Activity className="h-4 w-4" aria-hidden /> Knowledge Graph · Operations</p>
           <h1 className="text-2xl font-semibold tracking-tight text-slate-900 dark:text-white">KG Health Dashboard</h1>
-          <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">Understand graph health, follow pending work and recover with confidence.</p>
+          <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">Observe graph availability, pending work and the limits of each measurement.</p>
           <p className="mt-2 flex flex-wrap items-center gap-x-2 text-xs text-slate-500 dark:text-slate-400">
             Board: {boardName} · {intervalLabel} · {lastFetchLabel}
             <ReadinessHelp label="About automatic refresh">This page refreshes observations while visible, without starting a rebuild or consolidation. Refresh does not retry failed jobs. If a refresh fails, previous data remains visible with a warning.</ReadinessHelp>
@@ -986,7 +986,7 @@ const CARD_GUIDANCE: Record<string, { description: string; help: string }> = {
   },
   'KG Health': {
     description: 'Read integrity signals and graph telemetry.',
-    help: 'These are backend observations, not inferred health. An unavailable metric is not zero. Inspect reported issues before deciding whether maintenance or recovery is needed.',
+    help: 'These are backend observations, not inferred health. An unavailable metric is not zero. Health provides no repair action; recovery requires authorized external support.',
   },
   'Canonical Debt': {
     description: 'Identify updates still waiting for canonical materialization.',

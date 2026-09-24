@@ -10,6 +10,7 @@ describe('HelpPanel after maintenance CLI retirement', () => {
     expect(dialog).toHaveTextContent(/Task Validation Gate thresholds/i);
     expect(dialog).toHaveTextContent(/Per-spec overrides/i);
     expect(dialog).not.toHaveTextContent(/Runtime Settings Panel|Menu → Settings|GraphDB|Event Queue|Decay Tick/i);
+    expect(dialog).not.toHaveTextContent(/dlq_auto_drain_enabled|re-queue dead-lettered/i);
   });
 
   it('explains schema unavailability without directing the user to a removed CLI', () => {

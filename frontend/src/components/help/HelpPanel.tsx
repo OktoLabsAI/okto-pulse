@@ -1553,7 +1553,6 @@ These flags bypass specific coverage checks for the entire board:
 |---------|---------|-------------|
 | \`max_scenarios_per_card\` | 5 | Maximum test scenarios per card (1–10) |
 | \`skip_cognitive_consolidation\` | false | Allow \`done\` transitions even when cognitive consolidation is pending — badges and KG Health pending lists remain visible |
-| \`dlq_auto_drain_enabled\` | false | Automatically re-queue dead-lettered consolidation entries for reprocessing |
 
 ### Per-spec overrides
 
