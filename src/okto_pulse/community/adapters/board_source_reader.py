@@ -6,10 +6,12 @@ import hashlib
 import json
 import logging
 import sqlite3
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
+from okto_pulse.core.application.rebuild_ports import SourceObservationBudget
 
 from okto_pulse.core.kg.board_source_store import (
     AMENDMENT_CONTENT_COLUMNS,
@@ -1637,7 +1639,13 @@ class CommunityBoardSourceReader:
             return Path(self.db_path_provider())
         return resolve_pulse_db_path()
 
-    def fetch(self, board_id: str) -> BoardSourceSnapshot:
+    def fetch(
+        self, board_id: str, *, observation_budget: SourceObservationBudget | None = None
+    ) -> BoardSourceSnapshot:
+        if observation_budget is not None and type(observation_budget) is not SourceObservationBudget:
+            raise TypeError("source_observation_budget_required")
+        deadline_at = (None if observation_budget is None else
+                       time.monotonic() + observation_budget.timeout_seconds)
         db_path = self._path()
         if not db_path.exists():
             logger.warning(
@@ -1646,11 +1654,14 @@ class CommunityBoardSourceReader:
             )
             return BoardSourceSnapshot(rows=(), complete=False, cause="db_missing")
 
+        remaining = 5.0 if deadline_at is None else deadline_at - time.monotonic()
+        if remaining <= 0:
+            raise SourceReadFailure("source observation deadline exceeded", cause_type="observation_timeout")
         try:
             conn = sqlite3.connect(
                 f"file:{db_path}?mode=ro&immutable=0",
                 uri=True,
-                timeout=5.0,
+                timeout=remaining,
             )
         except sqlite3.Error as exc:
             raise SourceUnavailableError(
@@ -1663,8 +1674,18 @@ class CommunityBoardSourceReader:
             # sqlite3 does not open a transaction for a SELECT by default.  An
             # explicit read transaction keeps schema preflight and row
             # collection pinned to one coherent database snapshot.
-            conn.execute("BEGIN")
-            return self._fetch_conn(conn, board_id)
+            reader = conn
+            if observation_budget is not None:
+                from okto_pulse.community.adapters.source_observation_budget import BoundedSourceConnection
+
+                reader = BoundedSourceConnection(conn, observation_budget, deadline_at=deadline_at)
+            reader.execute("BEGIN")
+            snapshot = self._fetch_conn(reader, board_id)
+            if observation_budget is not None:
+                reader.check()
+                if len(snapshot.rows) > observation_budget.max_rows:
+                    raise SourceReadFailure("source observation volume exceeded", cause_type="observation_volume_exceeded")
+            return snapshot
         except sqlite3.Error as exc:
             raise SourceReadFailure(
                 "board source rows could not be read",
