@@ -655,7 +655,7 @@ origins = {
 core_dist = metadata.distribution("okto-pulse-core")
 community_dist = metadata.distribution("okto-pulse")
 grafx_dist = metadata.distribution("okto-grafx")
-assert core_dist.version == community_dist.version == "0.3.3"
+assert core_dist.version == community_dist.version == __EXPECTED_VERSION__
 assert grafx_dist.version == expected_grafx_version
 for distribution in (core_dist, community_dist, grafx_dist):
     root = Path(distribution.locate_file("")).resolve()
@@ -692,7 +692,7 @@ assert under(resource_manifest_path, venv), resource_manifest_path
 tool_manifest = json.loads(tool_manifest_path.read_text(encoding="utf-8"))
 resource_manifest = json.loads(resource_manifest_path.read_text(encoding="utf-8"))
 assert tool_manifest["tool_count"] == 13
-assert resource_manifest["resource_count"] == 23
+assert resource_manifest["resource_count"] == 22
 
 semantic_v2_reader_signature = inspect.signature(
     SemanticAssessmentV2ReadPort.get_current_semantic_assessment_v2
@@ -725,7 +725,7 @@ label = "Community Edition \u2014 v"
 about = [source for source in sources if label in source]
 assert len(about) == 1, len(about)
 assert about[0].count(label) == 1
-assert "0.3.3" in about[0]
+assert __EXPECTED_VERSION__ in about[0]
 assert not any("Community Edition \u2014 v0.3.0" in source for source in sources)
 
 print("INSTALLED_ORIGIN_PROBE=" + json.dumps({
@@ -753,9 +753,12 @@ print("INSTALLED_ORIGIN_PROBE=" + json.dumps({
         "compatible": True,
         "signature": str(semantic_v2_reader_signature),
     },
-    "about_version": "0.3.3",
+    "about_version": __EXPECTED_VERSION__,
 }, sort_keys=True))
 """
+_INSTALLED_ORIGIN_PROBE = _INSTALLED_ORIGIN_PROBE.replace(
+    "__EXPECTED_VERSION__", json.dumps(EXPECTED_VERSION)
+)
 
 
 _INSTALLED_RUNTIME_VERSION_PROBE = r"""
@@ -839,9 +842,9 @@ async def main():
     frozen_ska_tools = {
         entry["name"] for entry in build_ska_tool_manifest()["tools"]
     }
-    assert initialized.serverInfo.version == "0.3.3"
-    assert metadata.version("okto-pulse-core") == "0.3.3"
-    assert metadata.version("okto-pulse") == "0.3.3"
+    assert initialized.serverInfo.version == __EXPECTED_VERSION__
+    assert metadata.version("okto-pulse-core") == __EXPECTED_VERSION__
+    assert metadata.version("okto-pulse") == __EXPECTED_VERSION__
     assert (
         len(names)
         == manifest["tool_inventory"]["count"]
@@ -880,6 +883,7 @@ _MCP_CLIENT_PROBE = (
     )
     .replace("__EXPECTED_TOOL_ALIAS_COUNT__", str(EXPECTED_TOOL_ALIAS_COUNT))
     .replace("__EXPECTED_RESOURCE_COUNT__", str(EXPECTED_RESOURCE_COUNT))
+    .replace("__EXPECTED_VERSION__", json.dumps(EXPECTED_VERSION))
 )
 
 
@@ -946,6 +950,26 @@ def _installed_gate(
     _run(install, cwd=work_dir, timeout=900)
 
     env = _isolated_env()
+    # Prove the installed pair before importing product code or probing behavior.
+    # sysconfig is stdlib-only; no package initializer can run ahead of this check.
+    installed_root = _run(
+        (python, "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"),
+        cwd=work_dir,
+        env=env,
+        timeout=120,
+    )
+    site_packages = Path(installed_root.stdout.strip()).resolve()
+    if not site_packages.is_relative_to(venv.resolve()):
+        raise ReleaseArtifactGateError("installed payload root escaped isolated venv")
+    expected_origins = {
+        "okto_pulse.core": str(site_packages / "okto_pulse/core/__init__.py"),
+        "okto_pulse.community": str(site_packages / "okto_pulse/community/__init__.py"),
+    }
+    payload_provenance = _installed_payload_provenance(
+        core_wheel=core_wheel,
+        community_wheel=community_wheel,
+        origin_evidence={"origins": expected_origins},
+    )
     runtime_version = _run(
         (
             python,
@@ -978,11 +1002,9 @@ def _installed_gate(
         timeout=180,
     )
     origin_evidence = _parse_probe(origin.stdout, "INSTALLED_ORIGIN_PROBE=")
-    payload_provenance = _installed_payload_provenance(
-        core_wheel=core_wheel,
-        community_wheel=community_wheel,
-        origin_evidence=origin_evidence,
-    )
+    for module_name, expected_origin in expected_origins.items():
+        if Path(origin_evidence["origins"][module_name]).resolve() != Path(expected_origin):
+            raise ReleaseArtifactGateError(f"unproved runtime origin: {module_name}")
 
     runtime_matrix = _run(
         (
@@ -1029,7 +1051,7 @@ def _installed_gate(
         env=env,
         timeout=120,
     )
-    expected_cli = "okto-pulse 0.3.3 (okto-pulse-core 0.3.3)"
+    expected_cli = f"okto-pulse {EXPECTED_VERSION} (okto-pulse-core {EXPECTED_VERSION})"
     if cli.stdout.strip() != expected_cli:
         raise ReleaseArtifactGateError(
             "installed CLI version mismatch: "

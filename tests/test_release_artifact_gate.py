@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tomllib
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -46,6 +47,11 @@ def test_ts24_release_harness_freezes_installed_inventory_and_provenance() -> No
     assert module.EXPECTED_CANONICAL_TOOL_COUNT == live_canonical_count == 294
     assert module.EXPECTED_TOOL_ALIAS_COUNT == live_alias_count == 7
     assert module.EXPECTED_RESOURCE_COUNT == live_resource_count == 54
+    resource_manifest = json.loads(
+        (module.CORE_REPO / "src/okto_pulse/core/mcp/resources/ska_resource_manifest.json")
+        .read_text(encoding="utf-8")
+    )
+    assert resource_manifest["resource_count"] == 22
     assert module.MINIMUM_SUPPORTED_PYTHON == (3, 11)
     assert module._is_core_checkout(module.CORE_REPO)
     assert "site-packages" not in str(module.CORE_REPO).lower()
@@ -60,6 +66,11 @@ def test_ts24_release_harness_freezes_installed_inventory_and_provenance() -> No
     assert 'metadata.distribution("okto-grafx")' in module._INSTALLED_ORIGIN_PROBE
     assert 'grafx_dist.read_text("direct_url.json")' in (module._INSTALLED_ORIGIN_PROBE)
     assert "__EXPECTED_" not in module._MCP_CLIENT_PROBE
+    for probe in (module._INSTALLED_ORIGIN_PROBE, module._MCP_CLIENT_PROBE):
+        assert "__EXPECTED_" not in probe
+        assert '"0.3.3"' not in probe
+        assert json.dumps(module.EXPECTED_VERSION) in probe
+        compile(probe, "<installed-release-probe>", "exec")
     assert "installed runtime" in module._INSTALLED_RUNTIME_VERSION_PROBE
     assert 'metadata.version("pydantic")' in (module._INSTALLED_RUNTIME_VERSION_PROBE)
     assert 'metadata.version("okto-grafx")' in (module._INSTALLED_RUNTIME_VERSION_PROBE)
@@ -70,6 +81,33 @@ def test_ts24_release_harness_freezes_installed_inventory_and_provenance() -> No
     assert '"productive_kuzu_purged": False' in runtime_probe
     assert '"family_projection_hashes": family_hashes' in runtime_probe
     assert "third_rerun_snapshot" in runtime_probe
+
+
+def test_release_gate_rejects_unproved_bytes_before_product_probes(monkeypatch, tmp_path):
+    spec = importlib.util.spec_from_file_location("release_gate_proof_order", GATE)
+    assert spec is not None and spec.loader is not None
+    gate = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gate)
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(tuple(map(str, command)))
+        if len(commands) > 3:
+            pytest.fail("behavioral probe ran before successful payload proof")
+        return SimpleNamespace(stdout=str(tmp_path / "venv/Lib/site-packages"))
+
+    def reject_payload(**kwargs):
+        assert len(commands) == 3  # venv, installation, stdlib path discovery
+        assert "sysconfig" in commands[-1][2]
+        raise gate.ReleaseArtifactGateError("installed payload differs from source")
+
+    monkeypatch.setattr(gate, "_run", run)
+    monkeypatch.setattr(gate, "_installed_payload_provenance", reject_payload)
+    with pytest.raises(gate.ReleaseArtifactGateError, match="differs from source"):
+        gate._installed_gate(
+            "uv", tmp_path / "core.whl", tmp_path / "community.whl",
+            tmp_path / "grafx.whl", tmp_path, offline=True,
+        )
 
 
 def test_release_gate_resolves_core_from_explicit_workspace_root(
@@ -182,7 +220,7 @@ def test_fresh_wheels_install_and_serve_from_isolated_venv(tmp_path: Path) -> No
     evidence = json.loads(results[0])
 
     assert evidence["status"] == "passed"
-    assert evidence["expected_version"] == "0.3.3"
+    assert evidence["expected_version"] == "0.3.4"
     assert evidence["installed"]["runtime_version"]["python_major_minor"] == [3, 11]
     assert evidence["installed"]["runtime_version"]["required_major_minor"] == [3, 11]
     assert evidence["installed"]["runtime_version"]["pydantic"]
@@ -197,15 +235,15 @@ def test_fresh_wheels_install_and_serve_from_isolated_venv(tmp_path: Path) -> No
     assert origin["grafx_direct_url"]["url"].endswith(
         "/" + evidence["wheels"]["grafx"]["name"]
     )
-    assert origin["about_version"] == "0.3.3"
+    assert origin["about_version"] == "0.3.4"
     assert origin["ska_contract_manifests"]["tool_count"] == 13
-    assert origin["ska_contract_manifests"]["resource_count"] == 23
+    assert origin["ska_contract_manifests"]["resource_count"] == 22
     assert origin["semantic_v2_reader_contract"]["compatible"] is True
     assert "subject_edition" in origin["semantic_v2_reader_contract"]["signature"]
     assert len(origin["required_core_resources"]) == 2
     for distribution in ("core", "community"):
         provenance = evidence["installed"]["payload_provenance"][distribution]
-        assert provenance["version"] == "0.3.3"
+        assert provenance["version"] == "0.3.4"
         assert provenance["commit"]
         assert provenance["repository_root"]
         assert provenance["wheel"]["sha256"]
@@ -236,10 +274,13 @@ def test_fresh_wheels_install_and_serve_from_isolated_venv(tmp_path: Path) -> No
         "ideation",
         "refinement",
         "spec",
-        "sprint",
         "card",
     ]
-    assert kg_parity["artifact_family_count"] == 6
+    assert kg_parity["artifact_family_count"] == 5
+    assert kg_parity["retired_sprint_rejected"] is True
+    assert set(kg_parity["family_projection_hashes"]) == {
+        "story", "ideation", "refinement", "spec", "card",
+    }
     assert kg_parity["mismatches"] == []
     assert kg_parity["oracle"]["productive_kuzu_materialized"] is False
     assert kg_parity["oracle"]["productive_kuzu_purged"] is False
@@ -250,13 +291,13 @@ def test_fresh_wheels_install_and_serve_from_isolated_venv(tmp_path: Path) -> No
     assert kg_parity["ska"]["quality"] == "covered"
     assert kg_parity["ska"]["research_decision_ledger"] == "covered"
     assert evidence["installed"]["cli_version"] == (
-        "okto-pulse 0.3.3 (okto-pulse-core 0.3.3)"
+        "okto-pulse 0.3.4 (okto-pulse-core 0.3.4)"
     )
     mcp_http = evidence["installed"]["mcp_http"]
     assert mcp_http["transport"] == "streamable-http-loopback"
-    assert mcp_http["tool_count"] == 340
-    assert mcp_http["canonical_tool_count"] == 332
-    assert mcp_http["tool_alias_count"] == 8
-    assert mcp_http["resource_count"] == 56
+    assert mcp_http["tool_count"] == 301
+    assert mcp_http["canonical_tool_count"] == 294
+    assert mcp_http["tool_alias_count"] == 7
+    assert mcp_http["resource_count"] == 54
     assert mcp_http["ska_tool_count"] == 13
     assert (work_dir / "release-artifact-evidence.json").is_file()

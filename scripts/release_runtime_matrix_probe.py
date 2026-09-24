@@ -540,14 +540,6 @@ def _kg_projection_parity() -> dict[str, Any]:
             ],
             "quality_assessments": quality,
         },
-        "sprint": {
-            "id": "sprint-release",
-            "board_id": board_id,
-            "title": "Release sprint",
-            "description": "Ship the verified artifact.",
-            "objective": "Close the release.",
-            "status": "done",
-        },
         "card": {
             "id": "card-release",
             "board_id": board_id,
@@ -559,6 +551,15 @@ def _kg_projection_parity() -> dict[str, Any]:
         },
     }
     worker = DeterministicWorker()
+    if hasattr(worker, "process_sprint"):
+        raise RuntimeError("retired Sprint projector is still callable")
+    try:
+        worker.process_artifact("sprint", {"id": "retired-sprint", "board_id": board_id})
+    except ValueError as exc:
+        if str(exc) != "unknown artifact_type: sprint":
+            raise
+    else:
+        raise RuntimeError("generic projector accepted retired Sprint")
     incremental_final: dict[str, dict[str, Any]] = {}
     rebuild_final: dict[str, dict[str, Any]] = {}
     for artifact_type, payload in final_payloads.items():
@@ -628,6 +629,7 @@ def _kg_projection_parity() -> dict[str, Any]:
         "coverage": "TS24-C11 covered",
         "fail_closed": True,
         "scope": "installed deterministic projection parity",
+        "retired_sprint_rejected": True,
         "oracle": {
             "comparison": (
                 "incremental churn final projection versus clean rebuild "
