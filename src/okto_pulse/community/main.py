@@ -880,6 +880,9 @@ async def _drain_global_discovery_recovery_runtime(
 def create_community_app():
     """Create the community FastAPI application with embedded frontend."""
     require_compatible_core()
+    from okto_pulse.community.adapters.frontend_distribution import require_compatible_frontend
+
+    require_compatible_frontend(FRONTEND_DIR)
     settings = CommunitySettings()
 
     # Read ports from environment (set by CLI) or use defaults

@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build && node scripts/sync-frontend-dist.mjs",
+    "build": "tsc -b && vite build && node scripts/write-frontend-contract.mjs && node scripts/sync-frontend-dist.mjs",
     "verify:frontend-dist": "node scripts/sync-frontend-dist.mjs --verify-only",
     "lint": "node scripts/lint-ratchet.mjs",
     "preview": "vite preview",
