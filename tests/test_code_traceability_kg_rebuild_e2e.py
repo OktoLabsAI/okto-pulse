@@ -20,6 +20,9 @@ from okto_pulse.community.adapters.board_source_reader import (
 from okto_pulse.community.adapters.sqlalchemy_consolidation import (
     CommunitySqlAlchemyConsolidationPersistence,
 )
+from okto_pulse.community.adapters.sqlalchemy_kg_cognitive_source import (
+    CommunitySqlAlchemyCognitiveSourceStore,
+)
 from okto_pulse.community.adapters.sqlalchemy_models import (
     Base,
     ConsolidationQueue,
@@ -27,7 +30,10 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
 from okto_pulse.core.application.processors.consolidation import (
     _run_deterministic_worker,
 )
-from okto_pulse.core.kg.rebuild_sources import RebuildSourceEnumerator
+from okto_pulse.core.kg.rebuild_sources import (
+    RebuildSourceEnumerator,
+    cognitive_durable_digest_from_rows,
+)
 
 
 NOW = datetime(2026, 8, 9, 18, 0, tzinfo=timezone.utc)
@@ -409,9 +415,19 @@ async def test_rebuild_closes_historical_evidence_chain_without_counting_it_as_c
 
     snapshot = CommunityBoardSourceReader(database_path).fetch("board-1")
     assert snapshot.complete is True
+    # Enumerate the cognitive class from this fixture's database as well.
+    # A process-global store may belong to another test; an unavailable store
+    # must still fail closed, never stand in for an empty source class.
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    cognitive_rows = await CommunitySqlAlchemyCognitiveSourceStore(
+        sessions
+    ).enumerate_latest_verified("board-1")
+    assert cognitive_rows == ()
+    cognitive_digest = cognitive_durable_digest_from_rows(cognitive_rows)
     source_set = RebuildSourceEnumerator(
         source_store=lambda _board_id: list(snapshot.rows),
         now=NOW + timedelta(days=1),
+        cognitive_digest_provider=lambda _board_id: cognitive_digest,
     ).enumerate(board_id="board-1")
     assert {
         row.id
@@ -473,7 +489,6 @@ async def test_rebuild_closes_historical_evidence_chain_without_counting_it_as_c
         ]
     assert ordered_evidence == ["evidence-y", "evidence-z", "evidence-1"]
 
-    sessions = async_sessionmaker(engine, expire_on_commit=False)
     persistence = CommunitySqlAlchemyConsolidationPersistence()
     results = []
     async with sessions() as session:
