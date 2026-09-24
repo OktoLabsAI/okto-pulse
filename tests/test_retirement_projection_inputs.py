@@ -47,7 +47,7 @@ async def test_terminal_refinement_from_real_sql_keeps_empty_cleanup_outside_cen
         plans = {item['source']['artifact_id']: item for item in document['plans']}
         assert set(plans) == {'refinement', 'spec'}
         assert plans['refinement']['projection']['nodes'] == []
-        assert plans['refinement']['projection']['relational_projection_active_set_intent'] == {
+        assert plans['refinement']['projection']['relational_projection_active_set_intents'][0] == {
             'owner_type': 'refinement', 'owner_id': 'refinement', 'namespace': 'rdl',
             'active_refs': [], 'active_edges': [],
         }
