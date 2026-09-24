@@ -21,7 +21,9 @@ from okto_pulse.community.adapters.sqlalchemy_models import Base
 
 pytestmark = pytest.mark.asyncio
 
-LIST_ENTITIES = ("stories", "ideations", "refinements", "specs", "sprints", "cards")
+# F3 retired Sprint storage and its public read paths. The surviving matrix
+# remains exact; the migration must not recreate a retired table or index.
+LIST_ENTITIES = ("stories", "ideations", "refinements", "specs", "cards")
 
 EXPECTED_INDICES = {
     "ix_cards_board_status_archived_position_iddesc",
@@ -33,11 +35,6 @@ EXPECTED_INDICES = {
     "ix_cards_board_assignee",
     "ix_cards_board_spec",
     "ix_stories_board_topic_archived",
-    "ix_sprints_spec_archived_updated_id",
-    "ix_sprints_spec_status_archived_updated_id",
-    "ix_sprints_spec_updated_id",
-    "ix_sprints_spec_archived_created_iddesc",
-    "ix_sprints_spec_status_archived_created_iddesc",
     "ix_specs_board_title_id",
     "ix_ideations_board_title_id",
     "ix_refinements_ideation_archived_updated_id",
@@ -53,7 +50,6 @@ EXPECTED_INDICES = {
     "ix_ideation_qa_items_parent_open",
     "ix_refinement_qa_items_parent_open",
     "ix_spec_qa_items_parent_open",
-    "ix_sprint_qa_items_parent_open",
     *(f"ix_{table}_board_archived_updated_id" for table in LIST_ENTITIES),
     *(f"ix_{table}_board_updated_id" for table in LIST_ENTITIES),
     *(f"ix_{table}_board_status_archived_updated_id" for table in LIST_ENTITIES),
@@ -112,33 +108,6 @@ CANONICAL_QUERIES = [
         "WHERE board_id = 'pg-board' GROUP BY topic_id, archived",
     ),
     (
-        "sprints_by_spec",
-        "SELECT id FROM sprints WHERE spec_id = 'pg-spec' AND archived = 0 "
-        "ORDER BY updated_at DESC, id DESC LIMIT 25",
-    ),
-    (
-        "sprints_by_spec_status_filtered",
-        "SELECT id FROM sprints WHERE spec_id = 'pg-spec' AND status = 'draft' "
-        "AND archived = 0 ORDER BY updated_at DESC, id DESC LIMIT 25",
-    ),
-    (
-        "sprints_by_spec_all",
-        "SELECT id FROM sprints WHERE spec_id = 'pg-spec' "
-        "ORDER BY updated_at DESC, id DESC LIMIT 25",
-    ),
-    (
-        "mcp_sprints_by_spec",
-        "SELECT id FROM sprints WHERE board_id = 'pg-board' "
-        "AND spec_id = 'pg-spec' AND archived = 0 "
-        "ORDER BY created_at ASC, id DESC LIMIT 25",
-    ),
-    (
-        "mcp_sprints_by_spec_status_filtered",
-        "SELECT id FROM sprints WHERE board_id = 'pg-board' "
-        "AND spec_id = 'pg-spec' AND status = 'draft' AND archived = 0 "
-        "ORDER BY created_at ASC, id DESC LIMIT 25",
-    ),
-    (
         "lookup_specs_plain",
         "SELECT id, title, status FROM specs WHERE board_id = 'pg-board' "
         "ORDER BY title ASC, id ASC LIMIT 20",
@@ -177,11 +146,6 @@ CANONICAL_QUERIES = [
     (
         "qa_open_count_spec",
         "SELECT COUNT(*) FROM spec_qa_items WHERE spec_id = 'pg-spec' "
-        "AND answered_at IS NULL",
-    ),
-    (
-        "qa_open_count_sprint",
-        "SELECT COUNT(*) FROM sprint_qa_items WHERE sprint_id = 'pg-sprint' "
         "AND answered_at IS NULL",
     ),
     (
@@ -250,7 +214,6 @@ DESC_INDEXES = {
     "ix_refinements_board_ideation_archived_updated_iddesc",
     "ix_refinements_board_ideation_status_archived_updated_iddesc",
     "ix_refinements_board_ideation_updated_iddesc",
-    "ix_sprints_spec_status_archived_updated_id",
 }
 
 
@@ -335,13 +298,6 @@ async def _seed_dirty_board(engine: AsyncEngine) -> None:
         )
         await conn.execute(
             text(
-                "INSERT INTO sprints (id, spec_id, board_id, title, status, "
-                "spec_version, version, created_by) VALUES "
-                "('pg-sprint', 'pg-spec', 'pg-board', 'Sprint 1', 'draft', 1, 1, 'pg-user')"
-            )
-        )
-        await conn.execute(
-            text(
                 "INSERT INTO qa_items (id, card_id, question, asked_by, answered_at) "
                 "VALUES ('pg-qa-open', 'pg-neg', 'open?', 'pg-user', NULL), "
                 "('pg-qa-done', 'pg-neg', 'done?', 'pg-user', '2026-07-20 10:00:00')"
@@ -409,6 +365,13 @@ async def test_backfill_normalizes_and_is_idempotent(
             assert (await conn.execute(divergence_sql)).scalar_one() == 0
         await steps._migrate_pagination_indices_and_positions()
         assert await _positions(engine) == snap
+
+        async with engine.connect() as conn:
+            retired = await conn.execute(text(
+                "SELECT name FROM sqlite_master WHERE "
+                "name IN ('sprints', 'sprint_qa_items') OR name LIKE 'ix_sprint%'"
+            ))
+            assert retired.all() == []
 
         # Covering indices exist (idempotent CREATE INDEX IF NOT EXISTS).
         async with engine.connect() as conn:

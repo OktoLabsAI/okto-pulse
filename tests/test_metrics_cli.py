@@ -2,10 +2,22 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import pytest
 
 from okto_pulse.community.config import CommunitySettings
 from okto_pulse.community.cli import cmd_metrics, main
 from okto_pulse.core.telemetry.schema import CURRENT_SCHEMA_VERSION
+
+
+@pytest.fixture(autouse=True)
+def _isolated_metrics_paths(tmp_path, monkeypatch):
+    # Explicit inherited paths override DATA_DIR in Settings. Keep CLI writes,
+    # exports and purge inside this test even under the paired-suite launcher.
+    monkeypatch.chdir(tmp_path)
+    for key in ("METRICS_DIR", "KG_BASE_DIR", "DATABASE_URL", "UPLOAD_DIR"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("OKTO_PULSE_HOME", str(tmp_path / "pulse-home"))
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "pulse-data"))
 
 
 class Args:
