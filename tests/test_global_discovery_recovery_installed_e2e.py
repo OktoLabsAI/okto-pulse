@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -69,18 +70,21 @@ _grafx_requirement = next(
 _grafx_pins = tuple(_grafx_requirement.specifier)
 assert len(_grafx_pins) == 1 and _grafx_pins[0].operator == "=="
 EXPECTED_GRAFX_VERSION = _grafx_pins[0].version
+EXPECTED_PULSE_VERSION = tomllib.loads(
+    (COMMUNITY_REPO / "pyproject.toml").read_text(encoding="utf-8")
+)["project"]["version"]
+assert tomllib.loads((CORE_REPO / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"] == EXPECTED_PULSE_VERSION
 BOARD_CENSUS_SIZE = 1_500
-EXPECTED_TOOL_COUNT = 341
-EXPECTED_CANONICAL_TOOL_COUNT = 333
+EXPECTED_TOOL_COUNT = 301
+EXPECTED_CANONICAL_TOOL_COUNT = 294
 EXPECTED_TOOL_INVENTORY_SHA256 = (
-    "b88574861a237b1159358930b705b3d30592bc01b5cf0c61f30a55841edd2412"
+    "87584aac5163215b5d302078198d3ebd425d6061b1ce931302ea7184cd90f688"
 )
 EXPECTED_TOOL_ALIASES = {
     "okto_pulse_ask_ideation_question": "okto_pulse_ask",
     "okto_pulse_ask_question": "okto_pulse_ask",
     "okto_pulse_ask_refinement_question": "okto_pulse_ask",
     "okto_pulse_ask_spec_question": "okto_pulse_ask",
-    "okto_pulse_ask_sprint_question": "okto_pulse_ask",
     "okto_pulse_remove_api_contract": "okto_pulse_remove_spec_entity",
     "okto_pulse_remove_business_rule": "okto_pulse_remove_spec_entity",
     "okto_pulse_remove_decision": "okto_pulse_remove_spec_entity",
@@ -178,8 +182,8 @@ def _resolve_pulse_wheel_pair(
         assert len(community_candidates) == 1, all_wheels
         core_wheel = core_candidates[0]
         community_wheel = community_candidates[0]
-        assert "-0.3.3-" in core_wheel.name, core_wheel.name
-        assert "-0.3.3-" in community_wheel.name, community_wheel.name
+        assert f"-{EXPECTED_PULSE_VERSION}-" in core_wheel.name, core_wheel.name
+        assert f"-{EXPECTED_PULSE_VERSION}-" in community_wheel.name, community_wheel.name
         expected_core_sha = _expected_sha256(FINAL_CORE_WHEEL_SHA256_ENV)
         expected_community_sha = _expected_sha256(FINAL_COMMUNITY_WHEEL_SHA256_ENV)
         if expected_core_sha is not None:
@@ -384,6 +388,43 @@ class InstalledRuntime:
     resource_manifest: dict[str, Any]
 
 
+def _isolated_runtime_environment(data_dir: Path) -> dict[str, str]:
+    """Override every storage destination inherited from a parent campaign."""
+    return {
+        **os.environ,
+        "DATA_DIR": str(data_dir),
+        "OKTO_PULSE_HOME": str(data_dir),
+        "DATABASE_URL": f"sqlite+aiosqlite:///{(data_dir / 'data' / 'pulse.db').as_posix()}",
+        "KG_BASE_DIR": str(data_dir),
+        "UPLOAD_DIR": str(data_dir / "uploads"),
+        "METRICS_DIR": str(data_dir / "metrics"),
+        "PYTHONUTF8": "1",
+    }
+
+
+def _prove_installed_pair(*, root, python, core_wheel, community_wheel, env):
+    """Use the release gate's full source/wheel/install proof before runtime IO."""
+    spec = importlib.util.spec_from_file_location(
+        "installed_e2e_payload_gate", COMMUNITY_REPO / "scripts/release_artifact_gate.py",
+    )
+    assert spec is not None and spec.loader is not None
+    gate = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gate)
+    location = _run_checked(
+        [str(python), "-I", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+        cwd=root, env=env,
+    )
+    site_packages = Path(location.stdout.strip())
+    proof = gate._installed_payload_provenance(
+        core_wheel=core_wheel, community_wheel=community_wheel,
+        origin_evidence={"origins": {
+            f"okto_pulse.{edition}": str(site_packages / "okto_pulse" / edition / "__init__.py")
+            for edition in ("core", "community")
+        }},
+    )
+    (root / "installed-pair-provenance.json").write_text(json.dumps(proof, indent=2), encoding="utf-8")
+
+
 @pytest.fixture(scope="module")
 def installed_runtime(
     tmp_path_factory: pytest.TempPathFactory,
@@ -439,6 +480,8 @@ def installed_runtime(
     assert _sha256(community_wheel) == community_wheel_sha256
     assert _sha256(grafx_wheel) == grafx_wheel_sha256
 
+    _prove_installed_pair(root=root, python=python, core_wheel=core_wheel,
+                         community_wheel=community_wheel, env=build_env)
     data_dir = root / "pulse-home"
     clock_file = root / "confirmation-clock-offset-seconds.txt"
     clock_file.write_text("0", encoding="ascii")
@@ -460,7 +503,7 @@ def installed_runtime(
     submit_gate_release_file = root / "submit-gate-release.txt"
     submit_gate_timeout_marker = root / "submit-gate-timeout-marker.txt"
     runtime_env = {
-        **os.environ,
+        **_isolated_runtime_environment(data_dir),
         "HF_HUB_OFFLINE": "1",
         "KG_GLOBAL_GRAPH_BACKEND": "grafx",
         "KG_GRAPH_BACKEND": "grafx",
@@ -536,7 +579,7 @@ for direct_dependency in (
 core_requirement = next(
     row for row in requirements if row.startswith("okto-pulse-core")
 )
-assert ">=0.3.3" in core_requirement and "<1.0.0" in core_requirement
+assert core_requirement.replace(" ", "") == "okto-pulse-core==" + os.environ["E2E_EXPECTED_PULSE_VERSION"]
 console_scripts = {
     entry.name: entry.value
     for entry in community.entry_points
@@ -551,7 +594,7 @@ for package_path in community.files or ():
         javascript.append(community.locate_file(package_path).read_text(encoding="utf-8"))
 about = [source for source in javascript if "Community Edition — v" in source]
 assert len(about) == 1
-assert "0.3.3" in about[0]
+assert os.environ["E2E_EXPECTED_PULSE_VERSION"] in about[0]
 assert "Community Edition — v0.2.5" not in "".join(javascript)
 
 print(json.dumps({
@@ -579,6 +622,7 @@ print(json.dumps({
         **runtime_env,
         "E2E_GRAFX_WHEEL_URI": grafx_wheel.as_uri(),
         "E2E_EXPECTED_GRAFX_VERSION": EXPECTED_GRAFX_VERSION,
+        "E2E_EXPECTED_PULSE_VERSION": EXPECTED_PULSE_VERSION,
         "OKTO_E2E_FENCE_DEBUG_FILE": str(root / "fence-debug.jsonl"),
         "E2E_WORKSPACE_ROOT": str(WORKSPACE_ROOT),
     }
@@ -588,7 +632,7 @@ print(json.dumps({
         env=origin_env,
     )
     origin_report = json.loads(origin_result.stdout.strip().splitlines()[-1])
-    assert origin_report["versions"] == {"community": "0.3.3", "core": "0.3.3"}
+    assert origin_report["versions"] == {"community": EXPECTED_PULSE_VERSION, "core": EXPECTED_PULSE_VERSION}
     assert origin_report["grafx"]["version"] == EXPECTED_GRAFX_VERSION
     assert origin_report["about_bundle_count"] == 1
 
@@ -627,17 +671,18 @@ with runtime_value_scope(runtime_values):
     version_result = _run_checked(
         [str(console), "--version"], cwd=root, env=runtime_env, timeout=60
     )
-    assert version_result.stdout.strip() == "okto-pulse 0.3.3 (okto-pulse-core 0.3.3)"
+    assert version_result.stdout.strip() == f"okto-pulse {EXPECTED_PULSE_VERSION} (okto-pulse-core {EXPECTED_PULSE_VERSION})"
 
+    handoff_path = root / "bootstrap-api-key"
     initialized = _run_checked(
-        [str(console), "init"],
+        [str(console), "init", "--bootstrap-key-handoff", str(handoff_path)],
         cwd=root,
         env=runtime_env,
         timeout=300,
     )
-    key_match = re.search(r"API Key:\s+(dash_[A-Za-z0-9]+)", initialized.stdout)
-    assert key_match is not None, initialized.stdout[-4000:]
-    api_key = key_match.group(1)
+    api_key = handoff_path.read_text(encoding="utf-8").strip()
+    assert re.fullmatch(r"dash_[A-Za-z0-9]+", api_key)
+    assert api_key not in initialized.stdout
     database_path = data_dir / "data" / "pulse.db"
     assert database_path.is_file(), database_path
 
@@ -805,14 +850,26 @@ print(json.dumps({"api_key_hash": key_hash, "api_key_marker": credential_marker(
     )
 
 
+def test_installed_runtime_paths_override_parent_campaign(tmp_path, monkeypatch):
+    keys = ("DATA_DIR", "OKTO_PULSE_HOME", "DATABASE_URL", "KG_BASE_DIR", "UPLOAD_DIR", "METRICS_DIR")
+    for key in keys:
+        monkeypatch.setenv(key, "parent-runtime-must-not-be-used")
+    data = tmp_path / "isolated"
+    env = _isolated_runtime_environment(data)
+    for key in keys:
+        assert "parent-runtime" not in env[key]
+        assert str(data).replace("\\", "/") in env[key].replace("\\", "/")
+        assert os.environ[key] == "parent-runtime-must-not-be-used"
+
+
 def test_final_wheel_mode_reuses_pair_and_authenticates_grafx_before_install(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     final_pair = tmp_path / "final-pair"
     final_pair.mkdir()
-    core_wheel = final_pair / "okto_pulse_core-0.3.3-py3-none-any.whl"
-    community_wheel = final_pair / "okto_pulse-0.3.3-py3-none-any.whl"
+    core_wheel = final_pair / f"okto_pulse_core-{EXPECTED_PULSE_VERSION}-py3-none-any.whl"
+    community_wheel = final_pair / f"okto_pulse-{EXPECTED_PULSE_VERSION}-py3-none-any.whl"
     core_wheel.write_bytes(b"governed-core")
     community_wheel.write_bytes(b"governed-community")
     grafx_wheel = tmp_path / f"okto_grafx-{EXPECTED_GRAFX_VERSION}-py3-none-any.whl"
@@ -927,6 +984,8 @@ def test_installed_grafx_candidate_materializes_board_and_global_routes(
     assert _sha256(core_wheel) == core_wheel_sha256
     assert _sha256(community_wheel) == community_wheel_sha256
     assert _sha256(grafx_wheel) == grafx_wheel_sha256
+    _prove_installed_pair(root=root, python=python, core_wheel=core_wheel,
+                         community_wheel=community_wheel, env=build_env)
     _run_checked(
         [uv, "pip", "check", "--python", str(python)],
         cwd=root,
@@ -936,7 +995,7 @@ def test_installed_grafx_candidate_materializes_board_and_global_routes(
 
     data_dir = root / "pulse-home"
     runtime_env = {
-        **os.environ,
+        **_isolated_runtime_environment(data_dir),
         "HF_HUB_OFFLINE": "1",
         "KG_GLOBAL_GRAPH_BACKEND": "grafx",
         "KG_GRAFX_PAGE_SIZE": "8192",
@@ -988,6 +1047,7 @@ from okto_pulse.community.adapters.graph_backend_binding import (
     CommunityGraphBackendBindingStore,
 )
 from okto_pulse.community.config import CommunitySettings
+from okto_pulse.community.adapters.grafx_schema_manifest import PULSE_GRAFX_SCHEMA_MANIFEST
 
 venv = Path(sys.prefix).resolve()
 workspace = Path(os.environ["E2E_WORKSPACE_ROOT"]).resolve()
@@ -1018,8 +1078,11 @@ def inspect(binding):
 
 board_tables = inspect(board)
 global_tables = inspect(global_route)
-assert len(board_tables) == 81, board_tables
+assert PULSE_GRAFX_SCHEMA_MANIFEST.schema_version == "0.6.0"
+assert board_tables == sorted(table.name for table in PULSE_GRAFX_SCHEMA_MANIFEST.tables)
+assert len(board_tables) == 92, board_tables
 assert {"BoardMeta", "Entity", "Decision"} <= set(board_tables)
+assert {"violates__Bug__Requirement", "violates__Bug__Criterion"} <= set(board_tables)
 assert len(global_tables) == 11, global_tables
 assert {
     "Board",
@@ -1068,7 +1131,7 @@ print(json.dumps({
     assert report["backends"] == {"board": "grafx", "global": "grafx"}
     assert report["grafx_version"] == EXPECTED_GRAFX_VERSION
     assert report["grafx_direct_url"] == grafx_wheel.as_uri()
-    assert report["board_table_count"] == 81
+    assert report["board_table_count"] == 92
     assert report["global_table_count"] == 11
     assert _sha256(core_wheel) == core_wheel_sha256
     assert _sha256(community_wheel) == community_wheel_sha256
@@ -1808,7 +1871,7 @@ async def _assert_served_about(server: RunningServer) -> None:
             bundles.append(response.text)
     about = [source for source in bundles if "Community Edition — v" in source]
     assert len(about) == 1
-    assert "0.3.3" in about[0]
+    assert EXPECTED_PULSE_VERSION in about[0]
     assert "Community Edition — v0.2.5" not in "".join(bundles)
 
 
@@ -1879,7 +1942,7 @@ async def _assert_mcp_inventory(
     names = sorted(tool.name for tool in tools)
     resource = await client.read_resource("okto-pulse://server-manifest")
     manifest = json.loads(resource[0].text)
-    assert client.initialize_result.serverInfo.version == "0.3.3"
+    assert client.initialize_result.serverInfo.version == EXPECTED_PULSE_VERSION
     assert len(names) == EXPECTED_TOOL_COUNT
     assert len(names) == manifest["tool_inventory"]["count"]
     assert manifest["tool_inventory"]["aliases"] == EXPECTED_TOOL_ALIASES
@@ -1898,7 +1961,7 @@ async def _assert_mcp_inventory(
     ).hexdigest()
     assert tool_hash == manifest["tool_inventory"]["sha256"]
     assert tool_hash == EXPECTED_TOOL_INVENTORY_SHA256
-    for required in (
+    for retired in (
         "okto_pulse_kg_global_discovery_recovery_preflight",
         "okto_pulse_kg_global_discovery_recovery_confirm",
         "okto_pulse_kg_global_discovery_recovery_run",
@@ -1909,7 +1972,7 @@ async def _assert_mcp_inventory(
         "okto_pulse_kg_global_outbox_dead_letter_reprocess",
         "okto_pulse_kg_global_outbox_dead_letter_verify",
     ):
-        assert required in names
+        assert retired not in names
     await _assert_resource_manifest_parity(client, resource_manifest)
 
 
@@ -1919,8 +1982,8 @@ async def test_installed_wheels_serve_exact_frozen_resource_manifest_over_real_h
 ) -> None:
     runtime = installed_runtime
     assert runtime.origin_report["versions"] == {
-        "community": "0.3.3",
-        "core": "0.3.3",
+        "community": EXPECTED_PULSE_VERSION,
+        "core": EXPECTED_PULSE_VERSION,
     }
     assert _sha256(runtime.core_wheel) == runtime.core_wheel_sha256
     assert _sha256(runtime.community_wheel) == runtime.community_wheel_sha256
@@ -1940,8 +2003,8 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
 ) -> None:
     runtime = installed_runtime
     assert runtime.origin_report["versions"] == {
-        "community": "0.3.3",
-        "core": "0.3.3",
+        "community": EXPECTED_PULSE_VERSION,
+        "core": EXPECTED_PULSE_VERSION,
     }
     assert _sha256(runtime.core_wheel) == runtime.core_wheel_sha256
     assert _sha256(runtime.community_wheel) == runtime.community_wheel_sha256
