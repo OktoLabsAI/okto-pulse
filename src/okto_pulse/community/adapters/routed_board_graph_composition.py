@@ -1092,6 +1092,7 @@ def build_community_routed_board_graph_composition(
         access.runtime_fence,
         board_storage_root_resolver=access.board_root,
         budget_snapshot_provider=lambda: runtime_budget,
+        observation_timeout=access.health_query_timeout,
     )
     grafx_recovery = CommunityGrafxGraphRecovery(
         quarantine_root=binding_store.root / "quarantine",

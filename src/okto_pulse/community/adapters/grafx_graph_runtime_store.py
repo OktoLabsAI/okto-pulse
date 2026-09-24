@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import stat
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -64,6 +66,7 @@ class CommunityGrafxGraphRuntimeStore:
         board_storage_root_resolver: BoardStorageRootResolver,
         configured_max_bytes: ConfiguredMaxBytes | None = None,
         budget_snapshot_provider: BudgetSnapshotProvider | None = None,
+        observation_timeout: Callable[[str], float | None] | None = None,
     ) -> None:
         self._path_resolver = path_resolver
         self._close_callback = close_callback
@@ -71,6 +74,7 @@ class CommunityGrafxGraphRuntimeStore:
         self._board_storage_root_resolver = board_storage_root_resolver
         self._configured_max_bytes_provider = configured_max_bytes
         self._budget_snapshot_provider = budget_snapshot_provider
+        self._observation_timeout = observation_timeout
 
     def _privacy_scope(
         self,
@@ -231,8 +235,32 @@ class CommunityGrafxGraphRuntimeStore:
                     reason_code="board_graph_identity_not_regular_file",
                     observed_at=observed_at,
                 )
-            entry_count = sum(1 for _entry in path.iterdir())
+            observing = (
+                self._observation_timeout is not None
+                and self._observation_timeout(board_id) is not None
+            )
+            entry_count = 0
+            # Path.iterdir eagerly collects the directory on Python 3.13.
+            # Health must stream and close the OS iterator on overflow/error.
+            scan = os.scandir(path) if observing else nullcontext(path.iterdir())
+            with scan as entries:
+                for _entry in entries:
+                    if observing:
+                        # Share the caller's remaining deadline, never restart
+                        # it per entry. Foreground retains complete observation.
+                        self._observation_timeout(board_id)
+                        if entry_count >= 2000:
+                            return self._state(
+                                board_id,
+                                GraphRuntimeObservationState.PRESENT_UNREADABLE_OR_ERROR,
+                                generation=generation,
+                                reason_code="board_graph_metadata_entry_limit",
+                                observed_at=observed_at,
+                            )
+                    entry_count += 1
             lease_record_present = (path / _WRITER_LEASE).is_file()
+            if observing:
+                self._observation_timeout(board_id)
         except FileNotFoundError:
             return self._state(
                 board_id,
