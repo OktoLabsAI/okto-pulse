@@ -18,7 +18,9 @@ whole engine scope.
 from __future__ import annotations
 
 import os
+import math
 import threading
+import time
 from okto_pulse.community.adapters.grafx_read_lanes import GrafxReadLanes
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, nullcontext
@@ -389,22 +391,41 @@ class _GrafxBoardAccess:
         self.rollout_mutation_recorder = rollout_mutation_recorder
         self.configured_page_size = validate_grafx_page_size(configured_page_size)
         self.connect = connect
-        self._health_observation: ContextVar[bool] = ContextVar(
-            "grafx_board_health_observation", default=False
+        self._health_observation: ContextVar[float | None] = ContextVar(
+            "grafx_board_health_observation", default=None
         )
 
     @contextmanager
-    def scope(self, board_id: str) -> Iterator[None]:
+    def scope(self, board_id: str, *, timeout_seconds: float = 0.35) -> Iterator[None]:
         """Implement the Health observation port without widening authority."""
-        token = self._health_observation.set(True)
+        if (
+            type(timeout_seconds) not in (int, float)
+            or not math.isfinite(timeout_seconds)
+            or not 0 < timeout_seconds <= 5
+        ):
+            raise ValueError("invalid_graph_health_observation_timeout")
+        deadline = time.monotonic() + timeout_seconds
+        parent = self._health_observation.get()
+        token = self._health_observation.set(
+            deadline if parent is None else min(parent, deadline)
+        )
         try:
             yield
         finally:
             self._health_observation.reset(token)
 
     def _refuse_health_mutation(self, board_id: str) -> None:
-        if self._health_observation.get():
+        if self._health_observation.get() is not None:
             raise _route_failure("graph_health_maintenance_forbidden", board_id=board_id)
+
+    def health_query_timeout(self, board_id: str) -> float | None:
+        deadline = self._health_observation.get()
+        if deadline is None:
+            return None
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise _route_failure("graph_health_deadline_exceeded", board_id=board_id)
+        return remaining
 
     def _snapshot(
         self,
@@ -425,7 +446,7 @@ class _GrafxBoardAccess:
         return snapshot
 
     def database(self, board_id: str):
-        if self._health_observation.get():
+        if self._health_observation.get() is not None:
             return self.read_database(board_id)
         snapshot = self._snapshot(board_id, require_physical=True)
         assert snapshot.page_size is not None
@@ -454,6 +475,7 @@ class _GrafxBoardAccess:
         block either lane, and a retry resolves the other lane automatically.
         """
 
+        self.health_query_timeout(board_id)
         snapshot = self._snapshot(board_id, require_physical=True)
         assert snapshot.page_size is not None
         if not self.read_pools:
@@ -476,7 +498,7 @@ class _GrafxBoardAccess:
                 isinstance(cause, GrafxUnsupportedOperation)
                 and cause.details.get("field") == "read_only_consistency"
             )
-            if not read_join_requires_checkpoint or self._health_observation.get():
+            if not read_join_requires_checkpoint or self._health_observation.get() is not None:
                 raise
             # A new read-only participant can join only a checkpoint-complete
             # durable image.  First recheck under a single-flight lock: another
@@ -1044,6 +1066,7 @@ def build_community_routed_board_graph_composition(
     grafx_cypher = CommunityGrafxCypherExecutor(
         access.read_database,
         read_database_scope=access.read_database_scope,
+        query_timeout=access.health_query_timeout,
     )
     grafx_schema = CommunityGrafxGraphSchemaManager(
         access.database,

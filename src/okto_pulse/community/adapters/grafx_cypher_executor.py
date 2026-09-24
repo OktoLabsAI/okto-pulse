@@ -103,12 +103,25 @@ class CommunityGrafxCypherExecutor:
     """Grafx implementation of the read-only CypherExecutor port."""
 
     def __init__(self, database_resolver: DatabaseResolver, *,
-                 read_database_scope: Callable[[str], AbstractContextManager[Database]] | None = None) -> None:
+                 read_database_scope: Callable[[str], AbstractContextManager[Database]] | None = None,
+                 query_timeout: Callable[[str], float | None] | None = None) -> None:
         # The executor resolves a database but never owns its lifecycle: the
         # composition root decides which generation a board reads from, and a
         # reader must not be able to close a handle other readers share.
         self._database_resolver = database_resolver
         self._read_database_scope = read_database_scope
+        self._query_timeout = query_timeout
+
+    def _execute(self, reader: Any, board_id: str, query: str, params: Any) -> Any:
+        remaining = self._query_timeout(board_id) if self._query_timeout else None
+        result = (
+            reader.execute(query, params)
+            if remaining is None
+            else reader.execute(query, params, timeout_seconds=remaining)
+        )
+        if self._query_timeout is not None:
+            self._query_timeout(board_id)
+        return result
 
     def _read_scope(self, board_id: str) -> AbstractContextManager[Database]:
         if self._read_database_scope is not None:
@@ -168,7 +181,7 @@ class CommunityGrafxCypherExecutor:
             scope = self._read_scope(board_id)
             try:
                 with scope as database:
-                    result = database.execute(cleaned, _grafx_query_parameters(params))
+                    result = self._execute(database, board_id, cleaned, _grafx_query_parameters(params))
                     return self._envelope(
                         result,
                         max_rows=max_rows,
@@ -213,14 +226,14 @@ class CommunityGrafxCypherExecutor:
                 with scope as database, database.transaction("read") as reader:
                     primary_started = time.monotonic()
                     prepared_params = _grafx_query_parameters(params)
-                    primary_result = reader.execute(primary, prepared_params)
+                    primary_result = self._execute(reader, board_id, primary, prepared_params)
                     primary_envelope = self._envelope(
                         primary_result,
                         max_rows=max_rows,
                         started=primary_started,
                     )
                     comparison_started = time.monotonic()
-                    comparison_result = reader.execute(comparison, prepared_params)
+                    comparison_result = self._execute(reader, board_id, comparison, prepared_params)
                     comparison_envelope = self._envelope(
                         comparison_result,
                         max_rows=max_rows,
@@ -271,7 +284,7 @@ class CommunityGrafxCypherExecutor:
                 with scope as database, database.transaction("read") as reader:
                     for cypher, params, max_rows in prepared:
                         started = time.monotonic()
-                        result = reader.execute(cypher, params)
+                        result = self._execute(reader, board_id, cypher, params)
                         envelopes.append(
                             self._envelope(result, max_rows=max_rows, started=started)
                         )

@@ -9,6 +9,7 @@ from okto_grafx.errors import GrafxUnsupportedOperation
 from okto_pulse.community.adapters.grafx_cypher_executor import CommunityGrafxCypherExecutor
 from okto_pulse.community.adapters.grafx_database_pool import GrafxDatabasePoolError
 from okto_pulse.community.adapters.routed_board_graph_composition import _GrafxBoardAccess
+from okto_pulse.community.adapters import routed_board_graph_composition as composition
 from okto_pulse.core.kg import interfaces
 from okto_pulse.core.kg.interfaces.graph_errors import GraphCapabilityUnavailable
 from okto_pulse.core.services.kg_health_service import (
@@ -17,6 +18,7 @@ from okto_pulse.core.services.kg_health_service import (
     _aggregate_graph_metrics,
     _run_health_probe_step,
 )
+from okto_pulse.core.services import kg_health_service as health
 
 
 @pytest.fixture
@@ -122,3 +124,85 @@ def test_health_writable_resolver_uses_only_reader(routed_access):
     with access.scope("board"), pytest.raises(GrafxDatabasePoolError):
         access.database("board")
     assert effects == []
+
+
+@pytest.mark.parametrize("budget", [True, False, 0, -1, 5.1, float("inf"), float("nan"), "1"])
+def test_invalid_timeout_cannot_enter_observation(routed_access, budget):
+    access, effects = routed_access
+    with pytest.raises(ValueError), access.scope("board", timeout_seconds=budget):
+        pytest.fail("invalid scope entered")
+    assert effects == []
+    assert access.health_query_timeout("board") is None
+
+
+def test_nested_deadline_cannot_extend_parent_and_expiry_prevents_open(routed_access, monkeypatch):
+    access, effects = routed_access
+    clock = SimpleNamespace(now=10.0)
+    monkeypatch.setattr(composition, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    with access.scope("board", timeout_seconds=0.1):
+        clock.now += 0.05
+        with access.scope("board", timeout_seconds=5):
+            assert access.health_query_timeout("board") == pytest.approx(0.05)
+            clock.now += 0.06
+            with pytest.raises(GraphCapabilityUnavailable) as failure:
+                access.read_database("board")
+            assert failure.value.details["reason"] == "graph_health_deadline_exceeded"
+    assert effects == []
+    assert access.health_query_timeout("board") is None
+
+
+def test_batch_shares_deadline_and_never_returns_a_partial_prefix(routed_access, monkeypatch):
+    access, effects = routed_access
+    clock = SimpleNamespace(now=10.0)
+    monkeypatch.setattr(composition, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    calls = []
+
+    class Reader:
+        @contextmanager
+        def transaction(self, mode):
+            assert mode == "read"
+            yield self
+
+        def execute(self, query, params, *, timeout_seconds):
+            calls.append(timeout_seconds)
+            clock.now += 0.1
+            return SimpleNamespace(columns=["n"], rows=[[1]])
+
+    access.read_pools = (SimpleNamespace(get=lambda *args, **kwargs: Reader(), read_only=True),)
+    executor = CommunityGrafxCypherExecutor(
+        access.read_database, read_database_scope=access.read_database_scope,
+        query_timeout=access.health_query_timeout,
+    )
+    with access.scope("board", timeout_seconds=0.15), pytest.raises(GraphCapabilityUnavailable):
+        executor.execute_read_only_batch("board", [("RETURN 1", {}, 10)] * 3)
+    assert calls == pytest.approx([0.15, 0.05])
+    assert effects == []
+
+
+def test_managed_graph_worker_shares_one_deadline_across_steps(routed_access, monkeypatch):
+    access, _effects = routed_access
+    clock = SimpleNamespace(now=10.0)
+    observed = []
+    monkeypatch.setattr(composition, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    monkeypatch.setattr(interfaces, "get_kg_registry", lambda: SimpleNamespace(
+        graph_health_observation=access))
+
+    def read():
+        observed.append(access.health_query_timeout("worker-deadline-board"))
+        clock.now += 0.3
+
+    def build():
+        for name in ("metrics", "schema"):
+            health._run_health_probe_step(
+                probe_name=health._GRAPH_HEALTH_PROBE, board_id="worker-deadline-board",
+                step_name=name, build=read,
+            )
+
+    request = health._HealthProbeRequest(
+        name=health._GRAPH_HEALTH_PROBE, board_id="worker-deadline-board",
+        generation_id="deadline-test", build=build, fallback={}, ttl_s=0,
+    )
+    _initial, future = health._ensure_health_probe(request)
+    assert future is not None
+    future.result(timeout=5)
+    assert observed == pytest.approx([0.35, 0.05])
