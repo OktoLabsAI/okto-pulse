@@ -38,6 +38,79 @@ class _CanonicalBugReader:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('model,identity,field,new_value', [
+    (Card, 'bug-context', 'policy_version', 12),
+    (Card, 'regression-test', 'conclusions', [{'text': 'Corrected test outcome.'}]),
+    (Spec, 'spec-bug-context', 'acceptance_criteria', [{'id': 'ac-about', 'text': 'Changed condition.'}]),
+    (Comment, 'comment-context', 'content', 'The earlier observation was retracted.'),
+    (AmendmentHotfixRevision, 'lineage-context', 'validation_metadata', {'verified': False}),
+])
+async def test_semantic_source_refreshes_preloaded_entities_after_external_commit(
+    tmp_path, model, identity, field, new_value,
+):
+    engine, factory = await _runtime(tmp_path / 'semantic-cached.db')
+    graph = _CanonicalBugReader(fail=True)
+    assembler = CommunityBugCognitiveContextAssembler(graph)
+    try:
+        await _seed_full_context(factory)
+        async with factory() as reader:
+            held = await reader.get(model, identity)
+            first = await assembler.assemble_semantic(reader, board_id='board-bug-context', bug_id='bug-context')
+            await reader.commit()  # End the SQL snapshot, retain ORM identity map.
+            async with factory() as writer:
+                changed = await writer.get(model, identity)
+                setattr(changed, field, new_value)
+                await writer.commit()
+            fresh = await assembler.assemble_semantic(reader, board_id='board-bug-context', bug_id='bug-context')
+            assert getattr(held, field) == new_value
+            assert fresh.source_digest != first.source_digest
+            assert fresh.verified and graph.calls == []
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_semantic_refresh_preserves_staged_content_without_committing_it(tmp_path):
+    engine, factory = await _runtime(tmp_path / 'semantic-pending.db')
+    assembler = CommunityBugCognitiveContextAssembler(_CanonicalBugReader(fail=True))
+    try:
+        await _seed_full_context(factory)
+        async with factory() as session:
+            bug = await session.get(Card, 'bug-context')
+            original = list(bug.conclusions)
+            bug.conclusions = [{'text': 'New conclusion submitted with the capture.'}]
+            source = await assembler.assemble_semantic(session, board_id='board-bug-context', bug_id='bug-context')
+            assert source.conclusions == ({'text': 'New conclusion submitted with the capture.'},)
+            assert source.verified
+            await session.rollback()
+        async with factory() as session:
+            stored = await session.get(Card, 'bug-context')
+            assert stored.conclusions == original
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_semantic_refresh_does_not_retain_a_deleted_cached_bug(tmp_path):
+    engine, factory = await _runtime(tmp_path / 'semantic-deleted.db')
+    assembler = CommunityBugCognitiveContextAssembler(_CanonicalBugReader(fail=True))
+    try:
+        await _seed_full_context(factory)
+        async with factory() as reader:
+            held = await reader.get(Card, 'bug-context')
+            await reader.commit()
+            async with factory() as writer:
+                await writer.delete(await writer.get(Card, 'bug-context'))
+                await writer.commit()
+            source = await assembler.assemble_semantic(reader, board_id='board-bug-context', bug_id='bug-context')
+            assert held.id == 'bug-context'  # Keep a strong reference to the stale object.
+            assert not source.card_exists and not source.verified
+            assert source.source_digest is None
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_semantic_source_snapshot_is_versioned_before_done_without_graph_io(tmp_path):
     engine, session_factory = await _runtime(tmp_path / 'semantic-source.db')
     graph = _CanonicalBugReader(fail=True)

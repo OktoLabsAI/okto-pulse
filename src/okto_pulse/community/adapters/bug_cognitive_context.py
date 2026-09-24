@@ -105,7 +105,13 @@ class CommunityBugCognitiveContextAssembler:
         self, context: Any, *, board_id: str, bug_id: str, include_projection: bool,
     ) -> BugCognitiveContext:
         contract_version = 'bug-cognitive-context/v1' if include_projection else 'bug-semantic-context/v1'
-        card = await context.get(Card, bug_id)
+        fresh = {} if include_projection else {'populate_existing': True}
+        if not include_projection:
+            # Semantic capture must see the caller's staged content and the
+            # current SQL snapshot, not objects retained by the identity map.
+            # Flush is not a commit; the enclosing UOW still owns rollback.
+            await context.flush()
+        card = await context.get(Card, bug_id, **fresh)
         if card is None or str(card.board_id) != str(board_id):
             return BugCognitiveContext(
                 board_id=board_id,
@@ -117,6 +123,7 @@ class CommunityBugCognitiveContextAssembler:
 
         comments_result = await context.execute(
             select(Comment)
+            .execution_options(**fresh)
             .where(Comment.card_id == bug_id)
             .order_by(Comment.created_at.asc(), Comment.id.asc())
         )
@@ -131,7 +138,7 @@ class CommunityBugCognitiveContextAssembler:
             for row in comments_result.scalars().all()
         )
 
-        spec = await context.get(Spec, card.spec_id) if card.spec_id else None
+        spec = await context.get(Spec, card.spec_id, **fresh) if card.spec_id else None
         if spec is not None and str(spec.board_id) != str(board_id):
             spec = None
         all_scenarios = _mapping_rows(
@@ -153,7 +160,7 @@ class CommunityBugCognitiveContextAssembler:
         rows_by_id: dict[str, Card] = {}
         if linked_ids:
             linked_result = await context.execute(
-                select(Card).where(
+                select(Card).execution_options(**fresh).where(
                     Card.board_id == board_id,
                     Card.id.in_(linked_ids),
                 )
@@ -173,6 +180,7 @@ class CommunityBugCognitiveContextAssembler:
 
         lineage_result = await context.execute(
             select(AmendmentHotfixRevision)
+            .execution_options(**fresh)
             .where(
                 AmendmentHotfixRevision.board_id == board_id,
                 AmendmentHotfixRevision.origin_bug_id == bug_id,
