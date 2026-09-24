@@ -22,7 +22,6 @@ from .content_ingestion import (
 from .coordination import (
     CommunityLocalLeaseProvider,
     CommunityLocalWriteLockPort,
-    CommunityRuntimeSettingsProvider,
     CommunitySqlAlchemyClaimRepository,
     register_community_coordination_providers,
 )
@@ -131,7 +130,6 @@ __all__ = [
     "CommunityContentIngestionResolver",
     "CommunityLocalLeaseProvider",
     "CommunityLocalWriteLockPort",
-    "CommunityRuntimeSettingsProvider",
     "CommunitySqlAlchemyClaimRepository",
     "CommunityFileSystemRebuildAuditArtifactStore",
     "CommunityRebuildAuditArtifactStoreResolver",

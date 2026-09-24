@@ -32,7 +32,13 @@ def test_retired_router_is_not_distributed():
 
 
 def test_edition_keeps_startup_without_hidden_tuning_or_scheduler_effects():
+    from okto_pulse.core.ports.relational_services import RuntimeSettingsStartupPort
+    from okto_pulse.community import adapters
+    from okto_pulse.community.adapters import coordination
     from okto_pulse.community.adapters import sqlalchemy_runtime_settings_service as service
+    assert isinstance(service, RuntimeSettingsStartupPort)
+    assert not hasattr(adapters, "CommunityRuntimeSettingsProvider")
+    assert not hasattr(coordination, "CommunityRuntimeSettingsProvider")
     assert callable(service.apply_persisted_settings_to_core_settings)
     for name in (
         "get_runtime_settings", "put_runtime_settings", "_settings_write_guard",

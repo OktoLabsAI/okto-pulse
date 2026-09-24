@@ -1228,8 +1228,10 @@ def test_source_revision_installs_the_exact_closed_trigger_manifest(
 
     assert set(expected) == {str(row["name"]) for row in rows}
     assert len(expected) == len(GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES) * 3 + 2
-    assert len(GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES) == 40
-    assert len(expected) == 122
+    # F3 removed the Sprint source and its three revision triggers.
+    assert "sprints" not in GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES
+    assert len(GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES) == 39
+    assert len(expected) == 119
     assert {
         "ideation_qa_items",
         "quality_assessment_receipts",
@@ -1243,7 +1245,7 @@ def test_source_revision_installs_the_exact_closed_trigger_manifest(
         "spec_qa_items",
     }.issubset(GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES)
     assert (
-        GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION == "gdsr-trigger-manifest-v8"
+        GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION == "gdsr-trigger-manifest-v9"
     )
     for row in rows:
         name = str(row["name"])
@@ -1317,10 +1319,10 @@ def test_source_revision_v4_upgrade_installs_qa_inputs_and_rotates_incarnation(
         connection.close()
 
     assert row is not None
-    assert str(row[0]) == "gdsr-trigger-manifest-v8"
+    assert str(row[0]) == "gdsr-trigger-manifest-v9"
     assert str(row[1]) != before_incarnation
     assert {str(item[0]) for item in triggers} == set(expected)
-    assert len(triggers) == 122
+    assert len(triggers) == 119
 
 
 def test_relational_snapshot_fingerprint_fails_closed_for_missing_schema_or_file(
