@@ -51,7 +51,7 @@ from okto_pulse.community.adapters.cypher_statement_policy import (
     strip_comments_and_literals,
 )
 from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
-from okto_pulse.core.ports.spec_projection import is_scenario_criterion_writer, spec_relationship_family
+from okto_pulse.core.ports.spec_projection import SPEC_RELATIONSHIP_NAMESPACES, is_spec_relationship_writer
 from okto_pulse.community.adapters.grafx_query_values import normalize_query_value as _normalize_value
 from okto_pulse.community.adapters.grafx_relationship_layout import (
     resolve_relationship_table,
@@ -2037,22 +2037,18 @@ class _GrafxTransactionScope:
     def _projection_dependency_rule_id(
         edge: ProjectionEdgeBeforeImage,
     ) -> str | None:
-        """The rule that identifies a Spec dependency edge, or None for anything else.
+        """The rule that qualifies an owned Spec relationship, or None otherwise.
 
         One prerequisite may precede one owner under more than one rule, so for these edges
-        the endpoints alone do not name a single relationship.  Every other relationship is
-        identified by its endpoints, and asking for a ``rule_id`` it may not even declare
-        would fail for the wrong reason.
+        the endpoints alone do not name a single relationship. The closed Spec
+        families also preserve parallel writers using rule/layer/created_by.
+        Other relationships keep their existing endpoint identity.
         """
 
         rule_id = str(edge.attrs.get("rule_id") or "")
-        if (edge.edge_type == "derives_from" and edge.from_type == "Decision"
-                and edge.to_type in {"Requirement", "Constraint"}
-                and spec_relationship_family('decision_requirements').owns_writer(rule_id=rule_id,
-                    layer=edge.attrs.get('layer'), created_by=edge.attrs.get('created_by'))):
-            return rule_id
-        if (edge.edge_type == "tests" and edge.from_type == "TestScenario" and edge.to_type == "Criterion"
-                and is_scenario_criterion_writer(rule_id=rule_id, layer=edge.attrs.get("layer"), created_by=edge.attrs.get("created_by"))):
+        if is_spec_relationship_writer(edge_type=edge.edge_type, source_type=edge.from_type,
+                target_type=edge.to_type, rule_id=rule_id, layer=edge.attrs.get('layer'),
+                created_by=edge.attrs.get('created_by')):
             return rule_id
         if (
             edge.edge_type == _SPEC_DEPENDENCY_EDGE_TYPE
@@ -2162,7 +2158,7 @@ class _GrafxTransactionScope:
         if rule_id is not None:
             predicate += " AND r.rule_id = $rule_id"
             params["rule_id"] = rule_id
-            if edge.edge_type in {"tests", "derives_from"}:
+            if edge.edge_type != _SPEC_DEPENDENCY_EDGE_TYPE:
                 predicate += " AND r.layer = $layer AND r.created_by = $writer"
                 params.update(layer=edge.attrs.get("layer"), writer=edge.attrs.get("created_by"))
         projection = ", ".join(f"r.{name}" for name in properties) or "a.id"
@@ -2712,7 +2708,7 @@ class _GrafxTransactionScope:
         # The whole intent is validated, and every before-image captured, before the first
         # mutation: a refusal must not be able to leave half an active set staged.
         self._fence("reconcile_projection_active_set")
-        if intent.owner_type == "spec" and intent.namespace in {"scenario_criteria", "decision_requirements"}:
+        if intent.owner_type == "spec" and intent.namespace in SPEC_RELATIONSHIP_NAMESPACES:
             from okto_pulse.community.adapters.grafx_scenario_projection import reconcile_spec_relationships
             return reconcile_spec_relationships(self, intent)
         if intent.owner_type == "spec" and intent.namespace == "dependencies":

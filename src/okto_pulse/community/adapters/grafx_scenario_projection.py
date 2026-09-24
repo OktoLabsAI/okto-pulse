@@ -74,7 +74,8 @@ def reconcile_spec_relationships(scope, intent):
                 {"source": edge.from_id, "target": edge.to_id, "rule": edge.attrs["rule_id"],
                  "layer": edge.attrs["layer"], "writer": edge.attrs["created_by"]},
                 operation=("delete_projection_scenario_criterion_edge" if intent.namespace == 'scenario_criteria'
-                    else 'delete_projection_decision_requirement_edge'),
+                    else 'delete_projection_decision_requirement_edge' if intent.namespace == 'decision_requirements'
+                    else 'delete_projection_spec_relationship_edge'),
             )
         if set(owned()) != desired:
             _refuse("projection_stale_edge_cleanup_unconfirmed", "Spec relationship active set did not converge.")
