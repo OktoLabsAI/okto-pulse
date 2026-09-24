@@ -217,6 +217,23 @@ describe('TS1 — mount inicial dispara 1 fetch e renderiza cards principais', (
     const row = within(card).getByText('Open debt').parentElement!;
     expect(within(row).getByText('0')).toHaveClass('text-emerald-700');
   });
+
+  it.each(['partial', 'unavailable'] as const)(
+    'keeps incomplete layer maps visibly unknown (%s)', async (status) => {
+      mockBoard('b1');
+      mockApi(() => Promise.resolve({
+        ...baseHealth,
+        kg_layer_counts: { status, by_layer: {}, by_maturity_status: {} },
+      }));
+      render(<KGHealthView onClose={() => {}} />);
+      const title = await screen.findByText('Canonical Debt');
+      const card = title.closest('[data-testid="kg-health-card"]')! as HTMLElement;
+      expect(within(card).getByText('canonical unavailable · working unavailable')).toBeInTheDocument();
+      const row = within(card).getByText('Layer status').parentElement!;
+      expect(within(row).getByText(status)).toBeInTheDocument();
+      expect(within(card).queryByText('canonical 0 · working 0')).not.toBeInTheDocument();
+    },
+  );
   it.each([undefined, 'okto_pulse_kg_canonical_partition_integrity_list'])(
     'keeps partition counts without reopening the retired inspector (%s)', async (legacyTool) => {
       mockBoard('b1');
