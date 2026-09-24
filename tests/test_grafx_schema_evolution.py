@@ -2051,7 +2051,18 @@ def test_real_populated_rebuild_is_cold_exact_source_inert_and_noop(
         )
         try:
             assert cold.identity.database_uuid == first.candidate_database_uuid
-            assert validate_current_grafx_schema(cold) == TARGET_SCHEMA_FINGERPRINT
+            # This migrator deliberately targets the frozen 0.5.0 contract,
+            # independently pinned by test_literal_predecessor_and_target_goldens.
+            # It must never certify that historical candidate as current 0.6.0.
+            historical = evolution.PULSE_GRAFX_SCHEMA_MANIFEST
+            assert historical.logical_fingerprint == TARGET_SCHEMA_FINGERPRINT
+            evolution._require_catalog(
+                cold, historical.nodes, historical.relationships,
+                reason="frozen_target_catalog_mismatch", phase="test_cold_target",
+            )
+            with pytest.raises(GraphCapabilityUnavailable) as not_current:
+                validate_current_grafx_schema(cold)
+            assert not_current.value.details["reason"] == "table_shape_mismatch"
             assert cold.verify("all").clean
             evolution._require_indexes(cold, "test")
             metadata = cold.execute(
@@ -2186,6 +2197,7 @@ def test_real_populated_rebuild_is_cold_exact_source_inert_and_noop(
                 "SET m.schema_version = $marker RETURN m.board_id",
                 {"marker": evolution.BUILD_MARKER},
             )
+        catalog_before = marked.catalog.catalog
         with pytest.raises(GraphCapabilityUnavailable) as refused:
             ensure_current_grafx_board_schema(
                 marked,
@@ -2194,7 +2206,10 @@ def test_real_populated_rebuild_is_cold_exact_source_inert_and_noop(
                 embedding_model="fixture-model",
                 embedding_dimension=384,
             )
-        assert refused.value.details["reason"] == "board_meta_version_mismatch"
+        # Current bootstrap rejects the historical physical shape before it
+        # considers the building marker; neither schema nor stamp is upgraded.
+        assert refused.value.details["reason"] == "table_shape_mismatch"
+        assert marked.catalog.catalog == catalog_before
         assert marked.execute("MATCH (m:BoardMeta) RETURN m.schema_version").rows == (
             (evolution.BUILD_MARKER,),
         )
