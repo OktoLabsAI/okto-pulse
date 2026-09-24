@@ -3,6 +3,8 @@
 from dataclasses import asdict, replace
 import sqlite3
 
+from graph_observation_fixtures import enable_fixture_history
+
 import pytest
 from okto_grafx import connect
 
@@ -51,7 +53,7 @@ def test_predecessor_joint_logical_and_native_recovery_keep_schema_data_and_hist
         with pytest.raises(LogicalSchemaError):
             make_grafx_logical_source(source, scope='board').open_snapshot()
         reader = history(source)
-        reader.activate(board, ('Decision',), (), reason='predecessor recovery fixture')
+        enable_fixture_history(source)
         with source.begin('write') as transaction:
             transaction.execute("MATCH (n:Decision) SET n.title='historical observation'")
         commits = reader.commits(board)

@@ -2,6 +2,8 @@
 
 from dataclasses import replace
 
+from graph_observation_fixtures import enable_fixture_history
+
 import pytest
 from okto_grafx import connect
 
@@ -60,7 +62,7 @@ def test_additive_candidate_keeps_all_old_values_parallel_edges_and_native_backu
     original = stored_sources[0]
     graph = original[1][0].database
     reader = history(graph)
-    reader.activate('board-one', ('Decision',), (), reason='schema evolution fixture')
+    enable_fixture_history(graph)
     with graph.begin('write') as transaction:
         transaction.execute("MATCH (n:Decision) SET n.title='retained native history'")
     commits = reader.commits('board-one')

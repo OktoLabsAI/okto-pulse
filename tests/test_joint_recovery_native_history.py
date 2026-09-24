@@ -3,6 +3,8 @@
 import asyncio
 import hashlib
 
+from graph_observation_fixtures import enable_fixture_history
+
 import pytest
 from okto_grafx import connect
 
@@ -20,14 +22,14 @@ def capture(stored_sources):
 
 
 def history(database):
-    return CommunityGrafxHistory(lambda _: database, lambda *args: None)
+    return CommunityGrafxHistory(lambda _: database)
 
 
 def test_rollback_preserves_native_commit_history_and_original_cursors(stored_sources, tmp_path):
     original, uploads, _, _ = stored_sources
     database = original[1][0].database
     reader = history(database)
-    reader.activate('board-one', ('Decision',), (), reason='disposable rollback history fixture')
+    enable_fixture_history(database)
     with database.begin('write') as writer:
         writer.execute("MATCH (n:Decision {id: 'baseline'}) SET n.title = 'retained history'")
     expected = reader.commits('board-one')

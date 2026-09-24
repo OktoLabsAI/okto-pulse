@@ -8,6 +8,24 @@ from okto_pulse.community.api import kg_exploration as exploration
 from okto_pulse.community.api.router import api_router
 
 
+def test_retired_writers_have_no_internal_port_or_adapter_fallback():
+    from okto_pulse.core.kg.interfaces.ranked_graph_search import RankedGraphSearch
+    from okto_pulse.core.kg.interfaces.graph_observations import GraphHistory
+    from okto_pulse.community.adapters.grafx_ranked_search import CommunityGrafxRankedSearch
+    from okto_pulse.community.adapters.grafx_observations import CommunityGrafxHistory
+    from okto_pulse.community.adapters.routed_graph_exploration import (
+        CommunityRoutedRankedSearch, CommunityRoutedObservations,
+    )
+
+    for contract in (RankedGraphSearch, CommunityGrafxRankedSearch, CommunityRoutedRankedSearch):
+        assert not hasattr(contract, "prepare")
+        assert callable(contract.readiness) and callable(contract.search)
+    for contract in (GraphHistory, CommunityGrafxHistory, CommunityRoutedObservations):
+        for writer in ("activate", "prune", "prepare", "_mutate"):
+            assert not hasattr(contract, writer)
+        assert all(callable(getattr(contract, reader)) for reader in ("commits", "as_of", "diff"))
+
+
 @pytest.mark.parametrize("board", ["missing", "foreign", "owned"])
 @pytest.mark.parametrize("suffix", ["search/prepare", "history/activate", "history/prune"])
 @pytest.mark.parametrize("body", [{}, {

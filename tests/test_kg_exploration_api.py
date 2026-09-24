@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from okto_pulse.community.api import kg_exploration as api
 from okto_pulse.core.kg.interfaces.graph_errors import GraphUnavailable
+from graph_observation_fixtures import prepare_fixture_index, enable_fixture_history, routed_fixture_database
 from test_grafx_ranked_search import ranked  # noqa: F401
 from test_grafx_graph_store import BOARD_ID, real_store  # noqa: F401
 
@@ -43,7 +44,7 @@ def test_real_native_text_and_hybrid_from_http(client, request):
     http, registry, _ = client
     registry.ranked_graph_search = request.getfixturevalue("ranked")[0]
     # Index preparation is fixture setup, never a public HTTP operation.
-    registry.ranked_graph_search.prepare(BOARD_ID, "Decision", reason="fixture setup")
+    prepare_fixture_index(request.getfixturevalue("ranked")[2])
     for mode in ("text", "hybrid"):
         result = http.post(
             ROOT + "/search",
@@ -260,7 +261,8 @@ def test_real_routed_reads_preserve_preexisting_history_and_index(
             lease.ensure_durable()
         # Preexisting native history is a fixture prerequisite, not HTTP setup.
         with guard(BOARD_ID, operation="fixture_history", owner_id="test", mutation_ref="test") as lease:
-            registry.graph_history.activate(BOARD_ID, ("Decision",), (), reason="fixture history")
+            with routed_fixture_database(bundle, BOARD_ID) as database:
+                enable_fixture_history(database)
             lease.ensure_durable()
         assert not owner["held"]
         with guard(
@@ -279,7 +281,8 @@ def test_real_routed_reads_preserve_preexisting_history_and_index(
         assert response.status_code == 200, response.text
         assert response.json()["nodes"][0]["id"] == "routed"
         with guard(BOARD_ID, operation="fixture_index", owner_id="test", mutation_ref="test") as lease:
-            registry.ranked_graph_search.prepare(BOARD_ID, "Decision", reason="fixture index")
+            with routed_fixture_database(bundle, BOARD_ID) as database:
+                prepare_fixture_index(database)
             lease.ensure_durable()
         response = http.post(
             ROOT + "/search", json={"node_type": "Decision", "query": "durable"}

@@ -80,9 +80,6 @@ def bounds(value, maximum, name):
     return value
 
 
-def audit_reason(reason):
-    if type(reason) is not str or not reason.strip() or len(reason) > 1024:
-        raise ValueError("a_bounded_audit_reason_is_required")
 
 
 def json_value(value):
@@ -102,39 +99,12 @@ def json_value(value):
 
 class CommunityGrafxHistory:
     def __init__(
-        self, database_resolver, revalidate_fence, *, read_database_scope=None
+        self, database_resolver, *, read_database_scope=None
     ):
-        self._resolve, self._fence = database_resolver, revalidate_fence
         self._read = read_database_scope or (
             lambda board: nullcontext(database_resolver(board))
         )
 
-    @mapped
-    def activate(self, board_id, node_types, relationship_types, *, reason):
-        tables, _ = scope(node_types, relationship_types)
-        audit_reason(reason)
-        db = self._resolve(board_id)
-        # Missing schema is knowable before a one-way phase is applied.
-        for kind, table in tables:
-            db.catalog.catalog.table(table, kind=kind)
-        # Each native phase is independently durable and idempotent. Do not claim
-        # this is a single cross-capability activation transaction.
-        for name, operation in (
-            ("identity", db.ensure_identity_indexes),
-            ("commits", db.enable_commit_history),
-            ("system_time", lambda: db.enable_system_history(tables)),
-        ):
-            self._fence(board_id, f"history_activate_{name}")
-            operation()
-            self._fence(board_id, f"history_activate_{name}_complete")
-        return {
-            "enabled": True,
-            "node_types": list(node_types),
-            "relationship_types": list(relationship_types),
-            "reason": reason,
-            "prior_history_available": False,
-            "one_way": True,
-        }
 
     @mapped
     def commits(self, board_id, *, after=None, limit=100):
@@ -330,34 +300,6 @@ class CommunityGrafxHistory:
                 ],
             }
 
-    @mapped
-    def prune(
-        self,
-        board_id,
-        before,
-        node_types,
-        relationship_types,
-        *,
-        reason,
-        max_bytes=16777216,
-    ):
-        tables, _ = scope(node_types, relationship_types)
-        token = CommitId.parse(before)
-        bounds(max_bytes, 64 * 1024 * 1024, "max_bytes")
-        audit_reason(reason)
-        self._fence(board_id, "history_prune")
-        result = self._resolve(board_id).prune_system_history(
-            token, tables=tables, max_bytes=max_bytes
-        )
-        self._fence(board_id, "history_prune_complete")
-        return {
-            "retained_from": before,
-            "commit": None if result.commit is None else result.commit.to_token(),
-            "redacted_versions": result.redacted_versions,
-            "redacted_bytes": result.redacted_bytes,
-            "physical_bytes_reclaimed": result.physical_bytes_reclaimed,
-            "reason": reason,
-        }
 
 
 class CommunityGrafxAnalytics:

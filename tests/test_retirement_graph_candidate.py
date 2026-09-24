@@ -6,6 +6,8 @@ import os
 import shutil
 import sqlite3
 
+from graph_observation_fixtures import enable_fixture_history
+
 import pytest
 from okto_grafx import connect
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -50,7 +52,7 @@ async def test_native_candidate_is_private_and_preserves_history_after_failed_co
         original_binding = bindings.initialize_board_binding(board_id='board-a', backend='grafx', generation='original',
             physical_path=path, page_size=8192, database=graph)
         reader = history(graph)
-        reader.activate('board-a', ('Decision',), (), reason='candidate history fixture')
+        enable_fixture_history(graph)
         with graph.begin('write') as writer:
             writer.execute("MATCH (n:Decision {id: 'baseline'}) SET n.title='Historical title'")
         cursor = reader.commits('board-a')['entries'][-1]['commit']

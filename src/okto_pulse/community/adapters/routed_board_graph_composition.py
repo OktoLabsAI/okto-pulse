@@ -1008,15 +1008,14 @@ def build_community_routed_board_graph_composition(
     from okto_pulse.community.adapters.routed_graph_exploration import CommunityRoutedRankedSearch
 
     def observations(provider):
-        return CommunityRoutedObservations(resolver, provider, operation_window=operation_window,
-                                          mutation_window=mutation_window, close=access.close)
-    history = observations(CommunityGrafxHistory(access.database, access.write_fence, read_database_scope=access.read_database_scope))
+        return CommunityRoutedObservations(resolver, provider, operation_window=operation_window)
+    history = observations(CommunityGrafxHistory(access.database, read_database_scope=access.read_database_scope))
     analytics = observations(CommunityGrafxAnalytics(access.read_database_scope))
     ranked_search = CommunityRoutedRankedSearch(
         resolver,
-        CommunityGrafxRankedSearch(access.database, access.write_fence,
+        CommunityGrafxRankedSearch(access.database,
                                   read_database_scope=access.read_database_scope),
-        operation_window=operation_window, mutation_window=mutation_window, close=access.close,
+        operation_window=operation_window,
     )
     grafx_cypher = CommunityGrafxCypherExecutor(
         access.read_database,

@@ -11,6 +11,8 @@ import hashlib
 import json
 import sqlite3
 
+from graph_observation_fixtures import enable_fixture_history
+
 import pytest
 from sqlalchemy import insert, select, func
 
@@ -84,7 +86,7 @@ async def test_exact_projection_commits_without_purging_native_history(tmp_path,
         binding = bindings.initialize_board_binding(board_id='board', backend='grafx', generation='private-candidate',
             physical_path=physical, page_size=8192, database=graph)
         reader = history(graph)
-        reader.activate('board', ('Decision',), (), reason='disposable exact projection fixture')
+        enable_fixture_history(graph)
         with graph.begin('write') as writer:
             writer.execute("MATCH (n:Decision {id: 'retained-history'}) SET n.title='Earlier title'")
         cursor = reader.commits('board')['entries'][-1]['commit']

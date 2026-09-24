@@ -44,7 +44,7 @@ def text_index_name(node_type):
 
 def _missing(node_type):
     return GraphCapabilityUnavailable(
-        "Ranked graph search requires explicit index preparation.",
+        "Ranked graph search is unavailable without a compatible index.",
         details={"reason": "ranked_search_not_ready", "node_type": node_type},
     )
 
@@ -111,10 +111,8 @@ def _request(request):
 
 class CommunityGrafxRankedSearch:
     def __init__(
-        self, database_resolver, revalidate_fence, *, read_database_scope=None
+        self, database_resolver, *, read_database_scope=None
     ):
-        self._resolve = database_resolver
-        self._fence = revalidate_fence
         self._read_scope = read_database_scope or (
             lambda board: nullcontext(database_resolver(board))
         )
@@ -129,7 +127,7 @@ class CommunityGrafxRankedSearch:
         entry = indexes[name]
         if entry.stale:
             raise GraphCapabilityUnavailable(
-                "Ranked search index requires explicit maintenance."
+                "Ranked graph search is unavailable because its index is stale."
             )
         definition = database.catalog.catalog.table(node_type, kind="node")
         if (
@@ -155,32 +153,6 @@ class CommunityGrafxRankedSearch:
                 else ["text"],
             }
 
-    def prepare(self, board_id, node_type, *, reason):
-        _node_type(node_type)
-        if type(reason) is not str or not reason.strip() or len(reason) > 1024:
-            raise ValueError("preparation_requires_a_bounded_audit_reason")
-        self._fence(board_id, "ranked_search_prepare")
-        db = self._resolve(board_id)
-        try:
-            if not self._ready(db, node_type):
-                db.create_text_index(
-                    text_index_name(node_type),
-                    node_type,
-                    _FIELDS,
-                    options=_INDEX_OPTIONS,
-                )
-            self._fence(board_id, "ranked_search_prepare_complete")
-            return {
-                "supported": True,
-                "ready": True,
-                "node_type": node_type,
-                "reason": reason,
-            }
-        except Exception as exc:
-            error = map_grafx_error(exc, operation="ranked_search_prepare")
-            if error is exc:
-                raise
-            raise error from exc
 
     def search(self, board_id, request):
         request = _request(request)
