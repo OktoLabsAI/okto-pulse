@@ -247,7 +247,8 @@ def run_preservation_smoke() -> dict[str, object]:
             if f'"{c}"' in cli_src
         ]
         evidence["cli_commands_present"] = cli_commands
-        assert {"init", "serve", "status", "reset"} <= set(cli_commands), cli_commands
+        assert {"init", "serve", "status", "api-key"} <= set(cli_commands), cli_commands
+        assert "reset" not in cli_commands  # F4 retires public destructive maintenance.
 
     finally:
         try:

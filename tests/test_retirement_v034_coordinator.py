@@ -23,6 +23,7 @@ from test_permission_retirement_review_installation import seed
 from test_retirement_bootstrap_convergence import lifecycle
 from test_retirement_v034_cards import dump
 from test_retirement_v034_source import FIXTURES, restore_source
+from semantic_schema_assertions import exact_semantic_schema
 
 
 @pytest.mark.asyncio
@@ -112,6 +113,14 @@ async def test_real_predecessor_reaches_schema_retired_with_original_backup_and_
                     assert dump(path) == before_bootstrap
         else:
             await lifecycle(cold)
+        # F3 supersedes automatic startup migration of legacy Sprint storage.
+        # Keep the exact physical semantic/ACK contract and replay proof on
+        # the real supported predecessor AFTER the coordinated offline cut.
+        async with reopened.connect() as connection:
+            before_replay = await connection.run_sync(exact_semantic_schema)
+        await lifecycle(cold)
+        async with reopened.connect() as connection:
+            assert await connection.run_sync(exact_semantic_schema) == before_replay
         async with reopened.connect() as connection:
             await connection.exec_driver_sql("BEGIN")
             contexts = await read_permission_retirement_checkpoint(connection, permission)

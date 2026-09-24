@@ -45,6 +45,7 @@ def test_community_functional_preservation_offline() -> None:
     assert evidence["has_create_ideation_tool"] is True
 
     # CLI sub-commands preserved.
-    assert {"init", "serve", "status", "reset"} <= set(evidence["cli_commands_present"])
+    assert {"init", "serve", "status", "api-key"} <= set(evidence["cli_commands_present"])
+    assert "reset" not in evidence["cli_commands_present"]
 
     assert evidence["ok"] is True
