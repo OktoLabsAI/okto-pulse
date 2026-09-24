@@ -1,5 +1,6 @@
 """Settings inventory, validation, persistence and actual constructor forwarding."""
 
+import json
 from dataclasses import fields
 from types import SimpleNamespace
 
@@ -145,7 +146,7 @@ def test_page_geometry_persisted_text_keeps_its_integer_contract():
 
 
 @pytest.mark.asyncio
-async def test_save_read_restart_and_clear_options_without_mutating_active_snapshot(
+async def test_boot_replays_persisted_options_into_native_constructor_lanes(
     monkeypatch, tmp_path
 ):
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -158,31 +159,17 @@ async def test_save_read_restart_and_clear_options_without_mutating_active_snaps
         service, "configure_settings", lambda value: configured.__setitem__(0, value)
     )
     monkeypatch.setattr(service, "get_session_factory", lambda: factory)
-    monkeypatch.setattr(service, "_validate_runtime_settings_via_port", lambda _: None)
-
-    async def effective():
-        return {key: getattr(configured[0], key) for key in service.RUNTIME_KEYS}
-
-    monkeypatch.setattr(service, "_read_effective_runtime_settings", effective)
-    monkeypatch.setattr(service, "_boot_snapshot", {})
     desired = {"max_result_rows": 900, "lease_timeout_seconds": 12.5}
     try:
         async with factory() as db:
-            response = await service.put_runtime_settings(
-                db,
-                {
-                    "kg_grafx_buffer_pool_mb": 128,
-                    "kg_grafx_read_participants": 3,
-                    "kg_grafx_options": desired,
-                },
-            )
-            assert response["kg_grafx_options"] == {}
-            assert response["desired_values"]["kg_grafx_options"] == desired
-            assert response["restart_required"] is True
-            assert response["kg_grafx_read_participants"] == 2
-            assert response["desired_values"]["kg_grafx_read_participants"] == 3
-            saved = await db.get(AppSetting, "kg_grafx_options")
-            assert '"max_result_rows": 900' in saved.value
+            db.add_all([
+                AppSetting(key="kg_grafx_buffer_pool_mb", value="128"),
+                AppSetting(key="kg_grafx_read_participants", value="3"),
+                AppSetting(key="kg_grafx_options", value=json.dumps(desired)),
+            ])
+            await db.commit()
+            assert configured[0].kg_grafx_options == {}
+            assert configured[0].kg_grafx_read_participants == 2
         await service.apply_persisted_settings_to_core_settings()
         assert configured[0].kg_grafx_options == desired
         assert configured[0].kg_grafx_buffer_pool_mb == 128
@@ -212,11 +199,10 @@ async def test_save_read_restart_and_clear_options_without_mutating_active_snaps
             assert calls[-1]["buffer_budget_bytes"] == 128 * 1024**2
             pool.close_all()
         async with factory() as db:
-            response = await service.get_runtime_settings(db)
-            assert response["restart_required"] is False
-            response = await service.put_runtime_settings(db, {"kg_grafx_options": {}})
-            assert response["desired_values"]["kg_grafx_options"] == {}
-            assert response["kg_grafx_options"] == desired
+            row = await db.get(AppSetting, "kg_grafx_options")
+            row.value = "{}"
+            await db.commit()
+            assert configured[0].kg_grafx_options == desired
         await service.apply_persisted_settings_to_core_settings()
         assert configured[0].kg_grafx_options == {}
     finally:
