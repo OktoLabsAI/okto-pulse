@@ -261,6 +261,35 @@ Adapter source map:
   `community/adapters/telemetry_effect_config.py`.
 - Permission adapters: `community/adapters/permission_*`.
 - Filesystem privacy erasure: `community/adapters/filesystem_erasure.py`.
+- Bounded Health observation: `community/adapters/filesystem_observation.py`,
+  `community/adapters/source_observation_budget.py` and
+  `community/adapters/health_route_observation.py`.
+- Delivery migration and progress/resume reads: `community/adapters/delivery_*`.
+- Historical section grants and authorized context reads:
+  `community/adapters/historical_*`.
+- Offline retirement preparation, checkpoints, projection reconciliation and
+  activation: `community/adapters/retirement_*`,
+  `community/adapters/sprint_retirement_*`,
+  `community/adapters/sprint_work_retirement.py`,
+  `community/adapters/card_validation_retirement.py`,
+  `community/adapters/context_disposition_retirement.py`,
+  `community/adapters/global_outbox_retirement.py`,
+  `community/adapters/work_retirement_sql.py`,
+  `community/adapters/legacy_sprint_values.py` and
+  `community/adapters/migration_runtime_fence.py`.
+- Joint relational/storage/native recovery snapshots and exact graph inventory:
+  `community/adapters/joint_recovery_snapshot.py`,
+  `community/adapters/relational_recovery_snapshot.py`,
+  `community/adapters/storage_recovery_snapshot.py`,
+  `community/adapters/native_graph_recovery_snapshot.py`,
+  `community/adapters/recovery_graph_inventory.py`,
+  `community/adapters/recovery_storage_references.py`,
+  `community/adapters/kg_artifact_recovery.py` and
+  `community/adapters/relational_schema_transaction.py`.
+- Paired-package and embedded-frontend identity:
+  `community/adapters/distribution_compatibility.py`,
+  `community/adapters/frontend_distribution.py` and
+  `community/adapters/package_version.py`.
 - Ownership and local lifecycle support:
   `community/adapters/adapter_provenance.py`,
   `community/adapters/local_storage_ref.py`,

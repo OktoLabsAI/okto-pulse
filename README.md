@@ -61,21 +61,21 @@ Okto Pulse is a local-first SDLC workbench built for teams that use AI coding ag
 Instead of sending an agent straight from a prompt to code, Okto Pulse keeps the work explicit:
 
 ```text
-Stories -> Ideation -> Refinement -> Spec -> Sprint -> Tasks / Tests / Bugs
+Stories -> Ideation -> Refinement -> Spec -> Tasks / Tests / Bugs
 ```
 
 Every stage has structured artifacts, lineage, status transitions and validation rules. Agents can create and update those artifacts through MCP tools, while humans can inspect and steer the same work in the web UI.
 
 ## Platform Surface
 
-Current 0.3.3 surface:
+Current `feature/v0.4.0` implementation surface:
 
 | Surface | Count |
 | --- | ---: |
-| Governance gates | 18 |
-| Core MCP tools | 340 |
+| Governance gates | See the Core governance families and canonical gate contracts |
+| Core MCP tools | 301 |
 | Community-only MCP tools | 0 |
-| MCP tools exposed by `okto-pulse serve` | 340 |
+| MCP tools exposed by `okto-pulse serve` | 301 |
 
 The community package materializes the full `okto-pulse-core` command catalog in
 its FastMCP host. That means installed community runtimes expose the complete
