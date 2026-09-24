@@ -4,24 +4,31 @@ import pytest
 
 from okto_pulse.community.adapters.grafx_graph_transaction import CommunityGrafxGraphTransaction
 from okto_pulse.core.kg.interfaces.graph_transaction import ProjectionActiveSetIntent, ProjectionActiveSetReconciliationError
+from okto_pulse.core.ports.spec_projection import spec_relationship_family
 
 
 @pytest.fixture(params=[
     ('business_rule_requirements', 'Constraint', 'business_rule', 'Requirement', 'fr', 'derives_from', 'derives_from/br_requirement@v2.1'),
     ('integration_requirements', 'Requirement', 'integration_requirement', 'Requirement', 'fr', 'derives_from', 'derives_from/ir_requirement@v2.1'),
+    ('integration_requirements', 'Requirement', 'integration_requirement', 'Constraint', 'tr', 'derives_from', 'derives_from/ir_requirement@v2.1'),
+    ('observability_requirements', 'Constraint', 'observability_requirement', 'Requirement', 'fr', 'derives_from', 'derives_from/or_requirement@v2.1'),
+    ('observability_requirements', 'Constraint', 'observability_requirement', 'Constraint', 'tr', 'derives_from', 'derives_from/or_requirement@v2.1'),
     ('observability_integrations', 'Constraint', 'observability_requirement', 'Requirement', 'integration_requirement', 'derives_from', 'derives_from/or_integration@v2.1'),
     ('api_business_rules', 'APIContract', 'api_contract', 'Constraint', 'business_rule', 'implements', 'implements/api_business_rule@v2.1'),
 ])
 async def projection(request, tmp_path):
     namespace, source_type, section, target_type, target_section, edge_type, rule = request.param
+    targets = {kind for kind, _section in spec_relationship_family(namespace).target_sections}
+    node_types = tuple(sorted({'Entity', source_type} | targets))
     graph = okto_grafx.connect(tmp_path / 'lineage')
     with graph.begin('write') as schema:
-        for kind in sorted({'Entity', source_type, target_type}):
+        for kind in node_types:
             schema.execute(f'CREATE NODE TABLE {kind}(id STRING, source_session_id STRING, source_artifact_ref STRING, PRIMARY KEY(id))')
-        schema.execute(f'CREATE REL TABLE relation(FROM {source_type} TO {target_type}, rule_id STRING, layer STRING, created_by STRING, confidence DOUBLE)')
+        for kind in sorted(targets):
+            schema.execute(f'CREATE REL TABLE relation_{kind}(FROM {source_type} TO {kind}, rule_id STRING, layer STRING, created_by STRING, confidence DOUBLE)')
     provider = CommunityGrafxGraphTransaction(database_resolver=lambda _: graph, revalidate_fence=lambda *_: None,
-        node_types=tuple(sorted({'Entity', source_type, target_type})), relationship_pairs=((edge_type, source_type, target_type),),
-        relationship_table_resolver=lambda *_: 'relation')
+        node_types=node_types, relationship_pairs=tuple((edge_type, source_type, kind) for kind in sorted(targets)),
+        relationship_table_resolver=lambda _edge, _source, target: f'relation_{target}')
     async with await provider.begin('board') as scope:
         for kind, identity, ref in [('Entity', 'root', 'spec:owner'),
                 (source_type, 'source', f'spec:owner:{section}:one'),
