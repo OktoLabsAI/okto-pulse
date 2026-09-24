@@ -39,6 +39,7 @@ from okto_pulse.core.kg.interfaces.graph_lifecycle import (
     RebuildReport,
 )
 from okto_pulse.core.kg.interfaces.graph_recovery import WalRecoveryReport
+from okto_pulse.core.kg.interfaces.graph_health_observation import GraphHealthObservation
 from okto_pulse.core.kg.interfaces.graph_runtime_store import (
     GraphPurgeResult,
 )
@@ -388,6 +389,22 @@ class _GrafxBoardAccess:
         self.rollout_mutation_recorder = rollout_mutation_recorder
         self.configured_page_size = validate_grafx_page_size(configured_page_size)
         self.connect = connect
+        self._health_observation: ContextVar[bool] = ContextVar(
+            "grafx_board_health_observation", default=False
+        )
+
+    @contextmanager
+    def scope(self, board_id: str) -> Iterator[None]:
+        """Implement the Health observation port without widening authority."""
+        token = self._health_observation.set(True)
+        try:
+            yield
+        finally:
+            self._health_observation.reset(token)
+
+    def _refuse_health_mutation(self, board_id: str) -> None:
+        if self._health_observation.get():
+            raise _route_failure("graph_health_maintenance_forbidden", board_id=board_id)
 
     def _snapshot(
         self,
@@ -408,6 +425,8 @@ class _GrafxBoardAccess:
         return snapshot
 
     def database(self, board_id: str):
+        if self._health_observation.get():
+            return self.read_database(board_id)
         snapshot = self._snapshot(board_id, require_physical=True)
         assert snapshot.page_size is not None
         database = self.pool.get(
@@ -438,6 +457,7 @@ class _GrafxBoardAccess:
         snapshot = self._snapshot(board_id, require_physical=True)
         assert snapshot.page_size is not None
         if not self.read_pools:
+            self._refuse_health_mutation(board_id)
             # Backward-compatible narrow construction used by isolated tests;
             # the production composition always supplies dedicated lanes.
             return self.database(board_id)
@@ -456,7 +476,7 @@ class _GrafxBoardAccess:
                 isinstance(cause, GrafxUnsupportedOperation)
                 and cause.details.get("field") == "read_only_consistency"
             )
-            if not read_join_requires_checkpoint:
+            if not read_join_requires_checkpoint or self._health_observation.get():
                 raise
             # A new read-only participant can join only a checkpoint-complete
             # durable image.  First recheck under a single-flight lock: another
@@ -508,6 +528,7 @@ class _GrafxBoardAccess:
         )
 
     def write_fence(self, board_id: str, phase: str) -> None:
+        self._refuse_health_mutation(board_id)
         revalidate_board_graph_write_lease(board_id, failure_phase=phase)
         snapshot = self._snapshot(board_id, require_physical=True)
         self.resolver.revalidate_snapshot(snapshot, require_physical=True)
@@ -518,6 +539,7 @@ class _GrafxBoardAccess:
         )
 
     def runtime_fence(self, board_id: str, phase: str) -> None:
+        self._refuse_health_mutation(board_id)
         revalidate_board_graph_write_lease(board_id, failure_phase=phase)
         snapshot = self.resolver.revalidate_session_authority(
             board_id,
@@ -625,6 +647,7 @@ class CommunityRoutedBoardGraphComposition:
     ranked_graph_search: Any | None = None
     graph_history: Any | None = None
     graph_analytics: Any | None = None
+    graph_health_observation: GraphHealthObservation | None = None
 
     def _require_route_materialization_allowed(self, board_id: str) -> None:
         """Refuse every route-creation door while privacy erasure is durable."""
@@ -698,11 +721,12 @@ class CommunityRoutedBoardGraphComposition:
         return snapshot
 
     def registry_providers(self) -> dict[str, Any]:
-        """Return only the unchanged Core Board registry slots."""
+        """Return the public Core Board registry providers."""
 
         return {
             "graph_store": self.graph_store,
             "cypher_executor": self.cypher_executor,
+            "graph_health_observation": self.graph_health_observation,
             "graph_transaction": self.graph_transaction,
             "graph_schema_manager": self.graph_schema_manager,
             "graph_lifecycle": self.graph_lifecycle,
@@ -1243,6 +1267,7 @@ def build_community_routed_board_graph_composition(
         ranked_graph_search=ranked_search,
         graph_history=history,
         graph_analytics=analytics,
+        graph_health_observation=access,
     )
 
 

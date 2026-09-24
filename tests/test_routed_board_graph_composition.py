@@ -496,6 +496,12 @@ def test_build_is_read_only_and_every_board_port_shares_one_route_identity(
     assert bundle.graph_transaction._grafx_pool is bundle.grafx_pool
     assert not hasattr(bundle, "graph_rollout_coordinator")
     assert "graph_rollout_coordinator" not in bundle.registry_providers()
+    observation = bundle.registry_providers()["graph_health_observation"]
+    assert observation is not None
+    with observation.scope("missing"), pytest.raises(GraphCapabilityUnavailable):
+        bundle.cypher_executor.execute_read_only("missing", "RETURN 1")
+    assert connector.calls == []
+    assert not root.exists()
     for port in (
         bundle.graph_store,
         bundle.cypher_executor,
