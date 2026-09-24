@@ -2,6 +2,12 @@
 
 # ruff: noqa: E402
 
+from okto_pulse.community.adapters.distribution_compatibility import require_compatible_core
+
+# Check before imports that expect the current Core API, and again at startup
+# when this module may already have been loaded by tooling.
+require_compatible_core()
+
 import warnings
 
 warnings.filterwarnings(
@@ -873,6 +879,7 @@ async def _drain_global_discovery_recovery_runtime(
 
 def create_community_app():
     """Create the community FastAPI application with embedded frontend."""
+    require_compatible_core()
     settings = CommunitySettings()
 
     # Read ports from environment (set by CLI) or use defaults

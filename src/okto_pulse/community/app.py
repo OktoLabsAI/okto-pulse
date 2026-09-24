@@ -1,5 +1,10 @@
 """Community FastAPI application factory."""
 
+# ruff: noqa: E402
+from okto_pulse.community.adapters.distribution_compatibility import require_compatible_core
+
+require_compatible_core()
+
 import asyncio
 import logging
 import os
@@ -359,6 +364,7 @@ def create_app(
             core default is ``None``; edition composition roots own worker
             start/stop decisions and may inject a registry when appropriate.
     """
+    require_compatible_core()
     if auth_provider is None:
         raise TypeError("auth_provider is required")
     if storage_provider is None:

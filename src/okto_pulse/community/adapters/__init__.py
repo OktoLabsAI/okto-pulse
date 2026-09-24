@@ -1,193 +1,91 @@
-"""Community-edition adapters for the core runtime ports (spec #15 / #16).
+"""Lazy public adapter exports; importing the package does not compose a runtime."""
 
-Concrete implementations of the pure ``okto_pulse.core.ports`` Protocols live
-here. Importing this package is import-light: the adapter modules pull only the
-``core.ports`` contract at module top and lazy-import their concrete
-dependencies (engine, ``infra.database``) inside their composition factories,
-so ``core`` never imports ``community``.
-"""
+from importlib import import_module
 
-from __future__ import annotations
+_EXPORTS = {
+    'CREATE_ALL_BOUNDARY_STEP_ID': 'okto_pulse.community.adapters.relational_schema_migrator',
+    'CommunityCrossEncoderReranker': 'okto_pulse.community.adapters.rerank',
+    'CommunityBoardSourceReader': 'okto_pulse.community.adapters.board_source_reader',
+    'CommunityBoardRebuildIngestionAdapter': 'okto_pulse.community.adapters.board_rebuild_ingestion',
+    'CommunityDataBootstrapper': 'okto_pulse.community.adapters.data_bootstrapper',
+    'CommunityAgentAuthenticationGateway': 'okto_pulse.community.adapters.relational_application',
+    'CommunityAmendmentRevisionApiBackend': 'okto_pulse.community.adapters.relational_application',
+    'CommunityBoundaryCheckResult': 'okto_pulse.community.adapters.boundary_evidence',
+    'CommunityContentIngestionResolver': 'okto_pulse.community.adapters.content_ingestion',
+    'CommunityLocalLeaseProvider': 'okto_pulse.community.adapters.coordination',
+    'CommunityLocalWriteLockPort': 'okto_pulse.community.adapters.coordination',
+    'CommunitySqlAlchemyClaimRepository': 'okto_pulse.community.adapters.coordination',
+    'CommunityFileSystemRebuildAuditArtifactStore': 'okto_pulse.community.adapters.rebuild_audit_storage',
+    'CommunityRebuildAuditArtifactStoreResolver': 'okto_pulse.community.adapters.rebuild_audit_storage',
+    'CommunityFileSystemStorage': 'okto_pulse.community.adapters.storage',
+    'CommunityInMemoryCache': 'okto_pulse.community.adapters.memory',
+    'CommunityInMemoryRateLimiter': 'okto_pulse.community.adapters.memory',
+    'CommunityInMemorySessionStore': 'okto_pulse.community.adapters.memory',
+    'CommunityKGEventsReader': 'okto_pulse.community.adapters.kg_events',
+    'CommunityKGOperationalPorts': 'okto_pulse.community.adapters.kg_operational',
+    'CommunityKgComposition': 'okto_pulse.community.adapters.composition',
+    'CommunityMCPAuthContext': 'okto_pulse.community.adapters.mcp_auth',
+    'CommunityApiKeySessionMiddleware': 'okto_pulse.community.adapters.mcp_host',
+    'CommunityMcpHostProvider': 'okto_pulse.community.adapters.mcp_host',
+    'CommunityMcpAuthenticator': 'okto_pulse.community.adapters.mcp_auth',
+    'CommunityPermissionPresetGateway': 'okto_pulse.community.adapters.relational_application',
+    'CommunityRelationalApplicationAdapter': 'okto_pulse.community.adapters.relational_application',
+    'CommunityRelationalSchemaLifecycleOrchestrator': 'okto_pulse.community.adapters.relational_schema_lifecycle',
+    'CommunityRelationalSchemaMigrator': 'okto_pulse.community.adapters.relational_schema_migrator',
+    'CommunitySentenceTransformerProvider': 'okto_pulse.community.adapters.embedding',
+    'CommunitySqlAlchemyKGOperationalReadModel': 'okto_pulse.community.adapters.kg_operational',
+    'CommunitySqlAlchemyKGWorkerAudit': 'okto_pulse.community.adapters.kg_operational',
+    'CommunitySqlAlchemyKGWorkerQueue': 'okto_pulse.community.adapters.kg_operational',
+    'CommunityStubEmbeddingProvider': 'okto_pulse.community.adapters.embedding',
+    'CommunityTelemetryStateCarrier': 'okto_pulse.community.adapters.telemetry_state',
+    'CommunityTestEvidenceError': 'okto_pulse.community.adapters.test_evidence',
+    'EvidenceMigrationReport': 'okto_pulse.community.adapters.test_evidence',
+    'MCPAuthContext': 'okto_pulse.community.adapters.mcp_auth',
+    'PersistedEvidenceMigrationReport': 'okto_pulse.community.adapters.test_evidence',
+    'ProductExecutionObservation': 'okto_pulse.community.adapters.test_evidence',
+    'SingletonSchedulerControl': 'okto_pulse.community.adapters.scheduler',
+    'auth_context_from_session': 'okto_pulse.community.adapters.mcp_auth',
+    'build_community_data_bootstrap_ledger': 'okto_pulse.community.adapters.data_bootstrapper',
+    'build_community_boundary_evidence': 'okto_pulse.community.adapters.boundary_evidence',
+    'build_community_runtime_smoke_evidence': 'okto_pulse.community.adapters.smoke_evidence',
+    'build_community_mcp_asgi_app': 'okto_pulse.community.adapters.mcp_host',
+    'build_community_kg_composition': 'okto_pulse.community.adapters.composition',
+    'build_community_migration_ledger': 'okto_pulse.community.adapters.relational_schema_migrator',
+    'build_community_telemetry_state_carrier': 'okto_pulse.community.adapters.telemetry_state',
+    'community_storage_provider': 'okto_pulse.community.adapters.composition',
+    'configure_community_kg_registry': 'okto_pulse.community.adapters.composition',
+    'create_mcp_auth_factory': 'okto_pulse.community.adapters.mcp_auth',
+    'make_community_data_bootstrapper': 'okto_pulse.community.adapters.data_bootstrapper',
+    'make_community_mcp_authenticator': 'okto_pulse.community.adapters.mcp_auth',
+    'migrate_persisted_test_scenario_evidence': 'okto_pulse.community.adapters.test_evidence',
+    'migrate_test_scenario_evidence': 'okto_pulse.community.adapters.test_evidence',
+    'normalize_test_scenario_evidence': 'okto_pulse.community.adapters.test_evidence',
+    'register_community_mcp_host': 'okto_pulse.community.adapters.mcp_host',
+    'principal_from_auth_session': 'okto_pulse.community.adapters.mcp_auth',
+    'make_community_relational_schema_lifecycle_orchestrator': 'okto_pulse.community.adapters.relational_schema_lifecycle',
+    'make_community_relational_schema_migrator': 'okto_pulse.community.adapters.relational_schema_migrator',
+    'register_community_relational_schema_lifecycle': 'okto_pulse.community.adapters.relational_schema_lifecycle',
+    'register_community_content_ingestion_resolver': 'okto_pulse.community.adapters.content_ingestion',
+    'register_community_coordination_providers': 'okto_pulse.community.adapters.coordination',
+    'register_community_kg_events_reader': 'okto_pulse.community.adapters.kg_events',
+    'register_community_kg_operational_ports': 'okto_pulse.community.adapters.kg_operational',
+    'register_community_reranker': 'okto_pulse.community.adapters.rerank',
+    'register_community_telemetry_state_carrier': 'okto_pulse.community.adapters.telemetry_state',
+    'resolve_pulse_db_path': 'okto_pulse.community.adapters.board_source_reader',
+    'run_manifest_and_build_evidence_v2': 'okto_pulse.community.adapters.test_evidence',
+    'verify_community_evidence_v2': 'okto_pulse.community.adapters.test_evidence',
+}
 
-from .composition import (
-    CommunityKgComposition,
-    build_community_kg_composition,
-    community_storage_provider,
-    configure_community_kg_registry,
-)
-from .content_ingestion import (
-    CommunityContentIngestionResolver,
-    register_community_content_ingestion_resolver,
-)
-from .coordination import (
-    CommunityLocalLeaseProvider,
-    CommunityLocalWriteLockPort,
-    CommunitySqlAlchemyClaimRepository,
-    register_community_coordination_providers,
-)
-from .kg_operational import (
-    CommunityKGOperationalPorts,
-    CommunitySqlAlchemyKGOperationalReadModel,
-    CommunitySqlAlchemyKGWorkerAudit,
-    CommunitySqlAlchemyKGWorkerQueue,
-    register_community_kg_operational_ports,
-)
-from .rebuild_audit_storage import (
-    CommunityFileSystemRebuildAuditArtifactStore,
-    CommunityRebuildAuditArtifactStoreResolver,
-)
-from .board_rebuild_ingestion import CommunityBoardRebuildIngestionAdapter
-from .board_source_reader import CommunityBoardSourceReader, resolve_pulse_db_path
-from .boundary_evidence import (
-    CommunityBoundaryCheckResult,
-    build_community_boundary_evidence,
-)
-from .smoke_evidence import (
-    build_community_runtime_smoke_evidence,
-)
-from .test_evidence import (
-    CommunityTestEvidenceError,
-    EvidenceMigrationReport,
-    PersistedEvidenceMigrationReport,
-    ProductExecutionObservation,
-    migrate_persisted_test_scenario_evidence,
-    migrate_test_scenario_evidence,
-    normalize_test_scenario_evidence,
-    run_manifest_and_build_evidence_v2,
-    verify_community_evidence_v2,
-)
-from .data_bootstrapper import (
-    CommunityDataBootstrapper,
-    build_community_data_bootstrap_ledger,
-    make_community_data_bootstrapper,
-)
-from .embedding import (
-    CommunitySentenceTransformerProvider,
-    CommunityStubEmbeddingProvider,
-)
-from .mcp_auth import (
-    CommunityMCPAuthContext,
-    CommunityMcpAuthenticator,
-    MCPAuthContext,
-    auth_context_from_session,
-    create_mcp_auth_factory,
-    make_community_mcp_authenticator,
-    principal_from_auth_session,
-)
-from .mcp_host import (
-    CommunityApiKeySessionMiddleware,
-    CommunityMcpHostProvider,
-    build_community_mcp_asgi_app,
-    register_community_mcp_host,
-)
-from .memory import (
-    CommunityInMemoryCache,
-    CommunityInMemoryRateLimiter,
-    CommunityInMemorySessionStore,
-)
-from .relational_application import (
-    CommunityAgentAuthenticationGateway,
-    CommunityAmendmentRevisionApiBackend,
-    CommunityPermissionPresetGateway,
-    CommunityRelationalApplicationAdapter,
-)
-from .kg_events import (
-    CommunityKGEventsReader,
-    register_community_kg_events_reader,
-)
-from .relational_schema_lifecycle import (
-    CommunityRelationalSchemaLifecycleOrchestrator,
-    make_community_relational_schema_lifecycle_orchestrator,
-    register_community_relational_schema_lifecycle,
-)
-from .relational_schema_migrator import (
-    CREATE_ALL_BOUNDARY_STEP_ID,
-    CommunityRelationalSchemaMigrator,
-    build_community_migration_ledger,
-    make_community_relational_schema_migrator,
-)
-from .rerank import (
-    CommunityCrossEncoderReranker,
-    register_community_reranker,
-)
-from .scheduler import SingletonSchedulerControl
-from .storage import CommunityFileSystemStorage
-from .telemetry_state import (
-    CommunityTelemetryStateCarrier,
-    build_community_telemetry_state_carrier,
-    register_community_telemetry_state_carrier,
-)
+__all__ = list(_EXPORTS)
 
-__all__ = [
-    "CREATE_ALL_BOUNDARY_STEP_ID",
-    "CommunityCrossEncoderReranker",
-    "CommunityBoardSourceReader",
-    "CommunityBoardRebuildIngestionAdapter",
-    "CommunityDataBootstrapper",
-    "CommunityAgentAuthenticationGateway",
-    "CommunityAmendmentRevisionApiBackend",
-    "CommunityBoundaryCheckResult",
-    "CommunityContentIngestionResolver",
-    "CommunityLocalLeaseProvider",
-    "CommunityLocalWriteLockPort",
-    "CommunitySqlAlchemyClaimRepository",
-    "CommunityFileSystemRebuildAuditArtifactStore",
-    "CommunityRebuildAuditArtifactStoreResolver",
-    "CommunityFileSystemStorage",
-    "CommunityInMemoryCache",
-    "CommunityInMemoryRateLimiter",
-    "CommunityInMemorySessionStore",
-    "CommunityKGEventsReader",
-    "CommunityKGOperationalPorts",
-    "CommunityKgComposition",
-    "CommunityMCPAuthContext",
-    "CommunityApiKeySessionMiddleware",
-    "CommunityMcpHostProvider",
-    "CommunityMcpAuthenticator",
-    "CommunityPermissionPresetGateway",
-    "CommunityRelationalApplicationAdapter",
-    "CommunityRelationalSchemaLifecycleOrchestrator",
-    "CommunityRelationalSchemaMigrator",
-    "CommunitySentenceTransformerProvider",
-    "CommunitySqlAlchemyKGOperationalReadModel",
-    "CommunitySqlAlchemyKGWorkerAudit",
-    "CommunitySqlAlchemyKGWorkerQueue",
-    "CommunityStubEmbeddingProvider",
-    "CommunityTelemetryStateCarrier",
-    "CommunityTestEvidenceError",
-    "EvidenceMigrationReport",
-    "MCPAuthContext",
-    "PersistedEvidenceMigrationReport",
-    "ProductExecutionObservation",
-    "SingletonSchedulerControl",
-    "auth_context_from_session",
-    "build_community_data_bootstrap_ledger",
-    "build_community_boundary_evidence",
-    "build_community_runtime_smoke_evidence",
-    "build_community_mcp_asgi_app",
-    "build_community_kg_composition",
-    "build_community_migration_ledger",
-    "build_community_telemetry_state_carrier",
-    "community_storage_provider",
-    "configure_community_kg_registry",
-    "create_mcp_auth_factory",
-    "make_community_data_bootstrapper",
-    "make_community_mcp_authenticator",
-    "migrate_persisted_test_scenario_evidence",
-    "migrate_test_scenario_evidence",
-    "normalize_test_scenario_evidence",
-    "register_community_mcp_host",
-    "principal_from_auth_session",
-    "make_community_relational_schema_lifecycle_orchestrator",
-    "make_community_relational_schema_migrator",
-    "register_community_relational_schema_lifecycle",
-    "register_community_content_ingestion_resolver",
-    "register_community_coordination_providers",
-    "register_community_kg_events_reader",
-    "register_community_kg_operational_ports",
-    "register_community_reranker",
-    "register_community_telemetry_state_carrier",
-    "resolve_pulse_db_path",
-    "run_manifest_and_build_evidence_v2",
-    "verify_community_evidence_v2",
-]
+
+def __getattr__(name):
+    if name not in _EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(_EXPORTS[name]), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))
