@@ -305,6 +305,66 @@ async def test_projection_read_cannot_write_sql_or_leave_connection_readonly(tmp
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('outer_version', ['v2', 'v3'])
+async def test_retained_singular_plan_requires_fresh_preparation_without_rewriting_history(tmp_path, outer_version):
+    """A valid digest or a relabeled envelope cannot upgrade old cleanup authority."""
+    from okto_pulse.community.adapters import retirement_graph_candidate as candidate
+    runtime, storage, run, source = await prepare(tmp_path)
+    try:
+        prepared = await offline.prepare_offline_retirement_projection_inputs(runtime, storage, (), run,
+            migration_builds=MIGRATION, projection_directory=tmp_path / 'retained-projection')
+        retained = prepared['projection_inputs']
+        artifact = retained.directory / 'run.json'
+        document = json.loads(artifact.read_bytes())
+        # Model the previous singular contract, including its absence of the
+        # scenario namespace. This is a version-boundary fixture, not a claim
+        # that these bytes were produced by a historical released wheel.
+        for board in document['boards']:
+            board['projection']['format'] = f'deterministic-board-projection-plan/{outer_version}'
+            for plan in board['projection']['plans']:
+                plan['format'] = 'deterministic-projection-plan/v2'
+                projection = plan['projection']
+                if projection is not None:
+                    intents = projection.pop('relational_projection_active_set_intents')
+                    old = [intent for intent in intents if intent['namespace'] != 'scenario_criteria']
+                    assert len(old) <= 1
+                    projection['relational_projection_active_set_intent'] = old[0] if old else None
+            board['sha256'] = hashlib.sha256(inputs._encode(board['projection'])).hexdigest()
+        old_bytes = inputs._encode(document)
+        artifact.write_bytes(old_bytes)
+        old_handle = inputs.RetirementProjectionInputs(retained.directory, hashlib.sha256(old_bytes).hexdigest())
+        before = dump(source)
+        recovery = tmp_path / 'candidate-backups'
+        recovery.mkdir()
+        reason = 'board_plan_invalid' if outer_version == 'v2' else 'retained_plan_mismatch'
+        with pytest.raises(ValueError, match=reason):
+            await candidate.prepare_retirement_candidate_seed(runtime, storage, (), run, old_handle,
+                migration_builds=MIGRATION, recovery_directory=recovery, seed_directory=tmp_path / 'old-seed')
+        assert not (tmp_path / 'old-seed').exists()
+        assert artifact.read_bytes() == old_bytes and dump(source) == before
+
+        fresh = await offline.prepare_offline_retirement_projection_inputs(runtime, storage, (), run,
+            migration_builds=MIGRATION, projection_directory=tmp_path / 'fresh-projection')
+        current = inputs.read_retirement_projection_inputs(fresh['projection_inputs'])
+        async with runtime.engine.connect() as connection:
+            await connection.exec_driver_sql('BEGIN IMMEDIATE')
+            membership = await inputs.revalidate_retirement_projection_inputs(connection, source, current)
+            assert (await connection.exec_driver_sql('PRAGMA query_only')).scalar_one() == 0
+            await connection.rollback()
+        assert set(membership) == {'board-a'}
+        assert {row['id'] for row in membership['board-a']} == {'spec-a', 'card-a', 'card-b'}
+        spec_plan = next(plan for plan in current['boards'][0]['projection']['plans']
+            if plan['source']['artifact_type'] == 'spec')
+        assert any(intent['namespace'] == 'scenario_criteria'
+            for intent in spec_plan['projection']['relational_projection_active_set_intents'])
+        assert artifact.read_bytes() == old_bytes and dump(source) == before
+        with pytest.raises(Exception, match='retirement_cutover_incomplete'):
+            await offline.require_retirement_runtime_admission(runtime.engine)
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_aggregate_board_limit_stops_preparation_without_publishing(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
