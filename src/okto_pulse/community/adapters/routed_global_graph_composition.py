@@ -61,6 +61,7 @@ from okto_pulse.community.adapters.global_privacy_projection import (
 from okto_pulse.community.adapters.grafx_database_pool import (
     CommunityGrafxDatabasePool,
     GrafxDatabaseLease,
+    GrafxDatabasePoolError,
 )
 from okto_pulse.community.adapters.grafx_read_lanes import GrafxReadLanes
 from okto_pulse.community.adapters.grafx_global_discovery_recovery import (
@@ -262,8 +263,17 @@ class _GrafxGlobalPoolManager:
         self._paths: dict[str, Path] = {}
         self.readers: tuple[_GrafxGlobalPoolManager, ...] = ()
 
-    def acquire(self, path: Path, *, page_size: int) -> GrafxDatabaseLease:
-        lease = self.pool.acquire(path, page_size=page_size)
+    def acquire(self, path: Path, *, page_size: int, existing_only: bool = False) -> GrafxDatabaseLease:
+        if existing_only:
+            try:
+                lease = self.pool.acquire_existing(path, page_size=page_size)
+            except GrafxDatabasePoolError as failure:
+                raise GraphCapabilityUnavailable(
+                    "Global Health requires an existing live participant.",
+                    details={"reason": "global_health_participant_unavailable"},
+                ) from failure
+        else:
+            lease = self.pool.acquire(path, page_size=page_size)
         self._paths[_canonical_path(path)] = Path(path)
         return lease
 
@@ -314,19 +324,23 @@ class _RotatingGrafxLease:
         path: Path,
         page_size: int,
         admit: Callable[[Any], None],
+        observation_timeout: Callable[[], float | None] | None = None,
     ) -> None:
         self._manager = manager
         self._path = Path(path)
         self._page_size = page_size
         self._admit = admit
+        self._observation_timeout = observation_timeout
         self._lease: GrafxDatabaseLease | None = None
 
     def database(self) -> Any:
+        observing = self._observation_timeout is not None and self._observation_timeout() is not None
         lease = self._lease
         if lease is None:
             lease = self._manager.acquire(
                 self._path,
                 page_size=self._page_size,
+                existing_only=observing,
             )
             try:
                 self._admit(lease.database)
@@ -358,11 +372,13 @@ class _GrafxRuntimeSessionFactory:
         pool_manager: _GrafxGlobalPoolManager,
         revalidate_write_fence: FenceRevalidator,
         administration: _GlobalAdministrationBinding,
+        observation_timeout: Callable[[], float | None] | None = None,
     ) -> None:
         self._resolver = resolver
         self._pool_manager = pool_manager
         self._revalidate_write_fence = revalidate_write_fence
         self._administration = administration
+        self._observation_timeout = observation_timeout
 
     @contextmanager
     def __call__(
@@ -390,6 +406,7 @@ class _GrafxRuntimeSessionFactory:
             path=snapshot.active_path,
             page_size=snapshot.page_size,
             admit=admit,
+            observation_timeout=self._observation_timeout,
         )
 
         def fence(phase: str) -> None:
@@ -405,6 +422,7 @@ class _GrafxRuntimeSessionFactory:
             holder.close,
             fence,
             admission=admit,
+            query_timeout=self._observation_timeout,
         )
         try:
             yield CommunityGlobalDiscoveryRuntimeOperationSession(
@@ -1247,6 +1265,7 @@ def build_community_routed_global_graph_composition(
     grafx_connect: GrafxConnect | None = None,
     quarantine_targets: QuarantineTargets | None = None,
     read_participants: int = 0,
+    observation_timeout: Callable[[], float | None] | None = None,
 ) -> CommunityRoutedGlobalGraphComposition:
     """Build Global routing from the exact shared dependencies supplied by caller."""
 
@@ -1262,6 +1281,7 @@ def build_community_routed_global_graph_composition(
         pool_manager=grafx,
         revalidate_write_fence=revalidate,
         administration=administration,
+        observation_timeout=observation_timeout,
     )
     from okto_pulse.community.config import validate_grafx_read_participants
     read_factory = None
@@ -1282,7 +1302,7 @@ def build_community_routed_global_graph_composition(
             raise GraphCapabilityUnavailable("A Global reader session cannot write.", details={"phase": phase})
         factories = tuple(_GrafxRuntimeSessionFactory(
             resolver=resolver, pool_manager=reader, revalidate_write_fence=refuse_read_write,
-            administration=administration) for reader in grafx.readers)
+            administration=administration, observation_timeout=observation_timeout) for reader in grafx.readers)
         lanes = GrafxReadLanes(count)
         @contextmanager
         def read_factory(snapshot):

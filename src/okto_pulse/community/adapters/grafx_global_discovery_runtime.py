@@ -130,6 +130,7 @@ class CommunityGrafxGlobalDiscoveryRuntime:
         *,
         admission: GlobalAdmission | None = None,
         privacy_artifact_resolver: PrivacyArtifactResolver | None = None,
+        query_timeout: Callable[[], float | None] | None = None,
     ) -> None:
         self._database_resolver = database_resolver
         self._path_resolver = path_resolver
@@ -137,6 +138,7 @@ class CommunityGrafxGlobalDiscoveryRuntime:
         self._revalidate_fence = revalidate_fence
         self._admission = admission
         self._privacy_artifact_resolver = privacy_artifact_resolver
+        self._query_timeout = query_timeout
         self._lock = RLock()
 
     def _database(self):
@@ -145,6 +147,11 @@ class CommunityGrafxGlobalDiscoveryRuntime:
         return database
 
     def _fence(self, phase: str) -> None:
+        if self._query_timeout is not None and self._query_timeout() is not None:
+            raise GraphCapabilityUnavailable(
+                "Global Health cannot perform maintenance or writes.",
+                details={"reason": "graph_health_maintenance_forbidden", "phase": phase},
+            )
         self._revalidate_fence(phase)
 
     @staticmethod
@@ -281,11 +288,18 @@ class CommunityGrafxGlobalDiscoveryRuntime:
         operation: str,
         write: bool,
     ) -> GraphStatementResult:
+        remaining = self._query_timeout() if self._query_timeout is not None else None
+        if write and remaining is not None:
+            self._fence(operation)
         transaction = database.begin("write" if write else "read")
         try:
             if write:
                 self._fence(operation)
-            native = transaction.execute(statement, params or {})
+            native = (
+                transaction.execute(statement, params or {})
+                if remaining is None
+                else transaction.execute(statement, params or {}, timeout_seconds=remaining)
+            )
             result = GraphStatementResult.from_rows(
                 (
                     tuple(normalize_grafx_value(value) for value in row)
@@ -294,6 +308,8 @@ class CommunityGrafxGlobalDiscoveryRuntime:
                 columns=native.columns,
                 affected_count=_affected_count(dict(native.statistics)),
             )
+            if self._query_timeout is not None:
+                self._query_timeout()
             if write:
                 self._fence("commit")
                 report = transaction.commit()

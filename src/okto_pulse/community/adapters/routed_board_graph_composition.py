@@ -670,6 +670,8 @@ class CommunityRoutedBoardGraphComposition:
     graph_history: Any | None = None
     graph_analytics: Any | None = None
     graph_health_observation: GraphHealthObservation | None = None
+    # Community-only wiring for the shared Board/Global diagnostic context.
+    observation_timeout: Callable[[], float | None] | None = None
 
     def _require_route_materialization_allowed(self, board_id: str) -> None:
         """Refuse every route-creation door while privacy erasure is durable."""
@@ -1291,6 +1293,7 @@ def build_community_routed_board_graph_composition(
         graph_history=history,
         graph_analytics=analytics,
         graph_health_observation=access,
+        observation_timeout=lambda: access.health_query_timeout("global"),
     )
 
 

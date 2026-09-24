@@ -243,6 +243,7 @@ def build_community_routed_graph_composition(
         grafx_pool=board.grafx_pool,
         global_lock=GlobalOperationGate(),
         read_participants=len(board.grafx_read_pools),
+        observation_timeout=board.observation_timeout,
         grafx_connect=grafx_connect,
     )
     if (

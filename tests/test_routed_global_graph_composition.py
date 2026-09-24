@@ -245,7 +245,8 @@ def test_grafx_operation_lease_rotates_without_leaking_a_pin(tmp_path: Path) -> 
             self.leases: list[_Lease] = []
             self.closes = 0
 
-        def acquire(self, path: Path, *, page_size: int) -> _Lease:
+        def acquire(self, path: Path, *, page_size: int, existing_only: bool = False) -> _Lease:
+            assert not existing_only
             del path, page_size
             lease = _Lease(object())
             self.leases.append(lease)

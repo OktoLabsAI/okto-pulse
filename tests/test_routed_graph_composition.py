@@ -54,6 +54,7 @@ def test_registry_provider_set_is_one_complete_routed_bundle(tmp_path: Path) -> 
         "graph_analytics",
         "graph_store",
         "cypher_executor",
+        "graph_health_observation",
         "graph_transaction",
         "graph_schema_manager",
         "graph_lifecycle",
@@ -64,6 +65,7 @@ def test_registry_provider_set_is_one_complete_routed_bundle(tmp_path: Path) -> 
         "quarantine_restore",
     }
     assert providers["graph_schema_manager"] is bundle.graph_schema_manager
+    assert providers["graph_health_observation"] is bundle.board.graph_health_observation
     assert providers["global_discovery_runtime"] is bundle.global_graph.runtime
     assert providers["global_discovery_recovery"] is bundle.global_graph.recovery
     assert providers["quarantine_restore"] is bundle.quarantine_restore
