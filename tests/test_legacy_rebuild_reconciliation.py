@@ -697,7 +697,8 @@ def test_source_revision_guard_v1_binds_exact_contract_and_row_cardinality(
             LegacyManualRestoreQueueOnlyIntent.from_payload(tampered)
 
 
-def test_source_revision_guard_phase_matrix_is_exact(tmp_path: Path) -> None:
+@pytest.mark.parametrize("manifest_version", ["gdsr-trigger-manifest-v8", "gdsr-trigger-manifest-v9"])
+def test_source_revision_guard_phase_matrix_is_exact(tmp_path: Path, manifest_version: str) -> None:
     path, target_rows, non_target_rows, dlq_rows = _database(tmp_path)
     intent = _intent(
         path,
@@ -706,6 +707,7 @@ def test_source_revision_guard_phase_matrix_is_exact(tmp_path: Path) -> None:
         dlq_rows=dlq_rows,
     )
     guard = dict(intent.payload["source_revision_guard"])
+    guard["baseline"] = dict(guard["baseline"], trigger_manifest_version=manifest_version)
     baseline = dict(guard["baseline"])
     expected_count = len(target_rows)
     assert (
@@ -729,6 +731,12 @@ def test_source_revision_guard_phase_matrix_is_exact(tmp_path: Path) -> None:
     )
 
     invalid: list[tuple[dict[str, object], int]] = []
+    other_version = (
+        "gdsr-trigger-manifest-v9" if manifest_version.endswith("v8")
+        else "gdsr-trigger-manifest-v8"
+    )
+    invalid.append((dict(baseline, trigger_manifest_version=other_version), 0))
+    invalid.append((dict(terminal, trigger_manifest_version=other_version), expected_count))
     invalid.append((dict(baseline), 1))
     drift_at_baseline = dict(baseline)
     drift_at_baseline["revision"] = int(baseline["revision"]) + 1
@@ -755,6 +763,16 @@ def test_source_revision_guard_phase_matrix_is_exact(tmp_path: Path) -> None:
                 current=current,
                 terminal_count=terminal_count,
             )
+
+
+@pytest.mark.parametrize("version", ["gdsr-trigger-manifest-v7", "gdsr-trigger-manifest-v10", "", None, [], {}])
+def test_source_revision_guard_rejects_unreviewed_manifest_versions(tmp_path: Path, version: object) -> None:
+    path, target_rows, non_target_rows, dlq_rows = _database(tmp_path)
+    intent = _intent(path, target_rows, non_target_rows=non_target_rows, dlq_rows=dlq_rows)
+    payload = intent.to_payload()
+    payload["source_revision_guard"]["baseline"]["trigger_manifest_version"] = version
+    with pytest.raises(LegacyQueueOnlyIntentError, match="source_revision_guard_invalid"):
+        LegacyManualRestoreQueueOnlyIntent.from_payload(payload)
 
 
 def test_legacy_queue_only_cas_drift_rolls_back_every_target(tmp_path: Path) -> None:

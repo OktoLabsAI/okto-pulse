@@ -31,6 +31,14 @@ LEGACY_SOURCE_REVISION_TABLE = "global_discovery_source_revision"
 LEGACY_SOURCE_REVISION_SCOPE_ID = "_global"
 LEGACY_SOURCE_REVISION_FENCE_VERSION = "gdsr-fence-v2"
 LEGACY_SOURCE_REVISION_TRIGGER_MANIFEST_VERSION = "gdsr-trigger-manifest-v8"
+# v9 retires Sprint source triggers; the queue/singleton contract is unchanged.
+# Keep v8 evidence readable without rewriting it. Phase validation below still
+# requires the exact captured version, and the live reader validates the full
+# current manifest before admitting a new snapshot. No cross-version replay.
+_SOURCE_REVISION_TRIGGER_MANIFEST_VERSIONS = (
+    LEGACY_SOURCE_REVISION_TRIGGER_MANIFEST_VERSION,
+    "gdsr-trigger-manifest-v9",
+)
 LEGACY_QUEUE_ONLY_INTENT_EFFECT = (
     "legacy_manually_restored_blocked_after_enqueue_intent"
 )
@@ -800,7 +808,7 @@ def _validate_source_revision_singleton(
         singleton.get("scope_id") == LEGACY_SOURCE_REVISION_SCOPE_ID
         and singleton.get("fence_version") == LEGACY_SOURCE_REVISION_FENCE_VERSION
         and singleton.get("trigger_manifest_version")
-        == LEGACY_SOURCE_REVISION_TRIGGER_MANIFEST_VERSION
+        in _SOURCE_REVISION_TRIGGER_MANIFEST_VERSIONS
         and _is_sha256(singleton.get("incarnation_id"))
         and type(singleton.get("revision")) is int
         and int(singleton["revision"]) >= 0
