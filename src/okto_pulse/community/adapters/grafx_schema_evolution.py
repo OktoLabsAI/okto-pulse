@@ -37,9 +37,9 @@ from okto_pulse.core.kg.schema_contract import STABLE_NODE_PROPERTIES
 
 from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
 from okto_pulse.community.adapters.grafx_relationship_layout import (
-    PULSE_RELATIONSHIP_LAYOUT,
     RelationshipLayout,
 )
+from okto_pulse.community.adapters.grafx_schema_v060 import V060_RELATIONSHIP_LAYOUT
 from okto_pulse.community.adapters.grafx_schema_manifest import (
     EMBEDDING_DIMENSION,
     EMBEDDING_STORAGE_DTYPE,
@@ -72,7 +72,7 @@ _V050_NODE_PROPERTIES = tuple(
 )
 _V050_RELATIONSHIP_LAYOUT = RelationshipLayout(
     (entry.logical_type, entry.from_type, entry.to_type)
-    for entry in PULSE_RELATIONSHIP_LAYOUT.entries
+    for entry in V060_RELATIONSHIP_LAYOUT.entries
     if (entry.logical_type, entry.from_type, entry.to_type)
     not in _V060_RELATIONSHIP_PAIRS
 )

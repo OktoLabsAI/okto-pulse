@@ -11,6 +11,7 @@ from okto_pulse.core.kg.logical_transfer import (
 )
 
 from .grafx_schema_evolution import PULSE_GRAFX_SCHEMA_MANIFEST as PREDECESSOR
+from .grafx_schema_v060 import V060_MANIFEST, V060_FINGERPRINT
 from .logical_transfer_factories import LogicalTransferScope, logical_transfer_scope
 from .logical_transfer_schema import SchemaCensus, _property, require_no_schema_drift
 
@@ -20,6 +21,16 @@ _PREDECESSOR_FINGERPRINT = '4a7b425bf4b8c4864be633c1a87f034e5f7f641019dc029015b7
 def predecessor_recovery_contract():
     if PREDECESSOR.schema_version != '0.5.0' or PREDECESSOR.logical_fingerprint != _PREDECESSOR_FINGERPRINT:
         raise LogicalSchemaError('frozen predecessor recovery manifest changed')
+    return _manifest_contract(PREDECESSOR, SchemaCensus(12, 69, 11, 489, 483))
+
+
+def v060_recovery_contract():
+    if V060_MANIFEST.schema_version != '0.6.0' or V060_MANIFEST.logical_fingerprint != V060_FINGERPRINT:
+        raise LogicalSchemaError('frozen 0.6.0 recovery manifest changed')
+    return _manifest_contract(V060_MANIFEST, SchemaCensus(12, 80, 11, 544, 560))
+
+
+def _manifest_contract(manifest, census):
 
     def properties(table, *, relation=False):
         return tuple(_property(column.name, column.pulse_type,
@@ -28,20 +39,28 @@ def predecessor_recovery_contract():
 
     schema = LogicalSchema('board',
         node_types=tuple(LogicalNodeType(table.name, table.primary_key, properties(table))
-            for table in (PREDECESSOR.board_meta, *PREDECESSOR.nodes)),
+            for table in (manifest.board_meta, *manifest.nodes)),
         relation_layouts=tuple(LogicalRelationLayout(table.logical_relationship, table.from_table, table.to_table,
-            properties(table, relation=True)) for table in PREDECESSOR.relationships),
+            properties(table, relation=True)) for table in manifest.relationships),
         vector_spaces=tuple(LogicalVectorSpace(space.name, space.storage_dtype, space.dimension,
-            space.metric, space.normalized) for space in PREDECESSOR.spaces))
-    require_no_schema_drift(schema, SchemaCensus(12, 69, 11, 489, 483))
+            space.metric, space.normalized) for space in manifest.spaces))
+    require_no_schema_drift(schema, census)
     return LogicalTransferScope('board', schema, {
         (table.logical_relationship, table.from_table, table.to_table): table.name
-        for table in PREDECESSOR.relationships})
+        for table in manifest.relationships})
 
 
 def _contracts(scope):
     current = logical_transfer_scope(scope)
-    return (current, predecessor_recovery_contract()) if scope == 'board' else (current,)
+    if scope != 'board':
+        return (current,)
+    unique = {}
+    for contract in (current, v060_recovery_contract(), predecessor_recovery_contract()):
+        digest = schema_digest(contract.schema)
+        if digest in unique and unique[digest] != contract:
+            raise LogicalSchemaError('recovery contract digest collision')
+        unique[digest] = contract
+    return tuple(unique.values())
 
 
 def grafx_recovery_contract(database, *, scope):
