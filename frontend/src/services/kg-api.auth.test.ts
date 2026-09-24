@@ -37,4 +37,17 @@ describe('KG API authenticated transport', () => {
     );
     expect(new Headers(init.headers).get('Authorization')).toBe('Bearer token-for-test');
   });
+
+  it.each([undefined, 'board/one'])('requests only the public schema for %s', async (boardId) => {
+    fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+    // A stale JavaScript caller cannot restore the removed maintenance option.
+    // @ts-expect-error The public client no longer accepts an internal-view flag.
+    await kgApi.getSchemaInfo(boardId, true);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const parsed = new URL(url);
+    expect(parsed.pathname).toBe('/api/v1/kg/schema');
+    expect([...parsed.searchParams.keys()]).toEqual(boardId ? ['board_id'] : []);
+    expect(parsed.searchParams.get('board_id')).toBe(boardId ?? null);
+    expect(new Headers(init.headers).get('Authorization')).toBe('Bearer token-for-test');
+  });
 });

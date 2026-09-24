@@ -257,8 +257,10 @@ async def test_legacy_board_read_remains_compatible(
 
 
 @pytest.mark.asyncio
-async def test_internal_schema_requires_admin_read_before_introspection(
+@pytest.mark.parametrize("old_admin_grant", [False, True])
+async def test_internal_schema_is_retired_before_introspection(
     monkeypatch: pytest.MonkeyPatch,
+    old_admin_grant: bool,
 ) -> None:
     called = False
 
@@ -272,7 +274,7 @@ async def test_internal_schema_requires_admin_read_before_introspection(
         _permission_set(
             {
                 "kg.power.schema_info": True,
-                "kg.admin.settings_read": False,
+                "kg.admin.settings_read": old_admin_grant,
             }
         ),
         board_id=None,
@@ -286,6 +288,37 @@ async def test_internal_schema_requires_admin_read_before_introspection(
             uow=SimpleNamespace(),
         )
 
-    assert exc_info.value.status_code == 403
-    assert "kg.admin.settings_read" in str(exc_info.value.detail)
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail["error"] == "kg_internal_schema_view_retired"
     assert not called
+
+
+@pytest.mark.asyncio
+async def test_global_schema_has_no_implicit_board(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+
+    def schema(board_id, *, include_internal):
+        calls.append((board_id, include_internal))
+        return {"schema_version": "test"}
+
+    monkeypatch.setattr(kg_routes, "get_schema_info", schema)
+    result = await kg_routes.schema_info(
+        actor=_actor(_permission_set({"kg.power.schema_info": True}), board_id=None),
+        uow=SimpleNamespace(),
+    )
+    assert result == {"schema_version": "test"}
+    assert calls == [("", False)]
+
+
+def test_openapi_does_not_offer_internal_schema_view() -> None:
+    from fastapi import FastAPI
+
+    app = FastAPI()
+    app.include_router(kg_routes.router)
+    operation = next(
+        operations["get"] for path, operations in app.openapi()["paths"].items()
+        if path.endswith("/schema")
+    )
+    assert "include_internal" not in {
+        parameter["name"] for parameter in operation.get("parameters", [])
+    }

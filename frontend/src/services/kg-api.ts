@@ -207,9 +207,8 @@ export async function deleteKG(boardId: string) {
 }
 
 // Schema
-export async function getSchemaInfo(boardId?: string, includeInternal = false) {
+export async function getSchemaInfo(boardId?: string) {
   const qs = new URLSearchParams();
   if (boardId) qs.set('board_id', boardId);
-  if (includeInternal) qs.set('include_internal', 'true');
   return kgFetch<Record<string, unknown>>(`/schema?${qs}`);
 }

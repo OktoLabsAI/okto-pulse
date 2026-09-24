@@ -16,7 +16,7 @@ import logging
 from time import perf_counter
 from collections.abc import Sequence
 from datetime import datetime, timezone
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -1635,7 +1635,7 @@ async def cypher_query(
 @router.get("/schema")
 async def schema_info(
     board_id: str = "",
-    include_internal: bool = False,
+    include_internal: Annotated[str | None, Query(include_in_schema=False)] = None,
     actor: ActorContext = Depends(require_kg_actor),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
@@ -1648,22 +1648,20 @@ async def schema_info(
         board_id=board_id or None,
         require_board_read=True,
     )
-    if include_internal:
-        await _require_kg_operation(
-            actor,
-            operation="kg.admin.settings_read",
-            legacy_operation=None,
-            uow=uow,
-            board_id=board_id or None,
+    if include_internal is not None:
+        # Compatibility tombstone only: an old grant cannot restore maintenance.
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "kg_internal_schema_view_retired"},
         )
     if board_id:
         await _ensure_board_access(board_id=board_id, actor=actor, uow=uow)
     try:
         return await run_blocking_graph_io(
             lambda: get_schema_info(
-                board_id or "default", include_internal=include_internal,
+                board_id, include_internal=False,
             ),
-            task_name=f"community.kg.schema.read:{board_id or 'default'}",
+            task_name=f"community.kg.schema.read:{board_id or 'global'}",
         )
     except GraphError as exc:
         # No fallback to another board, synthetic schema or recovery on refusal.
