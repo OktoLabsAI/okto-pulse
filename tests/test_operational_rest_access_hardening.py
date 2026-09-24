@@ -242,7 +242,6 @@ BOARD_SURFACES = [
     ),
     ("DELETE", "/api/v1/kg/boards/board-b/kg", None),
     ("POST", "/api/v1/kg/boards/board-b/cypher", None),
-    ("POST", "/api/v1/kg/boards/board-b/nodes/node-1/boost", None),
 ]
 
 WRITE_SURFACES = [
@@ -270,7 +269,6 @@ WRITE_SURFACES = [
         },
     ),
     ("DELETE", "/api/v1/kg/boards/board-b/kg", None),
-    ("POST", "/api/v1/kg/boards/board-b/nodes/node-1/boost", None),
 ]
 
 
@@ -291,7 +289,6 @@ WRITE_SURFACES = [
         "candidate-command",
         "delete-board-kg",
         "cypher",
-        "boost-node",
     ],
 )
 @pytest.mark.parametrize("board", [None, FOREIGN_BOARD], ids=["missing", "foreign"])
@@ -325,7 +322,6 @@ def test_board_surface_returns_same_404_before_downstream_access(
         "cognitive-clear",
         "candidate-command",
         "delete-board-kg",
-        "boost-node",
     ],
 )
 def test_viewer_share_cannot_reach_board_writer(method, path, payload) -> None:

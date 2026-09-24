@@ -16,7 +16,6 @@ import * as kgApi from '@/services/kg-api';
 import { RelevanceBadge } from './RelevanceBadge';
 import { NodeSourceLink } from './NodeSourceLink';
 import { useOptionalModalStack } from '@/contexts/ModalStackContext';
-import { usePermissions } from '@/hooks/usePermissions';
 import { useCodeTraceabilityAuthority } from '@/components/code-traceability';
 
 interface Props {
@@ -41,7 +40,6 @@ interface ChainNode {
 }
 
 export function NodeDetailPanel({ node, boardId, onClose, onNodeNavigate }: Props) {
-  const permissions = usePermissions(boardId);
   const { canReadProjection: canReadCodeTraceability, isLoading: traceabilityLoading } =
     useCodeTraceabilityAuthority(boardId);
   const traceabilityPending = isCodeTraceabilityKind(node.kind_of) && traceabilityLoading;
@@ -51,12 +49,6 @@ export function NodeDetailPanel({ node, boardId, onClose, onNodeNavigate }: Prop
   useEffect(() => {
     if (traceabilityDenied) onClose();
   }, [onClose, traceabilityDenied]);
-  const canBoostNode = (
-    !permissions.isLoading
-    && !permissions.error
-    && !permissions.ownerReviewRequired
-    && permissions.has('kg.operations.node.boost')
-  );
   const config = kgNodeVisualConfig(node);
   const [similar, setSimilar] = useState<SimilarResult[] | null>(null);
   const [chain, setChain] = useState<ChainNode[] | null>(null);
@@ -113,29 +105,8 @@ export function NodeDetailPanel({ node, boardId, onClose, onNodeNavigate }: Prop
     }
   }
 
-  const [boosting, setBoosting] = useState(false);
-  const [optimisticScore, setOptimisticScore] = useState<number | null>(null);
+  const displayScore = node.relevance_score ?? 0.5;
 
-  async function handleBoost() {
-    if (!canBoostNode) return;
-    setBoosting(true);
-    const before = typeof optimisticScore === 'number' ? optimisticScore : node.relevance_score ?? 0.5;
-    const optimistic = Math.min(1.5, before + 0.3);
-    setOptimisticScore(optimistic);
-    try {
-      const data = await kgApi.boostNode(boardId, node.id);
-      setOptimisticScore(data.score_after);
-      toast.success(`Score boosted: ${data.score_before.toFixed(2)} → ${data.score_after.toFixed(2)}`);
-    } catch (err: any) {
-      setOptimisticScore(before);
-      toast.error(err.message || 'Failed to boost node');
-    } finally {
-      setBoosting(false);
-    }
-  }
-
-  const displayScore =
-    typeof optimisticScore === 'number' ? optimisticScore : node.relevance_score ?? 0.5;
 
   // Loading authority is not a denial. Keep the modal mounted without leaking
   // node content while the first request (or a cross-board lookup) completes.
@@ -193,19 +164,7 @@ export function NodeDetailPanel({ node, boardId, onClose, onNodeNavigate }: Prop
           <span className="text-gray-500">Relevance</span>
           <div className="mt-1 flex items-center justify-between gap-2">
             <RelevanceBadge score={displayScore} compact />
-            <button
-              type="button"
-              onClick={handleBoost}
-              disabled={!canBoostNode || boosting || displayScore >= 1.5}
-              className="px-2 py-0.5 text-xs rounded bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-400 text-white font-medium"
-              title={
-                canBoostNode
-                  ? 'Adds +0.3 to the relevance score (clamped at 1.5)'
-                  : 'Requires kg.operations.node.boost'
-              }
-            >
-              {boosting ? '...' : 'Boost'}
-            </button>
+
           </div>
           {typeof node.query_hits === 'number' && (
             <p className="mt-1 text-[10px] text-gray-500">

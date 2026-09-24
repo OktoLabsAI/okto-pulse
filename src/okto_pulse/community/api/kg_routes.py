@@ -42,7 +42,6 @@ from okto_pulse.core.kg.tier_power import (
     get_schema_info,
 )
 from okto_pulse.community.api.deps import get_unit_of_work
-from okto_pulse.core.application.errors import BoostPersistError
 from okto_pulse.core.application.kg_runtime_access import (
     resolve_cypher_executor,
     resolve_graph_transaction,
@@ -71,16 +70,7 @@ from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.core.domain.realm import LOCAL_REALM_ID
 from okto_pulse.core.ports.authentication import Principal
 from okto_pulse.community.adapters.kg_events import poll_community_kg_events
-from okto_pulse.core.application.use_cases.kg_routes_crud import (
-    BoostNodeCommand,
-    BoostNodeUseCase,
-    DeleteBoardKgCommand,
-    DeleteBoardKgUseCase,
-    GlobalSearchCommand,
-    GlobalSearchUseCase,
-    ListAuditCommand,
-    ListAuditUseCase,
-)
+from okto_pulse.core.application.use_cases.kg_routes_crud import DeleteBoardKgCommand, DeleteBoardKgUseCase, GlobalSearchCommand, GlobalSearchUseCase, ListAuditCommand, ListAuditUseCase
 
 router = APIRouter(prefix="/kg", tags=["knowledge-graph"])
 
@@ -1985,59 +1975,6 @@ async def stream_kg_events(
 
 
 
-@router.post("/boards/{board_id}/nodes/{node_id}/boost")
-async def boost_node(
-    board_id: str,
-    node_id: str,
-    actor: ActorContext = Depends(require_kg_board_writer_actor),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-):
-    """Increment a node's ``relevance_score`` by a fixed +0.3 with clamp [0, 1.5].
-
-    Persists a ``ConsolidationAudit`` row for the boost with all required NOT-NULL
-    columns populated (``artifact_type="boost"``, ``started_at``, …) — bug 547a2aa8
-    fix; the legacy row omitted ``artifact_type``/``started_at`` so its commit always
-    raised IntegrityError and was silently swallowed (200 with no audit row). Each
-    boost's audit row has a unique PK (uuid-suffixed ``session_id``) so repeated
-    boosts of the same node persist distinct rows. Idempotency is NOT enforced —
-    each call stacks another +0.3 until the clamp is reached, by design (repeat
-    clicks should reflect repeat intent).
-
-    Responses:
-        200 — `{node_id, node_type, score_before, score_after, boosted_at, boosted_by}`
-        404 — node not found in any table of the per-board graph
-
-    The graph read/SET + ``ConsolidationAudit`` staging live in
-    ``kg.governance.boost_node``; the ``BoostNodeUseCase`` commits the staged audit
-    via the UnitOfWork (best-effort — a commit failure on the already-boosted graph
-    rolls back the audit-only row and the boost still returns 200, preserving the
-    legacy contract). A missing node comes back as ``EntityNotFoundError`` (mapped to
-    the legacy 404 problem) and a failed SET as ``BoostPersistError`` (mapped to the
-    legacy 500 ``kuzu_error`` problem).
-    """
-    try:
-        result = await BoostNodeUseCase().execute(
-            BoostNodeCommand(board_id, node_id),
-            actor=actor,
-            uow=uow,
-        )
-    except EntityNotFoundError:
-        return _problem(
-            status=404,
-            title="Node not found",
-            detail=f"Node {node_id} not present in board {board_id}",
-            error_type="not_found",
-        )
-    except BoostPersistError as exc:
-        return _problem(
-            status=500,
-            title="Boost persist failed",
-            detail=str(exc),
-            error_type="kuzu_error",
-        )
-    except PermissionDeniedError as exc:
-        raise RESTAdapterContract.http_error(exc)
-    return result.payload
 
 
 @router.get("/openapi.json")

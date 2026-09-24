@@ -17,6 +17,7 @@ import test_sprint_retirement_inventory as relational
 
 database = relational.database
 RETIRED = tuple(sorted((
+    "kg.operations.node.boost",
     "kg.operations.integrity.backfill",
     "kg.operations.queue.read",
     "kg.operations.queue.reprocess",
