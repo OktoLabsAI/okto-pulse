@@ -235,7 +235,7 @@ def test_init_registers_community_kg_before_demo_skip_and_fails_closed(
 
 
 def test_init_real_engine_closes_wals_and_reopens_every_graph_strictly_offline(
-    tmp_path,
+    tmp_path, monkeypatch,
 ):
     """First boot is durable without WAL replay recovery or an HF download."""
 
@@ -249,6 +249,17 @@ def test_init_real_engine_closes_wals_and_reopens_every_graph_strictly_offline(
 
     pulse_home = tmp_path / "pulse-home"
     hf_home = tmp_path / "empty-hf-cache"
+    # A parent test campaign may configure all runtime paths independently.
+    # The init subprocess must never seed into those inherited destinations.
+    parent_home = tmp_path / "parent-runtime"
+    parent_home.mkdir()
+    monkeypatch.setenv(
+        "DATABASE_URL", f"sqlite+aiosqlite:///{(parent_home / 'pulse.db').as_posix()}",
+    )
+    for key, directory in (
+        ("KG_BASE_DIR", "kg"), ("UPLOAD_DIR", "uploads"), ("METRICS_DIR", "metrics"),
+    ):
+        monkeypatch.setenv(key, str(parent_home / directory))
     env = dict(os.environ)
     source_paths = [REPO_SRC, CORE_SRC]
     existing_pythonpath = env.get("PYTHONPATH")
@@ -262,6 +273,10 @@ def test_init_real_engine_closes_wals_and_reopens_every_graph_strictly_offline(
         {
             "DATA_DIR": str(pulse_home),
             "OKTO_PULSE_HOME": str(pulse_home),
+            "DATABASE_URL": f"sqlite+aiosqlite:///{(pulse_home / 'data' / 'pulse.db').as_posix()}",
+            "KG_BASE_DIR": str(pulse_home),
+            "UPLOAD_DIR": str(pulse_home / "uploads"),
+            "METRICS_DIR": str(pulse_home / "metrics"),
             "OKTO_PULSE_SKIP_DEMO_SEED": "0",
             "OKTO_PULSE_NO_BANNER": "1",
             "PYTHONUTF8": "1",
@@ -364,6 +379,7 @@ def test_init_real_engine_closes_wals_and_reopens_every_graph_strictly_offline(
             t.name for t in database.catalog.catalog.tables()
         }
     assert not list(pulse_home.rglob("*.lbug"))
+    assert not list(parent_home.iterdir())
 
 
 # ---------------------------------------------------------------------------

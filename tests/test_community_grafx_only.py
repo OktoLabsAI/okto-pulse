@@ -226,8 +226,8 @@ from okto_pulse.community.adapters.routed_graph_composition import build_communi
 from okto_pulse.community.main import create_community_app
 settings = CommunitySettings(_env_file=None)
 bundle = build_community_routed_graph_composition(settings=settings)
-assert len(bundle.registry_providers()) == 13
-assert all(bundle.registry_providers()[name] is not None for name in ('ranked_graph_search', 'graph_history', 'graph_analytics'))
+assert len(bundle.registry_providers()) == 14
+assert all(bundle.registry_providers()[name] is not None for name in ('ranked_graph_search', 'graph_history', 'graph_analytics', 'graph_health_observation'))
 from okto_pulse.core.infra.config import configure_settings
 configure_settings(lambda: settings)
 app = create_community_app()
