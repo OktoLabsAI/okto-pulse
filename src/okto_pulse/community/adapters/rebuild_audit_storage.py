@@ -26,6 +26,7 @@ from okto_pulse.core.kg.interfaces.rebuild_audit_storage import (
     RebuildAuditArtifactStore,
     RebuildAuditArtifactStoreResolver,
     RebuildAuditKey,
+    RebuildAuditObservationBudget,
 )
 from okto_pulse.core.kg.interfaces.storage_ref import StorageRef
 
@@ -34,6 +35,7 @@ from .filesystem_erasure import (
     contained_resolved_path,
     remove_contained_tree,
     validate_scope_id,
+    is_filesystem_alias,
 )
 from .local_storage_ref import resolve_local_storage_ref
 
@@ -782,6 +784,83 @@ class CommunityFileSystemRebuildAuditArtifactStore(RebuildAuditArtifactStore):
                 if isinstance(payload, dict):
                     rows.append(payload)
             return rows
+
+    def observe_health_json(
+        self, prefix: RebuildAuditKey, *, budget: RebuildAuditObservationBudget,
+    ) -> Sequence[dict[str, Any]]:
+        if not isinstance(budget, RebuildAuditObservationBudget):
+            raise TypeError("rebuild_observation_budget_required")
+        deadline = time.monotonic() + budget.timeout_seconds
+
+        def check_time():
+            if time.monotonic() >= deadline:
+                raise TimeoutError("rebuild_observation_timeout")
+
+        if prefix.namespace == "cognitive_pending":
+            directory = self._base_dir / "rebuild" / "audit" / "cognitive_pending" / prefix.board_id
+        elif prefix.namespace == "generation_current":
+            directory = self._base_dir / "rebuild" / "generations" / prefix.board_id
+        else:
+            raise ValueError("rebuild_observation_namespace_unsupported")
+        directory = contained_lexical_path(self._base_dir, directory)
+        for component in (directory, *directory.parents):
+            check_time()
+            if is_filesystem_alias(component):
+                raise ValueError("rebuild_observation_alias")
+            if component == self._base_dir:
+                break
+        try:
+            before = directory.stat()
+        except FileNotFoundError:
+            return []
+        if not stat.S_ISDIR(before.st_mode):
+            raise ValueError("rebuild_observation_directory_invalid")
+        selected = None
+        if prefix.kg_generation_id or prefix.artifact_id:
+            selected = f"{self._artifact_id(prefix)}.json"
+        candidates = []
+        with os.scandir(directory) as entries:
+            for index, entry in enumerate(entries):
+                check_time()
+                if index >= budget.max_entries:
+                    raise ValueError("rebuild_observation_entry_limit")
+                if (selected is not None and entry.name != selected) or not entry.name.endswith(".json"):
+                    continue
+                path = directory / entry.name
+                if is_filesystem_alias(path) or not entry.is_file(follow_symlinks=False):
+                    raise ValueError("rebuild_observation_file_invalid")
+                candidates.append(path)
+                if len(candidates) > budget.max_records:
+                    raise ValueError("rebuild_observation_record_limit")
+        rows, consumed, signatures = [], 0, []
+        for path in sorted(candidates):
+            check_time()
+            before_file = path.stat()
+            if before_file.st_size > budget.max_bytes - consumed:
+                raise ValueError("rebuild_observation_byte_limit")
+            with path.open("rb") as stream:
+                encoded = stream.read(budget.max_bytes - consumed + 1)
+            consumed += len(encoded)
+            if consumed > budget.max_bytes:
+                raise ValueError("rebuild_observation_byte_limit")
+            check_time()
+            payload = json.loads(encoded)
+            if not isinstance(payload, dict):
+                raise ValueError("rebuild_observation_document_invalid")
+            rows.append(payload)
+            signatures.append((path, before_file.st_ino, before_file.st_size, before_file.st_mtime_ns))
+        # Atomic writers replace files. Detect observed changes without acquiring
+        # their persistent write lock or cleaning their in-progress artifacts.
+        for path, inode, size, modified in signatures:
+            check_time()
+            after_file = path.stat()
+            if (after_file.st_ino, after_file.st_size, after_file.st_mtime_ns) != (inode, size, modified):
+                raise ValueError("rebuild_observation_changed")
+        after = directory.stat()
+        if (before.st_ino, before.st_mtime_ns) != (after.st_ino, after.st_mtime_ns):
+            raise ValueError("rebuild_observation_changed")
+        check_time()
+        return rows
 
     def list_json_bounded(
         self,
