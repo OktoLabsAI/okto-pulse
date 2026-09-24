@@ -35,7 +35,6 @@ REST_MUTATION_HANDLERS = (
     ("ideations.py", "move_ideation"),
     ("refinements.py", "move_refinement"),
     ("specs.py", "move_spec"),
-    ("sprints.py", "move_sprint"),
     ("cards.py", "move_card"),
     ("cards.py", "submit_task_validation"),
     ("specs.py", "submit_spec_validation"),

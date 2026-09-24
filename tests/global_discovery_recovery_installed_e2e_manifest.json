@@ -37,7 +37,7 @@
       "kind": "installed-process-test-monkeypatch",
       "target": "okto_pulse.community.adapters.global_discovery_recovery_worker.CommunityDurableRecoveryDispatcher.dispatch",
       "scope": "first recovery dispatch in the controlled-clock lifecycle only",
-      "justification": "Raise once after the real dispatcher has durably enqueued recovery work, then prove an identical internal start retry rediscovers the committed attempt without creating another run."
+      "justification": "Raise the declared test-only installed_e2e_dispatch_response_lost exception once after the real dispatcher durably enqueues recovery work, then prove an identical internal start retry rediscovers the committed attempt without creating another run. The local channel preserves this explicit injected code; it does not emulate the retired MCP error mapping or reclassify unexpected runtime failures."
     },
     {
       "id": "building-gate-hard-kill",

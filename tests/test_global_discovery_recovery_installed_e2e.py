@@ -1453,12 +1453,14 @@ def _server_launcher(
                 "_preparation.CommunityGlobalDiscoveryRecoveryPreparationOperation.__call__ = _observable_preparation",
                 "_real_dispatch = _worker.CommunityDurableRecoveryDispatcher.dispatch",
                 (
+                    "class _InjectedDispatchResponseLoss(RuntimeError):\n"
+                    "    code = 'installed_e2e_dispatch_response_lost'\n"
                     "def _fail_once_after_durable_dispatch(self, *args, **kwargs):\n"
                     "    result = _real_dispatch(self, *args, **kwargs)\n"
                     "    kind = kwargs.get('kind')\n"
                     "    if getattr(kind, 'value', kind) == 'recovery' and not _fail_once_marker.exists():\n"
                     "        _fail_once_marker.write_text('1', encoding='ascii')\n"
-                    "        raise RuntimeError('installed_e2e_fail_once_after_durable_dispatch')\n"
+                    "        raise _InjectedDispatchResponseLoss('installed_e2e_fail_once_after_durable_dispatch')\n"
                     "    return result"
                 ),
                 "_worker.CommunityDurableRecoveryDispatcher.dispatch = _fail_once_after_durable_dispatch",
@@ -2281,7 +2283,7 @@ async def test_installed_internal_recovery_and_public_dlq_retirement(
                 'start',
                 start_arguments,
             )
-            assert crashed_start["error"] == "global_discovery_recovery_run_failed"
+            assert crashed_start["error"] == "installed_e2e_dispatch_response_lost"
             assert runtime.fail_once_marker.read_text(encoding="ascii") == "1"
             accepted_start = await _internal_payload(
                 client,

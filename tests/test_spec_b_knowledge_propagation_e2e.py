@@ -72,6 +72,7 @@ from okto_pulse.community.adapters.sqlalchemy_unit_of_work import (
 from okto_pulse.community.api import cards as cards_api
 from okto_pulse.community.api import refinements as refinements_api
 from okto_pulse.core.application.use_cases import ActorContext
+from okto_pulse.core.domain.realm import RealmScope
 from okto_pulse.core.domain.enums import (
     IdeationStatus,
     RefinementStatus,
@@ -168,6 +169,7 @@ async def spec_b_runtime(tmp_path) -> _Runtime:
         class_=AsyncSession,
         sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
+        info={"realm_scope": RealmScope.local()},
     )
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)

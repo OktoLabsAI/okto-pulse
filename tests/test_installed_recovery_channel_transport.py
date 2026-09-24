@@ -68,3 +68,13 @@ async def test_invalid_response_is_not_treated_as_transient(tmp_path, monkeypatc
     (tmp_path / "request.response.json").write_text("invalid", encoding="utf-8")
     with pytest.raises(json.JSONDecodeError):
         await harness._internal_payload(_client(tmp_path), "prepare")
+
+
+@pytest.mark.asyncio
+async def test_unexpected_runtime_failure_is_not_a_declared_injection(tmp_path, monkeypatch):
+    monkeypatch.setattr(harness.secrets, "token_hex", lambda _: "request")
+    (tmp_path / "request.response.json").write_text(
+        '{"unexpected_error":"unexpected runtime failure"}', encoding="utf-8",
+    )
+    with pytest.raises(AssertionError, match="unexpected runtime failure"):
+        await harness._internal_payload(_client(tmp_path), "start")
