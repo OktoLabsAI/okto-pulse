@@ -32,6 +32,7 @@ from okto_pulse.community.adapters.filesystem_erasure import (
 from okto_pulse.community.adapters.graph_backend_binding import (
     CommunityGraphBackendBindingStore,
 )
+from okto_pulse.community.adapters.filesystem_observation import FilesystemObservationBudget
 from okto_pulse.community.adapters.local_storage_ref import (
     local_storage_ref,
     resolve_local_storage_ref,
@@ -112,7 +113,7 @@ def _revalidate_privacy_scope(scope: GrafxBoardPrivacyScope) -> None:
         raise ValueError("Grafx board privacy scope changed")
 
 
-def _binding_artifacts(scope: GrafxBoardPrivacyScope) -> tuple[Path, ...]:
+def _binding_artifacts(scope: GrafxBoardPrivacyScope, *, observation: FilesystemObservationBudget | None = None) -> tuple[Path, ...]:
     """Return only Foundation-owned binding state, with the binding last."""
 
     _revalidate_privacy_scope(scope)
@@ -127,7 +128,7 @@ def _binding_artifacts(scope: GrafxBoardPrivacyScope) -> tuple[Path, ...]:
         sorted(
             (
                 child
-                for child in scope.board_root.iterdir()
+                for child in (observation.children(scope.board_root) if observation else scope.board_root.iterdir())
                 if child.name == f"{_BINDING_FILENAME}.lock"
                 or (
                     child.name.startswith(temporary_prefix)
@@ -144,7 +145,7 @@ def _binding_artifacts(scope: GrafxBoardPrivacyScope) -> tuple[Path, ...]:
     return (*residues, scope.binding_path)
 
 
-def grafx_board_privacy_storage_present(scope: GrafxBoardPrivacyScope) -> bool:
+def grafx_board_privacy_storage_present(scope: GrafxBoardPrivacyScope, *, observation: FilesystemObservationBudget | None = None) -> bool:
     """Observe all canonical Grafx generations and binding artifacts."""
 
     _revalidate_privacy_scope(scope)
@@ -155,13 +156,13 @@ def grafx_board_privacy_storage_present(scope: GrafxBoardPrivacyScope) -> bool:
     else:
         return True
     return bool(
-        _binding_artifacts(scope)
-        or _privacy_directory_quarantine_artifacts(scope)
-        or _retired_board_artifacts(scope)
+        _binding_artifacts(scope, observation=observation)
+        or _privacy_directory_quarantine_artifacts(scope, observation=observation)
+        or _retired_board_artifacts(scope, observation=observation)
     )
 
 
-def _retired_board_artifacts(scope: GrafxBoardPrivacyScope) -> tuple[Path, ...]:
+def _retired_board_artifacts(scope: GrafxBoardPrivacyScope, *, observation: FilesystemObservationBudget | None = None) -> tuple[Path, ...]:
     """Opaque historical files, touched only by explicit privacy erasure.
 
     No retired driver is opened. Preserve the original board-owned namespace
@@ -174,7 +175,7 @@ def _retired_board_artifacts(scope: GrafxBoardPrivacyScope) -> tuple[Path, ...]:
         sorted(
             (
                 path
-                for path in scope.board_root.iterdir()
+                for path in (observation.children(scope.board_root) if observation else scope.board_root.iterdir())
                 if path.name == "graph.lbug" or path.name.startswith("graph.lbug.")
             ),
             key=lambda path: path.name,
@@ -188,6 +189,7 @@ def _retired_board_artifacts(scope: GrafxBoardPrivacyScope) -> tuple[Path, ...]:
 
 def _privacy_directory_quarantine_artifacts(
     scope: GrafxBoardPrivacyScope,
+    *, observation: FilesystemObservationBudget | None = None,
 ) -> tuple[Path, ...]:
     """Find authenticated complete-generation snapshots owned by one board."""
 
@@ -200,7 +202,8 @@ def _privacy_directory_quarantine_artifacts(
     if is_filesystem_alias(quarantine_root) or not stat.S_ISDIR(metadata.st_mode):
         raise ValueError("Grafx quarantine root alias refused during privacy erase")
     matches: list[Path] = []
-    for entry in sorted(quarantine_root.iterdir(), key=lambda item: item.name):
+    children = observation.children(quarantine_root) if observation else quarantine_root.iterdir()
+    for entry in sorted(children, key=lambda item: item.name):
         name = entry.name
         if not (
             name.startswith("grafx-board-")
@@ -213,7 +216,7 @@ def _privacy_directory_quarantine_artifacts(
         details = entry.lstat()
         if is_filesystem_alias(entry) or not stat.S_ISDIR(details.st_mode):
             raise ValueError("Grafx directory quarantine alias refused")
-        manifest = _read_directory_manifest(entry / _DIRECTORY_MANIFEST_FILENAME)
+        manifest = _read_directory_manifest(entry / _DIRECTORY_MANIFEST_FILENAME, observation=observation)
         if (
             manifest.get("format") != GRAFX_DIRECTORY_QUARANTINE_FORMAT
             or manifest.get("kind") != GRAFX_DIRECTORY_QUARANTINE_KIND
@@ -301,7 +304,7 @@ def grafx_board_storage_ref(board_id: str) -> StorageRef:
     return StorageRef(f"board:{board_id}", "community_local_graph")
 
 
-def storage_residues(path: Path) -> tuple[Path, ...]:
+def storage_residues(path: Path, *, observation: FilesystemObservationBudget | None = None) -> tuple[Path, ...]:
     """Return exact sibling artifacts owned by one absent primary path."""
 
     try:
@@ -309,7 +312,7 @@ def storage_residues(path: Path) -> tuple[Path, ...]:
             sorted(
                 (
                     child
-                    for child in path.parent.iterdir()
+                    for child in (observation.children(path.parent) if observation else path.parent.iterdir())
                     if child.name.startswith(f"{path.name}.")
                 ),
                 key=lambda child: child.name,
@@ -478,7 +481,7 @@ def _write_directory_json_atomic(path: Path, payload: dict[str, object]) -> None
             pass
 
 
-def _read_directory_manifest(path: Path) -> dict[str, object]:
+def _read_directory_manifest(path: Path, *, observation: FilesystemObservationBudget | None = None) -> dict[str, object]:
     reject_filesystem_alias_ancestry(path.parent)
     details = path.lstat()
     if (
@@ -500,7 +503,8 @@ def _read_directory_manifest(path: Path) -> dict[str, object]:
         return result
 
     payload = json.loads(
-        path.read_text(encoding="utf-8"),
+        (observation.read_text(path, max_file_bytes=_MAX_DIRECTORY_MANIFEST_BYTES)
+         if observation else path.read_text(encoding="utf-8")),
         object_pairs_hook=duplicate_free_object,
     )
     if type(payload) is not dict:

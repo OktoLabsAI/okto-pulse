@@ -37,6 +37,7 @@ from okto_pulse.community.adapters.grafx_board_storage import (
     storage_residues,
 )
 from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
+from okto_pulse.community.adapters.filesystem_observation import FilesystemObservationBudget
 
 ConfiguredMaxBytes = Callable[[], int | None]
 BudgetSnapshotProvider = Callable[[], GraphRuntimeBudgetSnapshot]
@@ -91,13 +92,26 @@ class CommunityGrafxGraphRuntimeStore:
         *,
         generation: str | None,
         observed_at: datetime,
+        observation: FilesystemObservationBudget | None = None,
     ) -> GraphRuntimeState | None:
         """Prove strict absence from the board root without reopening Grafx."""
 
         try:
             scope = self._privacy_scope(board_id)
-            present = grafx_board_privacy_storage_present(scope)
+            present = grafx_board_privacy_storage_present(scope, observation=observation)
+            if observation is not None:
+                observation.check()
         except Exception:
+            if observation is not None:
+                # An incomplete Health scan is never an absence proof, even
+                # when the selected primary path itself was already missing.
+                return self._state(
+                    board_id,
+                    GraphRuntimeObservationState.PRESENT_UNREADABLE_OR_ERROR,
+                    generation=generation,
+                    reason_code="board_graph_absence_observation_unavailable",
+                    observed_at=observed_at,
+                )
             return None
         if present:
             return self._state(
@@ -152,6 +166,9 @@ class CommunityGrafxGraphRuntimeStore:
         generation: str | None = None,
     ) -> GraphRuntimeState:
         observed_at = datetime.now(timezone.utc)
+        observation = None
+        if self._observation_timeout is not None and self._observation_timeout(board_id) is not None:
+            observation = FilesystemObservationBudget(lambda: self._observation_timeout(board_id))
         try:
             path = Path(self._path_resolver(board_id))
         except Exception:
@@ -159,6 +176,7 @@ class CommunityGrafxGraphRuntimeStore:
                 board_id,
                 generation=generation,
                 observed_at=observed_at,
+                observation=observation,
             )
             if fallback is not None:
                 return fallback
@@ -174,7 +192,7 @@ class CommunityGrafxGraphRuntimeStore:
             metadata = path.lstat()
         except FileNotFoundError:
             try:
-                residues = storage_residues(path)
+                residues = storage_residues(path, observation=observation)
             except OSError:
                 return self._state(
                     board_id,
@@ -197,6 +215,7 @@ class CommunityGrafxGraphRuntimeStore:
                 board_id,
                 generation=generation,
                 observed_at=observed_at,
+                observation=observation,
             )
             if fallback is not None:
                 return fallback
