@@ -54,7 +54,7 @@ def independent_gates(monkeypatch):
     monkeypatch.setattr(card_crud, 'project_card_validation_visibility', visibility)
 
 
-async def prepare(runtime, target):
+async def prepare(runtime, target, *, learning_policy=None):
     factory, assembler, _, request = runtime
     register_report_adapters()
     async with factory() as session:
@@ -62,6 +62,8 @@ async def prepare(runtime, target):
         board.realm_id = 'local'
         board.settings = {'require_task_validation': target == 'validation',
             'require_full_context_for_critical_actions': False, 'impact_evidence_mode': 'off'}
+        if learning_policy is not None:
+            board.settings = {**board.settings, 'bug_learning_closeout': learning_policy}
         spec = await session.get(Spec, 'spec-bug-context')
         spec.status = 'in_progress'
         bug = await session.get(Card, request.bug_id)
@@ -91,9 +93,10 @@ def unit(session):
 
 
 @pytest.mark.parametrize('target', ['validation', 'done'])
-async def test_report_and_capture_share_atomic_write_and_exact_retry(runtime, independent_gates, target):
+@pytest.mark.parametrize('policy', [None, 'advisory', 'blocking'])
+async def test_report_and_capture_share_atomic_write_and_exact_retry(runtime, independent_gates, target, policy):
     factory, assembler, store, _ = runtime
-    bug_id, data = await prepare(runtime, target)
+    bug_id, data = await prepare(runtime, target, learning_policy=policy)
     async with factory() as session:
         uow = unit(session)
         case = MoveCardUseCase()
@@ -121,9 +124,10 @@ async def test_report_and_capture_share_atomic_write_and_exact_retry(runtime, in
 
 
 @pytest.mark.parametrize('damage', ['stale', 'unsigned', 'late'])
-async def test_failed_compound_write_rolls_back_even_if_outer_caller_commits(runtime, independent_gates, monkeypatch, damage):
+@pytest.mark.parametrize('policy', [None, 'blocking'])
+async def test_failed_compound_write_rolls_back_even_if_outer_caller_commits(runtime, independent_gates, monkeypatch, damage, policy):
     factory, _, store, _ = runtime
-    bug_id, data = await prepare(runtime, 'done')
+    bug_id, data = await prepare(runtime, 'done', learning_policy=policy)
     if damage == 'late':
         from okto_pulse.core.domain import learning_closeout
         def fail(**kwargs): raise RuntimeError('late_binding_failure')

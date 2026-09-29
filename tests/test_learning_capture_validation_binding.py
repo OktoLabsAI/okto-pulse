@@ -37,7 +37,7 @@ def reviewer(denied=None):
         actor_name='Reviewer', permissions=flags)
 
 
-async def prepare(runtime, *, legacy=False):
+async def prepare(runtime, *, legacy=False, learning_policy=None):
     factory, assembler, _, request = runtime
     register_report_adapters()
     async with factory() as session:
@@ -51,6 +51,8 @@ async def prepare(runtime, *, legacy=False):
         board = await session.get(Board, BOARD)
         board.realm_id = 'local'
         board.settings = {'reviewer_separation_mode': 'off', 'require_full_context_for_critical_actions': False}
+        if learning_policy is not None:
+            board.settings = {**board.settings, 'bug_learning_closeout': learning_policy}
         await session.commit()
         source = await assembler.assemble_semantic(session, board_id=BOARD, bug_id=bug.id)
         request = replace(request, expected_source_digest=source.source_digest,
@@ -78,9 +80,10 @@ def validation_uow(session, *, failures=()):
         commit=AsyncMock(side_effect=session.commit), rollback=AsyncMock(side_effect=session.rollback))
 
 
-async def test_selected_capture_binds_real_validation_done_and_outbox_with_exact_retry(runtime):
+@pytest.mark.parametrize('policy', [None, 'advisory', 'blocking'])
+async def test_selected_capture_binds_real_validation_done_and_outbox_with_exact_retry(runtime, policy):
     factory, assembler, _, _ = runtime
-    request, data = await prepare(runtime)
+    request, data = await prepare(runtime, learning_policy=policy)
     async with factory() as session:
         uow = validation_uow(session)
         case = SubmitTaskValidationUseCase()

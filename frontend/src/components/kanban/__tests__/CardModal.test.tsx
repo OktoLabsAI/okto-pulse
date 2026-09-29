@@ -1510,7 +1510,7 @@ describe('CardModal', () => {
     await waitFor(() => expect(apiMock.submitTaskValidation).toHaveBeenCalledTimes(2));
     expect(apiMock.submitTaskValidation.mock.calls[1][1]).toEqual(first);
     await waitFor(() => expect(submit()).toBeEnabled());
-    fireEvent.click(screen.getByRole('button', { name: 'Continue without a Learning' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear Learning selection' }));
     fireEvent.click(submit());
     await waitFor(() => expect(apiMock.submitTaskValidation).toHaveBeenCalledTimes(3));
     const last = apiMock.submitTaskValidation.mock.calls[2][1];

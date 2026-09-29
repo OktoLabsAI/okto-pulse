@@ -21,6 +21,26 @@ const baseSettings: BoardSettings = {
   max_drift: 30,
 };
 
+describe('BoardSettingsForm — Bug Learning policy', () => {
+  it('reads omission as advisory without writing a default', () => {
+    const onChange = vi.fn();
+    render(<BoardSettingsForm settings={baseSettings} onChange={onChange} />);
+    expect(screen.getByRole('combobox', { name: 'Bug Learning closeout' })).toHaveValue('advisory');
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('patches only the selected policy and follows the current Board/template', () => {
+    const onChange = vi.fn();
+    const { rerender } = render(<BoardSettingsForm settings={{ ...baseSettings, bug_learning_closeout: 'blocking', skip_cognitive_consolidation: true }} onChange={onChange} />);
+    const select = screen.getByRole('combobox', { name: 'Bug Learning closeout' });
+    expect(select).toHaveValue('blocking');
+    fireEvent.change(select, { target: { value: 'advisory' } });
+    expect(onChange).toHaveBeenCalledExactlyOnceWith({ bug_learning_closeout: 'advisory' });
+    rerender(<BoardSettingsForm settings={baseSettings} onChange={onChange} />);
+    expect(select).toHaveValue('advisory');
+  });
+});
+
 describe('BoardSettingsForm — coverage overrides', () => {
   it('configures the Board-wide Code Evidence Matrix skip independently', () => {
     const onChange = vi.fn();

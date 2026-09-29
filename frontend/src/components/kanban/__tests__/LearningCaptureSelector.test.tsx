@@ -30,7 +30,7 @@ it('loads lazily, renders authored text inertly and sends only the selected iden
   fireEvent.click(await choose());
   expect(view.container.querySelector('script')).toBeNull();
   expect(change).toHaveBeenLastCalledWith({ learning_id: 'learning', generation: 2, fingerprint: item.fingerprint });
-  fireEvent.click(screen.getByRole('button', { name: 'Continue without a Learning' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Clear Learning selection' }));
   expect(change).toHaveBeenLastCalledWith(null);
   expect(screen.getByRole('radio')).not.toBeChecked();
 });

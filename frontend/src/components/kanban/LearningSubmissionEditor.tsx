@@ -16,6 +16,7 @@ export function LearningSubmissionEditor({ boardId, bugId, canCreate, onChange }
   return <section aria-label="Learning with this report" className="mt-3 space-y-2 rounded border p-3">
     <label><input type="checkbox" checked={enabled} disabled={!enabled && !canCreate}
       onChange={event => { setEnabled(event.target.checked); onChange(null, event.target.checked); }} /> Record a Learning with this report</label>
+    <p className="text-sm">Direct completion requires a valid Learning when the Board's Bug Learning policy is Blocking. Other completion gates still apply.</p>
     {enabled && (canCreate ? <SubmissionFields key={`${boardId}:${bugId}`} boardId={boardId} bugId={bugId} onChange={onChange} />
       : <p role="alert">Learning authoring permission is unavailable. Restore access or remove the Learning from this submission.</p>)}
   </section>;

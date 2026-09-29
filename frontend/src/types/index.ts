@@ -3278,6 +3278,7 @@ export interface BoardSettings {
   skip_task_requirement_link_gate_global?: boolean;
   skip_decisions_coverage_global: boolean;
   skip_cognitive_consolidation?: boolean;
+  bug_learning_closeout?: 'advisory' | 'blocking';
   allow_agent_self_answering?: boolean;
   require_full_context_for_critical_actions?: boolean;
   qa_require_role_separation?: boolean;

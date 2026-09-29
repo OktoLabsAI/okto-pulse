@@ -8,7 +8,7 @@ export function LearningCaptureSelector({ boardId, bugId, disabled, onChange }: 
 }) {
   const [open, setOpen] = useState(false);
   return <section aria-label="Learning for this validation" className="space-y-2 rounded border p-3">
-    <p className="text-sm">Optionally link a saved Learning to this Bug completion. The server revalidates its evidence; selecting it does not approve the Bug.</p>
+    <p className="text-sm">Link a saved Learning to this Bug completion. A valid capture is required when the Board's Bug Learning policy is Blocking. The server revalidates its evidence; selecting it does not approve the Bug.</p>
     {!open ? <button type="button" disabled={disabled} onClick={() => setOpen(true)}>Choose saved Learning</button>
       : <CaptureChoices key={`${boardId}:${bugId}`} boardId={boardId} bugId={bugId} disabled={disabled} onChange={onChange} />}
   </section>;
@@ -52,7 +52,7 @@ function CaptureChoices({ boardId, bugId, disabled, onChange }: {
               {!matching && <span className="block">Captured against a different Bug version. Review and save a new Learning before selecting.</span>}
             </label>;
           })}
-    <button type="button" onClick={clear}>Continue without a Learning</button>
+    <button type="button" onClick={clear}>Clear Learning selection</button>
     <button type="button" onClick={() => { clear(); setRefresh(value => value + 1); }}>Refresh Learnings</button>
     {history?.next_cursor && <button type="button" onClick={() => { clear(); setCursor(history.next_cursor); }}>Next Learnings</button>}
     {cursor && <button type="button" onClick={() => { clear(); setCursor(null); }}>First Learnings</button>}

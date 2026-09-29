@@ -433,7 +433,18 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
             activeColor="amber"
           />
         </SettingRow>
-        <SettingRow label="Skip cognitive closeout" description="Allow done transitions even when cognitive consolidation is pending. Badges and KG Health pending lists remain visible.">
+        <SettingRow label="Bug Learning closeout" description="Advisory allows completion without Learning. Blocking requires a valid saved Learning capture; graph projection may follow later. Only an authenticated human can change this policy.">
+          <select
+            aria-label="Bug Learning closeout"
+            value={settings.bug_learning_closeout ?? 'advisory'}
+            onChange={(event) => onChange({ bug_learning_closeout: event.target.value as 'advisory' | 'blocking' })}
+            className="rounded border border-gray-300 bg-transparent px-2 py-1 text-xs dark:border-gray-600"
+          >
+            <option value="advisory">Advisory</option>
+            <option value="blocking">Blocking</option>
+          </select>
+        </SettingRow>
+        <SettingRow label="Skip cognitive closeout" description="Allow done transitions even when legacy cognitive consolidation is pending. This does not waive the Bug Learning capture policy. Badges and KG Health pending lists remain visible.">
           <SettingsToggle
             checked={settings.skip_cognitive_consolidation ?? false}
             onChange={() => onChange({ skip_cognitive_consolidation: !(settings.skip_cognitive_consolidation ?? false) })}
