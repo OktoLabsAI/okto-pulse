@@ -72,6 +72,7 @@ _CARD_NON_SEMANTIC_OPERATIONAL_FIELDS = frozenset(
         "conclusions",
         "validations",
         "rejection_records",
+        "learning_closeout_bindings",
         "current_rejection_kind",
         "current_rejection_id",
         "current_rejection_code",

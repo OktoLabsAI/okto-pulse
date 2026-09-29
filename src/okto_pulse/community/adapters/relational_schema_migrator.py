@@ -179,6 +179,12 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
         "Add deprecated migration-only Card policy storage; preserve legacy data and links.",
     ),
     (
+        "_migrate_add_learning_closeout_bindings",
+        "pre_create_all",
+        False,
+        "Add nullable Learning closeout references without fabricating historical captures.",
+    ),
+    (
         "_migrate_add_spec_validation_gate_columns",
         "pre_create_all",
         False,

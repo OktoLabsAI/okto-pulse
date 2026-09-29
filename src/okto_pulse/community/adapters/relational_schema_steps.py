@@ -8939,6 +8939,35 @@ async def _migrate_add_card_validation_compatibility() -> str | None:
         return await _ensure_card_validation_compatibility(conn)
 
 
+async def _migrate_add_learning_closeout_bindings() -> str | None:
+    """Add empty transition-reference storage; never invent historical proof."""
+    async with get_engine().begin() as conn:
+        return await _ensure_learning_closeout_bindings(conn)
+
+
+async def _ensure_learning_closeout_bindings(conn, *, create=True) -> str | None:
+    from sqlalchemy import JSON, inspect, text as sa_text
+
+    def observed(connection):
+        inspector = inspect(connection)
+        if not inspector.has_table('cards'):
+            return None
+        return {column['name']: column for column in inspector.get_columns('cards')}
+
+    columns = await conn.run_sync(observed)
+    if columns is None:
+        return 'skipped' if create else 'missing'
+    existing = columns.get('learning_closeout_bindings')
+    if existing is not None:
+        if (not isinstance(existing['type'], JSON) or not existing['nullable']
+                or existing.get('default') is not None or existing.get('computed') is not None):
+            raise RuntimeError('learning_closeout_binding_schema_drift')
+        return 'skipped'
+    if not create:
+        return 'missing'
+    await conn.execute(sa_text('ALTER TABLE cards ADD COLUMN learning_closeout_bindings JSON'))
+
+
 async def _ensure_card_validation_compatibility(conn, *, create=True) -> str | None:
     """Use the caller's transaction; inspection never repairs retained evidence."""
     from sqlalchemy import JSON, inspect, text as sa_text
@@ -25278,6 +25307,7 @@ SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
     "_migrate_add_spec_architecture_adoption": _migrate_add_spec_architecture_adoption,
     "_migrate_add_spec_execution_contract": _migrate_add_spec_execution_contract,
     "_migrate_add_card_validation_compatibility": _migrate_add_card_validation_compatibility,
+    "_migrate_add_learning_closeout_bindings": _migrate_add_learning_closeout_bindings,
     "_migrate_add_spec_validation_gate_columns": _migrate_add_spec_validation_gate_columns,
     "_migrate_add_ideation_skip_ambiguity_gate": _migrate_add_ideation_skip_ambiguity_gate,
     "_migrate_add_refinement_skip_ambiguity_gate": _migrate_add_refinement_skip_ambiguity_gate,

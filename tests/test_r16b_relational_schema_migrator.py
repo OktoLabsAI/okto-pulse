@@ -175,10 +175,11 @@ def test_ts_7aacc71a_ledger_covers_all_migrate_functions():
     # Joint execution contract + deprecated migration-only Card policy storage.
     # Internal permission-review provenance precedes data reconciliation.
     # F3 removed the three unreferenced Sprint-only migration writers.
-    assert len(migrate_names) == 75, (
-        f"expected 75 _migrate_*, found {len(migrate_names)}"
+    # Nullable closeout references preserve legacy Done without invented proof.
+    assert len(migrate_names) == 76, (
+        f"expected 76 _migrate_*, found {len(migrate_names)}"
     )
-    assert len(ledger_migrate_ids) == 75
+    assert len(ledger_migrate_ids) == 76
     ordered_ids = [step.step_id for step in ledger]
     assert ordered_ids.index(
         "_migrate_guideline_policy_lifecycle_substrate"
@@ -853,6 +854,7 @@ def test_ts_7d52dffc_idempotent_replay_no_drift(tmp_path, _isolate_engine):
     human_lifecycle_convergence_step = "_migrate_add_human_lifecycle_editions"
     validation_cycle_convergence_step = "_migrate_validation_cycle_editions"
     first_run_skip_steps = {
+        "_migrate_add_learning_closeout_bindings",
         "_migrate_add_spec_execution_contract",
         "_migrate_add_card_validation_compatibility",
         "_migrate_delivery_progress",
@@ -889,6 +891,7 @@ def test_ts_7d52dffc_idempotent_replay_no_drift(tmp_path, _isolate_engine):
         # observe that receipt and skip without touching fingerprints.
     }
     replay_skip_steps = {
+        "_migrate_add_learning_closeout_bindings",
         "_migrate_add_spec_execution_contract",
         "_migrate_add_card_validation_compatibility",
         "_migrate_delivery_progress",

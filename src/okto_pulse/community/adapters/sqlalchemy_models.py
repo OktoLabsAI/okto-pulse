@@ -2234,6 +2234,9 @@ class Card(Base):
     # reviewer_id + reviewer_name) plus private idempotency ledger fields
     # (idempotency_key, request_digest and exact response replay snapshot).
     validations: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Server-owned append-only transition references; authored Learning content
+    # stays in kg_cognitive_sources. No backfill for historical Done cards.
+    learning_closeout_bindings: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # Append-only rejection-cause history for both Task Validation and completion
     # gates. Current always points to one record here; ``source_id`` on that
     # record identifies the immutable validation attempt that caused rejection.
