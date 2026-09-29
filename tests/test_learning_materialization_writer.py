@@ -42,6 +42,9 @@ async def graph_runtime(runtime, independent_gates, monkeypatch, tmp_path):
     from okto_pulse.community.adapters.sqlalchemy_consolidation import CommunitySqlAlchemyConsolidationPersistence
     from okto_pulse.core.ports.consolidation import register_consolidation_persistence_port
     register_consolidation_persistence_port(CommunitySqlAlchemyConsolidationPersistence())
+    from okto_pulse.community.adapters.sqlalchemy_canonical_debt import CommunitySqlAlchemyCanonicalDebtStore
+    from okto_pulse.core.ports.canonical_debt import register_canonical_debt_store
+    register_canonical_debt_store(CommunitySqlAlchemyCanonicalDebtStore())
     register_cognitive_source_store(store)
     from okto_pulse.community.adapters.bug_cognitive_context import CommunityCanonicalBugNodeReader
     from okto_pulse.core.ports.bug_cognitive_context import register_canonical_bug_node_read_port
