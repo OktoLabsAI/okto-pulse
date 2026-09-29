@@ -570,6 +570,17 @@ class CommunitySqlAlchemyCognitiveSourceStore:
             node_id=node_id, generation=generation)
         return next((record for record in history if record.source_revision == source_revision), None)
 
+    async def read_history_in_context(
+        self, context: object, *, board_id: str, node_id: str, generation: int,
+    ) -> tuple[CognitiveSourceRecord, ...]:
+        if (any(type(value) is not str or not value.strip() or len(value) > 4096
+                for value in (board_id, node_id))
+                or type(generation) is not int or generation < 0):
+            raise ValueError('cognitive_source_history_selection_invalid')
+        history = await self._read_scoped_history(context, board_id=board_id,
+            node_id=node_id, generation=generation)
+        return tuple(sorted(history, key=lambda record: record.source_revision))
+
     async def read_fingerprint_in_context(
         self, context: object, *, board_id: str, node_id: str, generation: int,
         fingerprint: str,
