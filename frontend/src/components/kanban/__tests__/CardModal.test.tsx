@@ -2585,8 +2585,8 @@ describe('ExecutionReportsPanel impact evidence (TS-11)', () => {
 // submit succeeds after the gate clears.
 describe('conclusion prompt keeps state on impact_evidence_required (TS-16)', () => {
   beforeEach(() => { vi.clearAllMocks(); permissionsMock.has.mockImplementation(() => true); });
-  async function prepareAtomicReport(target: 'validation' | 'done' = 'validation') {
-    const normalCard = { ...cardForType('normal'), status: 'in_progress', spec_id: 'spec-1' } as Card;
+  async function prepareAtomicReport(target: 'validation' | 'done' = 'validation', cardType: 'normal' | 'bug' = 'normal') {
+    const normalCard = { ...cardForType(cardType), status: 'in_progress', spec_id: 'spec-1' } as Card;
     storeMock.selectedCardId = normalCard.id;
     apiMock.getCard.mockResolvedValue(normalCard);
     apiMock.getBoard.mockResolvedValue({ settings: { delivery_evidence_gate: 'blocking' } });
@@ -2618,6 +2618,35 @@ describe('conclusion prompt keeps state on impact_evidence_required (TS-16)', ()
     fireEvent.change(screen.getByLabelText('Code change in this checkpoint'), { target: { value: 'none' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add progress to report draft' }));
   }
+
+  it.each([[false, false], [false, true], [true, false], [true, true]])(
+    'submits joint Bug Learning once with stable retry; batch=%s edit=%s', async (batch, edit) => {
+      learningCaptureApi.source.mockReset().mockResolvedValue({ source_digest: 'a'.repeat(64), source_policy_version: 7,
+        scenarios: [{ id: 'proof', title: 'Signed inspection', authenticated: true }] });
+      const { submit } = await prepareAtomicReport('validation', 'bug');
+      if (batch) stageReportProgress();
+      else fireEvent.click(screen.getByLabelText('Save a last batch together with this report'));
+      fireEvent.click(screen.getByLabelText('Record a Learning with this report'));
+      expect(submit).toBeDisabled();
+      for (const label of ['Learning for this report', 'Learning context', 'Learning applicability']) {
+        fireEvent.change(screen.getByLabelText(label), { target: { value: 'The authored lesson' } });
+      }
+      fireEvent.click(await screen.findByRole('checkbox', { name: 'Signed inspection' }));
+      const writer = batch ? apiMock.recordCardDeliveryEvidence : apiMock.moveCard;
+      writer.mockReset().mockRejectedValueOnce(new Error('Joint request timed out'))
+        .mockResolvedValueOnce({ ...cardForType('bug'), status: 'validation' });
+      fireEvent.click(submit); await screen.findByText('Joint request timed out');
+      expect(screen.getByLabelText('Learning for this report')).toHaveValue('The authored lesson');
+      if (edit) fireEvent.change(screen.getByPlaceholderText(/## Implementation Summary/), { target: { value: 'Corrected report' } });
+      fireEvent.click(submit);
+      await waitFor(() => expect(screen.queryByText('Execution Report Required')).not.toBeInTheDocument());
+      const reports = writer.mock.calls.map(call => batch ? call[3].report : call[1]);
+      expect(reports[0].learning_submission).toEqual({ capture_id: expect.any(String),
+        expected_source_digest: 'a'.repeat(64), expected_source_version: 7, scenario_ids: ['proof'],
+        content: 'The authored lesson', context: 'The authored lesson', applicability: 'The authored lesson' });
+      if (edit) expect(reports[1].learning_submission.capture_id).not.toBe(reports[0].learning_submission.capture_id);
+      else expect(reports[1]).toEqual(reports[0]);
+    });
 
   it('keeps the Done report, selection and unsent batch when delivery proof blocks completion', async () => {
     const { submit } = await prepareAtomicReport('done');

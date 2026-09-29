@@ -2393,6 +2393,16 @@ export interface LearningCaptureSelection {
   fingerprint: string;
 }
 
+export interface LearningSubmission {
+  capture_id: string;
+  expected_source_digest: string;
+  expected_source_version: number;
+  content: string;
+  context: string;
+  applicability: string;
+  scenario_ids: string[];
+}
+
 export interface TaskValidationSubmitPayload {
   learning_capture?: LearningCaptureSelection;
   expected_subject_version: number;
@@ -3790,6 +3800,7 @@ export interface ConclusionEntry {
 }
 
 export interface MoveCardRequest {
+  learning_submission?: LearningSubmission;
   delivery_selection?: import('./delivery-evidence').DeliverySelectionInput;
   status: CardStatus;
   position?: number | null;

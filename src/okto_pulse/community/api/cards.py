@@ -275,6 +275,8 @@ async def move_card(
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
     except CancellationReasonRequiredError as e:
         detail = e.to_dict()
         # Pagination/move clients consume the typed REST error discriminator

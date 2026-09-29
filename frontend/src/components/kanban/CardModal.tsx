@@ -24,7 +24,8 @@ import { CARD_STATUSES, STATUS_LABELS, PRIORITY_LABELS, CARD_PRIORITIES, BUG_SEV
 import { PathBRemediationPanel } from '@/components/kanban/PathBRemediationPanel';
 import { LearningCapturePanel } from '@/components/kanban/LearningCapturePanel';
 import { LearningCaptureSelector } from '@/components/kanban/LearningCaptureSelector';
-import type { LearningCaptureSelection } from '@/types';
+import { LearningSubmissionEditor } from '@/components/kanban/LearningSubmissionEditor';
+import type { LearningCaptureSelection, LearningSubmission } from '@/types';
 import {
   ImpactEvidenceEditor,
 } from '@/components/cards/ImpactEvidenceEditor';
@@ -408,6 +409,17 @@ export function CardModal({
   const [conclusionBatch, setConclusionBatch] = useState<CardDeliveryBatchDraft>();
   const conclusionOrigin = useRef<{ cardId: string; status: CardStatus }>();
   const conclusionReplay = useRef<{ body: string; key: string }>();
+  const learningSubmissionReplay = useRef<{ body: string; key: string }>();
+  const learningReportScope = `${boardId}:${card?.id}:${conclusionTargetStatus}`;
+  const [reportLearning, setReportLearning] = useState<{ scope: string; draft: Omit<LearningSubmission, 'capture_id'> | null; pending: boolean } | null>(null);
+  const onReportLearning = useCallback((draft: Omit<LearningSubmission, 'capture_id'> | null, pending: boolean) => {
+    setReportLearning({ scope: learningReportScope, draft, pending });
+  }, [learningReportScope]);
+  const canAuthorLearning = !perms.isLoading && !perms.error
+    && ['board.read', 'card.entity.read', 'card.entity.context_read', 'card.validation.read',
+      'card.comments.read', 'card.conclusion.read', 'card.tests.read', 'spec.entity.read', 'spec.tests.read',
+      'kg.session.begin', 'kg.session.add_node', 'kg.session.add_edge', 'kg.session.commit', 'card.conclusion.write'].every(perms.has);
+  const reportLearningPending = reportLearning?.scope === learningReportScope && reportLearning.pending;
   const conclusionSubmitting = useRef(false);
   const taskValidationThresholdsReady = Boolean(
     card
@@ -594,6 +606,8 @@ export function CardModal({
     setConclusionBatch(undefined);
     conclusionOrigin.current = card ? { cardId: card.id, status: card.status } : undefined;
     conclusionReplay.current = undefined;
+    learningSubmissionReplay.current = undefined;
+    setReportLearning(null);
     setConclusionGateError(null);
   };
 
@@ -1110,6 +1124,15 @@ export function CardModal({
     conclusionSubmitting.current = true;
     policyTransitionAuthority.clearRejection();
     try {
+      if (reportLearningPending && conclusion) throw new Error('Complete or remove the Learning before submitting this report.');
+      let learningSubmission: LearningSubmission | undefined;
+      if (conclusion && card.card_type === 'bug' && reportLearning?.scope === learningReportScope && reportLearning.draft) {
+        if (!canAuthorLearning) throw new Error('Learning authoring permission is unavailable.');
+        const body = JSON.stringify({ boardId, cardId: card.id, status, conclusion, metrics,
+          impactEvidence, deliverySelection, batch, learning: reportLearning.draft });
+        if (learningSubmissionReplay.current?.body !== body) learningSubmissionReplay.current = { body, key: uuidv4() };
+        learningSubmission = { ...reportLearning.draft, capture_id: learningSubmissionReplay.current.key };
+      }
       if (batch) {
         if (!card.spec_id || !deliverySelection || !sameDeliveryBasis(batch, deliverySelection)
           || !batch.entries.length || !conclusion || !metrics
@@ -1120,6 +1143,7 @@ export function CardModal({
           contract_version: 'card-delivery-report/v1', expected_card_status: fromStatus as 'started' | 'in_progress',
           batch: { ...batch, idempotency_key: '' },
           report: { status: status as 'validation' | 'done', conclusion, ...metrics,
+            ...(learningSubmission ? { learning_submission: learningSubmission } : {}),
             ...(impactEvidence ? { impact_evidence: impactEvidence } : {}) },
           existing_record_ids: deliverySelection.record_ids, reuse_impact: deliverySelection.reuse_impact ?? false,
         };
@@ -1137,6 +1161,7 @@ export function CardModal({
         return true;
       }
       const updated = await api.moveCard(card.id, {
+        ...(learningSubmission ? { learning_submission: learningSubmission } : {}),
         status,
         conclusion,
         completeness: metrics?.completeness,
@@ -2597,6 +2622,8 @@ export function CardModal({
               </div>
             </div>
             <fieldset disabled={movingStatus !== null} className="min-w-0">
+            {card?.card_type === 'bug' && <LearningSubmissionEditor key={learningReportScope}
+              boardId={boardId} bugId={card.id} canCreate={canAuthorLearning} onChange={onReportLearning} />}
             {!conclusionDeliverySelection?.reuse_impact && <ImpactEvidenceEditor
               draft={conclusionImpactDraft}
               onChange={setConclusionImpactDraft}
@@ -2636,7 +2663,7 @@ export function CardModal({
                   // rejection keeps every typed row intact.
                   if (ok) setShowConclusionPrompt(false);
                 }}
-                disabled={movingStatus !== null || conclusionSelectionPending || (conclusionBatchMode && (!conclusionBatch?.entries.length || !conclusionDeliverySelection || !sameDeliveryBasis(conclusionBatch, conclusionDeliverySelection))) || !conclusionDraft.trim() || !conclusionCompletenessJustification.trim() || !conclusionDriftJustification.trim()}
+                disabled={movingStatus !== null || reportLearningPending || conclusionSelectionPending || (conclusionBatchMode && (!conclusionBatch?.entries.length || !conclusionDeliverySelection || !sameDeliveryBasis(conclusionBatch, conclusionDeliverySelection))) || !conclusionDraft.trim() || !conclusionCompletenessJustification.trim() || !conclusionDriftJustification.trim()}
                 className={`btn text-xs ${conclusionDraft.trim() && conclusionCompletenessJustification.trim() && conclusionDriftJustification.trim() ? 'btn-primary' : 'btn-secondary opacity-50'}`}
               >
                 Complete & Move to {conclusionTargetLabel}

@@ -102,6 +102,7 @@ export interface CardDeliveryReportInput {
   expected_card_status: 'started' | 'in_progress';
   batch: CardDeliveryBatchInput;
   report: {
+    learning_submission?: import('./index').LearningSubmission;
     status: 'validation' | 'done'; conclusion: string;
     completeness: number; completeness_justification: string;
     drift: number; drift_justification: string;
