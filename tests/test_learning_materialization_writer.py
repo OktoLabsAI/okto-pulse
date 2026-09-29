@@ -43,6 +43,9 @@ async def graph_runtime(runtime, independent_gates, monkeypatch, tmp_path):
     from okto_pulse.core.ports.consolidation import register_consolidation_persistence_port
     register_consolidation_persistence_port(CommunitySqlAlchemyConsolidationPersistence())
     register_cognitive_source_store(store)
+    from okto_pulse.community.adapters.bug_cognitive_context import CommunityCanonicalBugNodeReader
+    from okto_pulse.core.ports.bug_cognitive_context import register_canonical_bug_node_read_port
+    register_canonical_bug_node_read_port(CommunityCanonicalBugNodeReader())
     async def healthy(*args, **kwargs):
         return {'overall_state': 'healthy', 'graph_state': 'healthy',
                 'discovery_state': 'healthy', 'total_nodes': 1}
@@ -142,6 +145,51 @@ async def test_curated_projection_is_preserved_on_replay(graph_runtime):
     assert graph_rows('MATCH (n:Learning) WHERE n.id = $id RETURN n.content, n.human_curated',
         {'id': capture.node_id}) == [['Human curated correction', True]]
     assert await store.enumerate(BOARD) == before
+
+
+@pytest.mark.parametrize('projection', ['working', 'superseded', 'ambiguous', 'absent'])
+async def test_materializer_resolves_only_one_active_canonical_bug(graph_runtime, projection):
+    runtime, capture, selection, persister = graph_runtime
+    _, _, store, _ = runtime
+    before = await store.enumerate(BOARD)
+    if projection == 'absent':
+        graph_rows("MATCH (b:Bug) WHERE b.id = 'canonical-bug' DETACH DELETE b")
+    else:
+        graph_rows('CREATE (b:Bug {id: $id, title: $title, source_artifact_ref: $ref, '
+            'graph_layer: $layer, superseded_by: $successor})',
+            {'id': '000-old-bug', 'title': 'Historical projection', 'ref': 'bug:bug-context',
+                'layer': 'working' if projection == 'working' else 'canonical',
+                'successor': 'canonical-bug' if projection == 'superseded' else None})
+    if projection == 'ambiguous':
+        with pytest.raises(ValueError, match='canonical_bug_identity_ambiguous'):
+            await persister.persist_authored_learning(BOARD, 'bug-context', selection)
+    else:
+        assert await persister.persist_authored_learning(BOARD, 'bug-context', selection) == (
+            projection != 'absent')
+    if projection in ('ambiguous', 'absent'):
+        assert await store.enumerate(BOARD) == before
+        assert graph_rows('MATCH (n:Learning) RETURN n.id') == []
+    else:
+        assert graph_rows('MATCH (n:Learning)-[:validates]->(b:Bug) RETURN n.id, b.id') == [
+            [capture.node_id, 'canonical-bug']]
+
+
+async def test_target_eligibility_is_rechecked_under_writer_fence(graph_runtime, monkeypatch):
+    from okto_pulse.core.ports.bug_cognitive_context import resolve_canonical_bug_node_read_port
+    runtime, _, selection, persister = graph_runtime
+    _, _, store, _ = runtime
+    before = await store.enumerate(BOARD)
+    resolver = resolve_canonical_bug_node_read_port()
+    original = resolver.resolve_current
+    def changed_after_read(**kwargs):
+        node_id = original(**kwargs)
+        graph_rows('MATCH (b:Bug) WHERE b.id = $id SET b.superseded_by = $successor',
+            {'id': node_id, 'successor': 'another-projection'})
+        return node_id
+    monkeypatch.setattr(resolver, 'resolve_current', changed_after_read)
+    assert not await persister.persist_authored_learning(BOARD, 'bug-context', selection)
+    assert await store.enumerate(BOARD) == before
+    assert graph_rows('MATCH (n:Learning) RETURN n.id') == []
 
 
 async def test_distinct_authored_create_never_supersedes_same_bug_learning(graph_runtime):

@@ -45,6 +45,34 @@ class CommunityCanonicalBugNodeReader:
     def __init__(self, cypher_executor: Any | None = None) -> None:
         self._cypher_executor = cypher_executor
 
+    def resolve_current(self, *, board_id: str, bug_id: str) -> str | None:
+        """Bounded identity lookup for authored materialization, never first-match.
+
+        Keep the legacy exists probe separate: its consumers retain their
+        existing semantics while the new writer requires one active target.
+        """
+        cypher_executor = self._cypher_executor
+        if cypher_executor is None:
+            from okto_pulse.core.services.application_kg import get_current_provider_registry
+            cypher_executor = get_current_provider_registry().cypher_executor
+        result = cypher_executor.execute_read_only(board_id,
+            "MATCH (b:Bug) WHERE b.graph_layer = 'canonical' "
+            "AND (b.superseded_by IS NULL OR b.superseded_by = '') "
+            "AND (b.source_artifact_ref = $bug_ref OR b.source_artifact_ref = $card_ref "
+            "OR b.source_artifact_ref = $card_bug_ref) RETURN b.id LIMIT 2",
+            {'bug_ref': f'bug:{bug_id}', 'card_ref': f'card:{bug_id}',
+                'card_bug_ref': f'card:bug:{bug_id}'}, max_rows=2)
+        rows = result.get('rows')
+        if rows is None or result.get('truncated'):
+            raise ValueError('canonical_bug_identity_unavailable')
+        if len(rows) > 1:
+            raise ValueError('canonical_bug_identity_ambiguous')
+        if not rows:
+            return None
+        if len(rows[0]) != 1 or type(rows[0][0]) is not str or not rows[0][0].strip():
+            raise ValueError('canonical_bug_identity_unavailable')
+        return rows[0][0]
+
     async def exists(self, *, board_id: str, bug_id: str) -> bool:
         cypher_executor = self._cypher_executor
         if cypher_executor is None:
