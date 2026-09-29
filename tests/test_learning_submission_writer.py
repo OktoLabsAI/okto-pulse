@@ -71,7 +71,8 @@ async def prepare(runtime, target, *, learning_policy=None):
         bug.conclusions = []
         await session.commit()
         source = await assembler.assemble_semantic(session, board_id=BOARD, bug_id=bug.id)
-    draft = {key: value for key, value in asdict(request).items() if key not in {'board_id', 'bug_id'}}
+    # Internal intent admission is not yet part of the compound wire contract.
+    draft = {key: value for key, value in asdict(request).items() if key not in {'board_id', 'bug_id', 'intent'}}
     draft.update(expected_source_digest=source.source_digest, expected_source_version=source.source_policy_version,
         scenario_ids=list(request.scenario_ids))
     return request.bug_id, CardMove(status=target, conclusion='The authored correction report.', completeness=100,

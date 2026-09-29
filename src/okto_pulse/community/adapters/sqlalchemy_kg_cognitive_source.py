@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import json
+import hashlib
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -495,6 +496,59 @@ class CommunitySqlAlchemyCognitiveSourceStore:
             raise
         except SQLAlchemyError as exc:
             raise CognitiveSourceError('learning_capture_history_unavailable', board_id=board_id) from exc
+
+    async def reserve_capture_identity_in_context(
+        self, context: object, *, board_id: str, author_id: str, capture_id: str,
+    ) -> CognitiveSourceRecord | None:
+        from okto_pulse.core.ports.learning_capture import validate_learning_capture_payload
+
+        if any(type(value) is not str or not value.strip() or len(value) > 4096
+               for value in (board_id, author_id, capture_id)):
+            raise ValueError('learning_capture_identity_invalid')
+        try:
+            dialect = str(context.get_bind().dialect.name)
+            if dialect == 'sqlite':
+                await context.execute(update(KGCognitiveSource).where(false()).values(id=KGCognitiveSource.id))
+            elif dialect == 'postgresql':
+                identity = json.dumps(['learning-capture', board_id, author_id, capture_id], separators=(',', ':'))
+                lock_key = int.from_bytes(hashlib.sha256(identity.encode()).digest()[:8], 'big', signed=True)
+                await context.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': lock_key})
+            else:
+                raise CognitiveSourceError('learning_capture_identity_reservation_unsupported', board_id=board_id)
+
+            def matches(payload):
+                return ((payload['author_id'].as_string() == author_id)
+                    & (payload['capture_id'].as_string() == capture_id)
+                    & payload['capture_format'].as_string().is_not(None))
+
+            revised = select(KGCognitiveSourceRevision.cognitive_source_id).where(
+                matches(KGCognitiveSourceRevision.payload))
+            rows = list((await context.execute(select(KGCognitiveSource).where(
+                KGCognitiveSource.board_id == board_id,
+                or_(matches(KGCognitiveSource.payload), KGCognitiveSource.id.in_(revised)))
+                .limit(2).execution_options(populate_existing=True))).scalars().all())
+            if len(rows) > 1:
+                raise CognitiveSourceConflict('learning_capture_identity_ambiguous', board_id=board_id)
+            if not rows:
+                return None
+            base, = rows
+            history = await self._read_scoped_history(context, board_id=board_id,
+                node_id=str(base.node_id), generation=int(base.generation))
+            captures = []
+            for record in history:
+                payload = dict(record.payload)
+                captured = validate_learning_capture_payload(payload, board_id=board_id,
+                    node_type=record.node_type, node_id=record.node_id, generation=record.generation,
+                    evidence_refs=record.evidence_refs)
+                if captured and payload['author_id'] == author_id and payload['capture_id'] == capture_id:
+                    captures.append(record)
+            if len(captures) != 1:
+                raise CognitiveSourceConflict('learning_capture_identity_ambiguous', board_id=board_id)
+            return captures[0]
+        except CognitiveSourceError:
+            raise
+        except SQLAlchemyError as exc:
+            raise _source_io_error('learning_capture_identity_reservation_failed', cause=exc, board_id=board_id) from exc
 
     async def read_latest_in_context(
         self, context: object, *, board_id: str, node_id: str, generation: int,

@@ -36,6 +36,7 @@ async def api(runtime, monkeypatch):
     app.dependency_overrides[get_unit_of_work] = unit
     app.dependency_overrides[require_user] = lambda: 'owner'
     body = asdict(request)
+    del body['intent']  # Internal intents remain unavailable on this wire contract.
     del body['bug_id']
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
         yield client, store, principal, body

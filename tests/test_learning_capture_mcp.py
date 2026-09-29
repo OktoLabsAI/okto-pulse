@@ -37,6 +37,7 @@ async def mcp_capture(runtime, monkeypatch):
     read = tools['okto_pulse_kg_get_learning_capture_context'].fn
     create = tools['okto_pulse_kg_create_learning_capture'].fn
     body = asdict(request)
+    del body['intent']  # Internal intents remain unavailable on this wire contract.
     body['scenario_ids'] = list(body['scenario_ids'])
     yield read, create, body, store, flags
 
