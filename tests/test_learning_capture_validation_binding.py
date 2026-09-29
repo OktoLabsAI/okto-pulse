@@ -80,6 +80,11 @@ def validation_uow(session, *, failures=()):
         commit=AsyncMock(side_effect=session.commit), rollback=AsyncMock(side_effect=session.rollback))
 
 
+async def event_snapshot(session):
+    return list((await session.execute(select(DomainEventRow.id,
+        DomainEventRow.event_type, DomainEventRow.payload_json).order_by(DomainEventRow.id))).all())
+
+
 @pytest.mark.parametrize('policy', [None, 'advisory', 'blocking'])
 async def test_selected_capture_binds_real_validation_done_and_outbox_with_exact_retry(runtime, policy):
     factory, assembler, _, _ = runtime
@@ -125,6 +130,8 @@ async def test_stale_or_legacy_fallback_refusal_leaves_no_partial_review_after_o
     if not legacy:
         data['learning_capture']['fingerprint'] = 'f' * 64
     async with factory() as session:
+        before = await event_snapshot(session)
+        assert [row.event_type for row in before] == ['learning.capture_admitted.v1']
         uow = validation_uow(session)
         with pytest.raises(ValueError, match='learning_(capture_selection_changed|closeout_requires_current_execution_report)'):
             await SubmitTaskValidationUseCase().execute(SubmitTaskValidationCommand(request.bug_id, data),
@@ -134,7 +141,7 @@ async def test_stale_or_legacy_fallback_refusal_leaves_no_partial_review_after_o
     async with factory() as session:
         bug = await session.get(Card, request.bug_id)
         assert bug.status.value == 'validation' and not bug.validations and not bug.learning_closeout_bindings
-        assert await session.scalar(select(func.count()).select_from(DomainEventRow)) == 0
+        assert await event_snapshot(session) == before
 
 
 async def test_late_binding_failure_rolls_back_status_review_and_outbox(runtime, monkeypatch):
@@ -146,6 +153,8 @@ async def test_late_binding_failure_rolls_back_status_review_and_outbox(runtime,
         raise RuntimeError('injected_late_binding_failure')
     monkeypatch.setattr(domain, 'bind_learning_capture_to_closed_source', fail)
     async with factory() as session:
+        before = await event_snapshot(session)
+        assert [row.event_type for row in before] == ['learning.capture_admitted.v1']
         uow = validation_uow(session)
         with pytest.raises(RuntimeError, match='injected_late_binding_failure'):
             await SubmitTaskValidationUseCase().execute(SubmitTaskValidationCommand(request.bug_id, data),
@@ -154,7 +163,7 @@ async def test_late_binding_failure_rolls_back_status_review_and_outbox(runtime,
     async with factory() as session:
         bug = await session.get(Card, request.bug_id)
         assert bug.status.value == 'validation' and not bug.validations and not bug.learning_closeout_bindings
-        assert await session.scalar(select(func.count()).select_from(DomainEventRow)) == 0
+        assert await event_snapshot(session) == before
 
 
 @pytest.mark.parametrize('denied', LEARNING_CAPTURE_HISTORY_PERMISSIONS)
