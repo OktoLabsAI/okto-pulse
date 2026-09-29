@@ -1482,6 +1482,58 @@ describe('CardModal', () => {
     });
   });
 
+  it('submits the selected Bug Learning, preserves exact retry and changes intent when selection is removed', async () => {
+    const card = { ...cardForType('bug'), status: 'validation' as const };
+    storeMock.selectedCardId = card.id;
+    apiMock.getCard.mockResolvedValue(card);
+    apiMock.submitTaskValidation.mockRejectedValue(new Error('network unavailable'));
+    const selection = { learning_id: 'saved-learning', generation: 2, fingerprint: 'f'.repeat(64) };
+    learningCaptureApi.history.mockResolvedValue({ items: [{ ...selection, source_revision: 3,
+      capture: { content: 'Saved lesson', context: 'Correction', applicability: 'Same component',
+        source: { digest: 'a'.repeat(64), policy_version: 1 } } }], next_cursor: null });
+    render(<CardModal boardId="board-1" />);
+    fireEvent.click(await screen.findByRole('tab', { name: /^Validation/ }));
+    fireEvent.click(await screen.findByRole('tab', { name: /^Task validation/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Choose saved Learning' }));
+    fireEvent.click(await screen.findByRole('radio', { name: /Saved lesson/ }));
+    for (const placeholder of ['Justify the confidence score...', 'Justify the completeness score...',
+      'Justify the drift score...', 'Overall validation summary...']) {
+      fireEvent.change(screen.getByPlaceholderText(placeholder), { target: { value: 'Independent review supported by the current evidence.' } });
+    }
+    const submit = () => screen.getByRole('button', { name: 'Submit Validation (Approve)' });
+    fireEvent.click(submit());
+    await waitFor(() => expect(apiMock.submitTaskValidation).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(submit()).toBeEnabled());
+    const first = apiMock.submitTaskValidation.mock.calls[0][1];
+    expect(first.learning_capture).toEqual(selection);
+    fireEvent.click(submit());
+    await waitFor(() => expect(apiMock.submitTaskValidation).toHaveBeenCalledTimes(2));
+    expect(apiMock.submitTaskValidation.mock.calls[1][1]).toEqual(first);
+    await waitFor(() => expect(submit()).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Continue without a Learning' }));
+    fireEvent.click(submit());
+    await waitFor(() => expect(apiMock.submitTaskValidation).toHaveBeenCalledTimes(3));
+    const last = apiMock.submitTaskValidation.mock.calls[2][1];
+    expect(last).not.toHaveProperty('learning_capture');
+    expect(last.idempotency_key).not.toBe(first.idempotency_key);
+    await waitFor(() => expect(submit()).toBeEnabled());
+  });
+
+  it.each(['board.read', 'card.entity.read', 'card.entity.context_read', 'card.validation.read',
+    'card.comments.read', 'card.conclusion.read', 'card.tests.read', 'spec.entity.read',
+    'spec.tests.read', 'kg.query.learning_from_bugs'])('does not offer Learning selection without %s', async denied => {
+    const card = { ...cardForType('bug'), status: 'validation' as const };
+    storeMock.selectedCardId = card.id;
+    apiMock.getCard.mockResolvedValue(card);
+    permissionsMock.has.mockImplementation(permission => permission !== denied);
+    render(<CardModal boardId="board-1" />);
+    fireEvent.click(await screen.findByRole('tab', { name: /^Validation/ }));
+    const taskTab = screen.queryByRole('tab', { name: /^Task validation/ });
+    if (taskTab) fireEvent.click(taskTab);
+    expect(screen.queryByRole('button', { name: 'Choose saved Learning' })).not.toBeInTheDocument();
+    expect(learningCaptureApi.history).not.toHaveBeenCalled();
+  });
+
   it('submits the explicit task-validation contract from circular score inputs', async () => {
     const validationCard: Card = {
       ...cardForType('normal'),

@@ -2387,7 +2387,14 @@ export type TaskValidationVerdict = 'pass' | 'fail';
  * Do not send the clean read aliases (`completeness`, `drift`, `verdict`,
  * `summary`) here: those are response/history compatibility fields.
  */
+export interface LearningCaptureSelection {
+  learning_id: string;
+  generation: number;
+  fingerprint: string;
+}
+
 export interface TaskValidationSubmitPayload {
+  learning_capture?: LearningCaptureSelection;
   expected_subject_version: number;
   idempotency_key: string;
   confidence: number;

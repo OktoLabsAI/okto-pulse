@@ -23,6 +23,8 @@ import type { Card, CardStatus, CardPriority, Comment, TestScenario, TestScenari
 import { CARD_STATUSES, STATUS_LABELS, PRIORITY_LABELS, CARD_PRIORITIES, BUG_SEVERITY_LABELS } from '@/types';
 import { PathBRemediationPanel } from '@/components/kanban/PathBRemediationPanel';
 import { LearningCapturePanel } from '@/components/kanban/LearningCapturePanel';
+import { LearningCaptureSelector } from '@/components/kanban/LearningCaptureSelector';
+import type { LearningCaptureSelection } from '@/types';
 import {
   ImpactEvidenceEditor,
 } from '@/components/cards/ImpactEvidenceEditor';
@@ -2431,6 +2433,7 @@ export function CardModal({
                         value={validationTab}
                       >
                         <ValidationsTab
+                          boardId={boardId}
                           card={card}
                           onCardChanged={(updated) => {
                             applyCardUpdate(updated);
@@ -3825,6 +3828,7 @@ function ValidationHistoryMetric({
 
 // Validations Tab Component
 function ValidationsTab({
+  boardId,
   card,
   onCardChanged,
   api,
@@ -3838,6 +3842,7 @@ function ValidationsTab({
   reworkBusy,
   onStartRework,
 }: {
+  boardId: string;
   card: Card;
   onCardChanged: (card: Card) => void;
   api: ReturnType<typeof useDashboardApi>;
@@ -3863,6 +3868,19 @@ function ValidationsTab({
   const [submitting, setSubmitting] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const validationIntentRef = useRef({ signature: '', idempotencyKey: '' });
+  const learningPermissions = usePermissions(boardId);
+  const canSelectLearning = !learningPermissions.isLoading && !learningPermissions.error
+    && ['board.read', 'card.entity.read', 'card.entity.context_read', 'card.validation.read',
+      'card.comments.read', 'card.conclusion.read', 'card.tests.read', 'spec.entity.read',
+      'spec.tests.read', 'kg.query.learning_from_bugs'].every(learningPermissions.has);
+  const learningScope = `${boardId}:${card.id}:${card.subject_version}`;
+  const [learningChoice, setLearningChoice] = useState<{ scope: string; value: LearningCaptureSelection } | null>(null);
+  const onLearningChange = useCallback((value: LearningCaptureSelection | null) => {
+    setLearningChoice(value ? { scope: learningScope, value } : null);
+  }, [learningScope]);
+  useEffect(() => {
+    if (!canSelectLearning || recommendation !== 'approve') setLearningChoice(null);
+  }, [canSelectLearning, recommendation]);
   const validations = card.validations || [];
   const latestFailedValidation = [...validations]
     .reverse()
@@ -3916,6 +3934,8 @@ function ValidationsTab({
         drift_justification: driftJustification.trim(),
         general_justification: generalJustification.trim(),
         recommendation,
+        ...(card.card_type === 'bug' && recommendation === 'approve' && canSelectLearning
+          && learningChoice?.scope === learningScope ? { learning_capture: learningChoice.value } : {}),
       };
       const signature = JSON.stringify(request);
       if (
@@ -3968,6 +3988,7 @@ function ValidationsTab({
       setDriftJustification('');
       setGeneralJustification('');
       setRecommendation('approve');
+      setLearningChoice(null);
       validationIntentRef.current = { signature: '', idempotencyKey: '' };
       toast.success('Validation submitted');
     } catch (err) {
@@ -4153,6 +4174,11 @@ function ValidationsTab({
               Reject
             </button>
           </div>
+
+          {card.card_type === 'bug' && recommendation === 'approve' && canSelectLearning && (
+            <LearningCaptureSelector key={learningScope} boardId={boardId} bugId={card.id}
+              disabled={submitting} onChange={onLearningChange} />
+          )}
 
           {/* Submit */}
           <button
