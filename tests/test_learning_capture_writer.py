@@ -41,6 +41,13 @@ async def runtime(tmp_path):
     store = CommunitySqlAlchemyCognitiveSourceStore(factory)
     register_bug_cognitive_context_assembler(assembler)
     register_cognitive_source_store(store)
+    from okto_pulse.community.adapters.sqlalchemy_domain_event_delivery import CommunitySqlAlchemyDomainEventPublisher
+    from okto_pulse.core.ports.domain_event_delivery import register_domain_event_publisher
+    from okto_pulse.core.events.bus import register_handler
+    from okto_pulse.core.events.handlers.learning_capture import LearningCaptureMaterializationEnqueuer
+    from okto_pulse.core.events.types import LearningCaptureAdmitted
+    register_domain_event_publisher(CommunitySqlAlchemyDomainEventPublisher())
+    register_handler(LearningCaptureAdmitted.event_type)(LearningCaptureMaterializationEnqueuer)
     try:
         async with factory() as session:
             spec = await session.get(Spec, 'spec-bug-context')
@@ -102,6 +109,13 @@ async def test_capture_persists_before_done_replays_in_same_uow_and_conflicts_wi
     assert records[0].payload['author_id'] == 'author'
     assert records[0].payload['content'] == request.content
     assert records[0].evidence_refs == ('spec:spec-bug-context:test_scenario:scenario-regression',)
+    from sqlalchemy import select
+    from okto_pulse.community.adapters.sqlalchemy_models import DomainEventRow
+    async with factory() as session:
+        events = (await session.scalars(select(DomainEventRow))).all()
+        assert len(events) == 1 and events[0].event_type == 'learning.capture_admitted.v1'
+        assert events[0].payload_json['capture']['fingerprint'] == first.record_fingerprint
+        assert events[0].payload_json['capture_author_id'] == 'author'
 
 
 async def test_capture_rollback_leaves_no_durable_record(runtime):
@@ -110,6 +124,10 @@ async def test_capture_rollback_leaves_no_durable_record(runtime):
         await StageLearningCaptureUseCase().execute(request, actor=actor(), uow=uow(session))
         await session.rollback()
     assert await store.enumerate(BOARD) == ()
+    from sqlalchemy import select
+    from okto_pulse.community.adapters.sqlalchemy_models import DomainEventRow
+    async with factory() as session:
+        assert (await session.scalars(select(DomainEventRow))).all() == []
 
 
 async def test_concurrent_same_capture_request_commits_one_source(runtime):
