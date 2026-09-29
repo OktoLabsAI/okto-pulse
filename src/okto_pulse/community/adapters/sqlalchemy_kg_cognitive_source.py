@@ -516,6 +516,24 @@ class CommunitySqlAlchemyCognitiveSourceStore:
             node_id=node_id, generation=generation)
         return next((record for record in history if record.source_revision == source_revision), None)
 
+    async def read_fingerprint_in_context(
+        self, context: object, *, board_id: str, node_id: str, generation: int,
+        fingerprint: str,
+    ) -> CognitiveSourceRecord | None:
+        if (any(type(value) is not str or not value.strip() or len(value) > 4096
+                for value in (board_id, node_id))
+                or type(generation) is not int or generation < 0
+                or type(fingerprint) is not str or len(fingerprint) != 64
+                or any(char not in '0123456789abcdef' for char in fingerprint)):
+            raise ValueError('cognitive_source_fingerprint_selection_invalid')
+        history = await self._read_scoped_history(context, board_id=board_id,
+            node_id=node_id, generation=generation)
+        matches = [record for record in history if record.record_fingerprint == fingerprint]
+        if len(matches) > 1:
+            raise CognitiveSourceConflict('cognitive_source_fingerprint_ambiguous',
+                board_id=board_id, node_id=node_id)
+        return matches[0] if matches else None
+
     async def _read_scoped_history(self, context, *, board_id, node_id, generation):
         try:
             bases = await _load_base_rows(context, ((node_id, generation),))
