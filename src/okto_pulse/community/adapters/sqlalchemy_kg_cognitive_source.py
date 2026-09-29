@@ -493,17 +493,35 @@ class CommunitySqlAlchemyCognitiveSourceStore:
     async def read_latest_in_context(
         self, context: object, *, board_id: str, node_id: str, generation: int,
     ) -> CognitiveSourceRecord | None:
+        history = await self._read_scoped_history(context, board_id=board_id,
+            node_id=node_id, generation=generation)
+        if not history:
+            return None
+        latest, = latest_cognitive_source_records(history)
+        return latest
+
+    async def read_revision_in_context(
+        self, context: object, *, board_id: str, node_id: str, generation: int,
+        source_revision: int,
+    ) -> CognitiveSourceRecord | None:
+        if type(source_revision) is not int or source_revision < 0:
+            raise ValueError('cognitive_source_revision_invalid')
+        history = await self._read_scoped_history(context, board_id=board_id,
+            node_id=node_id, generation=generation)
+        return next((record for record in history if record.source_revision == source_revision), None)
+
+    async def _read_scoped_history(self, context, *, board_id, node_id, generation):
         bases = await _load_base_rows(context, ((node_id, generation),))
         base = bases.get((node_id, generation))
         if base is None:
-            return None
+            return ()
         if str(base.board_id) != board_id:
             raise CognitiveSourceConflict('cognitive_source_scope_conflict', board_id=board_id, node_id=node_id)
         history = [_base_record(base)]
         for row in await _load_revision_rows(context, (str(base.id),)):
             history.append(_revision_record(base, row))
-        latest, = latest_cognitive_source_records(tuple(history))
-        return latest
+        latest_cognitive_source_records(tuple(history))
+        return tuple(history)
 
     async def append_many_if_current_in_context(
         self, context: object, records: tuple[CognitiveSourceRecord, ...], *,
