@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from sqlalchemy import false, select, text, tuple_, update, or_
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, InterfaceError, OperationalError, SQLAlchemyError
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
     KGCognitiveSource,
@@ -24,6 +24,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
 from okto_pulse.core.ports.kg_cognitive_source import (
     CognitiveSourceConflict,
     CognitiveSourceError,
+    CognitiveSourceUnavailable,
     CognitiveSourcePersistedRevision,
     CognitiveSourceRecord,
     canonical_cognitive_source_fingerprint,
@@ -35,6 +36,11 @@ from okto_pulse.core.ports.kg_cognitive_source import (
 logger = logging.getLogger("okto_pulse.community.kg_cognitive_source")
 
 SemanticKey = tuple[str, int]
+
+
+def _source_io_error(reason: str, *, cause: SQLAlchemyError, **scope) -> CognitiveSourceError:
+    error = CognitiveSourceUnavailable if isinstance(cause, (OperationalError, InterfaceError)) else CognitiveSourceError
+    return error(reason, **scope)
 
 
 def _committed_at(raw: str | None) -> datetime:
@@ -511,17 +517,21 @@ class CommunitySqlAlchemyCognitiveSourceStore:
         return next((record for record in history if record.source_revision == source_revision), None)
 
     async def _read_scoped_history(self, context, *, board_id, node_id, generation):
-        bases = await _load_base_rows(context, ((node_id, generation),))
-        base = bases.get((node_id, generation))
-        if base is None:
-            return ()
-        if str(base.board_id) != board_id:
-            raise CognitiveSourceConflict('cognitive_source_scope_conflict', board_id=board_id, node_id=node_id)
-        history = [_base_record(base)]
-        for row in await _load_revision_rows(context, (str(base.id),)):
-            history.append(_revision_record(base, row))
-        latest_cognitive_source_records(tuple(history))
-        return tuple(history)
+        try:
+            bases = await _load_base_rows(context, ((node_id, generation),))
+            base = bases.get((node_id, generation))
+            if base is None:
+                return ()
+            if str(base.board_id) != board_id:
+                raise CognitiveSourceConflict('cognitive_source_scope_conflict', board_id=board_id, node_id=node_id)
+            history = [_base_record(base)]
+            for row in await _load_revision_rows(context, (str(base.id),)):
+                history.append(_revision_record(base, row))
+            latest_cognitive_source_records(tuple(history))
+            return tuple(history)
+        except (OperationalError, InterfaceError) as exc:
+            raise CognitiveSourceUnavailable('cognitive_source_read_unavailable',
+                board_id=board_id, node_id=node_id) from exc
 
     async def append_many_if_current_in_context(
         self, context: object, records: tuple[CognitiveSourceRecord, ...], *,
@@ -556,7 +566,7 @@ class CommunitySqlAlchemyCognitiveSourceStore:
         except CognitiveSourceError:
             raise
         except SQLAlchemyError as exc:
-            raise CognitiveSourceError('cognitive_source_conditional_write_failed',
+            raise _source_io_error('cognitive_source_conditional_write_failed', cause=exc,
                 board_id=records[0].board_id, node_id=records[0].node_id) from exc
 
     async def append_many_in_context(
@@ -603,8 +613,8 @@ class CommunitySqlAlchemyCognitiveSourceStore:
                 len(records),
                 type(exc).__name__,
             )
-            raise CognitiveSourceError(
-                "cognitive_source_append_failed",
+            raise _source_io_error(
+                "cognitive_source_append_failed", cause=exc,
                 board_id=first.board_id,
                 node_id=first.node_id,
                 remediation=(
@@ -635,8 +645,8 @@ class CommunitySqlAlchemyCognitiveSourceStore:
         try:
             rows = await _load_base_rows(context, tuple(by_semantic))
         except SQLAlchemyError as exc:
-            raise CognitiveSourceError(
-                "cognitive_source_birth_lookup_failed",
+            raise _source_io_error(
+                "cognitive_source_birth_lookup_failed", cause=exc,
                 board_id=board_id,
                 remediation=(
                     "Check the application relational database; consolidation "
@@ -708,8 +718,8 @@ class CommunitySqlAlchemyCognitiveSourceStore:
                 len(records),
                 type(exc).__name__,
             )
-            raise CognitiveSourceError(
-                "cognitive_source_append_failed",
+            raise _source_io_error(
+                "cognitive_source_append_failed", cause=exc,
                 board_id=first.board_id,
                 node_id=first.node_id,
                 remediation=(
@@ -817,8 +827,8 @@ class CommunitySqlAlchemyCognitiveSourceStore:
                 board_id,
                 type(exc).__name__,
             )
-            raise CognitiveSourceError(
-                "cognitive_source_enumerate_failed",
+            raise _source_io_error(
+                "cognitive_source_enumerate_failed", cause=exc,
                 board_id=board_id,
                 remediation=(
                     "Check the application relational database; rebuild never "
