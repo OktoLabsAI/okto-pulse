@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 import time
 
-from okto_pulse.core.kg.logical_transfer import count_graph, decode_artifact
+from okto_pulse.core.kg.logical_transfer import count_graph, decode_artifact, LogicalFingerprintAccumulator, schema_digest
 from okto_pulse.core.ports.learning_reconciliation import (
     LearningReconciliationExecution, execute_learning_reconciliation,
     qualify_learning_reconciliation_graph_delta, plan_learning_reconciliation_execution,
@@ -238,3 +238,66 @@ async def verify_candidate_learning_board(recovery_directory, *, expected_receip
             raise ValueError('retirement_learning_execution_proof_changed')
         previous = after
     return document
+
+
+async def verify_candidate_learning_chain(recovery_directory, entries, *, board_ids,
+        baseline_database, candidate_database, read_graph, max_seconds=180):
+    """Bind retained per-Board proofs to the coordinator's exact phase boundaries.
+
+    Both SQL paths must be quiescent snapshots under the caller's offline
+    fences. ``read_graph(board_id)`` supplies the final native Board inventory,
+    not a graph copied from the receipt. This does not grant completion.
+    """
+    deadline, root = _deadline(max_seconds), _path(recovery_directory)
+    if (type(board_ids) is not tuple or any(type(item) is not str or not item for item in board_ids)
+            or len(set(board_ids)) != len(board_ids) or type(entries) is not list
+            or len(entries) != len(board_ids) or len(entries) > 100_000):
+        raise ValueError('retirement_learning_chain_scope_invalid')
+    previous = _path(baseline_database)
+    candidate = _path(candidate_database)
+    from .relational_recovery_snapshot import _sidecars_absent
+    _sidecars_absent(previous)
+    _sidecars_absent(candidate)
+    documents, retained_bytes = [], 0
+    for index, (board_id, entry) in enumerate(zip(board_ids, entries, strict=True)):
+        if (type(entry) is not dict or set(entry) != {'board_id', 'directory', 'receipt_sha256'}
+                or entry['board_id'] != board_id or entry['directory'] != f'{index:06d}'):
+            raise ValueError('retirement_learning_chain_scope_invalid')
+        directory = _path(root / entry['directory'])
+        document = await verify_candidate_learning_board(directory,
+            expected_receipt_sha256=entry['receipt_sha256'], max_seconds=_remaining(deadline))
+        retained_bytes += len(_encode(document))
+        if retained_bytes > 64 * 1024 * 1024:
+            raise ValueError('retirement_learning_execution_receipt_limit')
+        if document['board_id'] != board_id:
+            raise ValueError('retirement_learning_chain_board_changed')
+        initial = await _blocking(_read_frame, directory, document['initial'], '000000-before', deadline)
+        if not _same_sql(previous, initial[0], deadline):
+            raise ValueError('retirement_learning_chain_sql_boundary_changed')
+        if document['steps']:
+            final = await _blocking(_read_frame, directory, document['steps'][-1]['after'],
+                f"{len(document['steps']) - 1:06d}-after", deadline)
+        else:
+            final = initial
+        schema, nodes, relations = await _blocking(read_graph, board_id)
+        if (schema.scope != 'board' or type(nodes) is not tuple or type(relations) is not tuple
+                or len(nodes) > 100_000 or len(relations) > 500_000):
+            raise ValueError('retirement_learning_graph_limit')
+        fingerprint = LogicalFingerprintAccumulator.for_schema(schema)
+        for node in nodes:
+            _check_time(deadline)
+            fingerprint.add_node(node)
+        for relation in relations:
+            _check_time(deadline)
+            fingerprint.add_relation(relation)
+        if (schema_digest(schema) != final[1].header.schema_digest
+                or count_graph(nodes, relations) != final[1].manifest.counts
+                or fingerprint.digest() != final[1].manifest.fingerprint):
+            raise ValueError('retirement_learning_chain_final_graph_changed')
+        previous = final[0]
+        documents.append(document)
+    if not _same_sql(previous, candidate, deadline):
+        raise ValueError('retirement_learning_chain_final_sql_changed')
+    _sidecars_absent(candidate)
+    _check_time(deadline)
+    return tuple(documents)

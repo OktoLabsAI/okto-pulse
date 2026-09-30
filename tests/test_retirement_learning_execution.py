@@ -41,7 +41,9 @@ async def test_retained_board_execution_rederives_cold_and_refuses_report_tamper
     if missing_bug:
         graph_rows("MATCH (b:Bug) WHERE b.id = 'canonical-bug' DETACH DELETE b")
     source = Path(factory.kw['bind'].url.database)
-    root = tmp_path / 'learning-execution'
+    chain = tmp_path / 'learning-chain'
+    chain.mkdir()
+    root = chain / '000000'
     result = await execution.execute_candidate_learning_board(source, root, board_id=BOARD,
         relational_scope_factory=factory, read_graph=read_graph, require_live=lambda: True, max_seconds=180)
     before = await sql_cells(factory)
@@ -57,6 +59,27 @@ async def test_retained_board_execution_rederives_cold_and_refuses_report_tamper
         assert step['graph_delta'] == {'state': 'unchanged_without_committed_session'}
     else:
         assert step['sql_delta']['source_append_count'] == step['graph_delta']['introduced_nodes'] == 1
+    from okto_pulse.community.adapters.relational_recovery_snapshot import create_sqlite_recovery_snapshot
+    terminal = create_sqlite_recovery_snapshot(source, tmp_path, snapshot_id='final-candidate')
+    entries = [{'board_id': BOARD, 'directory': '000000', 'receipt_sha256': result['receipt_sha256']}]
+    graphs = read_graph()
+    options = dict(board_ids=(BOARD,), baseline_database=root / '000000-before/database.sqlite3',
+        candidate_database=terminal.directory / 'database.sqlite3', read_graph=lambda board: graphs)
+    with isolated_runtime_provider_scope(inherit=False):
+        assert await execution.verify_candidate_learning_chain(chain, entries, **options) == (document,)
+        with pytest.raises(ValueError, match='final_graph_changed'):
+            await execution.verify_candidate_learning_chain(chain, entries,
+                **{**options, 'read_graph': lambda board: (graphs[0], (), ())})
+        with pytest.raises(ValueError, match='scope_invalid'):
+            await execution.verify_candidate_learning_chain(chain,
+                [{**entries[0], 'directory': '../000000'}], **options)
+        if not missing_bug:
+            with pytest.raises(ValueError, match='sql_boundary_changed'):
+                await execution.verify_candidate_learning_chain(chain, entries,
+                    **{**options, 'baseline_database': terminal.directory / 'database.sqlite3'})
+            with pytest.raises(ValueError, match='final_sql_changed'):
+                await execution.verify_candidate_learning_chain(chain, entries,
+                    **{**options, 'candidate_database': options['baseline_database']})
     with pytest.raises(FileExistsError):
         await execution.execute_candidate_learning_board(source, root, board_id=BOARD,
             relational_scope_factory=factory, read_graph=read_graph, require_live=lambda: True)
