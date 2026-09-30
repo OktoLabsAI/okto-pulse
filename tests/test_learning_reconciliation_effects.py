@@ -17,7 +17,7 @@ from okto_pulse.community.adapters.grafx_recovery_contracts import make_grafx_re
 from okto_pulse.community.adapters.logical_transfer_schema import board_logical_schema
 from okto_pulse.core.domain.learning_materialization_work import LearningCaptureWorkRef, parse_learning_capture_work_ref
 from okto_pulse.core.ports.learning_reconciliation import (
-    execute_learning_reconciliation, select_learning_reconciliation,
+    execute_learning_reconciliation, select_learning_reconciliation, qualify_learning_reconciliation_graph_delta,
 )
 from test_learning_materialization_writer import (
     BOARD, graph_runtime as _graph_runtime, runtime as _runtime,
@@ -192,6 +192,27 @@ async def test_selected_capture_has_only_owned_append_deltas(graph_runtime, reco
     returned[0].payload['content'] = 'external mutation'
     assert (await following.read_history_in_context(None, **selector))[0].payload == capture.payload
     after_nodes, after_edges = graph_cells()
+    graph_proof = await qualify_learning_reconciliation_graph_delta(None, following,
+        schema=board_logical_schema(), execution=execution, before_nodes=before_nodes,
+        before_relations=before_edges, after_nodes=after_nodes, after_relations=after_edges)
+    assert graph_proof['introduced_nodes'] == graph_proof['introduced_edges'] == 1
+    assert graph_proof['removed_edges'] == 0
+    for damage in ('bug_content', 'learning_content', 'removed_bug', 'foreign_session', 'edge_confidence'):
+        damaged_nodes, damaged_edges = after_nodes, after_edges
+        if damage in ('bug_content', 'learning_content'):
+            target_type = 'Bug' if damage == 'bug_content' else 'Learning'
+            damaged_nodes = tuple(replace(node, properties={**node.properties, 'title': 'unowned'})
+                if node.type_name == target_type else node for node in after_nodes)
+        elif damage == 'removed_bug':
+            damaged_nodes = tuple(node for node in after_nodes if node.type_name != 'Bug')
+        else:
+            patch = {'confidence': 0.9} if damage == 'edge_confidence' else {'created_by_session_id': 'foreign'}
+            damaged_edges = tuple(replace(edge, properties={**edge.properties, **patch})
+                if edge.layout_name == 'validates' else edge for edge in after_edges)
+        with pytest.raises(ValueError):
+            await qualify_learning_reconciliation_graph_delta(None, following,
+                schema=board_logical_schema(), execution=execution, before_nodes=before_nodes,
+                before_relations=before_edges, after_nodes=damaged_nodes, after_relations=damaged_edges)
     existing = {(node.type_name, node.key): node for node in before_nodes}
     current = {(node.type_name, node.key): node for node in after_nodes}
     graph_changes = {str(key): {name: [str(node.properties.get(name)), str(current[key].properties.get(name))]
@@ -282,6 +303,11 @@ async def test_public_replay_identifies_its_own_audit_without_reauthoring_captur
     assert {name for name in before if before[name] != after[name]} == {
         'consolidation_audit', 'global_update_outbox', 'app_settings', 'domain_events', 'global_discovery_source_revision'}
     current, current_edges = graph_cells()
+    from okto_pulse.community.adapters.retirement_learning_history import CandidateLearningHistory
+    graph_proof = await qualify_learning_reconciliation_graph_delta(None, CandidateLearningHistory(history),
+        schema=board_logical_schema(), execution=replay, before_nodes=nodes,
+        before_relations=edges, after_nodes=current, after_relations=current_edges)
+    assert graph_proof['introduced_nodes'] == graph_proof['introduced_edges'] == graph_proof['removed_edges'] == 0
     assert current_edges == edges
     assert {(node.type_name, node.key) for node in current} == {(node.type_name, node.key) for node in nodes}
     originals = {(node.type_name, node.key): node for node in nodes}
