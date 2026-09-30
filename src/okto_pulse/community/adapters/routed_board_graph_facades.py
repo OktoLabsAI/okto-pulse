@@ -92,6 +92,7 @@ class _PairedCypherExecutor(CypherExecutor, Protocol):
         params: dict[str, Any] | None = None,
         *,
         max_rows: int = 1000,
+        timeout_ms: int | None = None,
     ) -> dict[str, dict[str, Any]]: ...
 
 
@@ -707,10 +708,12 @@ class CommunityRoutedCypherExecutor:
         params: dict[str, Any] | None = None,
         *,
         max_rows: int = 1000,
+        timeout_ms: int | None = None,
     ) -> dict:
         with self._operation_window(board_id):
             return self._provider(board_id).execute_read_only(
-                board_id, cypher, params, max_rows=max_rows
+                board_id, cypher, params, max_rows=max_rows,
+                **({"timeout_ms": timeout_ms} if timeout_ms is not None else {}),
             )
 
     def execute_read_only_pair(
@@ -721,6 +724,7 @@ class CommunityRoutedCypherExecutor:
         params: dict[str, Any] | None = None,
         *,
         max_rows: int = 1000,
+        timeout_ms: int | None = None,
     ) -> dict[str, dict[str, Any]]:
         with self._operation_window(board_id):
             return self._provider(board_id).execute_read_only_pair(
@@ -729,12 +733,14 @@ class CommunityRoutedCypherExecutor:
                 comparison_cypher,
                 params,
                 max_rows=max_rows,
+                **({"timeout_ms": timeout_ms} if timeout_ms is not None else {}),
             )
 
     def execute_read_only_batch(
         self,
         board_id: str,
         statements: Sequence[tuple[str, dict[str, Any] | None, int]],
+        *, timeout_ms: int | None = None,
     ) -> list[dict[str, Any]]:
         """Pin one route/window and use a shared snapshot when the backend supports it."""
 
@@ -742,7 +748,10 @@ class CommunityRoutedCypherExecutor:
             provider = self._provider(board_id)
             batched = getattr(provider, "execute_read_only_batch", None)
             if callable(batched):
-                return list(batched(board_id, statements))
+                return list(batched(board_id, statements,
+                    **({"timeout_ms": timeout_ms} if timeout_ms is not None else {})))
+            if timeout_ms is not None:
+                raise GraphCapabilityUnavailable("Bounded batch execution is not supported.")
             return [
                 provider.execute_read_only(
                     board_id,

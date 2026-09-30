@@ -25,7 +25,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from okto_grafx import Database
-from okto_grafx.errors import GrafxLeaseTimeout
+from okto_grafx.errors import GrafxLeaseTimeout, GrafxQueryDeadlineExceeded
 from okto_pulse.core.kg.tier_power import (
     MAX_TRAVERSAL_DEPTH,
     auto_bound_var_length_path,
@@ -112,15 +112,32 @@ class CommunityGrafxCypherExecutor:
         self._read_database_scope = read_database_scope
         self._query_timeout = query_timeout
 
-    def _execute(self, reader: Any, board_id: str, query: str, params: Any) -> Any:
+    @staticmethod
+    def _deadline(timeout_ms: int | None) -> float | None:
+        if timeout_ms is None:
+            return None
+        if type(timeout_ms) is not int or not 1 <= timeout_ms <= 30_000:
+            raise ValueError("query_timeout_ms_requires_1_to_30000")
+        return time.monotonic() + timeout_ms / 1000
+
+    def _remaining(self, board_id: str, deadline: float | None) -> float | None:
         remaining = self._query_timeout(board_id) if self._query_timeout else None
+        if deadline is not None:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise GrafxQueryDeadlineExceeded("Pulse query deadline exceeded.")
+            remaining = left if remaining is None else min(left, remaining)
+        return remaining
+
+    def _execute(self, reader: Any, board_id: str, query: str, params: Any,
+                 deadline: float | None = None) -> Any:
+        remaining = self._remaining(board_id, deadline)
         result = (
             reader.execute(query, params)
             if remaining is None
             else reader.execute(query, params, timeout_seconds=remaining)
         )
-        if self._query_timeout is not None:
-            self._query_timeout(board_id)
+        self._remaining(board_id, deadline)
         return result
 
     def _read_scope(self, board_id: str) -> AbstractContextManager[Database]:
@@ -174,19 +191,23 @@ class CommunityGrafxCypherExecutor:
         params: dict[str, Any] | None = None,
         *,
         max_rows: int = 1000,
+        timeout_ms: int | None = None,
     ) -> dict:
+        deadline = self._deadline(timeout_ms)
         cleaned = self._prepare(cypher, max_rows=max_rows)
         started = time.monotonic()
         for attempt in range(2):
             scope = self._read_scope(board_id)
             try:
                 with scope as database:
-                    result = self._execute(database, board_id, cleaned, _grafx_query_parameters(params))
-                    return self._envelope(
+                    result = self._execute(database, board_id, cleaned, _grafx_query_parameters(params), deadline)
+                    envelope = self._envelope(
                         result,
                         max_rows=max_rows,
                         started=started,
                     )
+                    self._remaining(board_id, deadline)
+                    return envelope
             except GrafxLeaseTimeout as exc:
                 if attempt == 0:
                     continue
@@ -209,6 +230,7 @@ class CommunityGrafxCypherExecutor:
         params: dict[str, Any] | None = None,
         *,
         max_rows: int = 1000,
+        timeout_ms: int | None = None,
     ) -> dict[str, dict[str, Any]]:
         """Read the canonical window and its all-layer baseline together.
 
@@ -218,6 +240,7 @@ class CommunityGrafxCypherExecutor:
         difference that has to come from the layer filter, never from time.
         """
 
+        deadline = self._deadline(timeout_ms)
         primary = self._prepare(primary_cypher, max_rows=max_rows)
         comparison = self._prepare(comparison_cypher, max_rows=max_rows)
         for attempt in range(2):
@@ -226,19 +249,20 @@ class CommunityGrafxCypherExecutor:
                 with scope as database, database.transaction("read") as reader:
                     primary_started = time.monotonic()
                     prepared_params = _grafx_query_parameters(params)
-                    primary_result = self._execute(reader, board_id, primary, prepared_params)
+                    primary_result = self._execute(reader, board_id, primary, prepared_params, deadline)
                     primary_envelope = self._envelope(
                         primary_result,
                         max_rows=max_rows,
                         started=primary_started,
                     )
                     comparison_started = time.monotonic()
-                    comparison_result = self._execute(reader, board_id, comparison, prepared_params)
+                    comparison_result = self._execute(reader, board_id, comparison, prepared_params, deadline)
                     comparison_envelope = self._envelope(
                         comparison_result,
                         max_rows=max_rows,
                         started=comparison_started,
                     )
+                    self._remaining(board_id, deadline)
             except GrafxLeaseTimeout as exc:
                 if attempt == 0:
                     continue
@@ -258,6 +282,7 @@ class CommunityGrafxCypherExecutor:
         self,
         board_id: str,
         statements: Sequence[ReadOnlyBatchItem],
+        *, timeout_ms: int | None = None,
     ) -> list[dict[str, Any]]:
         """Execute independent reads against one immutable Grafx snapshot.
 
@@ -267,6 +292,7 @@ class CommunityGrafxCypherExecutor:
         invalid statement therefore fails closed without partially executing the batch.
         """
 
+        deadline = self._deadline(timeout_ms)
         prepared = [
             (
                 self._prepare(cypher, max_rows=max_rows),
@@ -284,10 +310,11 @@ class CommunityGrafxCypherExecutor:
                 with scope as database, database.transaction("read") as reader:
                     for cypher, params, max_rows in prepared:
                         started = time.monotonic()
-                        result = self._execute(reader, board_id, cypher, params)
+                        result = self._execute(reader, board_id, cypher, params, deadline)
                         envelopes.append(
                             self._envelope(result, max_rows=max_rows, started=started)
                         )
+                        self._remaining(board_id, deadline)
             except GrafxLeaseTimeout as exc:
                 if attempt == 0:
                     continue

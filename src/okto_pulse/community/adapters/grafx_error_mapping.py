@@ -17,6 +17,7 @@ from okto_grafx.errors import (
     GrafxPlanError,
     GrafxPortNotConfigured,
     GrafxQueryBudgetExceeded,
+    GrafxQueryDeadlineExceeded,
     GrafxRecoveryRefused,
     GrafxSchemaVersionMismatch,
     GrafxSpaceRetired,
@@ -35,6 +36,7 @@ from okto_pulse.core.kg.interfaces.graph_errors import (
     GraphIndexUnavailable,
     GraphInvalidQuery,
     GraphLockContention,
+    GraphQueryTimeout,
     GraphUnavailable,
 )
 
@@ -101,7 +103,9 @@ def map_grafx_error(exc: BaseException, *, operation: str) -> GraphError:
     else:
         message = f"{operation} failed in Okto Grafx ({type(exc).__name__})."
 
-    if isinstance(exc, (GrafxParseError, GrafxPlanError)):
+    if isinstance(exc, GrafxQueryDeadlineExceeded):
+        mapped = GraphQueryTimeout(message, details=details)
+    elif isinstance(exc, (GrafxParseError, GrafxPlanError)):
         mapped = GraphInvalidQuery(message, details=details)
     elif isinstance(exc, _CONTENTION_FAILURES):
         mapped = GraphLockContention(message, details=details)
