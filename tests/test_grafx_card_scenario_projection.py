@@ -3,7 +3,10 @@ from dataclasses import replace
 import okto_grafx
 import pytest
 
-from okto_pulse.core.kg.interfaces.graph_transaction import ProjectionActiveSetIntent, ProjectionActiveSetReconciliationError, ProjectionEdgeRef
+from okto_pulse.core.kg.interfaces.graph_transaction import (
+    ProjectionActiveSetIntent, ProjectionActiveSetReconciliationError, ProjectionEdgeRef,
+    ProjectionLogicalEdgeRef, ProjectionRemovalOnlyIntent,
+)
 from okto_pulse.core.ports.card_projection import card_scenario_rule
 from okto_pulse.community.adapters.grafx_graph_transaction import CommunityGrafxGraphTransaction
 
@@ -109,6 +112,41 @@ async def test_failure_after_delete_restores_exact_owned_edge(projection, monkey
                 raise RuntimeError('injected after owned delete')
             return value
         monkeypatch.setattr(scope, '_mutation', fail)
+        with pytest.raises(ProjectionActiveSetReconciliationError):
+            scope.reconcile_projection_active_set(intent)
+        await scope.commit()
+    assert await rows() == before
+
+
+@pytest.mark.parametrize('retain_existing', [True, False])
+async def test_known_removal_retains_expected_edges_without_materializing_missing_targets(projection, retain_existing):
+    provider, kind, _intent, rows = projection
+    before = await rows()
+    refs = ['spec:spec:test_scenario:ts_pending']
+    if retain_existing:
+        refs.append('spec:spec:test_scenario:ts_one')
+    intent = ProjectionRemovalOnlyIntent('card', 'owner', 'card_scenarios', expected_edges=tuple(
+        ProjectionLogicalEdgeRef('supports', kind, 'TestScenario', 'card:owner', ref, RULE) for ref in refs))
+    async with await provider.begin('board') as scope:
+        receipt = scope.reconcile_projection_active_set(intent)
+        assert len(receipt.edge_before_images) == (0 if retain_existing else 1)
+        assert scope.find_active_node_ids_by_source_refs('TestScenario', (refs[0],)) == ()
+        await scope.commit()
+    assert len(await rows()) == (3 if retain_existing else 2)
+    async with await provider.begin('board') as scope:
+        assert scope.reconcile_projection_active_set(intent).edge_before_images == ()
+        scope.compensate_projection_active_set(receipt)
+        await scope.commit()
+    assert await rows() == before
+
+
+async def test_known_removal_rejects_untrusted_logical_source_before_deleting(projection):
+    provider, kind, _intent, rows = projection
+    before = await rows()
+    intent = ProjectionRemovalOnlyIntent('card', 'owner', 'card_scenarios', expected_edges=(
+        ProjectionLogicalEdgeRef('supports', kind, 'TestScenario', 'card:other',
+            'spec:spec:test_scenario:ts_pending', RULE),))
+    async with await provider.begin('board') as scope:
         with pytest.raises(ProjectionActiveSetReconciliationError):
             scope.reconcile_projection_active_set(intent)
         await scope.commit()

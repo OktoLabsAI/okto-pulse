@@ -2866,6 +2866,12 @@ class _GrafxTransactionScope:
         # The whole intent is validated, and every before-image captured, before the first
         # mutation: a refusal must not be able to leave half an active set staged.
         self._fence("reconcile_projection_active_set")
+        from okto_pulse.core.kg.interfaces.graph_transaction import ProjectionRemovalOnlyIntent
+        if isinstance(intent, ProjectionRemovalOnlyIntent) and not (
+            intent.owner_type == 'card' and intent.namespace in {'card_scenarios', 'card_parent'}
+        ):
+            raise ProjectionActiveSetReconciliationError(
+                'projection_active_set_scope_invalid', 'Removal-only namespace is unsupported.')
         if intent.owner_type == 'card' and intent.namespace in {'card_scenarios', 'card_parent'}:
             from okto_pulse.community.adapters.grafx_card_scenario_projection import reconcile_card_scenarios
             return reconcile_card_scenarios(self, intent)

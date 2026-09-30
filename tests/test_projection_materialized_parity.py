@@ -79,7 +79,7 @@ def relationship_set(graph):
         reader.close()
 
 
-async def materialize(root, *, incremental, card_type=None, final_unlinked=False):
+async def materialize(root, *, incremental, card_type=None, final_unlinked=False, exercise=None):
     root.mkdir()
     path = root / 'source.sqlite3'
     settings = CommunitySettings(database_url=f'sqlite+aiosqlite:///{path}',
@@ -177,6 +177,8 @@ async def materialize(root, *, incremental, card_type=None, final_unlinked=False
                         async with factory() as session:
                             assert not (await session.execute(select(ConsolidationQueue.id))).all()
         graph = bundle.grafx_pool.get(physical, page_size=8192)
+        if exercise is not None:
+            await exercise(factory, graph)
         if card_type and final_unlinked:
             async with factory() as session:
                 receipt = (await session.execute(select(ConsolidationAudit).where(
@@ -228,3 +230,70 @@ async def test_known_unlinked_source_rebuild_preserves_diagnostic_without_stale_
     rebuilt = await materialize(tmp_path / 'rebuilt', incremental=False, card_type='normal', final_unlinked=True)
     assert incremental == rebuilt
     assert not [edge for edge in rebuilt if edge[3].startswith('supports/card_scenario_observed_')]
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(480)
+@pytest.mark.parametrize('fail_commit', [False, True])
+async def test_known_removal_is_not_current_while_new_valid_scenario_waits_for_projection(tmp_path, monkeypatch, fail_commit):
+    async def exercise(factory, graph):
+        before = relationship_set(graph)
+        assert any(edge[1:3] == ('card:card', 'spec:spec:test_scenario:ts_one') for edge in before)
+        async with factory() as session:
+            audits_before = list((await session.execute(select(ConsolidationAudit.session_id))).scalars())
+        # The authoritative source replaces the old reference, but the Spec
+        # worker has not materialized the valid new scenario yet.
+        async with factory() as session:
+            await session.execute(update(Spec).where(Spec.id == 'spec').values(
+                test_scenarios=[{'id': 'ts_next', 'title': 'New scenario', 'linked_criteria': ['ac_two']}]))
+            await session.execute(update(Card).where(Card.id == 'card').values(test_scenario_ids=['ts_next']))
+            session.add(ConsolidationQueue(id='pending-scenario', board_id='board', artifact_type='card',
+                artifact_id='card', source='state_transition'))
+            await session.commit()
+        if fail_commit:
+            original = CommunitySqlAlchemyConsolidationPersistence.commit
+            async def reject_commit(store, context):
+                error = (await context.execute(select(ConsolidationQueue.last_error).where(
+                    ConsolidationQueue.id == 'pending-scenario'))).scalar_one_or_none()
+                if error and 'Known removals applied' in error:
+                    raise RuntimeError('injected failure before removal progress commit')
+                return await original(store, context)
+            with monkeypatch.context() as patch:
+                patch.setattr(CommunitySqlAlchemyConsolidationPersistence, 'commit', reject_commit)
+                assert await ConsolidationProcessor(relational_scope_factory=factory).process_batch() == 0
+            assert relationship_set(graph) == before, 'Caller rollback must restore the complete before-image.'
+            async with factory() as session:
+                await session.execute(update(ConsolidationQueue).values(next_retry_at=None))
+                await session.commit()
+        processed = await ConsolidationProcessor(relational_scope_factory=factory).process_batch()
+        assert processed == 0, 'Partial removal must not be counted as complete consolidation.'
+        async with factory() as session:
+            pending = (await session.execute(select(ConsolidationQueue.status, ConsolidationQueue.last_error))).all()
+            assert list((await session.execute(select(ConsolidationAudit.session_id))).scalars()) == audits_before
+        assert pending, 'A missing materialization must not be acknowledged as complete.'
+        assert pending[0][0] == 'pending' and pending[0][1].startswith('relational_projection_endpoint_pending:')
+        observed = relationship_set(graph)
+        stale = [edge for edge in observed if edge[1:3] == ('card:card', 'spec:spec:test_scenario:ts_one')
+                 and edge[3].startswith('supports/card_scenario_observed_')]
+        assert not stale, {'processed': processed, 'pending': pending, 'stale': stale}
+        assert not [edge for edge in observed if edge[1:3] == ('card:card', 'spec:spec:test_scenario:ts_next')]
+        # Replay before the prerequisite exists is idempotent and remains pending.
+        async with factory() as session:
+            await session.execute(update(ConsolidationQueue).values(next_retry_at=None))
+            await session.commit()
+        assert await ConsolidationProcessor(relational_scope_factory=factory).process_batch() == 0
+        assert relationship_set(graph) == observed
+        async with factory() as session:
+            session.add(ConsolidationQueue(id='prerequisite-spec', board_id='board', artifact_type='spec',
+                artifact_id='spec', source='state_transition'))
+            await session.commit()
+        assert await ConsolidationProcessor(relational_scope_factory=factory).process_batch() == 1
+        async with factory() as session:
+            await session.execute(update(ConsolidationQueue).values(next_retry_at=None))
+            await session.commit()
+        assert await ConsolidationProcessor(relational_scope_factory=factory).process_batch() == 1
+        async with factory() as session:
+            assert not (await session.execute(select(ConsolidationQueue.id))).all()
+            assert len(list((await session.execute(select(ConsolidationAudit.session_id))).scalars())) == len(audits_before) + 2
+        assert any(edge[1:3] == ('card:card', 'spec:spec:test_scenario:ts_next') for edge in relationship_set(graph))
+    await materialize(tmp_path / 'pending', incremental=False, card_type='normal', exercise=exercise)
