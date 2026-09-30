@@ -419,6 +419,9 @@ async def _restore_retirement_graph_candidate(runtime, storage, graphs, run, see
                                 if _sql_snapshot(learning_phase.baseline_database) != executed['deterministic_after_sql']:
                                     raise ValueError('retirement_candidate_learning_baseline_changed')
                                 executed['after_sql'] = _sql_snapshot(stage / 'database.sqlite3')
+                                from .retirement_learning_applicability import observe_verified_learning_phase_applicability
+                                executed['learning_applicability'] = await observe_verified_learning_phase_applicability(
+                                    stage, learning_phase, max_seconds=max_seconds)
 
                             from .retirement_candidate_global_sources import (
                                 capture_candidate_global_source_inputs, initialize_candidate_global_overlay,
@@ -446,7 +449,7 @@ async def _restore_retirement_graph_candidate(runtime, storage, graphs, run, see
                             restored_cognitive = verify_candidate_cognitive_restoration(stage, projection,
                                 executed['cognitive_restoration'], executed['historical_observations'], max_seconds=max_seconds,
                                 learning_phase=learning_phase)
-                            executed['format'] = ('retirement-candidate-projection/v7' if learning_phase is not None
+                            executed['format'] = ('retirement-candidate-projection/v8' if learning_phase is not None
                                 else 'retirement-candidate-projection/v6')
                             executed['schema_evolutions'] = schema_evolutions
                             from .retirement_candidate_global_reconciliation import compare_candidate_global_projection

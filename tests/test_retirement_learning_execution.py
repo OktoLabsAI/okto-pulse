@@ -45,7 +45,7 @@ async def enable_fence(factory, monkeypatch):
         await relational_schema_steps._migrate_global_discovery_recovery_control_plane()
 
 
-@pytest.mark.parametrize('reuse_original_bug', [False, True], ids=['superseded', 'reused'])
+@pytest.mark.parametrize('reuse_original_bug', [False, True, None], ids=['superseded', 'reused', 'fresh'])
 async def test_coordinator_retains_learning_phase_and_replays_checkpoint(
         coordinator_graph_runtime, monkeypatch, tmp_path, reuse_original_bug):
     from okto_grafx import connect
@@ -70,6 +70,10 @@ async def test_coordinator_retains_learning_phase_and_replays_checkpoint(
             title = (await connection.exec_driver_sql(
                 'SELECT title FROM cards WHERE id = ?', ('bug-context',))).scalar_one()
         graph_rows("MATCH (b:Bug) WHERE b.id = 'canonical-bug' SET b.title = $title", {'title': title})
+    elif reuse_original_bug is None:
+        # Independent positive-source fixture: no historical assertion whose
+        # missing birth provenance would legitimately prevent admission.
+        graph_rows("MATCH (b:Bug) WHERE b.id = 'canonical-bug' DETACH DELETE b")
     from legacy_sprint_schema import Base as LegacyBase, RETIRED_TABLES
     # Model an upgrade predecessor, not an already-retired runtime. Retired
     # tables and the nullable Card origin are isolated fixture DDL only.
@@ -147,8 +151,12 @@ async def test_coordinator_retains_learning_phase_and_replays_checkpoint(
                 trace = trace.tb_next
             raise
         report = json.loads((target / 'projection-receipt/run.json').read_bytes())
-        assert report['format'] == 'retirement-candidate-projection/v7'
-        if reuse_original_bug:
+        assert report['format'] == 'retirement-candidate-projection/v8'
+        assert report['learning_applicability']['state'] == 'observed_not_admitted'
+        assert report['learning_applicability']['unmaterialized'] == []
+        current, = report['learning_applicability']['observations']
+        assert (current['board_id'], current['bug_id']) == (BOARD, 'bug-context')
+        if reuse_original_bug is not False:
             assert report['historical_observations']['supersedence_effects'] == []
         else:
             transition, = report['historical_observations']['supersedence_effects']
@@ -237,6 +245,56 @@ async def test_private_phase_uses_isolated_candidate_sql_graph_and_signed_eviden
     with pytest.raises(ValueError, match='receipt_invalid'):
         await execution.verify_candidate_learning_phase(stage,
             expected_receipt_sha256=result['receipt_sha256'], board_ids=(BOARD,), generation='other-generation')
+
+    from okto_pulse.community.adapters.retirement_learning_applicability import observe_candidate_learning_applicability
+    from okto_pulse.community.adapters.bug_cognitive_context import CommunityBugCognitiveContextAssembler
+    from okto_pulse.core.ports.learning_reconciliation import LearningReconciliationExecution
+    committed = LearningReconciliationExecution(**boards[0]['steps'][0]['execution'])
+
+    def inventory():
+        result = {}
+        for path in stage.rglob('*'):
+            if path.is_file():
+                with path.open('rb') as stream:
+                    result[path.relative_to(stage).as_posix()] = hashlib.file_digest(stream, 'sha256').hexdigest()
+        return result
+
+    async def forbid_write_fence(*args, **kwargs):
+        raise AssertionError('read-only applicability requested a writer fence')
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(CommunityBugCognitiveContextAssembler, 'assemble_semantic_for_write', forbid_write_fence)
+        before_files = inventory()
+        observed = await observe_candidate_learning_applicability(stage, (committed,), max_seconds=60)
+        current, = observed
+        assert (current.board_id, current.bug_id) == (BOARD, 'bug-context')
+        assert current.capture_fingerprint and current.head_fingerprint != current.capture_fingerprint
+        assert await observe_candidate_learning_applicability(stage, (committed,), max_seconds=60) == observed
+        assert inventory() == before_files
+
+        receipts = {path: path.read_bytes() for path in (stage / 'evidence/receipts').glob('*.json')}
+        assert receipts
+        try:
+            for path in receipts:
+                path.write_bytes(b'{}')
+            tampered = inventory()
+            with pytest.raises(ValueError, match='learning_capture_evidence_not_authenticated'):
+                await observe_candidate_learning_applicability(stage, (committed,), max_seconds=60)
+            assert inventory() == tampered
+        finally:
+            for path, content in receipts.items():
+                path.write_bytes(content)
+        assert inventory() == before_files
+
+        import sqlite3
+        with sqlite3.connect(stage / 'database.sqlite3') as connection:
+            connection.execute('UPDATE cards SET status = ? WHERE id = ?', ('in_progress', 'bug-context'))
+            connection.commit()
+        reopened = inventory()
+        with pytest.raises(ValueError, match='learning_materialization_source_not_eligible'):
+            await observe_candidate_learning_applicability(stage, (committed,), max_seconds=60)
+        assert inventory() == reopened
+    assert await sql_cells(factory) == original_sql
 
 
 @pytest.mark.parametrize('missing_bug', [False, True])

@@ -89,11 +89,15 @@ async def verify_projected_candidate(target, *, seed, seed_document, projection,
     fields = {'format', 'seed_sha256', 'state', 'before_sql', 'after_sql',
             'boards', 'graph_reconciliation', 'historical_observations', 'schema_evolutions', 'global_source_inputs',
             'global_materialization', 'cognitive_restoration'}
-    has_learning = projected.get('format') == 'retirement-candidate-projection/v7'
+    has_applicability = projected.get('format') == 'retirement-candidate-projection/v8'
+    has_learning = projected.get('format') == 'retirement-candidate-projection/v7' or has_applicability
     if has_learning:
         fields |= {'learning_phase_sha256', 'deterministic_after_sql'}
+    if has_applicability:
+        fields.add('learning_applicability')
     if (set(projected) != fields
-            or projected['format'] not in {'retirement-candidate-projection/v6', 'retirement-candidate-projection/v7'}
+            or projected['format'] not in {'retirement-candidate-projection/v6', 'retirement-candidate-projection/v7',
+                'retirement-candidate-projection/v8'}
             or type(projected['global_materialization']) is not dict
             or type(projected['schema_evolutions']) is not list
             or projected['seed_sha256'] != seed.manifest_sha256
@@ -141,6 +145,11 @@ async def verify_projected_candidate(target, *, seed, seed_document, projection,
             generation=seed_document['generation'], max_seconds=max_seconds)
         if _sql_snapshot(learning_phase.baseline_database) != projected['deterministic_after_sql']:
             raise ValueError('retirement_candidate_learning_baseline_changed')
+        if has_applicability:
+            from .retirement_learning_applicability import observe_verified_learning_phase_applicability
+            applicability = await observe_verified_learning_phase_applicability(target, learning_phase, max_seconds=max_seconds)
+            if applicability != projected['learning_applicability']:
+                raise ValueError('retirement_candidate_learning_applicability_changed')
     engine = create_async_engine(f'sqlite+aiosqlite:///{target / "database.sqlite3"}')
     all_receipts = []
     try:
