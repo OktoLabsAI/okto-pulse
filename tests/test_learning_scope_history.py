@@ -10,7 +10,9 @@ import pytest
 from sqlalchemy import update
 
 from okto_pulse.community.adapters.sqlalchemy_models import KGCognitiveSourceRevision
-from okto_pulse.core.application.learning_supersedence import read_learning_scope_replacements
+from okto_pulse.core.application.learning_supersedence import (
+    read_learning_scope_replacements, stage_learning_scope_replacement,
+)
 from okto_pulse.core.ports.kg_cognitive_source import CognitiveSourceConflict, TransactionalCognitiveHistoryReader
 from test_kg_cognitive_source_adapter import BOARD, _record, store as _store
 from test_learning_capture_writer import runtime as _capture_runtime
@@ -90,8 +92,9 @@ async def test_successor_and_target_claim_share_one_conditional_transaction(stor
     await adapter.append_many((previous, capture))
     before = await adapter.enumerate(BOARD)
     async with factory() as session:
-        await adapter.append_many_if_current_in_context(session, (successor, claimed),
-            expected_fingerprints=(capture.record_fingerprint, previous.record_fingerprint))
+        prepared = await stage_learning_scope_replacement(session, adapter, previous=previous,
+            capture=capture, successor=successor)
+        assert prepared.claimed.record_fingerprint == claimed.record_fingerprint
         claim, = await read_learning_scope_replacements(session, adapter, head=claimed)
         assert claim.bug_id == 'covered-bug' and claim.successor.record_fingerprint == successor.record_fingerprint
         await (session.rollback() if rollback else session.commit())
@@ -114,8 +117,9 @@ async def test_concurrent_scoped_replacements_have_one_cas_winner_without_arbitr
         previous, claimed, capture, successor = records
         async with factory() as session:
             try:
-                await adapter.append_many_if_current_in_context(session, (successor, claimed),
-                    expected_fingerprints=(capture.record_fingerprint, previous.record_fingerprint))
+                prepared = await stage_learning_scope_replacement(session, adapter, previous=previous,
+                    capture=capture, successor=successor)
+                assert prepared.claimed.record_fingerprint == claimed.record_fingerprint
                 await session.commit()
                 return capture.node_id
             except BaseException:
@@ -133,6 +137,28 @@ async def test_concurrent_scoped_replacements_have_one_cas_winner_without_arbitr
         for records in (one, two):
             history = await adapter.read_history_in_context(session, board_id=BOARD, node_id=records[2].node_id, generation=0)
             assert len(history) == (2 if records[2].node_id == winner else 1)
+
+
+@pytest.mark.parametrize('changed', ['target', 'capture'])
+async def test_joint_scope_writer_rejects_either_changed_head_without_partial_successor(store, source_records, changed):
+    adapter, factory = store
+    previous, _, capture, successor = source_records(BOARD)
+    await adapter.append_many((previous, capture))
+    selected = previous if changed == 'target' else capture
+    updated = replace(selected, record_fingerprint='', source_revision=selected.source_revision + 1,
+        payload={**selected.payload, 'content': 'Concurrent authored correction'})
+    await adapter.append(updated)
+    before = await adapter.enumerate(BOARD)
+    async with factory() as session:
+        with pytest.raises(CognitiveSourceConflict, match='cognitive_source_head_changed'):
+            await stage_learning_scope_replacement(session, adapter, previous=previous,
+                capture=capture, successor=successor)
+        for identity in (previous, capture):
+            staged = await adapter.read_history_in_context(session, board_id=BOARD,
+                node_id=identity.node_id, generation=identity.generation)
+            assert staged == tuple(row for row in before if row.node_id == identity.node_id)
+        await session.rollback()
+    assert await adapter.enumerate(BOARD) == before
 
 
 async def test_later_literal_cannot_hide_a_historical_replacement_claim(store, source_records):
