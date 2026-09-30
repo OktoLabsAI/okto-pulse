@@ -32,6 +32,50 @@ async def enable_fence(factory, monkeypatch):
     await relational_schema_steps._migrate_global_discovery_recovery_control_plane()
 
 
+async def test_private_phase_uses_isolated_candidate_sql_graph_and_signed_evidence(graph_runtime, monkeypatch, tmp_path):
+    import shutil
+    from okto_grafx import connect
+    from okto_pulse.community.adapters.graph_backend_binding import CommunityGraphBackendBindingStore
+    from okto_pulse.community.adapters.relational_recovery_snapshot import create_sqlite_recovery_snapshot, _deadline
+    from okto_pulse.community.adapters.retirement_candidate_global_reconciliation import _read
+    from okto_pulse.community.config import CommunitySettings
+    from logical_transfer_matrix_support import Corpus, seed_generation
+
+    runtime, _, _, _ = graph_runtime
+    factory, _, store, _ = runtime
+    await enable_fence(factory, monkeypatch)
+    source = Path(factory.kw['bind'].url.database)
+    original_sql, original_graph = await sql_cells(factory), read_graph()
+    original_history = await store.enumerate(BOARD)
+    stage = create_sqlite_recovery_snapshot(source, tmp_path, snapshot_id='private-stage').directory
+    (stage / 'uploads').mkdir()
+    # Only disposable fixture evidence is copied; the production coordinator
+    # already restores authenticated evidence through its recovery window.
+    shutil.copytree(tmp_path / 'evidence', stage / 'evidence')
+    bindings = CommunityGraphBackendBindingStore(stage / 'kg-artifacts')
+    path = bindings.board_grafx_path(BOARD, 'private-generation')
+    path.parent.mkdir(parents=True)
+    seed_generation('grafx', path, Corpus(*original_graph))
+    with connect(path, page_size=8192) as graph:
+        bindings.initialize_board_binding(board_id=BOARD, backend='grafx', generation='private-generation',
+            physical_path=path, page_size=8192, database=graph)
+    result = await execution.execute_candidate_learning_phase(stage, board_ids=(BOARD,),
+        settings=CommunitySettings(kg_embedding_mode='stub', kg_embedding_dim=384),
+        generation='private-generation', lifetime_probe=lambda: True, max_seconds=180)
+    document = result['document']
+    assert document['state'] == 'retained_not_reconciled'
+    assert await sql_cells(factory) == original_sql
+    assert read_graph() == original_graph
+    assert await store.enumerate(BOARD) == original_history
+    with isolated_runtime_provider_scope(inherit=False):
+        boards = await execution.verify_candidate_learning_chain(result['directory'], document['boards'],
+            board_ids=(BOARD,), baseline_database=result['directory'] / 'baseline/database.sqlite3',
+            candidate_database=stage / 'database.sqlite3',
+            read_graph=lambda board: _read(bindings.inspect_board_binding(board), 'board', _deadline(60)))
+    assert len(boards) == 1 and boards[0]['steps'][0]['execution']['materialized'] is True
+    assert boards[0]['steps'][0]['sql_delta']['source_append_count'] == 1
+
+
 @pytest.mark.parametrize('missing_bug', [False, True])
 async def test_retained_board_execution_rederives_cold_and_refuses_report_tampering(
         graph_runtime, monkeypatch, tmp_path, missing_bug):

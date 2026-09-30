@@ -9,6 +9,7 @@ from contextlib import closing
 from dataclasses import asdict
 import json
 from pathlib import Path
+import sqlite3
 import time
 
 from okto_pulse.core.kg.logical_transfer import count_graph, decode_artifact, LogicalFingerprintAccumulator, schema_digest
@@ -301,3 +302,88 @@ async def verify_candidate_learning_chain(recovery_directory, entries, *, board_
     _sidecars_absent(candidate)
     _check_time(deadline)
     return tuple(documents)
+
+
+async def execute_candidate_learning_phase(stage, *, board_ids, settings, generation,
+        lifetime_probe, max_seconds=180):
+    """Compose governed writers only inside the coordinator's private stage.
+
+    The caller supplies the authenticated Board set and generation, owns both
+    offline fences and discards the entire stage on failure. No reissuance of
+    evidence, administrative actor substitution or runtime admission occurs.
+    """
+    from .retirement_candidate_execution import candidate_execution_runtime
+    from .retirement_candidate_global_reconciliation import _read
+    from .graph_backend_binding import CommunityGraphBackendBindingStore
+
+    deadline, stage = _deadline(max_seconds), _path(stage)
+    if (type(board_ids) is not tuple or len(board_ids) > 100_000
+            or any(type(board) is not str or not board or len(board) > 256 for board in board_ids)
+            or len(set(board_ids)) != len(board_ids) or type(generation) is not str or not generation):
+        raise ValueError('retirement_learning_chain_scope_invalid')
+
+    def live(*_):
+        _check_time(deadline)
+        if lifetime_probe() is not True:
+            raise ValueError('retirement_learning_execution_fence_lost')
+        return True
+
+    live()
+    root, source = stage / 'learning-reconciliation', stage / 'database.sqlite3'
+    root.mkdir(mode=0o700)
+    bindings = CommunityGraphBackendBindingStore(stage / 'kg-artifacts')
+    expected = {board: bindings.inspect_board_binding(board) for board in board_ids}
+    if any(binding.generation != generation or binding.backend != 'grafx' for binding in expected.values()):
+        raise ValueError('retirement_learning_execution_generation_mismatch')
+
+    def read_graph(board):
+        live()
+        binding = bindings.inspect_board_binding(board)
+        if binding != expected[board]:
+            raise ValueError('retirement_learning_execution_binding_changed')
+        graph = _read(binding, 'board', deadline)
+        live()
+        return graph
+
+    baseline = await _blocking(create_sqlite_recovery_snapshot, source, root,
+        snapshot_id='baseline', max_seconds=_remaining(deadline), progress=live)
+    candidate_settings = settings.model_copy(update={'database_url': f'sqlite+aiosqlite:///{source}',
+        'data_dir': str(stage), 'kg_base_dir': str(stage / 'kg-artifacts'), 'upload_dir': str(stage / 'uploads')})
+    entries = []
+    async with candidate_execution_runtime(stage, candidate_settings) as (runtime, _, _):
+        for index, board in enumerate(board_ids):
+            live()
+            result = await execute_candidate_learning_board(source, root / f'{index:06d}', board_id=board,
+                relational_scope_factory=runtime.session_factory, read_graph=lambda board=board: read_graph(board),
+                require_live=live, max_seconds=_remaining(deadline))
+            entries.append({'board_id': board, 'directory': f'{index:06d}', 'receipt_sha256': result['receipt_sha256']})
+    live()
+    def finish_sqlite():
+        # Engines are closed and the enclosing offline fence still excludes
+        # writers. Let SQLite fold its WAL and remove its own sidecars; never
+        # unlink them or use immutable reads while committed WAL may remain.
+        live()
+        with closing(sqlite3.connect(source.as_uri() + '?mode=rw', uri=True, timeout=1.0)) as connection:
+            checkpoint = connection.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()
+            if checkpoint is None or checkpoint[0] != 0:
+                raise ValueError('retirement_learning_execution_sqlite_busy')
+            if connection.execute('PRAGMA journal_mode=DELETE').fetchone() != ('delete',):
+                raise ValueError('retirement_learning_execution_sqlite_not_standalone')
+        live()
+    await _blocking(finish_sqlite)
+    terminal = await _blocking(create_sqlite_recovery_snapshot, source, root,
+        snapshot_id='terminal', max_seconds=_remaining(deadline), progress=live)
+    await verify_candidate_learning_chain(root, entries, board_ids=board_ids,
+        baseline_database=baseline.directory / 'database.sqlite3', candidate_database=terminal.directory / 'database.sqlite3',
+        read_graph=read_graph, max_seconds=_remaining(deadline))
+    live()
+
+    def snapshot_reference(snapshot):
+        return {'directory': snapshot.directory.name, 'manifest_sha256': snapshot.manifest_sha256,
+            'database_sha256': snapshot.database_sha256}
+
+    document = {'format': 'retirement-learning-phase/v1', 'state': 'retained_not_reconciled',
+        'generation': generation, 'baseline': snapshot_reference(baseline),
+        'terminal': snapshot_reference(terminal), 'boards': entries}
+    sealed = _seal(root / 'receipt', document)
+    return {'directory': root, 'receipt_sha256': sealed.manifest_sha256, 'document': document}
