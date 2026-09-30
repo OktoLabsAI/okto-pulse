@@ -80,7 +80,7 @@ def relationship_set(graph):
         reader.close()
 
 
-async def materialize(root, *, incremental, card_type=None, final_unlinked=False, exercise=None):
+async def materialize(root, *, incremental, card_type=None, final_unlinked=False, final_empty=False, exercise=None):
     root.mkdir()
     path = root / 'source.sqlite3'
     settings = CommunitySettings(database_url=f'sqlite+aiosqlite:///{path}',
@@ -107,7 +107,7 @@ async def materialize(root, *, incremental, card_type=None, final_unlinked=False
             await connection.run_sync(Base.metadata.create_all)
             await connection.execute(insert(Board).values(id='board', name='Board', owner_id='owner', realm_id='local'))
             await connection.execute(insert(Spec).values(id='spec', board_id='board', title='Spec',
-                status='done', created_by='owner', **source(['ac_two'])))
+                status='done', created_by='owner', **source([] if final_empty else ['ac_two'])))
             if card_type:
                 await connection.execute(insert(Card).values(id='card', board_id='board', spec_id=None if final_unlinked else 'spec',
                     title='Observed scenario', status='done', card_type=card_type, created_by='owner',
@@ -118,6 +118,8 @@ async def materialize(root, *, incremental, card_type=None, final_unlinked=False
             # Add, replace, remove, restore and replay; an empty active set must
             # remove old edges and the final replay must not duplicate them.
             steps = [['ac_one'], ['ac_two'], [], ['ac_two'], ['ac_two']]
+            if final_empty:
+                steps.append([])
             if final_unlinked:
                 steps.append(['ac_two'])
             for index, linked in enumerate(steps):
@@ -207,6 +209,40 @@ async def test_spec_relationships_converge_after_churn_and_clean_rebuild(tmp_pat
     scenario = {edge: count for edge, count in rebuilt.items() if edge[3] == 'tests/ac_match@v2.1'}
     assert len(scenario) == 1 and list(scenario.values()) == [1]
     assert next(iter(scenario))[2] == 'spec:spec:ac:ac_two'
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(480)
+async def test_spec_without_links_characterizes_rebuild_guard_conflict(tmp_path, monkeypatch):
+    """Known KG-10 conflict, pending the guard decision recorded in the ledger.
+
+    This characterizes the rejection; it does not claim rebuild parity.
+    """
+    from okto_pulse.core.kg.connectivity_guard import KGNodeConnectivityGuard
+
+    validate = KGNodeConnectivityGuard.validate
+    rejected = []
+
+    def capture_guard(self, **kwargs):
+        result = validate(self, **kwargs)
+        if not result.passed:
+            rejected.append(result.to_response())
+        return result
+
+    monkeypatch.setattr(KGNodeConnectivityGuard, 'validate', capture_guard)
+    incremental = await materialize(tmp_path / 'incremental-empty', incremental=True, final_empty=True)
+    assert not rejected
+    assert not [edge for edge in incremental if edge[3] in OWNED_RULES]
+    with pytest.raises(AssertionError):
+        await materialize(tmp_path / 'rebuilt-empty', incremental=False, final_empty=True)
+    assert len(rejected) == 1
+    violations = rejected[0]['violations']
+    assert len(violations) == 1
+    assert violations[0]['node_type'] == 'Decision'
+    assert violations[0]['source_artifact_ref'] == 'spec:spec:decision:dec_one'
+    assert violations[0]['writer_path'] == 'deterministic_worker'
+    assert violations[0]['reason'] == 'missing_required_edge'
+    assert violations[0]['required_edge'].startswith('supersedes:outgoing:Decision OR ')
 
 
 @pytest.mark.asyncio
