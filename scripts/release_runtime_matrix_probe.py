@@ -423,7 +423,9 @@ def _normalize_worker_result(result: object) -> dict[str, Any]:
     missing = _sort_rows(
         [asdict(item) for item in result.missing_link_candidates]
     )
-    active_set = result.relational_projection_active_set_intent
+    active_sets = _sort_rows([
+        asdict(intent) for intent in result.relational_projection_active_set_intents
+    ])
     return {
         "nodes": nodes,
         "edges": edges,
@@ -436,9 +438,7 @@ def _normalize_worker_result(result: object) -> dict[str, Any]:
         "relational_projection_candidate_ids": sorted(
             result.relational_projection_candidate_ids
         ),
-        "relational_projection_active_set": (
-            asdict(active_set) if active_set is not None else None
-        ),
+        "relational_projection_active_sets": active_sets,
     }
 
 
