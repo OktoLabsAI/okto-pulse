@@ -110,6 +110,18 @@ async def test_no_existing_replacement_never_removes_old_association(graph):
     assert state(db) == before
 
 
+async def test_recovery_with_missing_old_node_has_empty_bounded_before_image(graph):
+    db, provider = graph
+    with db.begin('write') as tx:
+        tx.execute("MATCH (n:Learning {id: 'old'}) DETACH DELETE n")
+    before = state(db)
+    scope, orch = await start(provider)
+    receipt = orch.replace_learning_bug_association('old', 'new', 'one')
+    assert receipt.removed_edges == ()
+    await scope.rollback()
+    assert state(db) == before
+
+
 @pytest.mark.parametrize('damage', ['changed_old', 'missing_new', 'foreign_board', 'same_identity'])
 async def test_snapshot_conflict_or_wrong_scope_fails_before_removal(graph, damage):
     db, provider = graph

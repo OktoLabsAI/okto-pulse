@@ -103,6 +103,65 @@ def _scope(
     )
 
 
+@pytest.mark.asyncio
+async def test_scoped_association_capability_is_visible_and_mutations_are_captured():
+    from okto_pulse.core.kg.interfaces.graph_transaction import (
+        LearningBugAssociationReceipt, LearningBugAssociationTransaction,
+    )
+    events = []
+    class Delegate(_Delegate):
+        def snapshot_learning_bug_association(self, previous, successor, bug):
+            self.events.append(('snapshot',))
+            return LearningBugAssociationReceipt('board-1', previous, successor, bug)
+        def remove_learning_bug_association(self, receipt):
+            self.events.append(('remove', receipt))
+        def restore_learning_bug_association(self, receipt):
+            self.events.append(('restore', receipt))
+    scope = CapturedGraphTransactionScope(Delegate(events), recorder=_Recorder(events),
+        board_id='board-1', backend='grafx', binding_sha256='a' * 64)
+    assert isinstance(scope, LearningBugAssociationTransaction)
+    receipt = scope.snapshot_learning_bug_association('old', 'new', 'bug')
+    assert events == [('snapshot',)]
+    scope.remove_learning_bug_association(receipt)
+    scope.restore_learning_bug_association(receipt)
+    assert [event[0] for event in events] == ['snapshot', 'prepare', 'remove', 'prepare', 'restore']
+    assert [event[1]['family'] for event in events if event[0] == 'prepare'] == [
+        'remove_learning_bug_association', 'restore_learning_bug_association']
+    await scope.commit()
+    assert [event[0] for event in events[-3:]] == ['source_commit', 'committed', 'committed']
+
+
+def test_scoped_proxy_refuses_a_delegate_without_the_capability_before_mutation():
+    from okto_pulse.core.kg.interfaces.graph_errors import GraphCapabilityUnavailable
+    events = []
+    scope, _, _ = _scope('grafx', events)
+    with pytest.raises(GraphCapabilityUnavailable, match='learning_association_replacement_unavailable'):
+        scope.snapshot_learning_bug_association('old', 'new', 'bug')
+    assert events == []
+
+
+@pytest.mark.parametrize('supports_preservation', [False, True])
+def test_capture_wrapper_keeps_the_real_cleanup_signature(supports_preservation):
+    import inspect
+    events = []
+    class Current(_Delegate):
+        def delete_edges_by_session_preserving_spec_lineage(self, session_id, preserved_edges,
+                *, preserved_projection_edges=()):
+            self.events.append(('cleanup', session_id, preserved_edges, preserved_projection_edges))
+    class Legacy(_Delegate):
+        def delete_edges_by_session_preserving_spec_lineage(self, session_id, preserved_edges, **kwargs):
+            self.events.append(('legacy_cleanup', session_id, preserved_edges))
+    delegate = Current(events) if supports_preservation else Legacy(events)
+    scope = CapturedGraphTransactionScope(delegate, recorder=_Recorder(events),
+        board_id='board-1', backend='grafx', binding_sha256='a' * 64)
+    cleanup = scope.delete_edges_by_session_preserving_spec_lineage
+    assert ('preserved_projection_edges' in inspect.signature(cleanup).parameters) == supports_preservation
+    if supports_preservation:
+        cleanup('session', (), preserved_projection_edges=('before-image',))
+        assert events[-1] == ('cleanup', 'session', (), ('before-image',))
+        assert events[0][0] == 'prepare'
+
+
 def test_envelope_hashes_user_values_without_persisting_them() -> None:
     secret = "customer@example.test"
     envelope = mutation_envelope(

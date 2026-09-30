@@ -1,4 +1,4 @@
-"""Reuse captured before Done binds the exact admitted lifecycle delta."""
+"""Explicit Learning intents before Done bind the admitted lifecycle delta."""
 from dataclasses import replace
 
 import pytest
@@ -19,7 +19,7 @@ independent_gates = _independent_gates
 pytestmark = pytest.mark.asyncio
 
 
-async def prepare_reuse(graph_runtime, policy=None):
+async def prepare_reuse(graph_runtime, policy=None, kind='reuse'):
     runtime, original, original_selection, persister = graph_runtime
     factory, assembler, store, request = runtime
     assert await persister.persist_authored_learning(BOARD, 'bug-context', original_selection)
@@ -28,17 +28,19 @@ async def prepare_reuse(graph_runtime, policy=None):
         target = await store.read_latest_in_context(session, board_id=BOARD,
             node_id=original.node_id, generation=original.generation)
     draft = replace(request, bug_id='second-bug', capture_id='reuse-before-done',
-        content=target.payload['content'], intent=LearningCaptureIntent('reuse', target.node_id,
-            target.generation, target.record_fingerprint, 'Applies to the second corrected Bug'))
+        content=target.payload['content'], intent=LearningCaptureIntent(kind, target.node_id,
+            target.generation, target.record_fingerprint, 'Applies to the second corrected Bug',
+            'source_bug' if kind == 'supersede' else None))
     _, data = await prepare((factory, assembler, store, draft), learning_policy=policy)
     return data, LearningCaptureSelection(**data['learning_capture'])
 
 
 @pytest.mark.parametrize('policy', [None, 'advisory', 'blocking'])
-async def test_reuse_waits_for_done_then_materializes_the_bound_revision(graph_runtime, policy):
+@pytest.mark.parametrize('kind', ['reuse', 'supersede'])
+async def test_intent_waits_for_done_then_materializes_the_bound_revision(graph_runtime, policy, kind):
     runtime, original, _, persister = graph_runtime
     factory, assembler, store, _ = runtime
-    data, selection = await prepare_reuse(graph_runtime, policy)
+    data, selection = await prepare_reuse(graph_runtime, policy, kind)
     history = await store.enumerate(BOARD)
     assert len(history) == 3 and associations() == {(original.node_id, 'canonical-bug')}
     with pytest.raises(ValueError, match='source_not_eligible'):
@@ -51,16 +53,17 @@ async def test_reuse_waits_for_done_then_materializes_the_bound_revision(graph_r
         bug = await session.get(Card, 'second-bug')
         assert bug.status.value == 'done' and len(bug.learning_closeout_bindings) == 1
         binding = bug.learning_closeout_bindings[0]
-        assert binding['capture'] == selection.model_dump() and binding['capture_revision'] == 2
+        assert binding['capture'] == selection.model_dump()
+        assert binding['capture_revision'] == (2 if kind == 'reuse' else 0)
         source = await assembler.assemble_semantic(session, board_id=BOARD, bug_id=bug.id)
         assert closeout_binding_is_current(binding, source)
         replay = await SubmitTaskValidationUseCase().execute(command, actor=reviewer(), uow=unit)
         assert replay.validation['replayed'] is True
     assert await store.enumerate(BOARD) == history
     assert await persister.persist_authored_learning(BOARD, 'second-bug', selection, raise_failures=True)
-    assert associations() == {(original.node_id, 'canonical-bug'), (original.node_id, 'second-canonical-bug')}
+    assert associations() == {(original.node_id, 'canonical-bug'), (selection.learning_id, 'second-canonical-bug')}
     after = await store.enumerate(BOARD)
-    assert len(after) == 4 and all(row in after for row in history)
+    assert len(after) == (4 if kind == 'reuse' else 5) and all(row in after for row in history)
     async with factory() as session:
         bug = await session.get(Card, 'second-bug')
         bug.status = 'in_progress'  # An already authorized reopen, not its gate proof.

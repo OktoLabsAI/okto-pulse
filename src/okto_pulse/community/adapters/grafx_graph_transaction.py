@@ -2161,8 +2161,7 @@ class _GrafxTransactionScope:
         replacement_learning_id: str, bug_id: str) -> LearningBugAssociationReceipt:
         self._fence('snapshot_learning_bug_association')
         receipt = LearningBugAssociationReceipt(self._board_id, previous_learning_id, replacement_learning_id, bug_id)
-        if (not self._learning_association_edges(replacement_learning_id, bug_id)
-                or 'Learning' not in self.find_node_types(previous_learning_id)):
+        if not self._learning_association_edges(replacement_learning_id, bug_id):
             raise GraphError('learning_association_replacement_missing')
         return LearningBugAssociationReceipt(receipt.board_id, previous_learning_id, replacement_learning_id,
             bug_id, self._learning_association_edges(previous_learning_id, bug_id))

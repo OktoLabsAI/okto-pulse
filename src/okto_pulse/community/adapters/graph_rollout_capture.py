@@ -17,12 +17,15 @@ import secrets
 from collections.abc import Callable, Mapping, Sequence
 from datetime import date, datetime
 from enum import Enum
+from functools import wraps
 from pathlib import Path
 from typing import Any, Protocol, Self, TypeVar
 
 from okto_pulse.community.adapters.cypher_statement_policy import (
     statement_is_write,
 )
+from okto_pulse.core.kg.interfaces.graph_errors import GraphCapabilityUnavailable
+from okto_pulse.core.kg.interfaces.graph_transaction import LearningBugAssociationTransaction
 
 logger = logging.getLogger(__name__)
 
@@ -301,10 +304,32 @@ class CapturedGraphTransactionScope:
         if name not in _MUTATING_SCOPE_METHODS or not callable(attribute):
             return attribute
 
+        @wraps(attribute)
         def captured(*args: Any, **kwargs: Any) -> Any:
             return self._invoke(name, attribute, args, kwargs)
 
         return captured
+
+    def _learning_association_delegate(self):
+        if not isinstance(self._delegate, LearningBugAssociationTransaction):
+            raise GraphCapabilityUnavailable('learning_association_replacement_unavailable')
+        return self._delegate
+
+    def snapshot_learning_bug_association(self, previous_learning_id, replacement_learning_id, bug_id):
+        # Explicit methods retain the optional Protocol through this proxy on
+        # Python versions whose runtime checks do not invoke __getattr__.
+        return self._learning_association_delegate().snapshot_learning_bug_association(
+            previous_learning_id, replacement_learning_id, bug_id)
+
+    def remove_learning_bug_association(self, receipt):
+        delegate = self._learning_association_delegate()
+        return self._invoke('remove_learning_bug_association', delegate.remove_learning_bug_association,
+            (receipt,), {})
+
+    def restore_learning_bug_association(self, receipt):
+        delegate = self._learning_association_delegate()
+        return self._invoke('restore_learning_bug_association', delegate.restore_learning_bug_association,
+            (receipt,), {})
 
     def _prepare(self, family: str, payload: Mapping[str, object]) -> object | None:
         return self._recorder.prepare_mutation(
