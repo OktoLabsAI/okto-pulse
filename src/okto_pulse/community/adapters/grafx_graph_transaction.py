@@ -24,6 +24,7 @@ from okto_pulse.core.kg.interfaces.graph_errors import (
 from okto_pulse.core.kg.interfaces.graph_transaction import (
     SOURCE_PROJECTION_REMOVED_REASON,
     GraphNodePropertyBeforeImage,
+    LearningBugAssociationReceipt,
     GraphStatementResult,
     ProjectionActiveSetIntent,
     ProjectionActiveSetReceipt,
@@ -2134,6 +2135,74 @@ class _GrafxTransactionScope:
             },
             incident_edges=self._projection_incident_edges(node_type, node_id),
         )
+
+    def _learning_association_edges(self, learning_id: str, bug_id: str) -> tuple[ProjectionEdgeBeforeImage, ...]:
+        physical, definition = self._relationship_definition('validates', 'Learning', 'Bug')
+        properties = self._projection_edge_properties(definition)
+        columns = ', '.join(f'r.{name}' for name in properties) or 'a.id'
+        result = self._query(
+            f'MATCH (a:Learning)-[r:{physical}]->(b:Bug) '
+            f'WHERE a.id = $learning_id AND b.id = $bug_id RETURN {columns}',
+            {'learning_id': learning_id, 'bug_id': bug_id}, operation='learning_association_snapshot')
+        return tuple(ProjectionEdgeBeforeImage('validates', 'Learning', 'Bug', learning_id, bug_id,
+            {name: _normalize_value(row[index]) for index, name in enumerate(properties)}) for row in result.rows)
+
+    def _require_learning_association_receipt(self, receipt: LearningBugAssociationReceipt) -> None:
+        if not isinstance(receipt, LearningBugAssociationReceipt) or receipt.board_id != self._board_id:
+            raise ValueError('learning_association_receipt_invalid')
+        receipt.__post_init__()
+        _, definition = self._relationship_definition('validates', 'Learning', 'Bug')
+        properties = self._projection_edge_properties(definition)
+        if any(set(edge.attrs) != set(properties) or _contains_non_finite_number(edge.attrs)
+                for edge in receipt.removed_edges):
+            raise ValueError('learning_association_before_image_invalid')
+
+    def snapshot_learning_bug_association(self, previous_learning_id: str,
+        replacement_learning_id: str, bug_id: str) -> LearningBugAssociationReceipt:
+        self._fence('snapshot_learning_bug_association')
+        receipt = LearningBugAssociationReceipt(self._board_id, previous_learning_id, replacement_learning_id, bug_id)
+        if (not self._learning_association_edges(replacement_learning_id, bug_id)
+                or 'Learning' not in self.find_node_types(previous_learning_id)):
+            raise GraphError('learning_association_replacement_missing')
+        return LearningBugAssociationReceipt(receipt.board_id, previous_learning_id, replacement_learning_id,
+            bug_id, self._learning_association_edges(previous_learning_id, bug_id))
+
+    def remove_learning_bug_association(self, receipt: LearningBugAssociationReceipt) -> None:
+        self._fence('remove_learning_bug_association')
+        self._require_learning_association_receipt(receipt)
+        before = self._learning_association_edges(receipt.previous_learning_id, receipt.bug_id)
+        signature = self._projection_edge_signature
+        if (Counter(map(signature, before)) != Counter(map(signature, receipt.removed_edges))
+                or not self._learning_association_edges(receipt.replacement_learning_id, receipt.bug_id)):
+            raise GraphError('learning_association_snapshot_changed')
+        if not before:
+            return
+        physical, _ = self._relationship_definition('validates', 'Learning', 'Bug')
+        try:
+            self._mutation(f'MATCH (a:Learning)-[r:{physical}]->(b:Bug) '
+                'WHERE a.id = $learning_id AND b.id = $bug_id DELETE r',
+                {'learning_id': receipt.previous_learning_id, 'bug_id': receipt.bug_id},
+                operation='remove_learning_bug_association')
+            if self._learning_association_edges(receipt.previous_learning_id, receipt.bug_id):
+                raise GraphError('learning_association_removal_unconfirmed')
+        except BaseException as primary:
+            cleanup = self._abort_after_staged_failure(operation='remove_learning_bug_association')
+            if cleanup is not None:
+                raise primary from cleanup
+            raise
+
+    def restore_learning_bug_association(self, receipt: LearningBugAssociationReceipt) -> None:
+        self._fence('restore_learning_bug_association')
+        self._require_learning_association_receipt(receipt)
+        try:
+            # These helpers restore complete edge multisets; no relational owner
+            # namespace, active-set reconciliation or node mutation is involved.
+            self._projection_restore_edges(receipt.removed_edges)
+        except BaseException as primary:
+            cleanup = self._abort_after_staged_failure(operation='restore_learning_bug_association')
+            if cleanup is not None:
+                raise primary from cleanup
+            raise
 
     def _projection_matching_edges(
         self,
