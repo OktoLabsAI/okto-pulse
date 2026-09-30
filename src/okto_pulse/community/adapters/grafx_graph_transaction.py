@@ -28,6 +28,7 @@ from okto_pulse.core.kg.interfaces.graph_transaction import (
     LearningAssociationInvalidationReceipt,
     GraphStatementResult,
     ProjectionActiveSetIntent,
+    ProjectionRemovalOnlyIntent,
     ProjectionActiveSetReceipt,
     ProjectionActiveSetReconciliationError,
     ProjectionEdgeBeforeImage,
@@ -42,6 +43,7 @@ from okto_pulse.core.kg.relational_projection import (
     parse_relational_projection_ref,
     relational_projection_rule_node_type,
 )
+from okto_pulse.core.ports.spec_projection import owns_spec_dependency_endpoints, is_spec_dependency_writer
 from okto_pulse.core.kg.schema_contract import (
     EDGE_METADATA_COLUMNS,
     MULTI_REL_TYPES,
@@ -2316,7 +2318,10 @@ class _GrafxTransactionScope:
         if rule_id is not None:
             predicate += " AND r.rule_id = $rule_id"
             params["rule_id"] = rule_id
-            if edge.edge_type != _SPEC_DEPENDENCY_EDGE_TYPE:
+            if edge.edge_type != _SPEC_DEPENDENCY_EDGE_TYPE or all(
+                isinstance(edge.attrs.get(name), str) and edge.attrs[name]
+                for name in ('layer', 'created_by')
+            ):
                 predicate += " AND r.layer = $layer AND r.created_by = $writer"
                 params.update(layer=edge.attrs.get("layer"), writer=edge.attrs.get("created_by"))
         projection = ", ".join(f"r.{name}" for name in properties) or "a.id"
@@ -2367,6 +2372,13 @@ class _GrafxTransactionScope:
                 edge.from_id,
                 edge.to_id,
                 self._projection_dependency_rule_id(edge),
+                # Modern dependency before-images distinguish writers too.
+                # A retained human edge with the same pair/rule must not be
+                # mistaken for a conflicting deterministic before-image.
+                (edge.attrs['layer'], edge.attrs['created_by'])
+                if self._projection_dependency_rule_id(edge) is not None and all(
+                    isinstance(edge.attrs.get(name), str) and edge.attrs[name]
+                    for name in ('layer', 'created_by')) else None,
             )
             signature = self._projection_edge_signature(edge)
             wanted.setdefault(key, Counter())[signature] += 1
@@ -2520,6 +2532,26 @@ class _GrafxTransactionScope:
                 "The Spec dependency projection owns edges and requires its root.",
             )
         desired: set[tuple[str, str, str, str, str, str]] = set()
+        removal_only = isinstance(intent, ProjectionRemovalOnlyIntent)
+        logical_desired = set()
+        if removal_only:
+            if intent.active_edges:
+                raise ProjectionActiveSetReconciliationError('projection_active_set_member_invalid',
+                    'Removal-only projection cannot declare a physical active set.')
+            owner = self._node_snapshot('Entity', intent.owner_node_id)
+            if owner is None or owner.get('source_artifact_ref') != f'spec:{intent.owner_id}':
+                raise ProjectionActiveSetReconciliationError('projection_active_set_member_invalid',
+                    'Dependency removal owner is absent or mismatched.')
+            for edge in intent.expected_edges:
+                identity = (edge.source_ref, edge.rule_id)
+                if (edge.edge_type != 'precedes' or identity in logical_desired
+                        or not is_spec_dependency_writer(rule_id=edge.rule_id, layer='deterministic', created_by='worker_layer1')
+                        or not owns_spec_dependency_endpoints(owner_id=intent.owner_id,
+                            source_type=edge.from_type, target_type=edge.to_type,
+                            source_ref=edge.source_ref, target_ref=edge.target_ref)):
+                    raise ProjectionActiveSetReconciliationError('projection_active_set_member_invalid',
+                        'Dependency removal logical endpoint is invalid.')
+                logical_desired.add(identity)
         desired_endpoints: set[tuple[str, str, str, str, str]] = set()
         for edge in intent.active_edges:
             endpoint_identity = (
@@ -2558,6 +2590,14 @@ class _GrafxTransactionScope:
             properties,
         )
         owned_identities = [identity for identity, _edge in owned]
+        if removal_only:
+            for identity, edge in owned:
+                source = self._node_snapshot('Entity', edge.from_id)
+                if source is None:
+                    raise ProjectionActiveSetReconciliationError('projection_active_set_member_invalid',
+                        'Dependency before-image endpoint is absent.')
+                if (source.get('source_artifact_ref'), edge.attrs.get('rule_id')) in logical_desired:
+                    desired.add(identity)
         if len(owned_identities) != len(set(owned_identities)):
             raise ProjectionActiveSetReconciliationError(
                 "projection_active_set_source_ref_ambiguous",
@@ -2580,11 +2620,14 @@ class _GrafxTransactionScope:
                     f"MATCH (a:{_PROJECTION_OWNER_NODE_TYPE})-[r:{physical}]->"
                     f"(b:{_PROJECTION_OWNER_NODE_TYPE}) "
                     "WHERE a.id = $from_id AND b.id = $to_id "
-                    "AND r.rule_id = $rule_id DELETE r",
+                    "AND r.rule_id = $rule_id "
+                    + ("AND r.layer = $layer AND r.created_by = $writer " if removal_only else "")
+                    + "DELETE r",
                     {
                         "from_id": edge.from_id,
                         "to_id": edge.to_id,
                         "rule_id": str(edge.attrs.get("rule_id") or ""),
+                        **({'layer': edge.attrs['layer'], 'writer': edge.attrs['created_by']} if removal_only else {}),
                     },
                     operation="delete_projection_dependency_edge",
                 )
@@ -2664,6 +2707,17 @@ class _GrafxTransactionScope:
             rule_id = str(attrs.get("rule_id") or "")
             if not rule_id.startswith(_SPEC_DEPENDENCY_RULE_PREFIX):
                 continue
+            if isinstance(intent, ProjectionRemovalOnlyIntent):
+                if not is_spec_dependency_writer(rule_id=rule_id, layer=attrs.get('layer'), created_by=attrs.get('created_by')):
+                    continue
+                source = self._node_snapshot('Entity', str(row[0]))
+                if source is None:
+                    raise ProjectionActiveSetReconciliationError('projection_active_set_member_invalid',
+                        'Dependency before-image endpoint is absent.')
+                if not owns_spec_dependency_endpoints(owner_id=intent.owner_id,
+                        source_type='Entity', target_type='Entity',
+                        source_ref=source.get('source_artifact_ref'), target_ref=f'spec:{intent.owner_id}'):
+                    continue
             owned.append(
                 (
                     (
@@ -2866,9 +2920,9 @@ class _GrafxTransactionScope:
         # The whole intent is validated, and every before-image captured, before the first
         # mutation: a refusal must not be able to leave half an active set staged.
         self._fence("reconcile_projection_active_set")
-        from okto_pulse.core.kg.interfaces.graph_transaction import ProjectionRemovalOnlyIntent
         if isinstance(intent, ProjectionRemovalOnlyIntent) and not (
             intent.owner_type == 'card' and intent.namespace in {'card_scenarios', 'card_parent'}
+            or intent.owner_type == 'spec' and intent.namespace == 'dependencies'
         ):
             raise ProjectionActiveSetReconciliationError(
                 'projection_active_set_scope_invalid', 'Removal-only namespace is unsupported.')

@@ -25,6 +25,7 @@ from okto_pulse.community.adapters.board_source_reader import CommunityBoardSour
 from okto_pulse.community.adapters.board_rebuild_ingestion import CommunityBoardRebuildIngestionAdapter
 from okto_pulse.community.adapters.sqlalchemy_consolidation import CommunitySqlAlchemyConsolidationPersistence
 from okto_pulse.community.adapters.sqlalchemy_models import Base, Board, Spec, Card, ConsolidationQueue, ConsolidationAudit
+from okto_pulse.community.adapters.sqlalchemy_models import SpecDependency
 from okto_pulse.core.ports.projection_findings import ProjectionFindingSnapshot
 from okto_pulse.community.adapters.migration_runtime_fence import offline_migration_window
 from okto_pulse.community.adapters.logical_transfer_factories import make_grafx_logical_source
@@ -297,3 +298,100 @@ async def test_known_removal_is_not_current_while_new_valid_scenario_waits_for_p
             assert len(list((await session.execute(select(ConsolidationAudit.session_id))).scalars())) == len(audits_before) + 2
         assert any(edge[1:3] == ('card:card', 'spec:spec:test_scenario:ts_next') for edge in relationship_set(graph))
     await materialize(tmp_path / 'pending', incremental=False, card_type='normal', exercise=exercise)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(480)
+@pytest.mark.parametrize('fail_commit', [False, True])
+async def test_known_dependency_removal_is_not_current_while_new_prerequisite_is_pending(tmp_path, monkeypatch, fail_commit):
+    from okto_pulse.core.kg import primitives
+    original_errors = []
+    original_contextualize = primitives._contextualize_graph_commit_error
+    def capture_original(error):
+        result = original_contextualize(error)
+        original_errors.append(result)
+        return result
+    monkeypatch.setattr(primitives, '_contextualize_graph_commit_error', capture_original)
+    def dependency(identity, target):
+        return SpecDependency(id=identity, board_id='board', dependent_spec_id='spec',
+            prerequisite_spec_id=target, prerequisite_spec_ref=target, active=True,
+            resolved_on_create=True, retrospective=False, introduced_at_spec_version=1,
+            source_version_on_create=1, source_status_on_create='done', target_status_on_create='done',
+            target_version_on_create=1, target_title_on_create=target, target_edition_on_create=1,
+            add_idempotency_key='add-' + identity, add_request_digest='a' * 64,
+            created_at=datetime.now(timezone.utc), created_by_id='owner', created_by_type='user', created_by_name='Owner')
+
+    async def enqueue(factory, identity, artifact):
+        async with factory() as session:
+            session.add(ConsolidationQueue(id=identity, board_id='board', artifact_type='spec',
+                artifact_id=artifact, source='state_transition'))
+            await session.commit()
+
+    async def exercise(factory, graph):
+        async with factory() as session:
+            session.add(Spec(id='old', board_id='board', title='Old prerequisite', status='done',
+                created_by='owner'))
+            session.add(Spec(id='next', board_id='board', title='New prerequisite', status='done',
+                created_by='owner'))
+            await session.commit()
+        await enqueue(factory, 'old-root', 'old')
+        assert await ConsolidationProcessor(relational_scope_factory=factory).process_batch() == 1, original_errors
+        async with factory() as session:
+            session.add(dependency('old-dependency', 'old'))
+            await session.commit()
+        await enqueue(factory, 'old-relation', 'spec')
+        assert await ConsolidationProcessor(relational_scope_factory=factory).process_batch() == 1
+        assert any(edge[1:3] == ('spec:old', 'spec:spec') for edge in relationship_set(graph))
+        before = relationship_set(graph)
+        async with factory() as session:
+            audits_before = list((await session.execute(select(ConsolidationAudit.session_id))).scalars())
+        async with factory() as session:
+            await session.execute(update(SpecDependency).where(SpecDependency.id == 'old-dependency').values(
+                active=False, prerequisite_spec_id=None, removed_at=datetime.now(timezone.utc),
+                removed_by_id='owner', removed_by_type='user', removed_by_name='Owner',
+                removal_reason='Source replacement', removed_at_spec_version=1,
+                remove_idempotency_key='remove-old', remove_request_digest='b' * 64))
+            session.add(dependency('new-dependency', 'next'))
+            await session.commit()
+        await enqueue(factory, 'new-relation', 'spec')
+        if fail_commit:
+            original_commit = CommunitySqlAlchemyConsolidationPersistence.commit
+            async def reject_commit(store, context):
+                error = (await context.execute(select(ConsolidationQueue.last_error).where(
+                    ConsolidationQueue.id == 'new-relation'))).scalar_one_or_none()
+                if error and 'Known removals applied' in error:
+                    raise RuntimeError('injected before dependency progress commit')
+                return await original_commit(store, context)
+            with monkeypatch.context() as patch:
+                patch.setattr(CommunitySqlAlchemyConsolidationPersistence, 'commit', reject_commit)
+                assert await ConsolidationProcessor(relational_scope_factory=factory).process_batch() == 0
+            assert relationship_set(graph) == before
+            async with factory() as session:
+                await session.execute(update(ConsolidationQueue).values(next_retry_at=None))
+                await session.commit()
+        assert await ConsolidationProcessor(relational_scope_factory=factory).process_batch() == 0
+        async with factory() as session:
+            pending = (await session.execute(select(ConsolidationQueue.status, ConsolidationQueue.last_error))).all()
+            assert list((await session.execute(select(ConsolidationAudit.session_id))).scalars()) == audits_before
+        assert pending and pending[0][0] == 'pending', pending
+        observed = relationship_set(graph)
+        stale = [edge for edge in observed if edge[1:3] == ('spec:old', 'spec:spec')
+                 and str(edge[3]).startswith('precedes/spec_dependency/')]
+        assert not stale, {'pending': pending, 'stale': stale}
+        assert not [edge for edge in observed if edge[1:3] == ('spec:next', 'spec:spec')]
+        async with factory() as session:
+            await session.execute(update(ConsolidationQueue).values(next_retry_at=None))
+            await session.commit()
+        assert await ConsolidationProcessor(relational_scope_factory=factory).process_batch() == 0
+        assert relationship_set(graph) == observed
+        await enqueue(factory, 'new-root', 'next')
+        assert await ConsolidationProcessor(relational_scope_factory=factory).process_batch() == 1
+        async with factory() as session:
+            await session.execute(update(ConsolidationQueue).values(next_retry_at=None))
+            await session.commit()
+        assert await ConsolidationProcessor(relational_scope_factory=factory).process_batch() == 1
+        async with factory() as session:
+            assert not (await session.execute(select(ConsolidationQueue.id))).all()
+            assert len(list((await session.execute(select(ConsolidationAudit.session_id))).scalars())) == len(audits_before) + 2
+        assert any(edge[1:3] == ('spec:next', 'spec:spec') for edge in relationship_set(graph))
+    await materialize(tmp_path / 'dependency-pending', incremental=False, exercise=exercise)
