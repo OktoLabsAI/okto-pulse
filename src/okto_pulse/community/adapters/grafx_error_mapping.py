@@ -37,6 +37,7 @@ from okto_pulse.core.kg.interfaces.graph_errors import (
     GraphInvalidQuery,
     GraphLockContention,
     GraphQueryTimeout,
+    GraphQueryResourceLimit,
     GraphUnavailable,
 )
 
@@ -65,12 +66,39 @@ _MEMORY_FAILURES = (GrafxBufferBudgetExceeded,)
 _UNAVAILABLE_FAILURES = (
     GrafxDeviceFull,
     GrafxDurabilityBarrierFailed,
-    GrafxQueryBudgetExceeded,
     GrafxRecoveryRefused,
     GrafxStorageError,
     GrafxTransactionBudgetExceeded,
     GrafxTransactionStateError,
 )
+
+
+def _query_limit_details(exc: BaseException) -> dict[str, object] | None:
+    resources = {
+        'max_result_rows': 'result_rows',
+        'max_intermediate_rows': 'intermediate_rows',
+        'max_traversal_expansions': 'traversal_expansions',
+        'max_traversal_paths': 'traversal_paths',
+        'query_memory_budget_bytes': 'query_memory_bytes',
+    }
+    source = exc
+    resource = None
+    if isinstance(source, GrafxQueryBudgetExceeded):
+        resource = resources.get(source.details.get('field'), 'native_query_budget')
+    elif isinstance(source, GrafxPlanError) and isinstance(source.__cause__, GrafxConfigurationError):
+        source = source.__cause__
+        field = source.details.get('field')
+        if type(field) is str and field.startswith('query.result.'):
+            # Grafx wraps bounded output-value refusals in a plan error. Keep
+            # the typed limit without parsing messages or disclosing result data.
+            resource = 'result_value'
+    if resource is None:
+        return None
+    limit = source.details.get('limit')
+    observed = source.details.get('observed', source.details.get('value'))
+    if type(limit) is not int or limit < 1 or type(observed) is not int or observed <= limit:
+        return None
+    return {'resource': resource, 'limit': limit, 'observed': observed}
 
 
 def _preserve_retryability(mapped: GraphError, exc: BaseException) -> GraphError:
@@ -103,6 +131,14 @@ def map_grafx_error(exc: BaseException, *, operation: str) -> GraphError:
     else:
         message = f"{operation} failed in Okto Grafx ({type(exc).__name__})."
 
+    limit_details = _query_limit_details(exc)
+    if limit_details is not None:
+        return GraphQueryResourceLimit('Query exceeded an explicit resource limit.', details=limit_details)
+    if isinstance(exc, GrafxQueryBudgetExceeded):
+        # A native typed refusal must not be treated as a transient outage,
+        # even when an engine version omits numeric detail.
+        return GraphQueryResourceLimit('Query exceeded a native resource limit.',
+                                       details={'resource': 'native_query_budget'})
     if isinstance(exc, GrafxQueryDeadlineExceeded):
         mapped = GraphQueryTimeout(message, details=details)
     elif isinstance(exc, (GrafxParseError, GrafxPlanError)):

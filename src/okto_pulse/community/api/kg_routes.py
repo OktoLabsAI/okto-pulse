@@ -27,6 +27,7 @@ from okto_pulse.core.kg.interfaces.graph_errors import (
     GraphCapabilityUnavailable,
     GraphCorruption,
     GraphError,
+    GraphQueryResourceLimit,
     GraphInvalidQuery,
     GraphUnavailable,
     graph_memory_pressure_retry_after_seconds,
@@ -342,6 +343,11 @@ def _handle_kg_error(e: KGToolError) -> JSONResponse:
 
 def _graph_problem(exc: GraphError) -> JSONResponse:
     """Translate only failures already mapped through neutral provider contracts."""
+    if isinstance(exc, GraphQueryResourceLimit):
+        return JSONResponse(status_code=413, media_type='application/problem+json', content={
+            'type': '/errors/' + exc.code, 'title': exc.code, 'status': 413,
+            'detail': str(exc), 'resource_limit': exc.details,
+        })
     status = 500
     if isinstance(exc, GraphInvalidQuery):
         status = 400
