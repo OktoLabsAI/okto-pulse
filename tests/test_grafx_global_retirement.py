@@ -175,9 +175,11 @@ def test_preparation_rejects_inconsistent_counter_missing_board_and_ambiguous_so
             else:
                 transaction.execute("MATCH (b:Board) WHERE b.board_id=$id DETACH DELETE b", {"id": "board-a"})
     before = fingerprint(global_db)
+    board_before = fingerprint(board, scope="board")
     with pytest.raises(ValueError, match="(count_mismatch|summary_missing|identity_ambiguous)"):
         prepare(graphs)
     assert fingerprint(global_db) == before
+    assert fingerprint(board, scope="board") == board_before
 
 
 def test_missing_digest_rows_do_not_change_authoritative_board_counter_delta(graphs):

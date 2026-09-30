@@ -1,6 +1,7 @@
 """Actual predecessor schema through offline cut and cold replay, not runtime readiness."""
 
 import json
+import sqlite3
 
 import pytest
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -31,6 +32,30 @@ from semantic_schema_assertions import exact_semantic_schema
 @pytest.mark.parametrize("transactional", [False, True])
 async def test_real_predecessor_reaches_schema_retired_with_original_backup_and_cold_replay(tmp_path, monkeypatch, with_authority, transactional):
     path = restore_source(tmp_path)
+    # BASE T26: extend only the disposable predecessor with mixed Sprint
+    # states, including a cancelled Card and an empty active Sprint.
+    with sqlite3.connect(path) as source_db:
+        source_db.row_factory = sqlite3.Row
+        source_db.execute("UPDATE sprints SET status='active' WHERE id='sprint-a'")
+        source_db.execute("UPDATE sprints SET status='closed' WHERE id='sprint-b'")
+        template = dict(source_db.execute("SELECT * FROM sprints WHERE id='sprint-a'").fetchone())
+        def copy_row(table, values):
+            names = ','.join('"' + name.replace('"', '""') + '"' for name in values)
+            source_db.execute(f'INSERT INTO "{table}" ({names}) VALUES ({",".join("?" for _ in values)})', tuple(values.values()))
+        for identity, state in (('sprint-c', 'cancelled'), ('empty', 'active')):
+            copy_row('sprints', {**template, 'id': identity, 'status': state})
+        card = dict(source_db.execute("SELECT * FROM cards WHERE id='card-a'").fetchone())
+        copy_row('cards', {**card, 'id': 'card-c', 'sprint_id': 'sprint-c', 'status': 'cancelled'})
+        columns = {table: [row[1] for row in source_db.execute(f'PRAGMA table_info("{table}")')
+                          if row[1] not in {'sprint_id', 'migrated_validation_policy'}]
+                   for table in ('cards', 'specs', 'ideations', 'refinements')}
+        def artifact_rows(connection):
+            return {table: sorted([tuple(row) for row in connection.execute(
+                'SELECT ' + ','.join('"' + name + '"' for name in names) + f' FROM "{table}"')], key=repr)
+                for table, names in columns.items()}
+        artifacts = artifact_rows(source_db)
+        order_sql = 'SELECT id FROM cards ORDER BY board_id, status, archived, position, id DESC'
+        original_order = [row[0] for row in source_db.execute(order_sql)]
     metadata = json.loads((FIXTURES / "f2_v034_source.json").read_text(encoding="utf-8"))["source_builds"]
     source = RecoveryBuildPair(metadata["core"]["commit"], metadata["community"]["commit"],
         metadata["core"]["wheel_sha256"], metadata["community"]["wheel_sha256"])
@@ -58,6 +83,8 @@ async def test_real_predecessor_reaches_schema_retired_with_original_backup_and_
         assert dump(backup.directory / "relational" / "database.sqlite3") == original
         result = await offline.resume_offline_retirement_schema(runtime, storage, (), run, migration_builds=target)
         assert result["state"] == "schema_retired"
+        with sqlite3.connect(path) as verify:
+            assert artifact_rows(verify) == artifacts
         async with engine.connect() as connection:
             tables = set((await connection.exec_driver_sql("SELECT name FROM sqlite_schema WHERE type='table'")).scalars())
             assert not tables & set(RETIRED_TABLES)
@@ -130,5 +157,16 @@ async def test_real_predecessor_reaches_schema_retired_with_original_backup_and_
                 retired_flags=retired_feature_permission_flags())
         with pytest.raises(Exception, match="retirement_cutover_incomplete"):
             await offline.require_retirement_runtime_admission(reopened)
+        # The existing pagination migration normalizes colliding positions by
+        # (archived, position, id DESC). Preserve that observable order and every
+        # other original cell; the physical cut above preserves positions too.
+        with sqlite3.connect(path) as verify:
+            after = artifact_rows(verify)
+            for table, rows in artifacts.items():
+                keep = [index for index, name in enumerate(columns[table])
+                        if table != 'cards' or name != 'position']
+                assert [tuple(row[index] for index in keep) for row in after[table]] == [
+                    tuple(row[index] for index in keep) for row in rows]
+            assert [row[0] for row in verify.execute(order_sql)] == original_order
     finally:
         await cold.close()
