@@ -3,6 +3,7 @@
  */
 
 import React, { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { CardScenarioReferenceNotice } from './CardScenarioReferenceNotice';
 import { DeliverySelectionEditor } from '@/components/code-traceability/DeliverySelectionEditor';
 import { DeliveryReportBatchEditor } from '@/components/code-traceability/DeliveryReportBatchEditor';
 import { sameDeliveryBasis } from '@/components/code-traceability/deliveryReportDraft';
@@ -2749,6 +2750,7 @@ function CardLineagePanel({
 
   return (
     <div className="space-y-4" data-testid="card-lineage-panel">
+      <CardScenarioReferenceNotice context={card.scenario_reference_context} />
       <div className="grid gap-3 sm:grid-cols-3">
         <div className="rounded-lg border border-gray-200 p-3 dark:border-gray-700">
           <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">

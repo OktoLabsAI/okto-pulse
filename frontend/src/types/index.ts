@@ -2326,6 +2326,20 @@ export interface TaskValidationConfig {
 
 // Card
 export interface Card {
+  scenario_reference_context?: {
+    contract_version: 'card-scenario-reference-context/v1';
+    status: 'available' | 'not_authorized' | 'unavailable';
+    source_fingerprint: string | null;
+    finding_count: number | null;
+    findings: {
+      finding_id: string;
+      source_selector: string;
+      target_ref: string | null;
+      reason_code: 'parent_absent' | 'target_absent' | 'target_ambiguous';
+      correction_surface: 'card_scenario_links' | 'spec_test_scenarios';
+    }[];
+    truncated: boolean;
+  } | null;
   validation_config?: TaskValidationConfig | null;
   /** Deprecated migration-only compatibility. Never send this in Card writes. */
   migrated_validation_policy?: MigratedTaskValidationPolicy | null;
