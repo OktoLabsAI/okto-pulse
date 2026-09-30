@@ -869,6 +869,28 @@ class _GrafxTransactionScope:
             for index, name in enumerate(names)
         }
 
+    def find_active_node_ids_by_source_refs(
+        self, node_type: str, source_refs: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        if (type(source_refs) is not tuple or not 1 <= len(source_refs) <= 3
+                or any(type(ref) is not str or not ref or len(ref) > 1024
+                       for ref in source_refs)
+                or len(set(source_refs)) != len(source_refs)):
+            raise ValueError('graph_source_references_invalid')
+        definition = self._node_definition(node_type)
+        params = {f'ref_{index}': ref for index, ref in enumerate(source_refs)}
+        predicate = ' OR '.join(f'n.source_artifact_ref = ${key}' for key in params)
+        result = self._query(
+            f'MATCH (n:{definition.name}) WHERE ({predicate}) '
+            "AND (n.superseded_by IS NULL OR n.superseded_by = '') "
+            'RETURN DISTINCT n.id ORDER BY n.id LIMIT 2',
+            params, operation='find_active_source_identities',
+        )
+        rows = result.rows
+        if any(len(row) != 1 or type(row[0]) is not str or not row[0] for row in rows):
+            raise ValueError('graph_source_identity_invalid')
+        return tuple(row[0] for row in rows)
+
     def _incident_edge_snapshot(
         self,
         node_type: str,

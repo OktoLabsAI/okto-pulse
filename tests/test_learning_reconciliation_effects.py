@@ -197,6 +197,33 @@ async def test_selected_capture_has_only_owned_append_deltas(graph_runtime, reco
         before_relations=before_edges, after_nodes=after_nodes, after_relations=after_edges)
     assert graph_proof['introduced_nodes'] == graph_proof['introduced_edges'] == 1
     assert graph_proof['removed_edges'] == 0
+    # A frozen whole-artifact alias denotes the same already typed Bug. The
+    # recognizer must not confuse concept suffixes or another source with it.
+    for source_ref in ('bug:bug-context', 'card:bug-context', 'card:bug:bug-context',
+                       'bug:bug-context:learning:child', 'card:another-bug'):
+        def aliased(nodes):
+            return tuple(replace(node, properties={**node.properties, 'source_artifact_ref': source_ref})
+                if node.type_name == 'Bug' else node for node in nodes)
+        arguments = dict(schema=board_logical_schema(), execution=execution,
+            before_nodes=aliased(before_nodes), before_relations=before_edges,
+            after_nodes=aliased(after_nodes), after_relations=after_edges)
+        if source_ref in ('bug:bug-context:learning:child', 'card:another-bug'):
+            with pytest.raises(ValueError, match='graph_bug_ambiguous'):
+                await qualify_learning_reconciliation_graph_delta(None, following, **arguments)
+        else:
+            assert await qualify_learning_reconciliation_graph_delta(None, following, **arguments) == graph_proof
+    for metadata in ({'superseded_by': ''}, {'superseded_by': 'successor'}, {'graph_layer': 'working'}):
+        def patched(nodes):
+            return tuple(replace(node, properties={**node.properties, **metadata})
+                if node.type_name == 'Bug' else node for node in nodes)
+        arguments = dict(schema=board_logical_schema(), execution=execution,
+            before_nodes=patched(before_nodes), before_relations=before_edges,
+            after_nodes=patched(after_nodes), after_relations=after_edges)
+        if metadata == {'superseded_by': ''}:
+            assert await qualify_learning_reconciliation_graph_delta(None, following, **arguments) == graph_proof
+        else:
+            with pytest.raises(ValueError, match='graph_bug_ambiguous'):
+                await qualify_learning_reconciliation_graph_delta(None, following, **arguments)
     for damage in ('bug_content', 'learning_content', 'removed_bug', 'foreign_session', 'edge_confidence'):
         damaged_nodes, damaged_edges = after_nodes, after_edges
         if damage in ('bug_content', 'learning_content'):

@@ -32,7 +32,7 @@ _FIELDS = (
 
 
 
-def read_graph_record_census(reader, *, deadline, budget, node_observer=None):
+def read_graph_record_census(reader, *, deadline, budget, node_observer=None, relation_observer=None):
     """Read one pinned logical stream; callers own authentication and closing."""
     nodes, relations, identities = [], Counter(), set()
     measured = LogicalFingerprintAccumulator.for_schema(reader.schema())
@@ -62,6 +62,8 @@ def read_graph_record_census(reader, *, deadline, budget, node_observer=None):
         _check_time(deadline)
         for relation in batch:
             measured.add_relation(relation)
+            if relation_observer is not None:
+                relation_observer(reader.schema(), relation)
             if measured.relation_count > _MAX_EDGES:
                 raise ValueError('retirement_historical_census_limit')
             single = LogicalFingerprintAccumulator(measured.schema_hex)

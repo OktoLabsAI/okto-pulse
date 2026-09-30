@@ -107,7 +107,7 @@ def restore_candidate_cognitive_nodes(target, projection, *, require_live, max_s
     return report
 
 
-def verify_candidate_cognitive_restoration(target, projection, receipt, history, *, max_seconds):
+def verify_candidate_cognitive_restoration(target, projection, receipt, history, *, max_seconds, learning_phase=None):
     """Re-derive ownership against source and original-to-candidate census delta."""
     if (type(receipt) is not dict or set(receipt) != {'format', 'boards'}
             or receipt['format'] not in {'retirement-cognitive-restoration/v1', 'retirement-cognitive-restoration/v2'}):
@@ -131,7 +131,9 @@ def verify_candidate_cognitive_restoration(target, projection, receipt, history,
             for row in histories.get(board_id, {}).get('introduced_nodes', ())}
         if len(created) != len(report['created']) or any(introduced.get(key) != value for key, value in created.items()):
             raise ValueError('retirement_cognitive_restoration_prior_identity')
-        schema, nodes, relations = _read(bindings.inspect_board_binding(board_id), 'board', deadline)
+        schema, nodes, relations = (learning_phase.read_initial_graph(board_id, deadline)
+            if learning_phase is not None and board_id in learning_phase.initial_graphs
+            else _read(bindings.inspect_board_binding(board_id), 'board', deadline))
         if any((edge.source_type, edge.source_key) in created or (edge.target_type, edge.target_key) in created for edge in relations):
             raise ValueError('retirement_cognitive_restoration_unowned_edges')
         before = tuple(node for node in nodes if (node.type_name, node.key) not in created)

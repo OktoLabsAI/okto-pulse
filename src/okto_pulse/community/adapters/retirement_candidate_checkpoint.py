@@ -86,10 +86,14 @@ async def verify_projected_candidate(target, *, seed, seed_document, projection,
             or re.fullmatch(r'[0-9a-f]{64}', checkpoint['content_sha256']) is None):
         raise ValueError('retirement_candidate_checkpoint_invalid')
     projected = _read_sealed(target / 'projection-receipt', receipt['projection_receipt_sha256'])
-    if (set(projected) != {'format', 'seed_sha256', 'state', 'before_sql', 'after_sql',
+    fields = {'format', 'seed_sha256', 'state', 'before_sql', 'after_sql',
             'boards', 'graph_reconciliation', 'historical_observations', 'schema_evolutions', 'global_source_inputs',
             'global_materialization', 'cognitive_restoration'}
-            or projected['format'] != 'retirement-candidate-projection/v6'
+    has_learning = projected.get('format') == 'retirement-candidate-projection/v7'
+    if has_learning:
+        fields |= {'learning_phase_sha256', 'deterministic_after_sql'}
+    if (set(projected) != fields
+            or projected['format'] not in {'retirement-candidate-projection/v6', 'retirement-candidate-projection/v7'}
             or type(projected['global_materialization']) is not dict
             or type(projected['schema_evolutions']) is not list
             or projected['seed_sha256'] != seed.manifest_sha256
@@ -126,6 +130,17 @@ async def verify_projected_candidate(target, *, seed, seed_document, projection,
         raise ValueError('retirement_candidate_checkpoint_content_changed')
     if _sql_snapshot(target / 'database.sqlite3') != projected['after_sql']:
         raise ValueError('retirement_candidate_checkpoint_sql_changed')
+    learning_phase = None
+    if has_learning:
+        from .retirement_learning_execution import verify_candidate_learning_phase, learning_phase_board_ids
+        learning_boards = learning_phase_board_ids(projection)
+        if not learning_boards:
+            raise ValueError('retirement_candidate_checkpoint_learning_scope_invalid')
+        learning_phase = await verify_candidate_learning_phase(target,
+            expected_receipt_sha256=projected['learning_phase_sha256'], board_ids=learning_boards,
+            generation=seed_document['generation'], max_seconds=max_seconds)
+        if _sql_snapshot(learning_phase.baseline_database) != projected['deterministic_after_sql']:
+            raise ValueError('retirement_candidate_learning_baseline_changed')
     engine = create_async_engine(f'sqlite+aiosqlite:///{target / "database.sqlite3"}')
     all_receipts = []
     try:
@@ -164,7 +179,8 @@ async def verify_projected_candidate(target, *, seed, seed_document, projection,
 
     property_effects = []
     verify_candidate_sql_delta(Path(seed_document['snapshot']['directory']) / 'relational/database.sqlite3',
-        target / 'database.sqlite3', tuple(all_receipts), deadline=deadline, effects_out=property_effects)
+        learning_phase.baseline_database if learning_phase is not None else target / 'database.sqlite3',
+        tuple(all_receipts), deadline=deadline, effects_out=property_effects)
     from .retirement_candidate_graph_reconciliation import (
         verify_candidate_graph_reconciliation,
     )
@@ -174,13 +190,13 @@ async def verify_projected_candidate(target, *, seed, seed_document, projection,
     snapshot = JointRecoverySnapshot(Path(seed_document['snapshot']['directory']),
         seed_document['snapshot']['manifest_sha256'])
     historical_observations = observe_candidate_history(target, snapshot, max_seconds=max_seconds,
-        property_effects=tuple(property_effects), schema_evolutions=tuple(projected['schema_evolutions']))
+        property_effects=tuple(property_effects), schema_evolutions=tuple(projected['schema_evolutions']), learning_phase=learning_phase)
     if historical_observations != projected['historical_observations']:
         raise ValueError('retirement_candidate_checkpoint_history_observations_changed')
     from .retirement_candidate_cognitive_restoration import verify_candidate_cognitive_restoration
 
     restored_cognitive = verify_candidate_cognitive_restoration(target, projection,
-        projected['cognitive_restoration'], historical_observations, max_seconds=max_seconds)
+        projected['cognitive_restoration'], historical_observations, max_seconds=max_seconds, learning_phase=learning_phase)
     from .retirement_candidate_global_sources import capture_candidate_global_source_inputs
 
     global_inputs = await capture_candidate_global_source_inputs(target, projection, max_seconds=max_seconds)
@@ -197,7 +213,8 @@ async def verify_projected_candidate(target, *, seed, seed_document, projection,
     if verify_candidate_graph_reconciliation(
             target, projected['boards'], projection=projection, deadline=deadline,
             historical_observations=historical_observations, global_comparison=global_comparison,
-            global_materialization=projected['global_materialization'], restored_cognitive=restored_cognitive) != projected['graph_reconciliation']:
+            global_materialization=projected['global_materialization'], restored_cognitive=restored_cognitive,
+            learning_phase=learning_phase) != projected['graph_reconciliation']:
         raise ValueError('retirement_candidate_checkpoint_graph_reconciliation_changed')
     if _inventory_digest(target, native_paths, deadline, published=True) != checkpoint['content_sha256']:
         raise ValueError('retirement_candidate_checkpoint_content_changed')

@@ -9,6 +9,8 @@ from okto_pulse.core.ports.projection_relations import ProjectionRelationCompari
 
 def require_candidate_projection_completion(projection, report):
     """Only called after checkpoint authentication and full observation replay."""
+    if report['format'] == 'retirement-candidate-graph-reconciliation/v18':
+        raise ValueError('retirement_completion_learning_pending')
     if report['format'] not in {'retirement-candidate-graph-reconciliation/v16', 'retirement-candidate-graph-reconciliation/v17'}:
         raise ValueError('retirement_completion_report_invalid')
     global_report = report['global_projection_comparison']

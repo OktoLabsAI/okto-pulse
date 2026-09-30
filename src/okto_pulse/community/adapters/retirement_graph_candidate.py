@@ -402,6 +402,24 @@ async def _restore_retirement_graph_candidate(runtime, storage, graphs, run, see
                             executed['cognitive_restoration'] = restore_candidate_cognitive_nodes(stage, projection,
                                 require_live=lambda: connection.in_transaction(), max_seconds=max_seconds)
 
+                            from .retirement_learning_execution import (
+                                execute_candidate_learning_phase, verify_candidate_learning_phase, learning_phase_board_ids,
+                            )
+                            learning_phase = None
+                            learning_boards = learning_phase_board_ids(projection)
+                            if learning_boards:
+                                learned = await execute_candidate_learning_phase(stage, board_ids=learning_boards,
+                                    settings=projection_settings, generation=document['generation'],
+                                    lifetime_probe=lambda: connection.in_transaction(), max_seconds=max_seconds)
+                                learning_phase = await verify_candidate_learning_phase(stage,
+                                    expected_receipt_sha256=learned['receipt_sha256'], board_ids=learning_boards,
+                                    generation=document['generation'], max_seconds=max_seconds)
+                                executed['learning_phase_sha256'] = learned['receipt_sha256']
+                                executed['deterministic_after_sql'] = executed['after_sql']
+                                if _sql_snapshot(learning_phase.baseline_database) != executed['deterministic_after_sql']:
+                                    raise ValueError('retirement_candidate_learning_baseline_changed')
+                                executed['after_sql'] = _sql_snapshot(stage / 'database.sqlite3')
+
                             from .retirement_candidate_global_sources import capture_candidate_global_source_inputs
 
                             executed['global_source_inputs'] = await capture_candidate_global_source_inputs(
@@ -419,10 +437,12 @@ async def _restore_retirement_graph_candidate(runtime, storage, graphs, run, see
                                 native_paths.append(bound.physical_path.relative_to(stage).as_posix())
                             executed['historical_observations'] = observe_candidate_history(
                                 stage, snapshot, max_seconds=max_seconds, property_effects=tuple(property_effects),
-                                schema_evolutions=tuple(schema_evolutions))
+                                schema_evolutions=tuple(schema_evolutions), learning_phase=learning_phase)
                             restored_cognitive = verify_candidate_cognitive_restoration(stage, projection,
-                                executed['cognitive_restoration'], executed['historical_observations'], max_seconds=max_seconds)
-                            executed['format'] = 'retirement-candidate-projection/v6'
+                                executed['cognitive_restoration'], executed['historical_observations'], max_seconds=max_seconds,
+                                learning_phase=learning_phase)
+                            executed['format'] = ('retirement-candidate-projection/v7' if learning_phase is not None
+                                else 'retirement-candidate-projection/v6')
                             executed['schema_evolutions'] = schema_evolutions
                             from .retirement_candidate_global_reconciliation import compare_candidate_global_projection
 
@@ -437,7 +457,8 @@ async def _restore_retirement_graph_candidate(runtime, storage, graphs, run, see
                             executed['graph_reconciliation'] = verify_candidate_graph_reconciliation(
                                 stage, executed['boards'], projection=projection, deadline=_deadline(max_seconds),
                                 historical_observations=executed['historical_observations'], global_comparison=global_comparison,
-                                global_materialization=executed['global_materialization'], restored_cognitive=restored_cognitive)
+                                global_materialization=executed['global_materialization'], restored_cognitive=restored_cognitive,
+                                learning_phase=learning_phase)
                             projection_receipt = offline._seal(stage / 'projection-receipt', executed)
                             state = 'projected_not_reconciled'
                             # Binding paths are relative, so the final rename does not

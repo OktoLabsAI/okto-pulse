@@ -6,7 +6,7 @@ entrypoint or completion authority is provided here.
 """
 import asyncio
 from contextlib import closing
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
 import sqlite3
@@ -29,6 +29,27 @@ from .retirement_learning_history import CandidateLearningHistory
 from .retirement_learning_sql_delta import _history, verify_learning_sql_delta
 from .retirement_offline_run import _seal
 from .sprint_retirement_archive import _encode
+
+
+@dataclass(frozen=True)
+class VerifiedLearningPhase:
+    """Freshly rederived phase inputs for the enclosing checkpoint verifier."""
+    document: dict
+    boards: tuple[dict, ...]
+    baseline_database: Path
+    terminal_database: Path
+    initial_graphs: dict[str, Path]
+
+    def read_initial_graph(self, board_id, deadline):
+        document, = (row for row in self.boards if row['board_id'] == board_id)
+        _, graph = _read_frame(self.initial_graphs[board_id].parent, document['initial'], '000000-before', deadline)
+        return graph.header.schema, graph.nodes, graph.relations
+
+
+def learning_phase_board_ids(projection):
+    """Keep the authenticated projection's complete Learning Board scope/order."""
+    return tuple(item['projection']['board_id'] for item in projection['boards']
+        if any(row['node_type'] == 'Learning' for row in item['projection']['cognitive_rows']))
 
 
 async def _blocking(function, *args, **kwargs):
@@ -387,3 +408,53 @@ async def execute_candidate_learning_phase(stage, *, board_ids, settings, genera
         'terminal': snapshot_reference(terminal), 'boards': entries}
     sealed = _seal(root / 'receipt', document)
     return {'directory': root, 'receipt_sha256': sealed.manifest_sha256, 'document': document}
+
+
+async def verify_candidate_learning_phase(stage, *, expected_receipt_sha256, board_ids,
+        generation, max_seconds=180):
+    """Reopen the sealed phase against the frozen candidate, without providers.
+
+    The caller authenticates the complete candidate and owns its offline fence.
+    Returned initial graph artifacts let it rederive earlier projection and
+    literal-restoration guards before composing the proved Learning effects.
+    """
+    from .retirement_candidate_global_reconciliation import _read
+    from .graph_backend_binding import CommunityGraphBackendBindingStore
+
+    deadline, stage = _deadline(max_seconds), _path(stage)
+    root = _path(stage / 'learning-reconciliation')
+    document = _read_sealed(root / 'receipt', expected_receipt_sha256)
+    if (set(document) != {'format', 'state', 'generation', 'baseline', 'terminal', 'boards'}
+            or document['format'] != 'retirement-learning-phase/v1'
+            or document['state'] != 'retained_not_reconciled'
+            or type(generation) is not str or not generation or document['generation'] != generation
+            or type(board_ids) is not tuple or len(board_ids) > 100_000
+            or any(type(board) is not str or not board or len(board) > 256 for board in board_ids)
+            or len(set(board_ids)) != len(board_ids)):
+        raise ValueError('retirement_learning_phase_receipt_invalid')
+    snapshots = {}
+    for name in ('baseline', 'terminal'):
+        reference = document[name]
+        if (type(reference) is not dict or set(reference) != {'directory', 'manifest_sha256', 'database_sha256'}
+                or reference['directory'] != name):
+            raise ValueError('retirement_learning_phase_snapshot_invalid')
+        snapshot = SqliteRecoverySnapshot(_path(root / name), reference['manifest_sha256'], reference['database_sha256'])
+        await _blocking(verify_sqlite_recovery_snapshot, snapshot, max_seconds=_remaining(deadline))
+        snapshots[name] = snapshot.directory / 'database.sqlite3'
+    bindings = CommunityGraphBackendBindingStore(stage / 'kg-artifacts')
+
+    def read_graph(board):
+        binding = bindings.inspect_board_binding(board)
+        if binding.generation != generation or binding.backend != 'grafx':
+            raise ValueError('retirement_learning_execution_generation_mismatch')
+        return _read(binding, 'board', deadline)
+
+    candidate = _path(stage / 'database.sqlite3')
+    boards = await verify_candidate_learning_chain(root, document['boards'], board_ids=board_ids,
+        baseline_database=snapshots['baseline'], candidate_database=candidate,
+        read_graph=read_graph, max_seconds=_remaining(deadline))
+    if not _same_sql(snapshots['terminal'], candidate, deadline):
+        raise ValueError('retirement_learning_phase_terminal_changed')
+    _check_time(deadline)
+    return VerifiedLearningPhase(document, boards, snapshots['baseline'], snapshots['terminal'],
+        {board: root / f'{index:06d}' / '000000-before.graph.jsonl' for index, board in enumerate(board_ids)})

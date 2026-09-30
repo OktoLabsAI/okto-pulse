@@ -1,7 +1,7 @@
 """Read-only source/graph reconciliation for a private retirement candidate."""
 
 from collections import Counter
-from contextlib import closing
+from contextlib import closing, nullcontext
 from dataclasses import asdict
 from datetime import datetime, timezone
 import hashlib
@@ -27,6 +27,7 @@ from okto_pulse.core.ports.projection_history import (
 )
 
 from .logical_transfer_factories import make_grafx_logical_source
+from .logical_graph_transfer import LogicalGraphFileSnapshotSource
 from .graph_backend_binding import CommunityGraphBackendBindingStore
 from .relational_recovery_snapshot import _check_time, _readonly, _sidecars_absent
 
@@ -153,7 +154,7 @@ def _cognitive_parity(schema, board_id, record, node):
 
 def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata, deadline, history=None,
         *, board_id=None, cognitive_rows=(), expected_partitions=None, expected_edge_sessions=None, planned_document=None,
-        restored_cognitive=None):
+        restored_cognitive=None, initial_graph=None, supersedence_effects=()):
     restored_cognitive = restored_cognitive or {}
     # Prior records qualify by a full fingerprint, preserved or independently
     # reconciled against the authenticated property trace. Both stay unclassified.
@@ -164,6 +165,17 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
     prior_nodes.update({(row['after']['node_type'], row['after']['node_id']): row['after']['fingerprint']
         for row in delta.get('changed_nodes', ())})
     prior_edges = Counter({_edge_identity(row): row['count'] for row in delta.get('retained_edges', ())})
+    transition_edges = {}
+    for proof in supersedence_effects:
+        if (proof['board_id'] != board_id or proof['predecessor'] not in delta.get('changed_nodes', ())
+                or proof['edge']['count'] != 1
+                or expected_refs.get((proof['successor']['node_type'], proof['successor']['node_id'])) != proof['session_id']):
+            raise ValueError('retirement_candidate_supersedence_scope_invalid')
+        identity = _edge_identity(proof['edge'])
+        if identity in transition_edges:
+            raise ValueError('retirement_candidate_supersedence_duplicate')
+        transition_edges[identity] = proof
+    observed_transitions = set()
     nodes, metadata, identities, hashes, partitions = {}, {}, [], {}, {}
     edges, new_edges, connected, technical_roots = [], [], set(), set()
     edge_sessions = Counter()
@@ -180,8 +192,10 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
         item = properties.get(name)
         return None if item is LOGICAL_NULL else item
 
-    with connect(binding.physical_path, page_size=binding.page_size, read_only=True) as graph:
-        reader = make_grafx_logical_source(graph, scope='board').open_snapshot()
+    with (connect(binding.physical_path, page_size=binding.page_size, read_only=True)
+            if initial_graph is None else nullcontext()) as graph:
+        reader = (make_grafx_logical_source(graph, scope='board').open_snapshot() if initial_graph is None
+            else LogicalGraphFileSnapshotSource(initial_graph).open_snapshot())
         try:
             for record in validate_cognitive_projection_sources(
                     schema=reader.schema(), board_id=board_id, records=cognitive_rows):
@@ -251,6 +265,10 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
                 raise ValueError('retirement_candidate_graph_node_census_changed')
             if any(nodes[identity][1] != session_id for identity, session_id in expected_refs.items()):
                 raise ValueError('retirement_candidate_graph_node_session_changed')
+            for proof in supersedence_effects:
+                successor = proof['successor']
+                if hashes.get((successor['node_type'], successor['node_id'])) != successor['fingerprint']:
+                    raise ValueError('retirement_candidate_supersedence_successor_changed')
             for batch in reader.iter_relations(batch_size=500):
                 _check_time(deadline)
                 for relation in batch:
@@ -270,7 +288,12 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
                     rule = value(relation.properties, 'rule_id')
                     layer = value(relation.properties, 'layer')
                     actor = value(relation.properties, 'created_by')
-                    if type(rule) is not str or not rule or layer != 'deterministic' or type(actor) is not str or not actor:
+                    transition = transition_edges.get(key)
+                    if transition is not None:
+                        if key in observed_transitions:
+                            raise ValueError('retirement_candidate_supersedence_duplicate')
+                        observed_transitions.add(key)
+                    elif type(rule) is not str or not rule or layer != 'deterministic' or type(actor) is not str or not actor:
                         raise ValueError('retirement_candidate_graph_edge_invalid')
                     if expected_edge_sessions is not None:
                         session_id = value(relation.properties, 'created_by_session_id')
@@ -280,6 +303,8 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
                     new_edges.append((relation.layout_name, *source, *target, rule, layer, actor))
             if any(prior_edges.values()):
                 raise ValueError('retirement_candidate_prior_edge_changed')
+            if observed_transitions != set(transition_edges):
+                raise ValueError('retirement_candidate_supersedence_edge_missing')
             if len(new_edges) != expected_edge_count or len(new_edges) != len(set(new_edges)):
                 raise ValueError('retirement_candidate_graph_edge_census_changed')
             if expected_edge_sessions is not None and edge_sessions != Counter(expected_edge_sessions):
@@ -354,7 +379,7 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
 
 
 def verify_candidate_graph_reconciliation(target, boards, *, projection, deadline, historical_observations=None,
-        global_comparison=None, global_materialization=None, restored_cognitive=None):
+        global_comparison=None, global_materialization=None, restored_cognitive=None, learning_phase=None):
     """Verify new projection effects; preserved history never receives implicit approval.
 
     historical_observations must be freshly derived under the caller's offline
@@ -362,7 +387,9 @@ def verify_candidate_graph_reconciliation(target, boards, *, projection, deadlin
     """
     histories, global_history = {}, 'no_prior_records'
     if historical_observations is not None:
-        if historical_observations.get('format') != 'retirement-candidate-history-observations/v4':
+        expected_format = ('retirement-candidate-history-observations/v5' if learning_phase is not None
+            else 'retirement-candidate-history-observations/v4')
+        if historical_observations.get('format') != expected_format:
             raise ValueError('retirement_candidate_history_observations_invalid')
         proofs = historical_observations['property_composition']
         for item in historical_observations['graphs']:
@@ -419,6 +446,9 @@ def verify_candidate_graph_reconciliation(target, boards, *, projection, deadlin
         report = _board_graph(binding, board_refs, sum(edge_sessions.values()), _source_expectations(planned[board_id]), deadline,
             histories.get(board_id), board_id=board_id, cognitive_rows=tuple(planned[board_id]['cognitive_rows']),
             restored_cognitive=(restored_cognitive or {}).get(board_id),
+            initial_graph=learning_phase.initial_graphs.get(board_id) if learning_phase is not None else None,
+            supersedence_effects=tuple(proof for proof in historical_observations['supersedence_effects']
+                if proof['board_id'] == board_id) if learning_phase is not None else (),
             expected_partitions=_partition_expectations(planned[board_id]), expected_edge_sessions=edge_sessions,
             planned_document=json.dumps(planned[board_id], ensure_ascii=False, sort_keys=True,
                 separators=(',', ':'), allow_nan=False).encode('utf-8'))
@@ -435,7 +465,18 @@ def verify_candidate_graph_reconciliation(target, boards, *, projection, deadlin
         or (global_comparison['state'] != 'matched' if global_comparison is not None else global_history != 'no_prior_records'))
     mismatch = any(any(report['source_relation_comparison'][field] for field in
         ('missing_count', 'unresolved_count', 'unexpected_new_count')) for report in reports)
-    return {'format': 'retirement-candidate-graph-reconciliation/v17',
+    result = {'format': 'retirement-candidate-graph-reconciliation/v17',
         'state': ('source_projection_mismatch' if mismatch else
             'source_projection_reconciled_history_pending' if pending else 'source_graph_reconciled'),
         'global_history_state': global_history, 'global_projection_comparison': global_comparison, 'boards': reports}
+    if learning_phase is not None:
+        # Mechanical phase composition is not final cognitive applicability.
+        # Keep the old observation's scope explicit; never present its Board
+        # fingerprints as the terminal candidate or silently upgrade v17.
+        return {'format': 'retirement-candidate-graph-reconciliation/v18',
+            'state': 'learning_reconciliation_pending',
+            'projection_with_before_learning_boards': result,
+            'learning_boards': list(learning_phase.initial_graphs),
+            'learning_execution_count': sum(len(board['steps']) for board in learning_phase.boards),
+            'terminal_census_sha256': historical_observations['candidate_census_sha256']}
+    return result
