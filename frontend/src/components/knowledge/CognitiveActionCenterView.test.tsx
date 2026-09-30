@@ -236,6 +236,27 @@ describe("CognitiveActionCenterView", () => {
     expect(screen.queryByTestId("cac-clear")).toBeNull();
   });
 
+  test("replaced Learning association is history, not a waiver or proof of a new projection", async () => {
+    mockList([item({
+      artifact_id: "bug:covered",
+      source_ref_original: "bug:covered:learning:capture-v1:old-learning:0",
+      aliases: ["bug:covered"],
+      signal: "terminal_history",
+      status: "consolidated",
+      outcome_type: "no_action_required",
+      reason_code: null,
+      readiness_effect: "ready_committed",
+      blocking: false,
+      precedence_explanation: { tier: "terminal_history" },
+    })]);
+    const write = vi.spyOn(api, "recordCognitiveSkip");
+    render(<CognitiveActionCenterView boardId="b" onClose={vi.fn()} />);
+    expect(await screen.findByText(/History — no action needed/)).toBeInTheDocument();
+    expect(screen.queryByTestId("cac-skip-toggle")).toBeNull();
+    expect(screen.queryByTestId("cac-clear")).toBeNull();
+    expect(write).not.toHaveBeenCalled();
+  });
+
   test("reports failed processing without a repair entry point or write", async () => {
     mockList([DLQ]);
     const write = vi.spyOn(api, "recordCognitiveSkip");
