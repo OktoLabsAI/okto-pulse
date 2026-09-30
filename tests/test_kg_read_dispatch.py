@@ -14,6 +14,9 @@ from okto_pulse.core.application.use_cases.base import ActorContext
 
 @pytest.fixture
 def admission(monkeypatch):
+    from okto_pulse.community.adapters.grafx_query_execution import CommunityGraphQueryExecution
+    execution = CommunityGraphQueryExecution()
+    monkeypatch.setattr(kg_routes, 'resolve_graph_query_execution', lambda: execution)
     # This suite isolates dispatch; real permission/CT policy has its own suite.
     from okto_pulse.core.application.use_cases.kg_query_policy import ReadKGQueryPolicyUseCase
     from okto_pulse.core.ports.kg_query_policy import KGQueryPolicy

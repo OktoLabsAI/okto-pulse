@@ -14,6 +14,9 @@ from test_kg_power_rest_authorization import _actor, _permission_set, BOARD_ID
 @pytest.mark.parametrize('door', ['cypher', 'search', 'analytics'])
 @pytest.mark.parametrize('requested,expected', [(None, 800), (30000, 800), (12, 12)])
 async def test_rest_reads_persisted_board_deadline(monkeypatch, door, requested, expected):
+    from okto_pulse.community.adapters.grafx_query_execution import CommunityGraphQueryExecution
+    execution = CommunityGraphQueryExecution()
+    monkeypatch.setattr(kg, 'resolve_graph_query_execution', lambda: execution)
     actor = _actor(_permission_set({flag: True for flag in ALL_FLAGS}))
     board = SimpleNamespace(id=BOARD_ID, owner_id=actor.actor_id, realm_id=LOCAL_REALM_ID,
                             settings={'kg_query_timeout_ms': 800})
@@ -21,6 +24,7 @@ async def test_rest_reads_persisted_board_deadline(monkeypatch, door, requested,
     observed = []
     if door == 'cypher':
         def read(*args, **kwargs):
+            assert 0 < execution.remaining(BOARD_ID) <= expected / 1000
             observed.append(kwargs['timeout_ms'])
             assert kwargs['max_rows'] == 200
             return {'rows': []}

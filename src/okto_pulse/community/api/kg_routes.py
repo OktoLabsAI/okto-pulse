@@ -45,6 +45,7 @@ from okto_pulse.core.kg.tier_power import (
 from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.core.application.kg_runtime_access import (
     resolve_cypher_executor,
+    resolve_graph_query_execution,
     resolve_graph_transaction,
     snapshot_kg_runtime,
 )
@@ -1618,15 +1619,17 @@ async def cypher_query(
         policy = await ReadKGQueryPolicyUseCase().execute(board_id, actor=actor, uow=uow)
         timeout_ms = policy.effective_timeout(timeout_ms)
         max_rows = query_row_limit(max_rows)
+        execution = resolve_graph_query_execution()
+
+        def query():
+            with execution.scope(board_id, timeout_ms=timeout_ms):
+                return execute_cypher_read_only(
+                    board_id, cypher, params, max_rows=max_rows,
+                    timeout_ms=timeout_ms, include_working=include_working,
+                )
+
         result = await run_blocking_graph_io(
-            lambda: execute_cypher_read_only(
-                board_id,
-                cypher,
-                params,
-                max_rows=max_rows,
-                timeout_ms=timeout_ms,
-                include_working=include_working,
-            ),
+            query,
             task_name=f"community.kg.cypher.read:{board_id}",
         )
         return result

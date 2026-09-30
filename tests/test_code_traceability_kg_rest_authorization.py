@@ -22,6 +22,10 @@ CT_ID = "ct-node"
 
 @pytest.fixture(autouse=True)
 def query_policy_boundary(monkeypatch):
+    from okto_pulse.community.adapters.grafx_query_execution import CommunityGraphQueryExecution
+    from okto_pulse.community.api import kg_routes
+    execution = CommunityGraphQueryExecution()
+    monkeypatch.setattr(kg_routes, 'resolve_graph_query_execution', lambda: execution)
     # CT authorization remains real; the scoped settings reader is covered by
     # test_kg_query_policy_transports, not these graph-confidentiality fixtures.
     from okto_pulse.core.application.use_cases.kg_query_policy import ReadKGQueryPolicyUseCase

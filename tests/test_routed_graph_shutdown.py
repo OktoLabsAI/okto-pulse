@@ -48,7 +48,7 @@ def test_worker_shutdown_closes_board_grafx_then_global_from_same_bundle(
     bundle = SimpleNamespace(
         binding_store=SimpleNamespace(root=tmp_path),
         grafx_pool=SimpleNamespace(pooled_paths=lambda: tuple(sorted(pooled))),
-        board=SimpleNamespace(graph_lifecycle=_Lifecycle(), grafx_read_pools=()),
+        board=SimpleNamespace(graph_lifecycle=_Lifecycle(), grafx_read_pools=(), grafx_query_pools=()),
         global_graph=_Global(),
     )
     registry = SimpleNamespace(_community_routed_graph_composition=bundle)
@@ -91,7 +91,7 @@ def test_worker_shutdown_attempts_global_after_routed_board_close_failure(
     bundle = SimpleNamespace(
         binding_store=SimpleNamespace(root=tmp_path),
         grafx_pool=SimpleNamespace(pooled_paths=lambda: (str(board_path),)),
-        board=SimpleNamespace(graph_lifecycle=_Lifecycle(), grafx_read_pools=()),
+        board=SimpleNamespace(graph_lifecycle=_Lifecycle(), grafx_read_pools=(), grafx_query_pools=()),
         global_graph=_Global(),
     )
     registry = SimpleNamespace(_community_routed_graph_composition=bundle)

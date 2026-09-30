@@ -23,6 +23,22 @@ from test_retirement_offline_run import MIGRATION
 from test_card_context_retirement import dump
 
 
+@pytest.fixture(autouse=True)
+def frozen_source_projection_cut(monkeypatch):
+    # The immutable v034 fixture's draft Spec expires on 2026-09-28.
+    # These execution/replay scenarios require the original, non-expired
+    # census. Fix only its capture clock; never rewrite source chronology or
+    # widen the production working-source TTL to keep this oracle passing.
+    from okto_pulse.community.adapters import retirement_projection_inputs
+
+    class CaptureClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 9, 22, tzinfo=timezone.utc).astimezone(tz)
+
+    monkeypatch.setattr(retirement_projection_inputs, 'datetime', CaptureClock)
+
+
 @pytest.mark.asyncio
 @pytest.mark.timeout(480)
 async def test_failed_private_execution_can_retry_from_seed_and_keeps_original_providers(tmp_path, monkeypatch):

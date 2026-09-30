@@ -44,6 +44,9 @@ from okto_pulse.core.kg.interfaces.graph_recovery import WalRecoveryReport
 from okto_pulse.core.kg.interfaces.graph_health_observation import GraphHealthObservation
 from okto_pulse.core.kg.interfaces.graph_query_execution import GraphQueryExecution
 from okto_pulse.community.adapters.grafx_query_execution import CommunityGraphQueryExecution
+from okto_pulse.community.adapters.grafx_foreground_query_limits import (
+    FOREGROUND_READER_BUFFER_MB, foreground_query_options,
+)
 from okto_pulse.core.kg.interfaces.graph_runtime_store import (
     GraphPurgeResult,
 )
@@ -376,6 +379,7 @@ class _GrafxBoardAccess:
         configured_page_size: int,
         connect: GrafxConnector | None,
         read_pools: tuple[CommunityGrafxDatabasePool, ...] | None = None,
+        query_pools: tuple[CommunityGrafxDatabasePool, ...] | None = None,
     ) -> None:
         self.resolver = resolver
         self.pool = pool
@@ -385,6 +389,12 @@ class _GrafxBoardAccess:
         ):
             raise ValueError("Grafx Board read pools must be non-empty and read-only")
         self.read_pools = selected_read_pools
+        self.query_pools = query_pools or ()
+        if self.query_pools and (
+            len(self.query_pools) != len(selected_read_pools)
+            or any(not pool.read_only for pool in self.query_pools)
+        ):
+            raise ValueError('foreground_query_pools_require_matching_read_only_lanes')
         self._read_lanes = GrafxReadLanes(len(selected_read_pools) or 1)
         self._read_pool_lock = threading.Lock()
         self._read_join_lock = threading.Lock()
@@ -488,15 +498,19 @@ class _GrafxBoardAccess:
         self.query_timeout(board_id)
         snapshot = self._snapshot(board_id, require_physical=True)
         assert snapshot.page_size is not None
-        if not self.read_pools:
+        query_active = self.query_execution.remaining(board_id) is not None
+        pools = self.query_pools if query_active else self.read_pools
+        if query_active and not pools:
+            raise GraphCapabilityUnavailable('Foreground query readers are not configured.')
+        if not pools:
             self._refuse_health_mutation(board_id)
             # Backward-compatible narrow construction used by isolated tests;
             # the production composition always supplies dedicated lanes.
             return self.database(board_id)
         with self._read_pool_lock:
             selected = self._next_read_pool if _lane is None else _lane
-            self._next_read_pool = (selected + 1) % len(self.read_pools)
-        pool = self.read_pools[selected]
+            self._next_read_pool = (selected + 1) % len(pools)
+        pool = pools[selected]
         try:
             database = pool.get(
                 snapshot.active_path,
@@ -582,7 +596,7 @@ class _GrafxBoardAccess:
             raise _route_failure("board_route_backend_invalid", board_id=board_id)
 
     def _all_pools(self) -> tuple[CommunityGrafxDatabasePool, ...]:
-        return (*self.read_pools, self.pool)
+        return (*self.query_pools, *self.read_pools, self.pool)
 
     def _board_pool_paths(
         self, board_id: str
@@ -681,6 +695,7 @@ class CommunityRoutedBoardGraphComposition:
     graph_analytics: Any | None = None
     graph_health_observation: GraphHealthObservation | None = None
     graph_query_execution: GraphQueryExecution | None = None
+    grafx_query_pools: tuple[CommunityGrafxDatabasePool, ...] = ()
     # Community-only wiring for the shared Board/Global diagnostic context.
     observation_timeout: Callable[[], float | None] | None = None
 
@@ -917,6 +932,18 @@ def build_community_routed_board_graph_composition(
         )
         for _lane in range(read_participants)
     )
+    # Lazy, bounded foreground participants share the existing scheduling lanes.
+    # Background readers retain configured scan semantics. Keep additional page
+    # caches small; native query working memory has its own independent ceiling.
+    grafx_query_pools = tuple(
+        CommunityGrafxDatabasePool(
+            binding_store.root, connect=connector, max_entries=None,
+            descriptor_revalidation=configured_descriptor_revalidation,
+            read_only=True,
+            buffer_pool_mb=min(configured_buffer_pool_mb, FOREGROUND_READER_BUFFER_MB),
+            constructor_options=foreground_query_options(getattr(settings, 'kg_grafx_options', {})),
+        ) for _lane in range(read_participants)
+    )
     access = _GrafxBoardAccess(
         resolver,
         grafx_pool,
@@ -925,6 +952,7 @@ def build_community_routed_board_graph_composition(
         configured_page_size=configured_page_size,
         connect=connector,
         read_pools=grafx_read_pools,
+        query_pools=grafx_query_pools,
     )
     resolver.bind_observation_timeout(lambda: access.health_query_timeout("global"))
     if shared_store is None:
@@ -1309,6 +1337,7 @@ def build_community_routed_board_graph_composition(
         graph_analytics=analytics,
         graph_health_observation=access,
         graph_query_execution=access.query_execution,
+        grafx_query_pools=grafx_query_pools,
         observation_timeout=lambda: access.health_query_timeout("global"),
     )
 

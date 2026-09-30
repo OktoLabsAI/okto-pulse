@@ -161,3 +161,21 @@ Installed wheel SHA-256:
 This is a local development build, not a new PyPI release. Reinstalling an
 older published Pulse artifact can reintroduce its original dependencies;
 use this checkout's wheels until the retirement is published.
+
+## v0.4.0 foreground query work limits
+
+MCP Cypher, natural and reflective queries, and REST Cypher, enter the public
+`GraphQueryExecution` scope after authorization and Board policy resolution.
+Community selects lazy read-only participants with these native per-statement
+ceilings: 10,000 internal result rows, 50,000 intermediate rows, 50,000 traversal
+expansions, 10,000 traversal paths and 16 MiB query working memory. Lower
+configured operator limits remain effective. The public result-row policy
+remains 200 by default and 1,000 maximum; internal operator ceilings do not
+increase it. Resource refusal is explicit, including for a one-row aggregate.
+
+These participants share the existing scheduling lanes. Each opened Board/lane
+can add at most 16 MiB configured page cache, independently of query working
+memory and other runtime overhead. Pool lifecycle and shutdown close them with
+the existing participants. Internal reads outside the query scope retain their
+configured limits, including rebuild scans. This introduces no question-count
+quota and grants no additional access or authority to change Board policy.

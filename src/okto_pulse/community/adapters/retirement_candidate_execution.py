@@ -50,7 +50,7 @@ async def candidate_execution_runtime(stage, candidate_settings):
                         raise RuntimeError('retirement_candidate_graph_jobs_still_running')
                     bundle.global_graph.close_all_on_shutdown()
                     bundle.grafx_pool.close_all()
-                    for pool in bundle.board.grafx_read_pools:
+                    for pool in (*bundle.board.grafx_read_pools, *bundle.board.grafx_query_pools):
                         pool.close_all()
             finally:
                 await runtime.close()
