@@ -10,6 +10,7 @@ from filelock import FileLock
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from .filesystem_erasure import fsync_directory, remove_contained_tree
+from .evidence_recovery import verify_evidence_source, verify_evidence_recovery
 from .graph_backend_binding import CommunityGraphBackendBindingStore
 from .joint_recovery_snapshot import _explicit_path, _publish, _storage_artifact, verify_joint_recovery_snapshot
 from .relational_recovery_snapshot import _check_time, _deadline
@@ -54,6 +55,11 @@ async def install_verified_candidate(candidate, destination, *, result, seed_doc
         storage = guards.enter_context(storage_recovery_restore_window(
             _storage_artifact(snapshot.directory, manifest), current_storage_root=uploads, max_seconds=max_seconds))
         storage.require_separate_target(target)
+        evidence_guard = None
+        if 'evidence' in manifest:
+            evidence_guard = verify_evidence_source(snapshot.directory / 'evidence', manifest['evidence'],
+                current_root=Path(manifest['evidence']['source_root']), max_seconds=max_seconds)
+            verify_evidence_recovery(candidate / 'evidence', manifest['evidence'], max_seconds=max_seconds)
         stage.mkdir(mode=0o700)
         try:
             for directory in expected[0]:
@@ -110,6 +116,9 @@ async def install_verified_candidate(candidate, destination, *, result, seed_doc
             if _candidate_contents(candidate, native_paths, deadline) != expected:
                 raise ValueError('retirement_activation_source_changed')
             storage.validate()
+            if evidence_guard is not None:
+                evidence_guard.validate()
+                verify_evidence_recovery(stage / 'evidence', manifest['evidence'], max_seconds=max_seconds)
             _check_time(deadline)
             fsync_directory(stage)
             _publish(stage, target)

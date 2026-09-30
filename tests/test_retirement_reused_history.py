@@ -38,6 +38,13 @@ from test_card_context_retirement import dump
     ids=['current-cognitive-pending', 'current-complete', 'predecessor-global-pending', 'predecessor-complete', 'durable-technical-report', 'v060-predecessor-complete'])
 async def test_authenticated_effects_on_reused_root_preserve_identity_and_require_complete_evidence(tmp_path, source_schema, cognitive_case, complete_overlay, monkeypatch):
     source = restore_source(tmp_path)
+    evidence_root, signed_evidence = None, None
+    if cognitive_case == 'technical-report':
+        from test_evidence_recovery import issue, verify
+
+        evidence_root = tmp_path / 'evidence'
+        _, signed_evidence = await issue(evidence_root)
+        assert verify(evidence_root, signed_evidence).verified
     for name in ('uploads', 'kg', 'backups', 'candidate-backups'):
         (tmp_path / name).mkdir()
     if complete_overlay:
@@ -112,7 +119,7 @@ async def test_authenticated_effects_on_reused_root_preserve_identity_and_requir
             snapshot_id='original', plan=ContextDispositionPlan(migration_id='reused-history-fixture',
                 decision_reference='frozen fixture without substantive Sprint context', decisions=()),
             source_builds=SOURCE, migration_builds=MIGRATION, runtime_directories=(tmp_path, tmp_path / 'kg'),
-            kg_base_dir=tmp_path / 'kg', max_seconds=180)
+            kg_base_dir=tmp_path / 'kg', max_seconds=180, evidence_root=evidence_root)
         prepared = await offline.prepare_offline_retirement_projection_inputs(runtime, storage, graphs, run,
             migration_builds=MIGRATION, projection_directory=tmp_path / 'projection')
         seed = await candidate.prepare_retirement_candidate_seed(runtime, storage, graphs, run, prepared['projection_inputs'],
@@ -126,6 +133,8 @@ async def test_authenticated_effects_on_reused_root_preserve_identity_and_requir
         result = await candidate.build_projected_retirement_graph_candidate(*arguments,
             migration_builds=MIGRATION, settings=settings, confirm_original_offline=True, max_seconds=300)
         receipt = json.loads((target / 'projection-receipt/run.json').read_bytes())
+        if signed_evidence is not None:
+            assert verify(target / 'evidence', signed_evidence).verified
         assert receipt['format'] == 'retirement-candidate-projection/v6'
         if complete_overlay:
             assert receipt['global_source_inputs']['state'] == 'captured_not_reconciled'
@@ -213,6 +222,9 @@ async def test_authenticated_effects_on_reused_root_preserve_identity_and_requir
             activated = await candidate.activate_retirement_graph_candidate(*arguments, tmp_path / 'installation',
                 **completion_arguments)
             assert activated['state'] == 'activated' and dump(source) == before
+            if signed_evidence is not None:
+                assert verify(activated['directory'] / 'evidence', signed_evidence).verified
+                assert verify(evidence_root, signed_evidence).verified
             assert await installation.resume_retirement_activation(activated['directory'],
                 expected_candidate_receipt_sha256=result['receipt_sha256'], confirm_installation_offline=True) == activated
             with pytest.raises(ValueError, match='offline_required'):

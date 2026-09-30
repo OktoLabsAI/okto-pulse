@@ -20,6 +20,7 @@ from okto_pulse.core.kg.logical_transfer import schema_digest
 from sqlalchemy import create_engine
 
 from . import retirement_offline_run as offline
+from .evidence_recovery import verify_evidence_source
 from .graph_backend_binding import CommunityGraphBackendBindingStore
 from .grafx_recovery_contracts import predecessor_recovery_contract, v060_recovery_contract
 from .joint_recovery_snapshot import (
@@ -111,12 +112,17 @@ async def prepare_retirement_candidate_seed(runtime, storage, graphs, run, proje
         migration_builds: RecoveryBuildPair, recovery_directory: Path, seed_directory: Path, max_seconds=180):
     """Capture the post-bootstrap state without replacing the original rollback."""
     document, _, _, _, original_backup, roots = offline.read_offline_retirement_run(run)
+    original_manifest = verify_joint_recovery_snapshot(original_backup)
+    evidence_record = original_manifest.get('evidence')
+    evidence_root = Path(evidence_record['source_root']) if evidence_record is not None else None
     projection = read_retirement_projection_inputs(projection_inputs)
     source, uploads = offline._binding(runtime, storage)
     target = projection_destination(seed_directory, document)
     recovery = _explicit_path(recovery_directory)
     protected = [Path(document[key]) for key in ('storage_root', 'kg_base_dir')]
     protected += [original_backup.directory, projection_inputs.directory]
+    if evidence_root is not None:
+        protected.append(evidence_root)
     if (not recovery.is_dir() or any(recovery.is_relative_to(root) for root in protected)
             or any(target.is_relative_to(root) for root in protected)):
         raise ValueError('retirement_candidate_private_destination_required')
@@ -129,7 +135,9 @@ async def prepare_retirement_candidate_seed(runtime, storage, graphs, run, proje
     async with joint_recovery_lifecycle_window(runtime, tuple(graphs), recovery,
             snapshot_id='candidate-' + secrets.token_hex(12), builds=migration_builds,
             runtime_directories=roots, kg_base_dir=Path(document['kg_base_dir']), storage_root=uploads,
-            max_seconds=max_seconds, include_native=True) as snapshot:
+            max_seconds=max_seconds, include_native=True, evidence_root=evidence_root) as snapshot:
+        if verify_joint_recovery_snapshot(snapshot).get('evidence') != evidence_record:
+            raise ValueError('retirement_candidate_evidence_changed')
         seed_document = {'format': _FORMAT, 'offline_run_sha256': run.manifest_sha256,
             'projection_inputs': {'directory': str(projection_inputs.directory), 'manifest_sha256': projection_inputs.manifest_sha256},
             'snapshot': {'directory': str(snapshot.directory), 'manifest_sha256': snapshot.manifest_sha256},
@@ -279,6 +287,8 @@ async def _restore_retirement_graph_candidate(runtime, storage, graphs, run, see
         projection_destination(target, original)
     protected = (source, uploads, Path(original['kg_base_dir']), Path(original['backup']['directory']),
         run.directory, seed.directory, snapshot.directory, Path(document['projection_inputs']['directory']))
+    if 'evidence' in manifest:
+        protected += (Path(manifest['evidence']['source_root']),)
     if any(target.is_relative_to(root) or root.is_relative_to(target) for root in protected):
         raise ValueError('retirement_candidate_private_destination_required')
     if replay:
@@ -299,11 +309,16 @@ async def _restore_retirement_graph_candidate(runtime, storage, graphs, run, see
                     if replay and projection_settings is not None:
                         from .retirement_candidate_checkpoint import verify_projected_candidate
 
+                        evidence_guard = (verify_evidence_source(snapshot.directory / 'evidence', manifest['evidence'],
+                            current_root=Path(manifest['evidence']['source_root']), max_seconds=max_seconds)
+                            if 'evidence' in manifest else None)
                         result = await verify_projected_candidate(target, seed=seed, seed_document=document,
                             projection=projection, settings=projection_settings, membership=membership,
                             expected_receipt_sha256=expected_receipt_sha256, max_seconds=max_seconds,
                             require_complete=require_complete)
                         _require_routes(source, kg, manifest['routing_inventory'])
+                        if evidence_guard is not None:
+                            evidence_guard.validate()
                         if activation_destination is not None:
                             from .retirement_activation_installation import install_verified_candidate
 
@@ -314,6 +329,7 @@ async def _restore_retirement_graph_candidate(runtime, storage, graphs, run, see
                     reference = target.with_name(f'.{target.name}.{secrets.token_hex(12)}.replay') if replay else target
                     with _staged_joint_recovery_restore(snapshot, reference, builds=migration_builds,
                             current_storage_root=uploads, confirm_original_offline=True, max_seconds=max_seconds,
+                            current_evidence_root=(Path(manifest['evidence']['source_root']) if 'evidence' in manifest else None),
                             publish=not replay) as stage:
                         bindings = CommunityGraphBackendBindingStore(stage / 'kg-artifacts')
                         routes, native_paths, schema_evolutions = [], [], []

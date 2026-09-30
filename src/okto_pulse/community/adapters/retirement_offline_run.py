@@ -59,7 +59,7 @@ _KEYS = {"format", "migration_id", "source_database", "storage_root", "kg_base_d
 
 
 def _complete_backup(manifest):
-    if manifest['format'] == 'joint-recovery-snapshot/v7':
+    if manifest['format'] in {'joint-recovery-snapshot/v7', 'joint-recovery-snapshot/v8'}:
         return True
     # Logical graph copies omit the native commit/system history exposed by the
     # predecessor. Old sets cannot certify operational rollback of those stores.
@@ -184,7 +184,7 @@ async def prepare_offline_retirement_run(
     runtime, storage, graphs, recovery_directory: Path, run_directory: Path, *,
     snapshot_id: str, plan: ContextDispositionPlan, source_builds: RecoveryBuildPair,
     migration_builds: RecoveryBuildPair, runtime_directories: tuple[Path, ...], kg_base_dir: Path,
-    max_seconds: float = 120,
+    max_seconds: float = 120, evidence_root: Path | None = None,
 ) -> OfflineRetirementRun:
     """Seal verified inputs before any context/Card/work transformation.
 
@@ -195,6 +195,10 @@ async def prepare_offline_retirement_run(
     source, uploads = _binding(runtime, storage)
     directory, recovery, kg = map(_explicit_path, (run_directory, recovery_directory, kg_base_dir))
     roots = _directories(runtime_directories)
+    if evidence_root is not None:
+        evidence_root = _explicit_path(evidence_root)
+        if directory.is_relative_to(evidence_root) or evidence_root.is_relative_to(directory):
+            raise ValueError('offline_retirement_private_destination_required')
     if not isinstance(plan, ContextDispositionPlan) or not isinstance(migration_builds, RecoveryBuildPair):
         raise ValueError("offline_retirement_input_invalid")
     _bounded(plan.model_dump(mode="json"))
@@ -210,7 +214,7 @@ async def prepare_offline_retirement_run(
             await require_retirement_not_started(runtime.engine)
             async with joint_recovery_lifecycle_window(runtime, graphs, recovery, snapshot_id=snapshot_id,
                     builds=source_builds, runtime_directories=roots, kg_base_dir=kg,
-                    storage_root=uploads, max_seconds=max_seconds, include_native=True) as backup:
+                    storage_root=uploads, max_seconds=max_seconds, include_native=True, evidence_root=evidence_root) as backup:
                 permission = await capture_permission_retirement_checkpoint(runtime.engine, migration_id=plan.migration_id)
                 references = await capture_sprint_retirement_archive(runtime.engine, storage, migration_id=plan.migration_id)
                 for reference in references:

@@ -10,6 +10,7 @@ version 4 also reconciles known attachment and historical-archive references.
 Version 5 retains the existing KG audit namespaces under their real mutex.
 Version 6 adds opaque inactive generations and quarantine without opening them.
 Optional version 7 captures native checkpoints too, preserving graph history.
+Version 8 additionally retains explicitly selected signed-evidence storage.
 The installer must establish those separately. Never serve these artifacts as
 Board history: the relational database can contain credentials and many Boards.
 """
@@ -33,6 +34,9 @@ from okto_grafx import Database, connect
 from okto_pulse.core.kg.logical_transfer import LogicalFingerprintAccumulator
 
 from okto_pulse.community.adapters.filesystem_erasure import fsync_directory, remove_contained_tree
+from okto_pulse.community.adapters.evidence_recovery import (
+    evidence_capture_window, evidence_restore_window, verify_evidence_recovery,
+)
 from okto_pulse.community.adapters.graph_backend_binding import CommunityGraphBackendBindingStore
 from okto_pulse.community.adapters.kg_artifact_recovery import (
     KGArtifactRecoverySnapshot, kg_artifact_capture_window,
@@ -159,6 +163,7 @@ def create_joint_recovery_snapshot(
     max_seconds: float = 60, batch_size: int = 500, kg_base_dir: Path | None = None,
     storage_root: Path | None = None,
     include_native: bool = False,
+    evidence_root: Path | None = None,
 ) -> JointRecoverySnapshot:
     """Capture and verify a backup, releasing startup exclusion on return.
 
@@ -168,7 +173,7 @@ def create_joint_recovery_snapshot(
     with joint_recovery_window(source_database, graphs, recovery_directory,
             snapshot_id=snapshot_id, builds=builds, runtime_directories=runtime_directories,
             max_seconds=max_seconds, batch_size=batch_size, kg_base_dir=kg_base_dir,
-            storage_root=storage_root, include_native=include_native) as snapshot:
+            storage_root=storage_root, include_native=include_native, evidence_root=evidence_root) as snapshot:
         return snapshot
 
 
@@ -179,6 +184,7 @@ def joint_recovery_window(
     max_seconds: float = 60, batch_size: int = 500, kg_base_dir: Path | None = None,
     storage_root: Path | None = None,
     include_native: bool = False,
+    evidence_root: Path | None = None,
 ) -> Iterator[JointRecoverySnapshot]:
     """Keep cooperating startup excluded from backup through caller-owned work.
 
@@ -198,7 +204,7 @@ def joint_recovery_window(
         snapshot = _capture_joint_recovery_snapshot(source_database, graphs, recovery_directory,
             snapshot_id=snapshot_id, builds=builds, runtime_directories=roots,
             max_seconds=max_seconds, batch_size=batch_size, kg_base_dir=kg_base_dir,
-            storage_root=storage_root, include_native=include_native)
+            storage_root=storage_root, include_native=include_native, evidence_root=evidence_root)
         verify_joint_recovery_snapshot(snapshot, max_seconds=max_seconds)
         yield snapshot
 
@@ -209,6 +215,7 @@ async def joint_recovery_lifecycle_window(
     *, snapshot_id: str, builds: RecoveryBuildPair, runtime_directories: tuple[Path, ...],
     kg_base_dir: Path, storage_root: Path, max_seconds: float = 60, batch_size: int = 500,
     include_native: bool = False,
+    evidence_root: Path | None = None,
 ) -> AsyncIterator[JointRecoverySnapshot]:
     """Hold schema initialization and cooperating startup through offline work.
 
@@ -233,7 +240,7 @@ async def joint_recovery_lifecycle_window(
         with joint_recovery_window(source, graphs, recovery_directory, snapshot_id=snapshot_id,
                 builds=builds, runtime_directories=runtime_directories, kg_base_dir=kg_base_dir,
                 storage_root=storage_root, max_seconds=max_seconds, batch_size=batch_size,
-                include_native=include_native) as snapshot:
+                include_native=include_native, evidence_root=evidence_root) as snapshot:
             yield snapshot
 
 
@@ -243,6 +250,7 @@ def _capture_joint_recovery_snapshot(
     max_seconds: float = 60, batch_size: int = 500, kg_base_dir: Path | None = None,
     storage_root: Path | None = None,
     include_native: bool = False,
+    evidence_root: Path | None = None,
 ) -> JointRecoverySnapshot:
     """Capture explicitly selected stores; publish only after stable-state proof.
 
@@ -289,6 +297,16 @@ def _capture_joint_recovery_snapshot(
         raise ValueError("joint_snapshot_duplicate_database")
     kg_root = _explicit_path(kg_base_dir) if kg_base_dir is not None else None
     uploads = _explicit_path(storage_root) if storage_root is not None else None
+    evidence = _explicit_path(evidence_root) if evidence_root is not None else None
+    if evidence is not None:
+        if not include_native:
+            raise ValueError('joint_snapshot_evidence_requires_full_native_capture')
+        if (not any(evidence.is_relative_to(_explicit_path(path)) for path in runtime_directories)
+                or root.is_relative_to(evidence) or evidence.is_relative_to(root)
+                or any(evidence.is_relative_to(path) or path.is_relative_to(evidence)
+                    for path in (source, *graph_paths, *(() if uploads is None else (uploads,)),
+                        *(() if kg_root is None else (kg_root,))))):
+            raise ValueError('joint_snapshot_evidence_root_invalid')
     if type(include_native) is not bool or (include_native and (uploads is None or kg_root is None)):
         raise ValueError('joint_snapshot_native_requires_full_capture')
     if uploads is not None and kg_root is None:
@@ -314,6 +332,10 @@ def _capture_joint_recovery_snapshot(
                 storage_snapshot = None
                 artifact_window = None
                 artifact_snapshot = None
+                evidence_guard = None
+                if evidence is not None:
+                    evidence_guard = publication.enter_context(evidence_capture_window(
+                        evidence, stage / 'evidence', max_seconds=max_seconds))
                 if kg_root is not None:
                     inventory = read_recovery_graph_inventory(reserved, kg_root)
                     require_recovery_graph_selection(inventory, tuple(
@@ -378,6 +400,9 @@ def _capture_joint_recovery_snapshot(
             if include_native:
                 manifest['format'] = 'joint-recovery-snapshot/v7'
                 manifest['native_graphs'] = native_records
+            if evidence_guard is not None:
+                manifest['format'] = 'joint-recovery-snapshot/v8'
+                manifest['evidence'] = evidence_guard.record
             encoded = _encode(manifest)
             if len(encoded) > _MAX_MANIFEST:
                 raise ValueError("joint_snapshot_manifest_limit")
@@ -389,6 +414,8 @@ def _capture_joint_recovery_snapshot(
             _check_time(deadline)
             if artifact_window is not None:
                 artifact_window.validate()
+            if evidence_guard is not None:
+                evidence_guard.validate()
             _publish(stage, final)
             return JointRecoverySnapshot(final, hashlib.sha256(encoded).hexdigest())
         finally:
@@ -410,19 +437,21 @@ def verify_joint_recovery_snapshot(snapshot: JointRecoverySnapshot, *, max_secon
         raise ValueError("joint_snapshot_manifest_hash_mismatch")
     manifest = json.loads(encoded)
     keys = {"format", "snapshot_id", "capture_contract", "created_at", "builds", "grafx_version", "relational", "graphs"}
-    if isinstance(manifest, dict) and manifest.get("format") in {"joint-recovery-snapshot/v2", "joint-recovery-snapshot/v3", "joint-recovery-snapshot/v4", "joint-recovery-snapshot/v5", "joint-recovery-snapshot/v6", "joint-recovery-snapshot/v7"}:
+    if isinstance(manifest, dict) and manifest.get("format") in {"joint-recovery-snapshot/v2", "joint-recovery-snapshot/v3", "joint-recovery-snapshot/v4", "joint-recovery-snapshot/v5", "joint-recovery-snapshot/v6", "joint-recovery-snapshot/v7", "joint-recovery-snapshot/v8"}:
         keys.add("routing_inventory")
-    if isinstance(manifest, dict) and manifest.get("format") in {"joint-recovery-snapshot/v3", "joint-recovery-snapshot/v4", "joint-recovery-snapshot/v5", "joint-recovery-snapshot/v6", "joint-recovery-snapshot/v7"}:
+    if isinstance(manifest, dict) and manifest.get("format") in {"joint-recovery-snapshot/v3", "joint-recovery-snapshot/v4", "joint-recovery-snapshot/v5", "joint-recovery-snapshot/v6", "joint-recovery-snapshot/v7", "joint-recovery-snapshot/v8"}:
         keys.add("storage")
-    if isinstance(manifest, dict) and manifest.get("format") in {"joint-recovery-snapshot/v4", "joint-recovery-snapshot/v5", "joint-recovery-snapshot/v6", "joint-recovery-snapshot/v7"}:
+    if isinstance(manifest, dict) and manifest.get("format") in {"joint-recovery-snapshot/v4", "joint-recovery-snapshot/v5", "joint-recovery-snapshot/v6", "joint-recovery-snapshot/v7", "joint-recovery-snapshot/v8"}:
         keys.add("storage_references")
-    if isinstance(manifest, dict) and manifest.get("format") in {"joint-recovery-snapshot/v5", "joint-recovery-snapshot/v6", "joint-recovery-snapshot/v7"}:
+    if isinstance(manifest, dict) and manifest.get("format") in {"joint-recovery-snapshot/v5", "joint-recovery-snapshot/v6", "joint-recovery-snapshot/v7", "joint-recovery-snapshot/v8"}:
         keys.add("kg_artifacts")
-    if isinstance(manifest, dict) and manifest.get('format') == 'joint-recovery-snapshot/v7':
+    if isinstance(manifest, dict) and manifest.get('format') in {'joint-recovery-snapshot/v7', 'joint-recovery-snapshot/v8'}:
         keys.add('native_graphs')
+    if isinstance(manifest, dict) and manifest.get('format') == 'joint-recovery-snapshot/v8':
+        keys.add('evidence')
     if (not isinstance(manifest, dict)
         or set(manifest) != keys
-        or manifest["format"] not in {_FORMAT, "joint-recovery-snapshot/v2", "joint-recovery-snapshot/v3", "joint-recovery-snapshot/v4", "joint-recovery-snapshot/v5", "joint-recovery-snapshot/v6", "joint-recovery-snapshot/v7"} or manifest["capture_contract"] != _CAPTURE
+        or manifest["format"] not in {_FORMAT, "joint-recovery-snapshot/v2", "joint-recovery-snapshot/v3", "joint-recovery-snapshot/v4", "joint-recovery-snapshot/v5", "joint-recovery-snapshot/v6", "joint-recovery-snapshot/v7", "joint-recovery-snapshot/v8"} or manifest["capture_contract"] != _CAPTURE
         or manifest["snapshot_id"] != root.name or type(manifest["graphs"]) is not list
         or len(manifest["graphs"]) > 256):
         raise ValueError("joint_snapshot_manifest_invalid")
@@ -477,7 +506,7 @@ def verify_joint_recovery_snapshot(snapshot: JointRecoverySnapshot, *, max_secon
         artifacts = verify_kg_artifact_snapshot(_kg_artifact(root, manifest), max_seconds=max_seconds)
         inventory = manifest['routing_inventory']
         expected_roots = inventory['other_storage_paths']
-        if manifest['format'] in {'joint-recovery-snapshot/v6', 'joint-recovery-snapshot/v7'}:
+        if manifest['format'] in {'joint-recovery-snapshot/v6', 'joint-recovery-snapshot/v7', 'joint-recovery-snapshot/v8'}:
             require_retained_generation_inventory(recovery_graph_inventory_from_manifest(inventory))
             expected_roots = sorted((*expected_roots, *inventory['unselected_generation_paths']))
             expected_format = 'kg-artifact-recovery/v2'
@@ -498,6 +527,8 @@ def verify_joint_recovery_snapshot(snapshot: JointRecoverySnapshot, *, max_secon
                 max_seconds=max_seconds)
             if observed['database_uuid'] != graph['database_uuid'] or observed['checkpoint_lsn'] != graph['published_lsn']:
                 raise ValueError('joint_snapshot_native_identity_mismatch')
+    if 'evidence' in manifest:
+        verify_evidence_recovery(root / 'evidence', manifest['evidence'], max_seconds=max_seconds)
     return manifest
 
 
@@ -525,11 +556,12 @@ def restore_joint_recovery_snapshot(
     snapshot: JointRecoverySnapshot, target_directory: Path, *, builds: RecoveryBuildPair,
     max_seconds: float = 60, batch_size: int = 500, current_storage_root: Path | None = None,
     confirm_original_offline: bool = False,
+    current_evidence_root: Path | None = None,
 ) -> Path:
     """Restore a complete set, retaining privacy guards through publication."""
     with _staged_joint_recovery_restore(snapshot, target_directory, builds=builds,
             max_seconds=max_seconds, batch_size=batch_size, current_storage_root=current_storage_root,
-            confirm_original_offline=confirm_original_offline):
+            confirm_original_offline=confirm_original_offline, current_evidence_root=current_evidence_root):
         pass
     return _explicit_path(target_directory)
 
@@ -539,6 +571,7 @@ def _staged_joint_recovery_restore(
     snapshot: JointRecoverySnapshot, target_directory: Path, *, builds: RecoveryBuildPair,
     max_seconds: float = 60, batch_size: int = 500, current_storage_root: Path | None = None,
     confirm_original_offline: bool = False,
+    current_evidence_root: Path | None = None,
     publish: bool = True,
 ) -> Iterator[Path]:
     """Restore into an entirely new directory; never promote live bindings.
@@ -563,7 +596,9 @@ def _staged_joint_recovery_restore(
         raise ValueError("joint_snapshot_batch_size_invalid")
     if "storage" in manifest and current_storage_root is None:
         raise ValueError("joint_snapshot_current_storage_root_required")
-    if manifest.get('native_graphs') and confirm_original_offline is not True:
+    if 'evidence' in manifest and current_evidence_root is None:
+        raise ValueError('joint_snapshot_current_evidence_root_required')
+    if (manifest.get('native_graphs') or 'evidence' in manifest) and confirm_original_offline is not True:
         raise ValueError('joint_snapshot_original_offline_required')
     target = _explicit_path(target_directory)
     if target.exists() or not target.parent.is_dir():
@@ -571,7 +606,9 @@ def _staged_joint_recovery_restore(
     # Refuse before creating the publisher's mutex: an output inside the upload
     # namespace would itself introduce an invalid root-level storage object.
     if (target.is_relative_to(_explicit_path(snapshot.directory))
-        or ("storage" in manifest and target.is_relative_to(_explicit_path(current_storage_root)))):
+        or ("storage" in manifest and target.is_relative_to(_explicit_path(current_storage_root)))
+        or ("evidence" in manifest and (target.is_relative_to(_explicit_path(current_evidence_root))
+            or _explicit_path(current_evidence_root).is_relative_to(target)))):
         raise ValueError("joint_snapshot_restore_root_overlap")
     stage = target.parent / f".{target.name}.{secrets.token_hex(12)}.restore"
     lock_path = _explicit_path(target.parent / ".joint-recovery-restore.lock")
@@ -587,6 +624,11 @@ def _staged_joint_recovery_restore(
             storage_guard.require_separate_target(target)
         stage.mkdir(mode=0o700)
         try:
+            evidence_guard = None
+            if 'evidence' in manifest:
+                evidence_guard = guards.enter_context(evidence_restore_window(
+                    snapshot.directory / 'evidence', manifest['evidence'], stage / 'evidence',
+                    current_root=current_evidence_root, max_seconds=max_seconds))
             restore_sqlite_recovery_snapshot(_sql_artifact(snapshot.directory, manifest), stage / "database.sqlite3", max_seconds=max_seconds)
             for index, record in enumerate(manifest["graphs"]):
                 _check_time(deadline)
@@ -622,6 +664,8 @@ def _staged_joint_recovery_restore(
             fsync_directory(stage)
             if storage_guard is not None:
                 storage_guard.validate()
+            if evidence_guard is not None:
+                evidence_guard.validate()
             if publish:
                 _publish(stage, target)
         finally:
