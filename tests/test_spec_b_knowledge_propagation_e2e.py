@@ -545,6 +545,24 @@ async def test_ts_9e54d02f_tri_state_v2_end_to_end(
     assert len(selected["ledgers"]) == 1
     assert roots[2] not in {item.root_id for item in selected["assignments"]}
 
+    # BASE T17: independent Specs retain the same completed refinement and its
+    # immutable source; the later derivations must not replace the earlier one.
+    spec_ids = {omitted_payload["spec_id"], explicit_empty.spec_id, explicit_ids.spec_id}
+    assert len(spec_ids) == 3
+    async with runtime.sessions() as session:
+        derived = (await session.scalars(select(Spec).where(Spec.refinement_id == refinement_id))).all()
+        assert {spec.id for spec in derived} == spec_ids
+        snapshots = (await session.scalars(select(RefinementSnapshot).where(
+            RefinementSnapshot.refinement_id == refinement_id))).all()
+        assert len(snapshots) == 1
+        for spec in derived:
+            assert spec.ideation_id == f"{refinement_id}-ideation"
+            assert spec.board_id == BOARD_ID
+            assert spec.source_refinement_snapshot_id == snapshots[0].id
+            assert spec.source_context_manifest is not None
+            assert spec.status == SpecStatus.DRAFT
+        assert (await session.get(Refinement, refinement_id)).status == RefinementStatus.DONE
+
 
 def _card_target(card_id: str) -> KnowledgeTargetKey:
     return KnowledgeTargetKey(
