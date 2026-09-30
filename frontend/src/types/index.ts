@@ -2393,6 +2393,10 @@ export interface LearningCaptureSelection {
   fingerprint: string;
 }
 
+export type LearningIntentRequest = { kind: 'create' } | ({
+  target_node_id: string; target_generation: number; expected_fingerprint: string; reason: string;
+} & ({ kind: 'reuse' } | { kind: 'supersede'; scope: 'source_bug' }));
+
 export interface LearningSubmission {
   capture_id: string;
   expected_source_digest: string;
@@ -2401,6 +2405,7 @@ export interface LearningSubmission {
   context: string;
   applicability: string;
   scenario_ids: string[];
+  intent?: LearningIntentRequest;
 }
 
 export interface TaskValidationSubmitPayload {

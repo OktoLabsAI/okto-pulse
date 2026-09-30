@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import { useApiClient } from '@/contexts/ApiContext';
+import type { LearningIntentRequest } from '@/types';
 
 export interface CaptureSource {
   source_digest: string;
@@ -9,6 +10,7 @@ export interface CaptureSource {
 export interface CaptureRequest {
   board_id: string; capture_id: string; expected_source_digest: string; expected_source_version: number;
   content: string; context: string; applicability: string; scenario_ids: string[];
+  intent?: LearningIntentRequest;
 }
 export type CaptureIntent = { kind: 'create' } | {
   kind: 'reuse' | 'supersede'; target_node_id: string; target_generation: number;

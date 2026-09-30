@@ -1,6 +1,7 @@
 import { renderHook, cleanup } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { parseCaptureHistory, parseCaptureSource, useLearningCaptureApi } from '../learning-capture-api';
+import type { LearningIntentRequest } from '@/types';
 
 const client = vi.hoisted(() => ({ fetchJson: vi.fn() }));
 vi.mock('@/contexts/ApiContext', () => ({ useApiClient: () => client }));
@@ -15,6 +16,20 @@ const item = { learning_id: 'learning', generation: 0, source_revision: 1, finge
     source: { board_id: 'board', bug_id: 'bug', digest: 'a'.repeat(64), policy_version: 1 },
     intent: { kind: 'create', target_node_id: null, target_generation: null, expected_fingerprint: null, reason: null } } };
 const history = { contract_version: 'learning-capture-history/v1', board_id: 'board', bug_id: 'bug', items: [item], next_cursor: null };
+
+it.each(['reuse', 'supersede'] as const)('sends an explicit %s intent unchanged without selecting a new target on conflict', async kind => {
+  const intent: LearningIntentRequest = { kind, target_node_id: 'target', target_generation: 2,
+    expected_fingerprint: 'c'.repeat(64), reason: 'Explicit applicability', ...(kind === 'supersede' ? { scope: 'source_bug' as const } : {}) } as LearningIntentRequest;
+  const request = { board_id: 'board', capture_id: 'capture', expected_source_digest: source.source_digest,
+    expected_source_version: 1, content: 'L', context: 'C', applicability: 'A', scenario_ids: ['scenario'], intent };
+  const conflict = new Error('learning_capture_target_changed');
+  client.fetchJson.mockRejectedValueOnce(conflict);
+  const { result } = renderHook(() => useLearningCaptureApi());
+  const signal = new AbortController().signal;
+  await expect(result.current.create('bug', request, signal)).rejects.toBe(conflict);
+  expect(client.fetchJson).toHaveBeenCalledTimes(1);
+  expect(JSON.parse(client.fetchJson.mock.calls[0][1].body).intent).toEqual(intent);
+});
 
 function scopedHistory() {
   return { ...history, items: [{ ...item, capture: { ...item.capture, capture_format: 'learning-capture/v2',

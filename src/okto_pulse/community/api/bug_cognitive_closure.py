@@ -33,6 +33,7 @@ from okto_pulse.core.application.use_cases.learning_capture import (
 from okto_pulse.core.application.use_cases.base import EntityNotFoundError, PermissionDeniedError
 from okto_pulse.core.models.learning_capture import LearningCaptureCreateRequest
 from okto_pulse.core.ports.kg_cognitive_source import CognitiveSourceError, CognitiveSourceConflict
+from okto_pulse.core.ports.learning_capture import LearningCaptureTargetConflict
 from okto_pulse.community.api.permission_errors import permission_denied_http_error
 
 router = APIRouter()
@@ -43,6 +44,9 @@ def _capture_error(exc):
         return permission_denied_http_error(exc)
     if isinstance(exc, EntityNotFoundError):
         return HTTPException(status_code=404, detail={'code': 'bug_not_found'})
+    if isinstance(exc, LearningCaptureTargetConflict):
+        return HTTPException(status_code=409, detail={'code': 'learning_capture_target_changed',
+            'current_target': exc.current_target})
     if isinstance(exc, CognitiveSourceConflict):
         return HTTPException(status_code=409, detail={'code': exc.failure_reason})
     code = str(exc)
@@ -53,6 +57,8 @@ def _capture_error(exc):
         'learning_capture_request_invalid', 'learning_capture_payload_invalid', 'learning_capture_payload_limit',
         'learning_capture_evidence_ambiguous', 'learning_capture_evidence_not_authenticated',
         'learning_capture_page_invalid',
+        'learning_capture_intent_invalid', 'learning_capture_target_not_eligible',
+        'learning_capture_reuse_content_changed', 'learning_capture_target_replaced_in_scope',
     }:
         return HTTPException(status_code=503, detail={'code': 'learning_capture_unavailable'})
     return HTTPException(status_code=503 if unavailable else 409 if conflict else 422, detail={'code': code})

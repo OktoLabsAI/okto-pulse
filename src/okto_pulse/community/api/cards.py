@@ -5,6 +5,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
+from okto_pulse.core.ports.learning_capture import LearningCaptureTargetConflict
 
 from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.community.api.download_headers import (
@@ -297,6 +298,8 @@ async def move_card(
         raise RESTAdapterContract.http_error(e) from e
     except SpecDependencyOperationError as exc:
         raise spec_dependency_http_error(exc) from exc
+    except LearningCaptureTargetConflict as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.to_dict()) from exc
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     except EntityNotFoundError:
