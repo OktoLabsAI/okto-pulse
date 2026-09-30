@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { LearningSubmissionEditor } from '../LearningSubmissionEditor';
 import type { CaptureSource } from '@/services/learning-capture-api';
 
-const api = vi.hoisted(() => ({ source: vi.fn() }));
+const api = vi.hoisted(() => ({ source: vi.fn(), candidates: vi.fn() }));
 vi.mock('@/services/learning-capture-api', () => ({ useLearningCaptureApi: () => api }));
 const source = { source_digest: 'a'.repeat(64), source_policy_version: 7, scenarios: [
   { id: 'proof', title: 'Signed inspection', authenticated: true },
@@ -20,8 +20,24 @@ async function fill() {
   }
   fireEvent.click(await screen.findByRole('checkbox', { name: 'Signed inspection' }));
 }
-beforeEach(() => { change.mockReset(); api.source.mockReset().mockResolvedValue(source); });
+beforeEach(() => { change.mockReset(); api.source.mockReset().mockResolvedValue(source); api.candidates.mockReset(); });
 afterEach(cleanup);
+
+it('keeps a compound replacement pending until the author chooses its target and reason', async () => {
+  api.candidates.mockResolvedValue({ status: 'available', limitations: [], items: [{ learning_id: 'target', generation: 0,
+    fingerprint: 'b'.repeat(64), content: 'Old lesson', context: 'Old context', similarity: .9, suggestion: 'review_replacement' }] });
+  render(<LearningSubmissionEditor boardId="board" bugId="bug" canCreate canReadTargets onChange={change} />);
+  await fill();
+  fireEvent.click(screen.getByRole('button', { name: 'Find suggestions' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Replace for this Bug' }));
+  expect(change).toHaveBeenLastCalledWith(null, true);
+  fireEvent.change(screen.getByLabelText('Reason for replacement'), { target: { value: 'Corrected for this Bug' } });
+  expect(change).toHaveBeenLastCalledWith(expect.objectContaining({ content: 'Authored content', intent: {
+    kind: 'supersede', target_node_id: 'target', target_generation: 0, expected_fingerprint: 'b'.repeat(64),
+    scope: 'source_bug', reason: 'Corrected for this Bug' } }), false);
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh Learning evidence' }));
+  expect(change).toHaveBeenLastCalledWith(null, true);
+});
 
 it('loads only after opt-in and requires authored content and authenticated evidence', async () => {
   render(editor()); expect(api.source).not.toHaveBeenCalled();

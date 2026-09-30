@@ -59,6 +59,7 @@ def _capture_error(exc):
         'learning_capture_page_invalid',
         'learning_capture_intent_invalid', 'learning_capture_target_not_eligible',
         'learning_capture_reuse_content_changed', 'learning_capture_target_replaced_in_scope',
+        'learning_capture_candidate_query_invalid',
     }:
         return HTTPException(status_code=503, detail={'code': 'learning_capture_unavailable'})
     return HTTPException(status_code=503 if unavailable else 409 if conflict else 422, detail={'code': code})
@@ -67,11 +68,12 @@ def _capture_error(exc):
 @router.get('/bugs/{bug_id}/learning-capture-context', tags=['bug-learning'])
 async def get_learning_capture_context(
     bug_id: str, board_id: str = Query(min_length=1, max_length=4096),
+    candidate_query: str | None = Query(default=None, min_length=1, max_length=4096),
     uow: PulseUnitOfWork = Depends(get_unit_of_work), actor: str = Depends(require_user),
 ) -> dict[str, Any]:
     try:
         return await GetLearningCaptureSourceUseCase().execute(board_id=board_id, bug_id=bug_id,
-            actor=RESTAdapterContract.actor(actor), uow=uow)
+            actor=RESTAdapterContract.actor(actor), uow=uow, candidate_query=candidate_query)
     except (EntityNotFoundError, PermissionDeniedError, ValueError, CognitiveSourceError, RuntimeError) as exc:
         raise _capture_error(exc) from exc
 

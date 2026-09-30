@@ -2623,7 +2623,8 @@ export function CardModal({
             </div>
             <fieldset disabled={movingStatus !== null} className="min-w-0">
             {card?.card_type === 'bug' && <LearningSubmissionEditor key={learningReportScope}
-              boardId={boardId} bugId={card.id} canCreate={canAuthorLearning} onChange={onReportLearning} />}
+              boardId={boardId} bugId={card.id} canCreate={canAuthorLearning}
+              canReadTargets={!perms.isLoading && !perms.error && perms.has('kg.query.learning_from_bugs')} onChange={onReportLearning} />}
             {!conclusionDeliverySelection?.reuse_impact && <ImpactEvidenceEditor
               draft={conclusionImpactDraft}
               onChange={setConclusionImpactDraft}

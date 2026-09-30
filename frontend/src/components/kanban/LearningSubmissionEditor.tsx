@@ -1,12 +1,13 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useLearningCaptureApi, type CaptureSource } from '@/services/learning-capture-api';
 import type { LearningSubmission } from '@/types';
+import { LearningIntentSelector, type LearningIntentSelection } from './LearningIntentSelector';
 
 type Draft = Omit<LearningSubmission, 'capture_id'>;
 type Change = (draft: Draft | null, pending: boolean) => void;
 
-export function LearningSubmissionEditor({ boardId, bugId, canCreate, onChange }: {
-  boardId: string; bugId: string; canCreate: boolean; onChange: Change;
+export function LearningSubmissionEditor({ boardId, bugId, canCreate, canReadTargets = false, onChange }: {
+  boardId: string; bugId: string; canCreate: boolean; canReadTargets?: boolean; onChange: Change;
 }) {
   const [enabled, setEnabled] = useState(false);
   useEffect(() => {
@@ -17,18 +18,26 @@ export function LearningSubmissionEditor({ boardId, bugId, canCreate, onChange }
     <label><input type="checkbox" checked={enabled} disabled={!enabled && !canCreate}
       onChange={event => { setEnabled(event.target.checked); onChange(null, event.target.checked); }} /> Record a Learning with this report</label>
     <p className="text-sm">Direct completion requires a valid Learning when the Board's Bug Learning policy is Blocking. Other completion gates still apply.</p>
-    {enabled && (canCreate ? <SubmissionFields key={`${boardId}:${bugId}`} boardId={boardId} bugId={bugId} onChange={onChange} />
+    {enabled && (canCreate ? <SubmissionFields key={`${boardId}:${bugId}`} boardId={boardId} bugId={bugId} canReadTargets={canReadTargets} onChange={onChange} />
       : <p role="alert">Learning authoring permission is unavailable. Restore access or remove the Learning from this submission.</p>)}
   </section>;
 }
 
-function SubmissionFields({ boardId, bugId, onChange }: { boardId: string; bugId: string; onChange: Change }) {
+function SubmissionFields({ boardId, bugId, canReadTargets, onChange }: { boardId: string; bugId: string; canReadTargets: boolean; onChange: Change }) {
   const api = useLearningCaptureApi();
   const [source, setSource] = useState<CaptureSource | null>(null);
   const [error, setError] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const [text, setText] = useState({ content: '', context: '', applicability: '' });
   const [selected, setSelected] = useState<string[]>([]);
+  const [intentSelection, setIntentSelection] = useState<LearningIntentSelection>({ ready: true });
+  const selectIntent = useCallback((selection: LearningIntentSelection) => {
+    setIntentSelection(selection);
+    if (selection.content !== undefined) setText(previous => ({ ...previous, content: selection.content! }));
+  }, []);
+  useEffect(() => {
+    setIntentSelection(previous => previous.intent || !previous.ready ? { ready: false } : previous);
+  }, [canReadTargets]);
   useEffect(() => {
     const abort = new AbortController();
     setSource(null); setError(false); setSelected([]);
@@ -38,17 +47,24 @@ function SubmissionFields({ boardId, bugId, onChange }: { boardId: string; bugId
     return () => abort.abort();
   }, [api, boardId, bugId, refresh]);
   useEffect(() => {
-    const valid = source && selected.length > 0 && Object.values(text).every(value => value.trim().length > 0);
+    const valid = source && intentSelection.ready && (!intentSelection.intent || canReadTargets)
+      && selected.length > 0 && Object.values(text).every(value => value.trim().length > 0);
     onChange(valid ? { ...text, expected_source_digest: source.source_digest,
-      expected_source_version: source.source_policy_version, scenario_ids: [...selected].sort() } : null, !valid);
-  }, [source, selected, text, onChange]);
+      expected_source_version: source.source_policy_version, scenario_ids: [...selected].sort(),
+      ...(intentSelection.intent ? { intent: intentSelection.intent } : {}) } : null, !valid);
+  }, [source, selected, text, onChange, intentSelection, canReadTargets]);
   return <div className="space-y-2">
     <p className="text-sm">Save the lesson and this execution report together. The Learning does not approve the implementation.</p>
     {(['content', 'context', 'applicability'] as const).map(name => <label key={name} className="block text-sm">
       {{ content: 'Learning for this report', context: 'Learning context', applicability: 'Learning applicability' }[name]}
       <textarea maxLength={65536} value={text[name]} className="block w-full rounded border bg-transparent p-2"
+        readOnly={name === 'content' && intentSelection.intent?.kind === 'reuse'}
         onChange={event => setText(previous => ({ ...previous, [name]: event.target.value }))} />
     </label>)}
+    {canReadTargets && <LearningIntentSelector boardId={boardId} bugId={bugId} content={text.content}
+      refresh={refresh} onChange={selectIntent} />}
+    {!canReadTargets && !intentSelection.ready && <button type="button"
+      onClick={() => selectIntent({ ready: true })}>Create a new Learning</button>}
     {error ? <p role="alert">Learning evidence is unavailable. Your text is preserved; refresh to try again.</p>
       : !source ? <p role="status">Loading Learning evidence…</p>
         : <fieldset><legend>Evidence supporting this lesson</legend>

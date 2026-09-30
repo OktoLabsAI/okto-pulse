@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { v4 as uuid } from 'uuid';
 import { usePermissions } from '@/hooks/usePermissions';
 import { AuthenticatedFetchError } from '@/lib/authFetch';
 import { useLearningCaptureApi, type CaptureHistory, type CaptureHistoryItem, type CaptureRequest, type CaptureSource } from '@/services/learning-capture-api';
+import { LearningIntentSelector, type LearningIntentSelection } from './LearningIntentSelector';
 
 const CAPTURE_SOURCE_PERMISSIONS = ['board.read', 'card.entity.read', 'card.entity.context_read',
   'card.validation.read', 'card.comments.read', 'card.conclusion.read', 'card.tests.read', 'spec.entity.read', 'spec.tests.read'];
@@ -61,6 +62,14 @@ function CaptureEditor({ boardId, bugId, canCreate, canReadHistory }: {
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState('');
   const [mustRefresh, setMustRefresh] = useState(false);
+  const [intentSelection, setIntentSelection] = useState<LearningIntentSelection>({ ready: true });
+  const selectIntent = useCallback((selection: LearningIntentSelection) => {
+    setIntentSelection(selection);
+    if (selection.content !== undefined) setDraft(previous => ({ ...previous, content: selection.content! }));
+  }, []);
+  useEffect(() => {
+    setIntentSelection(previous => previous.intent || !previous.ready ? { ready: false } : previous);
+  }, [canReadHistory]);
   const attempt = useRef<{ basis: string; id: string } | null>(null);
   const submission = useRef<AbortController | null>(null);
   useEffect(() => () => { submission.current?.abort(); }, []);
@@ -86,9 +95,11 @@ function CaptureEditor({ boardId, bugId, canCreate, canReadHistory }: {
   }, [api, boardId, bugId, canReadHistory, cursor, historyRefresh]);
 
   async function save() {
-    if (!source || !canCreate || saving || saved || mustRefresh || !selected.length) return;
+    if (!source || !canCreate || saving || saved || mustRefresh || !selected.length || !intentSelection.ready
+      || (intentSelection.intent && !canReadHistory)) return;
     const base = { board_id: boardId, expected_source_digest: source.source_digest,
-      expected_source_version: source.source_policy_version, ...draft, scenario_ids: [...selected].sort() };
+      expected_source_version: source.source_policy_version, ...draft, scenario_ids: [...selected].sort(),
+      ...(intentSelection.intent ? { intent: intentSelection.intent } : {}) };
     const basis = JSON.stringify(base);
     if (attempt.current?.basis !== basis) attempt.current = { basis, id: uuid() };
     const request: CaptureRequest = { ...base, capture_id: attempt.current.id };
@@ -112,8 +123,13 @@ function CaptureEditor({ boardId, bugId, canCreate, canReadHistory }: {
       {(['content', 'context', 'applicability'] as const).map(name => <label key={name} className="block text-sm">
         {{ content: 'Learning', context: 'Context', applicability: 'Applicability' }[name]}
         <textarea className={fieldClass} value={draft[name]} maxLength={65536} disabled={saving || saved}
+          readOnly={name === 'content' && intentSelection.intent?.kind === 'reuse'}
           onChange={event => setDraft(previous => ({ ...previous, [name]: event.target.value }))} />
       </label>)}
+      {canReadHistory && <LearningIntentSelector boardId={boardId} bugId={bugId} content={draft.content}
+        refresh={refresh} disabled={saving || saved} onChange={selectIntent} />}
+      {!canReadHistory && !intentSelection.ready && <button type="button" className={buttonClass}
+        disabled={saving || saved} onClick={() => selectIntent({ ready: true })}>Create a new Learning</button>}
       {sourceError ? <p role="alert">{sourceError}</p> : !source ? <p role="status">Loading current evidence…</p> :
         <fieldset disabled={saving || saved} className="space-y-2">
           <legend className="text-sm font-medium">Evidence supporting this Learning</legend>
@@ -129,7 +145,8 @@ function CaptureEditor({ boardId, bugId, canCreate, canReadHistory }: {
       <div className="flex flex-wrap gap-2">
         <button type="button" className={buttonClass} disabled={saving} onClick={() => setRefresh(value => value + 1)}>Refresh evidence</button>
         <button type="button" className={buttonClass} onClick={() => void save()}
-          disabled={saving || saved || !source || mustRefresh || !selected.length || selected.length > 128 || !Object.values(draft).every(value => value.trim())}>
+          disabled={saving || saved || !source || mustRefresh || !intentSelection.ready || (!!intentSelection.intent && !canReadHistory)
+            || !selected.length || selected.length > 128 || !Object.values(draft).every(value => value.trim())}>
           {saving ? 'Saving Learning…' : 'Save Learning'}
         </button>
         {saved && <button type="button" className={buttonClass} onClick={() => {

@@ -16,6 +16,7 @@ from okto_pulse.core.kg.schema_contract import NODE_TYPES
 from okto_pulse.community.adapters.grafx_board_vector_search import _SPACE_BY_NODE_TYPE
 from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
 from okto_pulse.community.adapters.grafx_observations import mapped
+from okto_pulse.community.adapters.grafx_schema_manifest import EMBEDDING_DIMENSION, EMBEDDING_METRIC
 
 _COLUMNS = (
     "id",
@@ -53,7 +54,7 @@ def _request(request):
     if type(request) is not RankedGraphQuery:
         raise ValueError("ranked_query_required")
     _node_type(request.node_type)
-    if request.mode not in {"text", "hybrid"} or request.graph_layer not in {
+    if request.mode not in {"text", "hybrid", "vector"} or request.graph_layer not in {
         "all",
         "canonical",
         "working",
@@ -88,7 +89,7 @@ def _request(request):
             or not lower <= value <= upper
         ):
             raise ValueError(f"invalid_{key}")
-    if request.mode == "hybrid":
+    if request.mode in {"hybrid", "vector"}:
         if request.phrase:
             raise ValueError("phrase_requires_text_mode")
         if (
@@ -153,6 +154,19 @@ class CommunityGrafxRankedSearch:
                 else ["text"],
             }
 
+    @staticmethod
+    def _vector_ready(database, node_type):
+        # The existing readiness response describes the lexical/hybrid public
+        # explorer. Internal vector consumers qualify their separate space here.
+        name = _SPACE_BY_NODE_TYPE.get(node_type)
+        spaces = {space.name: space for space in database.catalog.catalog.spaces()}
+        if name not in spaces:
+            return False
+        space = spaces[name]
+        if space.dimension != EMBEDDING_DIMENSION or space.metric.value != EMBEDDING_METRIC:
+            raise GraphCapabilityUnavailable('Vector search space differs from the cosine contract.')
+        return True
+
 
     def search(self, board_id, request):
         request = _request(request)
@@ -166,18 +180,21 @@ class CommunityGrafxRankedSearch:
 
         try:
             with self._read_scope(board_id) as db, db.begin("read") as reader:
-                if not self._ready(db, request.node_type):
+                ready = (self._vector_ready(db, request.node_type) if request.mode == 'vector'
+                    else self._ready(db, request.node_type))
+                if not ready:
                     raise _missing(request.node_type)
                 # Only projected policy/payload fields, never retained embeddings.
                 # Native filters require physical IDs; bound the materialization
                 # explicitly rather than post-filtering an already truncated top-k.
                 allowed, payloads, scanned, cursor = [], {}, 0, None
                 retained_bytes = 0
+                columns = _COLUMNS + (('generation', 'content', 'context') if request.mode == 'vector' else ())
                 while True:
                     page = reader.scan_rows_v1(
                         request.node_type,
                         kind="node",
-                        columns=_COLUMNS,
+                        columns=columns,
                         limit=min(256, request.max_filter_rows + 1 - scanned),
                         cursor=cursor,
                         max_batch_bytes=4 * 1024 * 1024,
@@ -190,7 +207,7 @@ class CommunityGrafxRankedSearch:
                                 "Ranked filter materialization budget exceeded.",
                                 resource="pulse_ranked_filter",
                             )
-                        values = dict(zip(_COLUMNS, row.values, strict=True))
+                        values = dict(zip(columns, row.values, strict=True))
                         if not tpl.is_visible_in_active_reads(
                             values["revocation_reason"]
                         ):
@@ -230,6 +247,22 @@ class CommunityGrafxRankedSearch:
                         break
                 permitted = RecordIdFilter.of(allowed)
                 limits = TextSearchLimits(max_candidates=request.max_filter_rows)
+                if request.mode == 'vector':
+                    result = db.search_vectors(reader, space=_SPACE_BY_NODE_TYPE[request.node_type],
+                        query=request.vector, k=request.limit, candidate_filter=permitted,
+                        table=request.node_type, timeout_seconds=remaining())
+                    remaining()
+                    return {
+                        'hits': [dict(node_id=payloads[hit.record_id]['id'], node_type=request.node_type,
+                            title=payloads[hit.record_id]['title'], generation=payloads[hit.record_id]['generation'],
+                            content=payloads[hit.record_id]['content'], context=payloads[hit.record_id]['context'],
+                            source_artifact_ref=payloads[hit.record_id]['source_artifact_ref'],
+                            score=hit.score, vector_score=hit.score, lexical_score=None) for hit in result.hits],
+                        'mode': 'vector', 'ranking': 'cosine', 'snapshot': str(reader.snapshot.read_lsn),
+                        'lexical_regime': 'disabled', 'vector_regime': result.regime,
+                        'achieved_k': result.achieved_k, 'requested_k': result.requested_k,
+                        'filter_rows_scanned': scanned, 'complete': True,
+                    }
                 if request.mode == "text":
                     result = db.search_text(
                         reader,

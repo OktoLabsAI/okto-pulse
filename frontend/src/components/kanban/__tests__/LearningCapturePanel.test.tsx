@@ -4,7 +4,7 @@ import { LearningCapturePanel } from '../LearningCapturePanel';
 import { AuthenticatedFetchError } from '@/lib/authFetch';
 import type { CaptureSource } from '@/services/learning-capture-api';
 
-const mocks = vi.hoisted(() => ({ api: { source: vi.fn(), history: vi.fn(), create: vi.fn() },
+const mocks = vi.hoisted(() => ({ api: { source: vi.fn(), history: vi.fn(), create: vi.fn(), candidates: vi.fn() },
   denied: new Set<string>(), loading: false, error: null as Error | null }));
 vi.mock('@/services/learning-capture-api', () => ({ useLearningCaptureApi: () => mocks.api }));
 vi.mock('@/hooks/usePermissions', () => ({ usePermissions: () => ({
@@ -22,6 +22,8 @@ beforeEach(() => {
   mocks.api.source.mockReset().mockResolvedValue(source);
   mocks.api.history.mockReset().mockResolvedValue({ items: [], next_cursor: null });
   mocks.api.create.mockReset().mockResolvedValue({ capture_id: 'saved', learning_id: 'learning' });
+  mocks.api.candidates.mockReset().mockResolvedValue({ status: 'available', limitations: [], items: [{ learning_id: 'target',
+    generation: 0, fingerprint: 'e'.repeat(64), content: 'Existing lesson', context: 'Existing context', similarity: 0.98, suggestion: 'reuse' }] });
 });
 afterEach(cleanup);
 function panel(bugId = 'bug') { return <LearningCapturePanel boardId="board" bugId={bugId} />; }
@@ -33,6 +35,20 @@ async function fill() {
 }
 
 describe('LearningCapturePanel', () => {
+  it.each(['reuse', 'supersede'])('includes the explicitly selected %s target and reason in the saved request', async kind => {
+    render(panel()); await fill();
+    fireEvent.click(screen.getByRole('button', { name: 'Find suggestions' }));
+    await screen.findByText('Existing lesson');
+    fireEvent.click(screen.getByRole('button', { name: kind === 'reuse' ? 'Reuse this Learning' : 'Replace for this Bug' }));
+    expect(screen.getByRole('button', { name: 'Save Learning' })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText(kind === 'reuse' ? 'Reason for reuse' : 'Reason for replacement'), { target: { value: 'This correction needs it' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Learning' }));
+    await screen.findByText('Learning saved. Graph materialization is pending.');
+    expect(mocks.api.create.mock.calls[0][1]).toMatchObject({ content: kind === 'reuse' ? 'Existing lesson' : 'Authored lesson',
+      intent: { kind, target_node_id: 'target', target_generation: 0, expected_fingerprint: 'e'.repeat(64),
+        reason: 'This correction needs it', ...(kind === 'supersede' ? { scope: 'source_bug' } : {}) } });
+  });
+
   it.each(['recorded', 'unverified', 'legacy', 'reuse'])('presents %s relationships without inferring current approval', async state => {
     const intent = { kind: state === 'reuse' ? 'reuse' : 'supersede', target_node_id: 'previous-learning',
       target_generation: 0, expected_fingerprint: 'c'.repeat(64), reason: '<script>replacement reason</script>',

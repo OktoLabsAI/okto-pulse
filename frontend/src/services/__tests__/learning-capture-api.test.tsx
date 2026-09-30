@@ -17,6 +17,39 @@ const item = { learning_id: 'learning', generation: 0, source_revision: 1, finge
     intent: { kind: 'create', target_node_id: null, target_generation: null, expected_fingerprint: null, reason: null } } };
 const history = { contract_version: 'learning-capture-history/v1', board_id: 'board', bug_id: 'bug', items: [item], next_cursor: null };
 
+const suggestions = { contract_version: 'learning-candidates/v1', status: 'available', exhaustive: false,
+  applicability: 'not_assessed', data_source: 'graph_and_cognitive_source', similarity_floor: 0.6, candidate_window: 20,
+  limitation: null, limitations: [], graph_snapshot: '12', vector_regime: 'exact', items: [{ learning_id: 'target',
+    generation: 0, source_revision: 1, fingerprint: 'd'.repeat(64), content: 'Old lesson', context: 'Old context', similarity: .96, suggestion: 'reuse' }] };
+
+it('loads candidates only on request through the existing scoped context surface', async () => {
+  client.fetchJson.mockResolvedValue({ ...source, candidates: suggestions });
+  const { result } = renderHook(() => useLearningCaptureApi());
+  const signal = new AbortController().signal;
+  const page = await result.current.candidates('board', 'bug', 'A related lesson', signal);
+  expect(page.items[0].fingerprint).toBe('d'.repeat(64));
+  expect(client.fetchJson).toHaveBeenCalledWith('/bugs/bug/learning-capture-context?board_id=board&candidate_query=A+related+lesson', { signal, cache: 'no-store' });
+});
+
+it.each(['scope', 'current', 'score', 'band', 'fingerprint', 'duplicate', 'limit', 'unknown'])('rejects malformed candidate evidence: %s', damage => {
+  const bad = structuredClone(suggestions);
+  if (damage === 'scope') bad.data_source = 'untrusted';
+  else if (damage === 'current') bad.applicability = 'approved';
+  else if (damage === 'score') bad.items[0].similarity = .59;
+  else if (damage === 'band') bad.items[0].suggestion = 'related';
+  else if (damage === 'fingerprint') bad.items[0].fingerprint = 'bad';
+  else if (damage === 'duplicate') bad.items.push(bad.items[0]);
+  else if (damage === 'limit') bad.candidate_window = 1000;
+  else bad.status = 'unknown';
+  expect(() => parseCaptureSource({ ...source, candidates: bad }, 'board', 'bug')).toThrow();
+});
+
+it('preserves unavailable search without manufacturing an empty successful page', () => {
+  const result = parseCaptureSource({ ...source, candidates: { ...suggestions, status: 'unavailable', items: [],
+    limitation: 'search_unavailable' } }, 'board', 'bug');
+  expect(result.candidates).toMatchObject({ status: 'unavailable', limitation: 'search_unavailable', items: [] });
+});
+
 it.each(['reuse', 'supersede'] as const)('sends an explicit %s intent unchanged without selecting a new target on conflict', async kind => {
   const intent: LearningIntentRequest = { kind, target_node_id: 'target', target_generation: 2,
     expected_fingerprint: 'c'.repeat(64), reason: 'Explicit applicability', ...(kind === 'supersede' ? { scope: 'source_bug' as const } : {}) } as LearningIntentRequest;

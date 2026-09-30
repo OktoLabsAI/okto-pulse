@@ -6,6 +6,14 @@ export interface CaptureSource {
   source_digest: string;
   source_policy_version: number;
   scenarios: { id: string; title: string; authenticated: boolean }[];
+  candidates?: LearningCandidates;
+}
+export interface LearningCandidate {
+  learning_id: string; generation: number; source_revision: number; fingerprint: string;
+  content: string; context: string; similarity: number; suggestion: 'reuse' | 'review_replacement' | 'related';
+}
+export interface LearningCandidates {
+  status: 'available' | 'unavailable'; items: LearningCandidate[]; limitation: string | null; limitations: string[];
 }
 export interface CaptureRequest {
   board_id: string; capture_id: string; expected_source_digest: string; expected_source_version: number;
@@ -37,6 +45,32 @@ function text(value: unknown, max = 4096): value is string {
 function digest(value: unknown): value is string { return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value); }
 function integer(value: unknown, min = 0): value is number { return Number.isSafeInteger(value) && Number(value) >= min; }
 function invalid(): never { throw new Error('Invalid Learning capture response'); }
+function parseCandidates(value: unknown): LearningCandidates {
+  if (!object(value) || value.contract_version !== 'learning-candidates/v1' || value.exhaustive !== false
+    || value.applicability !== 'not_assessed' || value.data_source !== 'graph_and_cognitive_source'
+    || value.similarity_floor !== 0.6 || value.candidate_window !== 20 || !Array.isArray(value.items) || value.items.length > 3) invalid();
+  if (value.status === 'unavailable') {
+    if (value.items.length || !['search_capability_unavailable', 'history_capability_unavailable', 'search_unavailable'].includes(String(value.limitation))) invalid();
+    return { status: 'unavailable', items: [], limitation: value.limitation as string, limitations: [] };
+  }
+  if (value.status !== 'available' || value.limitation !== null || !text(value.graph_snapshot)
+    || !text(value.vector_regime) || !Array.isArray(value.limitations) || value.limitations.some(item =>
+      !['history_limit', 'source_unavailable', 'source_not_eligible', 'projection_differs_from_source', 'source_payload_limit'].includes(String(item)))) invalid();
+  const seen = new Set<string>();
+  const items = value.items.map(row => {
+    if (!object(row) || !text(row.learning_id) || !integer(row.generation) || !integer(row.source_revision)
+      || !digest(row.fingerprint) || !text(row.content, 65536) || !text(row.context, 65536)
+      || typeof row.similarity !== 'number' || !Number.isFinite(row.similarity) || row.similarity < 0.6 || row.similarity > 1) invalid();
+    const suggestion = row.similarity >= 0.95 ? 'reuse' : row.similarity >= 0.85 ? 'review_replacement' : 'related';
+    const identity = `${row.learning_id}:${row.generation}`;
+    if (seen.has(identity) || row.suggestion !== suggestion) invalid();
+    seen.add(identity);
+    return { learning_id: row.learning_id, generation: row.generation, source_revision: row.source_revision,
+      fingerprint: row.fingerprint, content: row.content, context: row.context, similarity: row.similarity,
+      suggestion: suggestion as LearningCandidate['suggestion'] };
+  });
+  return { status: 'available', items, limitation: null, limitations: value.limitations as string[] };
+}
 function parseIntent(value: unknown, format: unknown, learning: string, generation: number): CaptureIntent {
   if (!object(value) || !['learning-capture/v1', 'learning-capture/v2'].includes(String(format))) invalid();
   const scoped = format === 'learning-capture/v2';
@@ -85,7 +119,8 @@ export function parseCaptureSource(value: unknown, board: string, bug: string): 
     seen.add(row.id);
     return { id: row.id, title: row.title, authenticated: row.authenticated };
   });
-  return { source_digest: value.source_digest, source_policy_version: value.source_policy_version, scenarios };
+  return { source_digest: value.source_digest, source_policy_version: value.source_policy_version, scenarios,
+    ...(value.candidates !== undefined ? { candidates: parseCandidates(value.candidates) } : {}) };
 }
 export function parseCaptureHistory(value: unknown, board: string, bug: string): CaptureHistory {
   if (!object(value) || value.contract_version !== 'learning-capture-history/v1'
@@ -120,6 +155,13 @@ export function useLearningCaptureApi() {
       return parseCaptureSource(await client.fetchJson<unknown>(
         `/bugs/${encodeURIComponent(bug)}/learning-capture-context?${new URLSearchParams({ board_id: board })}`,
         { signal, cache: 'no-store' }), board, bug);
+    },
+    async candidates(board: string, bug: string, query: string, signal: AbortSignal) {
+      const page = parseCaptureSource(await client.fetchJson<unknown>(
+        `/bugs/${encodeURIComponent(bug)}/learning-capture-context?${new URLSearchParams({ board_id: board, candidate_query: query })}`,
+        { signal, cache: 'no-store' }), board, bug);
+      if (!page.candidates) invalid();
+      return page.candidates;
     },
     async history(board: string, bug: string, cursor: string | null, signal: AbortSignal) {
       const query = new URLSearchParams({ board_id: board, limit: '20' });

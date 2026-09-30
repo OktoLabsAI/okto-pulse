@@ -65,6 +65,15 @@ def test_01_readiness_does_not_create_an_index_and_missing_is_not_empty(ranked):
     }
     with pytest.raises(GraphCapabilityUnavailable):
         provider.search(BOARD_ID, RankedGraphQuery("Decision", "durable"))
+    page = provider.search(BOARD_ID, RankedGraphQuery('Decision', 'irrelevant lexical tokens',
+        mode='vector', limit=2, vector=(1.0,) + (0.0,) * 383))
+    assert {hit['node_id'] for hit in page['hits']} == {'ranked:visible', 'ranked:other'}
+    assert page['ranking'] == 'cosine' and page['lexical_regime'] == 'disabled'
+    assert page['achieved_k'] == page['requested_k'] == 2
+    assert page['snapshot'].isdigit() and page['vector_regime']
+    assert all(hit['score'] == pytest.approx(1.0) and hit['lexical_score'] is None for hit in page['hits'])
+    assert {hit['node_id']: hit['content'] for hit in page['hits']} == {
+        'ranked:visible': 'recovery and consistency', 'ranked:other': 'no matching tokens'}
     assert db.indexes.indexes() == before
 
 
@@ -121,11 +130,30 @@ def test_phrase_is_explicit_and_empty_hits_are_successful_only_after_search(inde
     ]
 
 
-def test_filter_budget_is_a_refusal_not_truncation(indexed_ranked):
+@pytest.mark.parametrize('mode', ['text', 'vector'])
+def test_filter_budget_is_a_refusal_not_truncation(indexed_ranked, mode):
     with pytest.raises(GraphError):
         indexed_ranked[0].search(
-            BOARD_ID, RankedGraphQuery("Decision", "durable", max_filter_rows=1)
+            BOARD_ID, RankedGraphQuery("Decision", "durable", max_filter_rows=1, mode=mode,
+                vector=(1.0,) + (0.0,) * 383 if mode == 'vector' else ())
         )
+
+
+def test_vector_search_passes_native_deadline_and_visibility_filter(indexed_ranked, monkeypatch):
+    import okto_grafx
+    provider, _, db, *_ = indexed_ranked
+    native = okto_grafx.Database.search_vectors
+    observed = []
+    def controlled(self, reader, **kwargs):
+        assert self is db and reader.active and reader.mode == 'read'
+        assert 0 < kwargs['timeout_seconds'] <= 15
+        assert kwargs['candidate_filter'].cardinality == 2
+        observed.append(reader.snapshot.read_lsn)
+        return native(self, reader, **kwargs)
+    monkeypatch.setattr(okto_grafx.Database, 'search_vectors', controlled)
+    page = provider.search(BOARD_ID, RankedGraphQuery('Decision', 'lesson', mode='vector',
+        vector=(1.0,) + (0.0,) * 383, limit=2, timeout_seconds=15))
+    assert str(observed[0]) == page['snapshot'] and len(page['hits']) == 2
 
 
 @pytest.mark.parametrize(
@@ -144,6 +172,9 @@ def test_filter_budget_is_a_refusal_not_truncation(indexed_ranked):
         {"mode": "hybrid"},
         {"vector": (1.0,)},
         {"mode": "hybrid", "phrase": True},
+        {"mode": "vector"},
+        {"mode": "vector", "vector": (float('nan'),) * 384},
+        {"mode": "vector", "phrase": True},
     ],
 )
 def test_invalid_request_refuses_before_database_resolution(patch):
