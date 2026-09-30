@@ -43,7 +43,16 @@ async def retire_schema(engine, run, storage, *, verify_dependency):
             await verify_dependency(connection)
             references = tuple(HistoricalArchiveReference(**{**item, "counts": tuple(tuple(pair) for pair in item["counts"])})
                 for item in records[0]["payload"]["archives"])
-            documents = await _documents(connection, storage, references)
+            if references:
+                documents = await _documents(connection, storage, references)
+            else:
+                from .context_disposition_retirement import ContextDispositionReceipt
+                from .retirement_empty_context import verify_empty_context
+                await verify_empty_context(connection,
+                    expected_receipt=ContextDispositionReceipt(**records[1]['payload']))
+                # cut_retired_schema still compares every retiring row with
+                # this empty expected population before any physical removal.
+                documents = {}
             if len(records) == 8:
                 receipt = SchemaRetirementCheckpoint(**records[7]["payload"])
                 await connection.run_sync(lambda sync: require_cut_schema(sync, receipt))

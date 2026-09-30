@@ -449,7 +449,7 @@ async def _restore_retirement_graph_candidate(runtime, storage, graphs, run, see
                             restored_cognitive = verify_candidate_cognitive_restoration(stage, projection,
                                 executed['cognitive_restoration'], executed['historical_observations'], max_seconds=max_seconds,
                                 learning_phase=learning_phase)
-                            executed['format'] = ('retirement-candidate-projection/v8' if learning_phase is not None
+                            executed['format'] = ('retirement-candidate-projection/v9' if learning_phase is not None
                                 else 'retirement-candidate-projection/v6')
                             executed['schema_evolutions'] = schema_evolutions
                             from .retirement_candidate_global_reconciliation import compare_candidate_global_projection
@@ -466,7 +466,7 @@ async def _restore_retirement_graph_candidate(runtime, storage, graphs, run, see
                                 stage, executed['boards'], projection=projection, deadline=_deadline(max_seconds),
                                 historical_observations=executed['historical_observations'], global_comparison=global_comparison,
                                 global_materialization=executed['global_materialization'], restored_cognitive=restored_cognitive,
-                                learning_phase=learning_phase)
+                                learning_phase=learning_phase, learning_applicability=executed.get('learning_applicability'))
                             projection_receipt = offline._seal(stage / 'projection-receipt', executed)
                             state = 'projected_not_reconciled'
                             # Binding paths are relative, so the final rename does not

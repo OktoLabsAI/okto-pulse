@@ -89,7 +89,8 @@ async def verify_projected_candidate(target, *, seed, seed_document, projection,
     fields = {'format', 'seed_sha256', 'state', 'before_sql', 'after_sql',
             'boards', 'graph_reconciliation', 'historical_observations', 'schema_evolutions', 'global_source_inputs',
             'global_materialization', 'cognitive_restoration'}
-    has_applicability = projected.get('format') == 'retirement-candidate-projection/v8'
+    has_qualification = projected.get('format') == 'retirement-candidate-projection/v9'
+    has_applicability = projected.get('format') == 'retirement-candidate-projection/v8' or has_qualification
     has_learning = projected.get('format') == 'retirement-candidate-projection/v7' or has_applicability
     if has_learning:
         fields |= {'learning_phase_sha256', 'deterministic_after_sql'}
@@ -97,7 +98,7 @@ async def verify_projected_candidate(target, *, seed, seed_document, projection,
         fields.add('learning_applicability')
     if (set(projected) != fields
             or projected['format'] not in {'retirement-candidate-projection/v6', 'retirement-candidate-projection/v7',
-                'retirement-candidate-projection/v8'}
+                'retirement-candidate-projection/v8', 'retirement-candidate-projection/v9'}
             or type(projected['global_materialization']) is not dict
             or type(projected['schema_evolutions']) is not list
             or projected['seed_sha256'] != seed.manifest_sha256
@@ -223,7 +224,8 @@ async def verify_projected_candidate(target, *, seed, seed_document, projection,
             target, projected['boards'], projection=projection, deadline=deadline,
             historical_observations=historical_observations, global_comparison=global_comparison,
             global_materialization=projected['global_materialization'], restored_cognitive=restored_cognitive,
-            learning_phase=learning_phase) != projected['graph_reconciliation']:
+            learning_phase=learning_phase,
+            learning_applicability=projected['learning_applicability'] if has_qualification else None) != projected['graph_reconciliation']:
         raise ValueError('retirement_candidate_checkpoint_graph_reconciliation_changed')
     if _inventory_digest(target, native_paths, deadline, published=True) != checkpoint['content_sha256']:
         raise ValueError('retirement_candidate_checkpoint_content_changed')

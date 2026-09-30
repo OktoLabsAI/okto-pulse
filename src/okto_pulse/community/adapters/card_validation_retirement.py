@@ -173,6 +173,8 @@ async def _verify_events(events, references, migration_id, storage, *, connectio
     if len(formats) > 1 or len(set(context_receipts)) > 1:
         raise ValueError("card_validation_retirement_context_mismatch")
     bound = context_receipts[0] if context_receipts else None
+    if not references and not events:
+        bound = context_receipt
     if context_receipt is not None and bound != context_receipt:
         raise ValueError("card_validation_retirement_context_mismatch")
     if bound is not None:
@@ -313,7 +315,7 @@ async def materialize_archived_card_policies(
                 await _install_historical_archive_grants(connection, storage, reference, require_existing=True)
             previous = await _read_events(connection, migration_id)
             add_column = await _ensure_card_validation_compatibility(connection, create=False) == "missing"
-            if previous:
+            if previous or (not references and expected_receipt is not None and checkpoint_run is not None):
                 if add_column:
                     raise ValueError("card_validation_retirement_storage_missing")
                 receipt = await _verify_events(previous, references, migration_id, storage,

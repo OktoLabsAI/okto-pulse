@@ -95,7 +95,13 @@ async def verify_retirement_activation(connection, database_path):
     if checkpoint['seed_sha256'] != manifest['seed_sha256']:
         raise ValueError('retirement_activation_candidate_invalid')
     projected = _read_sealed(_explicit_path(path.parent / 'projection-receipt'), candidate['projection_receipt_sha256'])
-    if projected['seed_sha256'] != manifest['seed_sha256'] or projected['format'] != 'retirement-candidate-projection/v6':
+    formats = {
+        'retirement-candidate-projection/v6': {'retirement-candidate-graph-reconciliation/v16',
+            'retirement-candidate-graph-reconciliation/v17'},
+        'retirement-candidate-projection/v9': {'retirement-candidate-graph-reconciliation/v19'},
+    }
+    if (projected['seed_sha256'] != manifest['seed_sha256']
+            or projected['graph_reconciliation']['format'] not in formats.get(projected['format'], set())):
         raise ValueError('retirement_activation_projection_invalid')
     # The complete plan was authenticated during installation. Keep its exact
     # bytes in the activated set rather than depending on an external temp path.

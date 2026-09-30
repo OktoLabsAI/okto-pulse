@@ -222,7 +222,7 @@ async def supersede_archived_sprint_work(engine, storage, references, *,
             previous = await _stored_journal(connection, migration_id)
             if expected_receipt is not None and (expected_receipt != receipt or (references and not previous)):
                 raise ValueError("work_retirement_replay_mismatch")
-            if previous:
+            if previous or (not references and expected_receipt is not None and checkpoint_run is not None):
                 if sorted(previous, key=lambda row: row["id"]) != sorted(expected, key=lambda row: row["id"]):
                     raise ValueError("work_retirement_evidence_mismatch")
                 # Surviving Card work may progress after cutover. Retired rows

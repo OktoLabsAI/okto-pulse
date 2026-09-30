@@ -81,8 +81,9 @@ async def test_coordinator_retains_learning_phase_and_replays_checkpoint(
         await connection.run_sync(lambda sync: LegacyBase.metadata.create_all(sync,
             tables=[LegacyBase.metadata.tables[name] for name in RETIRED_TABLES]))
         await connection.exec_driver_sql('ALTER TABLE cards ADD COLUMN sprint_id VARCHAR(36) REFERENCES sprints(id) ON DELETE SET NULL')
-        await connection.execute(LegacyBase.metadata.tables['sprints'].insert().values(
-            id='legacy-empty', board_id=BOARD, spec_id='spec-bug-context', title='Empty historical container', created_by='fixture-owner'))
+        if reuse_original_bug is not None:
+            await connection.execute(LegacyBase.metadata.tables['sprints'].insert().values(
+                id='legacy-empty', board_id=BOARD, spec_id='spec-bug-context', title='Empty historical container', created_by='fixture-owner'))
     await enable_fence(factory, monkeypatch)
     source_runtime = CommunityDatabaseRuntime(factory.kw['bind'], factory)
     storage = CommunityFileSystemStorage(str(tmp_path / 'upgrade-uploads'))
@@ -151,7 +152,7 @@ async def test_coordinator_retains_learning_phase_and_replays_checkpoint(
                 trace = trace.tb_next
             raise
         report = json.loads((target / 'projection-receipt/run.json').read_bytes())
-        assert report['format'] == 'retirement-candidate-projection/v8'
+        assert report['format'] == 'retirement-candidate-projection/v9'
         assert report['learning_applicability']['state'] == 'observed_not_admitted'
         assert report['learning_applicability']['unmaterialized'] == []
         current, = report['learning_applicability']['observations']
@@ -165,7 +166,11 @@ async def test_coordinator_retains_learning_phase_and_replays_checkpoint(
             assert transition['edge']['edge_type'] == 'supersedes'
             assert transition['edge']['source_id'] == transition['successor']['node_id']
             assert transition['edge']['target_id'] == 'canonical-bug'
-        assert report['graph_reconciliation']['state'] == 'learning_reconciliation_pending'
+        assert report['graph_reconciliation']['state'] == 'learning_sources_observed'
+        qualification, = report['graph_reconciliation']['learning_source_qualification']
+        assert qualification['state'] == 'current_captures_reconciled'
+        assert qualification['unmatched_cognitive_sources'] == 0
+        assert len(qualification['qualified_sources']) == 1
         assert report['graph_reconciliation']['learning_execution_count'] >= 1
         projected = report['graph_reconciliation']['projection_with_before_learning_boards']
         board = next(row for row in projected['boards'] if row['board_id'] == BOARD)
@@ -178,10 +183,23 @@ async def test_coordinator_retains_learning_phase_and_replays_checkpoint(
         assert await candidate.build_projected_retirement_graph_candidate(*args,
             migration_builds=migration_builds, settings=settings, confirm_original_offline=True,
             confirm_candidate_offline=True, expected_receipt_sha256=result['receipt_sha256'], max_seconds=300) == result
-        with pytest.raises(ValueError, match='retirement_completion_learning_pending'):
-            await candidate.verify_reconciled_retirement_graph_candidate(*args,
+        if reuse_original_bug is None:
+            assert await candidate.verify_reconciled_retirement_graph_candidate(*args,
                 migration_builds=migration_builds, settings=settings, confirm_original_offline=True,
-                confirm_candidate_offline=True, expected_receipt_sha256=result['receipt_sha256'], max_seconds=300)
+                confirm_candidate_offline=True, expected_receipt_sha256=result['receipt_sha256'], max_seconds=300) == result
+            from retirement_learning_activation_support import assert_learning_candidate_activation
+            await assert_learning_candidate_activation(candidate, args,
+                completion_arguments=dict(migration_builds=migration_builds, settings=settings,
+                    confirm_original_offline=True, confirm_candidate_offline=True,
+                    expected_receipt_sha256=result['receipt_sha256'], max_seconds=300),
+                result=result, tmp_path=tmp_path, monkeypatch=monkeypatch)
+            assert await sql_cells(factory) == before
+        else:
+            expected = 'projection_completion_connectivity_pending' if reuse_original_bug else 'projection_completion_history_pending'
+            with pytest.raises(ValueError, match=expected):
+                await candidate.verify_reconciled_retirement_graph_candidate(*args,
+                    migration_builds=migration_builds, settings=settings, confirm_original_offline=True,
+                    confirm_candidate_offline=True, expected_receipt_sha256=result['receipt_sha256'], max_seconds=300)
     finally:
         graph.close()
 

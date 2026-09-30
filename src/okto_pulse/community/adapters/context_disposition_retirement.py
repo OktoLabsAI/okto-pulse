@@ -248,6 +248,10 @@ async def verify_context_disposition_snapshot(connection, storage, references, c
     expected_plan=None, check_targets=True):
     """Verify committed evidence under the Card step's existing transaction."""
     references = tuple(sorted(references, key=lambda reference: reference.board_id))
+    if not references:
+        from .retirement_empty_context import verify_empty_context
+        return await verify_empty_context(connection, expected_receipt=expected_receipt,
+            expected_plan=expected_plan, candidates=candidates)
     documents = await _documents(connection, storage, references)
     migration = references[0].migration_id
     previous = await _journal(connection, migration)
@@ -297,6 +301,13 @@ async def install_context_dispositions(engine, storage, references, *, plan: Con
         try:
             await connection.exec_driver_sql("BEGIN IMMEDIATE")
             await require_retirement_stage(connection, checkpoint_run, "context", references, plan=plan)
+            if not references:
+                from .retirement_empty_context import install_empty_context
+                receipt = await install_empty_context(connection, plan=plan,
+                    expected_receipt=expected_receipt, checkpoint_run=checkpoint_run)
+                commit_started = True
+                await connection.commit()
+                return receipt
             documents = await _documents(connection, storage, references)
             previous = await _journal(connection, plan.migration_id)
             if previous:

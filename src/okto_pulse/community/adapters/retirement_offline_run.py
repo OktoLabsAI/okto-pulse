@@ -167,7 +167,9 @@ async def _validate_plan(engine, storage, references, plan):
         await connection.exec_driver_sql("BEGIN IMMEDIATE")
         inventory = await connection.run_sync(inspect_sprint_pretransform)
         inventory.require_resolved_mechanics()
-        documents = await _documents(connection, storage, references)
+        # An empty archive population still passes the complete candidate/plan
+        # comparison and exact recapture below; it is not a missing-data waiver.
+        documents = await _documents(connection, storage, references) if references else {}
         _records(references, documents, inventory.context_candidates, plan)
         await _targets(connection, inventory.context_candidates, plan)
         await _require_original_archive(connection, references, plan.migration_id)

@@ -51,3 +51,34 @@ def test_summary_or_count_cannot_hide_incomplete_qualification(mutation):
     if mutation == 'negative_unqualified': row['unqualified_restored_cognitive_node_count'] = -1
     with pytest.raises((TypeError, ValueError)):
         check(value)
+
+
+def test_old_learning_report_remains_pending_even_with_new_fields():
+    value = report('v18', 0)
+    value['learning_source_qualification'] = []
+    with pytest.raises(ValueError, match='retirement_completion_learning_pending'):
+        check(value)
+
+
+@pytest.mark.parametrize('mutation', ['count', 'missing', 'duplicate', 'other_source', 'boolean_count', 'pending'])
+def test_composed_learning_summary_cannot_hide_missing_capture_proof(mutation):
+    base = report(restored=0)
+    base['boards'][0]['cognitive_source_parity'] = [{
+        'node_type': 'Learning', 'node_id': 'learning', 'generation': 0, 'source_revision': 0,
+        'source_fingerprint': 'd' * 64, 'state': 'capture_pending_materialization',
+        'differing_fields': [], 'usage_differences': []}]
+    qualification = {'board_id': 'board', 'state': 'current_captures_reconciled', 'reasons': [],
+        'qualified_sources': [['learning', 0, 'd' * 64]], 'unmatched_cognitive_sources': 0}
+    value = {'format': 'retirement-candidate-graph-reconciliation/v19',
+        'projection_with_before_learning_boards': base, 'learning_boards': ['board'],
+        'learning_source_qualification': [qualification]}
+    projection = {'boards': [{'projection': {'board_id': 'board', 'cognitive_rows': [{'node_type': 'Learning'}]}}]}
+    assert require_candidate_projection_completion(projection, value) is None
+    if mutation == 'count': qualification['unmatched_cognitive_sources'] = 1
+    if mutation == 'missing': qualification['qualified_sources'] = []
+    if mutation == 'duplicate': qualification['qualified_sources'] *= 2
+    if mutation == 'other_source': qualification['qualified_sources'][0][0] = 'other'
+    if mutation == 'boolean_count': qualification['unmatched_cognitive_sources'] = False
+    if mutation == 'pending': qualification['state'] = 'pending'
+    with pytest.raises(ValueError):
+        require_candidate_projection_completion(projection, value)

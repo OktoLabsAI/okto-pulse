@@ -11,6 +11,36 @@ def require_candidate_projection_completion(projection, report):
     """Only called after checkpoint authentication and full observation replay."""
     if report['format'] == 'retirement-candidate-graph-reconciliation/v18':
         raise ValueError('retirement_completion_learning_pending')
+    learning = {}
+    composed = report['format'] == 'retirement-candidate-graph-reconciliation/v19'
+    if composed:
+        from okto_pulse.core.ports.cognitive_projection import CognitiveProjectionParity
+        from okto_pulse.core.ports.learning_reconciliation import (
+            LearningReconciliationQualification, require_learning_reconciliation_qualification,
+        )
+        from .retirement_learning_execution import learning_phase_board_ids
+        expected = learning_phase_board_ids(projection)
+        qualifications = report['learning_source_qualification']
+        if (type(qualifications) is not list or len(qualifications) != len(expected)
+                or report['learning_boards'] != list(expected)
+                or [row['board_id'] for row in qualifications] != list(expected)):
+            raise ValueError('retirement_completion_learning_scope_invalid')
+        for row in qualifications:
+            if row['state'] != 'current_captures_reconciled' or row['reasons']:
+                raise ValueError('retirement_completion_learning_pending')
+            matching = [board for board in report['projection_with_before_learning_boards']['boards']
+                if board['board_id'] == row['board_id']]
+            if len(matching) != 1:
+                raise ValueError('retirement_completion_learning_scope_invalid')
+            qualification = LearningReconciliationQualification(row['state'], tuple(row['reasons']),
+                tuple(tuple(key) for key in row['qualified_sources']), row['unmatched_cognitive_sources'])
+            parity = tuple(CognitiveProjectionParity(**{**item,
+                'differing_fields': tuple(item['differing_fields']),
+                'usage_differences': tuple(item['usage_differences'])})
+                for item in matching[0]['cognitive_source_parity'])
+            learning[row['board_id']] = require_learning_reconciliation_qualification(
+                qualification=qualification, parity=parity)
+        report = report['projection_with_before_learning_boards']
     if report['format'] not in {'retirement-candidate-graph-reconciliation/v16', 'retirement-candidate-graph-reconciliation/v17'}:
         raise ValueError('retirement_completion_report_invalid')
     global_report = report['global_projection_comparison']
@@ -49,9 +79,9 @@ def require_candidate_projection_completion(projection, report):
         boards.append(BoardProjectionCompletion(row['board_id'], ProjectionHistoryQualification(**history),
             ProjectionRelationComparison(**relations), row['historical_orphan_count'],
             sum(item['outcome'] not in {'passed', 'allowlisted'} for item in row['historical_connectivity']),
-            sum(item['state'] != 'matched' for item in row['cognitive_source_parity']),
+            learning.get(row['board_id'], sum(item['state'] != 'matched' for item in row['cognitive_source_parity'])),
             unqualified))
     require_projection_completion(expected_boards=tuple(item['projection']['board_id'] for item in projection['boards']),
         boards=tuple(boards), global_comparison=global_evidence)
-    if report['state'] != 'source_graph_reconciled':
+    if not composed and report['state'] != 'source_graph_reconciled':
         raise ValueError('retirement_completion_summary_pending')

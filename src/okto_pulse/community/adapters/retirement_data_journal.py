@@ -28,7 +28,7 @@ def _digest(value):
 
 
 def _references(references):
-    if (type(references) is not tuple or not references or len(references) > 100_000
+    if (type(references) is not tuple or len(references) > 100_000
             or any(not isinstance(item, HistoricalArchiveReference) for item in references)
             or len({item.board_id for item in references}) != len(references)):
         raise ValueError("retirement_data_archives_invalid")
@@ -142,6 +142,8 @@ async def prepare_retirement_data_run(engine, storage, references, *, plan: Cont
     if engine.dialect.name != "sqlite" or not isinstance(plan, ContextDispositionPlan):
         raise ValueError("retirement_data_input_invalid")
     archives = _references(references)
+    if not archives and plan.decisions:
+        raise ValueError('retirement_data_empty_population_has_decisions')
     if any(item["migration_id"] != plan.migration_id for item in archives):
         raise ValueError("retirement_data_input_mismatch")
     record = {"format": _FORMAT, "migration_id": plan.migration_id, "stage": "prepared", "previous_sha256": None,

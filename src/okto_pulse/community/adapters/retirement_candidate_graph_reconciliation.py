@@ -378,7 +378,8 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
 
 
 def verify_candidate_graph_reconciliation(target, boards, *, projection, deadline, historical_observations=None,
-        global_comparison=None, global_materialization=None, restored_cognitive=None, learning_phase=None):
+        global_comparison=None, global_materialization=None, restored_cognitive=None, learning_phase=None,
+        learning_applicability=None):
     """Verify new projection effects; preserved history never receives implicit approval.
 
     historical_observations must be freshly derived under the caller's offline
@@ -469,6 +470,16 @@ def verify_candidate_graph_reconciliation(target, boards, *, projection, deadlin
             'source_projection_reconciled_history_pending' if pending else 'source_graph_reconciled'),
         'global_history_state': global_history, 'global_projection_comparison': global_comparison, 'boards': reports}
     if learning_phase is not None:
+        if learning_applicability is not None:
+            from .retirement_learning_qualification import qualify_candidate_learning_sources
+            return {'format': 'retirement-candidate-graph-reconciliation/v19',
+                'state': 'learning_sources_observed',
+                'projection_with_before_learning_boards': result,
+                'learning_boards': list(learning_phase.initial_graphs),
+                'learning_execution_count': sum(len(board['steps']) for board in learning_phase.boards),
+                'terminal_census_sha256': historical_observations['candidate_census_sha256'],
+                'learning_source_qualification': qualify_candidate_learning_sources(
+                    learning_phase, learning_applicability, reports)}
         # Mechanical phase composition is not final cognitive applicability.
         # Keep the old observation's scope explicit; never present its Board
         # fingerprints as the terminal candidate or silently upgrade v17.
