@@ -25,7 +25,9 @@ from okto_pulse.community.adapters.cypher_statement_policy import (
     statement_is_write,
 )
 from okto_pulse.core.kg.interfaces.graph_errors import GraphCapabilityUnavailable
-from okto_pulse.core.kg.interfaces.graph_transaction import LearningBugAssociationTransaction
+from okto_pulse.core.kg.interfaces.graph_transaction import (
+    LearningBugAssociationTransaction, LearningAssociationInvalidationTransaction,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -314,6 +316,24 @@ class CapturedGraphTransactionScope:
         if not isinstance(self._delegate, LearningBugAssociationTransaction):
             raise GraphCapabilityUnavailable('learning_association_replacement_unavailable')
         return self._delegate
+
+    def _learning_invalidation_delegate(self):
+        if not isinstance(self._delegate, LearningAssociationInvalidationTransaction):
+            raise GraphCapabilityUnavailable('learning_association_invalidation_unavailable')
+        return self._delegate
+
+    def snapshot_learning_invalidation(self, learning_id, bug_id):
+        return self._learning_invalidation_delegate().snapshot_learning_invalidation(learning_id, bug_id)
+
+    def invalidate_learning_association(self, receipt):
+        delegate = self._learning_invalidation_delegate()
+        return self._invoke('invalidate_learning_association', delegate.invalidate_learning_association,
+            (receipt,), {})
+
+    def restore_learning_invalidation(self, receipt):
+        delegate = self._learning_invalidation_delegate()
+        return self._invoke('restore_learning_invalidation', delegate.restore_learning_invalidation,
+            (receipt,), {})
 
     def snapshot_learning_bug_association(self, previous_learning_id, replacement_learning_id, bug_id):
         # Explicit methods retain the optional Protocol through this proxy on

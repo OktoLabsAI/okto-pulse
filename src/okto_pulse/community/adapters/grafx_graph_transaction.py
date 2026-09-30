@@ -25,6 +25,7 @@ from okto_pulse.core.kg.interfaces.graph_transaction import (
     SOURCE_PROJECTION_REMOVED_REASON,
     GraphNodePropertyBeforeImage,
     LearningBugAssociationReceipt,
+    LearningAssociationInvalidationReceipt,
     GraphStatementResult,
     ProjectionActiveSetIntent,
     ProjectionActiveSetReceipt,
@@ -2146,6 +2147,57 @@ class _GrafxTransactionScope:
             {'learning_id': learning_id, 'bug_id': bug_id}, operation='learning_association_snapshot')
         return tuple(ProjectionEdgeBeforeImage('validates', 'Learning', 'Bug', learning_id, bug_id,
             {name: _normalize_value(row[index]) for index, name in enumerate(properties)}) for row in result.rows)
+
+    def _require_learning_invalidation_receipt(self, receipt: LearningAssociationInvalidationReceipt) -> None:
+        if not isinstance(receipt, LearningAssociationInvalidationReceipt) or receipt.board_id != self._board_id:
+            raise ValueError('learning_invalidation_receipt_invalid')
+        receipt.__post_init__()
+        _, definition = self._relationship_definition('validates', 'Learning', 'Bug')
+        properties = self._projection_edge_properties(definition)
+        if any(set(edge.attrs) != set(properties) or _contains_non_finite_number(edge.attrs)
+                for edge in receipt.removed_edges):
+            raise ValueError('learning_invalidation_before_image_invalid')
+
+    def snapshot_learning_invalidation(self, learning_id: str,
+        bug_id: str) -> LearningAssociationInvalidationReceipt:
+        self._fence('snapshot_learning_invalidation')
+        LearningAssociationInvalidationReceipt(self._board_id, learning_id, bug_id)
+        return LearningAssociationInvalidationReceipt(self._board_id, learning_id, bug_id,
+            self._learning_association_edges(learning_id, bug_id))
+
+    def invalidate_learning_association(self, receipt: LearningAssociationInvalidationReceipt) -> None:
+        self._fence('invalidate_learning_association')
+        self._require_learning_invalidation_receipt(receipt)
+        before = self._learning_association_edges(receipt.learning_id, receipt.bug_id)
+        signature = self._projection_edge_signature
+        if Counter(map(signature, before)) != Counter(map(signature, receipt.removed_edges)):
+            raise GraphError('learning_invalidation_snapshot_changed')
+        if not before:
+            return
+        physical, _ = self._relationship_definition('validates', 'Learning', 'Bug')
+        try:
+            self._mutation(f'MATCH (a:Learning)-[r:{physical}]->(b:Bug) '
+                'WHERE a.id = $learning_id AND b.id = $bug_id DELETE r',
+                {'learning_id': receipt.learning_id, 'bug_id': receipt.bug_id},
+                operation='invalidate_learning_association')
+            if self._learning_association_edges(receipt.learning_id, receipt.bug_id):
+                raise GraphError('learning_invalidation_removal_unconfirmed')
+        except BaseException as primary:
+            cleanup = self._abort_after_staged_failure(operation='invalidate_learning_association')
+            if cleanup is not None:
+                raise primary from cleanup
+            raise
+
+    def restore_learning_invalidation(self, receipt: LearningAssociationInvalidationReceipt) -> None:
+        self._fence('restore_learning_invalidation')
+        self._require_learning_invalidation_receipt(receipt)
+        try:
+            self._projection_restore_edges(receipt.removed_edges)
+        except BaseException as primary:
+            cleanup = self._abort_after_staged_failure(operation='restore_learning_invalidation')
+            if cleanup is not None:
+                raise primary from cleanup
+            raise
 
     def _require_learning_association_receipt(self, receipt: LearningBugAssociationReceipt) -> None:
         if not isinstance(receipt, LearningBugAssociationReceipt) or receipt.board_id != self._board_id:
