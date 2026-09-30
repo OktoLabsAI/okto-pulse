@@ -21,6 +21,31 @@ const baseSettings: BoardSettings = {
   max_drift: 30,
 };
 
+describe('BoardSettingsForm — graph query policy', () => {
+  it('shows the legacy default without writing and follows Board/template changes', () => {
+    const onChange = vi.fn();
+    const { rerender } = render(<BoardSettingsForm settings={baseSettings} onChange={onChange} />);
+    const field = screen.getByRole('spinbutton', { name: 'Graph query timeout (ms)' });
+    expect(field).toHaveValue(15000);
+    expect(onChange).not.toHaveBeenCalled();
+    rerender(<BoardSettingsForm settings={{ ...baseSettings, kg_query_timeout_ms: 2000 }} onChange={onChange} />);
+    expect(field).toHaveValue(2000);
+    fireEvent.change(field, { target: { value: '30000' } });
+    fireEvent.blur(field);
+    expect(onChange).toHaveBeenCalledExactlyOnceWith({ kg_query_timeout_ms: 30000 });
+  });
+
+  it.each(['', '0', '30001', '1.5'])('does not save invalid timeout %s', (value) => {
+    const onChange = vi.fn();
+    render(<BoardSettingsForm settings={baseSettings} onChange={onChange} />);
+    const field = screen.getByRole('spinbutton', { name: 'Graph query timeout (ms)' });
+    fireEvent.change(field, { target: { value } });
+    fireEvent.blur(field);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(field).toHaveValue(15000);
+  });
+});
+
 describe('BoardSettingsForm — Bug Learning policy', () => {
   it('reads omission as advisory without writing a default', () => {
     const onChange = vi.fn();

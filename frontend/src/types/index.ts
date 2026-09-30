@@ -3284,6 +3284,7 @@ export interface BoardSettings {
   skip_decisions_coverage_global: boolean;
   skip_cognitive_consolidation?: boolean;
   bug_learning_closeout?: 'advisory' | 'blocking';
+  kg_query_timeout_ms?: number;
   allow_agent_self_answering?: boolean;
   require_full_context_for_critical_actions?: boolean;
   qa_require_role_separation?: boolean;

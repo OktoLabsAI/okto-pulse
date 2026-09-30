@@ -90,6 +90,32 @@ function SettingsSection({
   );
 }
 
+function QueryTimeoutSetting({ value, onChange }: { value: number; onChange: (value: number) => void }) {
+  const [draft, setDraft] = useState(String(value));
+  useEffect(() => setDraft(String(value)), [value]);
+  return (
+    <input
+      aria-label="Graph query timeout (ms)"
+      type="number"
+      min={1}
+      max={30000}
+      step={1}
+      value={draft}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={() => {
+        const parsed = Number(draft);
+        if (draft.trim() && Number.isInteger(parsed) && parsed >= 1 && parsed <= 30000) {
+          if (parsed !== value) onChange(parsed);
+        } else {
+          setDraft(String(value));
+        }
+      }}
+      onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }}
+      className="w-24 rounded border border-gray-300 bg-transparent px-2 py-1 text-xs dark:border-gray-600"
+    />
+  );
+}
+
 function SettingRow({
   label,
   description,
@@ -295,6 +321,9 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
         description="Board-level limits used across validation flows."
         icon={<SlidersHorizontal size={12} />}
       >
+        <SettingRow label="Graph query timeout" description="Maximum query duration in milliseconds: 15,000 by default, up to 30,000. Calls may request a shorter duration. Only an authenticated human can change this limit.">
+          <QueryTimeoutSetting value={settings.kg_query_timeout_ms ?? 15000} onChange={(value) => onChange({ kg_query_timeout_ms: value })} />
+        </SettingRow>
         <div>
           <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">
             Max test scenarios per card

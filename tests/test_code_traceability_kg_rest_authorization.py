@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
@@ -17,6 +18,15 @@ from okto_pulse.core.domain.permissions import PermissionSet
 BOARD_ID = "board-ct-rest"
 LEGACY_ID = "legacy-node"
 CT_ID = "ct-node"
+
+
+@pytest.fixture(autouse=True)
+def query_policy_boundary(monkeypatch):
+    # CT authorization remains real; the scoped settings reader is covered by
+    # test_kg_query_policy_transports, not these graph-confidentiality fixtures.
+    from okto_pulse.core.application.use_cases.kg_query_policy import ReadKGQueryPolicyUseCase
+    from okto_pulse.core.ports.kg_query_policy import KGQueryPolicy
+    monkeypatch.setattr(ReadKGQueryPolicyUseCase, "execute", AsyncMock(return_value=KGQueryPolicy()))
 
 
 def _actor(*, ct_read: bool) -> ActorContext:

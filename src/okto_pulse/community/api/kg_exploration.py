@@ -18,6 +18,7 @@ from okto_pulse.core.application.use_cases.code_traceability_kg_access import (
     require_code_traceability_safe_arbitrary_query,
 )
 from okto_pulse.core.application.use_cases.base import PermissionDeniedError
+from okto_pulse.core.application.use_cases.kg_query_policy import ReadKGQueryPolicyUseCase
 from okto_pulse.community.api import kg_routes as kg
 
 router = APIRouter(prefix="/kg/boards/{board_id}/exploration", tags=["knowledge-graph"])
@@ -35,7 +36,7 @@ class SearchRequest(BaseModel):
     min_confidence: float = Field(0.5, ge=0, le=1)
     candidate_limit: int = Field(100, ge=1, le=1000, strict=True)
     max_filter_rows: int = Field(10000, ge=1, le=100000, strict=True)
-    timeout_seconds: float = Field(10, ge=0.001, le=30)
+    timeout_seconds: float = Field(15, ge=0.001, le=30)
     phrase: bool = False
 
 
@@ -121,6 +122,8 @@ async def search(
     # CT authority, even when result rows themselves exclude CT by default.
     access = await authorize_unfiltered(board_id, actor, uow)
     fields = body.model_dump()
+    policy = await ReadKGQueryPolicyUseCase().execute(board_id, actor=actor, uow=uow)
+    fields["timeout_seconds"] = policy.effective_timeout(int(body.timeout_seconds * 1000)) / 1000
     fields["include_code_traceability"] = (
         body.include_code_traceability and access.allowed
     )
@@ -224,7 +227,7 @@ class AnalyticsRequest(HistoryScope):
     max_depth: int = Field(10, ge=0, le=100, strict=True)
     max_nodes: int = Field(1000, ge=1, le=10000, strict=True)
     max_edges: int = Field(10000, ge=1, le=100000, strict=True)
-    timeout_seconds: float = Field(10, ge=0.001, le=30)
+    timeout_seconds: float = Field(15, ge=0.001, le=30)
 
 
 @router.post("/analytics")
@@ -239,6 +242,8 @@ async def analyze_graph(
         actor=actor, board_id=board_id, uow=uow
     )
     options = body.model_dump()
+    policy = await ReadKGQueryPolicyUseCase().execute(board_id, actor=actor, uow=uow)
+    options["timeout_seconds"] = policy.effective_timeout(int(body.timeout_seconds * 1000)) / 1000
     options.update(
         node_types=tuple(body.node_types),
         relationship_types=tuple(body.relationship_types),

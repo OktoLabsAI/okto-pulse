@@ -15,6 +15,9 @@ from okto_pulse.core.application.use_cases.base import ActorContext
 @pytest.fixture
 def admission(monkeypatch):
     # This suite isolates dispatch; real permission/CT policy has its own suite.
+    from okto_pulse.core.application.use_cases.kg_query_policy import ReadKGQueryPolicyUseCase
+    from okto_pulse.core.ports.kg_query_policy import KGQueryPolicy
+    monkeypatch.setattr(ReadKGQueryPolicyUseCase, "execute", AsyncMock(return_value=KGQueryPolicy()))
     monkeypatch.setattr(kg_routes, "_require_kg_operation", AsyncMock())
     monkeypatch.setattr(kg_routes, "_code_traceability_kg_read_access", AsyncMock(return_value=SimpleNamespace(allowed=True)))
 

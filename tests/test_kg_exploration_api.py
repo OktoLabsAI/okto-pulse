@@ -25,6 +25,8 @@ def client(monkeypatch):
     )
 
     monkeypatch.setattr(api, "get_kg_registry", lambda: registry)
+    from okto_pulse.core.ports.kg_query_policy import KGQueryPolicy
+    monkeypatch.setattr(api.ReadKGQueryPolicyUseCase, "execute", AsyncMock(return_value=KGQueryPolicy()))
     monkeypatch.setattr(api.kg, "_require_kg_operation", AsyncMock())
     monkeypatch.setattr(
         api.kg,

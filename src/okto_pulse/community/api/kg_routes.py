@@ -1580,8 +1580,8 @@ async def cypher_query(
     board_id: str,
     cypher: str = "",
     params: dict | None = None,
-    max_rows: int = 1000,
-    timeout_ms: int = 5000,
+    max_rows: int = 200,
+    timeout_ms: int | None = None,
     include_working: bool = False,
     actor: ActorContext = Depends(require_kg_board_actor),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
@@ -1606,6 +1606,12 @@ async def cypher_query(
         except PermissionDeniedError as exc:
             raise RESTAdapterContract.http_error(exc) from exc
     try:
+        from okto_pulse.core.application.use_cases.kg_query_policy import ReadKGQueryPolicyUseCase
+        from okto_pulse.core.ports.kg_query_policy import query_row_limit
+
+        policy = await ReadKGQueryPolicyUseCase().execute(board_id, actor=actor, uow=uow)
+        timeout_ms = policy.effective_timeout(timeout_ms)
+        max_rows = query_row_limit(max_rows)
         result = await run_blocking_graph_io(
             lambda: execute_cypher_read_only(
                 board_id,
@@ -1618,6 +1624,8 @@ async def cypher_query(
             task_name=f"community.kg.cypher.read:{board_id}",
         )
         return result
+    except ValueError as exc:
+        return _problem(400, "invalid_param", str(exc), "invalid_param")
     except TierPowerError as e:
         return _problem(
             400 if e.code in ("unsafe_cypher", "invalid_cypher") else 503,
