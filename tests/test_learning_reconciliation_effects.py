@@ -4,8 +4,12 @@ The shared fixture substitutes unrelated lifecycle gates and health only. This
 does not certify a complete upgrade or grant historical applicability.
 """
 from collections import Counter
+from contextlib import closing
 from dataclasses import asdict, replace
 import json
+from pathlib import Path
+import shutil
+import sqlite3
 
 import pytest
 
@@ -24,6 +28,12 @@ pytestmark = pytest.mark.asyncio
 graph_runtime = _graph_runtime
 runtime = _runtime
 independent_gates = _independent_gates
+
+
+def sql_snapshot(factory, path):
+    uri = Path(factory.kw['bind'].url.database).resolve().as_uri() + '?mode=ro'
+    with closing(sqlite3.connect(uri, uri=True)) as source, closing(sqlite3.connect(path)) as target:
+        source.backup(target)
 
 
 async def sql_cells(factory):
@@ -54,7 +64,7 @@ def graph_cells():
 
 @pytest.mark.parametrize('existing_generation', [None, 'mg_predecessor'])
 async def test_selected_capture_has_only_owned_append_deltas(graph_runtime, record_property, monkeypatch,
-        existing_generation):
+        existing_generation, tmp_path):
     runtime, capture, _, _ = graph_runtime
     factory, _, store, _ = runtime
     from okto_pulse.community.adapters import relational_schema_steps
@@ -76,11 +86,38 @@ async def test_selected_capture_has_only_owned_append_deltas(graph_runtime, reco
     work, = [parse_learning_capture_work_ref(ref) for ref in selected.work_refs]
     assert work.fingerprint == capture.record_fingerprint
     before = await sql_cells(factory)
+    sql_snapshot(factory, tmp_path / 'before.sqlite3')
     execution = await execute_learning_reconciliation(board_id=BOARD, work_ref=selected.work_refs[0],
         relational_scope_factory=factory)
     assert execution.materialized is True
     assert execution.board_id == BOARD and execution.work_ref == selected.work_refs[0]
     after = await sql_cells(factory)
+    sql_snapshot(factory, tmp_path / 'after.sqlite3')
+    from okto_pulse.community.adapters.retirement_learning_sql_delta import verify_learning_sql_delta
+    from okto_pulse.community.adapters.relational_recovery_snapshot import _deadline
+    verified = await verify_learning_sql_delta(tmp_path / 'before.sqlite3', tmp_path / 'after.sqlite3',
+        execution=execution, deadline=_deadline(60))
+    assert verified['source_append_count'] == verified['node_ref_count'] == 1
+    assert verified['source_revision_delta'] == 5
+    for number, statement in enumerate((
+        "UPDATE consolidation_audit SET content_hash='forged'",
+        "UPDATE kuzu_node_refs SET kuzu_node_id='unowned'",
+        "UPDATE global_update_outbox SET payload='{}'",
+        "UPDATE domain_events SET payload_json='{}'",
+        "UPDATE app_settings SET value='unowned'",
+        "UPDATE kg_cognitive_source_revisions SET source_session_id='unowned'",
+        "UPDATE kg_cognitive_sources SET source_session_id='rewritten-history'",
+        "UPDATE global_discovery_source_revision SET revision=revision+1",
+        "CREATE INDEX unowned_candidate_index ON consolidation_audit (artifact_id)",
+    )):
+        altered = tmp_path / f'altered-{number}.sqlite3'
+        shutil.copyfile(tmp_path / 'after.sqlite3', altered)
+        with closing(sqlite3.connect(altered)) as connection:
+            connection.execute(statement)
+            connection.commit()
+        with pytest.raises(ValueError):
+            await verify_learning_sql_delta(tmp_path / 'before.sqlite3', altered,
+                execution=execution, deadline=_deadline(60))
     assert set(before) == set(after)
     changed = {name: {'before': sum(before[name][1].values()), 'after': sum(after[name][1].values())}
         for name in before if before[name] != after[name]}
@@ -213,26 +250,37 @@ async def test_public_execution_does_not_invent_session_for_absent_bug(graph_run
     assert graph_cells() == before_graph
 
 
-async def test_public_replay_identifies_its_own_audit_without_reauthoring_capture(graph_runtime):
+async def test_public_replay_identifies_its_own_audit_without_reauthoring_capture(graph_runtime, monkeypatch, tmp_path):
     runtime, capture, _, _ = graph_runtime
     factory, _, store, _ = runtime
+    from okto_pulse.community.adapters import relational_schema_steps
+    monkeypatch.setattr(relational_schema_steps, 'get_engine', lambda: factory.kw['bind'])
+    await relational_schema_steps._migrate_global_discovery_recovery_control_plane()
     work_ref = LearningCaptureWorkRef('bug-context', capture.node_id, 0, capture.record_fingerprint).encode()
     first = await execute_learning_reconciliation(board_id=BOARD, work_ref=work_ref,
         relational_scope_factory=factory)
     assert first.materialized is True
     history, before = await store.enumerate(BOARD), await sql_cells(factory)
+    sql_snapshot(factory, tmp_path / 'before.sqlite3')
     nodes, edges = graph_cells()
     replay = await execute_learning_reconciliation(board_id=BOARD, work_ref=work_ref,
         relational_scope_factory=factory)
     assert replay.materialized is True
     assert replay.consolidation_session_id != first.consolidation_session_id
     after = await sql_cells(factory)
+    sql_snapshot(factory, tmp_path / 'after.sqlite3')
+    from okto_pulse.community.adapters.retirement_learning_sql_delta import verify_learning_sql_delta
+    from okto_pulse.community.adapters.relational_recovery_snapshot import _deadline
+    verified = await verify_learning_sql_delta(tmp_path / 'before.sqlite3', tmp_path / 'after.sqlite3',
+        execution=replay, deadline=_deadline(60))
+    assert verified['source_append_count'] == verified['node_ref_count'] == 0
+    assert verified['source_revision_delta'] == 3
     audits = after['consolidation_audit'][1] - before['consolidation_audit'][1]
     audit, = [dict(zip(after['consolidation_audit'][0], row, strict=True)) for row in audits.elements()]
     assert audit['session_id'] == replay.consolidation_session_id
     assert await store.enumerate(BOARD) == history
     assert {name for name in before if before[name] != after[name]} == {
-        'consolidation_audit', 'global_update_outbox', 'app_settings', 'domain_events'}
+        'consolidation_audit', 'global_update_outbox', 'app_settings', 'domain_events', 'global_discovery_source_revision'}
     current, current_edges = graph_cells()
     assert current_edges == edges
     assert {(node.type_name, node.key) for node in current} == {(node.type_name, node.key) for node in nodes}
