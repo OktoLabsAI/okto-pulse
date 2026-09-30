@@ -89,6 +89,11 @@ async def complete_retirement_bootstrap(engine, run, *, verify_dependency):
                     await connection.run_sync(lambda sync: require_cut_schema(sync, schema))
                     card_content = {row['id']: {key: value for key, value in row.items() if key != 'position'}
                         for row in await _load_cards(connection, linked_only=False)}
+                    # The declared additive migration creates only NULL, never
+                    # a retrospective closeout binding. Preserve existing cells
+                    # exactly; every other addition or content change still fails.
+                    for row in card_content.values():
+                        row.setdefault('learning_closeout_bindings', None)
                     await ensure_retirement_data_journal(connection)
                     await orchestrator.initialize_schema()
                     if {row['id']: {key: value for key, value in row.items() if key != 'position'}

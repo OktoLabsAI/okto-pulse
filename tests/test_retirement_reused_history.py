@@ -44,6 +44,15 @@ async def test_authenticated_effects_on_reused_root_preserve_identity_and_requir
         overlay_revision = CognitivePendingOverlaySnapshotService(
             CommunityFileSystemRebuildAuditArtifactStore(tmp_path / 'kg')).current_fingerprint()
     with closing(sqlite3.connect(source)) as connection:
+        # This case requires a live working Spec. The frozen v034 schema/data
+        # contains a draft dated 2026-09-21; wall-clock execution after its
+        # seven-day TTL correctly excludes it from projection. Establish the
+        # test's live-source window BEFORE capturing any migration evidence.
+        # Keep draft status and the production TTL/partition rules unchanged.
+        from datetime import datetime, timezone
+        connection.execute('UPDATE specs SET updated_at=? WHERE id=?',
+            (datetime.now(timezone.utc).isoformat(), 'spec-a'))
+        connection.commit()
         title = connection.execute("SELECT title FROM specs WHERE id='spec-a'").fetchone()[0]
         if cognitive_case != 'none':
             # Durable knowledge can exist while its graph projection is absent.

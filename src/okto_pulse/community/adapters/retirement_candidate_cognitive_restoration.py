@@ -13,6 +13,7 @@ from okto_pulse.core.ports.cognitive_projection import (
     cognitive_projection_source_node, compare_cognitive_projection,
     observe_cognitive_restoration, validate_cognitive_projection_sources,
 )
+from okto_pulse.core.ports.learning_reconciliation import select_learning_reconciliation
 
 from .graph_backend_binding import CommunityGraphBackendBindingStore
 from .grafx_graph_store import CommunityGrafxGraphStore
@@ -48,6 +49,11 @@ def _plan(schema, board_id, records, nodes, relations):
     selected.sort(key=lambda item: (item[0].type_name, item[0].key))
     observed = json.loads(json.dumps([asdict(row) for row in observations]))
     return selected, observed
+
+
+def _learning_selection(schema, board_id, records, nodes):
+    return json.loads(json.dumps([asdict(row) for row in select_learning_reconciliation(
+        schema=schema, board_id=board_id, records=records, nodes=nodes)]))
 
 
 def restore_candidate_cognitive_nodes(target, projection, *, require_live, max_seconds):
@@ -91,9 +97,11 @@ def restore_candidate_cognitive_nodes(target, projection, *, require_live, max_s
             if (relations != edges or len(current) != len(expected)
                     or {(node.type_name, node.key): _fingerprint(current_schema, node) for node in current} != expected):
                 raise ValueError('retirement_cognitive_restoration_effects_changed')
-        reports.append({'board_id': board_id, 'observations': observations, 'created': [row for _, row in selected]})
+        reports.append({'board_id': board_id, 'observations': observations,
+            'created': [row for _, row in selected],
+            'learning_reconciliation': _learning_selection(schema, board_id, records, nodes)})
     fence()
-    report = {'format': 'retirement-cognitive-restoration/v1', 'boards': reports}
+    report = {'format': 'retirement-cognitive-restoration/v2', 'boards': reports}
     if len(json.dumps(report, ensure_ascii=False).encode('utf-8')) > 64 * 1024 * 1024:
         raise ValueError('retirement_cognitive_restoration_limit')
     return report
@@ -101,7 +109,8 @@ def restore_candidate_cognitive_nodes(target, projection, *, require_live, max_s
 
 def verify_candidate_cognitive_restoration(target, projection, receipt, history, *, max_seconds):
     """Re-derive ownership against source and original-to-candidate census delta."""
-    if type(receipt) is not dict or set(receipt) != {'format', 'boards'} or receipt['format'] != 'retirement-cognitive-restoration/v1':
+    if (type(receipt) is not dict or set(receipt) != {'format', 'boards'}
+            or receipt['format'] not in {'retirement-cognitive-restoration/v1', 'retirement-cognitive-restoration/v2'}):
         raise ValueError('retirement_cognitive_restoration_receipt_invalid')
     deadline = _deadline(max_seconds)
     expected_boards = [item['projection'] for item in projection['boards'] if item['projection']['cognitive_rows']]
@@ -111,7 +120,10 @@ def verify_candidate_cognitive_restoration(target, projection, receipt, history,
     bindings, owned = CommunityGraphBackendBindingStore(target / 'kg-artifacts'), {}
     for plan, report in zip(expected_boards, receipt['boards'], strict=True):
         board_id = plan['board_id']
-        if (set(report) != {'board_id', 'observations', 'created'} or report['board_id'] != board_id
+        fields = {'board_id', 'observations', 'created'}
+        if receipt['format'] == 'retirement-cognitive-restoration/v2':
+            fields.add('learning_reconciliation')
+        if (set(report) != fields or report['board_id'] != board_id
                 or type(report['created']) is not list):
             raise ValueError('retirement_cognitive_restoration_scope_changed')
         created = {(row['node_type'], row['node_id']): row['literal_fingerprint'] for row in report['created']}
@@ -125,6 +137,9 @@ def verify_candidate_cognitive_restoration(target, projection, receipt, history,
         before = tuple(node for node in nodes if (node.type_name, node.key) not in created)
         selected, observations = _plan(schema, board_id, tuple(plan['cognitive_rows']), before, relations)
         expected = {'board_id': board_id, 'observations': observations, 'created': [row for _, row in selected]}
+        if receipt['format'] == 'retirement-cognitive-restoration/v2':
+            expected['learning_reconciliation'] = _learning_selection(
+                schema, board_id, tuple(plan['cognitive_rows']), before)
         actual = {(node.type_name, node.key): _fingerprint(schema, node) for node in nodes}
         if report != expected or any(actual.get(key) != value for key, value in created.items()):
             raise ValueError('retirement_cognitive_restoration_receipt_changed')
