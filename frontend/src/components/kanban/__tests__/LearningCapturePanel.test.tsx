@@ -15,7 +15,7 @@ const source: CaptureSource = { source_digest: 'a'.repeat(64), source_policy_ver
     { id: 'legacy', title: 'Legacy note', authenticated: false }] };
 const item = { learning_id: 'learning', generation: 0, source_revision: 0, fingerprint: 'f'.repeat(64),
   capture: { capture_id: 'old', author_id: 'original-author', captured_at: '2026-09-24T15:00:00Z',
-    content: '<script>old learning</script>', context: 'Old context', applicability: 'Old scope',
+    content: '<script>old learning</script>', context: 'Old context', applicability: 'Old scope', intent: { kind: 'create' as const },
     source: { digest: 'b'.repeat(64), policy_version: 1 } } };
 beforeEach(() => {
   mocks.denied.clear(); mocks.loading = false; mocks.error = null;
@@ -33,6 +33,25 @@ async function fill() {
 }
 
 describe('LearningCapturePanel', () => {
+  it.each(['recorded', 'unverified', 'legacy', 'reuse'])('presents %s relationships without inferring current approval', async state => {
+    const intent = { kind: state === 'reuse' ? 'reuse' : 'supersede', target_node_id: 'previous-learning',
+      target_generation: 0, expected_fingerprint: 'c'.repeat(64), reason: '<script>replacement reason</script>',
+      ...(state === 'recorded' || state === 'unverified' ? { scope: 'source_bug' } : {}) };
+    mocks.api.history.mockResolvedValue({ items: [{ ...item, capture: { ...item.capture, intent },
+      ...(state === 'recorded' ? { lineage: { state: 'recorded', limitation: null } } : {}) }], next_cursor: null });
+    const { container } = render(panel());
+    await screen.findByText('Recorded relationship');
+    expect(screen.getByText(intent.reason)).toBeInTheDocument();
+    expect(container.querySelector('script')).toBeNull();
+    expect(screen.getByText('previous-learning')).toBeInTheDocument();
+    expect(screen.getByText('This history does not verify current applicability or graph availability.')).toBeInTheDocument();
+    const messages = { recorded: 'Historical replacement recorded for this Bug only.',
+      unverified: 'Replacement requested for this Bug only; historical linkage is not verified.',
+      legacy: 'Legacy replacement request; its scope is unspecified.', reuse: 'Explicit reuse of an existing Learning.' };
+    expect(screen.getByText(messages[state as keyof typeof messages])).toBeInTheDocument();
+    expect(mocks.api.create).not.toHaveBeenCalled();
+  });
+
   it('uses authenticated evidence and preserves one request identity after a network failure', async () => {
     mocks.api.create.mockRejectedValueOnce(new Error('SECRET provider')).mockResolvedValueOnce({});
     render(panel()); await fill();

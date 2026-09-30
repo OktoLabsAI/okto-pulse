@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { v4 as uuid } from 'uuid';
 import { usePermissions } from '@/hooks/usePermissions';
 import { AuthenticatedFetchError } from '@/lib/authFetch';
-import { useLearningCaptureApi, type CaptureHistory, type CaptureRequest, type CaptureSource } from '@/services/learning-capture-api';
+import { useLearningCaptureApi, type CaptureHistory, type CaptureHistoryItem, type CaptureRequest, type CaptureSource } from '@/services/learning-capture-api';
 
 const CAPTURE_SOURCE_PERMISSIONS = ['board.read', 'card.entity.read', 'card.entity.context_read',
   'card.validation.read', 'card.comments.read', 'card.conclusion.read', 'card.tests.read', 'spec.entity.read', 'spec.tests.read'];
@@ -17,6 +17,22 @@ function failure(error: unknown) {
     if (error.status === 422) return 'The capture could not be accepted. Check the text and selected evidence.';
   }
   return 'Learning information could not be verified. Your text is preserved; retry when available.';
+}
+
+function RecordedRelationship({ item }: { item: CaptureHistoryItem }) {
+  const intent = item.capture.intent;
+  if (!intent || intent.kind === 'create') return null;
+  const description = intent.kind === 'reuse' ? 'Explicit reuse of an existing Learning.'
+    : intent.scope !== 'source_bug' ? 'Legacy replacement request; its scope is unspecified.'
+      : item.lineage?.state === 'recorded' ? 'Historical replacement recorded for this Bug only.'
+        : 'Replacement requested for this Bug only; historical linkage is not verified.';
+  return <details className="text-sm">
+    <summary className="cursor-pointer">Recorded relationship</summary>
+    <p>{description}</p>
+    <p>Target Learning: <code>{intent.target_node_id}</code></p>
+    <p className="whitespace-pre-wrap"><strong>Reason: </strong>{intent.reason}</p>
+    <p className="text-gray-500">This history does not verify current applicability or graph availability.</p>
+  </details>;
 }
 
 export function LearningCapturePanel({ boardId, bugId }: { boardId: string; bugId: string }) {
@@ -133,6 +149,7 @@ function CaptureEditor({ boardId, bugId, canCreate, canReadHistory }: {
           <p className="whitespace-pre-wrap">{item.capture.content}</p>
           <p className="whitespace-pre-wrap text-sm"><strong>Context: </strong>{item.capture.context}</p>
           <p className="whitespace-pre-wrap text-sm"><strong>Applicability: </strong>{item.capture.applicability}</p>
+          <RecordedRelationship item={item} />
           {source && item.capture.source.digest !== source.source_digest && <p className="text-sm text-amber-700 dark:text-amber-300">Recorded against an earlier evidence basis. Review applicability before reuse.</p>}
         </article>)}
         {history.next_cursor && <button type="button" className={buttonClass} onClick={() => { setHistory(null); setCursor(history.next_cursor); }}>Next Learning page</button>}

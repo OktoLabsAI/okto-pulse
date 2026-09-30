@@ -8,7 +8,7 @@ vi.mock('@/services/learning-capture-api', () => ({ useLearningCaptureApi: () =>
 const source = { source_digest: 'a'.repeat(64), source_policy_version: 7, scenarios: [] };
 const item = { learning_id: 'learning', generation: 2, source_revision: 3, fingerprint: 'f'.repeat(64),
   capture: { capture_id: 'capture', author_id: 'author', captured_at: '2026-09-29T12:00:00Z',
-    content: '<script>lesson</script>', context: 'Context', applicability: 'Scope',
+    content: '<script>lesson</script>', context: 'Context', applicability: 'Scope', intent: { kind: 'create' as const },
     source: { digest: source.source_digest, policy_version: 7 } } };
 const change = vi.fn();
 function selector(bugId = 'bug', disabled = false) {

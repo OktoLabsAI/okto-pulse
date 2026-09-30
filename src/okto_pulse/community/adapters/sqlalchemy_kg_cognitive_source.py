@@ -261,6 +261,7 @@ async def _load_base_rows(
 async def _load_revision_rows(
     session: Any,
     source_ids: tuple[str, ...],
+    *, limit: int | None = None,
 ) -> tuple[KGCognitiveSourceRevision, ...]:
     if not source_ids:
         return ()
@@ -271,7 +272,7 @@ async def _load_revision_rows(
             .order_by(
                 KGCognitiveSourceRevision.cognitive_source_id.asc(),
                 KGCognitiveSourceRevision.source_revision.asc(),
-            )
+            ).limit(limit)
         )
     ).scalars().all()
     return tuple(rows)
@@ -599,7 +600,15 @@ class CommunitySqlAlchemyCognitiveSourceStore:
                 board_id=board_id, node_id=node_id)
         return matches[0] if matches else None
 
-    async def _read_scoped_history(self, context, *, board_id, node_id, generation):
+    async def read_bounded_history_in_context(self, context, *, board_id, node_id, generation, max_records):
+        if (any(type(value) is not str or not value.strip() or len(value) > 4096 for value in (board_id, node_id))
+                or type(generation) is not int or generation < 0
+                or type(max_records) is not int or not 1 <= max_records <= 200):
+            raise ValueError('cognitive_source_history_selection_invalid')
+        return await self._read_scoped_history(context, board_id=board_id, node_id=node_id,
+            generation=generation, max_records=max_records)
+
+    async def _read_scoped_history(self, context, *, board_id, node_id, generation, max_records=None):
         try:
             bases = await _load_base_rows(context, ((node_id, generation),))
             base = bases.get((node_id, generation))
@@ -608,7 +617,12 @@ class CommunitySqlAlchemyCognitiveSourceStore:
             if str(base.board_id) != board_id:
                 raise CognitiveSourceConflict('cognitive_source_scope_conflict', board_id=board_id, node_id=node_id)
             history = [_base_record(base)]
-            for row in await _load_revision_rows(context, (str(base.id),)):
+            revisions = await _load_revision_rows(context, (str(base.id),), limit=max_records)
+            # One base plus max_records revisions is the bounded overflow probe.
+            # Do not interpret or present that partial result as verified history.
+            if max_records is not None and len(revisions) >= max_records:
+                raise CognitiveSourceUnavailable('cognitive_source_history_limit', board_id=board_id, node_id=node_id)
+            for row in revisions:
                 history.append(_revision_record(base, row))
             latest_cognitive_source_records(tuple(history))
             return tuple(history)
