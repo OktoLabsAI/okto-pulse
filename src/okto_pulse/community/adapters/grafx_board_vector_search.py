@@ -18,6 +18,7 @@ from okto_pulse.core.kg import cypher_templates as tpl
 from okto_pulse.core.kg.schema_contract import VECTOR_INDEX_TYPES
 
 from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
+from okto_pulse.community.adapters.grafx_query_execution import GrafxDeadlineReader
 from okto_pulse.community.adapters.grafx_schema_manifest import (
     EMBEDDING_DIMENSION,
     PULSE_GRAFX_SCHEMA_MANIFEST,
@@ -238,6 +239,7 @@ class CommunityGrafxBoardVectorSearch:
         database_resolver: DatabaseResolver,
         *,
         read_database_scope: Callable[[str], AbstractContextManager[Database]] | None = None,
+        query_timeout: Callable[[str], float | None] | None = None,
     ) -> None:
         if not callable(database_resolver):
             raise ValueError("database_resolver must be callable")
@@ -245,6 +247,7 @@ class CommunityGrafxBoardVectorSearch:
             raise ValueError("read_database_scope must be callable")
         self._database_resolver = database_resolver
         self._read_database_scope = read_database_scope
+        self._query_timeout = query_timeout
 
     def vector_search(
         self,
@@ -297,28 +300,32 @@ class CommunityGrafxBoardVectorSearch:
                 else nullcontext(self._database_resolver(wanted_board))
             )
             with scope as database, database.begin("read") as reader:
-                result = reader.execute(
+                bounded = GrafxDeadlineReader(reader, wanted_board, self._query_timeout)
+                result = bounded.execute(
                     _indexed_statement(node_type, space), parameters
                 )
                 page = _ranked_page(result.rows, node_type=node_type)
                 page = [hit for hit in page if hit["similarity"] >= threshold]
                 if not _needs_exact(page, top_k=wanted_k):
+                    bounded.check()
                     return page[:wanted_k]
 
-                exact = reader.execute(
+                exact = bounded.execute(
                     _exact_statement(node_type),
                     {
                         "include_superseded": wanted_superseded,
                         "graph_layer": wanted_layer,
                     },
                 )
-                return _exact_hits(
+                hits = _exact_hits(
                     exact.rows,
                     node_type=node_type,
                     query=query,
                     top_k=wanted_k,
                     min_similarity=threshold,
                 )
+                bounded.check()
+                return hits
         except Exception as exc:
             mapped = map_grafx_error(exc, operation=_OPERATION)
             if mapped is exc:

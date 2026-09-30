@@ -40,6 +40,7 @@ from okto_pulse.community.adapters.grafx_board_vector_search import (
     CommunityGrafxBoardVectorSearch,
 )
 from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
+from okto_pulse.community.adapters.grafx_query_execution import GrafxDeadlineReader
 from okto_pulse.community.adapters.grafx_composed_reads import read_branches, read_frontier
 from okto_pulse.community.adapters.grafx_relationship_layout import (
     PULSE_RELATIONSHIP_LAYOUT,
@@ -223,6 +224,7 @@ class CommunityGrafxGraphStore:
         *,
         read_database_resolver: DatabaseResolver | None = None,
         read_database_scope: Callable[[str], AbstractContextManager[Database]] | None = None,
+        query_timeout: Callable[[str], float | None] | None = None,
     ) -> None:
         if not callable(database_resolver):
             raise ValueError("database_resolver must be callable")
@@ -233,10 +235,12 @@ class CommunityGrafxGraphStore:
         self._database_resolver = database_resolver
         self._read_database_resolver = read_database_resolver or database_resolver
         self._read_database_scope = read_database_scope
+        self._query_timeout = query_timeout
         self._revalidate_fence = revalidate_fence
         self._vector_provider = CommunityGrafxBoardVectorSearch(
             self._read_database_resolver,
             read_database_scope=read_database_scope,
+            query_timeout=query_timeout,
         )
 
     def _resolve(self, board_id: str, *, operation: str) -> Database:
@@ -278,7 +282,11 @@ class CommunityGrafxGraphStore:
             )
             try:
                 with scope as database, database.begin("read") as reader:
-                    return callback(reader)
+                    bounded = GrafxDeadlineReader(reader, board_id, self._query_timeout)
+                    bounded.check()
+                    result = callback(bounded)
+                    bounded.check()
+                    return result
             except GrafxLeaseTimeout as exc:
                 if attempt == 0:
                     continue

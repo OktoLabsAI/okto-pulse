@@ -42,6 +42,8 @@ from okto_pulse.core.kg.interfaces.graph_lifecycle import (
 )
 from okto_pulse.core.kg.interfaces.graph_recovery import WalRecoveryReport
 from okto_pulse.core.kg.interfaces.graph_health_observation import GraphHealthObservation
+from okto_pulse.core.kg.interfaces.graph_query_execution import GraphQueryExecution
+from okto_pulse.community.adapters.grafx_query_execution import CommunityGraphQueryExecution
 from okto_pulse.core.kg.interfaces.graph_runtime_store import (
     GraphPurgeResult,
 )
@@ -394,6 +396,14 @@ class _GrafxBoardAccess:
         self._health_observation: ContextVar[float | None] = ContextVar(
             "grafx_board_health_observation", default=None
         )
+        self.query_execution = CommunityGraphQueryExecution()
+
+    def query_timeout(self, board_id: str) -> float | None:
+        query_left = self.query_execution.remaining(board_id)
+        health_left = self.health_query_timeout(board_id)
+        if query_left is None:
+            return health_left
+        return query_left if health_left is None else min(query_left, health_left)
 
     @contextmanager
     def scope(self, board_id: str, *, timeout_seconds: float = 0.35) -> Iterator[None]:
@@ -475,7 +485,7 @@ class _GrafxBoardAccess:
         block either lane, and a retry resolves the other lane automatically.
         """
 
-        self.health_query_timeout(board_id)
+        self.query_timeout(board_id)
         snapshot = self._snapshot(board_id, require_physical=True)
         assert snapshot.page_size is not None
         if not self.read_pools:
@@ -670,6 +680,7 @@ class CommunityRoutedBoardGraphComposition:
     graph_history: Any | None = None
     graph_analytics: Any | None = None
     graph_health_observation: GraphHealthObservation | None = None
+    graph_query_execution: GraphQueryExecution | None = None
     # Community-only wiring for the shared Board/Global diagnostic context.
     observation_timeout: Callable[[], float | None] | None = None
 
@@ -751,6 +762,7 @@ class CommunityRoutedBoardGraphComposition:
             "graph_store": self.graph_store,
             "cypher_executor": self.cypher_executor,
             "graph_health_observation": self.graph_health_observation,
+            "graph_query_execution": self.graph_query_execution,
             "graph_transaction": self.graph_transaction,
             "graph_schema_manager": self.graph_schema_manager,
             "graph_lifecycle": self.graph_lifecycle,
@@ -1050,6 +1062,7 @@ def build_community_routed_board_graph_composition(
         access.write_fence,
         read_database_resolver=access.read_database,
         read_database_scope=access.read_database_scope,
+        query_timeout=access.query_timeout,
     )
     from okto_pulse.community.adapters.grafx_ranked_search import CommunityGrafxRankedSearch
     from okto_pulse.community.adapters.grafx_observations import CommunityGrafxHistory, CommunityGrafxAnalytics
@@ -1069,7 +1082,7 @@ def build_community_routed_board_graph_composition(
     grafx_cypher = CommunityGrafxCypherExecutor(
         access.read_database,
         read_database_scope=access.read_database_scope,
-        query_timeout=access.health_query_timeout,
+        query_timeout=access.query_timeout,
     )
     grafx_schema = CommunityGrafxGraphSchemaManager(
         access.database,
@@ -1295,6 +1308,7 @@ def build_community_routed_board_graph_composition(
         graph_history=history,
         graph_analytics=analytics,
         graph_health_observation=access,
+        graph_query_execution=access.query_execution,
         observation_timeout=lambda: access.health_query_timeout("global"),
     )
 
