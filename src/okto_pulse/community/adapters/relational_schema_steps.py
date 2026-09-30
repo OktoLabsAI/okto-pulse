@@ -24,6 +24,28 @@ StepCallable = Callable[[], "Awaitable[object] | object"]
 logger = logging.getLogger(__name__)
 
 
+async def _migrate_audit_reference_findings() -> None:
+    """Add optional diagnostics without rewriting historical audit values."""
+    from sqlalchemy import JSON, inspect
+
+    async with get_engine().begin() as connection:
+        if connection.dialect.name == 'sqlite':
+            await connection.exec_driver_sql('BEGIN IMMEDIATE')
+        def inspect_column(sync_connection):
+            inspector = inspect(sync_connection)
+            if not inspector.has_table('consolidation_audit'):
+                raise RuntimeError('projection_finding_audit_table_missing')
+            return next((column for column in inspector.get_columns('consolidation_audit')
+                         if column['name'] == 'reference_findings'), None)
+        column = await connection.run_sync(inspect_column)
+        if column is None:
+            await connection.exec_driver_sql(
+                'ALTER TABLE consolidation_audit ADD COLUMN reference_findings JSON NULL')
+        elif (not isinstance(column['type'], JSON) or not column['nullable']
+                or column.get('default') is not None or column.get('computed') is not None):
+            raise RuntimeError('projection_finding_audit_schema_drift')
+
+
 async def _migrate_permission_migration_reviews() -> None:
     """Add nullable review provenance before any bootstrap can normalize flags."""
     async with get_engine().begin() as connection:
@@ -25315,6 +25337,7 @@ SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
     "_migrate_status_renames": _migrate_status_renames,
     "_migrate_add_permission_columns": _migrate_add_permission_columns,
     "_migrate_add_event_tables": _migrate_add_event_tables,
+    "_migrate_audit_reference_findings": _migrate_audit_reference_findings,
     "_migrate_delivery_progress": _migrate_delivery_progress,
     "_migrate_architecture_classification_storage": _migrate_architecture_classification_storage,
     "_migrate_validation_cycle_editions": _migrate_validation_cycle_editions,

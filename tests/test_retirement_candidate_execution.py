@@ -188,6 +188,16 @@ async def test_failed_private_execution_can_retry_from_seed_and_keeps_original_p
             target / 'database.sqlite3', acknowledgements, deadline=_deadline(60))
         assert verified_delta['state'] == 'receipt_owned_projection_effects'
         assert verified_delta['source_revision_delta'] == verified_delta['source_revision_expected_delta'] == 25
+        forged_findings = tmp_path / 'forged-findings.sqlite3'
+        with closing(sqlite3.connect(target / 'database.sqlite3')) as original, closing(
+                sqlite3.connect(forged_findings)) as altered:
+            original.backup(altered)
+            with altered:
+                altered.execute("UPDATE consolidation_audit SET reference_findings='{}'")
+        with pytest.raises(ValueError, match='sql_delta_audit_changed'):
+            verify_candidate_sql_delta(
+                Path(seed_document['snapshot']['directory']) / 'relational/database.sqlite3',
+                forged_findings, acknowledgements, deadline=_deadline(60))
         with pytest.raises(ValueError, match='sql_delta_unclassified:boards'):
             verify_candidate_sql_delta(
                 Path(seed_document['snapshot']['directory']) / 'relational/database.sqlite3',

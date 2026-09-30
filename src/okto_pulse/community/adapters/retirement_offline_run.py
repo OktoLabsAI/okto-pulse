@@ -341,7 +341,7 @@ async def _resume_materialization_and_permissions(runtime, storage, graphs, run,
                 await connection.exec_driver_sql("BEGIN")
                 records = await read_retirement_data_journal(connection, data)
                 all_retired = require_materialization_states(retained, graphs, original=len(records) < 5, retired=len(records) >= 6)
-                raw = await connection.run_sync(_outbox_snapshot)
+                raw = await connection.run_sync(lambda sync: _outbox_snapshot(sync, original=retained.original))
                 if (len(records) < 5 and raw != retained.original
                         or raw != retained.original and (_outbox_sha(raw) != retained.after_sha256 or not all_retired)
                         or len(records) >= 6 and _outbox_sha(raw) != retained.after_sha256):

@@ -123,6 +123,9 @@ def verify_candidate_sql_delta(baseline_path, candidate_path, receipts, *, deadl
             if (audited['board_id'] != ack.board_id or audited['artifact_type'] != ack.artifact_type
                     or audited['artifact_id'] != ack.artifact_id
                     or audited['content_hash'] != ack.audit_content_hash
+                    # No productive writer yet. Fail closed until source-plan
+                    # qualification is integrated; never trust a self-sealed blob.
+                    or audited.get('reference_findings') is not None
                     or audited['undo_status'] != 'none' or audited['undone_at'] is not None):
                 raise ValueError('retirement_candidate_sql_delta_audit_changed')
             event = events[ack.generation_event_id]

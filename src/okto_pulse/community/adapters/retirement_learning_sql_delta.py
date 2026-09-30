@@ -96,6 +96,7 @@ async def verify_learning_sql_delta(baseline_path, candidate_path, *, execution,
         if (audit['session_id'] != session or audit['board_id'] != board
                 or audit['agent_id'] != 'cognitive_closeout_worker' or audit['artifact_type'] != 'bug'
                 or audit['artifact_id'] != basis.bug_id or audit['content_hash'] != basis.audit_content_hash
+                or audit.get('reference_findings') is not None
                 or audit['undo_status'] != 'none' or audit['undone_at'] is not None):
             raise ValueError('retirement_learning_sql_audit_unowned')
         counts = {key: audit[key] for key in ('nodes_added', 'nodes_updated', 'nodes_superseded', 'edges_added')}

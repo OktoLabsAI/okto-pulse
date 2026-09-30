@@ -176,10 +176,11 @@ def test_ts_7aacc71a_ledger_covers_all_migrate_functions():
     # Internal permission-review provenance precedes data reconciliation.
     # F3 removed the three unreferenced Sprint-only migration writers.
     # Nullable closeout references preserve legacy Done without invented proof.
-    assert len(migrate_names) == 76, (
-        f"expected 76 _migrate_*, found {len(migrate_names)}"
+    # Nullable audit source diagnostics preserve unobserved historical rows.
+    assert len(migrate_names) == 77, (
+        f"expected 77 _migrate_*, found {len(migrate_names)}"
     )
-    assert len(ledger_migrate_ids) == 76
+    assert len(ledger_migrate_ids) == 77
     ordered_ids = [step.step_id for step in ledger]
     assert ordered_ids.index(
         "_migrate_guideline_policy_lifecycle_substrate"

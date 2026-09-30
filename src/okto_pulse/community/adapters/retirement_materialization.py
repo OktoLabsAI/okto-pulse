@@ -42,7 +42,7 @@ async def verify_materialization_state(connection, runtime, permission, plan, ma
     if actual_boards != manifest["routing_inventory"]["board_ids"]:
         raise ValueError("retirement_materialization_board_population_mismatch")
     all_retired = require_materialization_states(plan, graphs, original=original, retired=retired)
-    raw = await connection.run_sync(_snapshot)
+    raw = await connection.run_sync(lambda sync: _snapshot(sync, original=plan.original))
     if original and raw != plan.original:
         raise ValueError("retirement_materialization_original_outbox_mismatch")
     if retired and _sha(raw) != plan.after_sha256:

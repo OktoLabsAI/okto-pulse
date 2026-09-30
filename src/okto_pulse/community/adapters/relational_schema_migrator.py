@@ -235,6 +235,12 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
     ),
     # --- post_create_all: schema ALTERs applied AFTER create_all ---
     (
+        "_migrate_audit_reference_findings",
+        "post_create_all",
+        False,
+        "Add nullable source-reference diagnostics to consolidation audit.",
+    ),
+    (
         "_migrate_delivery_progress",
         "post_create_all",
         True,

@@ -41,19 +41,37 @@ def _sha(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
-def _snapshot(connection):
+def _snapshot(connection, *, original=None):
     if connection.dialect.name != "sqlite":
         raise ValueError("outbox_retirement_sqlite_required")
     schema = inspect(connection)
+    retained = json.loads(original) if original is not None else None
     document, count, size = {}, 0, 0
     for model in _MODELS:
         table = model.__table__
-        names = tuple(sorted(column.name for column in table.columns))
+        mapped = {column.name for column in table.columns}
+        actual = {column['name']: column for column in schema.get_columns(table.name)} if schema.has_table(table.name) else {}
+        predecessor = mapped - {'reference_findings'} if model is ConsolidationAudit else mapped
+        names = tuple(sorted(actual))
         if (not schema.has_table(table.name)
-                or set(names) != {column["name"] for column in schema.get_columns(table.name)}
+                or set(actual) not in (mapped, predecessor)
                 or tuple(schema.get_pk_constraint(table.name)["constrained_columns"])
                 != tuple(column.name for column in table.primary_key)):
             raise ValueError("outbox_retirement_schema_mismatch")
+        if retained is not None:
+            names = tuple(retained[table.name]['columns'])
+            if set(names) not in (mapped, predecessor) or set(names) - set(actual):
+                raise ValueError('outbox_retirement_schema_mismatch')
+            if set(actual) - set(names):
+                # The declared upgrade adds only SQL NULL. Preserve the exact
+                # predecessor column bag; never erase a subsequently written fact.
+                from sqlalchemy import JSON
+                column = actual['reference_findings']
+                if (not isinstance(column['type'], JSON) or not column['nullable']
+                        or column.get('default') is not None or column.get('computed') is not None
+                        or connection.exec_driver_sql('SELECT 1 FROM consolidation_audit '
+                            'WHERE reference_findings IS NOT NULL LIMIT 1').first() is not None):
+                    raise ValueError('outbox_retirement_reference_findings_changed')
         # Names come from closed Community mappings; values remain parameters.
         length = "+".join(f'coalesce(length(CAST("{name}" AS BLOB)),0)' for name in names)
         projection = ",".join(f'CASE WHEN ({length}) <= {_MAX_ROW_BYTES} THEN "{name}" END AS "{name}"' for name in names)
@@ -177,7 +195,7 @@ async def _apply_outbox_in_transaction(connection, plan):
     _validate_plan(plan)
     if not connection.in_transaction():
         raise ValueError("outbox_retirement_transaction_required")
-    current = await connection.run_sync(_snapshot)
+    current = await connection.run_sync(lambda sync: _snapshot(sync, original=plan.original))
     if _sha(current) == plan.after_sha256:
         return
     if current != plan.original:
@@ -185,7 +203,7 @@ async def _apply_outbox_in_transaction(connection, plan):
     for identity in plan.selected_ids:
         await connection.execute(text("UPDATE global_update_outbox SET retry_count=:retired WHERE id=:identity"),
             {"retired": GLOBAL_OUTBOX_RETIRED_SENTINEL, "identity": identity})
-    if _sha(await connection.run_sync(_snapshot)) != plan.after_sha256:
+    if _sha(await connection.run_sync(lambda sync: _snapshot(sync, original=plan.original))) != plan.after_sha256:
         raise ValueError("outbox_retirement_after_mismatch")
 
 

@@ -101,6 +101,7 @@ async def test_selected_capture_has_only_owned_append_deltas(graph_runtime, reco
     assert verified['source_revision_delta'] == 5
     for number, statement in enumerate((
         "UPDATE consolidation_audit SET content_hash='forged'",
+        "UPDATE consolidation_audit SET reference_findings='{}'",
         "UPDATE kuzu_node_refs SET kuzu_node_id='unowned'",
         "UPDATE global_update_outbox SET payload='{}'",
         "UPDATE domain_events SET payload_json='{}'",
