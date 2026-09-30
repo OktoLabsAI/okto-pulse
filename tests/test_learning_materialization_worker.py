@@ -126,3 +126,31 @@ async def test_independent_post_done_capture_gets_distinct_work_and_preserves_le
     assert sum(row.status == 'consolidated' for row in items) == 2
     assert {row[0] for row in graph_rows('MATCH (n:Learning) RETURN n.id')} == {first.node_id, second.node_id}
     assert len(await source_store.enumerate(BOARD)) == 4
+
+
+async def test_same_bug_reuse_outbox_work_materializes_after_first_capture_finished(graph_runtime, work_store):
+    from test_learning_reuse_materialization import stage_reuse, associations
+    runtime, original, _, _ = graph_runtime
+    factory, _, source_store, _ = runtime
+    store, discovery = work_store
+    worker = CognitiveCloseoutWorker(factory, store=store, pending_work_provider=discovery)
+    await deliver_capture_events(factory)
+    assert await worker.drain_once() == 1
+    generation = store.latest_generation(BOARD)
+    first, = store.list_items(BOARD, generation)
+    assert first.status == 'consolidated'
+    capture, _ = await stage_reuse(graph_runtime)
+    assert await deliver_capture_events(factory) == 2
+    items = store.list_items(BOARD, generation)
+    assert first in items and len(items) == 2
+    new, = [item for item in items if item.content_hash == capture.record_fingerprint]
+    assert new.status == 'pending' and new.item_id != first.item_id
+    assert await worker.drain_once() == 1
+    history = await source_store.enumerate(BOARD)
+    assert len(history) == 4
+    assert max(history, key=lambda row: row.source_revision).payload['source_content_hash'] == capture.record_fingerprint
+    assert associations() == {(original.node_id, 'canonical-bug')}
+    assert all(item.status == 'consolidated' for item in store.list_items(BOARD, generation))
+    await deliver_capture_events(factory)
+    assert await worker.drain_once() == 0
+    assert await source_store.enumerate(BOARD) == history
