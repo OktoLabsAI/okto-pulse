@@ -54,7 +54,7 @@ from okto_pulse.community.adapters.cypher_statement_policy import (
 )
 from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
 from okto_pulse.core.ports.spec_projection import SPEC_RELATIONSHIP_NAMESPACES, is_spec_relationship_writer
-from okto_pulse.core.ports.card_projection import is_card_scenario_writer
+from okto_pulse.core.ports.card_projection import is_card_scenario_writer, is_card_parent_writer
 from okto_pulse.community.adapters.grafx_query_values import normalize_query_value as _normalize_value
 from okto_pulse.community.adapters.grafx_relationship_layout import (
     resolve_relationship_table,
@@ -2071,6 +2071,10 @@ class _GrafxTransactionScope:
         """
 
         rule_id = str(edge.attrs.get("rule_id") or "")
+        if (edge.edge_type == 'belongs_to' and edge.from_type in {'Entity', 'Bug'} and edge.to_type == 'Entity'
+                and is_card_parent_writer(rule_id=rule_id, layer=edge.attrs.get('layer'),
+                    created_by=edge.attrs.get('created_by'))):
+            return rule_id
         if (
             edge.edge_type == "supports"
             and edge.from_type in {"Entity", "Bug"}
@@ -2862,7 +2866,7 @@ class _GrafxTransactionScope:
         # The whole intent is validated, and every before-image captured, before the first
         # mutation: a refusal must not be able to leave half an active set staged.
         self._fence("reconcile_projection_active_set")
-        if intent.owner_type == 'card' and intent.namespace == 'card_scenarios':
+        if intent.owner_type == 'card' and intent.namespace in {'card_scenarios', 'card_parent'}:
             from okto_pulse.community.adapters.grafx_card_scenario_projection import reconcile_card_scenarios
             return reconcile_card_scenarios(self, intent)
         if intent.owner_type == "spec" and intent.namespace in SPEC_RELATIONSHIP_NAMESPACES:

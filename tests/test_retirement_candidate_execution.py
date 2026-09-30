@@ -183,9 +183,11 @@ async def test_failed_private_execution_can_retry_from_seed_and_keeps_original_p
         seed_document = candidate.read_retirement_candidate_seed(seed)[0]
         acknowledgements = tuple(ExactConsolidationAckReceipt.from_payload(ack)
             for board in receipt['boards'] for ack in board['acks'])
+        from okto_pulse.community.adapters.retirement_projection_inputs import read_retirement_projection_inputs
+        source_plan = read_retirement_projection_inputs(projection['projection_inputs'])
         verified_delta = verify_candidate_sql_delta(
             Path(seed_document['snapshot']['directory']) / 'relational/database.sqlite3',
-            target / 'database.sqlite3', acknowledgements, deadline=_deadline(60))
+            target / 'database.sqlite3', acknowledgements, deadline=_deadline(60), source_projection=source_plan)
         assert verified_delta['state'] == 'receipt_owned_projection_effects'
         assert verified_delta['source_revision_delta'] == verified_delta['source_revision_expected_delta'] == 25
         forged_findings = tmp_path / 'forged-findings.sqlite3'
@@ -197,17 +199,17 @@ async def test_failed_private_execution_can_retry_from_seed_and_keeps_original_p
         with pytest.raises(ValueError, match='sql_delta_audit_changed'):
             verify_candidate_sql_delta(
                 Path(seed_document['snapshot']['directory']) / 'relational/database.sqlite3',
-                forged_findings, acknowledgements, deadline=_deadline(60))
+                forged_findings, acknowledgements, deadline=_deadline(60), source_projection=source_plan)
         with pytest.raises(ValueError, match='sql_delta_unclassified:boards'):
             verify_candidate_sql_delta(
                 Path(seed_document['snapshot']['directory']) / 'relational/database.sqlite3',
-                changed_sql, acknowledgements, deadline=_deadline(60))
+                changed_sql, acknowledgements, deadline=_deadline(60), source_projection=source_plan)
         sidecar = Path(str(changed_sql) + '-wal')
         sidecar.write_bytes(b'uncheckpointed')
         with pytest.raises(ValueError, match='relational_snapshot_unexpected_sidecar'):
             verify_candidate_sql_delta(
                 Path(seed_document['snapshot']['directory']) / 'relational/database.sqlite3',
-                changed_sql, acknowledgements, deadline=_deadline(60))
+                changed_sql, acknowledgements, deadline=_deadline(60), source_projection=source_plan)
         sidecar.unlink()
         changed_revision = tmp_path / 'changed-revision.sqlite3'
         with closing(sqlite3.connect(target / 'database.sqlite3')) as original, closing(
@@ -219,12 +221,10 @@ async def test_failed_private_execution_can_retry_from_seed_and_keeps_original_p
         with pytest.raises(ValueError, match='revision_delta_unowned'):
             verify_candidate_sql_delta(
                 Path(seed_document['snapshot']['directory']) / 'relational/database.sqlite3',
-                changed_revision, acknowledgements, deadline=_deadline(60))
+                changed_revision, acknowledgements, deadline=_deadline(60), source_projection=source_plan)
         from okto_pulse.community.adapters.retirement_candidate_graph_reconciliation import (
             verify_candidate_graph_reconciliation,
         )
-        from okto_pulse.community.adapters.retirement_projection_inputs import read_retirement_projection_inputs
-        source_plan = read_retirement_projection_inputs(projection['projection_inputs'])
 
         changed_graph_evidence = tmp_path / 'changed-graph-evidence'
         shutil.copytree(target, changed_graph_evidence)

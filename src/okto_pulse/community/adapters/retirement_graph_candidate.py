@@ -390,7 +390,7 @@ async def _restore_retirement_graph_candidate(runtime, storage, graphs, run, see
                             property_effects = []
                             verify_candidate_sql_delta(snapshot.directory / 'relational/database.sqlite3',
                                 stage / 'database.sqlite3', acknowledgements, deadline=_deadline(max_seconds),
-                                effects_out=property_effects)
+                                effects_out=property_effects, source_projection=projection)
                             from .retirement_candidate_graph_reconciliation import (
                                 verify_candidate_graph_reconciliation,
                             )

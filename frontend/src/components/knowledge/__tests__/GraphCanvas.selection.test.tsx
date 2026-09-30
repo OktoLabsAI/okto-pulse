@@ -50,6 +50,28 @@ function renderCanvas(props: Partial<React.ComponentProps<typeof GraphCanvas>> =
 }
 
 describe('GraphCanvas — selection wiring (S4.1 / AC-4)', () => {
+  it.each(['Entity', 'Bug'] as const)('keeps the selected %s navigable after its parent edge is removed', (kind) => {
+    const card: KGNode = { ...NODE, id: 'card-root', title: 'Card', node_type: kind,
+      source_artifact_ref: 'card:owner' };
+    const spec: KGNode = { ...NODE, id: 'spec-root', title: 'Spec', node_type: 'Entity',
+      source_artifact_ref: 'spec:parent' };
+    const onSelect = vi.fn();
+    const { container, rerender } = renderCanvas({ nodes: [card, spec], onSelect,
+      initialSelectedNodeId: card.id,
+      edges: [{ id: 'parent', source: card.id, target: spec.id, edge_type: 'belongs_to', confidence: 1 }] });
+    rerender(<GraphCanvas nodes={[card, spec]} edges={[]} filters={FILTERS}
+      initialSelectedNodeId={card.id} onSelect={onSelect} />);
+    expect(container.querySelector('[data-testid="kg-canvas"]')).toHaveAttribute('data-selected-id', card.id);
+    for (const node of [card, spec]) {
+      const button = container.querySelector(`[data-node-id="${node.id}"]`);
+      expect(button).not.toBeNull();
+      fireEvent.doubleClick(button!);
+      expect(onSelect).toHaveBeenLastCalledWith(expect.objectContaining({
+        id: node.id, source_artifact_ref: node.source_artifact_ref, node_type: node.node_type,
+      }));
+    }
+  });
+
   it.each(['Entity', 'Bug'] as const)('keeps observed %s-to-scenario endpoints independently navigable', (kind) => {
     const card: KGNode = { ...NODE, id: 'card-root', title: 'Card', node_type: kind,
       source_artifact_ref: 'card:owner', graph_layer: 'working', maturity_status: 'working' };

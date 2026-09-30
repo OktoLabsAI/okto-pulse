@@ -190,7 +190,7 @@ async def verify_projected_candidate(target, *, seed, seed_document, projection,
     property_effects = []
     verify_candidate_sql_delta(Path(seed_document['snapshot']['directory']) / 'relational/database.sqlite3',
         learning_phase.baseline_database if learning_phase is not None else target / 'database.sqlite3',
-        tuple(all_receipts), deadline=deadline, effects_out=property_effects)
+        tuple(all_receipts), deadline=deadline, effects_out=property_effects, source_projection=projection)
     from .retirement_candidate_graph_reconciliation import (
         verify_candidate_graph_reconciliation,
     )

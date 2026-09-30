@@ -243,6 +243,18 @@ def _canonical_node_refs_sha256(
             raise ExactConsolidationAckIntegrityError('exact_consolidation_ack_outbox_invalid')
         payload['schema'] = 'exact_consolidation_node_refs.v2'
         payload['projection_property_effects_sha256'] = projection_effects_sha256
+    reference_findings = getattr(audit, 'reference_findings', None)
+    if reference_findings is not None:
+        from okto_pulse.core.ports.projection_findings import (
+            ProjectionFindingSnapshot, validate_audit_finding_snapshot,
+        )
+        if type(reference_findings) is str:
+            reference_findings = json.loads(reference_findings)
+        snapshot = ProjectionFindingSnapshot.from_payload(reference_findings)
+        validate_audit_finding_snapshot(snapshot, board_id=audit.board_id,
+            artifact_type=audit.artifact_type, artifact_id=audit.artifact_id, agent_id=audit.agent_id)
+        payload['schema'] = 'exact_consolidation_node_refs.v3'
+        payload['reference_findings'] = snapshot.to_payload()
     rendered = _canonical_json(payload).encode("utf-8")
     digest = hashlib.sha256()
     digest.update(_EXACT_NODE_REFS_DIGEST_DOMAIN)

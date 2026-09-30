@@ -24,7 +24,8 @@ from okto_pulse.community.adapters.graph_backend_binding import CommunityGraphBa
 from okto_pulse.community.adapters.board_source_reader import CommunityBoardSourceReader
 from okto_pulse.community.adapters.board_rebuild_ingestion import CommunityBoardRebuildIngestionAdapter
 from okto_pulse.community.adapters.sqlalchemy_consolidation import CommunitySqlAlchemyConsolidationPersistence
-from okto_pulse.community.adapters.sqlalchemy_models import Base, Board, Spec, Card, ConsolidationQueue
+from okto_pulse.community.adapters.sqlalchemy_models import Base, Board, Spec, Card, ConsolidationQueue, ConsolidationAudit
+from okto_pulse.core.ports.projection_findings import ProjectionFindingSnapshot
 from okto_pulse.community.adapters.migration_runtime_fence import offline_migration_window
 from okto_pulse.community.adapters.logical_transfer_factories import make_grafx_logical_source
 from logical_transfer_matrix_support import one_node_corpus, seed_generation
@@ -78,7 +79,7 @@ def relationship_set(graph):
         reader.close()
 
 
-async def materialize(root, *, incremental, card_type=None):
+async def materialize(root, *, incremental, card_type=None, final_unlinked=False):
     root.mkdir()
     path = root / 'source.sqlite3'
     settings = CommunitySettings(database_url=f'sqlite+aiosqlite:///{path}',
@@ -107,7 +108,7 @@ async def materialize(root, *, incremental, card_type=None):
             await connection.execute(insert(Spec).values(id='spec', board_id='board', title='Spec',
                 status='done', created_by='owner', **source(['ac_two'])))
             if card_type:
-                await connection.execute(insert(Card).values(id='card', board_id='board', spec_id='spec',
+                await connection.execute(insert(Card).values(id='card', board_id='board', spec_id=None if final_unlinked else 'spec',
                     title='Observed scenario', status='done', card_type=card_type, created_by='owner',
                     test_scenario_ids=['ts_one'], observed_behavior='Observed', expected_behavior='Expected',
                     steps_to_reproduce='Repeat', conclusions=[{'summary': 'Completed'}]))
@@ -115,7 +116,11 @@ async def materialize(root, *, incremental, card_type=None):
             processor = ConsolidationProcessor(relational_scope_factory=factory)
             # Add, replace, remove, restore and replay; an empty active set must
             # remove old edges and the final replay must not duplicate them.
-            for index, linked in enumerate((['ac_one'], ['ac_two'], [], ['ac_two'], ['ac_two'])):
+            steps = [['ac_one'], ['ac_two'], [], ['ac_two'], ['ac_two']]
+            if final_unlinked:
+                steps.append(['ac_two'])
+            for index, linked in enumerate(steps):
+                card_linked = bool(linked) and not (final_unlinked and index == len(steps) - 1)
                 async with runtime.engine.begin() as connection:
                     await connection.execute(update(Spec).where(Spec.id == 'spec').values(**source(linked)))
                     await connection.execute(insert(ConsolidationQueue).values(id=f'queue-{index}', board_id='board',
@@ -124,13 +129,21 @@ async def materialize(root, *, incremental, card_type=None):
                 if card_type:
                     async with runtime.engine.begin() as connection:
                         await connection.execute(update(Card).where(Card.id == 'card').values(
-                            test_scenario_ids=['ts_one'] if linked else []))
+                            # Actual unlink keeps its scenario IDs. The worker
+                            # must retract the old edge and retain the diagnosis.
+                            test_scenario_ids=['ts_one'], spec_id='spec' if card_linked else None))
                         await connection.execute(insert(ConsolidationQueue).values(id=f'card-queue-{index}',
                             board_id='board', artifact_type='card', artifact_id='card', source='state_transition'))
                     assert await processor.process_batch() == 1
                 async with factory() as session:
                     remaining = (await session.execute(select(ConsolidationQueue.status, ConsolidationQueue.last_error))).all()
                     assert not remaining, remaining
+                    if card_type:
+                        receipt = (await session.execute(select(ConsolidationAudit).where(
+                            ConsolidationAudit.artifact_type == 'card', ConsolidationAudit.artifact_id == 'card'
+                        ).order_by(ConsolidationAudit.committed_at.desc()))).scalars().first()
+                        snapshot = ProjectionFindingSnapshot.from_payload(receipt.reference_findings)
+                        assert [item.reason_code for item in snapshot.findings] == ([] if card_linked else ['parent_absent'])
                 current = relationship_set(bundle.grafx_pool.get(physical, page_size=8192))
                 owned = Counter({edge: count for edge, count in current.items() if edge[3] in OWNED_RULES})
                 assert {edge[3] for edge in owned} == (OWNED_RULES if linked else set())
@@ -138,7 +151,7 @@ async def materialize(root, *, incremental, card_type=None):
                 if card_type:
                     card_links = {edge: count for edge, count in current.items()
                                   if edge[3] == 'supports/card_scenario_observed_card@v2.1'}
-                    assert len(card_links) == (1 if linked else 0)
+                    assert len(card_links) == (1 if card_linked else 0)
                     assert all(count == 1 for count in card_links.values())
         else:
             snapshot = CommunityBoardSourceReader(path).fetch('board')
@@ -164,6 +177,13 @@ async def materialize(root, *, incremental, card_type=None):
                         async with factory() as session:
                             assert not (await session.execute(select(ConsolidationQueue.id))).all()
         graph = bundle.grafx_pool.get(physical, page_size=8192)
+        if card_type and final_unlinked:
+            async with factory() as session:
+                receipt = (await session.execute(select(ConsolidationAudit).where(
+                    ConsolidationAudit.artifact_type == 'card', ConsolidationAudit.artifact_id == 'card'
+                ).order_by(ConsolidationAudit.committed_at.desc()))).scalars().first()
+                snapshot = ProjectionFindingSnapshot.from_payload(receipt.reference_findings)
+                assert [item.reason_code for item in snapshot.findings] == ['parent_absent']
         return relationship_set(graph)
     finally:
         drain_kg_health_probes()
@@ -199,3 +219,12 @@ async def test_card_scenario_links_match_native_rebuild_after_removal_and_replay
     edge = next(iter(supports))
     assert edge[1:3] == ('card:card', 'spec:spec:test_scenario:ts_one')
     assert edge[4][0] == ('Bug' if card_type == 'bug' else 'Entity')
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(480)
+async def test_known_unlinked_source_rebuild_preserves_diagnostic_without_stale_edge(tmp_path):
+    incremental = await materialize(tmp_path / 'incremental', incremental=True, card_type='normal', final_unlinked=True)
+    rebuilt = await materialize(tmp_path / 'rebuilt', incremental=False, card_type='normal', final_unlinked=True)
+    assert incremental == rebuilt
+    assert not [edge for edge in rebuilt if edge[3].startswith('supports/card_scenario_observed_')]

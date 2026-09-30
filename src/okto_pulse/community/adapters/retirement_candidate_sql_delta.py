@@ -15,6 +15,7 @@ from types import SimpleNamespace
 
 from okto_pulse.core.ports.consolidation import ExactConsolidationAckReceipt
 from okto_pulse.core.ports.projection_effects import ProjectionPropertyEffects, validated_projection_effect_extension
+from okto_pulse.core.ports.projection_findings import ProjectionFindingSnapshot, validate_audit_finding_snapshot
 
 from .global_discovery_recovery import CommunityRelationalRecoverySnapshotFingerprint
 from .materialization_health import materialization_generation_key
@@ -87,7 +88,28 @@ def _inserted(changes, table, field, receipts, receipt_field):
     return {row[field]: row for row in added}
 
 
-def verify_candidate_sql_delta(baseline_path, candidate_path, receipts, *, deadline, effects_out=None):
+def _planned_reference_findings(source_projection):
+    """Caller authenticates and revalidates this retained plan under source fences."""
+    if source_projection is None:
+        return {}
+    result = {}
+    for board in source_projection['boards']:
+        for plan in board['projection']['plans']:
+            source = plan['source']
+            key = (source['board_id'], source['artifact_type'], source['artifact_id'])
+            if source['board_id'] != board['projection']['board_id'] or key in result:
+                raise ValueError('retirement_candidate_sql_delta_plan_scope_invalid')
+            payload = (plan.get('projection') or {}).get('reference_findings')
+            if payload is not None:
+                snapshot = ProjectionFindingSnapshot.from_payload(payload)
+                validate_audit_finding_snapshot(snapshot, board_id=key[0], artifact_type=key[1],
+                    artifact_id=key[2], agent_id='system:historical_consolidation')
+            result[key] = payload
+    return result
+
+
+def verify_candidate_sql_delta(baseline_path, candidate_path, receipts, *, deadline, effects_out=None,
+                               source_projection=None):
     """Check complete table bags and classify only rows owned by exact ACKs.
 
     This certifies only receipt-owned relational projection effects. Callers
@@ -96,6 +118,7 @@ def verify_candidate_sql_delta(baseline_path, candidate_path, receipts, *, deadl
     if (type(receipts) is not tuple or any(type(ack) is not ExactConsolidationAckReceipt
             for ack in receipts) or len({ack.receipt_sha256 for ack in receipts}) != len(receipts)):
         raise ValueError('retirement_candidate_sql_delta_receipts_invalid')
+    expected_findings = _planned_reference_findings(source_projection)
     # These files are retained, quiescent snapshots. Immutable reads avoid
     # manufacturing transient WAL/SHM files that would poison the byte seal.
     # Reject sidecars first: immutable SQLite would otherwise ignore live WAL.
@@ -120,12 +143,12 @@ def verify_candidate_sql_delta(baseline_path, candidate_path, receipts, *, deadl
             if any(logged.get(field) != getattr(ack, field) for field in ack.__dataclass_fields__):
                 raise ValueError('retirement_candidate_sql_delta_ack_changed')
             audited = audit[ack.consolidation_session_id]
+            findings = (json.loads(audited['reference_findings'])
+                        if audited.get('reference_findings') is not None else None)
             if (audited['board_id'] != ack.board_id or audited['artifact_type'] != ack.artifact_type
                     or audited['artifact_id'] != ack.artifact_id
                     or audited['content_hash'] != ack.audit_content_hash
-                    # No productive writer yet. Fail closed until source-plan
-                    # qualification is integrated; never trust a self-sealed blob.
-                    or audited.get('reference_findings') is not None
+                    or findings != expected_findings.get((ack.board_id, ack.artifact_type, ack.artifact_id))
                     or audited['undo_status'] != 'none' or audited['undone_at'] is not None):
                 raise ValueError('retirement_candidate_sql_delta_audit_changed')
             event = events[ack.generation_event_id]
