@@ -1,7 +1,8 @@
-"""Read-only Global source capture inside the private candidate's offline fences."""
+"""Private overlay initialization and read-only Global source capture."""
 
 from dataclasses import asdict
 import json
+import os
 from pathlib import Path
 import stat
 import time
@@ -76,6 +77,54 @@ class _OverlayReader:
                 if len(paths) > max_results:
                     raise ValueError('retirement_global_overlay_limit')
         return [self._read(path, max_document_bytes) for path in sorted(paths)]
+
+
+class _MissingOverlayRevisionWriter(_OverlayReader):
+    """Create one missing technical fence in an unpublished, offline stage."""
+
+    def __init__(self, root, deadline, require_live):
+        super().__init__(root, deadline)
+        self.require_live = require_live
+
+    def _require_live(self):
+        _check_time(self.deadline)
+        if self.require_live() is not True:
+            raise ValueError('retirement_global_overlay_fence_required')
+
+    def replace_json(self, key, transform):
+        self._require_live()
+        # read_json validates the exact revision key and refuses malformed
+        # content. Existing unstable revisions are evidence, never repaired.
+        if self.read_json(key) is not None:
+            raise ValueError('retirement_global_overlay_existing_revision_invalid')
+        payload = transform(None)
+        encoded = json.dumps(payload, ensure_ascii=False, allow_nan=False,
+            sort_keys=True, separators=(',', ':')).encode('utf-8')
+        if len(encoded) > 16_384:
+            raise ValueError('retirement_global_overlay_limit')
+        path = self._path('rebuild', 'global_discovery_recovery', key.artifact_id + '.json')
+        self._require_live()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open('xb') as stream:
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        self._require_live()
+        return payload
+
+
+def initialize_candidate_global_overlay(target, *, require_live, max_seconds):
+    """Establish only a missing revision; preserve every pending ledger entry.
+
+    This is a construction step under the candidate's offline fences, never a
+    read/replay side effect or a claim that there are no cognitive exclusions.
+    A failure discards the unpublished stage through the caller's lifecycle.
+    """
+    writer = _MissingOverlayRevisionWriter(Path(target) / 'kg-artifacts', _deadline(max_seconds), require_live)
+    writer._require_live()
+    result = CognitivePendingOverlaySnapshotService(writer).current_fingerprint()
+    writer._require_live()
+    return result
 
 
 async def capture_candidate_global_source_inputs(target, projection, *, max_seconds):

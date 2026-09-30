@@ -24,6 +24,7 @@ from okto_pulse.core.ports.projection_qualification import (
 from okto_pulse.core.ports.projection_history import (
     ProjectionSourceIdentity, ProjectionSourceRoot, select_projection_source_roots, is_projection_technical_root,
     ProjectionHistoryDelta, ProjectionNodeFingerprint, ProjectionNodeChange, ProjectionEdgeFingerprint,
+    projection_source_root_aliases,
 )
 
 from .logical_transfer_factories import make_grafx_logical_source
@@ -182,7 +183,8 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
     roots = tuple(sorted(expected_metadata))
     partition_roots = tuple(sorted(expected_partitions or {}))
     wanted_roots = set(roots) | set(partition_roots)
-    wanted_source_keys = {(root.node_type, root.source_artifact_ref) for root in wanted_roots}
+    wanted_source_keys = {(alias.node_type, alias.source_artifact_ref)
+        for root in wanted_roots for alias in projection_source_root_aliases(root)}
     historical_inventory_nodes, historical_inventory_edges = [], []
     if type(cognitive_rows) is not tuple or len(cognitive_rows) > _MAX_NODES:
         raise ValueError('retirement_candidate_cognitive_source_limit')
@@ -234,10 +236,7 @@ def _board_graph(binding, expected_refs, expected_edge_count, expected_metadata,
                         technical_roots.add(identity)
                     metadata[identity] = tuple(value(node.properties, name) for name in _SOURCE_FIELDS)
                     partitions[identity] = tuple(value(node.properties, name) for name in _PARTITION_FIELDS)
-                    root = (ProjectionSourceRoot(node.type_name, fields[0])
-                        if type(fields[0]) is str and fields[0] and
-                        (not preserved or (node.type_name, fields[0]) in wanted_source_keys) else None)
-                    if not preserved or root in wanted_roots:
+                    if not preserved or (node.type_name, fields[0]) in wanted_source_keys:
                         identities.append(ProjectionSourceIdentity(node.type_name, node.key, fields[0],
                             value(node.properties, 'generation'), value(node.properties, 'superseded_by')))
             selected = select_projection_source_roots(roots=roots, nodes=tuple(identities))

@@ -420,8 +420,13 @@ async def _restore_retirement_graph_candidate(runtime, storage, graphs, run, see
                                     raise ValueError('retirement_candidate_learning_baseline_changed')
                                 executed['after_sql'] = _sql_snapshot(stage / 'database.sqlite3')
 
-                            from .retirement_candidate_global_sources import capture_candidate_global_source_inputs
+                            from .retirement_candidate_global_sources import (
+                                capture_candidate_global_source_inputs, initialize_candidate_global_overlay,
+                            )
 
+                            if learning_phase is not None:
+                                initialize_candidate_global_overlay(stage,
+                                    require_live=lambda: connection.in_transaction(), max_seconds=max_seconds)
                             executed['global_source_inputs'] = await capture_candidate_global_source_inputs(
                                 stage, projection, max_seconds=max_seconds)
                             from .retirement_candidate_global_materialization import materialize_missing_candidate_global

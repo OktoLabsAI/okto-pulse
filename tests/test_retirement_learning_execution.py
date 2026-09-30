@@ -45,7 +45,9 @@ async def enable_fence(factory, monkeypatch):
         await relational_schema_steps._migrate_global_discovery_recovery_control_plane()
 
 
-async def test_coordinator_retains_learning_phase_and_replays_checkpoint(coordinator_graph_runtime, monkeypatch, tmp_path):
+@pytest.mark.parametrize('reuse_original_bug', [False, True], ids=['superseded', 'reused'])
+async def test_coordinator_retains_learning_phase_and_replays_checkpoint(
+        coordinator_graph_runtime, monkeypatch, tmp_path, reuse_original_bug):
     from okto_grafx import connect
     from okto_pulse.core.ports.context_disposition import ContextDispositionPlan
     from okto_pulse.community.adapters import retirement_offline_run as offline, retirement_graph_candidate as candidate
@@ -63,6 +65,11 @@ async def test_coordinator_retains_learning_phase_and_replays_checkpoint(coordin
 
     runtime, _, _, _ = coordinator_graph_runtime
     factory, _, _, _ = runtime
+    if reuse_original_bug:
+        async with factory.kw['bind'].connect() as connection:
+            title = (await connection.exec_driver_sql(
+                'SELECT title FROM cards WHERE id = ?', ('bug-context',))).scalar_one()
+        graph_rows("MATCH (b:Bug) WHERE b.id = 'canonical-bug' SET b.title = $title", {'title': title})
     from legacy_sprint_schema import Base as LegacyBase, RETIRED_TABLES
     # Model an upgrade predecessor, not an already-retired runtime. Retired
     # tables and the nullable Card origin are isolated fixture DDL only.
@@ -141,12 +148,15 @@ async def test_coordinator_retains_learning_phase_and_replays_checkpoint(coordin
             raise
         report = json.loads((target / 'projection-receipt/run.json').read_bytes())
         assert report['format'] == 'retirement-candidate-projection/v7'
-        transition, = report['historical_observations']['supersedence_effects']
-        assert transition['predecessor']['before']['node_id'] == 'canonical-bug'
-        assert transition['predecessor']['after']['node_id'] == 'canonical-bug'
-        assert transition['edge']['edge_type'] == 'supersedes'
-        assert transition['edge']['source_id'] == transition['successor']['node_id']
-        assert transition['edge']['target_id'] == 'canonical-bug'
+        if reuse_original_bug:
+            assert report['historical_observations']['supersedence_effects'] == []
+        else:
+            transition, = report['historical_observations']['supersedence_effects']
+            assert transition['predecessor']['before']['node_id'] == 'canonical-bug'
+            assert transition['predecessor']['after']['node_id'] == 'canonical-bug'
+            assert transition['edge']['edge_type'] == 'supersedes'
+            assert transition['edge']['source_id'] == transition['successor']['node_id']
+            assert transition['edge']['target_id'] == 'canonical-bug'
         assert report['graph_reconciliation']['state'] == 'learning_reconciliation_pending'
         assert report['graph_reconciliation']['learning_execution_count'] >= 1
         projected = report['graph_reconciliation']['projection_with_before_learning_boards']
@@ -154,6 +164,8 @@ async def test_coordinator_retains_learning_phase_and_replays_checkpoint(coordin
         relations = board['source_relation_comparison']
         assert relations['unresolved_count'] == relations['missing_count'] == 0
         assert relations['matched_count'] == relations['expected_count']
+        assert report['global_source_inputs']['state'] == 'captured_not_reconciled'
+        assert projected['global_projection_comparison']['state'] == 'matched'
         assert await sql_cells(factory) == before
         assert await candidate.build_projected_retirement_graph_candidate(*args,
             migration_builds=migration_builds, settings=settings, confirm_original_offline=True,
