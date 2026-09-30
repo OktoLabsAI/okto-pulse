@@ -395,3 +395,58 @@ async def test_known_dependency_removal_is_not_current_while_new_prerequisite_is
             assert len(list((await session.execute(select(ConsolidationAudit.session_id))).scalars())) == len(audits_before) + 2
         assert any(edge[1:3] == ('spec:next', 'spec:spec') for edge in relationship_set(graph))
     await materialize(tmp_path / 'dependency-pending', incremental=False, exercise=exercise)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(480)
+@pytest.mark.parametrize('fail_once', [False, True])
+async def test_repeated_spec_contract_content_keeps_each_owner(tmp_path, monkeypatch, fail_once):
+    from okto_pulse.community.adapters import grafx_scenario_projection
+    from okto_pulse.core.kg.interfaces.graph_transaction import ProjectionActiveSetReconciliationError
+    observed_failures = []
+    injected = False
+    original = grafx_scenario_projection.reconcile_spec_relationships
+    def capture(scope, intent):
+        nonlocal injected
+        try:
+            if fail_once and not injected and intent.owner_id == 'second' and intent.namespace == 'business_rule_requirements':
+                injected = True
+                raise ProjectionActiveSetReconciliationError('projection_injected_failure', 'Injected after new nodes were staged.')
+            return original(scope, intent)
+        except Exception:
+            observed_failures.append({'namespace': intent.namespace, 'owner': intent.owner_id,
+                'endpoints': [(edge.rule_id,
+                    (scope._node_snapshot(edge.from_type, edge.from_id) or {}).get('source_artifact_ref'),
+                    (scope._node_snapshot(edge.to_type, edge.to_id) or {}).get('source_artifact_ref'))
+                    for edge in intent.active_edges]})
+            raise
+    monkeypatch.setattr(grafx_scenario_projection, 'reconcile_spec_relationships', capture)
+    async def exercise(factory, graph):
+        before = relationship_set(graph)
+        async with factory() as session:
+            session.add(Spec(id='second', board_id='board', title='Second Spec', status='done',
+                created_by='owner', **source(['ac_two'])))
+            session.add(ConsolidationQueue(id='second-spec', board_id='board', artifact_type='spec',
+                artifact_id='second', source='state_transition'))
+            await session.commit()
+        if fail_once:
+            assert await ConsolidationProcessor(relational_scope_factory=factory).process_batch() == 0
+            assert injected
+            assert relationship_set(graph) == before
+            async with factory() as session:
+                error = (await session.execute(select(ConsolidationQueue.last_error))).scalar_one()
+                assert 'graph_compensation_failed' not in error, error
+                await session.execute(update(ConsolidationQueue).values(next_retry_at=None))
+                await session.commit()
+        assert await ConsolidationProcessor(relational_scope_factory=factory).process_batch() == 1, observed_failures
+        after = relationship_set(graph)
+        first = Counter({edge: count for edge, count in after.items()
+                         if isinstance(edge[1], str) and edge[1].startswith('spec:spec:')})
+        expected = Counter({edge: count for edge, count in before.items()
+                            if isinstance(edge[1], str) and edge[1].startswith('spec:spec:')})
+        assert first == expected
+        second = [edge for edge in after if edge[3] in OWNED_RULES
+                  and isinstance(edge[1], str) and edge[1].startswith('spec:second:')]
+        assert {edge[3] for edge in second} == OWNED_RULES
+        assert all(edge[2].startswith('spec:second:') for edge in second)
+    await materialize(tmp_path / 'repeated-spec', incremental=False, exercise=exercise)
