@@ -11,12 +11,13 @@ import pytest
 
 from okto_pulse.community.adapters.grafx_recovery_contracts import make_grafx_recovery_logical_source
 from okto_pulse.community.adapters.logical_transfer_schema import board_logical_schema
-from okto_pulse.core.domain.learning_closeout import LearningCaptureSelection
-from okto_pulse.core.domain.learning_materialization_work import parse_learning_capture_work_ref
-from okto_pulse.core.ports.learning_reconciliation import select_learning_reconciliation
+from okto_pulse.core.domain.learning_materialization_work import LearningCaptureWorkRef, parse_learning_capture_work_ref
+from okto_pulse.core.ports.learning_reconciliation import (
+    execute_learning_reconciliation, select_learning_reconciliation,
+)
 from test_learning_materialization_writer import (
     BOARD, graph_runtime as _graph_runtime, runtime as _runtime,
-    independent_gates as _independent_gates,
+    independent_gates as _independent_gates, graph_rows,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -54,7 +55,7 @@ def graph_cells():
 @pytest.mark.parametrize('existing_generation', [None, 'mg_predecessor'])
 async def test_selected_capture_has_only_owned_append_deltas(graph_runtime, record_property, monkeypatch,
         existing_generation):
-    runtime, capture, _, persister = graph_runtime
+    runtime, capture, _, _ = graph_runtime
     factory, _, store, _ = runtime
     from okto_pulse.community.adapters import relational_schema_steps
     monkeypatch.setattr(relational_schema_steps, 'get_engine', lambda: factory.kw['bind'])
@@ -74,9 +75,10 @@ async def test_selected_capture_has_only_owned_append_deltas(graph_runtime, reco
     work, = [parse_learning_capture_work_ref(ref) for ref in selected.work_refs]
     assert work.fingerprint == capture.record_fingerprint
     before = await sql_cells(factory)
-    assert await persister.persist_authored_learning(BOARD, work.bug_id,
-        LearningCaptureSelection(learning_id=work.learning_id, generation=work.generation,
-            fingerprint=work.fingerprint), raise_failures=True)
+    execution = await execute_learning_reconciliation(board_id=BOARD, work_ref=selected.work_refs[0],
+        relational_scope_factory=factory)
+    assert execution.materialized is True
+    assert execution.board_id == BOARD and execution.work_ref == selected.work_refs[0]
     after = await sql_cells(factory)
     assert set(before) == set(after)
     changed = {name: {'before': sum(before[name][1].values()), 'after': sum(after[name][1].values())}
@@ -95,6 +97,7 @@ async def test_selected_capture_has_only_owned_append_deltas(graph_runtime, reco
             for row in (after[table][1] - before[table][1]).elements()]
 
     audit, = added('consolidation_audit')
+    assert execution.consolidation_session_id == audit['session_id']
     ref, = added('kuzu_node_refs')
     outbox, = added('global_update_outbox')
     event, = added('domain_events')
@@ -154,3 +157,86 @@ async def test_selected_capture_has_only_owned_append_deltas(graph_runtime, reco
     assert len(added) == 1
     assert (added[0].source_type, added[0].source_key, added[0].target_type, added[0].target_key) == (
         'Learning', capture.node_id, 'Bug', 'canonical-bug')
+
+
+async def test_public_execution_rejects_unfingerprinted_work_before_opening_sql():
+    def forbidden_factory():
+        raise AssertionError('Unselected legacy reference may not enter the writer')
+    with pytest.raises(ValueError, match='fingerprinted_work_required'):
+        await execute_learning_reconciliation(board_id=BOARD,
+            work_ref=LearningCaptureWorkRef('bug-context', 'historical', 0).encode(),
+            relational_scope_factory=forbidden_factory)
+
+
+async def test_public_execution_preserves_unknown_fingerprint_without_writing(graph_runtime):
+    runtime, capture, _, _ = graph_runtime
+    factory, _, _, _ = runtime
+    before, before_graph = await sql_cells(factory), graph_cells()
+    with pytest.raises(ValueError, match='learning_capture_history_unavailable'):
+        await execute_learning_reconciliation(board_id=BOARD,
+            work_ref=LearningCaptureWorkRef('bug-context', capture.node_id, 0, '0' * 64).encode(),
+            relational_scope_factory=factory)
+    assert await sql_cells(factory) == before
+    assert graph_cells() == before_graph
+
+
+async def test_public_execution_does_not_invent_session_for_absent_bug(graph_runtime):
+    runtime, capture, _, _ = graph_runtime
+    factory, _, _, _ = runtime
+    graph_rows("MATCH (b:Bug) WHERE b.id = 'canonical-bug' DETACH DELETE b")
+    before, before_graph = await sql_cells(factory), graph_cells()
+    execution = await execute_learning_reconciliation(board_id=BOARD,
+        work_ref=LearningCaptureWorkRef('bug-context', capture.node_id, 0, capture.record_fingerprint).encode(),
+        relational_scope_factory=factory)
+    assert execution.materialized is False and execution.consolidation_session_id is None
+    assert await sql_cells(factory) == before
+    assert graph_cells() == before_graph
+
+
+async def test_public_replay_identifies_its_own_audit_without_reauthoring_capture(graph_runtime):
+    runtime, capture, _, _ = graph_runtime
+    factory, _, store, _ = runtime
+    work_ref = LearningCaptureWorkRef('bug-context', capture.node_id, 0, capture.record_fingerprint).encode()
+    first = await execute_learning_reconciliation(board_id=BOARD, work_ref=work_ref,
+        relational_scope_factory=factory)
+    assert first.materialized is True
+    history, before = await store.enumerate(BOARD), await sql_cells(factory)
+    nodes, edges = graph_cells()
+    replay = await execute_learning_reconciliation(board_id=BOARD, work_ref=work_ref,
+        relational_scope_factory=factory)
+    assert replay.materialized is True
+    assert replay.consolidation_session_id != first.consolidation_session_id
+    after = await sql_cells(factory)
+    audits = after['consolidation_audit'][1] - before['consolidation_audit'][1]
+    audit, = [dict(zip(after['consolidation_audit'][0], row, strict=True)) for row in audits.elements()]
+    assert audit['session_id'] == replay.consolidation_session_id
+    assert await store.enumerate(BOARD) == history
+    assert {name for name in before if before[name] != after[name]} == {
+        'consolidation_audit', 'global_update_outbox', 'app_settings', 'domain_events'}
+    current, current_edges = graph_cells()
+    assert current_edges == edges
+    assert {(node.type_name, node.key) for node in current} == {(node.type_name, node.key) for node in nodes}
+    originals = {(node.type_name, node.key): node for node in nodes}
+    for node in current:
+        original = originals[node.type_name, node.key]
+        assert {name for name in node.properties if node.properties[name] != original.properties[name]} <= {
+            'relevance_score', 'last_recomputed_at'}
+
+
+async def test_unconfirmed_projection_retains_the_committed_session(graph_runtime, monkeypatch):
+    runtime, capture, _, persister = graph_runtime
+    factory, _, _, _ = runtime
+    async def unavailable(*_):
+        return 'unavailable'
+    monkeypatch.setattr(type(persister), 'inspect_authored_learning', unavailable)
+    before = await sql_cells(factory)
+    execution = await execute_learning_reconciliation(board_id=BOARD,
+        work_ref=LearningCaptureWorkRef('bug-context', capture.node_id, 0, capture.record_fingerprint).encode(),
+        relational_scope_factory=factory)
+    assert execution.materialized is False
+    after = await sql_cells(factory)
+    audits = after['consolidation_audit'][1] - before['consolidation_audit'][1]
+    audit, = [dict(zip(after['consolidation_audit'][0], row, strict=True)) for row in audits.elements()]
+    assert execution.consolidation_session_id == audit['session_id']
+    assert graph_rows('MATCH (n:Learning)-[:validates]->(b:Bug) RETURN n.id, b.id') == [
+        [capture.node_id, 'canonical-bug']]
