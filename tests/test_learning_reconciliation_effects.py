@@ -4,7 +4,7 @@ The shared fixture substitutes unrelated lifecycle gates and health only. This
 does not certify a complete upgrade or grant historical applicability.
 """
 from collections import Counter
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import json
 
 import pytest
@@ -67,7 +67,8 @@ async def test_selected_capture_has_only_owned_append_deltas(graph_runtime, reco
             await connection.exec_driver_sql('INSERT INTO app_settings (key,value) VALUES (?,?)',
                 (materialization_generation_key(BOARD), existing_generation))
             await session.commit()
-    records = tuple(asdict(row) for row in await store.enumerate(BOARD))
+    source_before = await store.enumerate(BOARD)
+    records = tuple(asdict(row) for row in source_before)
     before_nodes, before_edges = graph_cells()
     selected, = select_learning_reconciliation(schema=board_logical_schema(), board_id=BOARD,
         records=records, nodes=before_nodes)
@@ -134,6 +135,25 @@ async def test_selected_capture_has_only_owned_append_deltas(graph_runtime, reco
     assert new_fence['revision'] - old_fence['revision'] == 5
     assert new_fence['incarnation_id'] == old_fence['incarnation_id']
     assert (await store.enumerate(BOARD))[0] == capture
+    from okto_pulse.community.adapters.retirement_learning_history import CandidateLearningHistory
+    source_after = await store.enumerate(BOARD)
+    appended = tuple(row for row in source_after if row not in source_before)
+    history = CandidateLearningHistory(source_before)
+    following = await history.verify_append(appended=appended, execution=execution)
+    selector = dict(board_id=BOARD, node_id=capture.node_id, generation=capture.generation)
+    assert await history.read_history_in_context(None, **selector) == (capture,)
+    assert await following.read_history_in_context(None, **selector) == source_after
+    for damaged in (replace(appended[0], source_session_id='unowned'),
+            replace(appended[0], record_fingerprint='', payload={**appended[0].payload, 'content': 'forged'})):
+        with pytest.raises(ValueError):
+            await history.verify_append(appended=(damaged,), execution=execution)
+    with pytest.raises(ValueError, match='append_not_next'):
+        await following.verify_append(appended=appended, execution=execution)
+    with pytest.raises(ValueError, match='revision_duplicate'):
+        CandidateLearningHistory((*source_before, *source_before))
+    returned = await following.read_history_in_context(None, **selector)
+    returned[0].payload['content'] = 'external mutation'
+    assert (await following.read_history_in_context(None, **selector))[0].payload == capture.payload
     after_nodes, after_edges = graph_cells()
     existing = {(node.type_name, node.key): node for node in before_nodes}
     current = {(node.type_name, node.key): node for node in after_nodes}
