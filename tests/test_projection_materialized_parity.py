@@ -24,7 +24,7 @@ from okto_pulse.community.adapters.graph_backend_binding import CommunityGraphBa
 from okto_pulse.community.adapters.board_source_reader import CommunityBoardSourceReader
 from okto_pulse.community.adapters.board_rebuild_ingestion import CommunityBoardRebuildIngestionAdapter
 from okto_pulse.community.adapters.sqlalchemy_consolidation import CommunitySqlAlchemyConsolidationPersistence
-from okto_pulse.community.adapters.sqlalchemy_models import Base, Board, Spec, ConsolidationQueue
+from okto_pulse.community.adapters.sqlalchemy_models import Base, Board, Spec, Card, ConsolidationQueue
 from okto_pulse.community.adapters.migration_runtime_fence import offline_migration_window
 from okto_pulse.community.adapters.logical_transfer_factories import make_grafx_logical_source
 from logical_transfer_matrix_support import one_node_corpus, seed_generation
@@ -78,7 +78,7 @@ def relationship_set(graph):
         reader.close()
 
 
-async def materialize(root, *, incremental):
+async def materialize(root, *, incremental, card_type=None):
     root.mkdir()
     path = root / 'source.sqlite3'
     settings = CommunitySettings(database_url=f'sqlite+aiosqlite:///{path}',
@@ -106,6 +106,11 @@ async def materialize(root, *, incremental):
             await connection.execute(insert(Board).values(id='board', name='Board', owner_id='owner', realm_id='local'))
             await connection.execute(insert(Spec).values(id='spec', board_id='board', title='Spec',
                 status='done', created_by='owner', **source(['ac_two'])))
+            if card_type:
+                await connection.execute(insert(Card).values(id='card', board_id='board', spec_id='spec',
+                    title='Observed scenario', status='done', card_type=card_type, created_by='owner',
+                    test_scenario_ids=['ts_one'], observed_behavior='Observed', expected_behavior='Expected',
+                    steps_to_reproduce='Repeat', conclusions=[{'summary': 'Completed'}]))
         if incremental:
             processor = ConsolidationProcessor(relational_scope_factory=factory)
             # Add, replace, remove, restore and replay; an empty active set must
@@ -116,6 +121,13 @@ async def materialize(root, *, incremental):
                     await connection.execute(insert(ConsolidationQueue).values(id=f'queue-{index}', board_id='board',
                         artifact_type='spec', artifact_id='spec', source='state_transition'))
                 assert await processor.process_batch() == 1
+                if card_type:
+                    async with runtime.engine.begin() as connection:
+                        await connection.execute(update(Card).where(Card.id == 'card').values(
+                            test_scenario_ids=['ts_one'] if linked else []))
+                        await connection.execute(insert(ConsolidationQueue).values(id=f'card-queue-{index}',
+                            board_id='board', artifact_type='card', artifact_id='card', source='state_transition'))
+                    assert await processor.process_batch() == 1
                 async with factory() as session:
                     remaining = (await session.execute(select(ConsolidationQueue.status, ConsolidationQueue.last_error))).all()
                     assert not remaining, remaining
@@ -123,6 +135,11 @@ async def materialize(root, *, incremental):
                 owned = Counter({edge: count for edge, count in current.items() if edge[3] in OWNED_RULES})
                 assert {edge[3] for edge in owned} == (OWNED_RULES if linked else set())
                 assert all(count == 1 for count in owned.values())
+                if card_type:
+                    card_links = {edge: count for edge, count in current.items()
+                                  if edge[3] == 'supports/card_scenario_observed_card@v2.1'}
+                    assert len(card_links) == (1 if linked else 0)
+                    assert all(count == 1 for count in card_links.values())
         else:
             snapshot = CommunityBoardSourceReader(path).fetch('board')
             assert snapshot.complete
@@ -140,8 +157,12 @@ async def materialize(root, *, incremental):
                             write_lock_port=write_port, relational_scope_factory=factory, owner_id='parity-fixture') as reserved:
                         CommunityBoardRebuildIngestionAdapter(db_path=path).enqueue_sources(
                             board_id='board', run_id='parity', sources=sources)
-                        outcome = await reserved.process_next()
-                        assert outcome.acked_count == 1, outcome
+                        # The sealed reservation intentionally processes one owner per batch.
+                        for _ in range(2 if card_type else 1):
+                            outcome = await reserved.process_next()
+                            assert outcome.acked_count == 1, outcome
+                        async with factory() as session:
+                            assert not (await session.execute(select(ConsolidationQueue.id))).all()
         graph = bundle.grafx_pool.get(physical, page_size=8192)
         return relationship_set(graph)
     finally:
@@ -163,3 +184,18 @@ async def test_spec_relationships_converge_after_churn_and_clean_rebuild(tmp_pat
     scenario = {edge: count for edge, count in rebuilt.items() if edge[3] == 'tests/ac_match@v2.1'}
     assert len(scenario) == 1 and list(scenario.values()) == [1]
     assert next(iter(scenario))[2] == 'spec:spec:ac:ac_two'
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(480)
+@pytest.mark.parametrize('card_type', ['normal', 'test', 'bug'])
+async def test_card_scenario_links_match_native_rebuild_after_removal_and_replay(tmp_path, card_type):
+    incremental = await materialize(tmp_path / 'incremental', incremental=True, card_type=card_type)
+    rebuilt = await materialize(tmp_path / 'rebuilt', incremental=False, card_type=card_type)
+    assert incremental == rebuilt
+    supports = {edge: count for edge, count in rebuilt.items()
+                if edge[3] == 'supports/card_scenario_observed_card@v2.1'}
+    assert len(supports) == 1 and list(supports.values()) == [1]
+    edge = next(iter(supports))
+    assert edge[1:3] == ('card:card', 'spec:spec:test_scenario:ts_one')
+    assert edge[4][0] == ('Bug' if card_type == 'bug' else 'Entity')

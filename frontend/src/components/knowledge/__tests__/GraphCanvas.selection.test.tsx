@@ -50,6 +50,26 @@ function renderCanvas(props: Partial<React.ComponentProps<typeof GraphCanvas>> =
 }
 
 describe('GraphCanvas — selection wiring (S4.1 / AC-4)', () => {
+  it.each(['Entity', 'Bug'] as const)('keeps observed %s-to-scenario endpoints independently navigable', (kind) => {
+    const card: KGNode = { ...NODE, id: 'card-root', title: 'Card', node_type: kind,
+      source_artifact_ref: 'card:owner', graph_layer: 'working', maturity_status: 'working' };
+    const scenario: KGNode = { ...NODE, id: 'scenario', title: 'Scenario', node_type: 'TestScenario',
+      source_artifact_ref: 'spec:parent:test_scenario:ts_one', graph_layer: 'canonical' };
+    const onSelect = vi.fn();
+    const { container } = renderCanvas({ nodes: [card, scenario], onSelect,
+      edges: [{ id: 'observed', source: card.id, target: scenario.id, edge_type: 'supports', confidence: 1 }],
+      filters: { ...FILTERS, edgeTypes: ['supports'] } });
+    for (const node of [card, scenario]) {
+      const button = container.querySelector(`[data-node-id="${node.id}"]`);
+      expect(button).not.toBeNull();
+      fireEvent.doubleClick(button!);
+      expect(onSelect).toHaveBeenLastCalledWith(expect.objectContaining({
+        id: node.id, node_type: node.node_type, source_artifact_ref: node.source_artifact_ref,
+        graph_layer: node.graph_layer,
+      }));
+    }
+  });
+
   it('starts with no selection when initialSelectedNodeId is null', () => {
     const { container } = renderCanvas();
     const canvas = container.querySelector('[data-testid="kg-canvas"]');
