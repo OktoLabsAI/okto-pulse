@@ -44,7 +44,7 @@ from okto_pulse.core.kg.cognitive_action_center import (
     build_skip_response,
 )
 from okto_pulse.core.kg.cognitive_readiness import (
-    GATE_BLOCKING_TIERS,
+    completion_would_block_done,
     CognitiveReadinessError,
 )
 from okto_pulse.core.repositories import PulseUnitOfWork
@@ -67,7 +67,7 @@ def build_default_readiness_service():
 
 
 def _would_block_done(verdict, enforcement_active: bool) -> bool:
-    return bool(enforcement_active and verdict.tier in GATE_BLOCKING_TIERS)
+    return completion_would_block_done(verdict, enforcement_active)
 
 
 class CognitiveSkipRequest(BaseModel):
@@ -136,14 +136,9 @@ async def list_cognitive_readiness_items(
         raise HTTPException(status_code=exc.http_status, detail=exc.to_dict()) from exc
 
     result = uc_result.result
-    # Enforcement-aware annotation so the UI never says "blocks done" purely from
-    # blocking=True (S3.1 carry-forward): would_block_done = enforcement_active
-    # AND tier in GATE_BLOCKING_TIERS, delegated to the central helper.
+    # Technical precedence cannot conceal the independent cognitive verdict.
     for item in result["items"]:
-        tier = (item.get("precedence_explanation") or {}).get("tier")
-        item["would_block_done"] = bool(
-            uc_result.enforcement_active and tier in GATE_BLOCKING_TIERS
-        )
+        item["would_block_done"] = completion_would_block_done(item, uc_result.enforcement_active)
     result["summary"]["enforcement_active"] = uc_result.enforcement_active
     return result
 

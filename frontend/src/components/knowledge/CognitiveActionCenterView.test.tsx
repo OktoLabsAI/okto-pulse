@@ -166,6 +166,23 @@ test("pending projection points to observation and external support without a re
   expect(screen.queryByRole("button", { name: /record waiver/i })).not.toBeInTheDocument();
 });
 
+test.each([false, true])('projection diagnostics preserve the backend completion assessment: %s', async (wouldBlock) => {
+  mockList([item({
+    signal: 'dlq', signal_source: 'dlq', error_cause: 'technical_dlq',
+    readiness_effect: 'blocking_technical', blocking: true,
+    precedence_explanation: { tier: 'technical_dlq' },
+    would_block_done: wouldBlock,
+  })], true);
+  render(<CognitiveActionCenterView boardId="b" onClose={vi.fn()} />);
+  await screen.findByText('card:aaaa');
+  if (wouldBlock) {
+    expect(screen.getByTestId('cac-would-block-done')).toBeInTheDocument();
+  } else {
+    expect(screen.queryByTestId('cac-would-block-done')).not.toBeInTheDocument();
+    expect(screen.getByText('This record does not currently block Done.')).toBeInTheDocument();
+  }
+});
+
 test('retains a legacy Sprint reference without a live entity lookup or navigation', async () => {
   mockList([item({ artifact_id: 'sprint:retired', source_ref_original: 'sprint:retired', aliases: ['sprint:retired'] })]);
   render(<CognitiveActionCenterView boardId="b" onClose={vi.fn()} />);
