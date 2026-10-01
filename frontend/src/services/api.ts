@@ -2767,6 +2767,18 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       URL.revokeObjectURL(url);
     },
 
+    async getDecisionImpact(
+      boardId: string, specId: string, decisionId: string,
+      query: import('@/components/specs/decisionImpactTypes').ImpactQuery = {},
+      signal?: AbortSignal,
+    ): Promise<import('@/components/specs/decisionImpactTypes').DecisionImpactResponse> {
+      const params = new URLSearchParams();
+      Object.entries(query).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') params.set(key, String(value));
+      });
+      return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/decisions/${encodeURIComponent(decisionId)}/impact?${params}`, { signal });
+    },
+
     async getSpecCoverage(
       boardId: string, specId: string,
       query: import('@/components/specs/specCoverageTypes').CoverageQuery = {},

@@ -18,6 +18,7 @@ from okto_pulse.community.api.analytics_transport import (
 from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.community.api.bug_clusters import router as bug_clusters_router
 from okto_pulse.community.api.spec_coverage_query import router as spec_coverage_router
+from okto_pulse.community.api.decision_impact import router as decision_impact_router
 from okto_pulse.community.api.permission_errors import permission_denied_http_error
 from okto_pulse.community.adapters.sqlalchemy_analytics_evidence import (
     validated_board_kg_cursor_observed_at,
@@ -91,6 +92,7 @@ router = APIRouter()
 
 router.include_router(bug_clusters_router)
 router.include_router(spec_coverage_router)
+router.include_router(decision_impact_router)
 
 
 # ---------------------------------------------------------------------------

@@ -26,7 +26,7 @@ from okto_pulse.core.ports.spec_coverage_query import (
 _SPEC_FIELDS = ('id', 'board_id', 'edition', 'version', 'title', 'status', 'archived',
     'test_scenarios', 'skip_test_coverage', 'skip_rules_coverage', 'skip_decisions_coverage',
     'skip_ir_coverage', 'skip_or_coverage', *(name for _, name in COLLECTIONS))
-_CARD_FIELDS = ('id', 'board_id', 'spec_id', 'card_type', 'status', 'archived', 'policy_version', 'test_scenario_ids')
+_CARD_FIELDS = ('id', 'board_id', 'spec_id', 'title', 'card_type', 'status', 'archived', 'policy_version', 'test_scenario_ids')
 
 
 def _json_value(value):

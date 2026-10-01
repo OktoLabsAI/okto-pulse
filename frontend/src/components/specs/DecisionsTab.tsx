@@ -14,6 +14,7 @@ import {
 import type { Decision, DecisionStatus, Spec } from '@/types';
 import { CognitivePendingBadge } from '@/components/knowledge/CognitivePendingBadge';
 import { useCognitivePendingBadges } from '@/hooks/useCognitivePendingBadges';
+import { DecisionImpactPanel } from './DecisionImpactPanel';
 
 interface DecisionsTabProps {
   spec: Spec;
@@ -56,6 +57,7 @@ export function DecisionsTab({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [linkPickerId, setLinkPickerId] = useState<string | null>(null);
+  const [impactId, setImpactId] = useState<string | null>(null);
 
   const [formTitle, setFormTitle] = useState('');
   const [formRationale, setFormRationale] = useState('');
@@ -508,6 +510,14 @@ export function DecisionsTab({
                 )}
 
                 {/* Task picker */}
+                {spec.board_id && <div className="pt-2 border-t dark:border-gray-700">
+                  <button type="button" className="btn btn-secondary text-xs" onClick={() => setImpactId(impactId === d.id ? null : d.id)}>
+                    {impactId === d.id ? 'Hide impact' : 'Show impact'}
+                  </button>
+                  {impactId === d.id && <DecisionImpactPanel key={`${spec.board_id}:${spec.id}:${d.id}`}
+                    boardId={spec.board_id} specId={spec.id} decisionId={d.id} revision={JSON.stringify(spec)}
+                    onOpenDecision={id => { setExpandedId(id); setImpactId(id); }} />}
+                </div>}
                 {canLinkTask && onLinkTask && d.status !== 'revoked' && specCards.length > 0 && (
                   <div className="pt-1">
                     {linkPickerId === d.id ? (
