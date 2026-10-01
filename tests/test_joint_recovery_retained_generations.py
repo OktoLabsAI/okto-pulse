@@ -34,7 +34,7 @@ def test_joint_capture_retains_inactive_graph_and_quarantine_as_opaque_bytes(sto
     binding = (bindings.inspect_board_binding('board-one'), bindings.inspect_global_binding())
     snapshot = recovery.capture_stored(stored_sources)
     manifest = joint.verify_joint_recovery_snapshot(snapshot)
-    assert manifest['format'] == 'joint-recovery-snapshot/v6'
+    assert manifest['format'] == 'joint-recovery-snapshot/0.4.0'
     assert manifest['routing_inventory']['unselected_generation_paths'] == [inactive.relative_to(kg).as_posix()]
     restored = joint.restore_joint_recovery_snapshot(snapshot, tmp_path / 'restored', builds=recovery.BUILDS,
         current_storage_root=uploads, max_seconds=120)
@@ -46,7 +46,7 @@ def test_joint_capture_retains_inactive_graph_and_quarantine_as_opaque_bytes(sto
 
 
 @pytest.mark.parametrize('has_artifact', [False, True])
-def test_retained_v5_snapshot_still_verifies_and_restores(stored_sources, tmp_path, has_artifact):
+def test_prior_snapshot_is_refused_without_creating_destination(stored_sources, tmp_path, has_artifact):
     if has_artifact:
         from okto_pulse.community.adapters.rebuild_audit_storage import CommunityFileSystemRebuildAuditArtifactStore
         from okto_pulse.core.kg.interfaces.rebuild_audit_storage import RebuildAuditKey
@@ -68,14 +68,12 @@ def test_retained_v5_snapshot_still_verifies_and_restores(stored_sources, tmp_pa
     encoded = joint._encode(manifest)
     manifest_path.write_bytes(encoded)
     legacy = joint.JointRecoverySnapshot(snapshot.directory, hashlib.sha256(encoded).hexdigest())
-    assert joint.verify_joint_recovery_snapshot(legacy)['format'] == 'joint-recovery-snapshot/v5'
-    restored = joint.restore_joint_recovery_snapshot(legacy, tmp_path / 'legacy', builds=recovery.BUILDS,
-        current_storage_root=stored_sources[1], max_seconds=120)
-    assert (restored / 'database.sqlite3').is_file()
-    assert (restored / 'kg-artifacts').is_dir()
-    if has_artifact:
-        assert (restored / 'kg-artifacts/rebuild/audit/original.json').read_bytes() == (
-            stored_sources[0][3] / 'kg/rebuild/audit/original.json').read_bytes()
+    before = tree(snapshot.directory)
+    with pytest.raises(ValueError, match='joint_snapshot_manifest_invalid'):
+        joint.restore_joint_recovery_snapshot(legacy, tmp_path / 'refused', builds=recovery.BUILDS,
+            current_storage_root=stored_sources[1], max_seconds=120)
+    assert not (tmp_path / 'refused').exists()
+    assert tree(snapshot.directory) == before
 
 
 @pytest.mark.parametrize('relative', ['boards/board-one/grafx/retained/opaque', 'quarantine/opaque'])
@@ -97,17 +95,16 @@ def test_retained_source_change_during_graph_exports_refuses_entire_set(stored_s
     assert not list(original[2].glob('*.partial'))
 
 
-def test_retired_physical_payloads_are_preserved_without_loading_an_old_runtime(stored_sources, tmp_path):
-    original, uploads, _, _ = stored_sources
+def test_incompatible_physical_payloads_refuse_capture_without_conversion(stored_sources):
+    original, _, _, _ = stored_sources
     kg = original[3] / 'kg'
     payloads = ('boards/board-one/graph.lbug', 'boards/board-one/graph.lbug.wal',
         'global/discovery.lbug', 'global/discovery.lbug.wal')
     for index, relative in enumerate(payloads):
-        (kg / relative).write_bytes(b'opaque retired payload\x00' + bytes([index]))
-    snapshot = recovery.capture_stored(stored_sources)
-    restored = joint.restore_joint_recovery_snapshot(snapshot, tmp_path / 'retained-physical',
-        builds=recovery.BUILDS, current_storage_root=uploads, max_seconds=120)
-    for index, relative in enumerate(payloads):
-        expected = b'opaque retired payload\x00' + bytes([index])
-        assert (kg / relative).read_bytes() == expected
-        assert (restored / 'kg-artifacts' / relative).read_bytes() == expected
+        (kg / relative).write_bytes(b'incompatible payload' + bytes([index]))
+    before = tree(kg)
+    with pytest.raises(ValueError, match='kg_artifact_recovery_unclassified_storage'):
+        recovery.capture_stored(stored_sources)
+    assert tree(kg) == before
+    assert not (original[2] / 'capture').exists()
+    assert not list(original[2].glob('*.partial'))

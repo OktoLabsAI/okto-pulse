@@ -69,7 +69,7 @@ def test_verified_v4_backup_fences_capture_verification_and_body_then_restores_o
         try:
             with _window(source, storage_root=uploads) as artifact:
                 assert observed == ["published", "verified"]
-                assert json.loads((artifact.directory / "manifest.json").read_bytes())["format"] == "joint-recovery-snapshot/v6"
+                assert json.loads((artifact.directory / "manifest.json").read_bytes())["format"] == "joint-recovery-snapshot/0.4.0"
                 assert [_start(root) for root in roots] == ["blocked", "blocked"]
                 # Capture locks have ended; the caller owns new SQL/graph work.
                 assert publication_attempt(data / "kg") == "entered"
@@ -94,7 +94,7 @@ def test_verified_v4_backup_fences_capture_verification_and_body_then_restores_o
     restored = joint.restore_joint_recovery_snapshot(artifact, tmp_path / "restored",
         builds=recovery.BUILDS, current_storage_root=uploads, max_seconds=120, batch_size=1)
     with sqlite3.connect(restored / "database.sqlite3") as connection:
-        assert connection.execute("SELECT * FROM history").fetchall() == [("sprint-opaque", b"\x00\x0a\xff")]
+        assert connection.execute("SELECT * FROM history").fetchall() == [("current-history", b"\x00\x0a\xff")]
     for index, corpus in enumerate(corpora):
         assert export_generation("grafx", restored / f"graph-{index:04d}", scope=corpus.schema.scope).fingerprint == corpus.fingerprint
     for path, contents in original_files.items():

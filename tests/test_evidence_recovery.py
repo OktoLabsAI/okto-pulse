@@ -13,7 +13,7 @@ from okto_pulse.community.adapters.test_evidence import (
     CommunityTestVerificationReportIssuer,
 )
 from okto_pulse.core.ports.test_evidence import TestVerificationReportRequest as Request
-from test_verification_report_admission import report
+from verification_report_fixtures import report
 
 
 async def issue(root):

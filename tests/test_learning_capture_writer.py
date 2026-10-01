@@ -25,7 +25,7 @@ from okto_pulse.core.ports.test_evidence import (
 )
 from okto_pulse.core.services.test_scenario_lifecycle import compute_test_scenario_semantic_sha256
 from test_bug_cognitive_context_adapter import _runtime, _seed_full_context, _CanonicalBugReader
-from test_verification_report_admission import report
+from verification_report_fixtures import report
 
 BOARD = 'board-bug-context'
 

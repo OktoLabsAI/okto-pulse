@@ -934,7 +934,7 @@ async def test_append_authenticates_every_historical_receipt(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_signed_legacy_receipt_is_continuity_only_and_never_authority(
+async def test_signed_old_receipt_refuses_authority_and_append_without_conversion(
     tmp_path,
 ):
     ledger, _calls, old_evidence = await _produce(tmp_path)
@@ -959,17 +959,10 @@ async def test_signed_legacy_receipt_is_continuity_only_and_never_authority(
     assert old_verdict.verified is False
     assert "evidence_v2.receipt_ledger_schema_invalid" in old_verdict.reason_codes
 
-    _ledger, _calls, new_evidence = await _produce(tmp_path, ledger=ledger)
-    new_verdict = verify_community_evidence_v2(
-        board_id=BOARD_ID,
-        spec_id=SPEC_ID,
-        status="passed",
-        scenario_id=SCENARIO_ID,
-        scenario_sha256=SCENARIO_SHA256,
-        evidence=new_evidence,
-        ledger=ledger,
-    )
-    assert new_verdict.verified is True
+    before = {path.name: path.read_bytes() for path in ledger.receipt_root.glob('*.json')}
+    with pytest.raises(CommunityTestEvidenceError, match='receipt_ledger_schema_invalid'):
+        await _produce(tmp_path, ledger=ledger)
+    assert {path.name: path.read_bytes() for path in ledger.receipt_root.glob('*.json')} == before
 
 
 @pytest.mark.parametrize(

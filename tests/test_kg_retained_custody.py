@@ -82,24 +82,24 @@ def test_legacy_nested_manifest_cannot_claim_extended_retained_roots(tmp_path):
     encoded = custody._encode(manifest)
     path.write_bytes(encoded)
     legacy = custody.KGArtifactRecoverySnapshot(snapshot.directory, hashlib.sha256(encoded).hexdigest())
-    with pytest.raises(ValueError, match='manifest_roots_invalid'):
+    with pytest.raises(ValueError, match='manifest_invalid'):
         custody.verify_kg_artifact_snapshot(legacy)
 
 
-def test_historical_directory_and_sidecar_do_not_authorize_neighbor_bindings(tmp_path):
+def test_incompatible_directory_and_sidecar_are_refused_without_changes(tmp_path):
     root = tmp_path / 'kg'
     historical = root / 'boards/b/graph.lbug'
     historical.mkdir(parents=True)
-    (historical / 'opaque').write_bytes(b'damaged historical database')
-    (historical.parent / 'graph.lbug.wal').write_bytes(b'historical sidecar')
-    (historical.parent / 'graph_backend_binding.json').write_bytes(b'current authority')
-    with custody.kg_artifact_capture_window(root,
-            selected_paths=('boards/b/graph.lbug', 'boards/b/graph.lbug.wal')) as window:
-        snapshot = window.capture(tmp_path / 'snapshot')
-    custody.restore_kg_artifact_snapshot(snapshot, tmp_path / 'restored')
-    assert (tmp_path / 'restored/boards/b/graph.lbug/opaque').read_bytes() == b'damaged historical database'
-    assert (tmp_path / 'restored/boards/b/graph.lbug.wal').read_bytes() == b'historical sidecar'
-    assert not (tmp_path / 'restored/boards/b/graph_backend_binding.json').exists()
+    (historical / 'opaque').write_bytes(b'incompatible database')
+    sidecar = historical.parent / 'graph.lbug.wal'
+    sidecar.write_bytes(b'incompatible sidecar')
+    with pytest.raises(ValueError, match='kg_artifact_recovery_unclassified_storage'):
+        with custody.kg_artifact_capture_window(root,
+                selected_paths=('boards/b/graph.lbug', 'boards/b/graph.lbug.wal')):
+            pytest.fail('old storage admitted')
+    assert (historical / 'opaque').read_bytes() == b'incompatible database'
+    assert sidecar.read_bytes() == b'incompatible sidecar'
+    assert not (tmp_path / 'snapshot').exists()
 
 
 def test_unknown_board_cannot_be_invented_for_retired_payload():

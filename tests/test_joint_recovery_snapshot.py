@@ -270,7 +270,7 @@ def test_bound_capture_records_exact_inventory_and_absent_board(sources, tmp_pat
     assert checked == [True]
     assert child(kg) == "entered"
     manifest = joint.verify_joint_recovery_snapshot(artifact)
-    assert manifest["format"] == "joint-recovery-snapshot/v2"
+    assert manifest["format"] == "joint-recovery-snapshot/0.4.0"
     inventory = manifest["routing_inventory"]
     assert inventory["board_ids"] == ["board-one", "empty-board"]
     assert [route["state"] for route in inventory["routes"]] == ["bound", "binding_absent_storage_absent", "bound"]
@@ -363,7 +363,7 @@ def test_v4_roundtrip_keeps_privacy_fenced_through_final_joint_publish(stored_so
     monkeypatch.setattr(joint, "create_storage_recovery_snapshot", capture_under_sql_reservation)
     snapshot = capture_stored(stored_sources)
     manifest = joint.verify_joint_recovery_snapshot(snapshot)
-    assert manifest["format"] == "joint-recovery-snapshot/v6"
+    assert manifest["format"] == "joint-recovery-snapshot/0.4.0"
     assert manifest["storage_references"]["attachment_count"] == 1
     assert "historical_archive_count" not in manifest["storage_references"]
     assert manifest["storage_references"]["unreferenced_object_count"] == 1
@@ -412,14 +412,15 @@ except Timeout:
         forged = replace(snapshot, manifest_sha256=hashlib.sha256(encoded).hexdigest())
         with pytest.raises(ValueError, match="storage_reference_certificate_mismatch"):
             joint.verify_joint_recovery_snapshot(forged)
-    # Old v3 remains readable with its original, explicitly narrower guarantee.
+    # A former format cannot bypass the current reconciliation contract.
     manifest.pop("storage_references")
     manifest.pop("kg_artifacts")
     manifest["format"] = "joint-recovery-snapshot/v3"
     encoded = json.dumps(manifest).encode()
     (snapshot.directory / "manifest.json").write_bytes(encoded)
     legacy = replace(snapshot, manifest_sha256=hashlib.sha256(encoded).hexdigest())
-    assert "storage_references" not in joint.verify_joint_recovery_snapshot(legacy)
+    with pytest.raises(ValueError, match="joint_snapshot_manifest_invalid"):
+        joint.verify_joint_recovery_snapshot(legacy)
 
 
 def test_v4_later_erasure_refuses_before_any_sql_copy(stored_sources, tmp_path, monkeypatch):

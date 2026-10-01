@@ -78,7 +78,6 @@ _RECEIPT_RECORD_KEYS = frozenset(
         "signature",
     }
 )
-_LEGACY_RECEIPT_RECORD_KEYS = _RECEIPT_RECORD_KEYS - {"scenario_sha256"}
 _REPORT_RECEIPT_RECORD_KEYS = (_RECEIPT_RECORD_KEYS - {
     'manifest_ref', 'manifest_sha256', 'attestation_sha256', 'run_id',
 }) | {'verification_method', 'report_sha256'}
@@ -794,14 +793,11 @@ class CommunityEvidenceLedger:
 
     @staticmethod
     def _receipt_record_schema_valid(
-        record: Mapping[str, Any], *, allow_legacy: bool = False
+        record: Mapping[str, Any]
     ) -> bool:
         record_keys = set(record)
         report_record = record_keys == _REPORT_RECEIPT_RECORD_KEYS
-        legacy_non_authoritative = record_keys == _LEGACY_RECEIPT_RECORD_KEYS
-        if not report_record and record_keys != _RECEIPT_RECORD_KEYS and not (
-            allow_legacy and legacy_non_authoritative
-        ):
+        if not report_record and record_keys != _RECEIPT_RECORD_KEYS:
             return False
         if record.get("schema_version") != (COMMUNITY_REPORT_RECEIPT_SCHEMA if report_record else COMMUNITY_RECEIPT_SCHEMA):
             return False
@@ -837,8 +833,7 @@ class CommunityEvidenceLedger:
             "attestation_sha256",
             "evidence_sha256",
         ]
-        if not legacy_non_authoritative:
-            digest_fields.append("scenario_sha256")
+        digest_fields.append("scenario_sha256")
         for field in digest_fields:
             if not isinstance(record.get(field), str) or not _SHA256_RE.fullmatch(
                 record[field]
@@ -857,9 +852,8 @@ class CommunityEvidenceLedger:
     ) -> tuple[tuple[str, tuple[int, int, int, int, int]], ...]:
         """Authenticate the complete immutable history before appending.
 
-        A signed pre-hardening record may prove only key continuity here. It is
-        explicitly legacy/non-authoritative and is still rejected by
-        :meth:`verify`, which never enables ``allow_legacy``.
+        Every record must satisfy the current contract, including its scenario
+        digest. Unsupported records refuse append without rewriting history.
         """
 
         key_fingerprint = hashlib.sha256(key).hexdigest()
@@ -903,7 +897,7 @@ class CommunityEvidenceLedger:
                     first_error.__cause__ = exc
                 continue
             if not isinstance(record, dict) or not self._receipt_record_schema_valid(
-                record, allow_legacy=True
+                record
             ):
                 if first_error is None:
                     first_error = CommunityTestEvidenceError(

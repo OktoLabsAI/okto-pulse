@@ -462,7 +462,7 @@ async def test_two_partial_authorization_records_never_sum_to_the_inherited_obli
 async def test_one_signed_report_preserves_distinct_criterion_verdicts(ledger, tmp_path):
     from okto_pulse.community.adapters.test_evidence import CommunityTestVerificationReportIssuer
     from okto_pulse.core.ports.test_evidence import TestVerificationReportRequest as ReportRequest
-    from test_verification_report_admission import report
+    from verification_report_fixtures import report
 
     session, store = await setup(ledger)
     spec = await session.get(Spec, SPEC)

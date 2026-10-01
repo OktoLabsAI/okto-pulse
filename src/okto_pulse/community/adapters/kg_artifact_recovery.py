@@ -24,8 +24,7 @@ from .relational_recovery_snapshot import _check_time, _deadline, _encode, _path
 _ROOTS = frozenset({'rebuild', 'contingency', 'stress'})
 _EXTENDED_ROOTS = _ROOTS | {'quarantine', 'candidate_decisions'}
 _MUTEX = f'rebuild/{REBUILD_ARTIFACT_MUTEX_FILENAME}'
-_LEGACY_FORMAT = 'kg-artifact-recovery/v1'
-_FORMAT = 'kg-artifact-recovery/v2'
+_FORMAT = 'kg-artifact-recovery/0.4.0'
 _MAX_MANIFEST = 16 * 1024 * 1024
 _MAX_FILES = 100_000
 _MAX_BYTES = 16 * 1024**3
@@ -56,28 +55,8 @@ def _retained_generation(value):
         or (len(parts) == 3 and parts[:2] == ('global', 'grafx')))
 
 
-def _retired_payload(value):
-    """Historical physical files only; no retired runtime is imported/opened."""
-    _relative(value)
-    parts = PurePosixPath(value).parts
-    if len(parts) == 3 and parts[0] == 'boards':
-        base = 'graph.lbug'
-    elif len(parts) == 2 and parts[0] == 'global':
-        base = 'discovery.lbug'
-    else:
-        return False
-    return parts[-1] == base or parts[-1].startswith(base + '.')
-
-
 def _auxiliary_root(value):
-    if type(value) is not str:
-        return False
-    if value in _EXTENDED_ROOTS:
-        return True
-    try:
-        return _retired_payload(value)
-    except ValueError:
-        return False
+    return type(value) is str and value in _EXTENDED_ROOTS
 
 
 def _under_roots(value, roots):
@@ -120,7 +99,7 @@ def _inventory(root, roots, deadline):
             files[relative] = identity
     for name in roots:
         path = _path(root / name)
-        if not path.is_dir() and not (_retired_payload(name) and path.is_file()):
+        if not path.is_dir():
             raise ValueError('kg_artifact_recovery_namespace_missing')
         visit(path)
         # Only structural parents are added; unrelated siblings are not copied.
@@ -224,14 +203,13 @@ def verify_kg_artifact_snapshot(snapshot, *, max_seconds=60):
         raise ValueError('kg_artifact_recovery_manifest_mismatch')
     document = json.loads(encoded)
     if (type(document) is not dict or set(document) != {'format', 'roots', 'directories', 'files'}
-            or document['format'] not in {_LEGACY_FORMAT, _FORMAT} or type(document['roots']) is not list
+            or document['format'] != _FORMAT or type(document['roots']) is not list
             or any(type(name) is not str for name in document['roots'])
             or document['roots'] != sorted(set(document['roots']))
             or type(document['directories']) is not list or type(document['files']) is not list):
         raise ValueError('kg_artifact_recovery_manifest_invalid')
     roots = document['roots']
-    legacy = document['format'] == _LEGACY_FORMAT
-    if any((name not in _ROOTS if legacy else not (_auxiliary_root(name) or _retained_generation(name))) for name in roots):
+    if any(not (_auxiliary_root(name) or _retained_generation(name)) for name in roots):
         raise ValueError('kg_artifact_recovery_manifest_roots_invalid')
     if (len(document['directories']) + len(document['files']) > _MAX_FILES
             or any(type(entry) is not dict or set(entry) != {'path', 'size', 'sha256'}

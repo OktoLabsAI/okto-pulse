@@ -284,6 +284,12 @@ Adapter source map:
   `community/adapters/recovery_storage_references.py`,
   `community/adapters/kg_artifact_recovery.py` and
   `community/adapters/relational_schema_transaction.py`.
+  Joint snapshots and KG custody use their single `/0.4.0` wire formats.
+  Explicit capture selections retain their current guarantees: upload capture
+  requires reference reconciliation and KG custody; signed evidence requires
+  native capture. Older formats and retired runtime payloads are refused without
+  conversion or deletion. Native history, signatures and erasure fences remain
+  enforced during capture and restore.
 - Paired-package and embedded-frontend identity:
   `community/adapters/distribution_compatibility.py`,
   `community/adapters/frontend_distribution.py` and

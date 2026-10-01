@@ -98,8 +98,8 @@ def _inventory(root, deadline):
         identities.append((directory.relative_to(root).as_posix(), _file_identity(before)))
 
     visit(root)
-    # Reuse the ledger's own signature/key-continuity rules, including its
-    # explicit refusal to confer authority on pre-hardening legacy receipts.
+    # Authenticate the current receipt contract and key continuity before
+    # capture. Unsupported receipts cannot be imported through recovery.
     if ledger.secret_path.exists():
         key = ledger._secret(create=False)
         if ledger.receipt_root.exists():

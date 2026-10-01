@@ -71,7 +71,7 @@ from okto_pulse.community.adapters.storage_recovery_snapshot import (
 )
 
 
-_FORMAT = "joint-recovery-snapshot/v1"
+_FORMAT = "joint-recovery-snapshot/0.4.0"
 _CAPTURE = "sqlite-reserved-grafx-stable-publication/v1"
 _MAX_MANIFEST = 1024 * 1024
 
@@ -257,23 +257,17 @@ def _capture_joint_recovery_snapshot(
     Private capture body; its caller owns the enclosing offline runtime window.
     Graph handles remain caller-owned; this never repairs, binds or closes them.
     Logical mode does not checkpoint. Explicit include_native mode checkpoints
-    through Grafx's public backup API and retains UUID/LSN/history in v7.
+    through Grafx's public backup API and retains UUID/LSN/history.
     A graph commit at any point between the two LSN collections
     refuses publication, even when that commit later restores the old values.
     No automatic retry can turn an unstable capture into a reported success.
 
-    With an explicit KG root, v2 also records authenticated routing inventory
-    and requires the exact active selection before and after capture. Current
-    capture holds the binding store's publication window through final artifact
-    publication. This excludes cooperating initialization/CAS, not native graph
-    writes, physical erasure, old binaries or raw directory replacement.
-    Supplying the upload root requires routing inventory and creates v6. Its
-    storage copy and relational reference reconciliation occur inside the SQL
-    reservation and the stable Grafx interval. v3 artifacts retain their older
-    physical-copy guarantee without a reference reconciliation certificate.
-    v6 additionally copies classified KG audit namespaces, quarantine and every
-    inventoried inactive generation as inert bytes. Unclassified paths still
-    refuse capture; retained bytes are not proof of operational graph health.
+    An explicit KG root selects authenticated routing inventory. Upload capture
+    also requires relational reference reconciliation and custody of classified
+    KG namespaces, quarantine and inactive generations. Optional native images
+    and signed evidence are explicit participants in this same wire contract.
+    All selected participants are fenced through final publication; unsupported
+    formats are never converted. Retained bytes do not prove graph health.
     """
     deadline = _deadline(max_seconds)
     if type(snapshot_id) is not str or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,95}", snapshot_id):
@@ -390,18 +384,14 @@ def _capture_joint_recovery_snapshot(
                 "relational": {"manifest_sha256": relational.manifest_sha256, "database_sha256": relational.database_sha256},
                 "graphs": records}
             if inventory is not None:
-                manifest["format"] = "joint-recovery-snapshot/v2"
                 manifest["routing_inventory"] = inventory.as_manifest()
             if storage_snapshot is not None:
-                manifest["format"] = "joint-recovery-snapshot/v6"
                 manifest["storage"] = {"manifest_sha256": storage_snapshot.manifest_sha256}
                 manifest["storage_references"] = storage_references
                 manifest["kg_artifacts"] = {"manifest_sha256": artifact_snapshot.manifest_sha256}
             if include_native:
-                manifest['format'] = 'joint-recovery-snapshot/v7'
                 manifest['native_graphs'] = native_records
             if evidence_guard is not None:
-                manifest['format'] = 'joint-recovery-snapshot/v8'
                 manifest['evidence'] = evidence_guard.record
             encoded = _encode(manifest)
             if len(encoded) > _MAX_MANIFEST:
@@ -437,23 +427,20 @@ def verify_joint_recovery_snapshot(snapshot: JointRecoverySnapshot, *, max_secon
         raise ValueError("joint_snapshot_manifest_hash_mismatch")
     manifest = json.loads(encoded)
     keys = {"format", "snapshot_id", "capture_contract", "created_at", "builds", "grafx_version", "relational", "graphs"}
-    if isinstance(manifest, dict) and manifest.get("format") in {"joint-recovery-snapshot/v2", "joint-recovery-snapshot/v3", "joint-recovery-snapshot/v4", "joint-recovery-snapshot/v5", "joint-recovery-snapshot/v6", "joint-recovery-snapshot/v7", "joint-recovery-snapshot/v8"}:
-        keys.add("routing_inventory")
-    if isinstance(manifest, dict) and manifest.get("format") in {"joint-recovery-snapshot/v3", "joint-recovery-snapshot/v4", "joint-recovery-snapshot/v5", "joint-recovery-snapshot/v6", "joint-recovery-snapshot/v7", "joint-recovery-snapshot/v8"}:
-        keys.add("storage")
-    if isinstance(manifest, dict) and manifest.get("format") in {"joint-recovery-snapshot/v4", "joint-recovery-snapshot/v5", "joint-recovery-snapshot/v6", "joint-recovery-snapshot/v7", "joint-recovery-snapshot/v8"}:
-        keys.add("storage_references")
-    if isinstance(manifest, dict) and manifest.get("format") in {"joint-recovery-snapshot/v5", "joint-recovery-snapshot/v6", "joint-recovery-snapshot/v7", "joint-recovery-snapshot/v8"}:
-        keys.add("kg_artifacts")
-    if isinstance(manifest, dict) and manifest.get('format') in {'joint-recovery-snapshot/v7', 'joint-recovery-snapshot/v8'}:
-        keys.add('native_graphs')
-    if isinstance(manifest, dict) and manifest.get('format') == 'joint-recovery-snapshot/v8':
-        keys.add('evidence')
+    optional = {"routing_inventory", "storage", "storage_references", "kg_artifacts", "native_graphs", "evidence"}
     if (not isinstance(manifest, dict)
-        or set(manifest) != keys
-        or manifest["format"] not in {_FORMAT, "joint-recovery-snapshot/v2", "joint-recovery-snapshot/v3", "joint-recovery-snapshot/v4", "joint-recovery-snapshot/v5", "joint-recovery-snapshot/v6", "joint-recovery-snapshot/v7", "joint-recovery-snapshot/v8"} or manifest["capture_contract"] != _CAPTURE
+        or not keys <= set(manifest) or set(manifest) - keys - optional
+        or manifest["format"] != _FORMAT or manifest["capture_contract"] != _CAPTURE
         or manifest["snapshot_id"] != root.name or type(manifest["graphs"]) is not list
         or len(manifest["graphs"]) > 256):
+        raise ValueError("joint_snapshot_manifest_invalid")
+    # These are explicit capture selections within the one current format.
+    # No version can weaken the proof required for a selected participant.
+    storage_fields = {"storage", "storage_references", "kg_artifacts"}
+    selected = set(manifest) & storage_fields
+    if (selected and (selected != storage_fields or "routing_inventory" not in manifest)
+        or "native_graphs" in manifest and selected != storage_fields
+        or "evidence" in manifest and "native_graphs" not in manifest):
         raise ValueError("joint_snapshot_manifest_invalid")
     RecoveryBuildPair(**manifest["builds"])
     verify_sqlite_recovery_snapshot(_sql_artifact(root, manifest), max_seconds=max_seconds)
@@ -506,14 +493,9 @@ def verify_joint_recovery_snapshot(snapshot: JointRecoverySnapshot, *, max_secon
         artifacts = verify_kg_artifact_snapshot(_kg_artifact(root, manifest), max_seconds=max_seconds)
         inventory = manifest['routing_inventory']
         expected_roots = inventory['other_storage_paths']
-        if manifest['format'] in {'joint-recovery-snapshot/v6', 'joint-recovery-snapshot/v7', 'joint-recovery-snapshot/v8'}:
-            require_retained_generation_inventory(recovery_graph_inventory_from_manifest(inventory))
-            expected_roots = sorted((*expected_roots, *inventory['unselected_generation_paths']))
-            expected_format = 'kg-artifact-recovery/v2'
-        else:
-            if inventory['unselected_generation_paths']:
-                raise ValueError('joint_snapshot_kg_artifact_coverage_mismatch')
-            expected_format = 'kg-artifact-recovery/v1'
+        require_retained_generation_inventory(recovery_graph_inventory_from_manifest(inventory))
+        expected_roots = sorted((*expected_roots, *inventory['unselected_generation_paths']))
+        expected_format = 'kg-artifact-recovery/0.4.0'
         if artifacts['roots'] != expected_roots or artifacts['format'] != expected_format:
             raise ValueError('joint_snapshot_kg_artifact_coverage_mismatch')
     if 'native_graphs' in manifest:
@@ -576,12 +558,12 @@ def _staged_joint_recovery_restore(
 ) -> Iterator[Path]:
     """Restore into an entirely new directory; never promote live bindings.
 
-    v1-v6 use logical transfer and regenerate native UUIDs/LSNs. v7 restores the
+    Logical capture regenerates native UUIDs/LSNs. Native capture restores the
     authenticated native image and cold-verifies its logical certificate too.
     Its operator must explicitly confirm all original participants are offline
     and will not resume alongside the same-UUID replacement; this flag is not
     process detection. The installer must use the recorded compatible build pair.
-    Version 3 checks current erasure BEFORE reconstructing even the SQL copy,
+    Storage capture checks current erasure before reconstructing the SQL copy,
     and holds source lifecycle locks through publication of the WHOLE set.
     Trusted replay verification may use publish=False to compare this temporary
     reference; all guards still run and the unpublished stage is always removed.

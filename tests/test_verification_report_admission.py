@@ -1,3 +1,4 @@
+from verification_report_fixtures import report
 """Real signed external reports share the scoped scenario and delivery trust path."""
 from copy import deepcopy
 import json
@@ -23,23 +24,9 @@ import test_delivery_evidence_integration as delivery
 adopted_context = methods.adopted_context
 classified_context = methods.classified_context
 ledger = delivery.ledger
-SOURCE = {'reference': 'repo:component', 'revision': 'commit-1', 'sha256': 'a' * 64}
 CRITERIA = [{'id': 'ac-1', 'text': 'Public ports only'}]
 
 
-def report(method='inspection'):
-    result = {'schema_version': 'verification-report/v1', 'method': method, 'report_id': 'report-1',
-        'observed_at': '2026-09-23T13:00:00Z', 'sources': [SOURCE], 'conclusion': 'Public ports only', 'result': 'passed',
-        'observations': [{'observation_id': 'o1', 'criterion_id': 'ac-1', 'observation_ref': 'repo:component#imports',
-            'expected': 'Public ports', 'observed': 'Imports use ports', 'outcome': 'passed'}]}
-    if method == 'inspection':
-        result['inspection_procedure'] = SOURCE
-    elif method == 'demonstration':
-        result.update(procedure=SOURCE, environment=SOURCE)
-    else:
-        result.update(tool_name='checker', tool_version='1', rules=[SOURCE], configuration=SOURCE,
-                      analyzed_scope=['component'], findings=[])
-    return result
 
 
 @pytest.fixture(autouse=True)
