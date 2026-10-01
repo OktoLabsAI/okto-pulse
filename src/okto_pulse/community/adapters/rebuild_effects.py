@@ -6,7 +6,8 @@ import hashlib
 import json
 import logging
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
+from dataclasses import fields
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -26,13 +27,6 @@ from okto_pulse.core.kg.interfaces.rebuild_audit_storage import (
     RebuildAuditKey,
 )
 
-from okto_pulse.community.adapters.legacy_rebuild_reconciliation import (
-    LEGACY_QUEUE_ONLY_INTENT_CODE,
-    LEGACY_QUEUE_ONLY_INTENT_EFFECT,
-    LEGACY_QUEUE_ONLY_KIND,
-    LEGACY_QUEUE_ONLY_REMAINING_ACTIONS,
-    LegacyManualRestoreQueueOnlyIntent,
-)
 
 if TYPE_CHECKING:
     from okto_pulse.community.adapters.board_rebuild_ingestion import (
@@ -66,6 +60,7 @@ def _command_payload(command: RebuildCommand) -> dict[str, object]:
 
 def _receipt_payload(receipt: RebuildEffectReceipt) -> dict[str, object]:
     return {
+        "schema_version": "rebuild-effect-receipt/0.4.0",
         "effect_key": receipt.effect_key,
         "effect": receipt.effect,
         "ok": receipt.ok,
@@ -74,13 +69,36 @@ def _receipt_payload(receipt: RebuildEffectReceipt) -> dict[str, object]:
     }
 
 
+def _require_enqueue_receipt(receipt: RebuildEffectReceipt) -> None:
+    from okto_pulse.community.adapters.board_rebuild_ingestion import REBUILD_QUEUE_ORDER_VERSION
+
+    details = receipt.details
+    baseline = details.get("baseline_dead_letter_ids")
+    if (
+        receipt.effect != "enqueue"
+        or type(details.get("queue_order_version")) is not int
+        or details["queue_order_version"] != REBUILD_QUEUE_ORDER_VERSION
+        or type(details.get("enqueue_admission_complete")) is not bool
+        or not isinstance(baseline, (list, tuple))
+        or any(type(value) is not str or not value for value in baseline)
+    ):
+        raise RuntimeError("rebuild_enqueue_receipt_format_incompatible")
+
+
 def _receipt_from_payload(payload: dict[str, Any]) -> RebuildEffectReceipt:
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema_version") != "rebuild-effect-receipt/0.4.0"
+        or set(payload) != {"schema_version", "effect_key", "effect", "ok", "code", "details"}
+        or type(payload["ok"]) is not bool
+    ):
+        raise RuntimeError("rebuild_effect_receipt_format_incompatible")
     return RebuildEffectReceipt(
         effect_key=str(payload["effect_key"]),
         effect=str(payload["effect"]),
-        ok=bool(payload["ok"]),
-        code=str(payload.get("code", "ok")),
-        details=dict(payload.get("details", {})),
+        ok=payload["ok"],
+        code=str(payload["code"]),
+        details=dict(payload["details"]),
     )
 
 
@@ -191,39 +209,58 @@ class CommunityRebuildEffects:
         )
         if payload is None:
             return None
+        if (
+            not isinstance(payload, dict)
+            or payload.get("schema_version") != "rebuild-checkpoint/0.4.0"
+            or payload.get("kind") != "f06_rebuild_checkpoint"
+            or set(payload) != {field.name for field in fields(RebuildCheckpoint)} | {"schema_version", "kind"}
+        ):
+            raise RuntimeError("rebuild_checkpoint_format_incompatible")
         command_payload = dict(payload["command"])
-        command_payload["source_rows"] = tuple(command_payload.get("source_rows", ()))
+        if type(command_payload.get("source_rows")) is not list:
+            raise RuntimeError("rebuild_checkpoint_command_format_incompatible")
+        command_payload["source_rows"] = tuple(command_payload["source_rows"])
         command = RebuildCommand(**command_payload)
+        if (
+            set(command_payload) != set(_command_payload(command))
+            or command.run_id != run_id
+            or command.board_id != board_id
+            or any(type(payload[name]) is not int for name in (
+                "last_sequence", "queue_progress_events", "writer_handoff_count", "writer_reacquire_count",
+            ))
+            or type(payload["queue_grace_applied"]) is not bool
+        ):
+            raise RuntimeError("rebuild_checkpoint_command_format_incompatible")
         receipts = {
             str(key): _receipt_from_payload(value)
-            for key, value in dict(payload.get("receipts", {})).items()
+            for key, value in dict(payload["receipts"]).items()
         }
         checkpoint = RebuildCheckpoint(
             command=command,
             state=RebuildState(str(payload["state"])),
             started_at=datetime.fromisoformat(str(payload["started_at"])),
             last_progress_at=datetime.fromisoformat(str(payload["last_progress_at"])),
-            best_queue_depth=payload.get("best_queue_depth"),
-            last_sequence=int(payload.get("last_sequence", 0)),
-            queue_progress_events=int(payload.get("queue_progress_events", 0)),
-            queue_grace_applied=bool(payload.get("queue_grace_applied", False)),
-            queue_grace_reason=payload.get("queue_grace_reason"),
-            writer_handoff_count=int(payload.get("writer_handoff_count", 0)),
-            writer_reacquire_count=int(payload.get("writer_reacquire_count", 0)),
+            best_queue_depth=payload["best_queue_depth"],
+            last_sequence=payload["last_sequence"],
+            queue_progress_events=payload["queue_progress_events"],
+            queue_grace_applied=payload["queue_grace_applied"],
+            queue_grace_reason=payload["queue_grace_reason"],
+            writer_handoff_count=payload["writer_handoff_count"],
+            writer_reacquire_count=payload["writer_reacquire_count"],
             compensation_failed_state=(
                 RebuildState(str(payload["compensation_failed_state"]))
-                if payload.get("compensation_failed_state")
+                if payload["compensation_failed_state"]
                 else None
             ),
             compensation_failure_code=(
                 RebuildOutcomeCode(str(payload["compensation_failure_code"]))
-                if payload.get("compensation_failure_code")
+                if payload["compensation_failure_code"]
                 else None
             ),
-            compensation_failure_detail=payload.get("compensation_failure_detail"),
+            compensation_failure_detail=payload["compensation_failure_detail"],
             compensation_actions=tuple(
                 CompensationAction(str(value))
-                for value in payload.get("compensation_actions", ())
+                for value in payload["compensation_actions"]
             ),
             receipts=receipts,
         )
@@ -240,6 +277,7 @@ class CommunityRebuildEffects:
             self._key(checkpoint.command, self._checkpoint_id(run_id)),
             {
                 "kind": "f06_rebuild_checkpoint",
+                "schema_version": "rebuild-checkpoint/0.4.0",
                 "command": _command_payload(checkpoint.command),
                 "state": checkpoint.state.value,
                 "started_at": checkpoint.started_at.isoformat(),
@@ -300,64 +338,6 @@ class CommunityRebuildEffects:
             )
         return receipt
 
-    def persist_legacy_manual_restore_queue_only_intent(
-        self,
-        command: RebuildCommand,
-        *,
-        intent_payload: Mapping[str, Any],
-        mutation_guard: Callable[[], bool],
-    ) -> RebuildEffectReceipt:
-        """Persist one exact nominal intent before any legacy queue CAS."""
-
-        intent = LegacyManualRestoreQueueOnlyIntent.from_payload(intent_payload)
-        if (
-            intent.board_id != command.board_id
-            or intent.manifest_ref != command.manifest_ref
-            or intent.f06_run_id != command.run_id
-        ):
-            raise RuntimeError("legacy_queue_only_intent_command_mismatch")
-        effect_key = f"{command.run_id}:{LEGACY_QUEUE_ONLY_INTENT_EFFECT}"
-        receipt = RebuildEffectReceipt(
-            effect_key=effect_key,
-            effect=LEGACY_QUEUE_ONLY_INTENT_EFFECT,
-            ok=True,
-            code=LEGACY_QUEUE_ONLY_INTENT_CODE,
-            details=intent.to_payload(),
-        )
-        expected = _receipt_payload(receipt)
-
-        def _guard(phase: str) -> None:
-            try:
-                live = bool(mutation_guard())
-            except BaseException as exc:
-                raise RuntimeError(
-                    f"legacy_queue_only_intent_guard_error:{phase}"
-                ) from exc
-            if not live:
-                raise RuntimeError(f"legacy_queue_only_intent_guard_lost:{phase}")
-
-        _guard("before_write")
-        if self._artifact_store is not None:
-            key = self._key(command, self._effect_id(effect_key))
-
-            def _persist_exact(
-                current: dict[str, Any] | None,
-            ) -> dict[str, Any]:
-                _guard("during_write")
-                if current not in (None, expected):
-                    raise RuntimeError("legacy_queue_only_intent_receipt_conflict")
-                return dict(expected)
-
-            persisted = self._artifact_store.replace_json(key, _persist_exact)
-            if persisted != expected:
-                raise RuntimeError("legacy_queue_only_intent_receipt_mismatch")
-        _guard("after_write")
-        # Never retain the caller's mutable mapping. Revalidate the canonical
-        # payload after the artifact callback before it enters checkpoint state.
-        persisted_receipt = _receipt_from_payload(dict(expected))
-        LegacyManualRestoreQueueOnlyIntent.from_payload(persisted_receipt.details)
-        self._owner._rebuild_effect_cache[effect_key] = persisted_receipt
-        return persisted_receipt
 
     def snapshot(
         self, command: RebuildCommand, *, effect_key: str
@@ -440,54 +420,21 @@ class CommunityRebuildEffects:
             )
         return self._store_receipt(command, receipt)
 
-    def prepare_enqueue_resume_baseline(
-        self,
-        command: RebuildCommand,
-        *,
-        effect_key: str,
+    def restore_enqueue_receipt(
+        self, command: RebuildCommand, *, effect_key: str,
         prior_receipt: RebuildEffectReceipt | None,
-        prior_admission_possible: bool,
     ) -> RebuildEffectReceipt | None:
-        """Restore or conservatively seed a pre-v4 enqueue receipt.
-
-        A legacy checkpoint may survive while its separately persisted effect
-        receipt does not.  Once quarantine completed, absence of that receipt
-        is ambiguous: enqueue may have committed before the crash.  An empty
-        baseline is the only safe recovery cut because it cannot absorb a DLQ
-        produced by that earlier admission.
-        """
-
+        """Restore an existing native checkpoint receipt without inventing one."""
         existing = self._load_receipt(command, effect_key)
         if existing is not None:
+            _require_enqueue_receipt(existing)
             return existing
-        if prior_receipt is not None:
-            if (
-                prior_receipt.effect_key != effect_key
-                or prior_receipt.effect != "enqueue"
-            ):
-                raise ValueError("rebuild_enqueue_resume_receipt_identity_invalid")
-            return self._store_receipt(command, prior_receipt)
-        if not prior_admission_possible:
+        if prior_receipt is None:
             return None
-
-        from okto_pulse.community.adapters.board_rebuild_ingestion import (
-            REBUILD_QUEUE_ORDER_VERSION,
-        )
-
-        return self._store_receipt(
-            command,
-            RebuildEffectReceipt(
-                effect_key,
-                "enqueue",
-                True,
-                details={
-                    "queue_order_version": REBUILD_QUEUE_ORDER_VERSION,
-                    "enqueue_admission_complete": False,
-                    "baseline_dead_letter_ids": [],
-                    "baseline_recovery": "legacy_admission_unknown_fail_closed",
-                },
-            ),
-        )
+        if prior_receipt.effect_key != effect_key:
+            raise ValueError("rebuild_enqueue_resume_receipt_identity_invalid")
+        _require_enqueue_receipt(prior_receipt)
+        return self._store_receipt(command, prior_receipt)
 
     def enqueue(
         self, command: RebuildCommand, *, effect_key: str
@@ -497,33 +444,12 @@ class CommunityRebuildEffects:
         )
 
         existing = self._load_receipt(command, effect_key)
-        if (
-            existing is not None
-            and int(dict(existing.details).get("queue_order_version", 0))
-            >= REBUILD_QUEUE_ORDER_VERSION
-            and "baseline_dead_letter_ids" in dict(existing.details)
-            and bool(dict(existing.details).get("enqueue_admission_complete", False))
-        ):
-            return existing
+        if existing is not None:
+            _require_enqueue_receipt(existing)
+            if existing.details["enqueue_admission_complete"]:
+                return existing
         existing_details = dict(existing.details) if existing is not None else {}
-        baseline_present = "baseline_dead_letter_ids" in existing_details
-        if existing is not None and not baseline_present:
-            # An older/partial enqueue receipt proves queue admission may have
-            # happened, but not which DLQs predated it. Resampling would absorb
-            # this run's own dead letter and could authorize a partial graph.
-            return self._store_receipt(
-                command,
-                RebuildEffectReceipt(
-                    effect_key,
-                    "enqueue",
-                    False,
-                    code="rebuild_enqueue_baseline_missing_requires_new_manifest",
-                    details={
-                        "queue_order_version": REBUILD_QUEUE_ORDER_VERSION,
-                        "enqueue_admission_complete": False,
-                    },
-                ),
-            )
+        baseline_present = existing is not None
         baseline_dead_letter_ids = tuple(
             str(value) for value in existing_details.get("baseline_dead_letter_ids", ())
         )
@@ -750,149 +676,6 @@ class CommunityRebuildEffects:
     ) -> RebuildEffectReceipt:
         rebuild_command = self._checkpoint_command(command.run_id)
         existing = self._load_receipt(rebuild_command, effect_key)
-        checkpoint = self._owner._rebuild_checkpoint_cache.get(command.run_id)
-        intent_receipts = tuple(
-            receipt
-            for receipt in (
-                tuple(checkpoint.receipts.values()) if checkpoint is not None else ()
-            )
-            if receipt.effect == LEGACY_QUEUE_ONLY_INTENT_EFFECT
-        )
-        if intent_receipts:
-            if len(intent_receipts) != 1:
-                raise RuntimeError("legacy_queue_only_intent_cardinality_invalid")
-            intent_receipt = intent_receipts[0]
-            expected_intent_key = f"{command.run_id}:{LEGACY_QUEUE_ONLY_INTENT_EFFECT}"
-            if (
-                intent_receipt.effect_key != expected_intent_key
-                or intent_receipt.code != LEGACY_QUEUE_ONLY_INTENT_CODE
-                or not intent_receipt.ok
-                or expected_intent_key not in command.receipt_keys
-                or tuple(action.value for action in command.actions)
-                != LEGACY_QUEUE_ONLY_REMAINING_ACTIONS
-            ):
-                raise RuntimeError("legacy_queue_only_compensation_binding_invalid")
-            intent = LegacyManualRestoreQueueOnlyIntent.from_payload(
-                intent_receipt.details
-            )
-            expected_row_count = len(intent.queue_rows)
-            expected_pending_count = sum(
-                1 for row in intent.queue_rows if row["status"] == "pending"
-            )
-            expected_claimed_count = sum(
-                1 for row in intent.queue_rows if row["status"] == "claimed"
-            )
-            expected_details = {
-                "actions": list(LEGACY_QUEUE_ONLY_REMAINING_ACTIONS),
-                "reconciliation_kind": LEGACY_QUEUE_ONLY_KIND,
-                "intent_digest": intent.evidence_digest,
-                "queue": {
-                    "source": intent.queue_source,
-                    "expected_row_count": expected_row_count,
-                    "terminal_fingerprint": intent.terminal_queue_fingerprint,
-                    "pending_compensated": expected_pending_count,
-                    "claimed_compensated": expected_claimed_count,
-                    "already_compensated": 0,
-                    "active_remaining": 0,
-                    "live_intents_restored": 0,
-                    "total_compensated": expected_row_count,
-                    "evidence_digest": intent.evidence_digest,
-                },
-            }
-            if existing is not None:
-                if (
-                    existing.effect_key != effect_key
-                    or existing.effect != "compensate"
-                    or not existing.ok
-                    or existing.code != "legacy_manual_restore_queue_only_reconciled"
-                    or dict(existing.details) != expected_details
-                ):
-                    raise RuntimeError("legacy_queue_only_terminal_receipt_conflict")
-                return existing
-            guard = command.mutation_guard
-            if not callable(guard):
-                raise RuntimeError("legacy_queue_only_mutation_guard_required")
-
-            def _guard(phase: str) -> None:
-                try:
-                    live = bool(guard())
-                except BaseException as exc:
-                    raise RuntimeError(
-                        f"legacy_queue_only_terminal_guard_error:{phase}"
-                    ) from exc
-                if not live:
-                    raise RuntimeError(f"legacy_queue_only_terminal_guard_lost:{phase}")
-
-            result = self._owner.compensate_legacy_manual_restore_queue_only(
-                intent_payload=intent.to_payload(),
-                mutation_guard=guard,
-            )
-            expected_result_keys = {
-                "reconciliation_kind",
-                "evidence_digest",
-                "queue_source",
-                "pending_compensated",
-                "claimed_compensated",
-                "already_compensated",
-                "active_remaining",
-                "live_intents_restored",
-                "total_compensated",
-            }
-            if (
-                not isinstance(result, Mapping)
-                or set(result) != expected_result_keys
-                or result.get("reconciliation_kind") != LEGACY_QUEUE_ONLY_KIND
-                or result.get("evidence_digest") != intent.evidence_digest
-                or result.get("queue_source") != intent.queue_source
-                or result.get("active_remaining") != 0
-                or result.get("live_intents_restored") != 0
-                or any(
-                    type(result.get(key)) is not int or int(result[key]) < 0
-                    for key in (
-                        "pending_compensated",
-                        "claimed_compensated",
-                        "already_compensated",
-                        "total_compensated",
-                    )
-                )
-                or int(result["pending_compensated"])
-                + int(result["claimed_compensated"])
-                != int(result["total_compensated"])
-                or int(result["total_compensated"]) + int(result["already_compensated"])
-                != expected_row_count
-            ):
-                raise RuntimeError("legacy_queue_only_terminal_proof_invalid")
-            _guard("after_queue_commit")
-            receipt = RebuildEffectReceipt(
-                effect_key=effect_key,
-                effect="compensate",
-                ok=True,
-                code="legacy_manual_restore_queue_only_reconciled",
-                details=expected_details,
-            )
-            expected_terminal = _receipt_payload(receipt)
-            if self._artifact_store is not None:
-                key = self._key(rebuild_command, self._effect_id(effect_key))
-
-                def _persist_terminal(
-                    current: dict[str, Any] | None,
-                ) -> dict[str, Any]:
-                    _guard("during_terminal_receipt")
-                    if current not in (None, expected_terminal):
-                        raise RuntimeError(
-                            "legacy_queue_only_terminal_receipt_conflict"
-                        )
-                    return dict(expected_terminal)
-
-                persisted = self._artifact_store.replace_json(
-                    key,
-                    _persist_terminal,
-                )
-                if persisted != expected_terminal:
-                    raise RuntimeError("legacy_queue_only_terminal_receipt_mismatch")
-            _guard("after_terminal_receipt")
-            self._owner._rebuild_effect_cache[effect_key] = receipt
-            return receipt
         if existing is not None and existing.ok:
             return existing
         details: dict[str, object] = {
