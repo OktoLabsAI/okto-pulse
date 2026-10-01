@@ -81,7 +81,10 @@ async def call(client, name, **arguments):
 
 
 @pytest.mark.asyncio
-async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(adopted_context, tmp_path, monkeypatch):
+@pytest.mark.parametrize('late_requirement_link', [False, True])
+async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(
+    adopted_context, tmp_path, monkeypatch, late_requirement_link
+):
     db = adopted_context
     await complete_start_fixture(db, tmp_path)
     register_report_adapters()
@@ -106,6 +109,12 @@ async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(ad
     spec = await db.get(Spec, 'spec', populate_existing=True)
     spec.evaluations = []
     spec.created_by = 'solo'
+    if late_requirement_link:
+        # Draft input has a criterion linked to FR only. The BR link will be
+        # authored through MCP after a real signed run, in the same edition.
+        criteria = copy.deepcopy(spec.acceptance_criteria)
+        criteria[0]['requirement_links'] = [criteria[0]['requirement_links'][0]]
+        spec.acceptance_criteria = criteria
     for identity in ('task', 'test'):
         card = await db.get(Card, identity)
         card.created_by = card.assignee_id = 'solo'
@@ -126,11 +135,79 @@ async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(ad
     frozen = freeze_mcp_resource_catalog(server.effective_resource_catalog())
     host = CommunityMcpHostProvider().materialize_catalog(server.mcp,
         resource_catalog=frozen, projection_identity=frozen.identity)
+    # External project fixture: a real GET/assertion replay, signed by the
+    # Community issuer and later authenticated by the write verifier.
+    import httpx
+    from fastapi import FastAPI
+    from test_evidence_v2_adapter import _ledger
+    from okto_pulse.community.adapters.test_evidence import (
+        CommunityHttpManifestExecutor, CommunityTestEvidenceExecutionIssuer,
+        CommunityTestEvidenceWriteVerifier,
+    )
+    from okto_pulse.core.ports.test_evidence import (
+        register_test_evidence_execution_issuer, register_test_evidence_write_verifier,
+    )
+    project = FastAPI()
+    steps = ['Open the procedure', 'Perform each required action', 'Record completion']
+
+    @project.get('/procedure')
+    async def procedure():
+        return {'steps': steps}
+
+    evidence_ledger = _ledger(tmp_path / 'external-evidence')
+    register_test_evidence_execution_issuer(CommunityTestEvidenceExecutionIssuer(
+        ledger=evidence_ledger, executor=CommunityHttpManifestExecutor(
+            base_url='http://127.0.0.1', transport=httpx.ASGITransport(app=project)),
+        environment='pytest-asgi'))
+    register_test_evidence_write_verifier(CommunityTestEvidenceWriteVerifier(ledger=evidence_ledger))
     scope = {'board_id': 'board', 'spec_id': 'spec'}
     async with Client(host) as client:
         resolved = await server._get_agent_ctx('board')
         assert resolved.agent_id == 'solo'
         assert not resolved.permissions.owner_review_required
+        if late_requirement_link:
+            from okto_pulse.core.services.test_scenario_lifecycle import compute_test_scenario_semantic_sha256
+            async with factory() as reader:
+                before = await reader.get(Spec, 'spec')
+                before_edition, before_version = before.edition, before.version
+                old_digest = compute_test_scenario_semantic_sha256(board_id='board', spec_id='spec',
+                    scenario=before.test_scenarios[0], acceptance_criteria=before.acceptance_criteria)
+            old_run = await call(client, 'okto_pulse_execute_test_scenario_evidence', **scope,
+                scenario_id='scenario', status='passed', replay=json.dumps({
+                    'description': 'Observe procedure before BR criterion association',
+                    'steps': [{'name': 'procedure', 'path': '/procedure', 'expected_status': 200,
+                        'assertions': [{'name': 'all-required-steps', 'kind': 'json_equals',
+                            'path': 'steps', 'expected': steps}]}]}))
+            old_evidence = copy.deepcopy(old_run['evidence'])
+            await call(client, 'okto_pulse_update_spec_entity', **scope,
+                entity_type='acceptance_criterion', entity_id='ac-procedure', operation='update',
+                expected_spec_version=before_version, payload_json={'requirement_links': [
+                    {'requirement_type': 'functional_requirement', 'requirement_id': 'fr'},
+                    {'requirement_type': 'business_rule', 'requirement_id': 'br'}]})
+            async with factory() as reader:
+                linked = await reader.get(Spec, 'spec')
+                assert linked.status == 'draft' and linked.edition == before_edition
+                assert linked.version > before_version
+                assert len(linked.acceptance_criteria[0]['requirement_links']) == 2
+                current_digest = compute_test_scenario_semantic_sha256(board_id='board', spec_id='spec',
+                    scenario=linked.test_scenarios[0], acceptance_criteria=linked.acceptance_criteria)
+                assert current_digest != old_digest
+                after_link = copy.deepcopy((linked.test_scenarios, linked.acceptance_criteria, linked.version))
+            # The receipt remains authentic for its original scope. A link alone
+            # cannot enlarge that scope, even before implementation/time gates.
+            assert CommunityTestEvidenceWriteVerifier(ledger=evidence_ledger).verify(
+                board_id='board', spec_id='spec', scenario_id='scenario', status='passed',
+                scenario_sha256=old_digest, actor_id='solo',
+                evidence=old_evidence).verified
+            refused = await client.call_tool('okto_pulse_update_test_scenario_status',
+                {**scope, 'scenario_id': 'scenario', 'status': 'passed',
+                 'evidence': json.dumps(old_evidence)}, raise_on_error=False)
+            assert 'evidence_unverified' in str(refused), refused.content
+            async with factory() as reader:
+                linked = await reader.get(Spec, 'spec')
+                assert (linked.test_scenarios, linked.acceptance_criteria, linked.version) == after_link
+                assert not list(await reader.scalars(select(CardDeliveryEvidenceRecordRow)))
+            assert old_run['evidence'] == old_evidence
         for state in ('review', 'approved'):
             await call(client, 'okto_pulse_move_spec', **scope, status=state)
         preflight = await call(client, 'okto_pulse_get_requirement_lint_preflight', **scope)
@@ -197,31 +274,6 @@ async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(ad
             implementation_payload = copy.deepcopy(records[0].payload)
         for state in ('started', 'in_progress'):
             await call(client, 'okto_pulse_move_card', board_id='board', card_id='test', status=state)
-        # External project fixture: a real GET/assertion replay, signed by the
-        # Community issuer and later authenticated by the write verifier.
-        import httpx
-        from fastapi import FastAPI
-        from test_evidence_v2_adapter import _ledger
-        from okto_pulse.community.adapters.test_evidence import (
-            CommunityHttpManifestExecutor, CommunityTestEvidenceExecutionIssuer,
-            CommunityTestEvidenceWriteVerifier,
-        )
-        from okto_pulse.core.ports.test_evidence import (
-            register_test_evidence_execution_issuer, register_test_evidence_write_verifier,
-        )
-        project = FastAPI()
-        steps = ['Open the procedure', 'Perform each required action', 'Record completion']
-
-        @project.get('/procedure')
-        async def procedure():
-            return {'steps': steps}
-
-        evidence_ledger = _ledger(tmp_path / 'external-evidence')
-        register_test_evidence_execution_issuer(CommunityTestEvidenceExecutionIssuer(
-            ledger=evidence_ledger, executor=CommunityHttpManifestExecutor(
-                base_url='http://127.0.0.1', transport=httpx.ASGITransport(app=project)),
-            environment='pytest-asgi'))
-        register_test_evidence_write_verifier(CommunityTestEvidenceWriteVerifier(ledger=evidence_ledger))
         executed = await call(client, 'okto_pulse_execute_test_scenario_evidence', **scope,
             scenario_id='scenario', status='passed', replay=json.dumps({'description': 'Verify every procedure step',
                 'steps': [{'name': 'procedure', 'path': '/procedure', 'expected_status': 200,
