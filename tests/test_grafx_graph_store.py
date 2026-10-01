@@ -481,7 +481,8 @@ def test_every_port_method_roundtrips_over_one_real_grafx_board(real_store) -> N
     main, origins, violations = store.get_constraint_detail(BOARD_ID, "constraint-1")
     assert main[0][:2] == ["constraint-1", "Constraint one"]
     assert origins == []
-    assert violations == [["bug-1", "Storage incident"]]
+    assert [row[:2] for row in violations] == [["bug-1", "Storage incident"]]
+    assert all(len(row) == 7 for row in violations)
 
     alternatives = store.get_alternatives(BOARD_ID, "decision-old", 10)
     assert alternatives[0][:2] == ["alternative-1", "Alternative one"]

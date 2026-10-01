@@ -20,6 +20,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, act, fireEvent } from '@testing-library/react';
 import { GraphCanvas, type GraphCanvasFilters } from '../GraphCanvas';
 import type { KGNode } from '@/types/knowledge-graph';
+import { kgEdgeDisplayLabel, type KGEdge } from '@/types/knowledge-graph';
 
 const FILTERS: GraphCanvasFilters = {
   types: [],
@@ -50,6 +51,30 @@ function renderCanvas(props: Partial<React.ComponentProps<typeof GraphCanvas>> =
 }
 
 describe('GraphCanvas — selection wiring (S4.1 / AC-4)', () => {
+  it('labels origin associations without claiming common cause and clears the note after removal', () => {
+    const bug: KGNode = { ...NODE, id: 'bug', node_type: 'Bug' };
+    const constraint: KGNode = { ...NODE, id: 'constraint', node_type: 'Constraint' };
+    const edge: KGEdge = { id: 'proxy', source: bug.id, target: constraint.id,
+      edge_type: 'violates', confidence: 0.8, assertion_basis: 'origin_proxy',
+      causal_conclusion: 'not_established' };
+    const { getByRole, queryByRole, rerender } = renderCanvas({ nodes: [bug, constraint], edges: [edge] });
+    expect(getByRole('note')).toHaveTextContent('Origin association (inferred). Shared cause not established.');
+    expect(kgEdgeDisplayLabel(edge)).toBe('violates · inferred association');
+    rerender(<GraphCanvas nodes={[bug, constraint]} edges={[]} filters={FILTERS} />);
+    expect(queryByRole('note')).toBeNull();
+  });
+
+  it('does not infer origin provenance from a confidence of 0.8', () => {
+    const edge: KGEdge = { id: 'unclassified', source: 'bug', target: 'constraint',
+      edge_type: 'violates', confidence: 0.8 };
+    const { queryByRole } = renderCanvas({
+      nodes: [{ ...NODE, id: 'bug', node_type: 'Bug' }, { ...NODE, id: 'constraint', node_type: 'Constraint' }],
+      edges: [edge],
+    });
+    expect(queryByRole('note')).toBeNull();
+    expect(kgEdgeDisplayLabel(edge)).toBe('violates');
+  });
+
   it.each(['Entity', 'Bug'] as const)('keeps the selected %s navigable after its parent edge is removed', (kind) => {
     const card: KGNode = { ...NODE, id: 'card-root', title: 'Card', node_type: kind,
       source_artifact_ref: 'card:owner' };

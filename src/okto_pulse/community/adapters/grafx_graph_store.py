@@ -1265,7 +1265,8 @@ class CommunityGrafxGraphStore:
                     "WHERE c.id = $constraint_id "
                     f"AND {tpl.active_read_filter_clause('c')} "
                     f"AND {tpl.active_read_filter_clause('bug')} "
-                    "RETURN bug.id, bug.title",
+                    "RETURN bug.id, bug.title, r.confidence, r.rule_id, "
+                    "r.layer, r.created_by, r.fallback_reason",
                     {"constraint_id": constraint_id},
                 )
             )

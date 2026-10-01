@@ -58,6 +58,16 @@ export interface KGEdge {
   target: string;
   edge_type: KGEdgeType;
   confidence: number;
+  assertion_basis?: 'origin_proxy';
+  causal_conclusion?: 'not_established';
+  rule_id?: string;
+  origin_card_ref?: string;
+}
+
+export function kgEdgeDisplayLabel(edge: KGEdge): string {
+  return edge.edge_type === 'violates' && edge.assertion_basis === 'origin_proxy'
+    ? 'violates · inferred association'
+    : edge.edge_type;
 }
 
 export interface ContradictionPair {
@@ -219,7 +229,7 @@ export const EDGE_TYPE_CONFIG: Record<KGEdgeType, {
   depends_on:   { color: '#F59E0B', label: 'depends_on',
     description: 'A needs B to be in place before it can be worked on or trusted. Used for cards, decisions, requirements — the core blocker relation.' },
   violates:     { color: '#DC2626', label: 'violates',
-    description: 'The source breaks the target Constraint. Any node marked as violating a Constraint is a blocker until reconciled.' },
+    description: 'An association with a requirement, criterion or constraint. Origin proxies are inferred: they do not establish a confirmed violation, a shared cause, or a delivery gate.' },
   implements:   { color: '#10B981', label: 'implements',
     description: 'A Component, Card, or Spec concretises a Requirement or Decision — the "this code closes that promise" edge.' },
   tests:        { color: '#14B8A6', label: 'tests',

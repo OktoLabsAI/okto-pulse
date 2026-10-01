@@ -733,7 +733,7 @@ def _fetch_edges_for_nodes(
         ])
 
         edges = []
-        seen: set[tuple[str, str, str]] = set()  # (rel, src, tgt) dedup
+        seen: set[tuple[str, ...]] = set()
         pending: list[tuple[str, str, str, str, dict[str, Any] | None]] = []
         for rel_name, from_type, to_type in rel_pairs:
             diagnostics["edge_tables_considered"] += 1
@@ -776,10 +776,12 @@ def _fetch_edges_for_nodes(
                         f" AND {tpl.code_traceability_visibility_clause('b')}"
                     )
                     params = {"include_code_traceability": False}
+                provenance_columns = (', r.rule_id, r.layer, r.created_by, r.fallback_reason'
+                    if rel_name == 'violates' else '')
                 query = (
                     f"MATCH (a:{from_type})-[r:{physical_rel}]->(b:{to_type})"
                     f"{visibility} "
-                    "RETURN a.id, b.id, r.confidence LIMIT 5000"
+                    f"RETURN a.id, b.id, r.confidence{provenance_columns} LIMIT 5000"
                 )
                 pending.append((rel_name, from_type, to_type, query, params))
             except Exception as exc:
@@ -799,7 +801,18 @@ def _fetch_edges_for_nodes(
         ) -> None:
             for row in result.get("rows", []):
                 src, tgt = row[0], row[1]
-                key = (relation, src, tgt)
+                metadata = {}
+                if relation == 'violates' and len(row) >= 7:
+                    from okto_pulse.core.ports.card_projection import bug_origin_proxy_read_metadata
+                    metadata = bug_origin_proxy_read_metadata(rule_id=row[3], layer=row[4],
+                        created_by=row[5], fallback_reason=row[6])
+                # A proxy and an independently authored edge are different
+                # observations even when they share endpoints and confidence.
+                suffix = ''
+                if metadata:
+                    import hashlib
+                    suffix = '-proxy-' + hashlib.sha256(metadata['rule_id'].encode()).hexdigest()
+                key = (relation, src, tgt, suffix)
                 if key in seen:
                     continue
                 # Pelo menos UMA ponta na página (era AND): com a projeção
@@ -810,11 +823,12 @@ def _fetch_edges_for_nodes(
                     seen.add(key)
                     edges.append(
                         {
-                            "id": f"{src}-{relation}-{tgt}",
+                            "id": f"{src}-{relation}-{tgt}{suffix}",
                             "source": src,
                             "target": tgt,
                             "edge_type": relation,
                             "confidence": row[2] if len(row) > 2 else 0.7,
+                            **metadata,
                         }
                     )
 
