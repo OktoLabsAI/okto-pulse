@@ -1,25 +1,18 @@
 from __future__ import annotations
 
-import inspect
 import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine, func, insert, select, text
+from sqlalchemy import create_engine, func, insert, select
 from sqlalchemy.exc import IntegrityError
 
-import okto_pulse.community.adapters.relational_schema_steps as schema_steps
 import okto_pulse.community.adapters.sqlalchemy_models as models
-import okto_pulse.core.infra.database as database_module
 import okto_pulse.core.ports.global_discovery_recovery_control as recovery_contract
 from okto_pulse.community.adapters.global_discovery_recovery_worker import (
     SQLAlchemyRecoveryRunStore,
-)
-from okto_pulse.community.adapters.relational_schema_migrator import (
-    CREATE_ALL_BOUNDARY_STEP_ID,
-    build_community_migration_ledger,
 )
 
 
@@ -285,29 +278,6 @@ def test_recovery_slot_database_rejects_non_global_scope(tmp_path: Path) -> None
         engine.dispose()
 
 
-def test_r5_schema_migration_is_in_the_canonical_lifecycle_ledger() -> None:
-    migration_name = "_migrate_global_discovery_recovery_control_plane"
-    assert hasattr(schema_steps, migration_name)
-
-    ledger = build_community_migration_ledger()
-    ids = [step.step_id for step in sorted(ledger, key=lambda step: step.order)]
-    assert migration_name in ids
-    assert ids.index(migration_name) > ids.index(CREATE_ALL_BOUNDARY_STEP_ID)
-    registered_migrations = {
-        step.step_id for step in ledger if step.step_id.startswith("_migrate_")
-    }
-    implemented_migrations = {
-        name
-        for name, value in inspect.getmembers(
-            schema_steps,
-            inspect.iscoroutinefunction,
-        )
-        if name.startswith("_migrate_")
-    }
-    # The executable migration module is the authority: every implementation
-    # must have exactly one governed ledger slot, without a stale numeric
-    # ratchet whenever an additive migration is introduced.
-    assert registered_migrations == implemented_migrations
 
 
 def test_preparation_persists_not_null_sentinels_but_authorizes_by_state(
@@ -423,109 +393,8 @@ def test_same_preparation_replay_returns_incumbent_without_duplicate_dispatch(
         engine.dispose()
 
 
-def test_recovery_migration_repairs_noncanonical_attempt_defaults(
-    tmp_path: Path,
-) -> None:
-    database_path = tmp_path / "attempt-default-repair.sqlite3"
-
-    async def exercise() -> tuple[str | None, str | None]:
-        database_module.create_database(
-            f"sqlite+aiosqlite:///{database_path.as_posix()}"
-        )
-        engine = database_module.get_engine()
-        async with engine.begin() as connection:
-            await connection.run_sync(models.Base.metadata.create_all)
-            create_sql = (
-                await connection.execute(
-                    text(
-                        "SELECT sql FROM sqlite_master WHERE type='table' "
-                        "AND name='global_discovery_recovery_attempts'"
-                    )
-                )
-            ).scalar_one()
-            malformed_sql = str(create_sql).replace(
-                "attempt_id VARCHAR(512) NOT NULL",
-                "attempt_id VARCHAR(512) DEFAULT '' NOT NULL",
-            ).replace(
-                "confirmation_state VARCHAR(32) DEFAULT 'unconfirmed' NOT NULL",
-                "confirmation_state VARCHAR(32) DEFAULT 'consumed' NOT NULL",
-            )
-            assert malformed_sql != create_sql
-            await connection.execute(
-                text(
-                    'DROP INDEX "uq_global_discovery_recovery_attempt_identity"'
-                )
-            )
-            await connection.execute(
-                text(
-                    "ALTER TABLE global_discovery_recovery_attempts "
-                    "RENAME TO global_discovery_recovery_attempts_bad"
-                )
-            )
-            await connection.execute(text(malformed_sql))
-            await connection.execute(
-                text("DROP TABLE global_discovery_recovery_attempts_bad")
-            )
-
-        first = await schema_steps._migrate_global_discovery_recovery_control_plane()
-        second = await schema_steps._migrate_global_discovery_recovery_control_plane()
-        async with engine.connect() as connection:
-            columns = (
-                await connection.execute(
-                    text("PRAGMA table_info(global_discovery_recovery_attempts)")
-                )
-            ).mappings().all()
-        await engine.dispose()
-        defaults = {str(row["name"]): row["dflt_value"] for row in columns}
-        assert defaults["attempt_id"] is None
-        assert defaults["confirmation_state"] == "'unconfirmed'"
-        return first, second
-
-    first, second = __import__("asyncio").run(exercise())
-    assert first is None
-    assert second == "skipped"
 
 
-def test_recovery_migration_fails_closed_on_partial_slot_contract(
-    tmp_path: Path,
-) -> None:
-    database_path = tmp_path / "partial-slot.sqlite3"
-
-    async def exercise() -> None:
-        database_module.create_database(
-            f"sqlite+aiosqlite:///{database_path.as_posix()}"
-        )
-        engine = database_module.get_engine()
-        async with engine.begin() as connection:
-            await connection.run_sync(models.Base.metadata.create_all)
-            create_sql = (
-                await connection.execute(
-                    text(
-                        "SELECT sql FROM sqlite_master WHERE type='table' "
-                        "AND name='global_discovery_recovery_slots'"
-                    )
-                )
-            ).scalar_one()
-            malformed_sql = str(create_sql).replace(
-                "version INTEGER DEFAULT 1 NOT NULL",
-                "version INTEGER DEFAULT 1",
-            )
-            assert malformed_sql != create_sql
-            await connection.execute(
-                text(
-                    "ALTER TABLE global_discovery_recovery_slots "
-                    "RENAME TO global_discovery_recovery_slots_bad"
-                )
-            )
-            await connection.execute(text(malformed_sql))
-            await connection.execute(
-                text("DROP TABLE global_discovery_recovery_slots_bad")
-            )
-        with pytest.raises(RuntimeError, match="non-canonical"):
-            await schema_steps._migrate_global_discovery_recovery_control_plane()
-        await engine.dispose()
-
-    __import__("asyncio").run(exercise())
 
 
 def test_requester_actor_audit_is_bounded_and_rejects_oversized_actor(

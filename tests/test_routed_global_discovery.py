@@ -152,8 +152,6 @@ class _RuntimeProvider:
     def bootstrap(self):
         return self._call("bootstrap", result=object())
 
-    def ensure_layer_schema(self) -> tuple[str, ...]:
-        return self._call("ensure_layer_schema", result=("layer",))
 
     def execute(
         self,

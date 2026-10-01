@@ -432,43 +432,6 @@ def validate_current_grafx_global_schema(
         raise mapped from exc
 
 
-def backfill_null_graph_layer(
-    database: Database,
-    *,
-    revalidate_fence: MutationFence | None = None,
-) -> int:
-    """Fence-owned migration: NULL ``graph_layer`` becomes ``legacy_unknown``.
-
-    Legacy digests were written before the layer column existed.  Storage keeps
-    NULL so the value is never implicitly canonical (reads coalesce it), but
-    the migration contract (KG-R1/FR5) requires an explicit backfill so the
-    stored truth matches the projection.  Returns the number of digests
-    backfilled.
-    """
-
-    transaction = database.begin("write")
-    try:
-        if revalidate_fence is not None:
-            revalidate_fence("global_layer_backfill")
-        native = transaction.execute(
-            "MATCH (d:DecisionDigest) WHERE d.graph_layer IS NULL "
-            "SET d.graph_layer = 'legacy_unknown'",
-            {},
-        )
-        statistics = dict(native.statistics)
-        if revalidate_fence is not None:
-            revalidate_fence("commit")
-        report = transaction.commit()
-    except BaseException:
-        if transaction.active:
-            transaction.rollback()
-        raise
-    if not report.durable:
-        raise _failure(
-            "layer_backfill_not_published",
-            operation="ensure_layer_schema",
-        )
-    return int(statistics.get("node_properties_set", statistics.get("affected", 0)) or 0)
 
 
 def ensure_current_grafx_global_schema(
@@ -481,8 +444,6 @@ def ensure_current_grafx_global_schema(
 
     The physical index has its own fenced transaction after durable schema
     creation. Existing databases receive it even when their schema is complete.
-    The NULL ``graph_layer`` backfill runs for complete schemas too, so legacy
-    databases are migrated without recreating any object.
     """
 
     try:
@@ -492,12 +453,9 @@ def ensure_current_grafx_global_schema(
             changed = ensure_grafx_global_digest_source_index(
                 database, revalidate_fence=revalidate_fence
             )
-            backfilled = backfill_null_graph_layer(
-                database, revalidate_fence=revalidate_fence
-            )
             return GrafxGlobalBootstrapResult(
                 logical_fingerprint=manifest.logical_fingerprint,
-                changed=changed or backfilled > 0,
+                changed=changed,
             )
         transaction = database.begin("write")
         try:

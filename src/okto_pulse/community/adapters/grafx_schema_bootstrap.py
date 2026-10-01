@@ -544,6 +544,9 @@ def ensure_current_grafx_board_schema(
             revalidate_fence=revalidate_fence,
         )
         changed = changed or sources.changed
+        from .grafx_index_inventory import require_current_grafx_indexes
+
+        require_current_grafx_indexes(database, "bootstrap")
         observed_meta = _read_board_meta(database, table_exists=True)
         if observed_meta is None:
             _stamp_board_meta(

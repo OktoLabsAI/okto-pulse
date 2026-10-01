@@ -32,9 +32,6 @@ from okto_pulse.community.adapters.grafx_graph_schema_manager import (
     CommunityGrafxGraphSchemaManager,
 )
 from okto_pulse.community.adapters.grafx_schema_bootstrap import _commit_statements
-from okto_pulse.community.adapters.grafx_schema_evolution import (
-    GrafxSchemaCandidateResult,
-)
 from okto_pulse.community.adapters.grafx_schema_manifest import (
     PULSE_GRAFX_SCHEMA_MANIFEST,
 )
@@ -127,19 +124,6 @@ def _foundation_bound_path(board_root: Path) -> Path:
     return physical_path
 
 
-def _candidate() -> GrafxSchemaCandidateResult:
-    return GrafxSchemaCandidateResult(
-        source_schema_version="0.3.12",
-        target_schema_version=PULSE_GRAFX_SCHEMA_MANIFEST.schema_version,
-        source_schema_fingerprint="source-schema",
-        target_schema_fingerprint="target-schema",
-        source_snapshot_lsn=17,
-        logical_data_fingerprint="logical-data",
-        node_row_counts=(("Decision", 2),),
-        relationship_row_counts=(("supersedes__Decision__Decision", 1),),
-        candidate_database_uuid=b"candidate-uuid",
-        changed=True,
-    )
 
 
 def test_grafx_operational_providers_satisfy_all_three_core_ports(tmp_path) -> None:
@@ -254,118 +238,18 @@ async def test_schema_manager_covers_bootstrap_version_and_validation(
     await manager.ensure_bootstrapped("board-1")
     assert await manager.current_version("board-1") == target
     validation = await manager.validate("board-1")
-    migration = await manager.migrate("board-1")
+    assert not hasattr(manager, "migrate")
 
     assert validation.valid is True
     assert validation.current_version == target
-    assert migration["activated"] is False
-    assert resolutions == ["board-1", "board-1", "board-1", "board-1"]
+    assert resolutions == ["board-1", "board-1", "board-1"]
     assert ("board-1", "commit") in fences
 
 
-async def test_schema_migrate_certifies_then_activates_candidate(monkeypatch) -> None:
-    database = _Database()
-    events: list[str] = []
-    candidate_path = Path("candidate-generation")
-    receipt = _candidate()
-    monkeypatch.setattr(
-        schema_module,
-        "read_current_grafx_schema_version",
-        lambda _database: "0.3.12",
-    )
-
-    def rebuild(source, path, *, batch_size):
-        assert source is database
-        assert path == candidate_path
-        assert batch_size == 128
-        events.append("candidate")
-        return receipt
-
-    monkeypatch.setattr(schema_module, "rebuild_grafx_schema_candidate", rebuild)
-    manager = CommunityGrafxGraphSchemaManager(
-        lambda _board_id: database,
-        lambda _board_id, phase: events.append(f"fence:{phase}"),
-        candidate_path_resolver=lambda _board_id: candidate_path,
-        candidate_activator=lambda board_id, path, result: events.append(
-            f"activate:{board_id}:{path}:{result.target_schema_version}"
-        ),
-        rebuild_batch_size=128,
-    )
-
-    summary = await manager.migrate("board-2")
-
-    assert summary["activated"] is True
-    assert summary["candidate_database_uuid"] == b"candidate-uuid".hex()
-    assert events == [
-        "fence:schema_migrate",
-        "fence:schema_migrate_candidate",
-        "candidate",
-        "fence:schema_migrate_cutover",
-        f"activate:board-2:{candidate_path}:{receipt.target_schema_version}",
-    ]
 
 
-async def test_schema_migrate_refuses_missing_activator_before_candidate(
-    monkeypatch,
-) -> None:
-    database = _Database()
-    built = False
-    monkeypatch.setattr(
-        schema_module,
-        "read_current_grafx_schema_version",
-        lambda _database: "0.3.12",
-    )
-
-    def rebuild(*_args, **_kwargs):
-        nonlocal built
-        built = True
-
-    monkeypatch.setattr(schema_module, "rebuild_grafx_schema_candidate", rebuild)
-    manager = CommunityGrafxGraphSchemaManager(
-        lambda _board_id: database,
-        lambda _board_id, _phase: None,
-        candidate_path_resolver=lambda _board_id: Path("candidate"),
-    )
-
-    with pytest.raises(GraphCapabilityUnavailable):
-        await manager.migrate("board-3")
-    assert built is False
 
 
-async def test_schema_migrate_failure_never_activates_or_touches_primary(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    database = _Database()
-    primary = tmp_path / "active" / "grafx.meta"
-    primary.parent.mkdir()
-    primary.write_bytes(b"active-generation")
-    activated = False
-    monkeypatch.setattr(
-        schema_module,
-        "read_current_grafx_schema_version",
-        lambda _database: "0.3.12",
-    )
-
-    def rebuild(*_args, **_kwargs):
-        raise GraphCapabilityUnavailable("candidate refused")
-
-    def activate(*_args) -> None:
-        nonlocal activated
-        activated = True
-
-    monkeypatch.setattr(schema_module, "rebuild_grafx_schema_candidate", rebuild)
-    manager = CommunityGrafxGraphSchemaManager(
-        lambda _board_id: database,
-        lambda _board_id, _phase: None,
-        candidate_path_resolver=lambda _board_id: tmp_path / "candidate",
-        candidate_activator=activate,
-    )
-
-    with pytest.raises(GraphCapabilityUnavailable):
-        await manager.migrate("board-failed")
-    assert activated is False
-    assert primary.read_bytes() == b"active-generation"
 
 
 async def test_schema_admission_refuses_small_persisted_page_before_bootstrap(

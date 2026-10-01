@@ -273,22 +273,6 @@ class CommunityGrafxGlobalDiscoveryRuntime:
                 mapped = map_grafx_error(exc, operation="global_bootstrap")
                 raise mapped from exc
 
-    def ensure_layer_schema(self) -> tuple[str, ...]:
-        with self._lock:
-            try:
-                self._fence("ensure_layer_schema")
-                database = self._database()
-                result = ensure_current_grafx_global_schema(
-                    database,
-                    revalidate_fence=self._fence,
-                )
-                validate_current_grafx_global_schema(database)
-                return ("DecisionDigest.graph_layer",) if result.changed else ()
-            except GraphError:
-                raise
-            except Exception as exc:
-                mapped = map_grafx_error(exc, operation="ensure_layer_schema")
-                raise mapped from exc
 
     def _execute_on_database(
         self,

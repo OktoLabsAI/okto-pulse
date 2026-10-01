@@ -121,7 +121,6 @@ _SessionStatus = Literal["unresolved", "missing", "snapshot"]
 _ROLLOUT_ADMIN_MUTATION_PHASES = frozenset(
     {
         "graph_schema_ensure_bootstrapped",
-        "graph_schema_migrate",
         "graph_lifecycle_rebuild",
         "graph_lifecycle_purge",
         "purge_board_graph",

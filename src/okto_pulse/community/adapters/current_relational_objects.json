@@ -2098,5 +2098,41 @@
     "name": "trg_semantic_pinpoint_v2_semantic_guideline_metric_results_v2_u",
     "table": "semantic_guideline_metric_results_v2",
     "sql": "CREATE TRIGGER \"trg_semantic_pinpoint_v2_semantic_guideline_metric_results_v2_u\"\nBEFORE UPDATE ON \"semantic_guideline_metric_results_v2\"\nBEGIN\n    SELECT RAISE(ABORT, 'semantic_metric_result_v2_immutable');\nEND"
+  },
+  {
+    "kind": "trigger",
+    "name": "trg_global_discovery_source_revision_code_evidence_classification_events_insert",
+    "table": "code_evidence_classification_events",
+    "sql": "CREATE TRIGGER \"trg_global_discovery_source_revision_code_evidence_classification_events_insert\"\nAFTER INSERT ON \"code_evidence_classification_events\"\nBEGIN\n    UPDATE \"global_discovery_source_revision\"\n    SET revision = revision + 1,\n        mutation_nonce = lower(hex(randomblob(32))),\n        updated_at = CURRENT_TIMESTAMP\n    WHERE scope_id = '_global';\n    SELECT CASE WHEN changes() <> 1\n        THEN RAISE(ABORT, 'global_discovery_source_revision_missing') END;\nEND"
+  },
+  {
+    "kind": "trigger",
+    "name": "trg_global_discovery_source_revision_code_evidence_classification_events_update",
+    "table": "code_evidence_classification_events",
+    "sql": "CREATE TRIGGER \"trg_global_discovery_source_revision_code_evidence_classification_events_update\"\nAFTER UPDATE ON \"code_evidence_classification_events\"\nBEGIN\n    UPDATE \"global_discovery_source_revision\"\n    SET revision = revision + 1,\n        mutation_nonce = lower(hex(randomblob(32))),\n        updated_at = CURRENT_TIMESTAMP\n    WHERE scope_id = '_global';\n    SELECT CASE WHEN changes() <> 1\n        THEN RAISE(ABORT, 'global_discovery_source_revision_missing') END;\nEND"
+  },
+  {
+    "kind": "trigger",
+    "name": "trg_global_discovery_source_revision_code_evidence_classification_events_delete",
+    "table": "code_evidence_classification_events",
+    "sql": "CREATE TRIGGER \"trg_global_discovery_source_revision_code_evidence_classification_events_delete\"\nAFTER DELETE ON \"code_evidence_classification_events\"\nBEGIN\n    UPDATE \"global_discovery_source_revision\"\n    SET revision = revision + 1,\n        mutation_nonce = lower(hex(randomblob(32))),\n        updated_at = CURRENT_TIMESTAMP\n    WHERE scope_id = '_global';\n    SELECT CASE WHEN changes() <> 1\n        THEN RAISE(ABORT, 'global_discovery_source_revision_missing') END;\nEND"
+  },
+  {
+    "kind": "trigger",
+    "name": "trg_global_discovery_source_revision_code_evidence_classification_heads_insert",
+    "table": "code_evidence_classification_heads",
+    "sql": "CREATE TRIGGER \"trg_global_discovery_source_revision_code_evidence_classification_heads_insert\"\nAFTER INSERT ON \"code_evidence_classification_heads\"\nBEGIN\n    UPDATE \"global_discovery_source_revision\"\n    SET revision = revision + 1,\n        mutation_nonce = lower(hex(randomblob(32))),\n        updated_at = CURRENT_TIMESTAMP\n    WHERE scope_id = '_global';\n    SELECT CASE WHEN changes() <> 1\n        THEN RAISE(ABORT, 'global_discovery_source_revision_missing') END;\nEND"
+  },
+  {
+    "kind": "trigger",
+    "name": "trg_global_discovery_source_revision_code_evidence_classification_heads_update",
+    "table": "code_evidence_classification_heads",
+    "sql": "CREATE TRIGGER \"trg_global_discovery_source_revision_code_evidence_classification_heads_update\"\nAFTER UPDATE ON \"code_evidence_classification_heads\"\nBEGIN\n    UPDATE \"global_discovery_source_revision\"\n    SET revision = revision + 1,\n        mutation_nonce = lower(hex(randomblob(32))),\n        updated_at = CURRENT_TIMESTAMP\n    WHERE scope_id = '_global';\n    SELECT CASE WHEN changes() <> 1\n        THEN RAISE(ABORT, 'global_discovery_source_revision_missing') END;\nEND"
+  },
+  {
+    "kind": "trigger",
+    "name": "trg_global_discovery_source_revision_code_evidence_classification_heads_delete",
+    "table": "code_evidence_classification_heads",
+    "sql": "CREATE TRIGGER \"trg_global_discovery_source_revision_code_evidence_classification_heads_delete\"\nAFTER DELETE ON \"code_evidence_classification_heads\"\nBEGIN\n    UPDATE \"global_discovery_source_revision\"\n    SET revision = revision + 1,\n        mutation_nonce = lower(hex(randomblob(32))),\n        updated_at = CURRENT_TIMESTAMP\n    WHERE scope_id = '_global';\n    SELECT CASE WHEN changes() <> 1\n        THEN RAISE(ABORT, 'global_discovery_source_revision_missing') END;\nEND"
   }
 ]

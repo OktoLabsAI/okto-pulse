@@ -497,7 +497,7 @@ def test_semantic_mutation_is_prepared_before_selected_auto_commit_provider() ->
     snapshot = _snapshot("board-g", "grafx", generation="generation-7")
     resolver = _RouteResolver({"board-g": snapshot}, events)
     windows = _Windows(events)
-    legacy = Mock(name="legacy_store")
+    Mock(name="legacy_store")
     grafx = Mock(name="grafx_store")
     recorder = _MutationRecorder(events)
 
@@ -542,7 +542,7 @@ def test_semantic_read_does_not_touch_mutation_recorder() -> None:
         events,
     )
     windows = _Windows(events)
-    legacy = Mock(name="legacy_store")
+    Mock(name="legacy_store")
     grafx = Mock(name="grafx_store")
     recorder = _MutationRecorder(events)
     grafx.get_schema_version.return_value = "0.5.0"
@@ -760,9 +760,8 @@ async def test_schema_manager_forwards_all_methods_inside_complete_async_window(
         events,
     )
     windows = _Windows(events)
-    legacy = Mock()
+    Mock()
     grafx = Mock()
-    migration = {"board_id": "board-l", "migrated": True}
     validation = SchemaValidationResult(
         board_id="board-l",
         valid=True,
@@ -770,7 +769,6 @@ async def test_schema_manager_forwards_all_methods_inside_complete_async_window(
         expected_version="0.5.0",
     )
     grafx.ensure_bootstrapped = AsyncMock(return_value=None)
-    grafx.migrate = AsyncMock(return_value=migration)
     grafx.current_version = AsyncMock(return_value="0.5.0")
     grafx.validate = AsyncMock(return_value=validation)
     facade = CommunityRoutedGraphSchemaManager(
@@ -780,17 +778,16 @@ async def test_schema_manager_forwards_all_methods_inside_complete_async_window(
     )
 
     assert await facade.ensure_bootstrapped("board-l") is None
-    assert await facade.migrate("board-l") is migration
+    assert not hasattr(facade, "migrate")
     assert await facade.current_version("board-l") == "0.5.0"
     assert await facade.validate("board-l") is validation
 
     grafx.ensure_bootstrapped.assert_awaited_once_with("board-l")
-    grafx.migrate.assert_awaited_once_with("board-l")
     grafx.current_version.assert_awaited_once_with("board-l")
     grafx.validate.assert_awaited_once_with("board-l")
-    assert resolver.acquire_calls == ["board-l"] * 4
-    assert events.count(("operation_enter", "board-l")) == 4
-    assert events.count(("operation_exit", "board-l")) == 4
+    assert resolver.acquire_calls == ["board-l"] * 3
+    assert events.count(("operation_enter", "board-l")) == 3
+    assert events.count(("operation_exit", "board-l")) == 3
 
 
 def _runtime_facade(
@@ -1174,7 +1171,7 @@ def test_privacy_erase_is_an_all_storage_admin_sweep_even_without_binding(
 
     legacy = Mock()
     grafx = Mock()
-    legacy_erase = Mock(side_effect=eraser("legacy"))
+    Mock(side_effect=eraser("legacy"))
     grafx_erase = Mock(side_effect=eraser("grafx"))
     facade = _runtime_facade(
         resolver,
@@ -1537,7 +1534,7 @@ def test_every_routed_grafx_semantic_mutation_revalidates_its_write_fence(
         {"board-l": _snapshot("board-l", "grafx", generation="legacy-1")},
         events,
     )
-    legacy = Mock()
+    Mock()
     grafx = Mock()
     getattr(grafx, method).side_effect = lambda *_args, **_kwargs: events.append(
         ("provider_mutation", method)
@@ -1566,18 +1563,13 @@ async def test_every_routed_grafx_schema_mutation_revalidates_its_write_fence() 
         {"board-l": _snapshot("board-l", "grafx", generation="legacy-1")},
         events,
     )
-    legacy = Mock()
+    Mock()
     grafx = Mock()
 
     async def ensure(board_id: str) -> None:
         events.append(("provider_mutation", "ensure", board_id))
 
-    async def migrate(board_id: str) -> dict[str, Any]:
-        events.append(("provider_mutation", "migrate", board_id))
-        return {"migrated": True}
-
     grafx.ensure_bootstrapped = ensure
-    grafx.migrate = migrate
     facade = CommunityRoutedGraphSchemaManager(
         resolver,  # type: ignore[arg-type]
         grafx=grafx,
@@ -1588,17 +1580,13 @@ async def test_every_routed_grafx_schema_mutation_revalidates_its_write_fence() 
     )
 
     await facade.ensure_bootstrapped("board-l")
-    assert await facade.migrate("board-l") == {"migrated": True}
+    assert not hasattr(facade, "migrate")
 
     ensure_fence = (
         "write_fence",
         "board-l",
         "graph_schema_ensure_bootstrapped",
     )
-    migrate_fence = ("write_fence", "board-l", "graph_schema_migrate")
     assert events.index(ensure_fence) < events.index(
         ("provider_mutation", "ensure", "board-l")
-    )
-    assert events.index(migrate_fence) < events.index(
-        ("provider_mutation", "migrate", "board-l")
     )

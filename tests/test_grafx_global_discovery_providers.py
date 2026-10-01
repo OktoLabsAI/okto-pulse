@@ -256,7 +256,7 @@ def test_digest_link_probes_start_from_digest_and_preserve_duplicate_foreign_lin
         slot.close()
 
 
-def test_runtime_all_19_methods_and_exhaustive_search_are_real(
+def test_runtime_current_methods_and_exhaustive_search_are_real(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -269,7 +269,7 @@ def test_runtime_all_19_methods_and_exhaustive_search_are_real(
     assert (
         runtime.state().state is GraphRuntimeObservationState.PRESENT_READABLE_CANDIDATE
     )
-    assert runtime.ensure_layer_schema() == ()
+    assert not hasattr(runtime, "ensure_layer_schema")
     assert {"Board", "DecisionDigest", "CONTAINS_DECISION"}.issubset(
         runtime.list_schema_objects()
     )

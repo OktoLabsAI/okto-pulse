@@ -830,12 +830,6 @@ class CommunityRoutedGraphSchemaManager:
                 phase="graph_schema_ensure_bootstrapped",
             ).ensure_bootstrapped(board_id)
 
-    async def migrate(self, board_id: str) -> dict[str, Any]:
-        with self._operation_window(board_id):
-            return await self._mutation_provider(
-                board_id,
-                phase="graph_schema_migrate",
-            ).migrate(board_id)
 
     async def current_version(self, board_id: str) -> str:
         with self._operation_window(board_id):

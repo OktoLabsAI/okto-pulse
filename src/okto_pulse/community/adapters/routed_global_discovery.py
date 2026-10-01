@@ -511,12 +511,6 @@ class CommunityRoutedGlobalDiscoveryRuntime:
             )
             return handle
 
-    def ensure_layer_schema(self) -> tuple[str, ...]:
-        return self._call_runtime(
-            "ensure_layer_schema",
-            phase="ensure_layer_schema",
-            write=True,
-        )
 
     def execute(
         self,

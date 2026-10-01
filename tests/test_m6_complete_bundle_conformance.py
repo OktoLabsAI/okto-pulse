@@ -170,7 +170,7 @@ async def _run_complete_bundle(
         runtime = registry.global_discovery_runtime
         with _global_writer_guard():
             assert runtime.bootstrap().opened is True
-            runtime.ensure_layer_schema()
+            assert not hasattr(runtime, "ensure_layer_schema")
             assert {"Board", "DecisionDigest", "CONTAINS_DECISION"}.issubset(
                 runtime.list_schema_objects()
             )

@@ -33,8 +33,7 @@ from okto_pulse.community.adapters.rebuild_audit_storage import (
 from okto_pulse.community.adapters.relational_schema_lifecycle import (
     register_community_relational_schema_lifecycle,
 )
-from okto_pulse.community.adapters.relational_schema_steps import (
-    _migrate_global_discovery_recovery_control_plane,
+from okto_pulse.community.adapters.current_schema_guards import (
     global_discovery_source_revision_trigger_manifest,
 )
 from okto_pulse.community.adapters.sqlalchemy_models import (
@@ -261,7 +260,7 @@ def test_worker_terminalizes_unusable_worker_inputs_without_native_operation(
     """Z2: a dispatched attempt whose durable worker inputs are missing or
     corrupt terminalizes FAILED with the exact typed reason and
     retryable=False, performing ZERO native operation, cutover or physical
-    mutation — the provider failure is decided strictly before the writer
+    mutation â€” the provider failure is decided strictly before the writer
     lease/native phase."""
 
     database_path = tmp_path / f"z2-{variant}.sqlite3"
@@ -912,8 +911,8 @@ def test_worker_renewal_exhaustion_after_physical_work_terminalizes_partial(
 ) -> None:
     """A5R: when the REAL renewal seam exhausts its bounded PermissionError
     retry AFTER physical work has begun, the worker terminalizes epoch N as
-    PARTIAL/recovery_physical_reconciliation_pending with retryable=False —
-    never FAILED/native_operation_failed — and epoch N+1 is admitted and
+    PARTIAL/recovery_physical_reconciliation_pending with retryable=False â€”
+    never FAILED/native_operation_failed â€” and epoch N+1 is admitted and
     reconciles the fence-lost predecessor."""
 
     import okto_pulse.community.adapters.coordination as coordination_module
@@ -1115,7 +1114,7 @@ def test_worker_renewal_exhaustion_after_physical_work_terminalizes_partial(
             status = runtime.control.status(run_id)
         assert status.state is RecoveryRunState.SUCCESS
         # Reconcile-before-mutate: the successor healed the bound predecessor
-        # exactly once and adopted that completed truth as its own terminal —
+        # exactly once and adopted that completed truth as its own terminal â€”
         # no fresh candidate build preceded or followed it.
         assert len(physical.predecessor_completions) == 1
         assert len(physical.calls) == 1
@@ -1254,75 +1253,6 @@ def test_source_revision_installs_the_exact_closed_trigger_manifest(
             assert "randomblob(32)" in str(row["sql"]).lower()
 
 
-def test_source_revision_v4_upgrade_installs_qa_inputs_and_rotates_incarnation(
-    tmp_path: Path,
-) -> None:
-    database_path = tmp_path / "triggers-v4-upgrade.sqlite3"
-    _initialize_relational_schema(database_path)
-    new_inputs = {
-        "ideation_qa_items",
-        "refinement_qa_items",
-        "spec_qa_items",
-    }
-    expected = global_discovery_source_revision_trigger_manifest()
-    connection = sqlite3.connect(database_path)
-    try:
-        before_incarnation = str(
-            connection.execute(
-                "SELECT incarnation_id FROM global_discovery_source_revision"
-            ).fetchone()[0]
-        )
-        connection.execute(
-            "UPDATE global_discovery_source_revision SET trigger_manifest_version = ?",
-            ("gdsr-trigger-manifest-v4",),
-        )
-        connection.commit()
-    finally:
-        connection.close()
-
-    stale_provider = CommunityRelationalRecoverySnapshotFingerprint(
-        db_path_provider=lambda: database_path
-    )
-    with pytest.raises(CommunityGlobalDiscoveryRecoveryError) as stale:
-        stale_provider.read_fence()
-    assert stale.value.code == "global_discovery_relational_snapshot_unavailable"
-
-    connection = sqlite3.connect(database_path)
-    try:
-        for trigger_name, (table_name, _sql) in expected.items():
-            if table_name in new_inputs:
-                connection.execute(f'DROP TRIGGER "{trigger_name}"')
-        connection.commit()
-    finally:
-        connection.close()
-
-    async def upgrade() -> str | None:
-        database_module.create_database(
-            f"sqlite+aiosqlite:///{database_path.as_posix()}"
-        )
-        result = await _migrate_global_discovery_recovery_control_plane()
-        await database_module.get_engine().dispose()
-        return result
-
-    assert asyncio.run(upgrade()) is None
-    connection = sqlite3.connect(database_path)
-    try:
-        row = connection.execute(
-            "SELECT trigger_manifest_version, incarnation_id "
-            "FROM global_discovery_source_revision"
-        ).fetchone()
-        triggers = connection.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE ?",
-            (f"{GLOBAL_DISCOVERY_SOURCE_REVISION_TRIGGER_PREFIX}%",),
-        ).fetchall()
-    finally:
-        connection.close()
-
-    assert row is not None
-    assert str(row[0]) == "gdsr-trigger-manifest-v9"
-    assert str(row[1]) != before_incarnation
-    assert {str(item[0]) for item in triggers} == set(expected)
-    assert len(triggers) == 119
 
 
 def test_relational_snapshot_fingerprint_fails_closed_for_missing_schema_or_file(
@@ -1358,7 +1288,7 @@ def test_relational_snapshot_fingerprint_fails_closed_for_missing_schema_or_file
     )
 
 
-def test_dropped_trigger_refuses_fingerprint_and_restart_repair_rotates_incarnation(
+def test_dropped_trigger_refuses_fingerprint_and_restart_without_repair(
     tmp_path: Path,
 ) -> None:
     database_path = tmp_path / "trigger-tamper.sqlite3"
@@ -1366,7 +1296,7 @@ def test_dropped_trigger_refuses_fingerprint_and_restart_repair_rotates_incarnat
     provider = CommunityRelationalRecoverySnapshotFingerprint(
         db_path_provider=lambda: database_path
     )
-    baseline = provider.read_fence()
+    provider.read_fence()
     trigger_name = f"{GLOBAL_DISCOVERY_SOURCE_REVISION_TRIGGER_PREFIX}_boards_insert"
     connection = sqlite3.connect(database_path)
     try:
@@ -1385,10 +1315,13 @@ def test_dropped_trigger_refuses_fingerprint_and_restart_repair_rotates_incarnat
     assert time.monotonic() - started < 2.0
     assert refused.value.code == "global_discovery_relational_snapshot_unavailable"
 
-    _initialize_relational_schema(database_path)
-    repaired = provider.read_fence()
-    assert repaired.incarnation_id != baseline.incarnation_id
-    assert repaired.fingerprint() != baseline.fingerprint()
+    from okto_pulse.community.adapters.current_relational_schema import StorageFormatError
+    from test_current_relational_schema import snapshot
+
+    before = snapshot(database_path)
+    with pytest.raises(StorageFormatError):
+        _initialize_relational_schema(database_path)
+    assert snapshot(database_path) == before
 
 
 def test_source_revision_fingerprint_is_o1_and_lock_refusal_is_bounded(

@@ -41,11 +41,10 @@ def _same_path(left: Path, right: Path) -> bool:
 
 
 class CommunityInitializingGraphSchemaManager:
-    """Make schema bootstrap/migration the explicit Board route-init seam.
+    """Make current schema creation the explicit Board route-init seam.
 
-    Read-only version and validation calls never initialize a route.  The two
-    methods whose public contract already authorizes schema materialization do
-    so immediately before delegating to the routed schema provider.  This keeps
+    Read-only version and validation calls never initialize a route.  The creation
+    method authorizes schema materialization and initializes the route immediately before delegating to the routed schema provider.  This keeps
     ordinary reads/lifecycle opens fail-closed while preserving new-board and
     ``okto-pulse init`` behaviour.
     """
@@ -61,9 +60,6 @@ class CommunityInitializingGraphSchemaManager:
         self._board.initialize_board_route(board_id)
         await self._delegate.ensure_bootstrapped(board_id)
 
-    async def migrate(self, board_id: str) -> dict[str, Any]:
-        self._board.initialize_board_route(board_id)
-        return await self._delegate.migrate(board_id)
 
     async def current_version(self, board_id: str) -> str:
         return await self._delegate.current_version(board_id)

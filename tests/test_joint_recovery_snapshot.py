@@ -12,6 +12,8 @@ import sys
 
 import pytest
 from okto_pulse.core.kg.interfaces.graph_errors import GraphLockContention
+from okto_pulse.core.kg.logical_transfer import LOGICAL_NULL, LogicalNode, LogicalTimestamp
+from okto_pulse.community.adapters.grafx_schema_manifest import PULSE_GRAFX_SCHEMA_MANIFEST
 
 from logical_transfer_matrix_support import (
     export_generation, one_node_corpus, open_generation_database, seed_generation,
@@ -53,7 +55,13 @@ def sources(tmp_path):
                 node = corpus.nodes[0]
                 corpus = replace(corpus, nodes=(replace(node, properties={
                     **node.properties, "source_artifact_ref": "spec:current:v1",
-                }),))
+                }), LogicalNode('BoardMeta', 'board-one', {
+                    'board_id': 'board-one',
+                    'schema_version': PULSE_GRAFX_SCHEMA_MANIFEST.schema_version,
+                    'bootstrapped_at': LogicalTimestamp(1),
+                    'embedding_model': LOGICAL_NULL,
+                    'embedding_dimension': LOGICAL_NULL,
+                })))
             path = (bindings.board_grafx_path("board-one", "g1") if scope == "board"
                     else bindings.global_grafx_path("g1"))
             path.parent.mkdir(parents=True, exist_ok=True)

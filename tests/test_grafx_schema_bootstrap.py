@@ -314,8 +314,8 @@ def test_empty_bootstrap_is_exact_second_call_is_noop_and_reopen_is_stable(
             for table in PULSE_GRAFX_SCHEMA_MANIFEST.nodes
         }
         assert all(index.columns == ("source_artifact_ref",) for index in source_indexes.values())
-        from okto_pulse.community.adapters.grafx_schema_evolution import _require_indexes
-        _require_indexes(
+        from okto_pulse.community.adapters.grafx_index_inventory import require_current_grafx_indexes
+        require_current_grafx_indexes(
             database,
             "bootstrap",
             schema_manifest=PULSE_GRAFX_SCHEMA_MANIFEST,
