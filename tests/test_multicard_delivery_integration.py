@@ -159,6 +159,76 @@ def rows(projection):
 
 
 @pytest.mark.asyncio
+async def test_diamond_reuses_one_proof_and_persisted_cycle_never_receives_credit(ledger, tmp_path):
+    """ADV-10: two origin paths do not require two runs for one condition."""
+    from okto_pulse.core.domain.requirement_verification_resolution import resolve_requirement_verification
+    from okto_pulse.core.services.delivery_evidence import require_spec_delivery
+    from test_delivery_reused_impact import register_report_adapters
+
+    session, store = await setup(ledger)
+    register_report_adapters()
+    spec = await session.get(Spec, SPEC)
+    left = {**deepcopy(spec.business_rules[0]), 'id': 'br-left'}
+    right = {**deepcopy(left), 'id': 'br-right'}
+
+    def inherited(source):
+        return dict(source=dict(requirement_type='business_rule', requirement_id=source['id']),
+            source_digest=requirement_verification_digest(SPEC, 'business_rule', source),
+            criterion_ids=['ac-auth'], covered_aspect='Unauthorized payment is refused')
+
+    top = dict(id='br-top', title='Authorization through both paths', rule='Unauthorized payment is refused',
+        linked_requirements=['fr'],
+        verification=dict(mode='inherited', required_profiles=['technical'],
+                          inheritance=[inherited(left), inherited(right)]))
+    await session.execute(update(Spec).where(Spec.id == SPEC).values(business_rules=[left, right, top]))
+    await session.commit()
+    refs = ['fr:fr', 'ac:ac-auth', 'br:br-left', 'br:br-right', 'br:br-top']
+    ui = await delivery.record(store, implementation())
+    authorization = await delivery.record(store, delivery.command(card_id='authorization',
+        execution_id='execution-auth', idempotency_key='diamond-implementation', obligation_refs=[],
+        bindings=[dict(obligation_ref=ref, contribution='complete') for ref in refs]))
+    await bind_test(session, store, tmp_path, 'ui', [ui['id']])
+    proof = await bind_test(session, store, tmp_path, 'auth', [authorization['id']], refs=refs)
+    await session.commit()
+    history = {item.id: deepcopy(item.payload) for item in
+               await session.scalars(select(CardDeliveryEvidenceRecordRow))}
+    factory = async_sessionmaker(session.bind, sync_session_class=CommunitySemanticSession,
+        expire_on_commit=False, info={'realm_scope': RealmScope.local()})
+    async with factory() as reader:
+        persisted = await reader.get(Spec, SPEC)
+        qualification = resolve_requirement_verification(spec_id=SPEC,
+            collections={field: getattr(persisted, field) for _, field in COLLECTIONS})
+        top_result = next(item for item in qualification['requirements'] if item['requirement_id'] == 'br-top')
+        assert qualification['criteria_resolution_complete']
+        assert len(top_result['criteria_paths']) == 2
+        assert {path['criterion_id'] for path in top_result['criteria_paths']} == {'ac-auth'}
+        assert {path['path'][1]['requirement_id'] for path in top_result['criteria_paths']} == {'br-left', 'br-right'}
+        projection = await CommunityDeliveryEvidenceStore(reader).projection(BOARD, SPEC)
+        assert projection['allowed']
+        assert len(projection['rows']) == len(rows(projection)) == 6
+        assert rows(projection)['br:br-top']['required_card_ids'] == ('authorization',)
+        await require_spec_delivery(reader, persisted)
+        proofs = list(await reader.scalars(select(CardDeliveryEvidenceRecordRow).where(
+            CardDeliveryEvidenceRecordRow.kind == 'test')))
+        assert len(proofs) == 2 and sum(item.id == proof['id'] for item in proofs) == 1
+    # Corrupt persisted lineage to characterize recovery reads, not an authorized writer bypass.
+    left['verification']['inheritance'] = [inherited(top)]
+    await session.execute(update(Spec).where(Spec.id == SPEC).values(business_rules=[left, right, top]))
+    await session.commit()
+    async with factory() as reader:
+        persisted = await reader.get(Spec, SPEC)
+        qualification = resolve_requirement_verification(spec_id=SPEC,
+            collections={field: getattr(persisted, field) for _, field in COLLECTIONS})
+        assert not qualification['criteria_resolution_complete']
+        assert 'verification_inheritance_cycle' in str(qualification)
+        assert not (await CommunityDeliveryEvidenceStore(reader).projection(BOARD, SPEC))['allowed']
+        with pytest.raises(ValueError, match='delivery_evidence_incomplete'):
+            await require_spec_delivery(reader, persisted)
+        assert {item.id: item.payload for item in
+                await reader.scalars(select(CardDeliveryEvidenceRecordRow))} == history
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('third_result', ['absent', 'failed'])
 async def test_two_of_three_passing_criteria_never_satisfy_requirement(ledger, tmp_path, third_result):
     """ADV-11: persisted proof is conjunctive, including after a fresh read."""
