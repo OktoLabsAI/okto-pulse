@@ -259,6 +259,72 @@ def semantic_evaluation(corrected, reason):
 
 
 @pytest.mark.asyncio
+async def test_latency_and_alert_cannot_inherit_only_functional_http_success(adopted_context, tmp_path):
+    """AC-VER-12: actual authorship, review and start keep dimensions separate."""
+    from sqlalchemy import delete
+    from okto_pulse.core.domain.realm import RealmScope
+    from okto_pulse.core.services.main import SpecService
+
+    db = adopted_context
+    db.info['realm_scope'] = RealmScope.local()
+    app, _, _ = await four_profiles(db, tmp_path)
+    spec = await db.get(Spec, 'spec', populate_existing=True)
+    criteria = deepcopy([item for item in spec.acceptance_criteria if item['id'] not in {'ac-tr', 'ac-or'}])
+    criteria[0]['text'] = 'GET procedure returns HTTP 200'
+    scenarios = deepcopy([item for item in spec.test_scenarios if item['id'] not in {'ts-tr', 'ts-or'}])
+    scenarios[0]['then'] = 'HTTP 200'
+    technical = deepcopy(spec.technical_requirements)
+    technical[0].pop('description')  # TR authoring schema uses text, not OR/IR description.
+    await db.execute(update(Spec).where(Spec.id == 'spec').values(
+        acceptance_criteria=criteria, test_scenarios=scenarios, technical_requirements=technical))
+    await db.execute(update(Card).where(Card.id == 'test').values(test_scenario_ids=['scenario', 'ts-ir']))
+    await db.execute(delete(Card).where(Card.id == 'test-or'))
+    await db.commit()
+    spec = await db.get(Spec, 'spec', populate_existing=True)
+    source_digest = requirement_verification_digest('spec', 'functional_requirement', spec.functional_requirements[0])
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+        for kind, identity, profile, aspect in [
+            ('technical_requirement', 'tr', 'technical', 'Response within 200 ms'),
+            ('observability_requirement', 'or', 'operational', 'Alert after five consecutive errors'),
+        ]:
+            await patch_requirement(client, db, kind, identity, {'verification': {
+                'mode': 'inherited', 'required_profiles': [profile], 'inheritance': [{
+                    'source': {'requirement_type': 'functional_requirement', 'requirement_id': 'fr'},
+                    'source_digest': source_digest, 'criterion_ids': ['ac-procedure'], 'covered_aspect': aspect}]}})
+        diagnostic = await client.get('/api/v1/boards/board/specs/spec/requirement-verification')
+        assert diagnostic.status_code == 200, diagnostic.text
+        assert not diagnostic.json()['verification_work_complete']
+        for identity, profile in [('tr', 'technical'), ('or', 'operational')]:
+            item = next(row for row in diagnostic.json()['items'] if row['requirement_id'] == identity)
+            assert not item['qualification_resolved']
+            assert {path['profile'] for path in item['criteria_paths']} == {'functional'}
+            assert any(block['code'] == 'verification_path_missing' and block['profile'] == profile
+                       for block in item['blockers']), item
+        spec = await db.get(Spec, 'spec', populate_existing=True)
+        with pytest.raises(ValueError, match='spec_execution_plan_incomplete'):
+            await SpecService(db).require_execution_contract_ready(spec)
+        # Existing approval is deliberately insufficient to override the
+        # deterministic missing-profile guard. Initial state is fixture input.
+        await db.execute(update(Spec).where(Spec.id == 'spec').values(status='validated'))
+        await db.commit()
+        before = await start.classification.snapshot(db)
+        refused = await client.post('/api/v1/specs/spec/move', json={'status': 'in_progress'})
+        assert refused.status_code == 400 and 'spec_execution_plan_incomplete' in refused.text, refused.text
+        assert await start.classification.snapshot(db) == before
+        review = await client.post('/api/v1/specs/spec/evaluations', json=semantic_evaluation(False,
+            'HTTP 200 observes neither latency within 200 ms nor an alert after five consecutive errors'))
+        assert review.status_code == 201, review.text
+        evaluation = review.json()['evaluation']
+        assert evaluation['recommendation'] == 'reject'
+        refused = await client.post('/api/v1/specs/spec/move', json={'status': 'in_progress'})
+        assert refused.status_code == 400 and 'reject' in refused.text, refused.text
+    spec = await db.get(Spec, 'spec', populate_existing=True)
+    assert spec.status == 'validated'
+    assert any(item.get('id') == evaluation['id'] for item in spec.evaluations)
+    assert all(item['status'] == 'ready' and not item.get('evidence') for item in spec.test_scenarios)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('case', ['vague_condition', 'unrelated_criterion', 'insufficient_inheritance'])
 @pytest.mark.parametrize('corrected', [False, True], ids=['review_rejects', 'condition_corrected'])
 async def test_semantic_review_is_distinct_from_structural_readiness(classified_context, tmp_path, case, corrected):
