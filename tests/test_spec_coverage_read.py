@@ -13,6 +13,7 @@ from okto_pulse.core.application.use_cases.base import EntityNotFoundError
 from okto_pulse.core.domain.delivery_evidence import evaluate_delivery_coverage
 from okto_pulse.core.kg.interfaces.graph_errors import GraphQueryTimeout
 from okto_pulse.core.ports.spec_coverage_query import SpecCoverageQuery
+from okto_pulse.core.models.spec_coverage_query import SpecCoverageResponse
 from okto_pulse.core.services.spec_coverage_query import project_spec_coverage
 import test_delivery_evidence_integration as delivery_fixture
 
@@ -25,9 +26,17 @@ QUERY = SpecCoverageQuery(BOARD, SPEC, 'authorized-actor')
 @pytest.mark.asyncio
 async def test_linked_test_card_without_ledger_proof_stays_missing(ledger):
     session, store, _ = ledger
+    spec = await session.get(Spec, SPEC)
+    # KG-58: a linked Test Card with no current passing scenario or admitted
+    # delivery record. Historical receipts are preserved, never promoted.
+    scenario = {**spec.test_scenarios[0], 'status': 'ready', 'evidence': None, 'linked_task_ids': ['test']}
+    await session.execute(update(Spec).where(Spec.id == SPEC).values(test_scenarios=[scenario]))
+    await session.commit()
     observed = await CommunitySpecCoverageReader(session, delivery_store=store).read(QUERY, timeout_ms=15000)
     result = project_spec_coverage(QUERY, observed)
+    SpecCoverageResponse.model_validate(result)
     assert result['structure']['complete_for_scope']
+    assert result['structure']['summary']['scenario_task_linkage_pct'] == 100
     assert result['delivery']['counts']['verification_proven'] == 0
     assert all(item['verification'] == 'missing' for item in result['items'])
     assert result['projection_freshness']['state'] == 'unknown'

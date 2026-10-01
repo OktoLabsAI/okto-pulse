@@ -30,6 +30,13 @@ const permissionMock = vi.hoisted(() => ({
   allowed: new Set<string>(),
 }));
 const qualityPanelSpy = vi.hoisted(() => vi.fn());
+const coveragePanelSpy = vi.hoisted(() => vi.fn());
+vi.mock('../SpecCoveragePanel', () => ({
+  SpecCoveragePanel: (props: { canCorrect: string[] }) => {
+    coveragePanelSpy(props);
+    return <div data-testid="spec-coverage-panel" />;
+  },
+}));
 
 vi.mock('@/services/api', () => ({
   useDashboardApi: () => apiMock,
@@ -153,6 +160,34 @@ function renderSpec(
 }
 
 describe('SpecModal Requirement lint in Validation', () => {
+  const coverageFlags = ['board.read', 'spec.entity.read', 'card.entity.read', 'spec.tests.read',
+    'spec.integration_requirements.read', 'spec.observability_requirements.read'];
+
+  it('mounts coverage only after selecting the contextual tab', async () => {
+    permissionMock.allowed = new Set(coverageFlags);
+    renderSpec();
+    await screen.findByText(baseSpec.title);
+    expect(coveragePanelSpy).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('tab', { name: 'Coverage' }));
+    expect(screen.getByTestId('spec-coverage-panel')).toBeInTheDocument();
+    expect(coveragePanelSpy.mock.calls.at(-1)?.[0]).toMatchObject({ boardId: 'board-1', specId: baseSpec.id });
+  });
+
+  it.each(['spec.integration_requirements.read', 'spec.observability_requirements.read'])('hides coverage without %s', async flag => {
+    permissionMock.allowed = new Set(coverageFlags.filter(value => value !== flag));
+    renderSpec();
+    await screen.findByText(baseSpec.title);
+    expect(screen.queryByRole('tab', { name: 'Coverage' })).not.toBeInTheDocument();
+    expect(coveragePanelSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not offer link correction in a Done Spec', async () => {
+    permissionMock.allowed = new Set([...coverageFlags, 'spec.tests.edit', 'spec.structured_entity.business_rule.update']);
+    renderSpec({ status: 'done' });
+    await screen.findByText(baseSpec.title);
+    fireEvent.click(screen.getByRole('tab', { name: 'Coverage' }));
+    expect(coveragePanelSpy.mock.calls.at(-1)?.[0].canCorrect).toEqual([]);
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     permissionMock.allowed = new Set();

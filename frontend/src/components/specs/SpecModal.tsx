@@ -10,6 +10,7 @@ import {
   useState,
 } from 'react';
 import { DeliveryEvidencePanel } from '@/components/code-traceability/DeliveryEvidencePanel';
+import { SpecCoveragePanel } from './SpecCoveragePanel';
 import { CriterionVerificationPanel } from './CriterionVerificationPanel';
 import { RequirementVerificationPanel } from './RequirementVerificationPanel';
 import { ScenarioVerificationMethodEditor } from './ScenarioVerificationMethodEditor';
@@ -172,6 +173,7 @@ type ModalTab =
   | 'details'
   | 'evidence-matrix'
   | 'delivery-evidence'
+  | 'coverage'
   | 'project-structure'
   | 'tests'
   | 'rules'
@@ -1470,6 +1472,8 @@ export function SpecModal({
   const canReadSpecValidation = perms.has('spec.validation.read');
   const canReadSpecEvaluations = perms.has('spec.evaluations.read');
   const canReadDependencies = perms.has('spec.entity.read');
+  const canReadCoverage = ['board.read', 'spec.entity.read', 'card.entity.read', 'spec.tests.read',
+    'spec.integration_requirements.read', 'spec.observability_requirements.read'].every(flag => perms.has(flag));
   const canReadProjectStructure = perms.has('spec.entity.read');
   const canReadPolicyCompliance = perms.has(
     'guidelines.assessments.read',
@@ -2312,6 +2316,7 @@ export function SpecModal({
     || canReadSpecEvaluations;
   const allTabs: { id: ModalTab; label: string; icon: React.ReactNode; count?: number; highlight?: boolean; permission?: string }[] = [
     { id: 'details', label: 'Details', icon: <FileText size={14} /> },
+    ...(canReadCoverage ? [{ id: 'coverage' as ModalTab, label: 'Coverage', icon: <GitBranch size={14} /> }] : []),
     ...(canReadCodeTraceability
       ? [{ id: 'evidence-matrix' as ModalTab, label: 'Code Evidence Matrix', icon: <Grid3X3 size={14} /> }, { id: 'delivery-evidence' as ModalTab, label: 'Delivery evidence', icon: <ShieldCheck size={14} /> }]
       : []),
@@ -2832,6 +2837,14 @@ export function SpecModal({
                 }
               }}
             />
+          )}
+          {activeTab === 'coverage' && spec.id === specId && canReadCoverage && (
+            <SpecCoveragePanel boardId={spec.board_id} specId={spec.id} revision={`${spec.edition}:${spec.version}:${spec.updated_at}`}
+              onOpenSection={setActiveTab}
+              canCorrect={!spec.archived && spec.status === 'draft' ? [
+                ...(hasPermissionWithState(perms.has, 'spec.tests.edit', 'spec', spec.status) ? ['tests' as const] : []),
+                ...(hasPermissionWithState(perms.has, 'spec.structured_entity.business_rule.update', 'spec', spec.status) ? ['rules' as const] : []),
+              ] : []} />
           )}
           {activeTab === 'project-structure' && spec && showProjectStructure && (
             <ProjectStructureErrorBoundary>
