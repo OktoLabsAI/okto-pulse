@@ -234,12 +234,6 @@ def test_rebuild_artifact_purge_covers_partitioned_shared_and_quarantine_state(
             {"summary": {"board_id": target}},
         ),
         (
-            "rebaseline_audit",
-            target,
-            "rebaseline-target",
-            {"records": [{"board_id": target}]},
-        ),
-        (
             "global_discovery_recovery",
             "_global",
             "recovery-target",

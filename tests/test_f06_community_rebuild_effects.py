@@ -963,7 +963,6 @@ def test_f06_build_step_uses_core_processor_and_typed_effects(
         "source_version": "3",
         "content_hash": "current-v3-hash",
         "_rebuild_manifest_created_at": "2026-08-15T00:00:00+00:00",
-        "_rebuild_rebaseline_evidence_id": ("run_legacy:rebuild_manifest_legacy"),
     }
     step = adapter.build_step_adapter(lambda _request: (source,))
     result = step(
@@ -1022,9 +1021,6 @@ def test_f06_build_step_uses_core_processor_and_typed_effects(
     checkpoint = next(row for key, row in store.rows.items() if "f06-checkpoint" in key)
     persisted_source = checkpoint["command"]["source_rows"][0]
     assert persisted_source["content_hash"] == "current-v3-hash"
-    assert persisted_source["_rebuild_rebaseline_evidence_id"] == (
-        "run_legacy:rebuild_manifest_legacy"
-    )
     with sqlite3.connect(str(adapter._path())) as connection:  # noqa: SLF001
         queue_payload = json.loads(
             connection.execute(

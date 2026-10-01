@@ -18,8 +18,7 @@ from okto_pulse.core.kg.board_source_store import (
     CARD_CONTENT_COLUMNS,
     IDEATION_CONTENT_COLUMNS,
     REFINEMENT_CONTENT_COLUMNS,
-    SPEC_CONTENT_COLUMNS_V1,
-    SPEC_CONTENT_COLUMNS_V2,
+    SPEC_CONTENT_COLUMNS,
     SPEC_SOURCE_MANIFEST_VERSION,
     STORY_CONTENT_COLUMNS,
     bug_has_minimal_evidence,
@@ -85,7 +84,7 @@ _QUALITY_JSON_FIELDS = frozenset(
 ARTIFACT_QUERIES: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
     ("story", "stories", "status", STORY_CONTENT_COLUMNS),
     ("ideation", "ideations", "status", IDEATION_CONTENT_COLUMNS),
-    ("spec", "specs", "status", SPEC_CONTENT_COLUMNS_V2),
+    ("spec", "specs", "status", SPEC_CONTENT_COLUMNS),
     ("refinement", "refinements", "status", REFINEMENT_CONTENT_COLUMNS),
 )
 
@@ -825,7 +824,7 @@ def _current_research_decision_head_fingerprints(
     }
 
 
-def _root_source_hashes(
+def _root_source_hash(
     row: sqlite3.Row,
     *,
     board_id: str,
@@ -833,26 +832,13 @@ def _root_source_hashes(
     content_columns: tuple[str, ...],
     quality_fingerprints: dict[tuple[str, str, str], tuple[str, ...]],
     research_fingerprints: dict[tuple[str, str, str], tuple[str, ...]],
-) -> tuple[str, str, str]:
+) -> str:
     row_id = str(row["id"])
-    content_hash_v2 = canonical_content_hash(row, content_columns)
-    content_hash_v1 = (
-        canonical_content_hash(row, SPEC_CONTENT_COLUMNS_V1)
-        if artifact_type == "spec"
-        else content_hash_v2
+    return projected_root_content_hash(
+        canonical_content_hash(row, content_columns),
+        quality_head_fingerprints=quality_fingerprints.get((board_id, artifact_type, row_id), ()),
+        research_decision_head_fingerprints=research_fingerprints.get((board_id, artifact_type, row_id), ()),
     )
-    content_hash_v3 = projected_root_content_hash(
-        content_hash_v2,
-        quality_head_fingerprints=quality_fingerprints.get(
-            (board_id, artifact_type, row_id),
-            (),
-        ),
-        research_decision_head_fingerprints=research_fingerprints.get(
-            (board_id, artifact_type, row_id),
-            (),
-        ),
-    )
-    return content_hash_v1, content_hash_v2, content_hash_v3
 
 
 def resolve_pulse_db_path() -> Path:
@@ -1412,10 +1398,9 @@ def read_realm_source_snapshot(
             version_raw = row["version"] if "version" in row.keys() else 1
             source_version = str(version_raw if version_raw is not None else 1)
             content_hash = canonical_content_hash(row, content_cols)
-            compatibility_hashes: tuple[str, str] | None = None
             if artifact_type in {"ideation", "refinement", "spec"}:
-                content_hash_v1, content_hash_v2, content_hash = (
-                    _root_source_hashes(
+                content_hash = (
+                    _root_source_hash(
                         row,
                         board_id=board_id,
                         artifact_type=artifact_type,
@@ -1424,7 +1409,6 @@ def read_realm_source_snapshot(
                         research_fingerprints=research_fingerprints,
                     )
                 )
-                compatibility_hashes = (content_hash_v1, content_hash_v2)
             source_row: dict[str, Any] = {
                 "artifact_type": artifact_type,
                 "id": row_id,
@@ -1437,9 +1421,6 @@ def read_realm_source_snapshot(
                 "source_artifact_status": row_status(row, status_col),
                 "has_minimal_evidence": True,
             }
-            if compatibility_hashes is not None:
-                source_row["content_hash_v1"] = compatibility_hashes[0]
-                source_row["content_hash_v2"] = compatibility_hashes[1]
             if artifact_type == "spec":
                 source_row["source_manifest_version"] = SPEC_SOURCE_MANIFEST_VERSION
             working_ttl_days = ttl_by_board[board_id]
@@ -1768,10 +1749,9 @@ class CommunityBoardSourceReader:
                 version_raw = row["version"] if "version" in row.keys() else 1
                 source_version = str(version_raw if version_raw is not None else 1)
                 content_hash = canonical_content_hash(row, content_cols)
-                compatibility_hashes: tuple[str, str] | None = None
                 if artifact_type in {"ideation", "refinement", "spec"}:
-                    content_hash_v1, content_hash_v2, content_hash = (
-                        _root_source_hashes(
+                    content_hash = (
+                        _root_source_hash(
                             row,
                             board_id=board_id,
                             artifact_type=artifact_type,
@@ -1780,7 +1760,6 @@ class CommunityBoardSourceReader:
                             research_fingerprints=research_fingerprints,
                         )
                     )
-                    compatibility_hashes = (content_hash_v1, content_hash_v2)
                 source_row = {
                     "artifact_type": artifact_type,
                     "id": row_id,
@@ -1793,9 +1772,6 @@ class CommunityBoardSourceReader:
                     "source_artifact_status": row_status(row, status_col),
                     "has_minimal_evidence": True,
                 }
-                if compatibility_hashes is not None:
-                    source_row["content_hash_v1"] = compatibility_hashes[0]
-                    source_row["content_hash_v2"] = compatibility_hashes[1]
                 if artifact_type == "spec":
                     source_row["source_manifest_version"] = SPEC_SOURCE_MANIFEST_VERSION
                 if working_ttl_days is not None:

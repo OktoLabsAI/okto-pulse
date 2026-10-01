@@ -21,7 +21,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
 from okto_pulse.core.ports.coordination import ClaimRepository
 from okto_pulse.core.kg.board_source_store import (
     CARD_CONTENT_COLUMNS,
-    SPEC_CONTENT_COLUMNS_V2,
+    SPEC_CONTENT_COLUMNS,
     canonical_content_hash,
     projected_root_content_hash,
 )
@@ -268,7 +268,7 @@ class CommunitySqlAlchemyDomainEventFactReader:
                 artifact=spec,
             )
         )
-        base_content_hash = _content_hash(spec, SPEC_CONTENT_COLUMNS_V2)
+        base_content_hash = _content_hash(spec, SPEC_CONTENT_COLUMNS)
         return CognitiveSpecFacts(
             spec_id=spec.id,
             context=spec.context,

@@ -17,7 +17,7 @@ from okto_pulse.core.kg.interfaces.board_source_reader import SourceUnavailableE
 from okto_pulse.core.kg.board_source_store import (
     IDEATION_CONTENT_COLUMNS,
     REFINEMENT_CONTENT_COLUMNS,
-    SPEC_CONTENT_COLUMNS_V2,
+    SPEC_CONTENT_COLUMNS,
     STORY_CONTENT_COLUMNS,
     _canonical_content_hash,
 )
@@ -63,7 +63,7 @@ def test_artifact_queries_use_core_content_contract_objects() -> None:
     assert queries["refinement"][:2] == ("refinements", "status")
     assert queries["refinement"][2] is REFINEMENT_CONTENT_COLUMNS
     assert queries["spec"][:2] == ("specs", "status")
-    assert queries["spec"][2] is SPEC_CONTENT_COLUMNS_V2
+    assert queries["spec"][2] is SPEC_CONTENT_COLUMNS
     assert "sprint" not in queries
 
 

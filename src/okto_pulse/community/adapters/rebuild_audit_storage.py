@@ -236,8 +236,6 @@ class CommunityFileSystemRebuildAuditArtifactStore(RebuildAuditArtifactStore):
             candidate = self._base_dir / "rebuild" / "reports"
         elif key.namespace == "candidate_decision":
             candidate = self._base_dir / "candidate_decisions" / key.board_id
-        elif key.namespace == "rebaseline_audit":
-            candidate = self._base_dir / "rebuild" / "rebaseline_audit"
         elif key.namespace == "global_discovery_reindex":
             candidate = self._base_dir / "rebuild" / "discovery_reindex" / key.board_id
         elif key.namespace == "global_discovery_recovery":
@@ -674,7 +672,6 @@ class CommunityFileSystemRebuildAuditArtifactStore(RebuildAuditArtifactStore):
             self._base_dir / "rebuild" / "manifests",
             self._base_dir / "rebuild" / "confirmations",
             self._base_dir / "rebuild" / "reports",
-            self._base_dir / "rebuild" / "rebaseline_audit",
             self._base_dir / "rebuild" / "global_discovery_recovery",
         ]
         for candidate_root in shared_roots:
