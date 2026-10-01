@@ -352,7 +352,7 @@ class Board(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     owner_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
-    realm_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    realm_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     # Board settings are a JSON payload validated by Core ``BoardSettings``.
     # Coverage gates (including ``skip_code_evidence_coverage_global``) remain
     # additive JSON keys, so legacy SQLite/PostgreSQL schemas require no

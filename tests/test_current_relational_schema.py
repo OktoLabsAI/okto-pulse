@@ -128,7 +128,7 @@ async def test_pending_wal_is_inspected_without_touching_source_files(tmp_path, 
         if change_schema:
             writer.execute("ALTER TABLE cards ADD COLUMN sprint_id TEXT")
         else:
-            writer.execute("INSERT INTO boards(id, name, owner_id) VALUES ('wal-row', 'Keep', 'owner')")
+            writer.execute("INSERT INTO boards(id, name, owner_id, realm_id) VALUES ('wal-row', 'Keep', 'owner', 'local')")
         writer.commit()
         before = snapshot(path)
         assert before[path.name + "-wal"]
@@ -188,7 +188,7 @@ async def test_current_source_fence_advances_and_cannot_be_removed(tmp_path, con
         await initialize_current_schema(engine, contract)
         async with engine.begin() as connection:
             before = (await connection.exec_driver_sql("SELECT revision FROM global_discovery_source_revision")).scalar_one()
-            await connection.exec_driver_sql("INSERT INTO boards(id,name,owner_id) VALUES ('current', 'Board', 'owner')")
+            await connection.exec_driver_sql("INSERT INTO boards(id,name,owner_id,realm_id) VALUES ('current', 'Board', 'owner', 'local')")
             after = (await connection.exec_driver_sql("SELECT revision FROM global_discovery_source_revision")).scalar_one()
             assert after > before
         async with engine.begin() as connection:

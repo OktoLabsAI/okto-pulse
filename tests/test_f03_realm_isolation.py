@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import pytest
 from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from okto_pulse.community.adapters.realm_migration import backfill_local_realm
-from okto_pulse.community.adapters.sqlalchemy_base import Base
+from okto_pulse.community.adapters.current_relational_schema import (
+    current_schema_contract, initialize_current_schema,
+)
 from okto_pulse.community.adapters.sqlalchemy_models import Board as BoardRow
 from okto_pulse.community.adapters.sqlalchemy_realm_access import (
     CommunitySqlAlchemyRealmAccess,
@@ -20,8 +22,7 @@ from okto_pulse.core.domain.realm import RealmIsolationViolation, RealmScope
 async def _database(tmp_path):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'realm.db'}")
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    await initialize_current_schema(engine, current_schema_contract())
     return engine, factory
 
 
@@ -77,28 +78,36 @@ async def test_f03_two_realms_hide_known_ids_and_reject_cross_realm_writes(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_f03_local_backfill_is_idempotent_and_preserves_legacy_boards(tmp_path):
+async def test_f03_storage_rejects_board_without_realm(tmp_path):
+    engine, sessions = await _database(tmp_path)
+    try:
+        async with sessions() as session:
+            session.add(BoardRow(id="unscoped", name="Invalid", owner_id="owner"))
+            with pytest.raises(IntegrityError):
+                await session.flush()
+            await session.rollback()
+            assert await session.get(BoardRow, "unscoped") is None
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_f03_new_local_board_has_explicit_realm_and_indexes(tmp_path):
     engine, sessions = await _database(tmp_path)
     async with sessions() as session:
         session.add(
             BoardRow(
-                id="legacy-board",
-                name="Legacy",
+                id="local-board",
+                name="Local",
                 owner_id="local-user",
-                realm_id=None,
+                realm_id="local",
             )
         )
         await session.commit()
 
-    first = await backfill_local_realm(engine)
-    second = await backfill_local_realm(engine)
-    assert first.rows_backfilled == 1
-    assert second.rows_backfilled == 0
-    assert first.indexes == second.indexes
-
     async with sessions() as session:
         realm_id = await session.scalar(
-            select(BoardRow.realm_id).where(BoardRow.id == "legacy-board")
+            select(BoardRow.realm_id).where(BoardRow.id == "local-board")
         )
         indexes = {
             row[1]
@@ -112,7 +121,7 @@ async def test_f03_local_backfill_is_idempotent_and_preserves_legacy_boards(tmp_
     factory = build_community_unit_of_work_factory(sessions)
     async with factory() as uow:
         assert uow.realm_scope == RealmScope.local()
-        assert await uow.boards.get("legacy-board") is not None
+        assert await uow.boards.get("local-board") is not None
         await uow.rollback()
 
     await engine.dispose()

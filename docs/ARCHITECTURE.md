@@ -294,7 +294,6 @@ Adapter source map:
   `community/adapters/adapter_provenance.py`,
   `community/adapters/local_storage_ref.py`,
   `community/adapters/grafx_quarantine_restore.py`,
-  `community/adapters/realm_migration.py`,
   `community/adapters/rebuild_effects.py`,
   `community/adapters/sqlite_only_boundary.py` and
   `community/adapters/worker_runners.py`.
