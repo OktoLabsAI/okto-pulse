@@ -64,6 +64,72 @@ async def patch_requirement(client, db, kind, identity, payload):
 
 
 @pytest.mark.asyncio
+async def test_cancelled_sole_ir_implementer_stays_pending_until_authorized_reallocation(adopted_context, tmp_path):
+    """ADV-15: cancellation removes implementation capacity, never the IR."""
+    from okto_pulse.community.api.cards import router as cards_router
+    from okto_pulse.core.domain.realm import RealmScope
+    from okto_pulse.core.domain.requirement_verification import RequirementVerification
+    from okto_pulse.core.services.main import SpecService
+
+    db = adopted_context
+    db.info['realm_scope'] = RealmScope.local()
+    app, _, _ = await four_profiles(db, tmp_path)
+    app.include_router(cards_router, prefix='/api/v1/cards')
+    spec = await db.get(Spec, 'spec', populate_existing=True)
+    requirements = deepcopy(spec.integration_requirements)
+    requirements[0]['linked_task_ids'] = ['ir-task']
+    requirements[0]['implementation_plan'] = {'contributions': [{'card_id': 'ir-task', 'scope': 'whole_requirement'}]}
+    criteria = deepcopy(spec.acceptance_criteria)
+    next(item for item in criteria if item['id'] == 'ac-ir')['linked_task_ids'] = ['ir-task']
+    db.add(Card(id='ir-task', board_id='board', spec_id='spec', title='Implement integration only',
+        card_type='normal', status='not_started', created_by='author'))
+    await db.execute(update(Spec).where(Spec.id == 'spec').values(
+        integration_requirements=requirements, acceptance_criteria=criteria, status='validated'))
+    await db.commit()
+    spec = await db.get(Spec, 'spec', populate_existing=True)
+    await SpecService(db).require_execution_contract_ready(spec)
+    history = deepcopy((spec.evaluations, spec.validations, spec.edition, spec.current_validation_id))
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+        cancelled = await client.post('/api/v1/cards/ir-task/move', json={
+            'status': 'cancelled', 'cancellation_reason': 'Integration work needs reassignment'})
+        assert cancelled.status_code == 200, cancelled.text
+        db.expire_all()
+        card = await db.get(Card, 'ir-task')
+        assert card.status == 'cancelled' and card.cancelled_by == 'author'
+        assert card.cancellation_reason == 'Integration work needs reassignment'
+        spec = await db.get(Spec, 'spec')
+        assert spec.status == 'approved'
+        assert spec.integration_requirements == requirements and spec.acceptance_criteria == criteria
+        assert spec.evaluations == [{**item, 'stale': True} for item in history[0]]
+        assert (spec.validations, spec.edition, spec.current_validation_id) == history[1:]
+        diagnostic = await client.get('/api/v1/boards/board/specs/spec/requirement-verification')
+        assert diagnostic.status_code == 200, diagnostic.text
+        ir = next(item for item in diagnostic.json()['items'] if item['requirement_id'] == 'ir')
+        assert ir['qualification_resolved'] and not ir['implementation_contributions']
+        assert 'implementation_contribution_card_unavailable' in ir['contribution_blockers']
+        with pytest.raises(ValueError, match='spec_execution_plan_incomplete'):
+            await SpecService(db).require_execution_contract_ready(spec)
+        before = await start.classification.snapshot(db)
+        blocked = await client.post('/api/v1/specs/spec/move', json={'status': 'in_progress'})
+        assert blocked.status_code == 400 and 'spec:approved->in_progress' in blocked.text, blocked.text
+        assert await start.classification.snapshot(db) == before
+        reopened = await client.post('/api/v1/specs/spec/move', json={'status': 'draft'})
+        assert reopened.status_code == 200, reopened.text
+        await patch_requirement(client, db, 'integration_requirement', 'ir', {
+            'linked_task_ids': ['task'],
+            'implementation_plan': {'contributions': [{'card_id': 'task', 'scope': 'whole_requirement'}]},
+        })
+        await patch_requirement(client, db, 'acceptance_criterion', 'ac-ir', {'linked_task_ids': ['task']})
+        spec = await db.get(Spec, 'spec', populate_existing=True)
+        await SpecService(db).require_execution_contract_ready(spec)
+        assert spec.status == 'draft' and spec.integration_requirements[0]['id'] == 'ir'
+        assert spec.integration_requirements[0]['status'] == 'active'
+        assert spec.integration_requirements[0]['verification'] == RequirementVerification.model_validate(
+            requirements[0]['verification']).model_dump(mode='json')
+        assert (await db.get(Card, 'ir-task', populate_existing=True)).status == 'cancelled'
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('damage', ['missing_profile', 'missing_operational_work', 'cycle', 'missing_terminal', 'orphan_criterion'])
 async def test_real_start_requires_four_profile_plan_and_valid_inheritance(classified_context, tmp_path, damage):
     db = classified_context
