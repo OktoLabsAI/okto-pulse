@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import toast from 'react-hot-toast';
 import { SpecModal } from '../SpecModal';
 import { persistTestScenariosWithWriteGuard } from '../scenarioWriteGuard';
 import type { Spec, SpecHistoryEntry, TestScenario } from '@/types';
@@ -673,7 +674,7 @@ describe('SpecModal Activity tab', () => {
     expect(screen.getByText('rejected')).toHaveClass('bg-rose-100');
   });
 
-  it('omits an unsupported legacy scenario type from the whole-list request', async () => {
+  it('refuses an unsupported stored scenario type without rewriting or submitting it', async () => {
     const legacySpec: Spec = {
       ...spec,
       test_scenarios: [
@@ -734,18 +735,9 @@ describe('SpecModal Activity tab', () => {
       }),
     );
 
-    await waitFor(() => expect(apiMock.updateSpec).toHaveBeenCalledTimes(1));
-    const request = apiMock.updateSpec.mock.calls[0][1];
-    expect(request.test_scenarios).toHaveLength(1);
-    const legacyRequest = request.test_scenarios.find(
-      (scenario: { id: string }) => scenario.id === 'ts-legacy',
-    );
-    expect(legacyRequest).toMatchObject({
-      id: 'ts-legacy',
-      title: 'Historical regression type',
-      status: 'draft',
-    });
-    expect(legacyRequest).not.toHaveProperty('scenario_type');
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('Invalid scenario_type regression for scenario ts-legacy')));
+    expect(apiMock.updateSpec).not.toHaveBeenCalled();
+    expect(legacySpec.test_scenarios?.[0].scenario_type).toBe('regression');
   });
 
   it('blocks a tampered new scenario with an absent type before the request', async () => {
@@ -771,10 +763,9 @@ describe('SpecModal Activity tab', () => {
         persistTestScenariosWithWriteGuard(
           updateSpec,
           spec.id,
-          [],
           [tampered],
         ),
-      ).rejects.toThrow(/Invalid scenario_type undefined for new scenario/);
+      ).rejects.toThrow(/Invalid scenario_type undefined for scenario/);
     }
     expect(updateSpec).not.toHaveBeenCalled();
   });

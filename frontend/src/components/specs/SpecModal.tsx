@@ -2884,7 +2884,6 @@ export function SpecModal({
                   const updated = await persistTestScenariosWithWriteGuard(
                     api.updateSpec,
                     specId,
-                    spec.test_scenarios || [],
                     scenarios,
                   );
                   setSpec(updated);
