@@ -64,6 +64,44 @@ async def patch_requirement(client, db, kind, identity, payload):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('disposition', ['not_applicable', 'revoked'])
+async def test_read_only_user_cannot_dispense_active_ir_or_replace_its_cause(adopted_context, tmp_path, disposition):
+    """ADV-09: actual Board sharing never turns read access into a waiver."""
+    from okto_pulse.community.adapters.sqlalchemy_models import BoardShare
+    from okto_pulse.community.api.auth_deps import require_user
+    from okto_pulse.core.domain.realm import RealmScope
+
+    db = adopted_context
+    db.info['realm_scope'] = RealmScope.local()
+    app, _, _ = await four_profiles(db, tmp_path)
+    spec = await db.get(Spec, 'spec', populate_existing=True)
+    requirements = deepcopy(spec.integration_requirements)
+    requirements[0]['notes'] = 'The adopted service contract remains required'
+    await db.execute(update(Spec).where(Spec.id == 'spec').values(integration_requirements=requirements))
+    db.add(BoardShare(id='read-only-share', board_id='board', user_id='viewer', realm_id='local',
+        permission='viewer', shared_by='author'))
+    await db.commit()
+    app.dependency_overrides[require_user] = lambda: 'viewer'
+    before = await start.classification.snapshot(db)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+        visible = await client.get('/api/v1/specs/spec')
+        assert visible.status_code == 200, visible.text
+        assert visible.json()['integration_requirements'][0]['status'] == 'active'
+        refused = await client.patch('/api/v1/specs/spec/structured-entities/integration_requirement/ir', json={
+            'expected_spec_version': visible.json()['version'],
+            'payload': {'status': disposition, 'notes': 'Attempt to dispense required integration work'},
+        })
+        # The existing write preflight hides resources unavailable for mutation.
+        assert refused.status_code == 404 and refused.json()['detail'] == 'Spec not found', refused.text
+        assert await start.classification.snapshot(db) == before
+        retained = await client.get('/api/v1/specs/spec')
+        assert retained.status_code == 200, retained.text
+        assert retained.json()['integration_requirements'] == visible.json()['integration_requirements']
+    spec = await db.get(Spec, 'spec', populate_existing=True)
+    assert spec.integration_requirements == requirements
+
+
+@pytest.mark.asyncio
 async def test_cancelled_sole_ir_implementer_stays_pending_until_authorized_reallocation(adopted_context, tmp_path):
     """ADV-15: cancellation removes implementation capacity, never the IR."""
     from okto_pulse.community.api.cards import router as cards_router
