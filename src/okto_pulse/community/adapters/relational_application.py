@@ -657,6 +657,10 @@ class CommunityRelationalApplicationAdapter:
         from okto_pulse.community.adapters.sqlalchemy_bug_clusters import CommunityBugClustersReader
         return CommunityBugClustersReader(session)
 
+    def spec_coverage_read(self, session: AsyncSession):
+        from okto_pulse.community.adapters.sqlalchemy_spec_coverage import CommunitySpecCoverageReader
+        return CommunitySpecCoverageReader(session)
+
     def guideline_policy(self, session: AsyncSession):
         """Bind the SK-B policy authority to the caller-owned transaction."""
 
