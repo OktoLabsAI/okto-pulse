@@ -159,6 +159,68 @@ def rows(projection):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('third_result', ['absent', 'failed'])
+async def test_two_of_three_passing_criteria_never_satisfy_requirement(ledger, tmp_path, third_result):
+    """ADV-11: persisted proof is conjunctive, including after a fresh read."""
+    from okto_pulse.core.services.delivery_evidence import require_spec_delivery
+    from test_delivery_reused_impact import register_report_adapters
+
+    session, store = await setup(ledger)
+    register_report_adapters()
+    spec = await session.get(Spec, SPEC)
+    requirements = deepcopy(spec.functional_requirements)
+    requirements[0]['implementation_plan']['contributions'][1]['criterion_ids'].append('ac-timeout')
+    rules = deepcopy(spec.business_rules)
+    rules[0]['verification']['inheritance'][0]['source_digest'] = requirement_verification_digest(
+        SPEC, 'functional_requirement', requirements[0])
+    criteria = deepcopy(spec.acceptance_criteria)
+    criteria.append({**criteria[1], 'id': 'ac-timeout', 'text': 'Payment timeout is handled'})
+    scenarios = deepcopy(spec.test_scenarios)
+    scenarios.append({**scenarios[1], 'id': 'ts-timeout', 'when': 'The timeout endpoint is queried',
+                      'linked_criteria': ['ac-timeout']})
+    await session.execute(update(Spec).where(Spec.id == SPEC).values(
+        functional_requirements=requirements, business_rules=rules,
+        acceptance_criteria=criteria, test_scenarios=scenarios))
+    await session.execute(update(Card).where(Card.id == 'test').values(
+        test_scenario_ids=[item['id'] for item in scenarios]))
+    await session.commit()
+    ui = await delivery.record(store, implementation())
+    authorization_command = delivery.command(card_id='authorization', execution_id='execution-auth',
+        idempotency_key='implementation-authorization', obligation_refs=[],
+        bindings=[dict(obligation_ref=ref, contribution='complete')
+                  for ref in AUTH_REFS + ['ac:ac-timeout']])
+    authorization = await delivery.record(store, authorization_command)
+    await bind_test(session, store, tmp_path, 'ui', [ui['id']])
+    await bind_test(session, store, tmp_path, 'auth', [authorization['id']])
+    timeout_refs = ['fr:fr', 'ac:ac-timeout']
+    if third_result == 'failed':
+        await bind_test(session, store, tmp_path, 'timeout', [authorization['id']],
+                        passed=False, refs=timeout_refs)
+    await session.commit()
+    history = {item.id: deepcopy(item.payload) for item in
+               await session.scalars(select(CardDeliveryEvidenceRecordRow))}
+    factory = async_sessionmaker(session.bind, sync_session_class=CommunitySemanticSession,
+        expire_on_commit=False, info={'realm_scope': RealmScope.local()})
+    async with factory() as reader:
+        projection = await CommunityDeliveryEvidenceStore(reader).projection(BOARD, SPEC)
+        scope = rows(projection)
+        assert all(item['implementation_satisfied'] for item in scope.values())
+        assert scope['ac:ac-ui']['test_satisfied'] and scope['ac:ac-auth']['test_satisfied']
+        assert not scope['ac:ac-timeout']['test_satisfied']
+        assert scope['fr:fr']['missing_criteria'] == ((authorization['id'], 'ac-timeout'),)
+        assert not projection['allowed']
+        with pytest.raises(ValueError, match='delivery_evidence_incomplete'):
+            await require_spec_delivery(reader, await reader.get(Spec, SPEC))
+    await bind_test(session, store, tmp_path, 'timeout', [authorization['id']], refs=timeout_refs)
+    await session.commit()
+    async with factory() as reader:
+        assert (await CommunityDeliveryEvidenceStore(reader).projection(BOARD, SPEC))['allowed']
+        await require_spec_delivery(reader, await reader.get(Spec, SPEC))
+        for record_id, payload in history.items():
+            assert (await reader.get(CardDeliveryEvidenceRecordRow, record_id)).payload == payload
+
+
+@pytest.mark.asyncio
 async def test_ui_completion_cannot_deliver_authorization_or_its_inherited_rule(ledger, tmp_path):
     session, store = await setup(ledger)
     ui = await delivery.record(store, implementation())
