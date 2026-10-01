@@ -21,8 +21,6 @@ from okto_pulse.community.adapters.test_evidence import (
     CommunityTestEvidenceExecutionIssuer,
     CommunityTestEvidenceWriteVerifier,
     ProductExecutionObservation,
-    migrate_test_scenario_evidence,
-    normalize_test_scenario_evidence,
     run_inline_replay_and_build_evidence_v2,
     run_manifest_and_build_evidence_v2,
     verify_community_evidence_v2,
@@ -30,7 +28,6 @@ from okto_pulse.community.adapters.test_evidence import (
 from okto_pulse.community.adapters import test_evidence as evidence_adapter
 from okto_pulse.community.api.specs import (
     ScenarioStatusUpdate,
-    _prepare_spec_update_evidence,
 )
 from okto_pulse.core.models.schemas import SpecUpdate
 from okto_pulse.core.ports.test_evidence import (
@@ -522,23 +519,16 @@ async def test_real_http_runtime_executes_before_signed_receipt(tmp_path):
     request = ScenarioStatusUpdate(status="passed", evidence=evidence)
     assert request.evidence is not None
     assert request.evidence.execution_receipt == evidence["execution_receipt"]
-    whole_spec = _prepare_spec_update_evidence(
-        SpecUpdate(
-            test_scenarios=[
-                {
-                    "id": SCENARIO_ID,
-                    "title": "About version",
-                    "status": "passed",
-                    "evidence": evidence,
-                }
-            ]
-        )
+    whole_spec = SpecUpdate(
+        test_scenarios=[{
+            "id": SCENARIO_ID, "title": "About version", "status": "passed", "evidence": evidence,
+        }]
     )
     assert (
         whole_spec.test_scenarios[0].evidence.execution_receipt
         == evidence["execution_receipt"]
     )
-    # Evidence normalization must not materialize the nested default. The
+    # Transport validation must not materialize the nested default. The
     # service still needs to distinguish omission so it can preserve an
     # existing scenario type (or default only a genuinely new scenario).
     assert "scenario_type" not in whole_spec.test_scenarios[0].model_fields_set
@@ -1020,52 +1010,28 @@ async def test_runner_refuses_contradictory_observation_without_receipt(tmp_path
     assert not ledger.receipt_root.exists()
 
 
-def test_legacy_normalization_never_fabricates_attestation_or_receipt():
-    legacy_string = {
-        "evidence_class": "mcp_replay_manifest",
-        "mcp_replay_manifest": "manifests/legacy.json",
-    }
-    legacy_object = {
-        "evidence_class": "mcp_replay_manifest",
-        "mcp_replay_manifest": {
-            "product_runtime_exercised": True,
-            "expected_output_snapshot": "0.3.0",
-            "observed_output": "0.3.0",
-        },
-    }
-    pre_receipt_v2 = {
-        "evidence_class": "mcp_replay_manifest",
-        "manifest_ref": "manifests/pre-receipt.json",
-        "execution_attestation": {"schema_version": 2},
-    }
-    assert normalize_test_scenario_evidence(legacy_string) == legacy_string
-    assert normalize_test_scenario_evidence(legacy_object) == legacy_object
-    report = migrate_test_scenario_evidence(
-        [
-            {"id": "ts-string", "evidence": legacy_string},
-            {"id": "ts-object", "evidence": legacy_object},
-            {"id": "ts-pre-receipt", "evidence": pre_receipt_v2},
-        ]
-    )
-    assert report.legacy_unverified == 3
-    assert report.promoted_v2 == 0
+@pytest.mark.parametrize("old_value", ["old.json", {"product_runtime_exercised": True}])
+def test_status_transport_refuses_old_alias_without_conversion(old_value):
+    raw = {"evidence_class": "mcp_replay_manifest", "mcp_replay_manifest": old_value}
+    before = deepcopy(raw)
+    with pytest.raises(ValueError, match="mcp_replay_manifest"):
+        ScenarioStatusUpdate(status="passed", evidence=raw)
+    assert raw == before
+
 
 
 @pytest.mark.asyncio
-async def test_complete_embedded_signed_v2_is_promoted_losslessly(tmp_path):
-    _ledger_value, _calls, canonical = await _produce(tmp_path)
-    embedded = {
-        "evidence_class": "mcp_replay_manifest",
-        "mcp_replay_manifest": {
-            "manifest_ref": canonical["manifest_ref"],
-            "execution_attestation": canonical["execution_attestation"],
-            "execution_receipt": canonical["execution_receipt"],
-        },
-    }
-    normalized = normalize_test_scenario_evidence(embedded)
-    assert normalized == canonical
-    report = migrate_test_scenario_evidence(
-        [{"id": SCENARIO_ID, "status": "passed", "evidence": embedded}]
-    )
-    assert report.promoted_v2 == 1
-    assert report.scenarios[0]["evidence"] == canonical
+async def test_signed_embedded_payload_is_refused_without_ledger_changes(tmp_path):
+    ledger, _calls, canonical = await _produce(tmp_path)
+    embedded = {"evidence_class": "mcp_replay_manifest", "mcp_replay_manifest": {
+        "manifest_ref": canonical["manifest_ref"], "execution_attestation": canonical["execution_attestation"],
+        "execution_receipt": canonical["execution_receipt"],
+    }}
+    before = {path.name: path.read_bytes() for path in ledger.receipt_root.glob('*.json')}
+    verdict = verify_community_evidence_v2(board_id=BOARD_ID, spec_id=SPEC_ID, status="passed",
+        scenario_id=SCENARIO_ID, scenario_sha256=SCENARIO_SHA256, evidence=embedded, ledger=ledger)
+    assert verdict.verified is False
+    assert "evidence_v2.unsupported_evidence_fields:mcp_replay_manifest" in verdict.reason_codes
+    with pytest.raises(ValueError, match="mcp_replay_manifest"):
+        ScenarioStatusUpdate(status="passed", evidence=embedded)
+    assert {path.name: path.read_bytes() for path in ledger.receipt_root.glob('*.json')} == before

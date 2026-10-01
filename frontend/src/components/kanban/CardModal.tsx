@@ -144,7 +144,6 @@ const TEST_EVIDENCE_FIELDS: Array<keyof TestScenarioEvidence> = [
   // must count as "has evidence" for rendering.
   'evidence_class',
   'replay_command',
-  'mcp_replay_manifest',
   'manifest_ref',
   'execution_attestation',
   'manual_checklist_ref',
@@ -153,7 +152,7 @@ const TEST_EVIDENCE_FIELDS: Array<keyof TestScenarioEvidence> = [
 ];
 
 function getScenarioEvidence(scenario: TestScenario): TestScenarioEvidence | null {
-  return scenario.evidence ?? scenario.latest_evidence ?? null;
+  return scenario.evidence ?? null;
 }
 
 function hasScenarioEvidence(scenario: TestScenario): boolean {
@@ -3122,15 +3121,6 @@ export function TestEvidenceTab({ scenarios }: { scenarios: TestScenario[] }) {
               value: evidence?.execution_attestation
                 ? `v${evidence.execution_attestation.schema_version} · ${evidence.execution_attestation.run_id} · runtime ${evidence.execution_attestation.product_runtime_exercised ? 'exercised' : 'NOT exercised'}`
                 : null,
-              mono: true,
-            },
-            {
-              label: 'Legacy MCP manifest',
-              value: typeof evidence?.mcp_replay_manifest === 'string'
-                ? evidence.mcp_replay_manifest
-                : evidence?.mcp_replay_manifest
-                  ? 'embedded object (unverified)'
-                  : null,
               mono: true,
             },
             { label: 'Manual checklist', value: evidence?.manual_checklist_ref, mono: true },

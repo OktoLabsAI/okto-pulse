@@ -43,7 +43,7 @@ function MethodEditor({ boardId, specId, version, scenario, canEdit, onSaved }: 
       </select>
     </label>
     <p className="text-xs text-gray-500">A method declares the required observation. Credit requires an installed admission path and authenticated evidence; unsupported methods remain pending.</p>
-    {(scenario.evidence || scenario.latest_evidence) && <p className="text-xs text-amber-600">Changing this method invalidates the current scenario evidence.</p>}
+    {(scenario.evidence) && <p className="text-xs text-amber-600">Changing this method invalidates the current scenario evidence.</p>}
     <button type="button" disabled={busy || saved || (Boolean(method) && !methods.includes(method as Method))} onClick={() => void save()}>{busy ? 'Saving method…' : 'Save verification method'}</button>
     {error && <p role="alert">{error}</p>}
     {saved && <button type="button" onClick={() => void reload()}>Reload saved method</button>}

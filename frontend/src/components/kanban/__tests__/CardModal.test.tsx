@@ -2014,7 +2014,7 @@ describe('CardModal', () => {
         name: /Drift score 9 out of 100.*Maximum 15.*threshold met/i,
       }),
     ).toBeInTheDocument();
-    expect(screen.getByText('Threshold source: sprint')).toBeInTheDocument();
+    expect(screen.getAllByText('Threshold source: spec')).toHaveLength(2);
     expect(screen.getByText('Threshold source: board')).toBeInTheDocument();
   });
 
@@ -2102,8 +2102,7 @@ describe('CardModal', () => {
           status: 'passed',
           linked_task_ids: ['test-1'],
           created_at: '2026-05-06T09:30:00Z',
-          evidence: null,
-          latest_evidence: {
+          evidence: {
             test_file_path: 'tests/test_flow.py',
             test_function: 'test_flow_happy_path',
             last_run_at: '2026-05-07T12:00:00Z',
@@ -2336,7 +2335,6 @@ describe('TestEvidenceTab — re-executable evidence visibility (spec 9e0bf979)'
       status: 'passed',
       linked_task_ids: null,
       evidence: null,
-      latest_evidence: null,
       ...overrides,
     } as TestScenario;
   }

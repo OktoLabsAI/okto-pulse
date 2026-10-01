@@ -1977,7 +1977,6 @@ class CommunitySqlAlchemySemanticGuidelineAssessment:
                     "status",
                     "linked_task_ids",
                     "evidence",
-                    "latest_evidence",
                     "execution_attestation",
                     "execution_receipt",
                 }

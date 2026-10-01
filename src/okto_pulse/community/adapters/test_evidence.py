@@ -28,7 +28,7 @@ from pathlib import Path, PurePosixPath
 import re
 import secrets
 import stat
-from typing import Any, Awaitable, Callable, Mapping, Sequence
+from typing import Any, Awaitable, Callable, Mapping
 from urllib.parse import urlsplit
 
 from okto_pulse.core.ports.test_evidence import (
@@ -99,26 +99,6 @@ class ProductExecutionObservation:
     outcome: str
     assertions: tuple[Mapping[str, Any], ...]
     executed_at: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class EvidenceMigrationReport:
-    scenarios: tuple[dict[str, Any], ...]
-    canonical_v2: int
-    promoted_v2: int
-    legacy_unverified: int
-    malformed: int
-
-
-@dataclass(frozen=True, slots=True)
-class PersistedEvidenceMigrationReport:
-    specs_scanned: int
-    specs_updated: int
-    canonical_v2: int
-    promoted_v2: int
-    legacy_unverified: int
-    malformed: int
-    dry_run: bool
 
 
 RuntimeExecutor = Callable[
@@ -1579,57 +1559,6 @@ async def _execute_validated_manifest_and_build_evidence_v2(
     return evidence
 
 
-def normalize_test_scenario_evidence(
-    evidence: object,
-    *,
-    scenario_id: str | None = None,
-    status: str | None = None,
-) -> dict[str, Any]:
-    """Normalize canonical V2 without inventing legacy execution facts."""
-
-    normalized = _plain(evidence)
-    if normalized is None:
-        raise CommunityTestEvidenceError("evidence must be an object")
-    embedded = _plain(normalized.get("mcp_replay_manifest"))
-    if embedded and not normalized.get("manifest_ref"):
-        candidate_ref = embedded.get("manifest_ref")
-        candidate_attestation = embedded.get("execution_attestation")
-        candidate_receipt = embedded.get("execution_receipt")
-        if (
-            isinstance(candidate_ref, str)
-            and candidate_attestation is not None
-            and candidate_receipt is not None
-        ):
-            candidate = {
-                **normalized,
-                "evidence_class": "mcp_replay_manifest",
-                "manifest_ref": candidate_ref,
-                "execution_attestation": candidate_attestation,
-                "execution_receipt": candidate_receipt,
-            }
-            candidate.pop("mcp_replay_manifest", None)
-            candidate_attestation_map = _plain(candidate_attestation)
-            candidate_scenario_id = scenario_id or str(
-                (candidate_attestation_map or {}).get("scenario_id") or ""
-            )
-            candidate_status = status or str(
-                (candidate_attestation_map or {}).get("outcome") or "passed"
-            )
-            if verify_mcp_replay_evidence_v2(
-                candidate_status, candidate, scenario_id=candidate_scenario_id
-            ).verified:
-                normalized = candidate
-    if normalized.get("manifest_ref") is not None:
-        normalized.setdefault("evidence_class", "mcp_replay_manifest")
-        legacy = normalized.get("mcp_replay_manifest")
-        if (
-            isinstance(legacy, str)
-            and legacy.strip() == str(normalized.get("manifest_ref")).strip()
-        ):
-            normalized.pop("mcp_replay_manifest", None)
-    return normalized
-
-
 def verify_community_evidence_v2(
     *,
     board_id: str,
@@ -1643,9 +1572,9 @@ def verify_community_evidence_v2(
 ) -> EvidenceVerificationResult:
     """Verify CORE semantics, allowlisted bytes, ledger record, and HMAC."""
 
-    normalized = normalize_test_scenario_evidence(
-        evidence, scenario_id=scenario_id, status=status
-    )
+    normalized = _plain(evidence)
+    if normalized is None:
+        raise CommunityTestEvidenceError("evidence must be an object")
     verdict = verify_mcp_replay_evidence_v2(
         status,
         normalized,
@@ -1828,118 +1757,6 @@ class CommunityTestEvidenceExecutionIssuer:
         return TestEvidenceExecutionResult(evidence=evidence)
 
 
-def migrate_test_scenario_evidence(
-    scenarios: Sequence[Mapping[str, Any]],
-) -> EvidenceMigrationReport:
-    """Pure JSON-column migration; legacy values stay unverified."""
-
-    migrated: list[dict[str, Any]] = []
-    canonical_v2 = promoted_v2 = legacy_unverified = malformed = 0
-    for original in scenarios:
-        scenario = dict(original)
-        for field in ("evidence", "latest_evidence"):
-            raw = scenario.get(field)
-            if raw is None:
-                continue
-            raw_map = _plain(raw)
-            if raw_map is None:
-                malformed += 1
-                continue
-            was_canonical = bool(
-                raw_map.get("manifest_ref")
-                and raw_map.get("execution_attestation")
-                and raw_map.get("execution_receipt")
-            )
-            normalized = normalize_test_scenario_evidence(
-                raw_map,
-                scenario_id=str(scenario.get("id"))
-                if scenario.get("id") is not None
-                else None,
-                status=str(scenario.get("status"))
-                if scenario.get("status") is not None
-                else None,
-            )
-            is_canonical = bool(
-                normalized.get("manifest_ref")
-                and normalized.get("execution_attestation")
-                and normalized.get("execution_receipt")
-            )
-            scenario[field] = normalized
-            if is_canonical:
-                if was_canonical:
-                    canonical_v2 += 1
-                else:
-                    promoted_v2 += 1
-            elif (
-                normalized.get("mcp_replay_manifest") is not None
-                or normalized.get("manifest_ref") is not None
-                or normalized.get("execution_attestation") is not None
-            ):
-                legacy_unverified += 1
-        migrated.append(scenario)
-    return EvidenceMigrationReport(
-        scenarios=tuple(migrated),
-        canonical_v2=canonical_v2,
-        promoted_v2=promoted_v2,
-        legacy_unverified=legacy_unverified,
-        malformed=malformed,
-    )
-
-
-async def migrate_persisted_test_scenario_evidence(
-    session: object,
-    *,
-    board_id: str | None = None,
-    dry_run: bool = True,
-) -> PersistedEvidenceMigrationReport:
-    """Scan Community SQL specs and persist only lossless V2 promotions."""
-
-    from sqlalchemy import select
-    from sqlalchemy.orm.attributes import flag_modified
-
-    from okto_pulse.community.adapters.sqlalchemy_models import Spec
-
-    statement = select(Spec)
-    if board_id is not None:
-        statement = statement.where(Spec.board_id == board_id)
-    execute = getattr(session, "execute", None)
-    if not callable(execute):
-        raise TypeError("session must provide async execute()")
-    result = await execute(statement)
-    specs = list(result.scalars().all())
-    totals = {
-        "canonical_v2": 0,
-        "promoted_v2": 0,
-        "legacy_unverified": 0,
-        "malformed": 0,
-    }
-    updated = 0
-    for spec in specs:
-        original = list(spec.test_scenarios or [])
-        report = migrate_test_scenario_evidence(original)
-        for key in totals:
-            totals[key] += int(getattr(report, key))
-        migrated = list(report.scenarios)
-        if migrated != original:
-            updated += 1
-            if not dry_run:
-                spec.test_scenarios = migrated
-                flag_modified(spec, "test_scenarios")
-    if not dry_run:
-        flush = getattr(session, "flush", None)
-        if callable(flush):
-            await flush()
-    return PersistedEvidenceMigrationReport(
-        specs_scanned=len(specs),
-        specs_updated=updated,
-        canonical_v2=totals["canonical_v2"],
-        promoted_v2=totals["promoted_v2"],
-        legacy_unverified=totals["legacy_unverified"],
-        malformed=totals["malformed"],
-        dry_run=dry_run,
-    )
-
-
 __all__ = [
     "COMMUNITY_EVIDENCE_ADAPTER",
     "COMMUNITY_EVIDENCE_PRODUCER",
@@ -1951,14 +1768,9 @@ __all__ = [
     "CommunityTestEvidenceError",
     "CommunityTestEvidenceExecutionIssuer",
     "CommunityTestEvidenceWriteVerifier",
-    "EvidenceMigrationReport",
-    "PersistedEvidenceMigrationReport",
     "ProductExecutionObservation",
     "build_inline_replay_manifest",
     "manifest_sha256",
-    "migrate_test_scenario_evidence",
-    "migrate_persisted_test_scenario_evidence",
-    "normalize_test_scenario_evidence",
     "run_manifest_and_build_evidence_v2",
     "run_inline_replay_and_build_evidence_v2",
     "validate_replay_manifest",

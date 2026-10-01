@@ -731,7 +731,7 @@ function TestScenariosTab({
                 <ScenarioVerificationMethodEditor boardId={spec.board_id} specId={spec.id} version={spec.version} scenario={scenario}
                   canEdit={!spec.archived && spec.status === 'draft' && hasPermissionWithState(scenarioPermissions.has, 'spec.tests.edit', 'spec', spec.status)}
                   onSaved={async () => { onSpecRefreshed(await api.getSpec(spec.id)); }} />
-                <VerificationReportDetails evidence={scenario.evidence ?? scenario.latest_evidence} />
+                <VerificationReportDetails evidence={scenario.evidence} />
                 <div className="grid grid-cols-3 gap-3">
                   <div>
                     <span className="text-[10px] font-semibold text-green-600 uppercase">Given</span>

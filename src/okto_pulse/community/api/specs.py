@@ -163,9 +163,6 @@ from okto_pulse.core.application.use_cases import (
     UpdateSpecUseCase,
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
-from okto_pulse.community.adapters.test_evidence import (
-    normalize_test_scenario_evidence,
-)
 from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.core.models.schemas import (
     PageEnvelope,
@@ -800,34 +797,6 @@ _STRUCTURED_SPEC_ENTITY_UPDATE_FIELDS = {
 }
 
 
-def _prepare_spec_update_evidence(data: SpecUpdate) -> SpecUpdate:
-    """Normalize/verify canonical V2 evidence on the whole-spec REST path."""
-
-    fields_set = set(getattr(data, "model_fields_set", set()))
-    if "test_scenarios" not in fields_set or data.test_scenarios is None:
-        return data
-    payload = data.model_dump(mode="python", exclude_unset=True)
-    scenarios: list[dict[str, Any]] = []
-    for raw_scenario in payload.get("test_scenarios") or []:
-        scenario = dict(raw_scenario)
-        raw_evidence = scenario.get("evidence") or scenario.get("latest_evidence")
-        if raw_evidence is not None:
-            evidence = normalize_test_scenario_evidence(
-                raw_evidence,
-                scenario_id=str(scenario.get("id") or ""),
-                status=str(scenario.get("status") or "draft"),
-            )
-            target = (
-                "evidence"
-                if scenario.get("evidence") is not None
-                else "latest_evidence"
-            )
-            scenario[target] = evidence
-        scenarios.append(scenario)
-    payload["test_scenarios"] = scenarios
-    return SpecUpdate.model_validate(payload)
-
-
 class StructuredSpecEntityMutationRequest(BaseModel):
     operation: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
@@ -1039,7 +1008,7 @@ def _link_task_not_found_detail(exc: EntityNotFoundError) -> str:
     if exc.entity_type == "spec":
         return "Spec not found"
     if exc.entity_type == "card":
-        return f"Card '{exc.entity_id}' not found — cannot link a non-existent card."
+        return f"Card '{exc.entity_id}' not found â€” cannot link a non-existent card."
     return f"Scenario '{exc.entity_id}' not found in spec."
 
 
@@ -1050,7 +1019,7 @@ def _link_ir_not_found_detail(exc: EntityNotFoundError) -> str:
     if exc.entity_type == "spec":
         return "Spec not found"
     if exc.entity_type == "card":
-        return f"Card '{exc.entity_id}' not found — cannot link a non-existent card."
+        return f"Card '{exc.entity_id}' not found â€” cannot link a non-existent card."
     return f"Integration requirement '{exc.entity_id}' not found in spec."
 
 
@@ -1061,7 +1030,7 @@ def _link_or_not_found_detail(exc: EntityNotFoundError) -> str:
     if exc.entity_type == "spec":
         return "Spec not found"
     if exc.entity_type == "card":
-        return f"Card '{exc.entity_id}' not found — cannot link a non-existent card."
+        return f"Card '{exc.entity_id}' not found â€” cannot link a non-existent card."
     return f"Observability requirement '{exc.entity_id}' not found in spec."
 
 
@@ -1088,7 +1057,7 @@ async def _run_structured_spec_entity_command(
     """Spec R01A REST-FU3b-S1: thin REST mapping over
     ``RunStructuredSpecEntityUseCase``. The transport-free logic (spec lookup,
     permission resolution, ``StructuredSpecEntityService.apply``, commit/rollback)
-    lives in the use case; this adapter only maps the result to HTTP — a missing
+    lives in the use case; this adapter only maps the result to HTTP â€” a missing
     spec to 404 and a service failure to the legacy ``error_code`` status."""
     try:
         result = await RunStructuredSpecEntityUseCase().execute(
@@ -1618,7 +1587,7 @@ async def update_spec(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Update a spec. Bumps version when content fields change.
-    Rejects orphan `linked_*` references with 422 — see
+    Rejects orphan `linked_*` references with 422 â€” see
     `_validate_spec_linked_refs` in services/main.py for the exact rules.
     """
     fields_set = set(
@@ -1630,9 +1599,8 @@ async def update_spec(
             STRUCTURED_SPEC_ENTITY_DEPRECATION_WARNING
         )
     try:
-        prepared_data = _prepare_spec_update_evidence(data)
         result = await UpdateSpecUseCase().execute(
-            UpdateSpecCommand(spec_id, prepared_data),
+            UpdateSpecCommand(spec_id, data),
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
@@ -2272,7 +2240,7 @@ async def update_test_scenario_status(
 
     Applies the same leaf helpers as the MCP status tool
     (require_test_scenario_status_mutable + validate_test_scenario_evidence via
-    SpecService.set_test_scenario_status) and mutates ONLY the target scenario —
+    SpecService.set_test_scenario_status) and mutates ONLY the target scenario â€”
     it does NOT use the full-list update_spec path and does NOT trigger the
     content-lock, so the other scenarios are preserved. Rejects gated status
     without evidence (422) and arbitrary status changes on validated/done specs
@@ -2282,11 +2250,7 @@ async def update_test_scenario_status(
     """
     try:
         evidence = (
-            normalize_test_scenario_evidence(
-                body.evidence.model_dump(mode="python", exclude_none=True),
-                scenario_id=scenario_id,
-                status=body.status,
-            )
+            body.evidence.model_dump(mode="python", exclude_none=True)
             if body.evidence is not None
             else None
         )
@@ -2687,8 +2651,8 @@ async def submit_spec_validation(
     # Thin REST adapter (spec #09): the field-shape validation moved into the
     # command, get_spec/not-found and the coverage-gate errors are surfaced as
     # transport-neutral errors and mapped to the SAME HTTP status/detail as before
-    # (CommandValidationError→400, EntityNotFoundError→404, ResourceGateError→409
-    # with {error,message,details}, ValueError→409). Spec R01A REST-FU3b-S1 fixes
+    # (CommandValidationErrorâ†’400, EntityNotFoundErrorâ†’404, ResourceGateErrorâ†’409
+    # with {error,message,details}, ValueErrorâ†’409). Spec R01A REST-FU3b-S1 fixes
     # the hybrid wiring: the gate now flows through the PulseUnitOfWork instead of
     # a raw AsyncSession passed as the uow.
     try:
@@ -2811,8 +2775,8 @@ async def get_current_spec_validation(
 
 
 class SpecEvaluationSubmit(BaseModel):
-    """Avaliação qualitativa de uma spec validated — gêmeo REST do MCP tool
-    ``okto_pulse_submit_spec_evaluation`` (paridade de superfícies)."""
+    """AvaliaÃ§Ã£o qualitativa de uma spec validated â€” gÃªmeo REST do MCP tool
+    ``okto_pulse_submit_spec_evaluation`` (paridade de superfÃ­cies)."""
 
     breakdown_completeness: int = Field(..., ge=0, le=100)
     breakdown_justification: str = Field(..., min_length=10)
@@ -2836,10 +2800,10 @@ async def submit_spec_evaluation(
 ):
     """Submit a qualitative evaluation for a spec in 'validated' status.
 
-    Gap fechado (paridade REST/MCP): este gate é pré-requisito de
-    ``move_spec(validated→in_progress)``, mas só existia como MCP tool —
-    usuários UI/REST ficavam presos em ``validated`` sem caminho de escrita.
-    Mesma semântica do tool: múltiplos avaliadores, append-only, spec
+    Gap fechado (paridade REST/MCP): este gate Ã© prÃ©-requisito de
+    ``move_spec(validatedâ†’in_progress)``, mas sÃ³ existia como MCP tool â€”
+    usuÃ¡rios UI/REST ficavam presos em ``validated`` sem caminho de escrita.
+    Mesma semÃ¢ntica do tool: mÃºltiplos avaliadores, append-only, spec
     precisa estar em 'validated'.
     """
     try:
@@ -2867,7 +2831,7 @@ async def list_spec_evaluations(
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
-    """List spec evaluations (newest first) — gêmeo REST de
+    """List spec evaluations (newest first) â€” gÃªmeo REST de
     ``okto_pulse_list_spec_evaluations``."""
     try:
         result = await ListSpecEvaluationsUseCase().execute(

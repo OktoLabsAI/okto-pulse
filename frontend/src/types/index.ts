@@ -1542,6 +1542,7 @@ export interface TestExecutionAttestationV2 {
   run_id: string;
   executed_at: string;
   scenario_id: string;
+  scenario_sha256: string;
   outcome: 'passed' | 'failed';
   product_runtime_exercised: boolean;
   manifest_sha256: string;
@@ -1554,18 +1555,16 @@ export interface TestScenarioEvidence {
   /** External observation; receipt authenticates submission, not independent approval. */
   verification_report?: { method: string; report_id: string; result: VerificationReportResult; conclusion: string; observed_at: string; observations: Array<{ criterion_id: string; expected: string; observed: string; observation_ref: string }> } | null;
   report_author_id?: string | null;
-  // Legacy / minimal fields (NC-9).
+  scenario_sha256?: string | null;
+  // Current test pointers and execution logs.
   test_file_path?: string | null;
   test_function?: string | null;
   last_run_at?: string | null;
   test_run_id?: string | null;
   output_snippet?: string | null;
-  // Re-executable evidence contract (spec 9e0bf979). All optional; legacy
-  // evidence simply omits them.
+  // Fields required by the selected evidence class.
   evidence_class?: EvidenceClass | null;
   replay_command?: string | null;
-  /** @deprecated Reader-only legacy alias; it never satisfies Evidence V2. */
-  mcp_replay_manifest?: string | Record<string, unknown> | null;
   manifest_ref?: string | null;
   execution_attestation?: TestExecutionAttestationV2 | null;
   /** Opaque receipt authenticated by the local installation at write time. */
@@ -1591,7 +1590,6 @@ export interface TestScenario {
   linked_task_ids: string[] | null;
   created_at?: string;
   evidence?: TestScenarioEvidence | null;
-  latest_evidence?: TestScenarioEvidence | null;
 }
 
 export interface TestScenarioStatusUpdateRequest {

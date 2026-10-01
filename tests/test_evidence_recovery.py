@@ -14,6 +14,7 @@ from okto_pulse.community.adapters.test_evidence import (
 )
 from okto_pulse.core.ports.test_evidence import TestVerificationReportRequest as Request
 from verification_report_fixtures import report
+from okto_pulse.core.models.schemas import TestScenarioEvidence as Evidence
 
 
 async def issue(root):
@@ -22,6 +23,15 @@ async def issue(root):
         board_id='board-a', spec_id='spec-a', scenario_id='scenario-a',
         scenario_sha256='sha256:' + 'a' * 64, actor_id='reviewer', report=report()))
     return ledger, dict(issued.evidence)
+
+
+@pytest.mark.asyncio
+async def test_current_report_transport_preserves_signed_evidence(tmp_path):
+    ledger, evidence = await issue(tmp_path)
+    before = {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+    transported = Evidence.model_validate(evidence).model_dump(mode='json', exclude_none=True)
+    assert verify(ledger.evidence_root, transported).verified
+    assert {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()} == before
 
 
 def verify(root, evidence):
