@@ -1,4 +1,4 @@
-"""Native storage mechanics for the closed Core Card scenario ownership rule."""
+"""Native storage mechanics for the closed Core Card projection ownership rules."""
 from okto_pulse.core.kg.interfaces.graph_transaction import (
     ProjectionActiveSetReceipt, ProjectionActiveSetReconciliationError, ProjectionEdgeBeforeImage,
     ProjectionRemovalOnlyIntent,
@@ -6,6 +6,7 @@ from okto_pulse.core.kg.interfaces.graph_transaction import (
 from okto_pulse.core.ports.card_projection import (
     owns_card_scenario_endpoints, is_card_scenario_writer,
     owns_card_parent_endpoints, is_card_parent_writer,
+    CARD_CHILD_NAMESPACES, card_child_family,
 )
 from okto_pulse.community.adapters.grafx_query_values import normalize_query_value
 
@@ -26,6 +27,11 @@ def reconcile_card_scenarios(scope, intent):
         operation = 'card_parent'
         if len(intent.active_edges) > 1:
             _refuse('A Card has at most one authoritative Spec parent.')
+    elif intent.namespace in CARD_CHILD_NAMESPACES:
+        family = card_child_family(intent.namespace)
+        edge_type, target_type = 'supports', family.target_type
+        owns_endpoints, is_writer = family.owns_endpoints, family.owns_writer
+        operation = family.namespace
     else:
         _refuse('Unknown Card relationship namespace.')
     if intent.active_nodes or (intent.active_edges and not intent.owner_node_id):

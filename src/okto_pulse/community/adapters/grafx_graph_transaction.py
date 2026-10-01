@@ -56,7 +56,9 @@ from okto_pulse.community.adapters.cypher_statement_policy import (
 )
 from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
 from okto_pulse.core.ports.spec_projection import SPEC_RELATIONSHIP_NAMESPACES, is_spec_relationship_writer
-from okto_pulse.core.ports.card_projection import is_card_scenario_writer, is_card_parent_writer
+from okto_pulse.core.ports.card_projection import (
+    is_card_scenario_writer, is_card_parent_writer, is_card_child_writer, CARD_CHILD_NAMESPACES,
+)
 from okto_pulse.community.adapters.grafx_query_values import normalize_query_value as _normalize_value
 from okto_pulse.community.adapters.grafx_relationship_layout import (
     resolve_relationship_table,
@@ -1310,6 +1312,9 @@ class _GrafxTransactionScope:
         from_id: str,
         to_id: str,
         rule_id: str | None = None,
+        *,
+        layer: str | None = None,
+        created_by: str | None = None,
     ) -> bool:
         physical, definition = self._relationship_definition(
             edge_type,
@@ -1328,6 +1333,12 @@ class _GrafxTransactionScope:
                 )
             predicate += " AND r.rule_id = $rule_id"
             params["rule_id"] = rule_id
+        for field, value in (('layer', layer), ('created_by', created_by)):
+            if value is not None:
+                if field not in self._column_map(definition):
+                    raise GraphCapabilityUnavailable(f'Grafx relationship table {physical!r} has no {field} property.')
+                predicate += f' AND r.{field} = ${field}'
+                params[field] = value
         result = self._query(
             f"MATCH (a:{from_type})-[r:{physical}]->(b:{to_type}) "
             f"WHERE {predicate} RETURN a.id LIMIT 1",
@@ -2087,6 +2098,10 @@ class _GrafxTransactionScope:
                 created_by=edge.attrs.get("created_by"),
             )
         ):
+            return rule_id
+        if is_card_child_writer(edge_type=edge.edge_type, source_type=edge.from_type,
+                target_type=edge.to_type, rule_id=rule_id, layer=edge.attrs.get('layer'),
+                created_by=edge.attrs.get('created_by')):
             return rule_id
         if is_spec_relationship_writer(edge_type=edge.edge_type, source_type=edge.from_type,
                 target_type=edge.to_type, rule_id=rule_id, layer=edge.attrs.get('layer'),
@@ -2921,12 +2936,12 @@ class _GrafxTransactionScope:
         # mutation: a refusal must not be able to leave half an active set staged.
         self._fence("reconcile_projection_active_set")
         if isinstance(intent, ProjectionRemovalOnlyIntent) and not (
-            intent.owner_type == 'card' and intent.namespace in {'card_scenarios', 'card_parent'}
+            intent.owner_type == 'card' and intent.namespace in ({'card_scenarios', 'card_parent'} | CARD_CHILD_NAMESPACES)
             or intent.owner_type == 'spec' and intent.namespace == 'dependencies'
         ):
             raise ProjectionActiveSetReconciliationError(
                 'projection_active_set_scope_invalid', 'Removal-only namespace is unsupported.')
-        if intent.owner_type == 'card' and intent.namespace in {'card_scenarios', 'card_parent'}:
+        if intent.owner_type == 'card' and intent.namespace in ({'card_scenarios', 'card_parent'} | CARD_CHILD_NAMESPACES):
             from okto_pulse.community.adapters.grafx_card_scenario_projection import reconcile_card_scenarios
             return reconcile_card_scenarios(self, intent)
         if intent.owner_type == "spec" and intent.namespace in SPEC_RELATIONSHIP_NAMESPACES:

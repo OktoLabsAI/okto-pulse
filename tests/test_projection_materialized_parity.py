@@ -299,6 +299,71 @@ async def test_spec_without_links_characterizes_rebuild_guard_conflict(tmp_path,
 @pytest.mark.asyncio
 @pytest.mark.timeout(480)
 @pytest.mark.parametrize('card_type', ['normal', 'test', 'bug'])
+async def test_card_supports_every_declared_child_and_removes_only_current_assignments(tmp_path, card_type):
+    from copy import deepcopy
+    from okto_pulse.core.ports.card_projection import CARD_CHILD_FAMILIES, CARD_SCENARIO_RULES
+    rules = {family.rule for family in CARD_CHILD_FAMILIES} | CARD_SCENARIO_RULES
+
+    async def project(factory, identity, artifact):
+        async with factory() as session:
+            session.add(ConsolidationQueue(id=identity, board_id='board', artifact_type=artifact,
+                artifact_id='spec' if artifact == 'spec' else 'card', source='state_transition'))
+            await session.commit()
+        assert await ConsolidationProcessor(relational_scope_factory=factory).process_batch() == 1
+        async with factory() as session:
+            assert not list(await session.scalars(select(ConsolidationQueue.id)))
+
+    async def exercise(factory, graph):
+        async with factory() as session:
+            spec = await session.get(Spec, 'spec')
+            spec.technical_requirements = [{'id': 'tr_one', 'text': 'Bounded response'}]
+            expected, original = set(), {}
+            for family in CARD_CHILD_FAMILIES:
+                values = deepcopy(getattr(spec, family.field))
+                values[0]['linked_task_ids'] = ['card']
+                setattr(spec, family.field, values)
+                original[family.field] = values
+                expected.add((family.target_type, f'spec:spec:{family.section}:{values[0]["id"]}'))
+            scenarios = deepcopy(spec.test_scenarios)
+            scenarios[0]['linked_task_ids'] = ['card']
+            spec.test_scenarios = scenarios
+            original['test_scenarios'] = scenarios
+            expected.add(('TestScenario', 'spec:spec:test_scenario:ts_one'))
+            await session.commit()
+        await project(factory, 'children-source', 'spec')
+        await project(factory, 'children-owner', 'card')
+        before = relationship_set(graph)
+        supports = {edge: count for edge, count in before.items() if edge[3] in rules}
+        assert {(edge[5][0], edge[2]) for edge in supports} == expected
+        assert len(supports) == len(expected) and all(count == 1 for count in supports.values())
+        assert {edge[4][0] for edge in supports} == {'Bug' if card_type == 'bug' else 'Entity'}
+        async with factory() as session:
+            spec = await session.get(Spec, 'spec')
+            for field, values in original.items():
+                setattr(spec, field, [{**item, 'linked_task_ids': []} for item in values])
+            card = await session.get(Card, 'card')
+            card.test_scenario_ids = []
+            await session.commit()
+        await project(factory, 'children-unlinked-source', 'spec')
+        await project(factory, 'children-unlinked-owner', 'card')
+        assert not [edge for edge in relationship_set(graph) if edge[3] in rules]
+        async with factory() as session:
+            spec = await session.get(Spec, 'spec')
+            for field, values in original.items():
+                setattr(spec, field, values)
+            (await session.get(Card, 'card')).test_scenario_ids = ['ts_one']
+            await session.commit()
+        await project(factory, 'children-restored-source', 'spec')
+        await project(factory, 'children-restored-owner', 'card')
+        await project(factory, 'children-replayed-owner', 'card')
+        assert relationship_set(graph) == before
+
+    await materialize(tmp_path / 'all-children', incremental=False, card_type=card_type, exercise=exercise)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(480)
+@pytest.mark.parametrize('card_type', ['normal', 'test', 'bug'])
 async def test_card_scenario_links_match_native_rebuild_after_removal_and_replay(tmp_path, card_type):
     incremental = await materialize(tmp_path / 'incremental', incremental=True, card_type=card_type)
     rebuilt = await materialize(tmp_path / 'rebuilt', incremental=False, card_type=card_type)

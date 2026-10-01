@@ -22,7 +22,7 @@ async def projection(request, tmp_path):
         for name in ('Entity', 'Bug', 'TestScenario'):
             schema.execute(f'CREATE NODE TABLE {name}(id STRING, source_session_id STRING, source_artifact_ref STRING, PRIMARY KEY(id))')
         for source in ('Entity', 'Bug'):
-            schema.execute(f'CREATE REL TABLE supports_{source}(FROM {source} TO TestScenario, rule_id STRING, layer STRING, created_by STRING, confidence DOUBLE, created_by_session_id STRING)')
+            schema.execute(f'CREATE REL TABLE supports_{source}(FROM {source} TO TestScenario, rule_id STRING, layer STRING, created_by STRING, confidence DOUBLE, created_by_session_id STRING, created_at STRING, fallback_reason STRING)')
     provider = CommunityGrafxGraphTransaction(database_resolver=lambda _: graph, revalidate_fence=lambda *_: None,
         node_types=('Entity', 'Bug', 'TestScenario'),
         relationship_pairs=tuple(('supports', source, 'TestScenario') for source in ('Entity', 'Bug')),
@@ -88,6 +88,23 @@ async def test_origin_change_keeps_one_owned_relation(projection):
         assert len(receipt.edge_before_images) == 1
         await scope.commit()
     assert [row[2] for row in await rows() if row[0] == 'root' and row[3] == 'deterministic'] == [BOTH]
+
+
+async def test_worker_origin_change_compensation_preserves_previous_provenance(projection):
+    from okto_pulse.core.kg.transaction import TransactionOrchestrator
+    provider, kind, intent, rows = projection
+    before = await rows()
+    async with await provider.begin('board') as scope:
+        worker = TransactionOrchestrator(scope, session_id='next', board_id='board')
+        worker.create_edge('supports', 'root', 'scenario',
+            {'rule_id': BOTH, 'layer': 'deterministic', 'created_by': 'worker_layer1', 'confidence': 1.0},
+            from_type=kind, to_type='TestScenario')
+        worker.reconcile_projection_active_set(replace(intent, active_edges=(
+            ProjectionEdgeRef('supports', kind, 'TestScenario', 'root', 'scenario', BOTH),)))
+        assert worker.counters.edges_added == 1
+        await worker.compensate()
+        await scope.commit()
+    assert await rows() == before
 
 
 async def test_invalid_target_refuses_before_removal(projection):
