@@ -70,8 +70,9 @@ async def snapshot(factory):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('recommendation', ['approve', 'reject'])
+@pytest.mark.parametrize('executor_can_review', [False, True], ids=['grant-denied', 'separation-enforced'])
 async def test_executor_and_reviewer_handoff_preserves_report_and_grant_boundaries(
-    ledger, tmp_path, monkeypatch, recommendation,
+    ledger, tmp_path, monkeypatch, recommendation, executor_can_review,
 ):
     seed, _, _ = await adopted.setup(ledger, tmp_path, monkeypatch)
     factory = async_sessionmaker(seed.bind, sync_session_class=CommunitySemanticSession,
@@ -87,9 +88,12 @@ async def test_executor_and_reviewer_handoff_preserves_report_and_grant_boundari
         root = next(row for row in builtin_permission_presets() if row['name'] == 'Full Control')
         seed.add(PermissionPreset(id='handoff-root', name=root['name'], flags=root['flags'], is_builtin=True))
         for identity, review in [('executor', False), ('reviewer', True)]:
+            flags = grants(review=review)
+            if identity == 'executor' and executor_can_review:
+                set_permission_flag(flags, 'card.validation.submit', True)
             seed.add(Agent(id=identity, name=identity, created_by='owner',
                 api_key='fixture-' + identity, api_key_hash=AgentService.hash_api_key('fixture-' + identity),
-                is_active=True, permissions=[], preset_id='handoff-root', permission_flags=grants(review=review)))
+                is_active=True, permissions=[], preset_id='handoff-root', permission_flags=flags))
             seed.add(AgentBoard(id='grant-' + identity, agent_id=identity,
                 board_id=adopted.BOARD, granted_by='owner'))
         await seed.commit()
@@ -128,7 +132,7 @@ async def test_executor_and_reviewer_handoff_preserves_report_and_grant_boundari
             assert resolved.agent_id == 'executor'
             assert not resolved.permissions.owner_review_required, resolved.permissions.review_reason
             assert resolved.permissions.flags['code_traceability']['target']['execution_submit'] is True
-            assert resolved.permissions.flags['card']['validation']['submit'] is False
+            assert resolved.permissions.flags['card']['validation']['submit'] is executor_can_review
             accepted = payload(await executor_client.call_tool('okto_pulse_record_delivery_evidence', arguments, raise_on_error=False))
         handed_off = await snapshot(factory)
         assert handed_off['status'] == 'validation'
@@ -147,7 +151,13 @@ async def test_executor_and_reviewer_handoff_preserves_report_and_grant_boundari
         }
         async with Client(host) as executor_client:
             refused = await executor_client.call_tool('okto_pulse_submit_task_validation', validation, raise_on_error=False)
-            assert refused.is_error and 'card.validation.submit' in str(refused), refused.content
+            if executor_can_review:
+                outcome = json.loads(refused.content[0].text)
+                assert outcome['outcome'] == 'action_required', outcome
+                assert outcome['error_code'] == 'reviewer_separation_required', outcome
+                assert outcome['next_action'] == {'hint': 'request_independent_task_validator'}
+            else:
+                assert refused.is_error and 'card.validation.submit' in str(refused), refused.content
             assert await snapshot(factory) == handed_off
 
         identity = 'reviewer'

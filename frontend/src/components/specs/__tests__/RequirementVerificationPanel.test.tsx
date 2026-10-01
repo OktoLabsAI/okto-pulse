@@ -58,6 +58,9 @@ describe('execution contract adoption', () => {
     render(<RequirementVerificationPanel {...props({ canAdoptContract: true })} />); open();
     expect(await screen.findByText(/Legacy execution contract/)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Adopt architecture and verification contract' })).not.toBeInTheDocument();
+    expect(api.updateSpec).not.toHaveBeenCalled();
+    expect(api.updateSpecEntity).not.toHaveBeenCalled();
+    expect(onSaved).not.toHaveBeenCalled();
   });
   it.each([{ canAdoptContract: false }, { archived: true }])('requires live content edit authority: %j', async restriction => {
     api.getRequirementVerification.mockResolvedValue(response({ execution_contract: null, archived: restriction.archived ?? false }));

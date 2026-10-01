@@ -104,6 +104,36 @@ async def seed(db):
 
 
 @pytest.mark.asyncio
+async def test_historical_done_without_metadata_is_read_without_adoption_or_reopening(classified_context, monkeypatch):
+    db = classified_context
+    await seed(db)
+    legacy = [{'id': 'fr', 'text': 'Historical blocking requirement'}]
+    await db.execute(update(Spec).where(Spec.id == 'spec').values(
+        status='done', execution_contract=None, functional_requirements=legacy,
+        technical_requirements=[], acceptance_criteria=[{'id': 'ac', 'text': 'Historical condition'}]))
+    await db.commit()
+    before = await writes.snapshot(db)
+    app, _ = transports.application(db)
+    monkeypatch.setattr(RESTAdapterContract, 'actor', staticmethod(lambda *args, **kwargs: actor(planning=True)))
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+        response = await client.get('/api/v1/boards/board/specs/spec/requirement-verification')
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data['spec_status'] == 'done' and data['execution_contract'] is None
+    assert not data['criteria_resolution_complete'] and not data['delivery_evaluated']
+    assert not data['semantic_review_evaluated']
+    item = data['items'][0]
+    assert item['requirement_id'] == 'fr' and item['verification'] is None
+    assert item['qualification_origin'] == 'absent_or_invalid' and not item['qualification_resolved']
+    assert item['criteria_paths'] == []
+    assert item['default_proposal']['requires_author_acceptance'] is True
+    assert await writes.snapshot(db) == before
+    persisted = await db.get(Spec, 'spec', populate_existing=True)
+    assert persisted.status == 'done' and persisted.execution_contract is None
+    assert persisted.functional_requirements == legacy
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("denied", sorted(READ_FLAGS))
 async def test_all_body_read_permissions_are_required_before_query(
     classified_context, denied
