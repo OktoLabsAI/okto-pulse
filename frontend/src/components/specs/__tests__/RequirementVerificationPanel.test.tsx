@@ -17,6 +17,8 @@ function row(extra: Partial<RequirementVerificationRow> = {}): RequirementVerifi
 }
 function response(extra: Partial<RequirementVerificationResponse> = {}): RequirementVerificationResponse {
   return { contract_version: 'requirement-verification/v1', board_id: 'board', spec_id: 'spec', spec_version: 8, spec_edition: 2,
+    execution_contract: { contract_version: 'spec-execution-contract/v1', board_id: 'board', spec_id: 'spec',
+      adopted_in_edition: 1, actor_id: 'author', origin: 'new_spec' },
     spec_status: 'draft', archived: false, population_complete: true, criteria_resolution_complete: false,
     total: 1, population_total: 1, resolved_count: 0, counts_scope: 'complete', offset: 0, limit: 25,
     has_more: false, next_offset: null, items: [row()], issues: [], issue_count: 0, issues_truncated: false,
@@ -32,58 +34,18 @@ async function edit() { open(); fireEvent.click(await screen.findByRole('button'
 function useDefault() { fireEvent.click(screen.getByRole('button', { name: /Use proposed default/ })); }
 function save() { fireEvent.click(screen.getByRole('button', { name: 'Save qualification' })); }
 
-describe('execution contract adoption', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    api.getRequirementVerification.mockResolvedValue(response({ execution_contract: null }));
-    api.updateSpec.mockResolvedValue({});
-    onSaved.mockResolvedValue(undefined);
-  });
-  it('adopts explicitly with the displayed version and edition, once', async () => {
-    let finish!: () => void;
-    api.updateSpec.mockImplementation(() => new Promise<void>(resolve => { finish = resolve; }));
-    render(<RequirementVerificationPanel {...props({ canAdoptContract: true })} />); open();
-    const button = await screen.findByRole('button', { name: 'Adopt architecture and verification contract' });
-    expect(api.updateSpec).not.toHaveBeenCalled();
-    fireEvent.click(button); fireEvent.click(button);
-    expect(api.updateSpec).toHaveBeenCalledExactlyOnceWith('spec', { adopt_execution_contract: {
-      contract_version: 'spec-execution-contract/v1', expected_spec_version: 8, expected_spec_edition: 2,
-    } });
-    finish();
-    await waitFor(() => expect(onSaved).toHaveBeenCalledOnce());
-    expect(screen.getByText('Joint architecture and verification contract adopted.')).toBeInTheDocument();
-  });
-  it.each(['approved', 'validated', 'in_progress', 'done'])('preserves %s contracts without offering a mutation', async spec_status => {
-    api.getRequirementVerification.mockResolvedValue(response({ execution_contract: null, spec_status }));
-    render(<RequirementVerificationPanel {...props({ canAdoptContract: true })} />); open();
-    expect(await screen.findByText(/Legacy execution contract/)).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Adopt architecture and verification contract' })).not.toBeInTheDocument();
+describe('current execution contract', () => {
+  beforeEach(() => { vi.clearAllMocks(); onSaved.mockResolvedValue(undefined); });
+  it.each([null, undefined, { contract_version: 'old' }, {
+    contract_version: 'spec-execution-contract/v1', board_id: 'other', spec_id: 'spec', adopted_in_edition: 1,
+  }])('rejects incompatible contract data without offering conversion: %j', async execution_contract => {
+    api.getRequirementVerification.mockResolvedValue({ ...response(), execution_contract });
+    render(<RequirementVerificationPanel {...props()} />); open();
+    expect(await screen.findByRole('alert')).toHaveTextContent('Its completeness is unknown');
+    expect(screen.queryByRole('button', { name: /Adopt architecture/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Edit qualification/ })).not.toBeInTheDocument();
     expect(api.updateSpec).not.toHaveBeenCalled();
     expect(api.updateSpecEntity).not.toHaveBeenCalled();
-    expect(onSaved).not.toHaveBeenCalled();
-  });
-  it.each([{ canAdoptContract: false }, { archived: true }])('requires live content edit authority: %j', async restriction => {
-    api.getRequirementVerification.mockResolvedValue(response({ execution_contract: null, archived: restriction.archived ?? false }));
-    render(<RequirementVerificationPanel {...props({ canAdoptContract: restriction.canAdoptContract ?? true })} />); open();
-    await screen.findByText(/Legacy execution contract/);
-    expect(screen.queryByRole('button', { name: 'Adopt architecture and verification contract' })).not.toBeInTheDocument();
-  });
-  it('reports revision rejection without claiming adoption', async () => {
-    api.updateSpec.mockRejectedValue(new Error('Spec version conflict'));
-    render(<RequirementVerificationPanel {...props({ canAdoptContract: true })} />); open();
-    fireEvent.click(await screen.findByRole('button', { name: 'Adopt architecture and verification contract' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('Spec version conflict');
-    expect(onSaved).not.toHaveBeenCalled();
-    expect(screen.queryByText('Joint architecture and verification contract adopted.')).not.toBeInTheDocument();
-  });
-  it('keeps committed adoption when refresh fails and retries only the read', async () => {
-    onSaved.mockRejectedValueOnce(new Error('offline'));
-    render(<RequirementVerificationPanel {...props({ canAdoptContract: true })} />); open();
-    fireEvent.click(await screen.findByRole('button', { name: 'Adopt architecture and verification contract' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('Contract adopted. Refresh failed');
-    fireEvent.click(screen.getByRole('button', { name: 'Reload adopted contract' }));
-    await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(2));
-    expect(api.updateSpec).toHaveBeenCalledOnce();
   });
 });
 

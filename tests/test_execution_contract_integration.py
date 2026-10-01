@@ -39,7 +39,7 @@ async def adopt_fixture(db, tmp_path, monkeypatch):
     }], acceptance_criteria=criteria,
         test_scenarios=[{**scenario, "status": "passed", "evidence": evidence}],
         execution_contract=new_execution_contract(board_id=signed.BOARD_ID, spec_id=signed.SPEC_ID,
-            edition=1, actor_id="author", origin="explicit_revision"))
+            edition=1, actor_id="author", origin="new_spec"))
     await db.execute(update(Spec).where(Spec.id == signed.SPEC_ID).values(**fields))
     await db.commit()
 
@@ -81,16 +81,14 @@ async def test_adopted_writer_requires_explicit_contribution_not_legacy_shorthan
 
 
 @pytest.mark.asyncio
-async def test_historical_records_do_not_acquire_scope_by_reading_after_adoption(ledger, tmp_path, monkeypatch):
+async def test_missing_contract_cannot_write_proof_or_use_old_snapshot_reader(ledger):
     db, store, _ = ledger
-    impl = await delivery.record(store, delivery.command())
-    await db.commit()
-    persisted = await db.get(CardDeliveryEvidenceRecordRow, impl["id"])
-    before = copy.deepcopy(persisted.payload)
-    await adopt_fixture(db, tmp_path, monkeypatch)
-    assert not (await store.projection(signed.BOARD_ID, signed.SPEC_ID))["allowed"]
-    await db.refresh(persisted)
-    assert persisted.payload == before and "contribution_scopes" not in persisted.payload
+    with pytest.raises(ValueError, match="spec_execution_contract_required"):
+        await delivery.record(store, delivery.command())
+    await db.rollback()
+    with pytest.raises(ValueError, match="spec_execution_contract_required"):
+        await store.load_snapshot(DeliveryScope(signed.BOARD_ID, signed.SPEC_ID, 1))
+    assert not (await db.scalars(select(CardDeliveryEvidenceRecordRow))).all()
 
 
 @pytest.mark.asyncio
@@ -168,5 +166,5 @@ async def test_first_start_checks_real_shared_plan_without_requiring_execution(l
     assert blocked.value.details["required_tool"] == "okto_pulse_list_architecture_classifications"
     await db.execute(update(Spec).where(Spec.id == signed.SPEC_ID).values(execution_contract=None))
     await db.commit()
-    with pytest.raises(ValueError, match="spec_execution_contract_adoption_required"):
+    with pytest.raises(ValueError, match="spec_execution_contract_required"):
         await service.require_execution_contract_ready(await service.get_spec(signed.SPEC_ID))

@@ -7,7 +7,7 @@ import type {
   RedactedPolicyComplianceTransitionDecision,
 } from './policy-governance';
 import type { RequirementVerification } from './requirement-verification';
-import type { SpecExecutionContract, SpecExecutionContractAdoption } from './execution-contract';
+import type { SpecExecutionContract } from './execution-contract';
 
 // Card status enum matching backend
 export type CardStatus =
@@ -2113,7 +2113,7 @@ export interface SpecKnowledgeSummary {
 
 // Spec
 export interface Spec extends TaskValidationGateOverride {
-  execution_contract?: SpecExecutionContract | null;
+  execution_contract: SpecExecutionContract;
   id: string;
   board_id: string;
   ideation_id: string | null;
@@ -4226,7 +4226,6 @@ export interface CreateSpecRequest {
 }
 
 export interface UpdateSpecRequest extends TaskValidationGateOverride {
-  adopt_execution_contract?: SpecExecutionContractAdoption;
   title?: string;
   description?: string;
   context?: string;

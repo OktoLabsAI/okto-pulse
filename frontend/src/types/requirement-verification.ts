@@ -58,7 +58,7 @@ export interface RequirementVerificationRow extends VerificationRequirementRef {
   paths_unavailable: boolean;
 }
 export interface RequirementVerificationResponse {
-  execution_contract?: import('./execution-contract').SpecExecutionContract | null;
+  execution_contract: import('./execution-contract').SpecExecutionContract;
   contract_version: 'requirement-verification/v1';
   board_id: string; spec_id: string; spec_version: number; spec_edition: number;
   spec_status: string; archived: boolean;

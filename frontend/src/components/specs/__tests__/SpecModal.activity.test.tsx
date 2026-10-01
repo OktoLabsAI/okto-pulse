@@ -142,6 +142,8 @@ vi.mock('react-hot-toast', () => ({
 }));
 
 const spec: Spec = {
+  execution_contract: { contract_version: 'spec-execution-contract/v1', board_id: 'board-1',
+    spec_id: 'spec-activity-1', adopted_in_edition: 1, actor_id: 'author', origin: 'new_spec' },
   id: 'spec-activity-1',
   board_id: 'board-1',
   ideation_id: null,
@@ -361,6 +363,7 @@ describe('SpecModal Activity tab', () => {
       within(tabList).getAllByRole('tab').map((tab) => tab.textContent),
     ).toEqual([
       'Details',
+      'Coverage',
       'Code Evidence Matrix',
       'Delivery evidence',
       'Project structure',

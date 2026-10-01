@@ -174,6 +174,8 @@ vi.mock('react-hot-toast', () => ({
 }));
 
 const baseSpec: Spec = {
+  execution_contract: { contract_version: 'spec-execution-contract/v1', board_id: 'board-1',
+    spec_id: 'spec-validation-tabs', adopted_in_edition: 1, actor_id: 'author', origin: 'new_spec' },
   id: 'spec-validation-tabs',
   board_id: 'board-1',
   ideation_id: null,
@@ -243,6 +245,7 @@ describe('SpecModal validation navigation', () => {
   it.each(['draft', 'review', 'approved', 'validated', 'in_progress', 'done'] as SpecStatus[])(
     'allows requirement qualification authoring only in an unarchived authorized Draft: %s', async status => {
       apiMock.getRequirementVerification.mockResolvedValue({
+        execution_contract: baseSpec.execution_contract,
         contract_version: 'requirement-verification/v1', board_id: baseSpec.board_id, spec_id: baseSpec.id,
         spec_version: baseSpec.version, spec_edition: baseSpec.edition, population_complete: true,
         population_total: 1, resolved_count: 0, issue_count: 0, next_offset: null,
@@ -261,6 +264,7 @@ describe('SpecModal validation navigation', () => {
       permissionMock.allowed = new Set(['spec.entity.read', 'spec.integration_requirements.read', 'spec.observability_requirements.read', 'spec.structured_entity.functional_requirement.update', 'spec.interact_in.draft'].filter(flag => flag !== missing));
       apiMock.getSpec.mockResolvedValue({ ...baseSpec, archived: missing === 'archived' });
       apiMock.getRequirementVerification.mockResolvedValue({
+        execution_contract: baseSpec.execution_contract,
         contract_version: 'requirement-verification/v1', board_id: baseSpec.board_id, spec_id: baseSpec.id,
         spec_version: baseSpec.version, spec_edition: baseSpec.edition, population_complete: true,
         population_total: 1, resolved_count: 0, issue_count: 0, next_offset: null,

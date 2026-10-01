@@ -105,6 +105,8 @@ vi.mock('react-hot-toast', () => ({
 }));
 
 const baseSpec: Spec = {
+  execution_contract: { contract_version: 'spec-execution-contract/v1', board_id: 'board-1',
+    spec_id: 'spec-quality-tab', adopted_in_edition: 1, actor_id: 'author', origin: 'new_spec' },
   id: 'spec-quality-tab',
   board_id: 'board-1',
   ideation_id: null,

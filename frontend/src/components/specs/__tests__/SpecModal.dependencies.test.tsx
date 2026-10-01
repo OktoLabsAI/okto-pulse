@@ -95,6 +95,8 @@ const readiness: SpecDependencyReadiness = {
 };
 
 const spec: Spec = {
+  execution_contract: { contract_version: 'spec-execution-contract/v1', board_id: 'board-1',
+    spec_id: 'spec-1', adopted_in_edition: 1, actor_id: 'author', origin: 'new_spec' },
   id: 'spec-1',
   board_id: 'board-1',
   ideation_id: 'ideation-1',
