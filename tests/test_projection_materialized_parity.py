@@ -213,6 +213,57 @@ async def test_spec_relationships_converge_after_churn_and_clean_rebuild(tmp_pat
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(480)
+async def test_reordering_fr_criteria_and_scenarios_preserves_native_ids_and_relations(tmp_path):
+    """KG-03: stable authored IDs survive each independent collection reorder."""
+    def identities(graph):
+        reader = make_grafx_logical_source(graph, scope='board').open_snapshot()
+        try:
+            return {(node.type_name, node.properties['source_artifact_ref']): node.key
+                    for batch in reader.iter_nodes(batch_size=500) for node in batch
+                    if any(str(node.properties.get('source_artifact_ref', '')).startswith(prefix)
+                           for prefix in ('spec:spec:fr:', 'spec:spec:ac:', 'spec:spec:test_scenario:'))}
+        finally:
+            reader.close()
+
+    async def project(factory, identity):
+        async with factory() as session:
+            session.add(ConsolidationQueue(id=identity, board_id='board', artifact_type='spec',
+                artifact_id='spec', source='state_transition'))
+            await session.commit()
+        assert await ConsolidationProcessor(relational_scope_factory=factory).process_batch() == 1
+        async with factory() as session:
+            assert not list(await session.scalars(select(ConsolidationQueue.id)))
+
+    async def exercise(factory, graph):
+        async with factory() as session:
+            spec = await session.get(Spec, 'spec')
+            spec.test_scenarios = [*spec.test_scenarios, {
+                'id': 'ts_two', 'title': 'Other scenario', 'linked_criteria': ['ac_one']}]
+            await session.commit()
+        await project(factory, 'add-second-scenario')
+        before_ids = identities(graph)
+        before_relations = relationship_set(graph)
+        assert len(before_ids) == 6, before_ids
+        tests = {edge[1:3] for edge in before_relations if edge[3] == 'tests/ac_match@v2.1'}
+        assert tests == {('spec:spec:test_scenario:ts_one', 'spec:spec:ac:ac_two'),
+                         ('spec:spec:test_scenario:ts_two', 'spec:spec:ac:ac_one')}
+        for collection in ('functional_requirements', 'acceptance_criteria', 'test_scenarios'):
+            async with factory() as session:
+                spec = await session.get(Spec, 'spec')
+                setattr(spec, collection, list(reversed(getattr(spec, collection))))
+                await session.commit()
+            await project(factory, 'reorder-' + collection)
+            assert identities(graph) == before_ids, collection
+            assert relationship_set(graph) == before_relations, collection
+        await project(factory, 'reordered-replay')
+        assert identities(graph) == before_ids
+        assert relationship_set(graph) == before_relations
+
+    await materialize(tmp_path / 'reordered', incremental=False, exercise=exercise)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(480)
 async def test_spec_without_links_characterizes_rebuild_guard_conflict(tmp_path, monkeypatch):
     """Known KG-10 conflict, pending the guard decision recorded in the ledger.
 
