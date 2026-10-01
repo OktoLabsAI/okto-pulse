@@ -1,11 +1,12 @@
 """AC-ARQ-15: real transition admission on disposable relational state."""
 
+import copy
 import httpx
 import pytest
 from types import SimpleNamespace
-from sqlalchemy import update
+from sqlalchemy import func, select, update
 
-from okto_pulse.community.adapters.sqlalchemy_models import Card, Spec
+from okto_pulse.community.adapters.sqlalchemy_models import Board, Card, DomainEventRow, Spec, SpecHistory
 from okto_pulse.community.adapters.relational_effects import register_community_relational_effects
 from okto_pulse.community.adapters.sqlalchemy_knowledge_propagation import CommunitySqlAlchemyKnowledgePropagationStore
 from okto_pulse.core.ports.knowledge_propagation import register_knowledge_propagation_port
@@ -142,3 +143,90 @@ async def test_pending_architecture_blocks_actual_start_without_workflow_mutatio
         assert "evidence" not in row.test_scenarios[0]
         assert (await db.get(Card, "task", populate_existing=True)).status == "not_started"
         assert (await db.get(Card, "test", populate_existing=True)).status == "not_started"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("gap", ["contribution", "test_owner"])
+async def test_approved_spec_cannot_start_with_incomplete_decomposition(classified_context, tmp_path, gap):
+    """BASE T06: content approval cannot substitute for a complete execution plan."""
+    db = classified_context
+    app, planned, fields = await complete_start_fixture(db, tmp_path)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        population = await read(db)
+        classified = await client.post("/api/v1/boards/board/specs/spec/architecture-classifications", json={
+            "expected_spec_version": planned.version, "expected_spec_edition": planned.edition,
+            "idempotency_key": "classify-for-planning", "decisions": [{
+                "candidate_ref": candidate.id, "expected_source_digest": candidate.source_digest,
+                "disposition": "context_only", "reason": "External contract outside this procedure view",
+            } for candidate in population.candidates],
+        })
+        assert classified.status_code == 200, classified.text
+        # The accepted evaluation is seeded; no planning gate is substituted.
+        await db.execute(update(Spec).where(Spec.id == "spec").values(status="validated"))
+        if gap == "contribution":
+            incomplete = copy.deepcopy(fields["functional_requirements"])
+            incomplete[0]["implementation_plan"] = {"contributions": []}
+            await db.execute(update(Spec).where(Spec.id == "spec").values(functional_requirements=incomplete))
+        else:
+            await db.execute(update(Card).where(Card.id == "test").values(test_scenario_ids=[]))
+        await db.commit()
+        row = await db.get(Spec, "spec", populate_existing=True)
+        preserved = copy.deepcopy((row.evaluations, row.validations, row.edition, row.current_validation_id))
+        blocked = await client.post("/api/v1/specs/spec/move", json={"status": "in_progress"})
+        assert blocked.status_code == 400, blocked.text
+        assert "spec_execution_plan_incomplete" in blocked.text, blocked.text
+        await db.refresh(row)
+        assert row.status == "validated"
+        assert (row.evaluations, row.validations, row.edition, row.current_validation_id) == preserved
+        assert (await db.get(Card, "task", populate_existing=True)).status == "not_started"
+        # Repair only the missing plan fact; the very same approval now permits start.
+        if gap == "contribution":
+            await db.execute(update(Spec).where(Spec.id == "spec").values(functional_requirements=fields["functional_requirements"]))
+        else:
+            await db.execute(update(Card).where(Card.id == "test").values(test_scenario_ids=["scenario"]))
+        await db.commit()
+        started = await client.post("/api/v1/specs/spec/move", json={"status": "in_progress"})
+        assert started.status_code == 200, started.text
+        await db.refresh(row)
+        assert row.status == "in_progress"
+        assert (row.evaluations, row.validations, row.edition, row.current_validation_id) == preserved
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("verification", ["absent", "unexecuted"])
+async def test_task_approvals_do_not_replace_spec_integrated_verification(adopted_context, tmp_path, verification):
+    """BASE T07: completed/reviewed tasks cannot mint Spec-level test credit."""
+    db = adopted_context
+    app, _, fields = await complete_start_fixture(db, tmp_path)
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    from okto_pulse.community.adapters.composition import configure_community_kg_registry
+    from okto_pulse.community.config import CommunitySettings
+    configure_community_kg_registry(async_sessionmaker(db.bind), settings=CommunitySettings(
+        data_dir=str(tmp_path / "runtime"), kg_base_dir=str(tmp_path / "kg"),
+        kg_embedding_mode="stub", kg_embedding_dim=8,
+    ))
+    # Approved task results are fixture inputs. T04 exercises actual submission.
+    approved = [{"reviewer_id": "independent", "recommendation": "approve", "confidence": 95}]
+    await db.execute(update(Card).where(Card.id == "task").values(status="done", validations=approved))
+    await db.execute(update(Card).where(Card.id == "test").values(status="done"))
+    await db.execute(update(Spec).where(Spec.id == "spec").values(
+        status="in_progress", test_scenarios=[] if verification == "absent" else fields["test_scenarios"]))
+    board = await db.get(Board, "board")
+    board.settings = {**(board.settings or {}), "skip_cognitive_consolidation": True,
+                      "delivery_evidence_gate": "blocking"}
+    await db.commit()
+    before_events = await db.scalar(select(func.count()).select_from(DomainEventRow))
+    before_history = await db.scalar(select(func.count()).select_from(SpecHistory))
+    row = await db.get(Spec, "spec", populate_existing=True)
+    preserved = copy.deepcopy((row.evaluations, row.edition, row.version, row.test_scenarios))
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        blocked = await client.post("/api/v1/specs/spec/move", json={"status": "done"})
+    assert blocked.status_code == 400, blocked.text
+    expected = "lack test scenarios" if verification == "absent" else "delivery_evidence_incomplete"
+    assert expected in blocked.text, blocked.text
+    await db.refresh(row)
+    assert row.status == "in_progress"
+    assert (row.evaluations, row.edition, row.version, row.test_scenarios) == preserved
+    assert (await db.get(Card, "task", populate_existing=True)).validations == approved
+    assert await db.scalar(select(func.count()).select_from(DomainEventRow)) == before_events
+    assert await db.scalar(select(func.count()).select_from(SpecHistory)) == before_history

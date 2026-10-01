@@ -1,8 +1,10 @@
 import pytest
 from sqlalchemy import update
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from test_delivery_progress import db as progress_db, command, record
 from okto_pulse.community.adapters.sqlalchemy_models import Card
+from okto_pulse.community.adapters.sqlalchemy_delivery_evidence import CommunityDeliveryEvidenceStore
 from okto_pulse.core.models.delivery_evidence import DeliveryEvidenceReadQuery
 
 db = progress_db
@@ -14,14 +16,21 @@ def query():
 
 @pytest.mark.asyncio
 async def test_resume_does_not_replace_old_work_with_short_latest_note(db, monkeypatch):
-    _, session, store = db
+    engine, session, store = db
     original = await record(store, command())
     await record(store, command(idempotency_key="short", justification="Still investigating"))
     await session.commit()
+    await session.close()
     async def forbidden(*args, **kwargs):
         raise AssertionError("Resume must not load every Card's rollup")
-    monkeypatch.setattr(store, "load_rollup_snapshot", forbidden)
-    result = await store.card_resume(query(), actor_id="successor")
+    # BASE T05: the successor receives only persisted IDs, with a fresh SQL
+    # session and store; no writer object or chat state participates in the read.
+    async with async_sessionmaker(engine, expire_on_commit=False)() as successor:
+        reader = CommunityDeliveryEvidenceStore(successor)
+        monkeypatch.setattr(reader, "load_rollup_snapshot", forbidden)
+        result = await reader.card_resume(query(), actor_id="successor")
+    assert (result["board_id"], result["spec_id"], result["card_id"]) == ("b", "s", "c")
+    assert result["status"] == "in_progress" and result["title"] == "Card"
     assert result["latest_checkpoint"]["summary"] == "Still investigating"
     assert result["progress"]["items"][1]["id"] == original["id"]
     assert result["progress"]["items"][1]["actor_id"] == "agent"
