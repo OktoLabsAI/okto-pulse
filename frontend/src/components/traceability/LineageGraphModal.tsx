@@ -33,6 +33,7 @@ import {
 import toast from 'react-hot-toast';
 import { lineageStatusColor } from './lineageStatusStyle';
 import { useMeasuredLineageNodes } from './useMeasuredLineageNodes';
+import { LineagePathsPanel } from './LineagePathsPanel';
 import { useModalStack } from '@/contexts/ModalStackContext';
 import { useDashboardApi } from '@/services/api';
 import { useDashboardStore } from '@/store/dashboard';
@@ -910,6 +911,7 @@ export function LineageGraphModal({ boardId }: Props) {
   const [lineageRevision, setLineageRevision] = useState(0);
   const [dependencyRevision, setDependencyRevision] = useState(0);
   const [viewMode, setViewMode] = useState<LineageViewMode>('lineage');
+  const [pathsSubject, setPathsSubject] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [dependencyLoading, setDependencyLoading] = useState(false);
@@ -941,6 +943,7 @@ export function LineageGraphModal({ boardId }: Props) {
       setLineageRevision(0);
       setDependencyRevision(0);
       setViewMode('lineage');
+      setPathsSubject(null);
       setSelectedNodeId(null);
       setError(null);
       setDependencyError(null);
@@ -1206,6 +1209,11 @@ export function LineageGraphModal({ boardId }: Props) {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <button type="button" className="rounded border px-2 py-1 text-xs dark:border-gray-700"
+              aria-pressed={pathsSubject !== null}
+              onClick={() => setPathsSubject(pathsSubject ? null : `${semanticEntityType(request.entityType)}:${request.entityId}`)}>
+              {pathsSubject ? 'Back to graph' : 'Source paths'}
+            </button>
             {dependencyViewSupported && (
               <div
                 role="group"
@@ -1223,7 +1231,7 @@ export function LineageGraphModal({ boardId }: Props) {
                       type="button"
                       aria-pressed={active}
                       aria-controls="lineage-graph-region"
-                      onClick={() => setViewMode(mode)}
+                      onClick={() => { setPathsSubject(null); setViewMode(mode); }}
                       className={[
                         'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-semibold transition-colors',
                         active
@@ -1276,12 +1284,16 @@ export function LineageGraphModal({ boardId }: Props) {
           </div>
         </div>
 
+        {pathsSubject && <div className="flex-1 overflow-auto p-5">
+          <LineagePathsPanel key={`${boardId}:${pathsSubject}`} boardId={boardId} subjectRef={pathsSubject}
+            revision={lineageRevision} onContinue={setPathsSubject} />
+        </div>}
         <div
           id="lineage-graph-region"
           role="region"
           aria-label={`${viewMode === 'dependencies' ? 'Dependencies' : 'Origin and derivation'} graph for ${activeGraphTitle}`}
           aria-busy={loading || (viewMode === 'dependencies' && dependencyLoading)}
-          className="relative flex-1 bg-gray-50 dark:bg-gray-950"
+          className={pathsSubject ? 'hidden' : 'relative flex-1 bg-gray-50 dark:bg-gray-950'}
         >
           {(loading || (viewMode === 'dependencies' && dependencyLoading)) && (
             <div

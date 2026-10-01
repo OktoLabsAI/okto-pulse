@@ -22,6 +22,12 @@ const apiMock = vi.hoisted(() => ({
 const pushMock = vi.hoisted(() => vi.fn());
 const openCardModalMock = vi.hoisted(() => vi.fn());
 
+vi.mock('../LineagePathsPanel', () => ({ LineagePathsPanel: ({ boardId, subjectRef, onContinue }: {
+  boardId: string; subjectRef: string; onContinue: (subjectRef: string) => void;
+}) => <div data-testid="source-paths" data-board={boardId} data-subject={subjectRef}>
+  <button onClick={() => onContinue('spec:frontier')}>Continue source frontier</button>
+</div> }));
+
 vi.mock('@/services/api', () => ({
   useDashboardApi: () => apiMock,
 }));
@@ -499,6 +505,21 @@ describe('LineageGraphModal', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     apiMock.getLineageGraph.mockResolvedValue(graph);
+  });
+
+  it('loads source paths on demand and continues from a canonical frontier without opening work', async () => {
+    render(<LineageGraphModal boardId="board-1" />);
+    act(() => openLineageGraph('spec', 'spec-a'));
+    await waitFor(() => expect(apiMock.getLineageGraph).toHaveBeenCalledTimes(1));
+    expect(screen.queryByTestId('source-paths')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Source paths' }));
+    expect(screen.getByTestId('source-paths')).toHaveAttribute('data-subject', 'spec:spec-a');
+    fireEvent.click(screen.getByRole('button', { name: 'Continue source frontier' }));
+    expect(screen.getByTestId('source-paths')).toHaveAttribute('data-subject', 'spec:frontier');
+    expect(pushMock).not.toHaveBeenCalled();
+    expect(openCardModalMock).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Back to graph' }));
+    expect(screen.queryByTestId('source-paths')).not.toBeInTheDocument();
   });
 
   it('shows tasks directly after Specs without a Sprint stage or navigation target', async () => {

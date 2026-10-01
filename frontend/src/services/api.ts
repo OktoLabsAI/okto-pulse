@@ -2767,6 +2767,17 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       URL.revokeObjectURL(url);
     },
 
+    async getSourceLineage(
+      boardId: string, query: import('@/components/traceability/lineageQueryTypes').LineageQuery,
+      signal?: AbortSignal,
+    ): Promise<import('@/components/traceability/lineageQueryTypes').SourceLineageResponse> {
+      const params = new URLSearchParams();
+      Object.entries(query).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') params.set(key, String(value));
+      });
+      return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/lineage?${params}`, { signal });
+    },
+
     async getDecisionImpact(
       boardId: string, specId: string, decisionId: string,
       query: import('@/components/specs/decisionImpactTypes').ImpactQuery = {},

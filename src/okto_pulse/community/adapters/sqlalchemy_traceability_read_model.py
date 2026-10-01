@@ -49,6 +49,11 @@ _DEPENDENCY_GRAPH_EDGE_LIMIT = 10_000
 _DEPENDENCY_GRAPH_NODE_LIMIT = 2_000
 
 
+async def read_lineage_snapshot(context, query, *, timeout_ms):
+    from okto_pulse.community.adapters.sqlalchemy_lineage_query import read_lineage_snapshot as read
+    return await read(context, query, timeout_ms=timeout_ms)
+
+
 class _LegacyTraceabilityReadError(Exception):
     """Contextual error raised while resolving traceability read models."""
 
