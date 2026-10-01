@@ -6,7 +6,9 @@ population/read behavior, not public authorization or Spec start admission.
 
 import pytest
 import pytest_asyncio
+from types import SimpleNamespace
 from sqlalchemy import event, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from okto_pulse.community.adapters.sqlalchemy_architecture_persistence import (
@@ -27,6 +29,41 @@ from okto_pulse.core.ports.architecture_persistence import (
 from okto_pulse.core.ports.relational_services import register_resource_gate_adapter_factory
 from okto_pulse.core.services.architecture_candidates import load_spec_architecture_candidates
 from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+from okto_pulse.core.services.resource_lineage import (
+    LineageEntityRef, ResolvedResourceLineageService, ResourceLineageError,
+)
+
+
+def adoption(spec_id="spec", board_id="board", roots=()):
+    return ArchitectureAdoptionScope(
+        board_id=board_id, spec_id=spec_id, adopted_in_edition=1,
+        actor_id="author", inherited_resource_ids=tuple(f"architecture:{root}" for root in roots),
+    ).model_dump(mode="json")
+
+
+@pytest.mark.parametrize("entity_type", ["spec", "card"])
+def test_absent_architecture_scope_is_rejected_without_inferred_inheritance(entity_type):
+    spec = LineageEntityRef(entity_type="spec", entity_id="spec", title="Spec",
+                           entity=SimpleNamespace(architecture_adoption=None, edition=1))
+    owner = spec if entity_type == "spec" else LineageEntityRef(
+        entity_type="card", entity_id="card", title="Card", entity=SimpleNamespace(spec_id="spec"),
+    )
+    inherited = {"architecture": [{"id": "parent-design", "effective": True}]}
+    resolver = ResolvedResourceLineageService(None)
+    with pytest.raises(ResourceLineageError) as rejected:
+        resolver._apply_architecture_adoption("board", owner, [spec], {}, inherited)
+    assert rejected.value.code == "architecture_adoption_invalid"
+    assert inherited == {"architecture": [{"id": "parent-design", "effective": True}]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fields", [{}, {"architecture_adoption": None}])
+async def test_new_storage_rejects_missing_adoption_scope(adopted_context, fields):
+    db = adopted_context
+    db.add(Spec(id="invalid", board_id="board", title="Invalid", created_by="author", **fields))
+    with pytest.raises(IntegrityError):
+        await db.flush()
+    await db.rollback()
 
 
 @pytest_asyncio.fixture
@@ -54,8 +91,9 @@ async def adopted_context(tmp_path):
             await db.flush()
             db.add_all([
                 Spec(id="spec", board_id="board", refinement_id="refinement",
-                     title="Spec", created_by="author", edition=2),
-                Spec(id="other-spec", board_id="other-board", title="Private", created_by="someone-else"),
+                     title="Spec", created_by="author", edition=2, architecture_adoption=adoption()),
+                Spec(id="other-spec", board_id="other-board", title="Private", created_by="someone-else",
+                     architecture_adoption=adoption("other-spec", "other-board")),
             ])
             await db.commit()
             yield db
@@ -83,6 +121,7 @@ async def read(db):
 @pytest.mark.asyncio
 async def test_nearest_adopted_snapshot_survives_origin_change_and_keeps_other_roots(adopted_context):
     db = adopted_context
+    (await db.get(Spec, "spec")).architecture_adoption = adoption(roots=("origin", "unrelated"))
     db.add_all([
         design("origin", "ideation", "idea", value="new-origin", version=3),
         design("adopted-copy", "refinement", "refinement", root="origin", value="adopted"),
@@ -107,6 +146,7 @@ async def test_nearest_adopted_snapshot_survives_origin_change_and_keeps_other_r
 @pytest.mark.asyncio
 async def test_direct_adoption_shadows_only_its_own_origin(adopted_context):
     db = adopted_context
+    (await db.get(Spec, "spec")).architecture_adoption = adoption(roots=("origin", "unrelated"))
     db.add_all([
         design("origin", "ideation", "idea", value="original"),
         design("ref-copy", "refinement", "refinement", root="origin", value="refinement"),

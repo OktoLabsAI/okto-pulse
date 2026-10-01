@@ -1,7 +1,6 @@
 """Prospective selection through real derivation and persisted canonical lineage.
 
-The earlier legacy reproduction is retained in commit aea2d9e and the ledger.
-Legacy NULL scopes remain covered by test_architecture_candidates_integration.
+Every new Spec persists an explicit selection; absence is invalid.
 """
 
 import pytest
@@ -17,8 +16,9 @@ from okto_pulse.core.services.resource_lineage import ResolvedResourceLineageSer
 
 from test_spec_b_knowledge_propagation_e2e import (
     ACTOR_ID, BOARD_ID, REST_ACTOR, _seed_refinement_sources,
-    spec_b_runtime as spec_b_runtime,
 )
+
+pytest_plugins = ["test_spec_b_knowledge_propagation_e2e"]
 
 
 def _source(design_id):
@@ -75,10 +75,8 @@ async def test_new_derive_persists_selection_for_candidates_coverage_and_card_co
                 architecture_propagation_mode=mode,
             ), actor=REST_ACTOR, uow=uow,
         )
-        spec_id = result.spec.id
-        summary = result.resource_propagation["by_type"]["architecture"]
-        assert summary["requested_ids"] == (selection or [])
-        assert summary["copied"] == expected_copies
+        spec_id = result.knowledge_mutation.receipt.target.target_id
+        assert result.knowledge_mutation.result_v2.creation_result["spec_id"] == spec_id
 
     # Reopen after commit: transient write-result attachments cannot establish
     # durable adoption authority for subsequent reads or the future start gate.
@@ -175,6 +173,9 @@ async def test_architecture_creation_and_read_do_not_gate_on_unrelated_resource_
             actor=REST_ACTOR, uow=uow,
         )
     async with runtime.sessions() as db:
-        population = await load_spec_architecture_candidates(db, board_id=BOARD_ID, spec_id=result.spec.id)
+        population = await load_spec_architecture_candidates(
+            db, board_id=BOARD_ID,
+            spec_id=result.knowledge_mutation.receipt.target.target_id,
+        )
         assert population.resolved
         assert {item.root_design_id for item in population.candidates} == {"chosen"}

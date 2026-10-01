@@ -1196,8 +1196,8 @@ class Spec(Base):
 
     __tablename__ = "specs"
     # Versioned selection only; Design snapshots remain the contract store.
-    # NULL is deliberately legacy inheritance, not an empty adoption.
-    architecture_adoption: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Required native selection; readers never infer inheritance from absence.
+    architecture_adoption: Mapped[dict] = mapped_column(JSON(none_as_null=True), nullable=False)
     execution_contract: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     __table_args__ = (
         CheckConstraint("edition >= 1", name="ck_spec_edition"),
