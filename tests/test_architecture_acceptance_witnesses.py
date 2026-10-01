@@ -301,3 +301,52 @@ async def test_promoted_ir_cannot_be_dismissed_as_context_in_approved_scope(clas
     with pytest.raises(ValueError, match='delivery_evidence_incomplete'):
         await require_spec_delivery(db, spec, board=await db.get(Board, 'board'))
     assert await writes.snapshot(db) == before
+
+
+@pytest.mark.asyncio
+async def test_source_withdrawal_preserves_promoted_obligations_and_classification_history(classified_context, tmp_path):
+    from types import SimpleNamespace
+    from okto_pulse.community.adapters.relational_effects import register_community_relational_effects
+    from okto_pulse.community.api.architecture import router
+    from okto_pulse.community.adapters.sqlalchemy_models import ArchitectureCandidateDecisionRow, DomainEventRow
+    from okto_pulse.community.adapters.sqlalchemy_knowledge_propagation import CommunitySqlAlchemyKnowledgePropagationStore
+    from okto_pulse.core.ports.knowledge_propagation import register_knowledge_propagation_port
+    from okto_pulse.core.services.delivery_evidence import require_spec_delivery
+    from okto_pulse.core.services.main import SpecService
+    from test_delivery_reused_impact import register_report_adapters
+    db = classified_context
+    register_report_adapters()
+    register_community_relational_effects(settings=SimpleNamespace(data_dir=str(tmp_path), port=1, environment='test'))
+    saved = await writes.execute(db, await writes.batch_for(db))
+    candidate = next(item for item in (await load_spec_architecture_candidates(
+        db, board_id='board', spec_id='spec')).candidates if item.root_design_id == 'promote')
+    await allocated_ir_snapshot(db, saved['created_ir_ids'][0])
+    before = copy.deepcopy((await db.get(Spec, 'spec', populate_existing=True)).integration_requirements)
+    history = {item.id: copy.deepcopy(item.payload) for item in
+        (await db.scalars(select(ArchitectureCandidateDecisionRow))).all()}
+    previous_events = set(await db.scalars(select(DomainEventRow.id)))
+    app, factory = transports.application(db)
+    app.include_router(router, prefix='/api/v1')
+    register_knowledge_propagation_port(CommunitySqlAlchemyKnowledgePropagationStore(factory))
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+        removed = await client.delete('/api/v1/architecture/promote')
+    assert removed.status_code == 204, removed.text
+    db.expire_all()
+    assert await db.get(ArchitectureDesign, 'promote') is None
+    spec = await db.get(Spec, 'spec')
+    assert spec.integration_requirements == before
+    assert {item.id: item.payload for item in
+        (await db.scalars(select(ArchitectureCandidateDecisionRow))).all()} == history
+    detail = (await review(db, candidate_id=candidate.id, source_digest=candidate.source_digest))['items'][0]
+    assert detail['state'] == 'retired'
+    assert detail['current_contract'] is None and detail['analyzed_contract'] == candidate.contract
+    assert set(detail['decisions'][0]['integration_requirement_refs']) == set(saved['created_ir_ids'])
+    assert detail['decisions'][0]['adopted_sources'] == [{'design_id': 'promote', 'revision': 1}]
+    deletion_events = [item for item in (await db.scalars(select(DomainEventRow))).all()
+                       if item.id not in previous_events and item.event_type == 'spec.semantic_changed']
+    assert any(item.actor_id == 'author' and item.payload_json.get('spec_id') == 'spec'
+               and 'architecture_designs' in item.payload_json.get('changed_fields', []) for item in deletion_events)
+    with pytest.raises(ValueError, match='spec_execution_plan_incomplete'):
+        await SpecService(db).require_execution_contract_ready(spec)
+    with pytest.raises(ValueError, match='delivery_evidence_incomplete'):
+        await require_spec_delivery(db, spec, board=await db.get(Board, 'board'))
