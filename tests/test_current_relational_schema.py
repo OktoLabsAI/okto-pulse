@@ -67,6 +67,7 @@ async def test_fresh_schema_restart_preserves_data_and_identity(tmp_path, contra
     "PRAGMA user_version=399",
     "PRAGMA application_id=0",
     "ALTER TABLE cards ADD COLUMN sprint_id TEXT",
+    "ALTER TABLE cards ADD COLUMN knowledge_bases JSON",
     "CREATE TABLE sprints (id TEXT PRIMARY KEY)",
     "DROP INDEX ix_boards_realm_id",
     "DROP TRIGGER trg_global_discovery_source_revision_singleton_delete_guard",

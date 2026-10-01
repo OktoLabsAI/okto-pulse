@@ -172,6 +172,7 @@ import type {
   ClearResourceNotApplicableRequest,
   CardCreateKnowledgeMutationResponse,
   DeriveSpecKnowledgeRequest,
+  DeriveIdeationSpecRequest,
   DeriveSpecKnowledgeResponse,
   KnowledgeAssignmentDropRequest,
   KnowledgeAssignmentRefreshRequest,
@@ -278,7 +279,7 @@ export type BoardRefinementPageItem = RefinementSummary & {
 };
 
 function isCardCreateKnowledgeMutationResponse(
-  response: Card | CardCreateKnowledgeMutationResponse,
+  response: unknown,
 ): response is CardCreateKnowledgeMutationResponse {
   return (
     typeof response === 'object'
@@ -874,14 +875,15 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
 
     async createCard(boardId: string, data: CreateCardRequest): Promise<Card> {
       const response = await apiClient.fetchJson<
-        Card | CardCreateKnowledgeMutationResponse
+        CardCreateKnowledgeMutationResponse
       >(`/boards/${boardId}/cards`, {
         method: 'POST',
         body: JSON.stringify(data),
       });
-      return isCardCreateKnowledgeMutationResponse(response)
-        ? response.card
-        : response;
+      if (!isCardCreateKnowledgeMutationResponse(response)) {
+        throw new Error('Invalid card creation receipt');
+      }
+      return response.card;
     },
 
     async getCard(cardId: string): Promise<Card> {
@@ -1939,9 +1941,11 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       });
     },
 
-    async deriveSpecFromIdeation(ideationId: string): Promise<Spec> {
-      return apiClient.fetchJson<Spec>(`/ideations/${ideationId}/derive-spec`, {
-        method: 'POST',
+    async deriveSpecFromIdeation(
+      ideationId: string, data: DeriveIdeationSpecRequest,
+    ): Promise<DeriveSpecKnowledgeResponse> {
+      return apiClient.fetchJson<DeriveSpecKnowledgeResponse>(`/ideations/${ideationId}/derive-spec`, {
+        method: 'POST', body: JSON.stringify(data),
       });
     },
 
@@ -2095,24 +2099,14 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       await apiClient.fetch(`/refinements/${refinementId}`, { method: 'DELETE' });
     },
 
-    async deriveSpecFromRefinement<
-      TRequest extends DeriveSpecKnowledgeRequest | undefined = undefined,
-    >(
-      refinementId: string,
-      data?: TRequest,
-    ): Promise<
-      TRequest extends DeriveSpecKnowledgeRequest
-        ? DeriveSpecKnowledgeResponse
-        : Spec
-    > {
-      type Response = TRequest extends DeriveSpecKnowledgeRequest
-        ? DeriveSpecKnowledgeResponse
-        : Spec;
+    async deriveSpecFromRefinement(
+      refinementId: string, data?: DeriveSpecKnowledgeRequest,
+    ): Promise<DeriveSpecKnowledgeResponse> {
       const options: RequestInit = { method: 'POST' };
       if (data !== undefined) {
         options.body = JSON.stringify(data);
       }
-      return apiClient.fetchJson<Response>(
+      return apiClient.fetchJson<DeriveSpecKnowledgeResponse>(
         `/refinements/${refinementId}/derive-spec`,
         options,
       );

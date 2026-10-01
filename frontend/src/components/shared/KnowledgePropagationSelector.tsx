@@ -47,9 +47,6 @@ const ACTIONS: Array<{
 
 const ORIGIN_CLASS_LABELS: Record<string, string> = {
   v2: 'v2',
-  legacy_all: 'legacy all',
-  selected_legacy: 'selected legacy',
-  legacy_unresolved: 'legacy unresolved',
 };
 
 function canonicalIds(ids: string[]): string[] {

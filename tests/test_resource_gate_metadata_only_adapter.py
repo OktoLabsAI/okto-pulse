@@ -104,9 +104,7 @@ def test_gate_profile_projects_only_persisted_metadata(
                     description=body,
                     content=body,
                     source_version=7,
-                    root_source_kb_id="kb-root",
-                    immediate_parent_kb_id="kb-parent",
-                    source_kb_id="kb-parent",
+                    root_source_kb_id="kb-1",
                     content_hash=persisted_hash,
                     created_by="owner",
                 )
@@ -330,9 +328,7 @@ def test_gate_profile_filters_v2_snapshot_from_persisted_stamps_only(
                     target_type="card",
                     target_id="card-3",
                     scope_revision=1,
-                    v2_active=True,
                     selection_state="explicit_ids",
-                    v2_activated_at=occurred_at,
                 )
             )
             await db.flush()
@@ -472,16 +468,6 @@ def test_every_metadata_collection_fails_closed_on_limit_plus_one(
                         created_by="owner",
                     ),
                     Card(
-                        id="overflow-card-json",
-                        board_id="overflow-board",
-                        title="Card JSON owner",
-                        knowledge_bases=[
-                            {"id": "card-kb-a", "title": "A", "content": "body-a"},
-                            {"id": "card-kb-b", "title": "B", "content": "body-b"},
-                        ],
-                        created_by="owner",
-                    ),
-                    Card(
                         id="overflow-assignment",
                         board_id="overflow-board",
                         title="Assignment owner",
@@ -576,9 +562,7 @@ def test_every_metadata_collection_fails_closed_on_limit_plus_one(
                         target_type="card",
                         target_id="overflow-assignment",
                         scope_revision=1,
-                        v2_active=True,
                         selection_state="explicit_ids",
-                        v2_activated_at=occurred_at,
                     ),
                     KnowledgePropagationScopeRecord(
                         id="overflow-tombstone-scope",
@@ -586,9 +570,7 @@ def test_every_metadata_collection_fails_closed_on_limit_plus_one(
                         target_type="card",
                         target_id="overflow-tombstone",
                         scope_revision=1,
-                        v2_active=True,
                         selection_state="explicit_empty",
-                        v2_activated_at=occurred_at,
                     ),
                 ]
             )
@@ -643,7 +625,6 @@ def test_every_metadata_collection_fails_closed_on_limit_plus_one(
                     "architecture_finding_run",
                 ),
                 ("spec", "overflow-mockup", "mockup"),
-                ("card", "overflow-card-json", "knowledge_base"),
                 ("spec", "overflow-kb-row", "knowledge_base"),
                 ("card", "overflow-assignment", "knowledge_assignment"),
                 ("card", "overflow-tombstone", "knowledge_tombstone"),
@@ -686,4 +667,4 @@ def test_every_metadata_collection_fails_closed_on_limit_plus_one(
         return errors
 
     errors = asyncio.run(drive())
-    assert len(errors) == 7
+    assert len(errors) == 6

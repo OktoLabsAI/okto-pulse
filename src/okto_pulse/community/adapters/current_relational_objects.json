@@ -1501,18 +1501,6 @@
   },
   {
     "kind": "trigger",
-    "name": "trg_knowledge_propagation_v2_knowledge_propagation_scopes_activation_insert",
-    "table": "knowledge_propagation_scopes",
-    "sql": "CREATE TRIGGER \"trg_knowledge_propagation_v2_knowledge_propagation_scopes_activation_insert\"\nBEFORE INSERT ON \"knowledge_propagation_scopes\"\nWHEN (\n        NEW.v2_active = 1\n        AND NEW.v2_activated_at IS NULL\n    )\n    OR (\n        NEW.v2_active = 0\n        AND NEW.v2_activated_at IS NOT NULL\n    )\nBEGIN\n    SELECT RAISE(\n        ABORT,\n        'knowledge_propagation_v2_activation_invalid'\n    );\nEND"
-  },
-  {
-    "kind": "trigger",
-    "name": "trg_knowledge_propagation_v2_knowledge_propagation_scopes_activation_update",
-    "table": "knowledge_propagation_scopes",
-    "sql": "CREATE TRIGGER \"trg_knowledge_propagation_v2_knowledge_propagation_scopes_activation_update\"\nBEFORE UPDATE OF v2_active, v2_activated_at ON \"knowledge_propagation_scopes\"\nWHEN (\n        NEW.v2_active = 0\n        AND NEW.v2_activated_at IS NOT NULL\n    )\n    OR (\n        OLD.v2_activated_at IS NOT NULL\n        AND NEW.v2_activated_at IS NOT OLD.v2_activated_at\n    )\n    OR (\n        OLD.v2_activated_at IS NULL\n        AND NEW.v2_activated_at IS NOT NULL\n        AND NOT (\n            OLD.v2_active = 0\n            AND NEW.v2_active = 1\n        )\n    )\n    OR (\n        NEW.v2_active = 1\n        AND NEW.v2_activated_at IS NULL\n    )\nBEGIN\n    SELECT RAISE(\n        ABORT,\n        'knowledge_propagation_v2_activation_immutable'\n    );\nEND"
-  },
-  {
-    "kind": "trigger",
     "name": "trg_knowledge_propagation_v2_knowledge_propagation_snapshots_closure_update",
     "table": "knowledge_propagation_snapshots",
     "sql": "CREATE TRIGGER \"trg_knowledge_propagation_v2_knowledge_propagation_snapshots_closure_update\"\nBEFORE UPDATE OF effective_to ON \"knowledge_propagation_snapshots\"\nWHEN OLD.effective_to IS NOT NULL\n    AND NEW.effective_to IS NOT OLD.effective_to\nBEGIN\n    SELECT RAISE(\n        ABORT,\n        'knowledge_propagation_snapshot_closure_immutable'\n    );\nEND"

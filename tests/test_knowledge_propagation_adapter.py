@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import copy
 from datetime import datetime, timedelta, timezone
-import hashlib
 import json
 
 import pytest
@@ -41,9 +39,6 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     Spec,
     SpecKnowledgeBase,
 )
-from okto_pulse.core.domain.knowledge_fingerprint import (
-    knowledge_content_bytes,
-)
 from okto_pulse.core.domain.knowledge_selection import (
     KnowledgeAssignment,
     KnowledgeAssignmentState,
@@ -73,9 +68,6 @@ from okto_pulse.core.ports.knowledge_propagation import (
     TemporalKnowledgeAssignment,
 )
 from okto_pulse.core.services.knowledge_propagation import (
-    KnowledgeGrandfatherAttachment,
-    KnowledgeGrandfatherCommand,
-    KnowledgeGrandfatherEvidence,
     KnowledgeMutationCommand,
     KnowledgePropagationService,
     KnowledgePropagationServiceError,
@@ -328,7 +320,6 @@ async def test_stage_mutation_uses_caller_uow_and_exact_replay(
             ),
         )
         assert scope.scope_revision == 1
-        assert scope.v2_active is True
         assert scope.selection_state is KnowledgeSelectionState.EXPLICIT_IDS
         assert [item.assignment.assignment_id for item in scope.assignments] == [
             "kbasg-one"
@@ -342,7 +333,7 @@ async def test_stage_mutation_uses_caller_uow_and_exact_replay(
         )
 
 
-async def test_relink_reset_preserves_first_activation_boundary(
+async def test_relink_reset_preserves_native_revision_and_ledger(
     propagation_store,
 ) -> None:
     store, sessions = propagation_store
@@ -420,48 +411,18 @@ async def test_relink_reset_preserves_first_activation_boundary(
 
     assert receipt.operation_kind is KnowledgeMutationKind.RELINK_RESET
     assert scope.scope_revision == 2
-    assert scope.v2_active is True
     assert scope.selection_state is KnowledgeSelectionState.OMITTED
-    assert scope.v2_activated_at == NOW
     assert ledger is not None
     assert ledger.operation_kind == "relink_reset"
 
 
-async def test_active_scope_without_activation_boundary_fails_closed(
-    propagation_store,
-) -> None:
+async def test_scope_without_ledger_starts_with_native_omitted_selection(propagation_store) -> None:
     store, sessions = propagation_store
-    target = _target(target_id="spec-missing-activation")
     async with sessions() as session:
-        session.add(
-            Spec(
-                id=target.target_id,
-                board_id=BOARD_ID,
-                title="Corrupt active scope target",
-                created_by=ACTOR_ID,
-            )
-        )
-        session.add(
-            KnowledgePropagationScopeRecord(
-                id="scope-missing-activation",
-                board_id=BOARD_ID,
-                target_type=KnowledgeTargetType.SPEC.value,
-                target_id=target.target_id,
-                scope_revision=1,
-                v2_active=True,
-                selection_state=KnowledgeSelectionState.OMITTED.value,
-                v2_activated_at=None,
-            )
-        )
-        await session.commit()
-
-    async with sessions() as session:
-        with pytest.raises(KnowledgePropagationPortError) as exc:
-            await store.load_scope(
-                session,
-                KnowledgeScopeLookup(target=target),
-            )
-    assert exc.value.code == "knowledge_propagation_v2_activation_missing"
+        scope = await store.load_scope(session, KnowledgeScopeLookup(target=_target()))
+    assert scope.scope_revision == 0
+    assert scope.selection_state is KnowledgeSelectionState.OMITTED
+    assert scope.assignments == ()
 
 
 async def test_stage_mutation_revalidates_polymorphic_target_with_uow_autoflush(
@@ -969,7 +930,6 @@ async def test_card_v2_parent_deleted_source_drop_uses_target_binding(
                     spec_id=SPEC_ID,
                     title="Card consuming a v2 Spec",
                     created_by=ACTOR_ID,
-                    knowledge_bases=[],
                 ),
                 Card(
                     id=unbound_card_id,
@@ -977,7 +937,6 @@ async def test_card_v2_parent_deleted_source_drop_uses_target_binding(
                     spec_id=SPEC_ID,
                     title="Card with no durable source binding",
                     created_by=ACTOR_ID,
-                    knowledge_bases=[],
                 ),
             ]
         )
@@ -1337,7 +1296,6 @@ async def test_card_selects_only_effective_transitive_spec_v2_knowledge(
                     spec_id=SPEC_ID,
                     title="Reference child",
                     created_by=ACTOR_ID,
-                    knowledge_bases=[],
                 ),
                 Card(
                     id="card-snapshot-child",
@@ -1345,7 +1303,6 @@ async def test_card_selects_only_effective_transitive_spec_v2_knowledge(
                     spec_id="spec-snapshot-parent",
                     title="Snapshot child",
                     created_by=ACTOR_ID,
-                    knowledge_bases=[],
                 ),
                 Card(
                     id="card-empty-child",
@@ -1353,7 +1310,6 @@ async def test_card_selects_only_effective_transitive_spec_v2_knowledge(
                     spec_id="spec-empty-parent",
                     title="Explicit empty child",
                     created_by=ACTOR_ID,
-                    knowledge_bases=[],
                 ),
                 Card(
                     id="card-obsolete-child",
@@ -1361,13 +1317,12 @@ async def test_card_selects_only_effective_transitive_spec_v2_knowledge(
                     spec_id=SPEC_ID,
                     title="Obsolete source token child",
                     created_by=ACTOR_ID,
-                    knowledge_bases=[],
                 ),
-                SpecKnowledgeBase(
-                    id="kb-empty-legacy-physical",
-                    spec_id="spec-empty-parent",
-                    title="Legacy physical history",
-                    content="must not leak through v2",
+                IdeationKnowledgeBase(
+                    id="kb-not-selected-by-parent",
+                    ideation_id="ideation-transitive",
+                    title="Unselected parent source",
+                    content="must not leak through an empty selection",
                     created_by=ACTOR_ID,
                     created_at=NOW - timedelta(seconds=1),
                 ),
@@ -1474,7 +1429,7 @@ async def test_card_selects_only_effective_transitive_spec_v2_knowledge(
                 KnowledgeMutationCommand(
                     target=targets["card_empty"],
                     selection=KnowledgeSelection.explicit_ids(
-                        ("kb-empty-legacy-physical",),
+                        ("kb-not-selected-by-parent",),
                         mode=KnowledgePropagationMode.REFERENCE,
                     ),
                     actor_id=ACTOR_ID,
@@ -1719,7 +1674,7 @@ def test_current_physical_source_rejects_incomplete_or_cross_root_chains() -> No
     )
 
 
-async def test_dual_read_keeps_legacy_history_but_v2_has_priority(
+async def test_native_local_attachment_survives_omitted_selection(
     propagation_store,
 ) -> None:
     store, sessions = propagation_store
@@ -1739,9 +1694,8 @@ async def test_dual_read_keeps_legacy_history_but_v2_has_priority(
     service = KnowledgePropagationService(port=store)
     async with sessions() as session:
         before = await service.read(session, _target())
-        assert before.v2_active is False
         assert [
-            item.source_knowledge_id for item in before.effective_legacy_attachments
+            item.source_knowledge_id for item in before.effective_local_attachments
         ] == ["kb-legacy"]
         await store.stage_mutation(session, _omitted_plan())
         await session.commit()
@@ -1750,16 +1704,12 @@ async def test_dual_read_keeps_legacy_history_but_v2_has_priority(
         after = await service.read(session, _target())
         physical = await session.get(SpecKnowledgeBase, "kb-legacy")
 
-    assert after.v2_active is True
-    assert after.effective_legacy_attachments == ()
-    assert [item.source_knowledge_id for item in after.history_legacy_attachments] == [
-        "kb-legacy"
-    ]
+    assert [item.source_knowledge_id for item in after.effective_local_attachments] == ["kb-legacy"]
     assert physical is not None
     assert physical.content == "must not be rewritten"
 
 
-async def test_spec_physical_rows_are_local_only_strictly_after_activation(
+async def test_native_local_rows_do_not_depend_on_selection_timestamp(
     propagation_store,
 ) -> None:
     store, sessions = propagation_store
@@ -1822,15 +1772,10 @@ async def test_spec_physical_rows_are_local_only_strictly_after_activation(
             _target(),
         )
 
-    assert scope.v2_activated_at == NOW
-    assert {item.source_knowledge_id for item in scope.legacy_attachments} == {
-        "kb-before-boundary",
-        "kb-at-boundary",
-    }
-    assert [item.source_knowledge_id for item in scope.local_attachments] == [
-        "kb-after-boundary",
+    assert {item.source_knowledge_id for item in scope.local_attachments} == {
+        "kb-before-boundary", "kb-at-boundary", "kb-after-boundary",
         "kb-self-root-after-boundary",
-    ]
+    }
     local = next(
         item
         for item in scope.local_attachments
@@ -1841,7 +1786,7 @@ async def test_spec_physical_rows_are_local_only_strictly_after_activation(
     assert local.governance_metadata == {"purpose": "local governance"}
     assert {
         item.source_knowledge_id for item in result.effective_local_attachments
-    } == {"kb-after-boundary", "kb-self-root-after-boundary"}
+    } == {"kb-before-boundary", "kb-at-boundary", "kb-after-boundary", "kb-self-root-after-boundary"}
 
 
 async def test_spec_local_default_preserves_microseconds_after_activation(
@@ -1896,64 +1841,16 @@ async def test_spec_local_default_preserves_microseconds_after_activation(
     assert column.server_default is not None
 
 
-async def test_card_json_never_becomes_target_local_attachment(
-    propagation_store,
-) -> None:
-    store, sessions = propagation_store
-    card_target = _target(
-        target_type=KnowledgeTargetType.CARD,
-        target_id="card-json-local-fence",
-    )
-    async with sessions() as session:
-        session.add(
-            Card(
-                id=card_target.target_id,
-                board_id=BOARD_ID,
-                spec_id=SPEC_ID,
-                title="Card JSON remains legacy history",
-                created_by=ACTOR_ID,
-                knowledge_bases=[],
-            )
+def test_card_storage_has_no_physical_knowledge_contract() -> None:
+    assert "knowledge_bases" not in Card.__table__.c
+    with pytest.raises(TypeError, match="knowledge_bases"):
+        Card(
+            id="card-invalid-physical-knowledge",
+            board_id=BOARD_ID,
+            title="Native Card",
+            created_by=ACTOR_ID,
+            knowledge_bases=[{"id": "old-copy", "content": "obsolete"}],
         )
-        await session.commit()
-
-    service = KnowledgePropagationService(port=store, now=lambda: NOW)
-    async with sessions() as session:
-        await service.mutate(
-            session,
-            KnowledgeMutationCommand(
-                target=card_target,
-                selection=KnowledgeSelection.omitted(),
-                actor_id=ACTOR_ID,
-                expected_revision=0,
-                idempotency_key="card-json:activate",
-            ),
-        )
-        await session.commit()
-    async with sessions() as session:
-        card = await session.get(Card, card_target.target_id)
-        assert card is not None
-        card.knowledge_bases = [
-            {
-                "id": "kb-card-after-boundary",
-                "title": "Still legacy JSON",
-                "content": "physical Card JSON is never local-v2 authority",
-                "mime_type": "text/markdown",
-                "created_at": (NOW + timedelta(seconds=1)).isoformat(),
-            }
-        ]
-        await session.commit()
-    async with sessions() as session:
-        scope = await store.load_scope(
-            session,
-            KnowledgeScopeLookup(target=card_target),
-        )
-
-    assert scope.v2_activated_at == NOW
-    assert scope.local_attachments == ()
-    assert [item.source_knowledge_id for item in scope.legacy_attachments] == [
-        "kb-card-after-boundary"
-    ]
 
 
 async def test_post_activation_physical_copy_cannot_resurrect_drop_after_restart(
@@ -2045,356 +1942,20 @@ async def test_post_activation_physical_copy_cannot_resurrect_drop_after_restart
     restarted_store = CommunitySqlAlchemyKnowledgePropagationStore(sessions)
     restarted_service = KnowledgePropagationService(port=restarted_store)
     async with sessions() as session:
-        restarted_scope = await restarted_store.load_scope(
-            session,
-            KnowledgeScopeLookup(target=_target()),
+        with pytest.raises(KnowledgePropagationPortError) as invalid_scope:
+            await restarted_store.load_scope(session, KnowledgeScopeLookup(target=_target()))
+        assert invalid_scope.value.code == "knowledge_propagation_physical_spec_attachment_invalid"
+        with pytest.raises(KnowledgePropagationServiceError) as invalid_read:
+            await restarted_service.read(session, _target())
+        assert invalid_read.value.code == "knowledge_propagation_physical_spec_attachment_invalid"
+        tombstones = (await session.execute(select(KnowledgeTombstoneRecord))).scalars().all()
+        assert any(
+            item.root_id == "root-drop-contamination" and item.effective_to is None
+            for item in tombstones
         )
-        restarted_read = await restarted_service.read(
-            session,
-            _target(),
-        )
-
-    assert restarted_scope.v2_activated_at == NOW
-    assert restarted_scope.local_attachments == ()
-    assert {
-        item.source_knowledge_id for item in restarted_scope.legacy_attachments
-    } == {"kb-forbidden-post-v2-copy"}
-    assert any(
-        item.root_id == "root-drop-contamination" and item.temporal.is_current
-        for item in restarted_scope.tombstones
-    )
-    assert restarted_read.effective_count == 0
-    assert restarted_read.effective_local_attachments == ()
-
-
-async def test_grandfather_classification_comes_from_canonical_ledger(
-    propagation_store,
-) -> None:
-    store, sessions = propagation_store
-    item = {
-        "id": "kb-grandfathered",
-        "title": "Selected legacy",
-        "description": None,
-        "content": "physical bytes remain authoritative",
-        "mime_type": "text/markdown",
-    }
-    content_bytes = knowledge_content_bytes(item)
-    content_hash = hashlib.sha256(content_bytes).hexdigest()
-    async with sessions() as session:
-        session.add(
-            SpecKnowledgeBase(
-                id=item["id"],
-                spec_id=SPEC_ID,
-                title=item["title"],
-                description=item["description"],
-                content=item["content"],
-                mime_type=item["mime_type"],
-                created_by=ACTOR_ID,
-                created_at=NOW + timedelta(seconds=10),
-            )
-        )
-        await session.commit()
-
-    service = KnowledgePropagationService(port=store, now=lambda: NOW)
-    async with sessions() as session:
-        receipt = await service.grandfather(
-            session,
-            KnowledgeGrandfatherCommand(
-                target=_target(),
-                attachments=(
-                    KnowledgeGrandfatherAttachment(
-                        source_knowledge_id="kb-grandfathered",
-                        revision_stamp=ResourceRevisionStamp(
-                            root_id="kb-root-grandfathered",
-                            source_revision="legacy-7",
-                            source_content_sha256=content_hash,
-                        ),
-                        evidence=KnowledgeGrandfatherEvidence(
-                            durable_selection_evidence=True,
-                        ),
-                        physical_locator={
-                            "storage_kind": "entity_row",
-                            "table": "spec_knowledge_bases",
-                            "owner_id": SPEC_ID,
-                            "attachment_id": "kb-grandfathered",
-                        },
-                    ),
-                ),
-                actor_id="system:migration",
-                expected_revision=0,
-                idempotency_key="idem-grandfathered",
-            ),
-        )
-        await session.commit()
-        loaded = await store.load_scope(
-            session,
-            KnowledgeScopeLookup(target=_target()),
-        )
-
-    assert receipt.outcome is KnowledgeMutationOutcome.GRANDFATHERED
-    assert loaded.scope_revision == 1
-    assert loaded.v2_active is False
-    assert loaded.selection_state is None
-    assert loaded.v2_activated_at is None
-    assert len(loaded.legacy_attachments) == 1
-    attachment = loaded.legacy_attachments[0]
-    assert attachment.origin_class is KnowledgeOriginClass.SELECTED_LEGACY
-    assert attachment.effective is True
-    assert attachment.revision_stamp.root_id == "kb-root-grandfathered"
-    assert attachment.revision_stamp.source_revision == "legacy-7"
-
-    # A physical legacy write after the durable classification cannot keep a
-    # selected record effective under stale hash evidence.
-    async with sessions() as session:
-        physical = await session.get(SpecKnowledgeBase, "kb-grandfathered")
+        physical = await session.get(SpecKnowledgeBase, "kb-forbidden-post-v2-copy")
         assert physical is not None
-        physical.content = "content drifted outside propagation v2"
-        await session.commit()
-    async with sessions() as session:
-        drifted = await store.load_scope(
-            session,
-            KnowledgeScopeLookup(target=_target()),
-        )
-    drifted_attachment = drifted.legacy_attachments[0]
-    assert drifted_attachment.origin_class is KnowledgeOriginClass.LEGACY_UNRESOLVED
-    assert drifted_attachment.effective is False
-
-    async with sessions() as session:
-        await service.mutate(
-            session,
-            KnowledgeMutationCommand(
-                target=_target(),
-                selection=KnowledgeSelection.omitted(),
-                actor_id=ACTOR_ID,
-                expected_revision=1,
-                idempotency_key="activate-after-grandfather",
-            ),
-        )
-        await session.commit()
-    async with sessions() as session:
-        activated = await store.load_scope(
-            session,
-            KnowledgeScopeLookup(target=_target()),
-        )
-    assert activated.v2_activated_at == NOW
-    assert activated.local_attachments == ()
-    assert [item.source_knowledge_id for item in activated.legacy_attachments] == [
-        "kb-grandfathered"
-    ]
-
-
-async def test_grandfather_inventory_preserves_nullable_stamps_and_classifies(
-    propagation_store,
-) -> None:
-    store, sessions = propagation_store
-    async with sessions() as session:
-        session.add_all(
-            [
-                SpecKnowledgeBase(
-                    id="kb-broken",
-                    spec_id=SPEC_ID,
-                    title="Broken legacy lineage",
-                    content="bytes do not match persisted hash",
-                    source_version=0,
-                    source_kb_id="kb-broken",
-                    content_hash="a" * 64,
-                    created_by=ACTOR_ID,
-                ),
-                SpecKnowledgeBase(
-                    id="kb-plain",
-                    spec_id=SPEC_ID,
-                    title="Unstamped legacy",
-                    content="historical payload without revision evidence",
-                    created_by=ACTOR_ID,
-                ),
-            ]
-        )
-        await session.commit()
-
-    async with sessions() as session:
-        inventory = await store.load_grandfather_inventory(
-            session,
-            _target(),
-        )
-
-    assert [item.source_knowledge_id for item in inventory] == [
-        "kb-broken",
-        "kb-plain",
-    ]
-    broken, plain = inventory
-    assert broken.revision_stamp.source_revision == "0"
-    assert broken.revision_stamp.source_content_sha256 == "a" * 64
-    assert broken.evidence.durable_selection_evidence is False
-    assert broken.evidence.origin_missing is True
-    assert broken.evidence.origin_cycle is True
-    assert broken.evidence.content_divergent is True
-    assert dict(broken.physical_locator) == {
-        "storage_kind": "entity_row",
-        "table": "spec_knowledge_bases",
-        "owner_id": SPEC_ID,
-        "attachment_id": "kb-broken",
-    }
-    assert plain.revision_stamp.root_id == "kb-plain"
-    assert plain.revision_stamp.source_revision is None
-    assert plain.revision_stamp.source_content_sha256 is None
-    assert plain.evidence == KnowledgeGrandfatherEvidence()
-
-    service = KnowledgePropagationService(port=store, now=lambda: NOW)
-    async with sessions() as session:
-        await service.grandfather(
-            session,
-            KnowledgeGrandfatherCommand(
-                target=_target(),
-                attachments=inventory,
-                actor_id="system:migration",
-                expected_revision=0,
-                idempotency_key="grandfather:inventory",
-            ),
-        )
-        await session.commit()
-    async with sessions() as session:
-        loaded = await store.load_scope(
-            session,
-            KnowledgeScopeLookup(target=_target()),
-        )
-
-    by_source = {item.source_knowledge_id: item for item in loaded.legacy_attachments}
-    assert by_source["kb-broken"].origin_class is KnowledgeOriginClass.LEGACY_UNRESOLVED
-    assert by_source["kb-broken"].effective is False
-    assert by_source["kb-plain"].origin_class is KnowledgeOriginClass.LEGACY_ALL
-    assert by_source["kb-plain"].effective is True
-
-
-async def test_grandfather_uses_highest_revision_and_rejects_conflicting_tie(
-    propagation_store,
-) -> None:
-    store, sessions = propagation_store
-    async with sessions() as session:
-        session.add(
-            SpecKnowledgeBase(
-                id="kb-resumable",
-                spec_id=SPEC_ID,
-                title="Resumable migration",
-                content="same physical row",
-                created_by=ACTOR_ID,
-            )
-        )
-        await session.commit()
-
-    service = KnowledgePropagationService(port=store, now=lambda: NOW)
-    async with sessions() as session:
-        inventory = await store.load_grandfather_inventory(session, _target())
-        await service.grandfather(
-            session,
-            KnowledgeGrandfatherCommand(
-                target=_target(),
-                attachments=inventory,
-                actor_id="system:migration",
-                expected_revision=0,
-                idempotency_key="grandfather:resumable:1",
-            ),
-        )
-        await session.commit()
-
-    selected = KnowledgeGrandfatherAttachment(
-        source_knowledge_id=inventory[0].source_knowledge_id,
-        revision_stamp=inventory[0].revision_stamp,
-        evidence=KnowledgeGrandfatherEvidence(
-            durable_selection_evidence=True,
-        ),
-        physical_locator=inventory[0].physical_locator,
-    )
-    async with sessions() as session:
-        second = await service.grandfather(
-            session,
-            KnowledgeGrandfatherCommand(
-                target=_target(),
-                attachments=(selected,),
-                actor_id="system:migration",
-                expected_revision=1,
-                idempotency_key="grandfather:resumable:2",
-            ),
-        )
-        await session.commit()
-    async with sessions() as session:
-        loaded = await store.load_scope(
-            session,
-            KnowledgeScopeLookup(target=_target()),
-        )
-        latest_row = await session.get(
-            KnowledgeMutationLedgerRecord,
-            second.operation_id,
-        )
-        assert latest_row is not None
-        assert (
-            loaded.legacy_attachments[0].origin_class
-            is KnowledgeOriginClass.SELECTED_LEGACY
-        )
-
-        duplicate_details = copy.deepcopy(latest_row.details)
-        session.add(
-            KnowledgeMutationLedgerRecord(
-                operation_id="kbop-grandfather-identical-tie",
-                scope_id=latest_row.scope_id,
-                board_id=latest_row.board_id,
-                target_type=latest_row.target_type,
-                target_id=latest_row.target_id,
-                idempotency_key="grandfather:identical-tie",
-                request_hash="7" * 64,
-                operation_kind=latest_row.operation_kind,
-                actor_id=latest_row.actor_id,
-                previous_revision=latest_row.previous_revision,
-                revision=latest_row.revision,
-                outcome=latest_row.outcome,
-                details=duplicate_details,
-                applied_at=latest_row.applied_at,
-                recorded_at=latest_row.recorded_at,
-            )
-        )
-        await session.commit()
-
-    async with sessions() as session:
-        deterministic_tie = await store.load_scope(
-            session,
-            KnowledgeScopeLookup(target=_target()),
-        )
-        assert (
-            deterministic_tie.legacy_attachments[0].origin_class
-            is KnowledgeOriginClass.SELECTED_LEGACY
-        )
-
-        conflicting_details = copy.deepcopy(duplicate_details)
-        attachment = conflicting_details["grandfathered_attachments"][0]
-        attachment["evidence"]["durable_selection_evidence"] = False
-        attachment["origin_class"] = KnowledgeOriginClass.LEGACY_ALL.value
-        session.add(
-            KnowledgeMutationLedgerRecord(
-                operation_id="kbop-grandfather-conflicting-tie",
-                scope_id=latest_row.scope_id,
-                board_id=latest_row.board_id,
-                target_type=latest_row.target_type,
-                target_id=latest_row.target_id,
-                idempotency_key="grandfather:conflicting-tie",
-                request_hash="8" * 64,
-                operation_kind=latest_row.operation_kind,
-                actor_id=latest_row.actor_id,
-                previous_revision=latest_row.previous_revision,
-                revision=latest_row.revision,
-                outcome=latest_row.outcome,
-                details=conflicting_details,
-                applied_at=latest_row.applied_at,
-                recorded_at=latest_row.recorded_at,
-            )
-        )
-        await session.commit()
-
-    async with sessions() as session:
-        with pytest.raises(KnowledgePropagationPortError) as raised:
-            await store.load_scope(
-                session,
-                KnowledgeScopeLookup(target=_target()),
-            )
-    assert raised.value.code == "knowledge_propagation_grandfather_ledger_conflict"
+        assert physical.content == "must never become local"
 
 
 async def test_snapshot_refresh_and_global_drop_round_trip_temporal_history(
@@ -2570,84 +2131,3 @@ async def test_snapshot_refresh_and_global_drop_round_trip_temporal_history(
     assert assignment_count == 2
     assert snapshot_count == 2
     assert tombstone_count == 1
-
-
-async def test_card_json_grandfather_inventory_has_exact_locator_and_fails_closed(
-    propagation_store,
-) -> None:
-    store, sessions = propagation_store
-    card_target = _target(
-        target_type=KnowledgeTargetType.CARD,
-        target_id="card-json-legacy",
-    )
-    async with sessions() as session:
-        session.add_all(
-            [
-                Card(
-                    id=card_target.target_id,
-                    board_id=BOARD_ID,
-                    spec_id=SPEC_ID,
-                    title="Legacy JSON target",
-                    created_by=ACTOR_ID,
-                    knowledge_bases=[
-                        {
-                            "id": "kb-card-json",
-                            "title": "JSON legacy",
-                            "description": None,
-                            "content": "preserved in the card row",
-                            "mime_type": "text/markdown",
-                        }
-                    ],
-                ),
-                Card(
-                    id="card-json-corrupt",
-                    board_id=BOARD_ID,
-                    spec_id=SPEC_ID,
-                    title="Corrupt JSON target",
-                    created_by=ACTOR_ID,
-                    knowledge_bases=[{"id": "valid"}, "not-an-object"],
-                ),
-            ]
-        )
-        await session.commit()
-
-    async with sessions() as session:
-        inventory = await store.load_grandfather_inventory(
-            session,
-            card_target,
-        )
-        scope = await store.load_scope(
-            session,
-            KnowledgeScopeLookup(target=card_target),
-        )
-
-    assert len(inventory) == 1
-    attachment = inventory[0]
-    assert attachment.source_knowledge_id == "kb-card-json"
-    assert attachment.revision_stamp.source_revision is None
-    assert attachment.revision_stamp.source_content_sha256 is None
-    assert dict(attachment.physical_locator) == {
-        "storage_kind": "card_json",
-        "table": "cards",
-        "owner_id": "card-json-legacy",
-        "attachment_id": "kb-card-json",
-    }
-    assert scope.legacy_attachments[0].source_knowledge_id == "kb-card-json"
-
-    corrupt_target = _target(
-        target_type=KnowledgeTargetType.CARD,
-        target_id="card-json-corrupt",
-    )
-    async with sessions() as session:
-        with pytest.raises(KnowledgePropagationPortError) as read_error:
-            await store.load_scope(
-                session,
-                KnowledgeScopeLookup(target=corrupt_target),
-            )
-        with pytest.raises(KnowledgePropagationPortError) as inventory_error:
-            await store.load_grandfather_inventory(
-                session,
-                corrupt_target,
-            )
-    assert read_error.value.code == "knowledge_propagation_legacy_payload_corrupt"
-    assert inventory_error.value.code == "knowledge_propagation_legacy_payload_corrupt"

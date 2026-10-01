@@ -137,7 +137,7 @@ const effectiveSpecKnowledge = {
         ref: {
           root_resource_id: 'root-inherited-kb',
           knowledge_assignment_stale: true,
-          origin_class: 'legacy_all',
+          origin_class: 'v2',
         },
         provenance: {
           source_entity_type: 'refinement',
@@ -344,7 +344,7 @@ describe('CreateCardModal selective Knowledge integration', () => {
       }),
     ).toBeInTheDocument();
     expect(screen.getByText('stale')).toBeInTheDocument();
-    expect(screen.getByText('legacy all')).toBeInTheDocument();
+    expect(screen.getAllByText('v2')).toHaveLength(2);
 
     fireEvent.click(screen.getByRole('radio', { name: 'Reference' }));
     fireEvent.click(

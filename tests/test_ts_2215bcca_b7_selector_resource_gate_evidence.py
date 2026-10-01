@@ -29,7 +29,6 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from okto_pulse.community.adapters.sqlalchemy_base import Base
 from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
     CommunitySemanticSession,
 )
@@ -143,8 +142,14 @@ async def b7_runtime(tmp_path):
         sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    from okto_pulse.community.adapters.current_relational_schema import (
+        current_schema_contract, initialize_current_schema,
+    )
+    from okto_pulse.community.adapters.relational_application import CommunityRelationalApplicationAdapter
+    from okto_pulse.core.ports.relational_application import register_relational_application_adapter
+
+    await initialize_current_schema(engine, current_schema_contract())
+    register_relational_application_adapter(CommunityRelationalApplicationAdapter())
 
     try:
         async with sessions() as session:
@@ -192,13 +197,11 @@ async def b7_runtime(tmp_path):
             session.add_all(
                 [
                     SpecKnowledgeBase(
-                        id="kb-source-ts-2215bcca",
+                        id=ROOT_ID,
                         spec_id=SPEC_ID,
                         title="Canonical selectable source",
                         content="source revision one",
                         source_version=1,
-                        source_kb_id=ROOT_ID,
-                        immediate_parent_kb_id=ROOT_ID,
                         root_source_kb_id=ROOT_ID,
                         created_by=ACTOR_ID,
                     ),
@@ -208,15 +211,6 @@ async def b7_runtime(tmp_path):
                         spec_id=SPEC_ID,
                         title="B7 target card",
                         created_by=ACTOR_ID,
-                        knowledge_bases=[
-                            {
-                                "id": "legacy-card-kb",
-                                "title": "Legacy physical history",
-                                "description": None,
-                                "content": "must survive v2 explicit empty",
-                                "mime_type": "text/markdown",
-                            }
-                        ],
                     ),
                     ResourceNotApplicable(
                         id="na-architecture-ts-2215bcca",
@@ -296,7 +290,7 @@ async def test_ts_2215bcca_b7_selector_drop_keeps_gate_and_history(
             KnowledgeAssignmentReplaceRequest(
                 contract_version=2,
                 mode="reference",
-                knowledge_ids=["kb-source-ts-2215bcca"],
+                knowledge_ids=[ROOT_ID],
                 justification="Reference is relevant before the explicit drop.",
                 idempotency_key="ts-2215bcca-reference",
                 expected_revision=0,
@@ -398,22 +392,8 @@ async def test_ts_2215bcca_b7_selector_drop_keeps_gate_and_history(
         is KnowledgeOriginClass.V2
     )
     assert read.effective_assignments == ()
-    assert read.effective_legacy_attachments == ()
-    assert any(
-        item.source_knowledge_id == "legacy-card-kb"
-        and item.origin_class is KnowledgeOriginClass.LEGACY_ALL
-        for item in read.history_legacy_attachments
-    )
     assert card is not None
-    assert card.knowledge_bases == [
-        {
-            "id": "legacy-card-kb",
-            "title": "Legacy physical history",
-            "description": None,
-            "content": "must survive v2 explicit empty",
-            "mime_type": "text/markdown",
-        }
-    ]
+    assert "knowledge_bases" not in Card.__table__.c
 
     assert _gate_mark_projection(after_rows) == before_marks
     assert not any(row.resource_type == "knowledge_base" for row in after_rows)

@@ -2223,8 +2223,6 @@ class Card(Base):
     conclusions: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # Screen mockups: [{id, title, description, screen_type, html_content, annotations, order}]
     screen_mockups: Mapped[list | None] = mapped_column(JSON, nullable=True)
-    # Knowledge bases: [{id, title, description, content, mime_type, source}]
-    knowledge_bases: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # Task validations: append-only public assessment fields (including
     # reviewer_id + reviewer_name) plus private idempotency ledger fields
     # (idempotency_key, request_digest and exact response replay snapshot).
@@ -8853,10 +8851,9 @@ class GlobalDiscoveryRecoveryTransition(Base):
 # Selective Knowledge Base propagation v2
 # ---------------------------------------------------------------------------
 #
-# These tables are additive beside the legacy ``*_knowledge_bases`` storage
-# and ``cards.knowledge_bases`` JSON.  Legacy content remains the durable
-# physical/history source; the v2 records only govern target selection,
-# temporal assignment state, immutable snapshots and mutation evidence.
+# Native assignments govern target selection, temporal state, immutable
+# snapshots and mutation evidence. Cards have no physical Knowledge copies;
+# source entities retain their directly authored Knowledge.
 
 
 class KnowledgePropagationScopeRecord(Base):
@@ -8879,13 +8876,7 @@ class KnowledgePropagationScopeRecord(Base):
             name="ck_knowledge_propagation_scope_revision",
         ),
         CheckConstraint(
-            "v2_active IN (0, 1)",
-            name="ck_knowledge_propagation_scope_v2_active",
-        ),
-        CheckConstraint(
-            "(v2_active = 0 AND selection_state IS NULL) OR "
-            "(v2_active = 1 AND selection_state IN "
-            "('omitted', 'explicit_empty', 'explicit_ids'))",
+            "selection_state IN ('omitted', 'explicit_empty', 'explicit_ids')",
             name="ck_knowledge_propagation_scope_selection_state",
         ),
         Index(
@@ -8916,19 +8907,7 @@ class KnowledgePropagationScopeRecord(Base):
         default=0,
         server_default=text("0"),
     )
-    v2_active: Mapped[bool] = mapped_column(
-        nullable=False,
-        default=False,
-        server_default=text("false"),
-    )
-    selection_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    # First durable transition into selective propagation v2.  It remains
-    # immutable across governed re-links so physical Spec KB rows can always
-    # be classified against the original v2 boundary.
-    v2_activated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True),
-        nullable=True,
-    )
+    selection_state: Mapped[str] = mapped_column(String(32), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -8955,7 +8934,7 @@ class KnowledgeAssignmentRecord(Base):
         ),
         CheckConstraint(
             "origin_class IN "
-            "('v2', 'legacy_all', 'selected_legacy', 'legacy_unresolved')",
+            "('v2')",
             name="ck_knowledge_assignment_origin_class",
         ),
         CheckConstraint(
@@ -9216,11 +9195,11 @@ class KnowledgeMutationLedgerRecord(Base):
         CheckConstraint(
             "operation_kind IN "
             "('replace_omitted', 'replace', 'drop_delta', 'replace_empty', "
-            "'refresh_snapshot', 'grandfather', 'relink_reset')",
+            "'refresh_snapshot', 'relink_reset')",
             name="ck_knowledge_mutation_ledger_operation_kind",
         ),
         CheckConstraint(
-            "outcome IN ('applied', 'noop', 'rejected', 'grandfathered')",
+            "outcome IN ('applied', 'noop', 'rejected')",
             name="ck_knowledge_mutation_ledger_outcome",
         ),
         CheckConstraint(
@@ -9229,7 +9208,7 @@ class KnowledgeMutationLedgerRecord(Base):
         ),
         CheckConstraint(
             "previous_revision >= 0 AND "
-            "((outcome IN ('applied', 'grandfathered') "
+            "((outcome = 'applied' "
             "AND revision = previous_revision + 1) OR "
             "(outcome IN ('noop', 'rejected') "
             "AND revision = previous_revision))",
@@ -9291,7 +9270,7 @@ class KnowledgeMutationAttemptRecord(Base):
         CheckConstraint(
             "operation_kind IN "
             "('replace_omitted', 'replace', 'drop_delta', 'replace_empty', "
-            "'refresh_snapshot', 'grandfather', 'relink_reset')",
+            "'refresh_snapshot', 'relink_reset')",
             name="ck_knowledge_mutation_attempt_operation_kind",
         ),
         CheckConstraint(

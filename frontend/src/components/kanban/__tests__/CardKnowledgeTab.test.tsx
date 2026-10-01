@@ -268,14 +268,14 @@ describe('CardKnowledgeTab', () => {
         {
           root_knowledge_id: 'root-snapshot',
           mode: 'snapshot',
-          origin_class: 'selected_legacy',
+          origin_class: 'v2',
           state: 'stale',
           stale: true,
         },
         {
           root_knowledge_id: 'root-reference',
           mode: 'reference',
-          origin_class: 'legacy_unresolved',
+          origin_class: 'v2',
           state: 'active',
           stale: false,
         },
@@ -306,12 +306,12 @@ describe('CardKnowledgeTab', () => {
     const snapshot = screen.getByTestId('knowledge-assignment-root-snapshot');
     expect(within(snapshot).getByText('Snapshot notes')).toBeInTheDocument();
     expect(within(snapshot).getByText('snapshot')).toBeInTheDocument();
-    expect(within(snapshot).getByText('selected legacy')).toBeInTheDocument();
+    expect(within(snapshot).getByText('v2')).toBeInTheDocument();
     expect(within(snapshot).getByText('stale')).toBeInTheDocument();
     expect(within(snapshot).getByRole('button', { name: 'Refresh' })).toBeInTheDocument();
 
     const reference = screen.getByTestId('knowledge-assignment-root-reference');
-    expect(within(reference).getByText('legacy unresolved')).toBeInTheDocument();
+    expect(within(reference).getByText('v2')).toBeInTheDocument();
     expect(within(reference).queryByRole('button', { name: 'Refresh' })).not.toBeInTheDocument();
   });
 
@@ -346,7 +346,7 @@ describe('CardKnowledgeTab', () => {
               source_entity_type: 'spec',
               source_entity_id: 's1',
               source_entity_title: 'Parent spec',
-              origin_class: 'selected_legacy',
+              origin_class: 'v2',
               source_revision: '7',
               source_content_sha256: null,
             },
@@ -382,7 +382,7 @@ describe('CardKnowledgeTab', () => {
     const selector = await screen.findByTestId('card-knowledge-propagation');
     expect(within(selector).getByText('Inherited source reference')).toBeInTheDocument();
     expect(within(selector).getByText('stale')).toBeInTheDocument();
-    expect(within(selector).getByText('selected legacy')).toBeInTheDocument();
+    expect(within(selector).getByText('v2')).toBeInTheDocument();
 
     fireEvent.click(within(selector).getByRole('radio', { name: 'Reference' }));
     fireEvent.click(

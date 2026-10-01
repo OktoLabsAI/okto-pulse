@@ -631,18 +631,6 @@ class CommunitySqlAlchemyResourceGateAdapter:
         cache_key = (board_id, ref.entity_type, ref.entity_id)
         if cache_key in self._knowledge_read_cache:
             return self._knowledge_read_cache[cache_key]
-        scope = (
-            await self.db.execute(
-                select(KnowledgePropagationScopeRecord).where(
-                    KnowledgePropagationScopeRecord.board_id == board_id,
-                    KnowledgePropagationScopeRecord.target_type == ref.entity_type,
-                    KnowledgePropagationScopeRecord.target_id == ref.entity_id,
-                )
-            )
-        ).scalar_one_or_none()
-        if scope is None or not bool(scope.v2_active):
-            self._knowledge_read_cache[cache_key] = None
-            return None
         read = await KnowledgePropagationService().read(
             self.db,
             KnowledgeTargetKey(
@@ -769,20 +757,11 @@ class CommunitySqlAlchemyResourceGateAdapter:
             )
             ref.update(_knowledge_stamp_aliases(local.revision_stamp))
             return ref
-        legacy = {
-            item.source_knowledge_id: item for item in read.history_legacy_attachments
-        }.get(source_id)
-        ref.update(
-            {
-                "effective": False,
-                "origin_class": (
-                    "legacy_all" if legacy is None else legacy.origin_class.value
-                ),
-                "knowledge_resolution": "history",
-            }
-        )
-        if legacy is not None:
-            ref.update(_knowledge_stamp_aliases(legacy.revision_stamp))
+        ref.update({
+            "effective": False,
+            "origin_class": "v2",
+            "knowledge_resolution": "unselected",
+        })
         return ref
 
     def serialize_na_mark(
@@ -1060,25 +1039,7 @@ class CommunitySqlAlchemyResourceGateAdapter:
     ) -> list[dict[str, Any]]:
         scope = await self._knowledge_scope_metadata(ref)
         if ref.entity_type == "card":
-            rows = await self._json_array_metadata_rows(
-                ref,
-                attribute_name="knowledge_bases",
-                resource_type="knowledge_base",
-                field_names=(
-                    "id",
-                    "title",
-                    "root_source_kb_id",
-                    "source_kb_id",
-                    "immediate_parent_kb_id",
-                    "source_version",
-                    "content_hash",
-                    "origin_ref",
-                    "source_ref",
-                    "source",
-                    "source_type",
-                    "source_id",
-                ),
-            )
+            rows = []
         else:
             kb_model, fk_column = {
                 "ideation": (
@@ -1140,7 +1101,7 @@ class CommunitySqlAlchemyResourceGateAdapter:
                     item[key] = row[key]
             item.update(_persisted_knowledge_lineage_aliases(row))
             if scope is None:
-                item.update(effective=True, origin_class="legacy_all")
+                item.update(effective=True, origin_class="v2")
             elif self._metadata_is_local_spec_attachment(row, ref, scope):
                 item.update(
                     effective=True,
@@ -1150,8 +1111,8 @@ class CommunitySqlAlchemyResourceGateAdapter:
             else:
                 item.update(
                     effective=False,
-                    origin_class="legacy_all",
-                    knowledge_resolution="history",
+                    origin_class="v2",
+                    knowledge_resolution="unselected",
                 )
             refs.append(item)
         return refs
@@ -1173,8 +1134,6 @@ class CommunitySqlAlchemyResourceGateAdapter:
             await self.db.execute(
                 select(
                     KnowledgePropagationScopeRecord.id,
-                    KnowledgePropagationScopeRecord.v2_active,
-                    KnowledgePropagationScopeRecord.v2_activated_at,
                 ).where(
                     KnowledgePropagationScopeRecord.board_id == board_id,
                     KnowledgePropagationScopeRecord.target_type == ref.entity_type,
@@ -1182,9 +1141,10 @@ class CommunitySqlAlchemyResourceGateAdapter:
                 )
             )
         ).mappings().one_or_none()
-        if scope_row is None or not bool(scope_row["v2_active"]):
-            self._knowledge_metadata_scope_cache[cache_key] = None
-            return None
+        if scope_row is None:
+            empty_scope = {"assignments": []}
+            self._knowledge_metadata_scope_cache[cache_key] = empty_scope
+            return empty_scope
 
         scope_id = str(scope_row["id"])
         assignment_rows = (
@@ -1294,7 +1254,6 @@ class CommunitySqlAlchemyResourceGateAdapter:
                 }
             )
         resolved = {
-            "activated_at": scope_row.get("v2_activated_at"),
             "assignments": assignments,
         }
         self._knowledge_metadata_scope_cache[cache_key] = resolved
@@ -1307,18 +1266,6 @@ class CommunitySqlAlchemyResourceGateAdapter:
         scope: Mapping[str, Any],
     ) -> bool:
         if ref.entity_type != "spec":
-            return False
-        activated_at = scope.get("activated_at")
-        created_at = row.get("created_at")
-        if not isinstance(activated_at, datetime) or not isinstance(
-            created_at, datetime
-        ):
-            return False
-        if activated_at.tzinfo is None:
-            activated_at = activated_at.replace(tzinfo=timezone.utc)
-        if created_at.tzinfo is None:
-            created_at = created_at.replace(tzinfo=timezone.utc)
-        if created_at <= activated_at:
             return False
         identity = str(row.get("id") or "")
         root_id = row.get("root_source_kb_id")
@@ -1470,12 +1417,7 @@ class CommunitySqlAlchemyResourceGateAdapter:
                 entity=card,
             )
             v2_read = await self._active_knowledge_read(card_ref)
-            if v2_read is None:
-                for item in card.knowledge_bases or []:
-                    coverage["knowledge_base"][bucket].update(
-                        self._resource_identity_values(item)
-                    )
-            else:
+            if v2_read is not None:
                 for item in v2_read.effective_assignments:
                     coverage["knowledge_base"][bucket].update(
                         self._resource_identity_values(
@@ -1586,42 +1528,9 @@ class CommunitySqlAlchemyResourceGateAdapter:
         return refs
 
     async def _knowledge_refs(self, ref: LineageEntityRef) -> list[dict[str, Any]]:
-        entity = ref.entity
         v2_read = await self._active_knowledge_read(ref)
         if ref.entity_type == "card":
-            refs: list[dict[str, Any]] = []
-            for item in getattr(entity, "knowledge_bases", None) or []:
-                source_id = str(item.get("id") if isinstance(item, dict) else "")
-                item_ref = self._artifact_ref(
-                    ref,
-                    artifact_id=source_id or None,
-                    title=item.get("title") if isinstance(item, dict) else None,
-                )
-                if isinstance(item, dict):
-                    for key in (
-                        "root_source_kb_id",
-                        "source_kb_id",
-                        "immediate_parent_kb_id",
-                        "source_version",
-                        "content_hash",
-                        "origin_ref",
-                        "source_ref",
-                        "source",
-                        "governance_metadata",
-                    ):
-                        if key == "governance_metadata" or item.get(key) not in (
-                            None,
-                            "",
-                        ):
-                            item_ref[key] = item.get(key)
-                    item_ref.update(_knowledge_lineage_aliases(item))
-                item_ref = self._apply_physical_knowledge_authority(
-                    item_ref,
-                    source_id=source_id,
-                    read=v2_read,
-                )
-                refs.append(item_ref)
-            return refs
+            return []
 
         kb_model, fk_column = {
             "ideation": (IdeationKnowledgeBase, IdeationKnowledgeBase.ideation_id),
@@ -1781,13 +1690,6 @@ class CommunitySqlAlchemyResourceGateAdapter:
             return None
         resource_id = str(ref.get("id") or "")
         if source.entity_type == "card":
-            for item in getattr(source.entity, "knowledge_bases", None) or []:
-                if not isinstance(item, dict):
-                    continue
-                if str(item.get("id") or "") == resource_id:
-                    payload = dict(item)
-                    payload.update(_knowledge_lineage_aliases(item))
-                    return with_knowledge_governance(payload, item)
             return None
 
         kb_model, fk_column, fk_name = {

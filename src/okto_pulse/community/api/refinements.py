@@ -618,7 +618,7 @@ async def derive_spec(
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
-    """Derive a spec, preserving the complete v1 path without a v2 body."""
+    """Derive a Spec with the governed Knowledge selection contract."""
     body_reader = getattr(request, "body", None)
     if data is None and callable(body_reader):
         raw_body = await body_reader()
@@ -632,13 +632,6 @@ async def derive_spec(
                     ),
                 )
             )
-    if data is not None and getattr(data, "kb_ids", None) is not None:
-        return knowledge_propagation_error_response(
-            KnowledgePropagationServiceError(
-                "conflicting_propagation_parameters",
-                "legacy kb_ids and knowledge_propagation v2 are mutually exclusive",
-            )
-        )
     actor = RESTAdapterContract.actor(user_id)
     command = DeriveSpecFromRefinementCommand(
         refinement_id,
@@ -653,9 +646,6 @@ async def derive_spec(
         )
 
     try:
-        if data is None:
-            result = await _execute(uow)
-            return result.spec
         result = await execute_knowledge_creation_with_one_retry(
             uow=uow,
             uow_factory=get_unit_of_work_factory(request),

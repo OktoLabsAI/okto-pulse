@@ -1904,10 +1904,7 @@ export type KnowledgeAssignmentState =
   | 'dropped'
   | 'inactive';
 export type KnowledgeOriginClass =
-  | 'v2'
-  | 'legacy_all'
-  | 'selected_legacy'
-  | 'legacy_unresolved';
+  | 'v2';
 export type KnowledgeRelevanceEntityType =
   | 'functional_requirement'
   | 'acceptance_criterion'
@@ -1920,8 +1917,8 @@ export interface KnowledgeRelevanceLinkRequest {
 
 /**
  * Authoritative v2 selection envelope. Omitting the envelope itself preserves
- * the legacy v1 path; `selection_state: 'omitted'` is a distinct persisted v2
- * decision.
+ * no inherited selection. `selection_state: 'omitted'` remains distinct from
+ * an explicit empty decision.
  */
 export interface KnowledgePropagationEnvelopeV2 {
   contract_version?: 2;
@@ -1935,7 +1932,11 @@ export interface KnowledgePropagationEnvelopeV2 {
 }
 
 export interface DeriveSpecKnowledgeRequest {
-  knowledge_propagation: KnowledgePropagationEnvelopeV2;
+  knowledge_propagation?: KnowledgePropagationEnvelopeV2;
+}
+
+export interface DeriveIdeationSpecRequest extends DeriveSpecKnowledgeRequest {
+  delivery_context: DeliveryContext;
 }
 
 export interface KnowledgeAssignmentReplaceRequest {
@@ -3645,7 +3646,6 @@ export interface UpdateCardRequest {
   labels?: string[];
   test_scenario_ids?: string[];
   screen_mockups?: ScreenMockup[];
-  knowledge_bases?: CardKnowledgeBase[];
   // Bug card fields
   severity?: BugSeverity;
   expected_behavior?: string;

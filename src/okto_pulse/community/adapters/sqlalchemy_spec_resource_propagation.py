@@ -13,16 +13,11 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     Board,
     Card,
     Spec,
-    SpecKnowledgeBase,
 )
 from okto_pulse.core.ports.spec_resource_propagation import (
     ResourcePropagationBoardFact,
     ResourcePropagationCardRecord,
-    ResourcePropagationKnowledgeBaseFact,
     ResourcePropagationSpecFact,
-)
-from okto_pulse.core.domain.knowledge_fingerprint import (
-    resolve_knowledge_content_sha256,
 )
 
 
@@ -63,7 +58,6 @@ class CommunitySqlAlchemySpecResourcePropagationStore:
             spec_id=row.spec_id,
             status=row.status,
             card_type=row.card_type,
-            knowledge_bases=copy.deepcopy(row.knowledge_bases or []),
             screen_mockups=copy.deepcopy(row.screen_mockups or []),
         )
 
@@ -95,39 +89,6 @@ class CommunitySqlAlchemySpecResourcePropagationStore:
         ).all()
         return tuple(str(row[0]) for row in rows)
 
-    async def list_spec_knowledge_bases(
-        self, context: Any, *, spec_id: str
-    ) -> tuple[ResourcePropagationKnowledgeBaseFact, ...]:
-        rows = (
-            await context.execute(
-                select(SpecKnowledgeBase)
-                .where(SpecKnowledgeBase.spec_id == spec_id)
-                .order_by(
-                    SpecKnowledgeBase.created_at.asc(),
-                    SpecKnowledgeBase.title.asc(),
-                )
-            )
-        ).scalars().all()
-        return tuple(
-            ResourcePropagationKnowledgeBaseFact(
-                id=str(row.id),
-                title=str(row.title),
-                description=row.description,
-                content=str(row.content),
-                mime_type=str(row.mime_type or "text/markdown"),
-                source_version=getattr(row, "source_version", None),
-                source_kb_id=getattr(row, "source_kb_id", None),
-                root_source_kb_id=getattr(row, "root_source_kb_id", None),
-                immediate_parent_kb_id=getattr(
-                    row, "immediate_parent_kb_id", None
-                ),
-                content_hash=resolve_knowledge_content_sha256(row),
-                governance_metadata=copy.deepcopy(
-                    getattr(row, "governance_metadata", None)
-                ),
-            )
-            for row in rows
-        )
 
     async def save_card(
         self,

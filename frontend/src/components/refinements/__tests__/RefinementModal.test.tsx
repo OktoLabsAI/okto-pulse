@@ -604,7 +604,7 @@ describe('RefinementModal selective Knowledge derivation', () => {
           ref: {
             root_resource_id: 'root-inherited-refinement-kb',
             knowledge_assignment_stale: true,
-            origin_class: 'selected_legacy',
+            origin_class: 'v2',
           },
           provenance: {
             source_entity_type: 'ideation',
@@ -686,7 +686,7 @@ describe('RefinementModal selective Knowledge derivation', () => {
     expect(selector).toHaveTextContent('root-inherited-refinement-kb');
     expect(selector).toHaveTextContent('Inherited refinement knowledge');
     expect(selector).toHaveTextContent('stale');
-    expect(selector).toHaveTextContent('selected_legacy');
+    expect(selector).toHaveTextContent('v2');
     const selectorProps = contextSelectorMock.mock.calls.at(-1)?.[0];
     expect(selectorProps).toEqual(
       expect.objectContaining({
@@ -699,7 +699,7 @@ describe('RefinementModal selective Knowledge derivation', () => {
         expect.objectContaining({
           id: 'root-inherited-refinement-kb',
           stale: true,
-          origin_class: 'selected_legacy',
+          origin_class: 'v2',
         }),
       ]),
     );

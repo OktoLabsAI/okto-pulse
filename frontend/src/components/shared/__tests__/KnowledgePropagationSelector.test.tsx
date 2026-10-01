@@ -18,7 +18,7 @@ const candidates: KnowledgePropagationCandidate[] = [
     id: 'root-b',
     title: 'Operational notes',
     description: 'Runbook evidence',
-    origin_class: 'legacy_all',
+    origin_class: 'v2',
   },
   {
     id: 'root-a',
@@ -29,13 +29,13 @@ const candidates: KnowledgePropagationCandidate[] = [
   },
   {
     id: 'root-c',
-    title: 'Selected legacy notes',
-    origin_class: 'selected_legacy',
+    title: 'Selected notes',
+    origin_class: 'v2',
   },
   {
     id: 'root-d',
-    title: 'Unresolved legacy notes',
-    origin_class: 'legacy_unresolved',
+    title: 'Reference notes',
+    origin_class: 'v2',
   },
 ];
 
@@ -199,10 +199,7 @@ describe('KnowledgePropagationSelector', () => {
 
     const selector = screen.getByTestId('knowledge-propagation-selector');
     expect(within(selector).getByText('stale')).toBeInTheDocument();
-    expect(within(selector).getByText('v2')).toBeInTheDocument();
-    expect(within(selector).getByText('legacy all')).toBeInTheDocument();
-    expect(within(selector).getByText('selected legacy')).toBeInTheDocument();
-    expect(within(selector).getByText('legacy unresolved')).toBeInTheDocument();
+    expect(within(selector).getAllByText('v2')).toHaveLength(candidates.length);
   });
 
   it('announces loading, empty and error states without conflating them', () => {

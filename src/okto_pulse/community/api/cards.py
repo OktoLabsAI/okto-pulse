@@ -1,10 +1,8 @@
 """Card API endpoints."""
 
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel
 from okto_pulse.core.ports.learning_capture import LearningCaptureTargetConflict
 
 from okto_pulse.community.api.deps import get_unit_of_work
@@ -116,7 +114,6 @@ from okto_pulse.core.ports.knowledge_propagation import (
     KnowledgePropagationPortError,
 )
 from okto_pulse.core.application.errors import (
-    CARD_RESOURCE_READ_ONLY_MESSAGE,
     CancellationReasonRequiredError,
     CardOperationError,
     CardResourceReadOnlyError,
@@ -850,23 +847,11 @@ async def get_card_knowledge_assignments(
 
 
 # ==================== CARD KNOWLEDGE BASE ====================
-# Inline JSONB on Card.knowledge_bases. Symmetric to spec_knowledge but
-# scoped to a single task; persisted as a snapshot at the card level.
+# Effective Knowledge resolved from the Card's native governed assignments.
 
 
-class CardKnowledgeCreate(BaseModel):
-    title: str
-    content: str
-    description: Optional[str] = None
-    mime_type: str = "text/markdown"
-    source: str = "manual"
 
 
-class CardKnowledgeUpdate(BaseModel):
-    title: Optional[str] = None
-    content: Optional[str] = None
-    description: Optional[str] = None
-    mime_type: Optional[str] = None
 
 
 @router.get("/{card_id}/knowledge")
@@ -894,19 +879,6 @@ async def list_card_knowledge(
     return {"card_id": card_id, "knowledge": result.knowledge}
 
 
-@router.post("/{card_id}/knowledge", status_code=status.HTTP_201_CREATED)
-async def create_card_knowledge(
-    card_id: str,
-    data: CardKnowledgeCreate,
-    user_id: str = Depends(require_user),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-):
-    """Blocked: card Knowledge Base resources are read-only governed snapshots."""
-    await _require_card_write_access(card_id, user_id, uow)
-    raise HTTPException(
-        status_code=status.HTTP_409_CONFLICT,
-        detail=CARD_RESOURCE_READ_ONLY_MESSAGE,
-    )
 
 
 @router.get("/{card_id}/knowledge/{kb_id}")
@@ -936,35 +908,8 @@ async def get_card_knowledge(
     return result.knowledge
 
 
-@router.patch("/{card_id}/knowledge/{kb_id}")
-async def update_card_knowledge(
-    card_id: str,
-    kb_id: str,
-    data: CardKnowledgeUpdate,
-    user_id: str = Depends(require_user),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-):
-    """Blocked: card Knowledge Base resources are read-only governed snapshots."""
-    await _require_card_write_access(card_id, user_id, uow, kb_id=kb_id)
-    raise HTTPException(
-        status_code=status.HTTP_409_CONFLICT,
-        detail=CARD_RESOURCE_READ_ONLY_MESSAGE,
-    )
 
 
-@router.delete("/{card_id}/knowledge/{kb_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_card_knowledge(
-    card_id: str,
-    kb_id: str,
-    user_id: str = Depends(require_user),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-):
-    """Blocked: card Knowledge Base resources are read-only governed snapshots."""
-    await _require_card_write_access(card_id, user_id, uow, kb_id=kb_id)
-    raise HTTPException(
-        status_code=status.HTTP_409_CONFLICT,
-        detail=CARD_RESOURCE_READ_ONLY_MESSAGE,
-    )
 
 
 @router.get("/{card_id}/knowledge/{kb_id}/download")

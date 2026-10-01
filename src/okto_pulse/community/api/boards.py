@@ -385,7 +385,7 @@ async def create_card(
     principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
-    """Create a card, preserving v1 unless propagation v2 is explicit."""
+    """Create a card with the governed Knowledge selection contract."""
     actor = RESTAdapterContract.actor_from_principal(principal, board_id=board_id)
     command = CreateCardInBoardCommand(board_id, data)
 
@@ -397,22 +397,6 @@ async def create_card(
         )
 
     try:
-        if (
-            "knowledge_propagation" in data.model_fields_set
-            and data.knowledge_propagation is None
-        ):
-            return knowledge_propagation_error_response(
-                KnowledgePropagationContractError(
-                    "knowledge_propagation_envelope_required",
-                    (
-                        "knowledge_propagation must be a complete v2 envelope "
-                        "when the field is present"
-                    ),
-                )
-            )
-        if data.knowledge_propagation is None:
-            result = await _execute(uow)
-            return result.card
         result = await execute_knowledge_creation_with_one_retry(
             uow=uow,
             uow_factory=get_unit_of_work_factory(request),

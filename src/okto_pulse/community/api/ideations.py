@@ -3,7 +3,16 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from okto_pulse.community.api.auth_deps import require_user
-from okto_pulse.community.api.deps import get_unit_of_work
+from okto_pulse.community.api.deps import get_unit_of_work, get_unit_of_work_factory
+from okto_pulse.community.api.knowledge_propagation import (
+    KnowledgePropagationContractError, KnowledgePropagationServiceError,
+    execute_knowledge_creation_with_one_retry, knowledge_propagation_error_response,
+    rollback_and_record_knowledge_error,
+)
+from okto_pulse.core.ports.knowledge_propagation import KnowledgePropagationPortError
+from okto_pulse.core.application.knowledge_propagation_projection import project_derive_spec_response
+from okto_pulse.core.models.knowledge_propagation import DeriveIdeationSpecRequest
+from okto_pulse.core.models.schemas import DeriveSpecResponse
 from okto_pulse.community.api.knowledge_governance import (
     KnowledgeGovernanceInvalidMetadata,
     knowledge_governance_error_response,
@@ -110,7 +119,6 @@ from okto_pulse.core.models.schemas import (
     IdeationUpdate,
     LookupResponse,
     PageEnvelope,
-    SpecResponse,
 )
 from okto_pulse.core.application.errors import (
     AmbiguityGateError,
@@ -511,26 +519,35 @@ async def evaluate_complexity(
     return result.ideation
 
 
-@router.post("/ideations/{ideation_id}/derive-spec", response_model=SpecResponse)
+@router.post("/ideations/{ideation_id}/derive-spec", response_model=DeriveSpecResponse)
 async def derive_spec(
     ideation_id: str,
+    request: Request,
+    data: DeriveIdeationSpecRequest,
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
-    """Create a spec draft from a done ideation."""
+    """Create a governed Spec draft from a completed small ideation."""
+    actor = RESTAdapterContract.actor(user_id)
+    command = DeriveSpecCommand(ideation_id, data)
+    async def execute(target_uow):
+        return await DeriveSpecUseCase().execute(command, actor=actor, uow=target_uow)
     try:
-        result = await DeriveSpecUseCase().execute(
-            DeriveSpecCommand(ideation_id),
-            actor=RESTAdapterContract.actor(user_id),
-            uow=uow,
+        result = await execute_knowledge_creation_with_one_retry(
+            uow=uow, uow_factory=get_unit_of_work_factory(request), actor=actor,
+            operation=execute,
         )
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        return project_derive_spec_response(result.knowledge_mutation)
+    except KnowledgePropagationServiceError as error:
+        await rollback_and_record_knowledge_error(uow, error)
+        return knowledge_propagation_error_response(error)
+    except (KnowledgePropagationContractError, KnowledgePropagationPortError) as error:
+        await uow.rollback()
+        return knowledge_propagation_error_response(error)
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error))
     except EntityNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Ideation not found"
-        )
-    return result.spec
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ideation not found")
 
 
 @router.get(

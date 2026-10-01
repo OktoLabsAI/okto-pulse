@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from okto_pulse.community.adapters.sqlalchemy_base import Base
 from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
     CommunitySemanticSession,
 )
@@ -104,8 +103,10 @@ async def propagation_runtime(tmp_path):
         sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    from okto_pulse.community.adapters.current_relational_schema import (
+        current_schema_contract, initialize_current_schema,
+    )
+    await initialize_current_schema(engine, current_schema_contract())
     try:
         async with sessions() as session:
             session.add_all(
@@ -186,14 +187,12 @@ async def propagation_runtime(tmp_path):
                         created_by=ACTOR_ID,
                     ),
                     SpecKnowledgeBase(
-                        id="kb-local",
+                        id="root-stable",
                         spec_id=PARENT_SPEC_ID,
                         title="Local source",
                         content="source revision one",
                         source_version=1,
                         root_source_kb_id="root-stable",
-                        immediate_parent_kb_id="root-stable",
-                        source_kb_id="root-stable",
                         created_by=ACTOR_ID,
                     ),
                     SpecKnowledgeBase(
@@ -425,7 +424,7 @@ def _plan(
     else:
         kind = KnowledgeMutationKind.REPLACE
         selection = KnowledgeSelection.explicit_ids(
-            ("kb-local",),
+            ("root-stable",),
             mode=KnowledgePropagationMode.REFERENCE,
         )
         state = KnowledgeSelectionState.EXPLICIT_IDS
@@ -436,7 +435,7 @@ def _plan(
                     board_id=target.board_id,
                     target_type=target.target_type,
                     target_id=target.target_id,
-                    source_knowledge_id="kb-local",
+                    source_knowledge_id="root-stable",
                     revision_stamp=ResourceRevisionStamp(
                         root_id="root-stable",
                         source_revision="1",
@@ -504,7 +503,7 @@ async def test_parent_preflight_is_target_independent_and_board_scoped(
             KnowledgeParentLookup(
                 parent=parent,
                 source_knowledge_ids=(
-                    "kb-local",
+                    "root-stable",
                     "kb-foreign",
                     "kb-cross-board",
                     "kb-missing",
@@ -532,7 +531,7 @@ async def test_parent_preflight_is_target_independent_and_board_scoped(
     assert evidence.parent_exists is True
     assert evidence.same_board is True
     assert evidence.parent_state == SpecStatus.APPROVED.value
-    assert [item.requested_knowledge_id for item in evidence.sources] == ["kb-local"]
+    assert [item.requested_knowledge_id for item in evidence.sources] == ["root-stable"]
     assert evidence.sources[0].revision_stamp.root_id == "root-stable"
     assert evidence.linked_spec_id == PARENT_SPEC_ID
     assert evidence.functional_requirement_ids == ("fr-local",)
@@ -552,7 +551,7 @@ async def test_parent_preflight_is_target_independent_and_board_scoped(
                     parent_type=KnowledgeParentType.SPEC,
                     parent_id=PARENT_SPEC_ID,
                 ),
-                source_knowledge_ids=("kb-local",),
+                source_knowledge_ids=("root-stable",),
             ),
         )
         missing = await store.load_parent_evidence(
@@ -563,7 +562,7 @@ async def test_parent_preflight_is_target_independent_and_board_scoped(
                     parent_type=KnowledgeParentType.SPEC,
                     parent_id="spec-future-parent-missing",
                 ),
-                source_knowledge_ids=("kb-local",),
+                source_knowledge_ids=("root-stable",),
             ),
         )
     assert wrong_board.parent_exists is True
@@ -714,13 +713,13 @@ async def test_parent_source_evidence_is_locked_and_revalidated_fresh(
             session,
             KnowledgeParentLookup(
                 parent=parent,
-                source_knowledge_ids=("kb-local",),
+                source_knowledge_ids=("root-stable",),
             ),
         )
         await session.rollback()
 
         async with sessions() as writer:
-            source = await writer.get(SpecKnowledgeBase, "kb-local")
+            source = await writer.get(SpecKnowledgeBase, "root-stable")
             assert source is not None
             source.content = "changed after preflight"
             source.source_version = 2
@@ -816,7 +815,7 @@ async def test_mixed_foreign_selection_is_atomic_then_reference_and_drop_work(
                 KnowledgeMutationCommand(
                     target=target,
                     selection=KnowledgeSelection.explicit_ids(
-                        ("kb-local", "kb-foreign"),
+                        ("root-stable", "kb-foreign"),
                         mode=KnowledgePropagationMode.REFERENCE,
                     ),
                     actor_id=ACTOR_ID,
@@ -827,7 +826,7 @@ async def test_mixed_foreign_selection_is_atomic_then_reference_and_drop_work(
                 ),
             )
         assert rejected.value.code == "knowledge_selection_invalid"
-        assert rejected.value.details["matched"] == ["kb-local"]
+        assert rejected.value.details["matched"] == ["root-stable"]
         assert rejected.value.details["missing"] == ["kb-foreign"]
         await session.rollback()
 
@@ -841,7 +840,7 @@ async def test_mixed_foreign_selection_is_atomic_then_reference_and_drop_work(
             KnowledgeMutationCommand(
                 target=target,
                 selection=KnowledgeSelection.explicit_ids(
-                    ("kb-local",),
+                    ("root-stable",),
                     mode=KnowledgePropagationMode.REFERENCE,
                 ),
                 actor_id=ACTOR_ID,
@@ -897,7 +896,7 @@ async def test_refresh_resolves_stable_root_and_replay_keeps_historical_result(
             KnowledgeMutationCommand(
                 target=target,
                 selection=KnowledgeSelection.explicit_ids(
-                    ("kb-local",),
+                    ("root-stable",),
                     mode=KnowledgePropagationMode.SNAPSHOT,
                 ),
                 actor_id=ACTOR_ID,
@@ -910,7 +909,7 @@ async def test_refresh_resolves_stable_root_and_replay_keeps_historical_result(
         await session.commit()
 
     async with sessions() as session:
-        source = await session.get(SpecKnowledgeBase, "kb-local")
+        source = await session.get(SpecKnowledgeBase, "root-stable")
         assert source is not None
         source.content = "source revision two"
         source.source_version = 2
