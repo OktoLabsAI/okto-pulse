@@ -27,6 +27,7 @@ from okto_pulse.core.application.use_cases.requirement_verification import (
     GetRequirementVerificationCommand,
     GetRequirementVerificationUseCase,
 )
+from okto_pulse.core.domain.execution_contract import new_execution_contract
 from okto_pulse.core.domain.permissions import ALL_FLAGS
 from okto_pulse.core.ports.permission_policy import PermissionSet, set_permission_flag
 from okto_pulse.core.mcp import server
@@ -67,10 +68,13 @@ def actor(denied=None, source="rest", planning=False):
 
 
 async def seed(db):
+    spec = await db.get(Spec, "spec", populate_existing=True)
+    contract = new_execution_contract(board_id="board", spec_id="spec", edition=spec.edition, actor_id="author", origin="new_spec")
     await db.execute(
         update(Spec)
         .where(Spec.id == "spec")
         .values(
+            execution_contract=contract,
             functional_requirements=[
                 {
                     "id": "fr",
@@ -104,13 +108,13 @@ async def seed(db):
 
 
 @pytest.mark.asyncio
-async def test_historical_done_without_metadata_is_read_without_adoption_or_reopening(classified_context, monkeypatch):
+async def test_current_done_without_qualification_is_read_without_changes(classified_context, monkeypatch):
     db = classified_context
     await seed(db)
-    legacy = [{'id': 'fr', 'text': 'Historical blocking requirement'}]
+    requirements = [{'id': 'fr', 'text': 'Blocking requirement'}]
     await db.execute(update(Spec).where(Spec.id == 'spec').values(
-        status='done', execution_contract=None, functional_requirements=legacy,
-        technical_requirements=[], acceptance_criteria=[{'id': 'ac', 'text': 'Historical condition'}]))
+        status='done', functional_requirements=requirements,
+        technical_requirements=[], acceptance_criteria=[{'id': 'ac', 'text': 'Blocking condition'}]))
     await db.commit()
     before = await writes.snapshot(db)
     app, _ = transports.application(db)
@@ -119,7 +123,7 @@ async def test_historical_done_without_metadata_is_read_without_adoption_or_reop
         response = await client.get('/api/v1/boards/board/specs/spec/requirement-verification')
     assert response.status_code == 200, response.text
     data = response.json()
-    assert data['spec_status'] == 'done' and data['execution_contract'] is None
+    assert data['spec_status'] == 'done' and data['execution_contract']['contract_version'] == 'spec-execution-contract/v1'
     assert not data['criteria_resolution_complete'] and not data['delivery_evaluated']
     assert not data['semantic_review_evaluated']
     item = data['items'][0]
@@ -129,8 +133,8 @@ async def test_historical_done_without_metadata_is_read_without_adoption_or_reop
     assert item['default_proposal']['requires_author_acceptance'] is True
     assert await writes.snapshot(db) == before
     persisted = await db.get(Spec, 'spec', populate_existing=True)
-    assert persisted.status == 'done' and persisted.execution_contract is None
-    assert persisted.functional_requirements == legacy
+    assert persisted.status == 'done' and persisted.execution_contract['contract_version'] == 'spec-execution-contract/v1'
+    assert persisted.functional_requirements == requirements
 
 
 @pytest.mark.asyncio
@@ -181,8 +185,8 @@ async def test_full_inventory_includes_supplemental_obligations_and_unlinked_car
     assert summary["population_complete"] and not summary["plan_complete"]
     assert summary["families"]["api"] == summary["families"]["decision"] == summary["families"]["card"] == 1
     assert summary["unassigned_count"] > 0 and len(summary["snapshot_sha256"]) == 64
-    assert summary["adoption_evaluated"] and not summary["contract_adopted"] and not summary["delivery_evaluated"]
-    assert result["execution_contract"] is None
+    assert summary["adoption_evaluated"] and summary["contract_adopted"] and not summary["delivery_evaluated"]
+    assert result["execution_contract"]["contract_version"] == "spec-execution-contract/v1"
 
 
 @pytest.mark.asyncio
@@ -334,7 +338,7 @@ async def seed_plan(db):
             test_scenarios=[
                 {
                     "id": "ts",
-                    "scenario_type": "manual",
+                    "scenario_type": "integration",
                     "status": "ready",
                     "given": "Five failed attempts",
                     "when": "Access requested",
