@@ -2767,6 +2767,18 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       URL.revokeObjectURL(url);
     },
 
+    async getBugClusters(
+      boardId: string,
+      query: import('@/components/analytics/bugClustersTypes').BugClustersQuery,
+      signal?: AbortSignal,
+    ): Promise<import('@/components/analytics/bugClustersTypes').BugClustersResponse> {
+      const params = new URLSearchParams();
+      Object.entries(query).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') params.set(key, String(value));
+      });
+      return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/analytics/bug-clusters?${params}`, { signal });
+    },
+
     async getBoardKgAnalytics(
       boardId: string,
       from?: string,

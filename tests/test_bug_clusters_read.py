@@ -252,3 +252,52 @@ async def test_sql_and_native_graph_keep_missing_bug_in_denominator(source, real
     assert result['items'][0]['distinct_bug_count'] is None
     assert result['items'][0]['observed_bug_count'] == 1
     assert database.transactions == before
+
+
+@pytest.mark.asyncio
+async def test_kg59_distinct_causes_share_only_an_origin_association(source, real_store, monkeypatch):
+    """KG-59: different recorded diagnoses must not become a common-cause claim."""
+    import json
+    from sqlalchemy import select
+    from okto_pulse.core.models.bug_clusters import BugClustersResponse
+
+    session, _ = source
+    store, database, _, _ = real_store
+    board = native_store.BOARD_ID
+    await session.execute(Spec.__table__.insert(), dict(id='kg59-spec', board_id=board,
+        title='Same affected contract', created_by='actor'))
+    await seed(session, {'id': 'kg59-origin', 'board_id': board, 'card_type': 'normal', 'spec_id': 'kg59-spec'})
+    diagnoses = {'kg59-one': 'Root cause: expired upstream certificate.',
+                 'kg59-two': 'Root cause: integer overflow in a local counter.'}
+    await seed(session, *(dict(id=key, board_id=board, origin_task_id='kg59-origin',
+        conclusions=[dict(text=text, author_id='reviewer', created_at=NOW.isoformat())])
+        for key, text in diagnoses.items()))
+    stored = (await session.execute(select(Card.id, Card.conclusions).where(Card.id.in_(diagnoses)))).all()
+    assert {key: entries[0]['text'] for key, entries in stored} == diagnoses
+    store.create_node(board, 'Constraint', 'kg59-constraint',
+        native_store._attrs('Origin-associated contract', 'spec:kg59-spec:tr:item', 'seed'))
+    for key in diagnoses:
+        store.create_node(board, 'Bug', key + '-node', {
+            **native_store._attrs(key, 'card:' + key, 'seed'),
+            'source_created_at': (NOW - timedelta(days=2)).isoformat(), 'source_status': 'done', 'severity': 'major',
+        })
+        store.create_edge(board, 'violates', key + '-node', 'kg59-constraint', {
+            'confidence': 0.8, 'rule_id': 'violates/bug_origin_proxy_tr/kg59-origin@v2.1',
+            'layer': 'deterministic', 'created_by': 'worker_layer1', 'fallback_reason': 'inferred_origin_proxy:card:kg59-origin',
+        }, from_type='Bug', to_type='Constraint')
+    execution = CommunityGraphQueryExecution()
+    monkeypatch.setattr(store, '_query_timeout', execution.remaining)
+    before = database.transactions
+    request = replace(query('proxy'), board_id=board)
+    snapshot = await CommunityBugClustersReader(session, graph_reader=store, query_execution=execution).read(request, timeout_ms=15000)
+    result = BugClustersResponse.model_validate(project_bug_clusters(request, snapshot)).model_dump(mode='json')
+    assert len(result['items']) == 1
+    cluster = result['items'][0]
+    assert result['distinct_bug_count'] == cluster['observed_bug_count'] == 2
+    assert cluster['bug_refs'] == ['card:kg59-one', 'card:kg59-two']
+    assert cluster['assertion_basis'] == 'origin_proxy'
+    assert cluster['causal_conclusion'] == 'not_established'
+    assert cluster['provenance_refs'] == ['violates/bug_origin_proxy_tr/kg59-origin@v2.1']
+    assert result['completeness']['complete_for_scope'] is False
+    assert all(text not in json.dumps(result) for text in diagnoses.values())
+    assert database.transactions == before

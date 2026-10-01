@@ -16,6 +16,7 @@ from okto_pulse.community.api.analytics_transport import (
     FlowHealthSettingsResponseDTO,
 )
 from okto_pulse.community.api.deps import get_unit_of_work
+from okto_pulse.community.api.bug_clusters import router as bug_clusters_router
 from okto_pulse.community.api.permission_errors import permission_denied_http_error
 from okto_pulse.community.adapters.sqlalchemy_analytics_evidence import (
     validated_board_kg_cursor_observed_at,
@@ -86,6 +87,8 @@ from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.core.services.analytics_contract import parse_analytics_datetime
 
 router = APIRouter()
+
+router.include_router(bug_clusters_router)
 
 
 # ---------------------------------------------------------------------------

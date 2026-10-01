@@ -10,6 +10,7 @@ import { DeliveryIntelligenceFullView } from './DeliveryIntelligenceFullView';
 import { FlowHealthFullView } from './FlowHealthFullView';
 import { FlowHealthSettingsPage } from './FlowHealthSettingsPage';
 import { KgEffectivenessFullView } from './KgEffectivenessFullView';
+import { BugClustersView } from './BugClustersView';
 import type { KgEffectivenessFilterState } from './KgEffectivenessFullView';
 import {
   canonicalCoverageFullViewPath,
@@ -38,7 +39,8 @@ type AnalyticsLevel =
   | 'delivery-intelligence'
   | 'flow-health'
   | 'flow-health-settings'
-  | 'kg-effectiveness';
+  | 'kg-effectiveness'
+  | 'bug-clusters';
 
 interface AnalyticsState {
   level: AnalyticsLevel;
@@ -128,6 +130,11 @@ function stateFromPath(pathname: string): AnalyticsState {
     const boardId = decodePathSegment(kgMatch[1]);
     if (boardId !== undefined) return { level: 'kg-effectiveness', boardId, boardName: '' };
   }
+  const clustersMatch = pathname.match(/^\/analytics\/boards\/([^/]+)\/bug-clusters\/?$/);
+  if (clustersMatch) {
+    const boardId = decodePathSegment(clustersMatch[1]);
+    if (boardId !== undefined) return { level: 'bug-clusters', boardId, boardName: '' };
+  }
   const boardMatch = pathname.match(/^\/analytics\/boards\/([^/]+)/);
   if (boardMatch) {
     const boardId = decodePathSegment(boardMatch[1]);
@@ -137,6 +144,7 @@ function stateFromPath(pathname: string): AnalyticsState {
 }
 
 function pathFromState(state: AnalyticsState): string {
+  if (state.level === 'bug-clusters' && state.boardId) return `/analytics/boards/${encodeURIComponent(state.boardId)}/bug-clusters`;
   if (state.level === 'overview') return '/analytics';
   if (state.level === 'board' && state.boardId) {
     return `/analytics/boards/${encodeURIComponent(state.boardId)}`;
@@ -476,6 +484,9 @@ export function AnalyticsPage() {
       });
     }
 
+    if (state.level === 'bug-clusters') {
+      segments.push({ label: 'Bug clusters', onClick: undefined as unknown as () => void });
+    }
     if (state.level === 'kg-effectiveness') {
       segments.push({
         label: 'KG Health & Cognitive Effectiveness',
@@ -520,7 +531,12 @@ export function AnalyticsPage() {
         <Breadcrumb segments={buildBreadcrumbSegments()} />
 
         <div className="flex items-center gap-3">
-          {!['flow-health-settings', 'canonical-coverage', 'delivery-intelligence', 'kg-effectiveness'].includes(state.level) && <DateFilter from={from} to={to} onChange={handleDateChange} />}
+          {!['flow-health-settings', 'canonical-coverage', 'delivery-intelligence', 'kg-effectiveness', 'bug-clusters'].includes(state.level) && <DateFilter from={from} to={to} onChange={handleDateChange} />}
+          {state.level === 'board' && <button className="border rounded px-3 py-1.5 text-sm" type="button" onClick={() => {
+            const next: AnalyticsState = { ...state, level: 'bug-clusters' };
+            setState(next);
+            window.history.pushState({}, '', pathFromState(next));
+          }}>Bug clusters</button>}
           {(state.level === 'overview' || state.level === 'board' || state.level === 'entity') && <button
             onClick={handleExportCsv}
             disabled={exporting}
@@ -536,6 +552,8 @@ export function AnalyticsPage() {
       </div>
 
       {/* Content based on level */}
+      {state.level === 'bug-clusters' && state.boardId && <BugClustersView key={state.boardId}
+        boardId={state.boardId} onBack={() => navigateToBoard(state.boardId!, state.boardName ?? '')} />}
       {state.level === 'overview' && (
         <OverviewDashboard from={from} to={to} onSelectBoard={navigateToBoard} />
       )}
