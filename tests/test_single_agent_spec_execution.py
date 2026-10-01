@@ -239,6 +239,21 @@ async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(
         await call(client, 'okto_pulse_move_spec', **scope, status='in_progress')
         for state in ('started', 'in_progress'):
             await call(client, 'okto_pulse_move_card', board_id='board', card_id='task', status=state)
+        checkpoint_scope = await call(client, 'okto_pulse_get_delivery_evidence', **scope, card_id='task', view='resume')
+        checkpoint = await call(client, 'okto_pulse_record_delivery_evidence', **scope, card_id='task', evidence=dict(
+            kind='progress', expected_card_version=checkpoint_scope['card_version'],
+            expected_spec_edition=checkpoint_scope['edition'], idempotency_key='solo-progress',
+            justification='Inspected the assigned procedure scope before reporting implementation',
+            progress=dict(contract_version='delivery-progress/v2', material_change='none',
+                source_state=dict(workspace_state='unknown', recoverability='unknown'),
+                remaining='Record accepted implementation and execute the procedure test')))
+        async with factory() as reader:
+            progress_row = await reader.get(CardDeliveryEvidenceRecordRow, checkpoint['id'])
+            assert progress_row.kind == 'progress' and progress_row.actor_id == 'solo'
+            progress_payload = copy.deepcopy(progress_row.payload)
+            assert (await reader.get(Card, 'task')).status == 'in_progress'
+            assert not list(await reader.scalars(select(CardDeliveryEvidenceRecordRow).where(
+                CardDeliveryEvidenceRecordRow.kind.in_(['implementation', 'test']))))
         async with factory() as writer:
             await seed_external_implementation(writer)
         resume = await call(client, 'okto_pulse_get_delivery_evidence', **scope, card_id='task', view='resume')
@@ -270,8 +285,9 @@ async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(
             assert current.status == 'in_progress'
             assert (current.validations, current.evaluations, current.current_validation_id) == preserved
             records = list(await reader.scalars(select(CardDeliveryEvidenceRecordRow)))
-            assert [record.id for record in records] == [delivered['entries'][0]['id']]
-            implementation_payload = copy.deepcopy(records[0].payload)
+            assert {record.id for record in records} == {checkpoint['id'], delivered['entries'][0]['id']}
+            implementation_payload = copy.deepcopy(next(
+                record.payload for record in records if record.id == delivered['entries'][0]['id']))
         for state in ('started', 'in_progress'):
             await call(client, 'okto_pulse_move_card', board_id='board', card_id='test', status=state)
         executed = await call(client, 'okto_pulse_execute_test_scenario_evidence', **scope,
@@ -309,8 +325,9 @@ async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(
         assert test.conclusions[0]['delivery_manifest']['records'][0]['id'] == tested['entries'][0]['id']
         assert current.test_scenarios[0]['evidence'] == executed['evidence']
         records = list(await reader.scalars(select(CardDeliveryEvidenceRecordRow)))
-        assert {record.id for record in records} == {delivered['entries'][0]['id'], tested['entries'][0]['id']}
+        assert {record.id for record in records} == {checkpoint['id'], delivered['entries'][0]['id'], tested['entries'][0]['id']}
         assert all(record.actor_id == 'solo' for record in records)
+        assert (await reader.get(CardDeliveryEvidenceRecordRow, checkpoint['id'])).payload == progress_payload
         assert (await reader.get(CardDeliveryEvidenceRecordRow, delivered['entries'][0]['id'])).payload == implementation_payload
         assert list(await reader.scalars(select(Agent.id))) == ['solo']
         receipts = list(await reader.scalars(select(QualityAssessmentReceiptRow)))
