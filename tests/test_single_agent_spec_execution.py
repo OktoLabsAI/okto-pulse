@@ -1,16 +1,19 @@
-"""BASE T01 composition: one authenticated agent through actual Spec admission."""
+"""BASE T01: one authenticated agent from Draft through Spec Done."""
 import copy
 import json
+from dataclasses import replace
+from datetime import datetime, timezone
 
 import pytest
 from fastmcp import Client
-from sqlalchemy import select
+from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from okto_pulse.community.adapters.mcp_auth import make_community_mcp_authenticator
 from okto_pulse.community.adapters.mcp_host import CommunityMcpHostProvider
 from okto_pulse.community.adapters.sqlalchemy_models import (
-    Agent, AgentBoard, Board, Card, PermissionPreset, QualityAssessmentReceiptRow, Spec,
+    Agent, AgentBoard, Board, Card, CardDeliveryEvidenceRecordRow, PermissionPreset,
+    QualityAssessmentReceiptRow, Spec,
 )
 from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import CommunitySemanticSession
 from okto_pulse.community.adapters.sqlalchemy_quality_assessment import CommunitySqlAlchemyQualityAssessmentPreflightReader
@@ -32,6 +35,43 @@ from test_delivery_reused_impact import register_report_adapters
 adopted_context = source_context
 
 
+async def seed_external_implementation(db):
+    """Fixture for an already-admitted external technical execution receipt."""
+    from test_code_traceability_persistence import _attestation_bundle
+    from okto_pulse.community.adapters.sqlalchemy_code_traceability import _receipt_row, _request_row
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        CodeInvestigationRequestRow, CodeInvestigationReceiptRow,
+        ImplementationTargetRow, ImplementationTargetExecutionRecordRow,
+    )
+    from okto_pulse.core.domain.code_traceability import code_investigation_observation_sha256
+    now = datetime.now(timezone.utc)
+    _, consumed, receipt, _, workspace = _attestation_bundle(now, subject_id='task')
+    workspace = replace(workspace, declared_revision='a' * 40)
+    request = replace(consumed, board_id='board')
+    observation = code_investigation_observation_sha256(source_ref=receipt.source_ref,
+        selector_scope_digest=receipt.selector_scope_digest, outcome=receipt.outcome,
+        capabilities=receipt.capabilities, source_identity_digest=receipt.source_identity_digest,
+        declared_revision=workspace.declared_revision, workspace_state=workspace, omission_manifest=())
+    receipt = replace(receipt, board_id='board', declared_revision='a' * 40,
+        workspace_state=workspace, observation_sha256=observation)
+    await db.execute(insert(CodeInvestigationRequestRow).values(**_request_row(request)))
+    await db.execute(insert(CodeInvestigationReceiptRow).values(**_receipt_row(receipt)))
+    spec = await db.get(Spec, 'spec')
+    db.add(ImplementationTargetRow(id='target', board_id='board', card_id='task',
+        source_ref=receipt.source_ref, selector_kind='file', relative_path_hint='src/file.py',
+        role='modify', intent='Deliver the procedure view', required=True,
+        source_spec_version=spec.version, lifecycle_status='active', revision=1,
+        created_by='solo', created_at=now, updated_at=now))
+    await db.flush()
+    db.add(ImplementationTargetExecutionRecordRow(id='execution', board_id='board', card_id='task',
+        target_id='target', target_revision=1, result_investigation_receipt_id=receipt.id,
+        source_ref=receipt.source_ref, disposition='touched', result_declared_revision='a' * 40,
+        result_workspace_state_id=workspace.workspace_state_id, actual_relative_path='src/file.py',
+        justification='External implementation receipt fixture', submitted_by='solo', received_at=now,
+        payload_sha256='b' * 64, idempotency_key='execution'))
+    await db.commit()
+
+
 async def call(client, name, **arguments):
     result = await client.call_tool(name, arguments, raise_on_error=False)
     assert not result.is_error, result.content
@@ -41,16 +81,28 @@ async def call(client, name, **arguments):
 
 
 @pytest.mark.asyncio
-async def test_one_agent_records_lint_validates_evaluates_and_starts_spec(adopted_context, tmp_path, monkeypatch):
+async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(adopted_context, tmp_path, monkeypatch):
     db = adopted_context
     await complete_start_fixture(db, tmp_path)
     register_report_adapters()
     register_structured_spec_store(CommunitySqlAlchemyStructuredSpecStore())
     factory = async_sessionmaker(db.bind, sync_session_class=CommunitySemanticSession,
         expire_on_commit=False, info={'realm_scope': RealmScope.local()})
+    from okto_pulse.community.adapters.composition import configure_community_kg_registry
+    from okto_pulse.community.config import CommunitySettings
+    from okto_pulse.community.adapters.sqlalchemy_resource_gate_service import CommunitySqlAlchemyResourceGateAdapter
+    configure_community_kg_registry(factory, settings=CommunitySettings(
+        data_dir=str(tmp_path / 'runtime'), kg_base_dir=str(tmp_path / 'kg'),
+        kg_embedding_mode='stub', kg_embedding_dim=8))
+    resources = CommunitySqlAlchemyResourceGateAdapter(db)
+    for identity in ('task', 'test'):
+        for resource in ('architecture', 'mockup'):
+            await resources.save_not_applicable('board', 'card', identity, resource, 'author',
+                justification='Procedure fixture has no additional design or mockup', source_channel='test')
     board = await db.get(Board, 'board')
     board.settings = {**(board.settings or {}), 'reviewer_separation_mode': 'off',
-                      'require_spec_validation': True, 'require_task_validation': True}
+                      'require_spec_validation': True, 'require_task_validation': True,
+                      'skip_cognitive_consolidation': True, 'impact_evidence_mode': 'off'}
     spec = await db.get(Spec, 'spec', populate_existing=True)
     spec.evaluations = []
     spec.created_by = 'solo'
@@ -108,13 +160,106 @@ async def test_one_agent_records_lint_validates_evaluates_and_starts_spec(adopte
             assert current.status == 'validated'
             preserved = copy.deepcopy((current.validations, current.evaluations, current.current_validation_id))
         await call(client, 'okto_pulse_move_spec', **scope, status='in_progress')
+        for state in ('started', 'in_progress'):
+            await call(client, 'okto_pulse_move_card', board_id='board', card_id='task', status=state)
+        async with factory() as writer:
+            await seed_external_implementation(writer)
+        resume = await call(client, 'okto_pulse_get_delivery_evidence', **scope, card_id='task', view='resume')
+        report = dict(contract_version='card-delivery-report/v1', expected_card_status='in_progress',
+            batch=dict(contract_version='card-delivery-batch/v1', expected_card_version=resume['card_version'],
+                expected_spec_edition=resume['edition'], expected_delivery_revision=resume['delivery_revision'],
+                idempotency_key='solo-report', entries=[dict(client_ref='implementation', kind='implementation',
+                    execution_id='execution', justification='Procedure implementation at the accepted revision',
+                    bindings=[dict(obligation_ref=ref, contribution='complete') for ref in ('fr:fr', 'br:br', 'ac:ac-procedure', 'decision:decision')])]),
+            report=dict(status='validation', conclusion='Procedure view displays every required step', completeness=100,
+                completeness_justification='All allocated implementation is present', drift=0,
+                drift_justification='Matches the approved procedure scope'))
+        delivered = await call(client, 'okto_pulse_record_delivery_evidence', **scope, card_id='task', evidence=report)
+        resume = await call(client, 'okto_pulse_get_delivery_evidence', **scope, card_id='task', view='resume')
+        reviewed = await call(client, 'okto_pulse_submit_task_validation', board_id='board', card_id='task',
+            expected_subject_version=resume['card_version'], idempotency_key='solo-review',
+            confidence=95, confidence_justification='Inspected the accepted implementation record',
+            estimated_completeness=100, completeness_justification='All allocated implementation is present',
+            estimated_drift=0, drift_justification='No difference from the assigned scope',
+            general_justification='Inspected the preserved implementation and report under permitted self-review',
+            recommendation='approve')
+        assert reviewed['card_status'] == 'done', reviewed
+        # T07 in the same continuous flow: accepted implementation and task
+        # review still cannot replace the independent test-phase evidence.
+        refused = await client.call_tool('okto_pulse_move_spec', {**scope, 'status': 'done'}, raise_on_error=False)
+        assert 'delivery_test_result_missing' in str(refused), refused.content
+        async with factory() as reader:
+            current = await reader.get(Spec, 'spec')
+            assert current.status == 'in_progress'
+            assert (current.validations, current.evaluations, current.current_validation_id) == preserved
+            records = list(await reader.scalars(select(CardDeliveryEvidenceRecordRow)))
+            assert [record.id for record in records] == [delivered['entries'][0]['id']]
+            implementation_payload = copy.deepcopy(records[0].payload)
+        for state in ('started', 'in_progress'):
+            await call(client, 'okto_pulse_move_card', board_id='board', card_id='test', status=state)
+        # External project fixture: a real GET/assertion replay, signed by the
+        # Community issuer and later authenticated by the write verifier.
+        import httpx
+        from fastapi import FastAPI
+        from test_evidence_v2_adapter import _ledger
+        from okto_pulse.community.adapters.test_evidence import (
+            CommunityHttpManifestExecutor, CommunityTestEvidenceExecutionIssuer,
+            CommunityTestEvidenceWriteVerifier,
+        )
+        from okto_pulse.core.ports.test_evidence import (
+            register_test_evidence_execution_issuer, register_test_evidence_write_verifier,
+        )
+        project = FastAPI()
+        steps = ['Open the procedure', 'Perform each required action', 'Record completion']
+
+        @project.get('/procedure')
+        async def procedure():
+            return {'steps': steps}
+
+        evidence_ledger = _ledger(tmp_path / 'external-evidence')
+        register_test_evidence_execution_issuer(CommunityTestEvidenceExecutionIssuer(
+            ledger=evidence_ledger, executor=CommunityHttpManifestExecutor(
+                base_url='http://127.0.0.1', transport=httpx.ASGITransport(app=project)),
+            environment='pytest-asgi'))
+        register_test_evidence_write_verifier(CommunityTestEvidenceWriteVerifier(ledger=evidence_ledger))
+        executed = await call(client, 'okto_pulse_execute_test_scenario_evidence', **scope,
+            scenario_id='scenario', status='passed', replay=json.dumps({'description': 'Verify every procedure step',
+                'steps': [{'name': 'procedure', 'path': '/procedure', 'expected_status': 200,
+                    'assertions': [{'name': 'all-required-steps', 'kind': 'json_equals', 'path': 'steps', 'expected': steps}]}]}))
+        await call(client, 'okto_pulse_update_test_scenario_status', **scope,
+            scenario_id='scenario', status='passed', evidence=json.dumps(executed['evidence']))
+        resume_test = await call(client, 'okto_pulse_get_delivery_evidence', **scope, card_id='test', view='resume')
+        test_report = dict(contract_version='card-delivery-report/v1', expected_card_status='in_progress',
+            batch=dict(contract_version='card-delivery-batch/v1', expected_card_version=resume_test['card_version'],
+                expected_spec_edition=resume_test['edition'], expected_delivery_revision=resume_test['delivery_revision'],
+                idempotency_key='solo-test-report', entries=[dict(client_ref='test-proof', kind='test',
+                    scenario_id='scenario', implementation_ids=[delivered['entries'][0]['id']],
+                    obligation_refs=['fr:fr', 'br:br', 'ac:ac-procedure', 'decision:decision'],
+                    justification='Authenticated GET replay verifies all required procedure steps')]),
+            report=dict(status='done', conclusion='Procedure verification passed', completeness=100,
+                completeness_justification='All assigned observable assertions passed', drift=0,
+                drift_justification='Within the planned verification scope'))
+        tested = await call(client, 'okto_pulse_record_delivery_evidence', **scope, card_id='test', evidence=test_report)
+        await call(client, 'okto_pulse_move_spec', **scope, status='done')
     async with factory() as reader:
         current = await reader.get(Spec, 'spec')
-        assert current.status == 'in_progress'
+        assert current.status == 'done'
         assert (current.validations, current.evaluations, current.current_validation_id) == preserved
         assert current.validations[-1]['reviewer_id'] == 'solo'
         assert current.evaluations[-1]['evaluator_id'] == 'solo'
-        assert (await reader.get(Card, 'task')).status == 'not_started'
+        task = await reader.get(Card, 'task')
+        assert task.status == 'done', json.dumps([reviewed, task.validations, task.rejection_records], default=str)
+        assert task.validations[-1]['reviewer_id'] == 'solo'
+        assert task.conclusions[0]['author_id'] == 'solo'
+        assert task.conclusions[0]['delivery_manifest']['records'][0]['id'] == delivered['entries'][0]['id']
+        test = await reader.get(Card, 'test')
+        assert test.status == 'done' and not test.validations
+        assert test.conclusions[0]['delivery_manifest']['records'][0]['id'] == tested['entries'][0]['id']
+        assert current.test_scenarios[0]['evidence'] == executed['evidence']
+        records = list(await reader.scalars(select(CardDeliveryEvidenceRecordRow)))
+        assert {record.id for record in records} == {delivered['entries'][0]['id'], tested['entries'][0]['id']}
+        assert all(record.actor_id == 'solo' for record in records)
+        assert (await reader.get(CardDeliveryEvidenceRecordRow, delivered['entries'][0]['id'])).payload == implementation_payload
         assert list(await reader.scalars(select(Agent.id))) == ['solo']
         receipts = list(await reader.scalars(select(QualityAssessmentReceiptRow)))
         # Canonical five-metric validation is append-only Spec JSON; external
