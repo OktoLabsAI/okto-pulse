@@ -14,10 +14,11 @@ from okto_pulse.core.kg.logical_transfer import (
 )
 
 from .grafx_recovery_contracts import (
-    predecessor_recovery_contract, v060_recovery_contract, make_grafx_recovery_logical_sink,
+    predecessor_recovery_contract, v060_recovery_contract, v070_recovery_contract, make_grafx_recovery_logical_sink,
 )
 from .grafx_schema_manifest import PULSE_GRAFX_SCHEMA_MANIFEST
 from .grafx_schema_v060 import V060_MANIFEST
+from .grafx_schema_v070 import V070_MANIFEST, POST_V070_CARD_DEPENDENCY_PAIRS
 from .joint_recovery_snapshot import RecoveryBuildPair, verify_joint_recovery_snapshot
 from .logical_graph_transfer import LogicalGraphFileSnapshotSource
 from .logical_transfer_factories import logical_transfer_scope
@@ -25,6 +26,7 @@ from .relational_recovery_snapshot import _check_time, _deadline, _digest
 
 _TARGET_FINGERPRINT = '3ab6faf0fd8a7fe3694ed7ddd336faa97a6b4af4a1626aafe20c75b0922b2bbe'
 _V070_FINGERPRINT = '099a8da29e07ccd0002a2000a5c5135d439e83cb15d4a84c8e2a71c001340a32'
+_V080_FINGERPRINT = '97a5ed31dfaf4d479b8d7810638ad3f07f3955894168a03b437a5533352b618b'
 _INTRODUCED = frozenset({'severity', 'source_status', 'source_created_at', 'source_updated_at', 'resolved_at'})
 
 
@@ -53,16 +55,34 @@ def _schemas():
 
 def _contract(source_digest, target_version):
     previous, v060 = _schemas()
+    v070 = v070_recovery_contract().schema
+    if target_version == '0.8.0':
+        if (PULSE_GRAFX_SCHEMA_MANIFEST.schema_version != '0.8.0'
+                or PULSE_GRAFX_SCHEMA_MANIFEST.logical_fingerprint != _V080_FINGERPRINT):
+            raise LogicalSchemaError('retirement schema target contract changed')
+        current = logical_transfer_scope('board').schema
+        old = {layout.identity: layout for layout in v070.relation_layouts}
+        new = {layout.identity: layout for layout in current.relation_layouts}
+        if (current.node_types != v070.node_types or current.vector_spaces != v070.vector_spaces
+                or any(new.get(key) != value for key, value in old.items())
+                or new.keys() - old.keys() != POST_V070_CARD_DEPENDENCY_PAIRS):
+            raise LogicalSchemaError('retirement schema unexpected card dependency delta')
+        for source, version, introduced, added in (
+                (previous, '0.5.0', _INTRODUCED, 16),
+                (v060, '0.6.0', frozenset(), 5), (v070, '0.7.0', frozenset(), 3)):
+            if source_digest == schema_digest(source):
+                return source, current, version, introduced, added
+        raise ValueError('retirement_schema_predecessor_required')
     if target_version == '0.6.0':
         if source_digest != schema_digest(previous):
             raise ValueError('retirement_schema_predecessor_required')
         return previous, v060, '0.5.0', _INTRODUCED, 11
     if target_version != '0.7.0':
         raise ValueError('retirement_schema_evolution_version_invalid')
-    if (PULSE_GRAFX_SCHEMA_MANIFEST.schema_version != '0.7.0'
-            or PULSE_GRAFX_SCHEMA_MANIFEST.logical_fingerprint != _V070_FINGERPRINT):
+    if (V070_MANIFEST.schema_version != '0.7.0'
+            or V070_MANIFEST.logical_fingerprint != _V070_FINGERPRINT):
         raise LogicalSchemaError('retirement schema target contract changed')
-    current = logical_transfer_scope('board').schema
+    current = v070
     if current.node_types != v060.node_types or current.vector_spaces != v060.vector_spaces:
         raise LogicalSchemaError('retirement schema unexpected node or vector delta')
     old = {layout.identity: layout for layout in v060.relation_layouts}
@@ -80,6 +100,9 @@ def _contract(source_digest, target_version):
 
 
 def evolution_target_version(receipt):
+    if (receipt.get('format') == 'retirement-schema-evolution/v4'
+            and receipt.get('target_version') == '0.8.0'):
+        return '0.8.0'
     if receipt.get('format') == 'retirement-schema-evolution/v2':
         return '0.6.0'
     if (receipt.get('format') == 'retirement-schema-evolution/v3'
@@ -171,7 +194,8 @@ def schema_evolution_receipt(snapshot, manifest, index, *, scope, counts, finger
     graph = manifest['graphs'][index]
     _, _, source_version, introduced, layouts = _contract(graph['certificate']['schema_digest'], target_version)
     version = ({'format': 'retirement-schema-evolution/v2'} if target_version == '0.6.0' else
-        {'format': 'retirement-schema-evolution/v3', 'source_version': source_version, 'target_version': target_version})
+        {'format': 'retirement-schema-evolution/v4' if target_version == '0.8.0' else 'retirement-schema-evolution/v3',
+         'source_version': source_version, 'target_version': target_version})
     return {**version, 'state': 'evolved_not_reconciled',
         'board_id': graph['board_id'], 'snapshot_sha256': snapshot.manifest_sha256, 'builds': manifest['builds'],
         'source_database_uuid': graph['database_uuid'], 'native_history': manifest['native_graphs'][index],
@@ -189,6 +213,11 @@ def build_retirement_v060_graph(snapshot, target, *, board_id, builds, max_secon
 def build_retirement_v070_graph(snapshot, target, *, board_id, builds, max_seconds=180, batch_size=500):
     return _build(snapshot, target, board_id=board_id, builds=builds,
         max_seconds=max_seconds, batch_size=batch_size, target_version='0.7.0')
+
+
+def build_retirement_v080_graph(snapshot, target, *, board_id, builds, max_seconds=180, batch_size=500):
+    return _build(snapshot, target, board_id=board_id, builds=builds,
+        max_seconds=max_seconds, batch_size=batch_size, target_version='0.8.0')
 
 
 def _build(snapshot, target, *, board_id, builds, max_seconds, batch_size, target_version):

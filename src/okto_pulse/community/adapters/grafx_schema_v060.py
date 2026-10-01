@@ -2,7 +2,8 @@
 
 from okto_pulse.core.kg.logical_transfer import LogicalSchemaError
 
-from .grafx_relationship_layout import PULSE_RELATIONSHIP_LAYOUT, RelationshipLayout
+from .grafx_relationship_layout import RelationshipLayout
+from .grafx_schema_v070 import V070_RELATIONSHIP_LAYOUT
 from .grafx_schema_manifest import build_grafx_schema_manifest
 
 V060_FINGERPRINT = '3ab6faf0fd8a7fe3694ed7ddd336faa97a6b4af4a1626aafe20c75b0922b2bbe'
@@ -14,7 +15,7 @@ POST_V060_REQUIREMENT_PAIRS = frozenset({
 })
 V060_RELATIONSHIP_LAYOUT = RelationshipLayout(
     (entry.logical_type, entry.from_type, entry.to_type)
-    for entry in PULSE_RELATIONSHIP_LAYOUT.entries
+    for entry in V070_RELATIONSHIP_LAYOUT.entries
     if (entry.logical_type, entry.from_type, entry.to_type) not in POST_V060_REQUIREMENT_PAIRS
 )
 V060_MANIFEST = build_grafx_schema_manifest(

@@ -24,6 +24,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     Board,
     CanonicalDebt,
     Card,
+    CardDependency,
     CodeEvidenceRow,
     CodeEvidenceSpecLinkRow,
     CodeInvestigationHeadRow,
@@ -63,6 +64,7 @@ from okto_pulse.core.ports.consolidation import (
     CurrentQualityAssessmentSummary,
     CurrentResearchDecisionSummary,
     CurrentSpecDependencyProjection,
+    CurrentCardDependencyProjection,
     ExactConsolidationAckIntegrityError,
     ExactConsolidationAckReceipt,
     ExactConsolidationCompensationError,
@@ -891,6 +893,25 @@ class CommunitySqlAlchemyConsolidationPersistence:
         artifact_id: str,
         artifact: Any | None = None,
     ) -> ConsolidationProjectionInputs:
+        if artifact_type == 'card':
+            if not board_id or not artifact_id:
+                raise ValueError('card_dependency_projection_scope_invalid')
+            owner = await context.get(Card, artifact_id)
+            if owner is None or owner.board_id != board_id:
+                raise ValueError('card_dependency_projection_owner_invalid')
+            rows = (await context.execute(select(CardDependency, Card)
+                .outerjoin(Card, Card.id == CardDependency.depends_on_id)
+                .where(CardDependency.card_id == artifact_id)
+                .order_by(CardDependency.id))).all()
+            dependencies = []
+            for dependency, prerequisite in rows:
+                if (prerequisite is None or prerequisite.board_id != board_id
+                        or prerequisite.card_type not in {'normal', 'test', 'bug'}
+                        or prerequisite.id == artifact_id):
+                    raise ValueError('card_dependency_projection_source_invalid')
+                dependencies.append(CurrentCardDependencyProjection(
+                    dependency.id, board_id, artifact_id, prerequisite.id, prerequisite.card_type))
+            return ConsolidationProjectionInputs(card_dependencies=tuple(dependencies))
         if artifact_type not in {"ideation", "refinement", "spec"}:
             return ConsolidationProjectionInputs()
         if not board_id or not artifact_id:

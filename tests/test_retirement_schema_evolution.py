@@ -30,6 +30,7 @@ def sources(tmp_path, monkeypatch, request):
         if scope != 'board':
             return sample
         schema = (contracts.predecessor_recovery_contract() if source_version == '0.5.0'
+            else contracts.v070_recovery_contract() if source_version == '0.7.0'
             else contracts.v060_recovery_contract()).schema
         original = sample.nodes[0]
         node = replace(original, properties={name: value for name, value in original.properties.items()
@@ -57,6 +58,36 @@ def sources(tmp_path, monkeypatch, request):
 
 
 stored_sources = recovery.stored_sources
+
+
+@pytest.mark.parametrize('sources', ['0.5.0', '0.6.0', '0.7.0'], indirect=True)
+@pytest.mark.timeout(180)
+def test_v080_dependency_pairs_preserve_predecessor_and_versioned_receipt(stored_sources, tmp_path):
+    graph = stored_sources[0][1][0].database
+    source_version = graph.execute('MATCH (m:BoardMeta) RETURN m.schema_version').rows[0][0]
+    snapshot = capture(stored_sources)
+    receipt = evolution.build_retirement_v080_graph(snapshot, tmp_path / 'v080',
+        board_id='board-one', builds=recovery.BUILDS)
+    assert receipt['format'] == 'retirement-schema-evolution/v4'
+    assert receipt['source_version'] == source_version and receipt['target_version'] == '0.8.0'
+    assert receipt['introduced_relation_layouts'] == {'0.5.0':16, '0.6.0':5, '0.7.0':3}[source_version]
+    assert receipt['runtime_admission'] == 'not_authorized'
+    assert receipt['after']['counts']['relations'] == receipt['before']['counts']['relations'] == 2
+    assert graph.execute('MATCH (m:BoardMeta) RETURN m.schema_version').rows == ((source_version,),)
+    census, digest = read_retirement_historical_graph_census(snapshot)
+    baseline, _ = read_retirement_schema_baseline(snapshot, census, digest, (receipt,))
+    assert baseline['schema_evolutions'] == [receipt]
+    changed = {**receipt, 'after': {**receipt['after'], 'fingerprint': '0' * 64}}
+    with pytest.raises(ValueError, match='receipt_changed'):
+        read_retirement_schema_baseline(snapshot, census, digest, (changed,))
+    with connect(tmp_path / 'v080', page_size=8192, read_only=True) as candidate:
+        assert candidate.identity.database_uuid != graph.identity.database_uuid
+        assert candidate.execute('MATCH (m:BoardMeta) RETURN m.schema_version').rows == (('0.8.0',),)
+        schema = contracts.grafx_recovery_contract(candidate, scope='board').schema
+        assert len(schema.relation_layouts) == 85
+        assert schema.relation_layout('precedes', 'Entity', 'Bug')
+        assert schema.relation_layout('precedes', 'Bug', 'Entity')
+        assert schema.relation_layout('precedes', 'Bug', 'Bug')
 
 
 @pytest.mark.parametrize('sources', ['0.5.0', '0.6.0'], indirect=True)

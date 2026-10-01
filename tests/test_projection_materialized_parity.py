@@ -363,6 +363,67 @@ async def test_card_supports_every_declared_child_and_removes_only_current_assig
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(480)
+async def test_typed_card_dependencies_converge_through_normal_queue(tmp_path):
+    from sqlalchemy import delete
+    from okto_pulse.community.adapters.sqlalchemy_models import CardDependency
+    from okto_pulse.core.ports.card_projection import CARD_DEPENDENCY_RULE_PREFIX
+    assignments = [('a', 'card', 'pre-normal'), ('b', 'card', 'pre-bug'),
+                   ('c', 'dep-normal', 'card'), ('d', 'dep-test', 'pre-normal')]
+
+    async def project(factory, keys, phase):
+        async with factory() as session:
+            for key in keys:
+                session.add(ConsolidationQueue(id=f'{phase}-{key}', board_id='board',
+                    artifact_type='card', artifact_id=key, source='state_transition'))
+            await session.commit()
+        completed = 0
+        for _ in keys:
+            if completed == len(keys):
+                break
+            processed = await ConsolidationProcessor(relational_scope_factory=factory).process_batch()
+            assert processed > 0
+            completed += processed
+        assert completed == len(keys)
+        async with factory() as session:
+            assert not list(await session.scalars(select(ConsolidationQueue.id)))
+
+    async def exercise(factory, graph):
+        async with factory() as session:
+            for key, kind in [('pre-normal', 'normal'), ('pre-bug', 'bug'), ('dep-normal', 'normal'), ('dep-test', 'test')]:
+                session.add(Card(id=key, board_id='board', spec_id='spec', title=key,
+                    status='done', card_type=kind, created_by='owner', test_scenario_ids=[],
+                    observed_behavior='Observed', expected_behavior='Expected', steps_to_reproduce='Repeat',
+                    conclusions=[{'summary':'Completed'}]))
+            await session.commit()
+        await project(factory, ['pre-normal', 'pre-bug', 'dep-normal', 'dep-test'], 'roots')
+        async with factory() as session:
+            for key, dependent, prerequisite in assignments:
+                session.add(CardDependency(id=key, card_id=dependent, depends_on_id=prerequisite))
+            await session.commit()
+        owners = ['card', 'dep-normal', 'dep-test']
+        await project(factory, owners, 'added')
+        before = relationship_set(graph)
+        edges = {edge: count for edge, count in before.items() if edge[3].startswith(CARD_DEPENDENCY_RULE_PREFIX)}
+        assert len(edges) == 4 and set(edges.values()) == {1}
+        assert {(edge[1], edge[2], edge[4][0], edge[5][0]) for edge in edges} == {
+            ('card:pre-normal', 'card:card', 'Entity', 'Bug'),
+            ('card:pre-bug', 'card:card', 'Bug', 'Bug'),
+            ('card:card', 'card:dep-normal', 'Bug', 'Entity'),
+            ('card:pre-normal', 'card:dep-test', 'Entity', 'Entity')}
+        await project(factory, owners, 'replayed')
+        assert relationship_set(graph) == before
+        async with factory() as session:
+            await session.execute(delete(CardDependency).where(CardDependency.id.in_(['a', 'b', 'c', 'd'])))
+            await session.commit()
+        await project(factory, owners, 'removed')
+        assert not [edge for edge in relationship_set(graph) if edge[3].startswith(CARD_DEPENDENCY_RULE_PREFIX)]
+        await project(factory, owners, 'stale-event')
+        assert not [edge for edge in relationship_set(graph) if edge[3].startswith(CARD_DEPENDENCY_RULE_PREFIX)]
+    await materialize(tmp_path / 'dependencies', incremental=False, card_type='bug', exercise=exercise)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(480)
 @pytest.mark.parametrize('card_type', ['normal', 'test', 'bug'])
 async def test_card_scenario_links_match_native_rebuild_after_removal_and_replay(tmp_path, card_type):
     incremental = await materialize(tmp_path / 'incremental', incremental=True, card_type=card_type)

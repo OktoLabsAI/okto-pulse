@@ -12,6 +12,7 @@ from okto_pulse.core.kg.logical_transfer import (
 
 from .grafx_schema_evolution import PULSE_GRAFX_SCHEMA_MANIFEST as PREDECESSOR
 from .grafx_schema_v060 import V060_MANIFEST, V060_FINGERPRINT
+from .grafx_schema_v070 import V070_MANIFEST, V070_FINGERPRINT
 from .logical_transfer_factories import LogicalTransferScope, logical_transfer_scope
 from .logical_transfer_schema import SchemaCensus, _property, require_no_schema_drift
 
@@ -28,6 +29,12 @@ def v060_recovery_contract():
     if V060_MANIFEST.schema_version != '0.6.0' or V060_MANIFEST.logical_fingerprint != V060_FINGERPRINT:
         raise LogicalSchemaError('frozen 0.6.0 recovery manifest changed')
     return _manifest_contract(V060_MANIFEST, SchemaCensus(12, 80, 11, 544, 560))
+
+
+def v070_recovery_contract():
+    if V070_MANIFEST.schema_version != '0.7.0' or V070_MANIFEST.logical_fingerprint != V070_FINGERPRINT:
+        raise LogicalSchemaError('frozen 0.7.0 recovery manifest changed')
+    return _manifest_contract(V070_MANIFEST, SchemaCensus(12, 82, 11, 544, 574))
 
 
 def _manifest_contract(manifest, census):
@@ -55,7 +62,7 @@ def _contracts(scope):
     if scope != 'board':
         return (current,)
     unique = {}
-    for contract in (current, v060_recovery_contract(), predecessor_recovery_contract()):
+    for contract in (current, v070_recovery_contract(), v060_recovery_contract(), predecessor_recovery_contract()):
         digest = schema_digest(contract.schema)
         if digest in unique and unique[digest] != contract:
             raise LogicalSchemaError('recovery contract digest collision')
