@@ -1,6 +1,7 @@
 """Upgrade-only schema fixture, never added to the runtime metadata.
 
-The four retired table declarations and codecs are frozen from Community
+Raw incompatible-data fixtures; no runtime decoder is imported.
+The four retired table declarations were copied from Community
 89f495cac475077ea448ce2e22837314a3d770b2, sqlalchemy_models blob
 e5c38207a7a66c08bab6d0e2b58816972a6b8487. Relationships to live mappers are
 intentionally absent: this represents historical storage, not a live entity.
@@ -10,10 +11,9 @@ cannot register old columns or classes in the operational Base.
 from datetime import datetime
 import uuid
 
-from sqlalchemy import JSON, CheckConstraint, Column, DateTime, ForeignKey, Integer, MetaData, String, Text, TypeDecorator, UniqueConstraint, func, text
+from sqlalchemy import JSON, CheckConstraint, Column, DateTime, ForeignKey, Integer, MetaData, String, Text, UniqueConstraint, func, text
 from sqlalchemy.orm import Mapped, declarative_base, mapped_column
 
-from okto_pulse.community.adapters.legacy_sprint_values import HistoricalSprintStatus, HistoricalSprintLaneType
 from okto_pulse.community.adapters.sqlalchemy_models import Base as RuntimeBase, UTCDateTime
 
 RETIRED_TABLES = ('sprints', 'sprint_history', 'sprint_qa_items', 'sprint_activation_baselines')
@@ -23,36 +23,6 @@ for _table in RuntimeBase.metadata.tables.values():
         _table.to_metadata(Base.metadata)
 if 'sprint_id' not in Base.metadata.tables['cards'].c:
     Base.metadata.tables['cards'].append_column(Column('sprint_id', String(36), ForeignKey('sprints.id', ondelete='SET NULL'), nullable=True, index=True))
-
-class HistoricalSprintStatusType(TypeDecorator):
-    impl = String(50)
-    cache_ok = True
-
-    def process_bind_param(self, value, dialect):
-        if value is None:
-            return None
-        return value.value if isinstance(value, HistoricalSprintStatus) else value
-
-    def process_result_value(self, value, dialect):
-        if value is None:
-            return None
-        return HistoricalSprintStatus(value)
-
-
-class HistoricalSprintLaneTypeType(TypeDecorator):
-    impl = String(50)
-    cache_ok = True
-
-    def process_bind_param(self, value, dialect):
-        if value is None:
-            return None
-        return value.value if isinstance(value, HistoricalSprintLaneType) else value
-
-    def process_result_value(self, value, dialect):
-        if value is None:
-            return None
-        return HistoricalSprintLaneType(value)
-
 
 class Sprint(Base):
     """Sprint — an incremental delivery slice of a spec."""
@@ -77,12 +47,12 @@ class Sprint(Base):
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     spec_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    status: Mapped[HistoricalSprintStatus] = mapped_column(
-        HistoricalSprintStatusType(), default=HistoricalSprintStatus.DRAFT, nullable=False
+    status: Mapped[str] = mapped_column(
+        String(50), default="draft", nullable=False
     )
-    lane_type: Mapped[HistoricalSprintLaneType] = mapped_column(
-        HistoricalSprintLaneTypeType(),
-        default=HistoricalSprintLaneType.NORMAL,
+    lane_type: Mapped[str] = mapped_column(
+        String(50),
+        default="normal",
         server_default=text("'normal'"),
         nullable=False,
     )
