@@ -1340,6 +1340,11 @@ class CommunityGrafxGraphStore:
             ),
         )
 
+    def read_bug_cluster_graph(self, board_id, bugs, *, group_by):
+        from okto_pulse.community.adapters.grafx_bug_clusters import read_bug_cluster_graph
+        return self._read(board_id, operation="read_bug_cluster_graph",
+            callback=lambda reader: read_bug_cluster_graph(reader, bugs, group_by=group_by))
+
     # ------------------------------------------------------------------
     # Schema and capabilities
     # ------------------------------------------------------------------

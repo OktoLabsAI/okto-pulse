@@ -653,6 +653,10 @@ class CommunityRelationalApplicationAdapter:
 
         return CommunitySqlAlchemyBoardKgAnalyticsEvidence(session)
 
+    def bug_clusters_read(self, session: AsyncSession):
+        from okto_pulse.community.adapters.sqlalchemy_bug_clusters import CommunityBugClustersReader
+        return CommunityBugClustersReader(session)
+
     def guideline_policy(self, session: AsyncSession):
         """Bind the SK-B policy authority to the caller-owned transaction."""
 

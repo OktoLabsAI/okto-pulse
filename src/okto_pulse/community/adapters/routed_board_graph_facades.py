@@ -446,6 +446,17 @@ class CommunityRoutedSemanticGraphStore:
         with self._operation_window(board_id):
             return self._provider(board_id).get_schema_version(board_id)
 
+    def read_bug_cluster_graph(self, board_id, bugs, *, group_by):
+        from dataclasses import replace
+        from okto_pulse.core.ports.bug_clusters import BugClustersGraphReadPort
+        with self._operation_window(board_id):
+            snapshot = self._resolver.acquire_board_route(board_id)
+            provider = _select_board_provider(snapshot, board_id=board_id, grafx=self._grafx)
+            if not isinstance(provider, BugClustersGraphReadPort):
+                raise GraphCapabilityUnavailable("Bug cluster graph reads are not configured.")
+            observed = provider.read_bug_cluster_graph(board_id, bugs, group_by=group_by)
+            return replace(observed, graph_generation=snapshot.generation)
+
     def get_schema_info(
         self,
         board_id: str,
