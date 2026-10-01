@@ -2848,6 +2848,8 @@ async def submit_spec_evaluation(
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     except EntityNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Spec not found"
