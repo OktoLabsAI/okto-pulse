@@ -193,6 +193,43 @@ async def test_approved_spec_cannot_start_with_incomplete_decomposition(classifi
 
 
 @pytest.mark.asyncio
+async def test_removing_only_test_card_invalidates_previously_complete_approved_plan(adopted_context, tmp_path):
+    """ADV-14: an approved plan is re-evaluated after an authorized Card deletion."""
+    from okto_pulse.community.api.cards import router as cards_router
+    from okto_pulse.core.domain.realm import RealmScope
+    from okto_pulse.core.services.main import SpecService
+
+    db = adopted_context
+    db.info['realm_scope'] = RealmScope.local()
+    app, _, _ = await complete_start_fixture(db, tmp_path)
+    app.include_router(cards_router, prefix='/api/v1/cards')
+    await db.execute(update(Spec).where(Spec.id == 'spec').values(status='validated'))
+    await db.commit()
+    spec = await db.get(Spec, 'spec', populate_existing=True)
+    await SpecService(db).require_execution_contract_ready(spec)
+    preserved = copy.deepcopy((spec.evaluations, spec.validations, spec.edition,
+                               spec.current_validation_id, spec.functional_requirements, spec.acceptance_criteria))
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+        removed = await client.delete('/api/v1/cards/test')
+        assert removed.status_code == 204, removed.text
+        db.expire_all()
+        assert await db.get(Card, 'test') is None
+        spec = await db.get(Spec, 'spec')
+        assert spec.status == 'validated'
+        assert (spec.evaluations, spec.validations, spec.edition, spec.current_validation_id,
+                spec.functional_requirements, spec.acceptance_criteria) == preserved
+        assert spec.test_scenarios[0]['linked_task_ids'] == []
+        assert spec.test_scenarios[0]['status'] == 'ready'
+        assert 'evidence' not in spec.test_scenarios[0]
+        with pytest.raises(ValueError, match='spec_execution_plan_incomplete'):
+            await SpecService(db).require_execution_contract_ready(spec)
+        before = await classification.snapshot(db)
+        blocked = await client.post('/api/v1/specs/spec/move', json={'status': 'in_progress'})
+        assert blocked.status_code == 400 and 'have no linked test cards' in blocked.text, blocked.text
+        assert await classification.snapshot(db) == before
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("verification", ["absent", "unexecuted"])
 async def test_task_approvals_do_not_replace_spec_integrated_verification(adopted_context, tmp_path, verification):
     """BASE T07: completed/reviewed tasks cannot mint Spec-level test credit."""
