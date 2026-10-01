@@ -118,4 +118,23 @@ describe('task validation REST client', () => {
       'Historical entry',
     );
   });
+
+  it.each(['reviewer_separation_required', 'task_validation_policy_conflict'])(
+    'propagates %s without retrying the rejected review', async code => {
+      const failure = new Error(code);
+      mockApiClient.fetchJson.mockRejectedValue(failure);
+      const { result } = renderHook(() => useDashboardApi());
+      const payload: TaskValidationSubmitPayload = {
+        expected_subject_version: 4, idempotency_key: 'policy-race',
+        confidence: 95, confidence_justification: 'Inspected work',
+        estimated_completeness: 100, completeness_justification: 'Complete scope',
+        estimated_drift: 0, drift_justification: 'Within scope',
+        general_justification: 'Review prepared before policy changed', recommendation: 'approve',
+      };
+      await expect(result.current.submitTaskValidation('card-1', payload)).rejects.toBe(failure);
+      expect(mockApiClient.fetchJson).toHaveBeenCalledExactlyOnceWith('/cards/card-1/validate', {
+        method: 'POST', body: JSON.stringify(payload),
+      });
+    },
+  );
 });
