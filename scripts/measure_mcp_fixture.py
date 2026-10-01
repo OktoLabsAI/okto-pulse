@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.metadata
+import importlib.util
 import json
 from pathlib import Path
 import sys
@@ -116,6 +117,8 @@ def main() -> int:
             "serialization": "UTF-8, sorted keys, compact JSON, aliases, omit None",
             "versions": {name: importlib.metadata.version(name)
                          for name in ("tiktoken", "mcp", "fastmcp", "pytest", "sqlalchemy")},
+            "module_origins": {name: importlib.util.find_spec(name).origin
+                               for name in ("okto_pulse.core", "okto_pulse.community")},
             "limits": ["Fixture setup and seeded facts are not measured authorship.",
                        "Only actually consumed resources are measured.",
                        "SQL counts cover serial MCP request windows, not fixture setup/verification; they do not establish causality for background work.",
