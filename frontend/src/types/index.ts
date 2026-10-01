@@ -1293,6 +1293,12 @@ export interface ObservabilityRequirement {
 }
 
 // Technical Requirement (structured)
+export interface SpecRequirementWrite {
+  id?: string;
+  text: string;
+  [key: string]: unknown;
+}
+
 export interface TechnicalRequirement {
   verification?: RequirementVerification | null;
   id: string;
@@ -4123,11 +4129,12 @@ export interface UpdateShareRequest {
 // Spec request types
 export interface CreateSpecRequest {
   title: string;
+  delivery_context?: 'brownfield' | 'greenfield' | 'hybrid';
   description?: string;
   context?: string;
-  functional_requirements?: string[];
-  technical_requirements?: string[];
-  acceptance_criteria?: string[];
+  functional_requirements?: SpecRequirementWrite[];
+  technical_requirements?: SpecRequirementWrite[];
+  acceptance_criteria?: SpecRequirementWrite[];
   test_scenarios?: TestScenarioWrite[];
   decisions?: Decision[];
   integration_requirements?: IntegrationRequirement[];
@@ -4143,9 +4150,9 @@ export interface UpdateSpecRequest extends TaskValidationGateOverride {
   title?: string;
   description?: string;
   context?: string;
-  functional_requirements?: string[];
-  technical_requirements?: string[];
-  acceptance_criteria?: string[];
+  functional_requirements?: SpecRequirementWrite[];
+  technical_requirements?: SpecRequirementWrite[];
+  acceptance_criteria?: SpecRequirementWrite[];
   test_scenarios?: TestScenarioWrite[];
   business_rules?: BusinessRule[];
   api_contracts?: ApiContract[];
