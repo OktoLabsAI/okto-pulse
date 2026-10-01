@@ -457,6 +457,17 @@ class CommunityRoutedSemanticGraphStore:
             observed = provider.read_bug_cluster_graph(board_id, bugs, group_by=group_by)
             return replace(observed, graph_generation=snapshot.generation)
 
+    def read_spec_coverage_graph(self, board_id, scope):
+        from dataclasses import replace
+        from okto_pulse.core.ports.spec_coverage_query import SpecCoverageGraphReadPort
+        with self._operation_window(board_id):
+            snapshot = self._resolver.acquire_board_route(board_id)
+            provider = _select_board_provider(snapshot, board_id=board_id, grafx=self._grafx)
+            if not isinstance(provider, SpecCoverageGraphReadPort):
+                raise GraphCapabilityUnavailable("Spec coverage graph reads are not configured.")
+            observed = provider.read_spec_coverage_graph(board_id, scope)
+            return replace(observed, generation=snapshot.generation)
+
     def get_schema_info(
         self,
         board_id: str,

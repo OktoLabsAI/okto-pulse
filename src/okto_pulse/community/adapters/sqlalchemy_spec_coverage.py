@@ -3,6 +3,7 @@ import asyncio
 from datetime import datetime, timezone
 import hashlib
 import json
+import time
 from types import SimpleNamespace
 
 from sqlalchemy import func, select
@@ -14,9 +15,11 @@ from okto_pulse.community.adapters.sqlalchemy_delivery_evidence import Community
 from okto_pulse.core.application.use_cases.base import EntityNotFoundError
 from okto_pulse.core.domain.delivery_evidence import DeliveryScope
 from okto_pulse.core.domain.delivery_inventory import COLLECTIONS
-from okto_pulse.core.kg.interfaces.graph_errors import GraphQueryTimeout
+from okto_pulse.core.kg.interfaces.graph_errors import GraphQueryTimeout, GraphCapabilityUnavailable, GraphUnavailable
+from okto_pulse.core.kg.blocking_io import run_blocking_graph_io
+from okto_pulse.core.application.kg_runtime_access import resolve_spec_coverage_graph_read, resolve_graph_query_execution
 from okto_pulse.core.ports.spec_coverage_query import (
-    MAX_SPEC_COVERAGE_ITEMS, MAX_SPEC_COVERAGE_FACTS, SpecCoverageSnapshot,
+    MAX_SPEC_COVERAGE_ITEMS, MAX_SPEC_COVERAGE_FACTS, SpecCoverageSnapshot, SpecCoverageGraphFacts,
 )
 
 
@@ -32,10 +35,54 @@ def _json_value(value):
     return getattr(value, 'value', value)
 
 
+def _revision(source, cards):
+    return hashlib.sha256(json.dumps([source, cards], default=_json_value,
+        sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+
+
 class CommunitySpecCoverageReader:
-    def __init__(self, session, *, delivery_store=None):
+    def __init__(self, session, *, delivery_store=None, graph_reader=None, query_execution=None):
         self._session = session
         self._delivery = delivery_store if delivery_store is not None else CommunityDeliveryEvidenceStore(session)
+        self._graph_reader = graph_reader
+        self._query_execution = query_execution
+
+    async def read_graph(self, query, scope, source_revision, *, timeout_ms):
+        if not query.read_graph:
+            raise ValueError('spec_coverage_graph_outside_authority')
+        if type(timeout_ms) is not int or not 1 <= timeout_ms <= 30000:
+            raise ValueError('query_timeout_ms_requires_1_to_30000')
+        deadline = time.monotonic() + timeout_ms / 1000
+
+        def remaining():
+            value = int((deadline - time.monotonic()) * 1000)
+            if value <= 0:
+                raise GraphQueryTimeout('Spec coverage graph deadline exceeded.')
+            return value
+
+        async def check_source():
+            try:
+                async with asyncio.timeout(remaining() / 1000):
+                    if _revision(*(await self._source(query))) != source_revision:
+                        raise ValueError('spec_coverage_source_changed')
+            except TimeoutError as exc:
+                raise GraphQueryTimeout('Spec coverage source deadline exceeded.') from exc
+
+        await check_source()
+        try:
+            reader = self._graph_reader or resolve_spec_coverage_graph_read()
+            execution = self._query_execution or resolve_graph_query_execution()
+
+            def observe():
+                with execution.scope(query.board_id, timeout_ms=remaining()):
+                    return reader.read_spec_coverage_graph(query.board_id, scope)
+
+            observed = await run_blocking_graph_io(observe, task_name='community.spec_coverage.read')
+        except (GraphCapabilityUnavailable, GraphUnavailable):
+            observed = SpecCoverageGraphFacts(state='unavailable')
+        await check_source()
+        remaining()
+        return observed
 
     async def _source(self, query):
         spec = (await self._session.execute(select(*(getattr(Spec, key) for key in _SPEC_FIELDS))
@@ -82,8 +129,7 @@ class CommunitySpecCoverageReader:
                         proof, _ = await self._delivery.load_rollup_snapshot(query.board_id, query.spec_id)
                     if (await self._source(query)) != (source, cards):
                         raise ValueError('spec_coverage_source_changed')
-                    revision = hashlib.sha256(json.dumps([source, cards], default=_json_value,
-                        sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+                    revision = _revision(source, cards)
                     return SpecCoverageSnapshot(scope, query.actor_scope_ref, revision, datetime.now(timezone.utc),
                         SimpleNamespace(**source), tuple(SimpleNamespace(**row) for row in cards), True,
                         proof, 'available' if query.read_delivery else 'restricted')

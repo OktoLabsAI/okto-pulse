@@ -1345,6 +1345,11 @@ class CommunityGrafxGraphStore:
         return self._read(board_id, operation="read_bug_cluster_graph",
             callback=lambda reader: read_bug_cluster_graph(reader, bugs, group_by=group_by))
 
+    def read_spec_coverage_graph(self, board_id, scope):
+        from okto_pulse.community.adapters.grafx_spec_coverage import read_spec_coverage_graph
+        return self._read(board_id, operation="read_spec_coverage_graph",
+            callback=lambda reader: read_spec_coverage_graph(reader, scope))
+
     # ------------------------------------------------------------------
     # Schema and capabilities
     # ------------------------------------------------------------------
