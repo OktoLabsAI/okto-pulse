@@ -363,6 +363,81 @@ async def test_card_supports_every_declared_child_and_removes_only_current_assig
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(480)
+async def test_bug_origin_proxies_reconcile_all_consumers_without_spec_fanout(tmp_path):
+    from copy import deepcopy
+    from okto_pulse.core.ports.card_projection import BUG_ORIGIN_PROXY_FAMILIES
+    from okto_pulse.core.events.handlers.consolidation_enqueuer import ConsolidationEnqueuer
+    from okto_pulse.core.events.types import SpecSemanticChanged
+
+    async def project_changes(factory, phase):
+        import asyncio
+        async with factory() as session:
+            await ConsolidationEnqueuer().handle(SpecSemanticChanged(board_id='board', actor_id='owner',
+                spec_id='spec', changed_fields=[f.field for f in BUG_ORIGIN_PROXY_FAMILIES],
+                projection_card_ids=['card']), session)
+            await session.commit()
+        deadline = asyncio.get_running_loop().time() + 90
+        while asyncio.get_running_loop().time() < deadline:
+            async with factory() as session:
+                pending = list(await session.scalars(select(ConsolidationQueue.id)))
+            if not pending:
+                return
+            processed = await ConsolidationProcessor(relational_scope_factory=factory).process_batch()
+            if not processed:
+                # A Card may precede its new Spec child in the fair queue.
+                # Exercise the ordinary deferred-endpoint retry, without
+                # changing priority, timestamps or the production policy.
+                await asyncio.sleep(0.1)
+        pytest.fail('scoped bug proxy queue did not drain: ' + phase)
+
+    def proxies(graph):
+        return {edge: count for edge, count in relationship_set(graph).items()
+            if edge[3].startswith('violates/bug_origin_proxy_')}
+
+    async def exercise(factory, graph):
+        async with factory() as session:
+            spec = await session.get(Spec, 'spec')
+            spec.technical_requirements = [{'id': 'tr_one', 'text': 'Bounded response'}]
+            expected, original = set(), {}
+            for family in BUG_ORIGIN_PROXY_FAMILIES:
+                values = deepcopy(getattr(spec, family.field))
+                values[0]['linked_task_ids'] = ['card']
+                setattr(spec, family.field, values)
+                original[family.field] = values
+                expected.add(f'spec:spec:{family.section}:{values[0]["id"]}')
+            for identity in ('bug-first', 'bug-second'):
+                session.add(Card(id=identity, board_id='board', spec_id='spec', title=identity,
+                    status='done', card_type='bug', origin_task_id='card', created_by='owner',
+                    test_scenario_ids=[], observed_behavior='Observed', expected_behavior='Expected',
+                    steps_to_reproduce='Repeat', conclusions=[{'summary': 'Completed'}]))
+            await session.commit()
+        await project_changes(factory, 'added')
+        before = proxies(graph)
+        assert len(before) == 12 and set(before.values()) == {1}
+        assert {edge[1] for edge in before} == {'card:bug-first', 'card:bug-second'}
+        assert {edge[2] for edge in before} == expected
+        assert all(edge[-2:] == ('inferred_origin_proxy:card:card', 0.8) for edge in before)
+        await project_changes(factory, 'replayed')
+        assert proxies(graph) == before
+        async with factory() as session:
+            spec = await session.get(Spec, 'spec')
+            for field, values in original.items():
+                setattr(spec, field, [{**item, 'linked_task_ids': []} for item in values])
+            await session.commit()
+        await project_changes(factory, 'removed')
+        assert proxies(graph) == {}
+        async with factory() as session:
+            spec = await session.get(Spec, 'spec')
+            for field, values in original.items():
+                setattr(spec, field, values)
+            await session.commit()
+        await project_changes(factory, 'restored')
+        assert proxies(graph) == before
+    await materialize(tmp_path / 'bug-proxies', incremental=False, card_type='normal', exercise=exercise)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(480)
 async def test_typed_card_dependencies_converge_through_normal_queue(tmp_path):
     from sqlalchemy import delete
     from okto_pulse.community.adapters.sqlalchemy_models import CardDependency

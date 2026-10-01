@@ -6,7 +6,7 @@ from okto_pulse.core.kg.interfaces.graph_transaction import (
 from okto_pulse.core.ports.card_projection import (
     owns_card_scenario_endpoints, is_card_scenario_writer,
     owns_card_parent_endpoints, is_card_parent_writer,
-    CARD_CHILD_NAMESPACES, card_child_family,
+    CARD_EDGE_NAMESPACES, card_edge_family,
 )
 from okto_pulse.community.adapters.grafx_query_values import normalize_query_value
 
@@ -27,9 +27,9 @@ def reconcile_card_scenarios(scope, intent):
         operation = 'card_parent'
         if len(intent.active_edges) > 1:
             _refuse('A Card has at most one authoritative Spec parent.')
-    elif intent.namespace in CARD_CHILD_NAMESPACES:
-        family = card_child_family(intent.namespace)
-        edge_type, target_type = 'supports', family.target_type
+    elif intent.namespace in CARD_EDGE_NAMESPACES:
+        family = card_edge_family(intent.namespace)
+        edge_type, target_type = family.edge_type, family.target_type
         owns_endpoints, is_writer = family.owns_endpoints, family.owns_writer
         operation = family.namespace
     else:
@@ -71,11 +71,12 @@ def reconcile_card_scenarios(scope, intent):
         desired.add(key)
         endpoints.add(key[:3])
 
+    source_types = card_edge_family(intent.namespace).source_types if intent.namespace in CARD_EDGE_NAMESPACES else ('Entity', 'Bug')
     logical_keys = {}
 
     def owned():
         found = {}
-        for kind in ('Entity', 'Bug'):
+        for kind in source_types:
             physical, definition = scope._relationship_definition(edge_type, kind, target_type)
             fields = scope._projection_edge_properties(definition)
             projection = ', '.join('r.' + field for field in fields)

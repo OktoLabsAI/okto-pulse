@@ -57,7 +57,7 @@ from okto_pulse.community.adapters.cypher_statement_policy import (
 from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
 from okto_pulse.core.ports.spec_projection import SPEC_RELATIONSHIP_NAMESPACES, is_spec_relationship_writer
 from okto_pulse.core.ports.card_projection import (
-    is_card_scenario_writer, is_card_parent_writer, is_card_projection_writer, CARD_CHILD_NAMESPACES,
+    is_card_scenario_writer, is_card_parent_writer, is_card_projection_writer, CARD_EDGE_NAMESPACES,
     CARD_DEPENDENCY_NAMESPACE,
 )
 from okto_pulse.community.adapters.grafx_query_values import normalize_query_value as _normalize_value
@@ -2937,7 +2937,7 @@ class _GrafxTransactionScope:
         # mutation: a refusal must not be able to leave half an active set staged.
         self._fence("reconcile_projection_active_set")
         if isinstance(intent, ProjectionRemovalOnlyIntent) and not (
-            intent.owner_type == 'card' and intent.namespace in ({'card_scenarios', 'card_parent', CARD_DEPENDENCY_NAMESPACE} | CARD_CHILD_NAMESPACES)
+            intent.owner_type == 'card' and intent.namespace in ({'card_scenarios', 'card_parent', CARD_DEPENDENCY_NAMESPACE} | CARD_EDGE_NAMESPACES)
             or intent.owner_type == 'spec' and intent.namespace == 'dependencies'
         ):
             raise ProjectionActiveSetReconciliationError(
@@ -2945,7 +2945,7 @@ class _GrafxTransactionScope:
         if intent.owner_type == 'card' and intent.namespace == CARD_DEPENDENCY_NAMESPACE:
             from .grafx_card_dependency_projection import reconcile_card_dependencies
             return reconcile_card_dependencies(self, intent)
-        if intent.owner_type == 'card' and intent.namespace in ({'card_scenarios', 'card_parent'} | CARD_CHILD_NAMESPACES):
+        if intent.owner_type == 'card' and intent.namespace in ({'card_scenarios', 'card_parent'} | CARD_EDGE_NAMESPACES):
             from okto_pulse.community.adapters.grafx_card_scenario_projection import reconcile_card_scenarios
             return reconcile_card_scenarios(self, intent)
         if intent.owner_type == "spec" and intent.namespace in SPEC_RELATIONSHIP_NAMESPACES:
