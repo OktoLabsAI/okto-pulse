@@ -9,7 +9,6 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from okto_pulse.community.adapters.sqlalchemy_audit_repo import CommunityAuditRepository
 from okto_pulse.community.adapters.sqlalchemy_models import Base, Board, ConsolidationAudit, GlobalUpdateOutbox
-from okto_pulse.community.adapters import relational_schema_steps as steps
 from okto_pulse.core.kg.interfaces.audit_dtos import ConsolidationAuditData, OutboxEventData
 from okto_pulse.core.ports.projection_findings import ProjectionFindingSnapshot, ProjectionReferenceFinding
 
@@ -116,52 +115,3 @@ async def test_read_scope_and_corruption_are_not_clean_results(storage):
         await session.commit()
     with pytest.raises(ValueError, match='fingerprint_invalid'):
         await latest(repository)
-
-
-@pytest.mark.asyncio
-async def test_upgrade_preserves_historical_columns_and_is_idempotent(tmp_path, monkeypatch):
-    engine = create_async_engine(f'sqlite+aiosqlite:///{tmp_path / "legacy.db"}')
-    monkeypatch.setattr(steps, 'get_engine', lambda: engine)
-    try:
-        async with engine.begin() as connection:
-            await connection.exec_driver_sql('CREATE TABLE consolidation_audit (session_id TEXT PRIMARY KEY, summary_text TEXT, error_details JSON)')
-            await connection.exec_driver_sql('INSERT INTO consolidation_audit VALUES (?, ?, ?)',
-                ('historical', 'literal history', '{"legacy": true}'))
-        await steps._migrate_audit_reference_findings()
-        await steps._migrate_audit_reference_findings()
-        async with engine.connect() as connection:
-            assert (await connection.exec_driver_sql('SELECT * FROM consolidation_audit')).one() == (
-                'historical', 'literal history', '{"legacy": true}', None)
-    finally:
-        await engine.dispose()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize('column', ['TEXT NULL', 'JSON NOT NULL', "JSON DEFAULT '{}'", 'JSON GENERATED ALWAYS AS (session_id) VIRTUAL'])
-async def test_upgrade_refuses_incompatible_existing_column(tmp_path, monkeypatch, column):
-    engine = create_async_engine(f'sqlite+aiosqlite:///{tmp_path / "drift.db"}')
-    monkeypatch.setattr(steps, 'get_engine', lambda: engine)
-    try:
-        async with engine.begin() as connection:
-            await connection.exec_driver_sql(f'CREATE TABLE consolidation_audit (session_id TEXT, reference_findings {column})')
-        with pytest.raises(RuntimeError, match='schema_drift'):
-            await steps._migrate_audit_reference_findings()
-    finally:
-        await engine.dispose()
-
-
-@pytest.mark.asyncio
-async def test_retained_outbox_snapshot_accepts_only_null_addition(storage):
-    from okto_pulse.community.adapters.global_outbox_retirement import _snapshot
-    engine, factory, repository = storage
-    async with factory() as session:
-        await stage(repository, session, 1)
-        await session.commit()
-    async with engine.begin() as connection:
-        await connection.exec_driver_sql('ALTER TABLE consolidation_audit DROP COLUMN reference_findings')
-        original = await connection.run_sync(_snapshot)
-        await connection.exec_driver_sql('ALTER TABLE consolidation_audit ADD COLUMN reference_findings JSON NULL')
-        assert await connection.run_sync(lambda sync: _snapshot(sync, original=original)) == original
-        await connection.exec_driver_sql("UPDATE consolidation_audit SET reference_findings='{}'")
-        with pytest.raises(ValueError, match='reference_findings_changed'):
-            await connection.run_sync(lambda sync: _snapshot(sync, original=original))

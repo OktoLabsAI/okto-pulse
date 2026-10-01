@@ -9,8 +9,8 @@ import pytest
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from okto_pulse.community.adapters import relational_recovery_snapshot as snapshots
-from okto_pulse.community.adapters.sprint_retirement_inventory import read_sprint_retirement_inventory
-import test_sprint_retirement_inventory as relational
+from okto_pulse.community.adapters.current_relational_schema import current_schema_contract, require_current_database_file
+import current_storage_test_support as relational
 
 database = relational.database
 
@@ -178,9 +178,9 @@ def test_filesystem_aliases_cannot_redirect_source_or_lock_writes(live, tmp_path
 
 
 @pytest.mark.asyncio
-async def test_current_full_schema_recovers_into_same_retirement_inventory(database, tmp_path):
+async def test_current_full_schema_recovers_into_same_native_format(database, tmp_path):
     engine, source = database
-    before = await read_sprint_retirement_inventory(engine)
+    require_current_database_file(str(engine.url), current_schema_contract())
     root = tmp_path / "recovery"
     root.mkdir()
     snapshot = await asyncio.to_thread(snapshots.create_sqlite_recovery_snapshot, source, root, snapshot_id="full-schema")
@@ -188,8 +188,9 @@ async def test_current_full_schema_recovers_into_same_retirement_inventory(datab
     await asyncio.to_thread(snapshots.restore_sqlite_recovery_snapshot, snapshot, target)
     restored = create_async_engine(f"sqlite+aiosqlite:///{target}")
     try:
-        assert await read_sprint_retirement_inventory(restored) == before
+        require_current_database_file(str(restored.url), current_schema_contract())
         manifest = json.loads((snapshot.directory / "manifest.json").read_bytes())
-        assert dict(manifest["table_counts"])["sprints"] == 1
+        assert dict(manifest["table_counts"])["boards"] == 2
+        assert "sprints" not in dict(manifest["table_counts"])
     finally:
         await restored.dispose()

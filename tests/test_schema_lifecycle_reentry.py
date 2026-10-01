@@ -7,9 +7,9 @@ import sys
 from filelock import FileLock
 import pytest
 
-from okto_pulse.core.ports import DataBootstrapResult, MigrationResult
 from okto_pulse.core.ports import relational_runtime as core_runtime
 from okto_pulse.community.adapters import sqlalchemy_database as db
+from okto_pulse.community.adapters import relational_schema_lifecycle as lifecycle
 from okto_pulse.community.adapters.relational_schema_lifecycle import register_community_relational_schema_lifecycle
 from test_sqlalchemy_database_lifecycle_lock import _Runtime
 
@@ -103,16 +103,16 @@ async def test_all_production_lifecycle_paths_keep_the_mutex_through_schema_and_
     monkeypatch.setattr(db, "_SCHEMA_PROCESS_LOCK_TIMEOUT_S", 0.05)
     orchestrator = register_community_relational_schema_lifecycle()
     observed = []
-    async def schema(_plan):
+    async def schema(engine, contract):
+        assert engine is runtime.engine
+        assert contract.objects
         assert probe(db._schema_process_lock_path(runtime)) == "blocked"
         observed.append("schema")
-        return MigrationResult(status="success")
-    async def seeds(_plan):
+    async def seeds():
         assert probe(db._schema_process_lock_path(runtime)) == "blocked"
         observed.append("seeds")
-        return DataBootstrapResult(status="success")
-    monkeypatch.setattr(orchestrator._migrator, "aexecute", schema)
-    monkeypatch.setattr(orchestrator._bootstrapper, "aexecute", seeds)
+    monkeypatch.setattr(lifecycle, "initialize_current_schema", schema)
+    monkeypatch.setattr(orchestrator, "_seed", seeds)
     try:
         await {"concrete": orchestrator.initialize_schema, "core": core_runtime.init_db, "community": db.init_db}[path]()
         assert observed == ["schema", "seeds"]

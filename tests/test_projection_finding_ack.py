@@ -7,7 +7,6 @@ from types import SimpleNamespace
 import pytest
 
 from okto_pulse.community.adapters.sqlalchemy_consolidation import _canonical_node_refs_sha256, _EXACT_NODE_REFS_DIGEST_DOMAIN
-from okto_pulse.community.adapters.retirement_candidate_sql_delta import _planned_reference_findings
 from okto_pulse.core.ports.projection_findings import ProjectionFindingSnapshot, ProjectionReferenceFinding
 
 
@@ -54,13 +53,3 @@ def test_digest_binds_reason_even_when_finding_identity_is_stable():
     row.agent_id = 'cognitive_closeout_worker'
     with pytest.raises(ValueError, match='audit_scope_invalid'):
         _canonical_node_refs_sha256(audit=row, refs=[])
-
-
-def test_retained_plan_is_scoped_and_not_replaced_by_observed_audit():
-    plan = {'source': {'board_id': 'board', 'artifact_type': 'card', 'artifact_id': 'card'},
-        'projection': {'reference_findings': snapshot().to_payload()}}
-    document = {'boards': [{'projection': {'board_id': 'board', 'plans': [plan]}}]}
-    assert _planned_reference_findings(document) == {('board', 'card', 'card'): snapshot().to_payload()}
-    document['boards'][0]['projection']['board_id'] = 'foreign'
-    with pytest.raises(ValueError, match='plan_scope_invalid'):
-        _planned_reference_findings(document)

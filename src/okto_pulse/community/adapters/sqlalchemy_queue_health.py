@@ -1,7 +1,6 @@
 """Community SQLAlchemy queue-health read adapter."""
 
 from __future__ import annotations
-from okto_pulse.community.adapters.work_retirement_sql import retired_work_origin_exists
 
 from datetime import datetime
 from typing import Any
@@ -48,8 +47,7 @@ class CommunitySqlAlchemyQueueHealthReader:
             )
         )
         dead_letter = await context.scalar(
-            select(func.count()).select_from(ConsolidationDeadLetter).where(~retired_work_origin_exists(
-                ConsolidationDeadLetter.board_id, ConsolidationDeadLetter.artifact_type, ConsolidationDeadLetter.artifact_id))
+            select(func.count()).select_from(ConsolidationDeadLetter)
         )
         return QueueHealthStorageSnapshot(
             queue_depth=int(queue_depth or 0),

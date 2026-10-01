@@ -62,7 +62,7 @@ describe('task validation REST client', () => {
           required: 'spec',
           min_confidence: 'board',
           min_completeness: 'board',
-          max_drift: 'sprint',
+          max_drift: 'spec',
         },
       },
       reviewer_separation: {

@@ -2194,9 +2194,6 @@ class Card(Base):
         nullable=True,
         index=True,
     )
-    # Deprecated F2B compatibility: written only by the coordinated migration.
-    # No seed backfill or executor authoring; provenance contains no operational FK.
-    migrated_validation_policy: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     details: Mapped[str | None] = mapped_column(Text, nullable=True)  # Rich text/HTML
@@ -2884,7 +2881,6 @@ class Agent(Base):
     # Granular permission flags (new system) — JSON dict with nested flags
     permission_flags: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # Internal migration provenance, never accepted in AgentCreate/AgentUpdate.
-    permission_migration_review: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # Preset ID — FK to permission_presets (nullable, agent may have custom flags without preset)
     preset_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_by: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -2928,7 +2924,6 @@ class AgentBoard(Base):
     )
     # Board-scoped permission overrides (AND with agent flags — can only restrict)
     permission_overrides: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    permission_migration_review: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     # Relationships
     agent: Mapped["Agent"] = relationship("Agent", back_populates="board_grants")
@@ -2949,7 +2944,6 @@ class PermissionPreset(Base):
     is_builtin: Mapped[bool] = mapped_column(default=False)
     base_preset_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     flags: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    permission_migration_review: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -7997,47 +7991,8 @@ class DomainEventRow(Base):
     )
 
 
-class RetirementDataCheckpoint(Base):
-    """Internal cross-Board migration evidence; never an event or live entity."""
-
-    __tablename__ = "retirement_data_checkpoints"
-    __table_args__ = (CheckConstraint("ordinal >= 0 AND ordinal <= 9", name="ck_retirement_checkpoint_ordinal"),)
-
-    migration_id: Mapped[str] = mapped_column(String(128), primary_key=True)
-    ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
-    record_json: Mapped[dict] = mapped_column(JSON, nullable=False)
-    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
-class HistoricalArchiveGrant(Base):
-    """Scoped read authority for an opaque archived origin, never a live entity.
-
-    Captured decisions and the source digest are migration evidence. Only the
-    current sections/revision change on revocation, with a domain audit event.
-    There is deliberately no FK to the retired source or an operational lane.
-    """
-
-    __tablename__ = "historical_archive_grants"
-    __table_args__ = (
-        CheckConstraint("revision >= 1", name="ck_archive_grant_revision"),
-        CheckConstraint("actor_kind IN ('human', 'agent')", name="ck_archive_grant_actor"),
-    )
-
-    realm_id: Mapped[str] = mapped_column(String(255), primary_key=True)
-    board_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("boards.id", ondelete="CASCADE"), primary_key=True,
-    )
-    origin_kind: Mapped[str] = mapped_column(String(255), primary_key=True)
-    origin_id: Mapped[str] = mapped_column(String(255), primary_key=True)
-    actor_kind: Mapped[str] = mapped_column(String(20), primary_key=True)
-    actor_id: Mapped[str] = mapped_column(String(255), primary_key=True)
-    archive_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("domain_events.id", ondelete="CASCADE"), nullable=False, index=True,
-    )
-    archive_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
-    captured_sections: Mapped[dict] = mapped_column(JSON, nullable=False)
-    sections: Mapped[dict] = mapped_column(JSON, nullable=False)
-    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
 
 class DomainEventHandlerExecution(Base):
@@ -10760,290 +10715,14 @@ class QualityAssessmentSubjectErasurePermitRow(Base):
     )
 
 
-class QualityAssessmentLegacyImportRunRow(Base):
-    """Immutable, board-scoped v1 import plan header."""
-
-    __tablename__ = "quality_assessment_legacy_import_runs"
-    __table_args__ = (
-        CheckConstraint(
-            "candidate_count >= 0",
-            name="ck_quality_legacy_run_candidate_count",
-        ),
-        CheckConstraint(
-            "length(code_digest) = 64 "
-            "AND length(candidate_digest) = 64 "
-            "AND length(plan_digest) = 64",
-            name="ck_quality_legacy_run_digests",
-        ),
-    )
-
-    board_id: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("boards.id", ondelete="CASCADE"),
-        primary_key=True,
-    )
-    epoch: Mapped[str] = mapped_column(String(128), primary_key=True)
-    cutoff: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
-    code_digest: Mapped[str] = mapped_column(String(64), nullable=False)
-    candidate_digest: Mapped[str] = mapped_column(String(64), nullable=False)
-    plan_digest: Mapped[str] = mapped_column(String(64), nullable=False)
-    candidate_count: Mapped[int] = mapped_column(Integer, nullable=False)
-    rejection_counts_json: Mapped[list] = mapped_column(
-        JSON,
-        nullable=False,
-        default=list,
-    )
-    contract_version: Mapped[str] = mapped_column(String(128), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 
-class QualityAssessmentLegacyImportCandidateRow(Base):
-    """Frozen candidate plan with the exact BR15 five-column identity."""
-
-    __tablename__ = "quality_assessment_legacy_import_candidates"
-    __table_args__ = (
-        ForeignKeyConstraint(
-            ("board_id", "epoch"),
-            (
-                "quality_assessment_legacy_import_runs.board_id",
-                "quality_assessment_legacy_import_runs.epoch",
-            ),
-            ondelete="CASCADE",
-            name="fk_quality_legacy_candidate_run",
-        ),
-        UniqueConstraint(
-            "board_id",
-            "subject_type",
-            "subject_id",
-            "assessment_kind",
-            "epoch",
-            name="uq_quality_legacy_candidate_physical_identity",
-        ),
-        CheckConstraint(
-            "ordinal >= 0 AND subject_version >= 1",
-            name="ck_quality_legacy_candidate_ord_version",
-        ),
-        CheckConstraint(
-            "(subject_type = 'ideation' AND assessment_kind = 'ambiguity') "
-            "OR (subject_type = 'spec' "
-            "AND assessment_kind = 'spec_validation')",
-            name="ck_quality_legacy_candidate_subject_kind",
-        ),
-        CheckConstraint(
-            "scale_minimum < scale_maximum "
-            "AND score >= scale_minimum AND score <= scale_maximum",
-            name="ck_quality_legacy_candidate_score",
-        ),
-        CheckConstraint(
-            "length(content_digest) = 64 "
-            "AND length(clarification_digest) = 64 "
-            "AND length(ruleset_digest) = 64 "
-            "AND length(taxonomy_digest) = 64 "
-            "AND length(policy_digest) = 64 "
-            "AND length(input_digest) = 64 "
-            "AND length(legacy_source_digest) = 64",
-            name="ck_quality_legacy_candidate_digests",
-        ),
-        Index(
-            "ix_quality_legacy_candidate_subject",
-            "board_id",
-            "subject_type",
-            "subject_id",
-        ),
-    )
-
-    board_id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    epoch: Mapped[str] = mapped_column(String(128), primary_key=True)
-    ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
-    subject_type: Mapped[str] = mapped_column(String(24), nullable=False)
-    subject_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    assessment_kind: Mapped[str] = mapped_column(String(32), nullable=False)
-    subject_version: Mapped[int] = mapped_column(Integer, nullable=False)
-    scale_kind: Mapped[str] = mapped_column(String(32), nullable=False)
-    scale_minimum: Mapped[float] = mapped_column(Float, nullable=False)
-    scale_maximum: Mapped[float] = mapped_column(Float, nullable=False)
-    scale_direction: Mapped[str] = mapped_column(String(24), nullable=False)
-    score: Mapped[float] = mapped_column(Float, nullable=False)
-    justification: Mapped[str] = mapped_column(Text, nullable=False)
-    content_digest: Mapped[str] = mapped_column(String(64), nullable=False)
-    clarification_digest: Mapped[str] = mapped_column(String(64), nullable=False)
-    ruleset_digest: Mapped[str] = mapped_column(String(64), nullable=False)
-    taxonomy_digest: Mapped[str] = mapped_column(String(64), nullable=False)
-    policy_digest: Mapped[str] = mapped_column(String(64), nullable=False)
-    input_digest: Mapped[str] = mapped_column(String(64), nullable=False)
-    canonicalization_version: Mapped[str] = mapped_column(
-        String(64),
-        nullable=False,
-    )
-    ruleset_version: Mapped[str] = mapped_column(String(128), nullable=False)
-    taxonomy_version: Mapped[str] = mapped_column(String(128), nullable=False)
-    analyzer_version: Mapped[str] = mapped_column(String(128), nullable=False)
-    policy_version: Mapped[str] = mapped_column(String(128), nullable=False)
-    legacy_source_id: Mapped[str] = mapped_column(String(255), nullable=False)
-    legacy_source_digest: Mapped[str] = mapped_column(String(64), nullable=False)
-    observed_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 
-class QualityAssessmentLegacyImportCheckpointRow(Base):
-    """Durable cursor advanced atomically with one candidate resolution."""
-
-    __tablename__ = "quality_assessment_legacy_import_checkpoints"
-    __table_args__ = (
-        ForeignKeyConstraint(
-            ("board_id", "epoch"),
-            (
-                "quality_assessment_legacy_import_runs.board_id",
-                "quality_assessment_legacy_import_runs.epoch",
-            ),
-            ondelete="CASCADE",
-            name="fk_quality_legacy_checkpoint_run",
-        ),
-        CheckConstraint(
-            "processed_count >= 0 AND imported_count >= 0 "
-            "AND native_wins_count >= 0 "
-            "AND processed_count = imported_count + native_wins_count "
-            "AND revision >= 1",
-            name="ck_quality_legacy_checkpoint_counts",
-        ),
-        CheckConstraint(
-            "(processed_count = 0 AND cursor_ordinal IS NULL "
-            "AND last_subject_type IS NULL AND last_subject_id IS NULL "
-            "AND last_assessment_kind IS NULL) "
-            "OR (processed_count > 0 "
-            "AND cursor_ordinal = processed_count - 1 "
-            "AND last_subject_type IS NOT NULL "
-            "AND last_subject_id IS NOT NULL "
-            "AND last_assessment_kind IS NOT NULL)",
-            name="ck_quality_legacy_checkpoint_cursor",
-        ),
-        CheckConstraint(
-            "length(plan_digest) = 64 AND length(candidate_digest) = 64",
-            name="ck_quality_legacy_checkpoint_digests",
-        ),
-    )
-
-    board_id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    epoch: Mapped[str] = mapped_column(String(128), primary_key=True)
-    plan_digest: Mapped[str] = mapped_column(String(64), nullable=False)
-    candidate_digest: Mapped[str] = mapped_column(String(64), nullable=False)
-    processed_count: Mapped[int] = mapped_column(Integer, nullable=False)
-    imported_count: Mapped[int] = mapped_column(Integer, nullable=False)
-    native_wins_count: Mapped[int] = mapped_column(Integer, nullable=False)
-    cursor_ordinal: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    last_subject_type: Mapped[str | None] = mapped_column(
-        String(24),
-        nullable=True,
-    )
-    last_subject_id: Mapped[str | None] = mapped_column(
-        String(64),
-        nullable=True,
-    )
-    last_assessment_kind: Mapped[str | None] = mapped_column(
-        String(32),
-        nullable=True,
-    )
-    revision: Mapped[int] = mapped_column(Integer, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 
-class QualityAssessmentLegacyImportResolutionRow(Base):
-    """Immutable per-candidate imported/native-wins resolution evidence."""
-
-    __tablename__ = "quality_assessment_legacy_import_resolutions"
-    __table_args__ = (
-        ForeignKeyConstraint(
-            ("board_id", "epoch", "ordinal"),
-            (
-                "quality_assessment_legacy_import_candidates.board_id",
-                "quality_assessment_legacy_import_candidates.epoch",
-                "quality_assessment_legacy_import_candidates.ordinal",
-            ),
-            ondelete="CASCADE",
-            name="fk_quality_legacy_resolution_candidate",
-        ),
-        CheckConstraint(
-            "resolution IN ('imported', 'native_wins')",
-            name="ck_quality_legacy_resolution_kind",
-        ),
-        CheckConstraint(
-            "processed_count >= 1 AND imported_count >= 0 "
-            "AND native_wins_count >= 0 "
-            "AND processed_count = imported_count + native_wins_count",
-            name="ck_quality_legacy_resolution_counts",
-        ),
-        CheckConstraint(
-            "length(request_digest) = 64 "
-            "AND length(run_identity_digest) = 64 "
-            "AND length(authority_digest) = 64",
-            name="ck_quality_legacy_resolution_digests",
-        ),
-    )
-
-    board_id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    epoch: Mapped[str] = mapped_column(String(128), primary_key=True)
-    ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
-    resolution: Mapped[str] = mapped_column(String(24), nullable=False)
-    processed_count: Mapped[int] = mapped_column(Integer, nullable=False)
-    imported_count: Mapped[int] = mapped_column(Integer, nullable=False)
-    native_wins_count: Mapped[int] = mapped_column(Integer, nullable=False)
-    # Deliberately not an FK: subject purge preserves this durable epoch even
-    # when the referenced operational receipt is physically erased.
-    receipt_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    event_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    history_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    outbox_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
-    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
-    run_identity_digest: Mapped[str] = mapped_column(String(64), nullable=False)
-    authority_digest: Mapped[str] = mapped_column(String(64), nullable=False)
-    actor_id: Mapped[str] = mapped_column(String(255), nullable=False)
-    resolved_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 
-class QualityAssessmentLegacyImportCompletionRow(Base):
-    """Immutable closure marker written only after physical postconditions."""
-
-    __tablename__ = "quality_assessment_legacy_import_completions"
-    __table_args__ = (
-        ForeignKeyConstraint(
-            ("board_id", "epoch"),
-            (
-                "quality_assessment_legacy_import_runs.board_id",
-                "quality_assessment_legacy_import_runs.epoch",
-            ),
-            ondelete="CASCADE",
-            name="fk_quality_legacy_completion_run",
-        ),
-        CheckConstraint(
-            "candidate_count >= 0 AND processed_count = candidate_count "
-            "AND imported_count >= 0 AND native_wins_count >= 0 "
-            "AND processed_count = imported_count + native_wins_count",
-            name="ck_quality_legacy_completion_counts",
-        ),
-        CheckConstraint(
-            "length(plan_digest) = 64 "
-            "AND length(candidate_digest) = 64 "
-            "AND length(postcondition_digest) = 64",
-            name="ck_quality_legacy_completion_digests",
-        ),
-    )
-
-    board_id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    epoch: Mapped[str] = mapped_column(String(128), primary_key=True)
-    plan_digest: Mapped[str] = mapped_column(String(64), nullable=False)
-    candidate_digest: Mapped[str] = mapped_column(String(64), nullable=False)
-    candidate_count: Mapped[int] = mapped_column(Integer, nullable=False)
-    processed_count: Mapped[int] = mapped_column(Integer, nullable=False)
-    imported_count: Mapped[int] = mapped_column(Integer, nullable=False)
-    native_wins_count: Mapped[int] = mapped_column(Integer, nullable=False)
-    all_candidates_resolved: Mapped[bool] = mapped_column(nullable=False)
-    unique_identity_satisfied: Mapped[bool] = mapped_column(nullable=False)
-    checkpoint_consistent: Mapped[bool] = mapped_column(nullable=False)
-    zero_orphans: Mapped[bool] = mapped_column(nullable=False)
-    audit_bundles_consistent: Mapped[bool] = mapped_column(nullable=False)
-    epoch_closed: Mapped[bool] = mapped_column(nullable=False)
-    postcondition_digest: Mapped[str] = mapped_column(String(64), nullable=False)
-    completed_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 
 class QualityAssessmentLifecycleTransitionRow(Base):

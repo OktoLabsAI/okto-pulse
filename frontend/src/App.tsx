@@ -1,5 +1,5 @@
 import { type ReactNode, useEffect, useState } from 'react';
-import { Quote, Lightbulb, Microscope, FileCheck2, Rocket, Archive } from 'lucide-react';
+import { Quote, Lightbulb, Microscope, FileCheck2, Rocket } from 'lucide-react';
 import { authAdapter, portalAdapter } from '@/adapters';
 import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
@@ -147,15 +147,6 @@ const STAGE_TABS: StageTab[] = [
     iconInactive: 'text-emerald-500/70 dark:text-emerald-400/60',
     labelActive: 'text-emerald-700 dark:text-emerald-300',
     pillActiveRing: 'ring-1 ring-emerald-200 dark:ring-emerald-500/30',
-  },
-  {
-    id: 'archives',
-    label: 'Archives',
-    Icon: Archive,
-    iconActive: 'text-slate-600 dark:text-slate-300',
-    iconInactive: 'text-slate-400 dark:text-slate-500',
-    labelActive: 'text-slate-700 dark:text-slate-200',
-    pillActiveRing: 'ring-1 ring-slate-200 dark:ring-slate-600/40',
   },
 ];
 

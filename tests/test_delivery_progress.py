@@ -8,15 +8,13 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     Card,
     Spec,
     CardDeliveryEvidenceRecordRow as Record,
-    CARD_DELIVERY_GUARDS,
 )
 from okto_pulse.community.adapters.sqlalchemy_delivery_evidence import (
     CommunityDeliveryEvidenceStore,
 )
-from okto_pulse.community.adapters.delivery_progress_migration import (
-    migrate_delivery_progress,
-)
 from okto_pulse.core.models.delivery_evidence import CardDeliveryEvidenceCommand
+from okto_pulse.core.domain.execution_contract import new_execution_contract
+from okto_pulse.core.domain.delivery_inventory import COLLECTIONS
 from okto_pulse.core.domain.delivery_evidence import (
     CardDeliveryScope,
     evaluate_delivery_coverage,
@@ -38,6 +36,27 @@ async def db(tmp_path):
             "INSERT INTO cards(id,board_id,spec_id,title,status,position,created_by,card_type) VALUES ('c','b','s','Card','in_progress',0,'owner','normal')"
         )
     async with async_sessionmaker(engine, expire_on_commit=False)() as session:
+        spec = await session.get(Spec, "s")
+        spec.execution_contract = new_execution_contract(
+            board_id="b", spec_id="s", edition=1, actor_id="owner", origin="new_spec",
+        )
+        for _, field in COLLECTIONS:
+            setattr(spec, field, [])
+        spec.functional_requirements = [{
+            "id": "fr", "text": "Parse the current input", "linked_task_ids": ["c"],
+            "verification": {"mode": "explicit", "required_profiles": ["functional"]},
+            "implementation_plan": {"contributions": [{
+                "card_id": "c", "scope": "selected_criteria", "criterion_ids": ["ac"],
+                "summary": "Parser implementation",
+            }]},
+        }]
+        spec.acceptance_criteria = [{
+            "id": "ac", "text": "Valid input is parsed", "verification_profile": "functional",
+            "linked_task_ids": ["c"],
+            "requirement_links": [{"requirement_type": "functional_requirement", "requirement_id": "fr"}],
+        }]
+        spec.test_scenarios = []
+        await session.commit()
         yield engine, session, CommunityDeliveryEvidenceStore(session)
     await engine.dispose()
 
@@ -130,83 +149,8 @@ async def test_scope_version_targets_and_sources_are_not_trusted(db):
     assert await session.scalar(select(func.count()).select_from(Record)) == 0
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("interrupt", [False, True])
-async def test_migration_exact_predecessor_preserves_every_row_and_guards(
-    db, interrupt
-):
-    engine, session, store = db
-    await session.close()
-    name = Record.__tablename__
-    async with engine.begin() as conn:
-        ddl = await conn.scalar(
-            __import__("sqlalchemy").text(
-                "SELECT sql FROM sqlite_master WHERE type='table' AND name=:name"
-            ),
-            {"name": name},
-        )
-        index = await conn.scalar(
-            __import__("sqlalchemy").text(
-                "SELECT sql FROM sqlite_master WHERE type='index' AND name='ix_card_delivery_evidence_scope'"
-            )
-        )
-        await conn.exec_driver_sql(f'DROP TABLE "{name}"')
-        await conn.exec_driver_sql(ddl.replace(", 'progress'", ""))
-        await conn.exec_driver_sql(index)
-        for key, body in CARD_DELIVERY_GUARDS.items():
-            await conn.exec_driver_sql(
-                f"CREATE TRIGGER trg_card_delivery_evidence_{key} {body}"
-            )
-        await conn.exec_driver_sql(
-            f"INSERT INTO {name}(id,board_id,card_id,spec_id,spec_edition,kind,actor_id,actor_kind,idempotency_key,payload_sha256,payload,created_at) VALUES ('legacy','b','c','s',1,'implementation','old','agent','old','digest','{{\"bindings\": [], \"legacy\": true}}','2026-01-01')"
-        )
-        before = (await conn.exec_driver_sql(f"SELECT * FROM {name}")).all()
-    if interrupt:
-        from sqlalchemy import event
-
-        def fail_after_drop(conn, cursor, statement, parameters, context, executemany):
-            if statement.startswith(f'ALTER TABLE "{name}__progress_upgrade"'):
-                raise RuntimeError("injected_upgrade_failure")
-
-        event.listen(engine.sync_engine, "before_cursor_execute", fail_after_drop)
-        try:
-            with pytest.raises(RuntimeError, match="injected_upgrade_failure"):
-                await migrate_delivery_progress(engine)
-        finally:
-            event.remove(engine.sync_engine, "before_cursor_execute", fail_after_drop)
-        async with engine.begin() as conn:
-            assert (await conn.exec_driver_sql(f"SELECT * FROM {name}")).all() == before
-            triggers = (
-                await conn.exec_driver_sql(
-                    "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name=?",
-                    (name,),
-                )
-            ).all()
-            assert len(triggers) == 3
-            assert not (
-                await conn.exec_driver_sql(
-                    "SELECT name FROM sqlite_master WHERE name=?",
-                    (name + "__progress_upgrade",),
-                )
-            ).all()
-    assert await migrate_delivery_progress(engine) == "applied"
-    assert await migrate_delivery_progress(engine) == "skipped"
-    async with engine.begin() as conn:
-        assert (await conn.exec_driver_sql(f"SELECT * FROM {name}")).all() == before
-        with pytest.raises(Exception, match="audit_immutable"):
-            await conn.exec_driver_sql(f"UPDATE {name} SET actor_id='forged'")
-    await record(store, command())
-    await session.commit()
 
 
-@pytest.mark.asyncio
-async def test_migration_rejects_trigger_drift_without_changing_history(db):
-    engine, session, _ = db
-    await session.close()
-    async with engine.begin() as conn:
-        await conn.exec_driver_sql("DROP TRIGGER trg_card_delivery_evidence_update")
-    with pytest.raises(RuntimeError, match="trigger_drift"):
-        await migrate_delivery_progress(engine)
 
 
 @pytest.mark.asyncio

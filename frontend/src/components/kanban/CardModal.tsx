@@ -39,7 +39,6 @@ import { SpecModal } from '@/components/specs/SpecModal';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
 import { CancellationDetails, CancellationReasonDialog } from '@/components/shared/CancellationReasonDialog';
 import { ActivityLogList } from '@/components/shared/ActivityLogList';
-import { HistoricalContextPanel } from '@/components/shared/HistoricalContextPanel';
 import { EvidenceBadge } from '@/components/specs/EvidenceBadge';
 import { VerificationReportDetails } from '@/components/specs/VerificationReportDetails';
 import { ScenarioTypeBadge } from '@/components/specs/ScenarioTypeBadge';
@@ -1383,7 +1382,6 @@ export function CardModal({
           label: 'References',
           icon: <Link size={14} />,
         },
-        { id: 'historical-context', label: 'Historical context', icon: <History size={14} /> },
         ...(
           hasVisibleValidation
             ? [{
@@ -2512,11 +2510,6 @@ export function CardModal({
               )}
 
               {/* Activity Tab */}
-              <AccessibleTabPanel idBase={`${tabIdBase}-card-${card.id}`} tabId="historical-context" value={activeTab}>
-                {card.id === selectedCardId && card.board_id === boardId && (
-                  <HistoricalContextPanel boardId={boardId} targetKind="card" targetId={card.id} />
-                )}
-              </AccessibleTabPanel>
               {canReadActivity && (
                 <AccessibleTabPanel
                   idBase={`${tabIdBase}-card-${card.id}`}
@@ -3770,7 +3763,7 @@ function ValidationMetricInput({
           className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-violet-500 dark:text-violet-300"
           data-testid={`${id}-threshold-source`}
         >
-          Threshold source: {thresholdSource === 'card_compatibility' ? 'preserved Card policy' : thresholdSource}
+          Threshold source: {thresholdSource}
         </p>
         <label
           htmlFor={id}
@@ -3842,7 +3835,7 @@ function ValidationHistoryMetric({
       >
         {thresholdSource && (
           <p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">
-            Threshold source: {thresholdSource === 'card_compatibility' ? 'preserved Card policy' : thresholdSource}
+            Threshold source: {thresholdSource}
           </p>
         )}
         <p className="text-xs font-semibold text-gray-600 dark:text-gray-300">

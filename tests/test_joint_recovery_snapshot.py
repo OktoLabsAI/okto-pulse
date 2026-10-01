@@ -43,7 +43,7 @@ def sources(tmp_path):
         writer.execute("CREATE TABLE history(id TEXT PRIMARY KEY, payload BLOB)")
         writer.execute("CREATE TABLE boards(id TEXT PRIMARY KEY)")
         writer.executemany("INSERT INTO boards VALUES (?)", [("board-one",), ("empty-board",)])
-        writer.execute("INSERT INTO history VALUES ('sprint-opaque', X'000AFF')")
+        writer.execute("INSERT INTO history VALUES ('current-history', X'000AFF')")
         writer.commit()
         assert Path(str(sql) + "-wal").stat().st_size > 0
         graphs, corpora = [], []
@@ -52,7 +52,7 @@ def sources(tmp_path):
             if scope == "board":
                 node = corpus.nodes[0]
                 corpus = replace(corpus, nodes=(replace(node, properties={
-                    **node.properties, "source_artifact_ref": "sprint:opaque:v1",
+                    **node.properties, "source_artifact_ref": "spec:current:v1",
                 }),))
             path = (bindings.board_grafx_path("board-one", "g1") if scope == "board"
                     else bindings.global_grafx_path("g1"))
@@ -99,7 +99,7 @@ def test_joint_roundtrip_preserves_wal_history_and_both_graph_scopes(sources, tm
     assert [item["certificate"]["fingerprint"] for item in manifest["graphs"]] == [c.fingerprint for c in corpora]
     restored = joint.restore_joint_recovery_snapshot(artifact, tmp_path / "restored", builds=BUILDS, max_seconds=120, batch_size=1)
     with sqlite3.connect(restored / "database.sqlite3") as database:
-        assert database.execute("SELECT * FROM history").fetchall() == [("sprint-opaque", b"\x00\x0a\xff")]
+        assert database.execute("SELECT * FROM history").fetchall() == [("current-history", b"\x00\x0a\xff")]
     for index, corpus in enumerate(corpora):
         observed = export_generation("grafx", restored / f"graph-{index:04d}", scope=corpus.schema.scope)
         assert observed.fingerprint == corpus.fingerprint
@@ -326,7 +326,7 @@ def stored_sources(sources):
     root.mkdir()
     storage = CommunityFileSystemStorage(str(root))
     attachment = Path(asyncio.run(storage.save("board-one", "original.bin", b"\x00attachment\xff")))
-    archive = Path(asyncio.run(storage.save("empty-board", "historical-archive.json", b'{ "source": "sprint:opaque" }\r\n')))
+    extra = Path(asyncio.run(storage.save("empty-board", "unreferenced.bin", b'current unreferenced bytes')))
     asyncio.run(storage.purge_board("previously-erased"))
     with sqlite3.connect(sources[0]) as database:
         database.executescript("""
@@ -336,10 +336,7 @@ def stored_sources(sources):
             INSERT INTO cards VALUES ('card-one', 'board-one');
         """)
         database.execute("INSERT INTO attachments VALUES (?,?,?,?)", ("attachment-one", "card-one", str(attachment), attachment.stat().st_size))
-        payload = {"format": "historical-relational-archive/v3", "migration_id": "m1", "storage_path": str(archive),
-            "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(), "size": archive.stat().st_size, "counts": []}
-        database.execute("INSERT INTO domain_events VALUES (?,?,?,?)", ("archive-one", "empty-board", "historical_archive.created", json.dumps(payload)))
-    return sources, root, storage, (attachment, archive)
+    return sources, root, storage, (attachment, extra)
 
 
 def capture_stored(stored_sources):
@@ -360,8 +357,8 @@ def test_v4_roundtrip_keeps_privacy_fenced_through_final_joint_publish(stored_so
     manifest = joint.verify_joint_recovery_snapshot(snapshot)
     assert manifest["format"] == "joint-recovery-snapshot/v6"
     assert manifest["storage_references"]["attachment_count"] == 1
-    assert manifest["storage_references"]["historical_archive_count"] == 1
-    assert manifest["storage_references"]["unreferenced_object_count"] == 0
+    assert "historical_archive_count" not in manifest["storage_references"]
+    assert manifest["storage_references"]["unreferenced_object_count"] == 1
     with pytest.raises(ValueError, match="current_storage_root_required"):
         joint.restore_joint_recovery_snapshot(snapshot, tmp_path / "missing-guard", builds=BUILDS)
     real_publish, checked = joint._publish, []
@@ -392,7 +389,7 @@ except Timeout:
         current_storage_root=uploads, max_seconds=120)
     assert checked == [True]
     with sqlite3.connect(target / "database.sqlite3") as restored:
-        assert restored.execute("SELECT * FROM history").fetchall() == [("sprint-opaque", b"\x00\x0a\xff")]
+        assert restored.execute("SELECT * FROM history").fetchall() == [("current-history", b"\x00\x0a\xff")]
     for index, corpus in enumerate(sources[4]):
         assert export_generation("grafx", target / f"graph-{index:04d}", scope=corpus.schema.scope).fingerprint == corpus.fingerprint
     for original in objects:

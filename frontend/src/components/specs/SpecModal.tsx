@@ -126,7 +126,6 @@ import { RefinementModal } from '@/components/refinements/RefinementModal';
 import { EditableField } from '@/components/shared/EditableField';
 import { ValidationGateOverride } from '@/components/shared/ValidationGateOverride';
 import { ActivityHistoryList } from '@/components/shared/ActivityHistoryList';
-import { HistoricalContextPanel } from '@/components/shared/HistoricalContextPanel';
 import { SpecEditionLabel } from './SpecEditionLabel';
 import { ArchitectureTab } from '@/components/architecture';
 import {
@@ -188,7 +187,6 @@ type ModalTab =
   | 'references'
   | 'kg'
   | 'validation'
-  | 'historical-context'
   | 'activity';
 
 type ResourceSubTab = 'mockups' | 'knowledge' | 'architecture';
@@ -2352,7 +2350,6 @@ export function SpecModal({
       ? [{ id: 'validation' as ModalTab, label: 'Validation', icon: <ShieldCheck size={14} /> }]
       : []),
     { id: 'activity', label: 'Activity', icon: <History size={14} /> },
-    { id: 'historical-context', label: 'Historical context', icon: <History size={14} /> },
   ];
   const tabs = allTabs.filter((tab) => !tab.permission || perms.has(tab.permission));
 
@@ -3286,9 +3283,6 @@ export function SpecModal({
             <KGValidationTab boardId={spec.board_id} specId={specId} />
           )}
           {activeTab === 'activity' && <HistoryTab specId={specId} />}
-          {activeTab === 'historical-context' && spec.id === specId && spec.board_id === _boardId && (
-            <HistoricalContextPanel boardId={_boardId} targetKind="spec" targetId={specId} />
-          )}
           {activeTab === 'qa' && (
             <QATab
               specId={specId}

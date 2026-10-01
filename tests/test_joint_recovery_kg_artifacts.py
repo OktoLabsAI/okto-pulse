@@ -1,7 +1,5 @@
 """Joint rollback retains the filesystem authority used by cognitive replay."""
 
-import hashlib
-import json
 
 import pytest
 
@@ -36,31 +34,6 @@ def test_joint_roundtrip_preserves_cognitive_pending_and_generation_evidence(sto
     assert not (restored / 'kg-artifacts' / 'rebuild' / '.rebuild-audit-artifact-store.lock').exists()
 
 
-@pytest.mark.parametrize('has_artifacts', [False, True])
-def test_legacy_v4_reader_does_not_claim_omitted_kg_authority(stored_sources, tmp_path, has_artifacts):
-    from okto_pulse.community.adapters.retirement_offline_run import _complete_backup
-    original, uploads, _, _ = stored_sources
-    if has_artifacts:
-        store = CommunityFileSystemRebuildAuditArtifactStore(original[3] / 'kg')
-        store.write_json_atomic(RebuildAuditKey('run_audit', 'board-one', artifact_id='original'), {'historical': True})
-    snapshot = recovery.capture_stored(stored_sources)
-    # Synthetic v4 wire-format fixture derived from the authenticated common
-    # fields. No SQL, graph, upload or historical payload is rewritten.
-    path = snapshot.directory / 'manifest.json'
-    document = json.loads(path.read_bytes())
-    document.pop('kg_artifacts')
-    document['format'] = 'joint-recovery-snapshot/v4'
-    encoded = joint._encode(document)
-    path.write_bytes(encoded)
-    legacy = joint.JointRecoverySnapshot(snapshot.directory, hashlib.sha256(encoded).hexdigest())
-    verified = joint.verify_joint_recovery_snapshot(legacy)
-    # These fixtures contain native graphs. v4 never preserved their original
-    # commit/system history, even when no separate artifact directory existed.
-    assert not _complete_backup(verified)
-    restored = joint.restore_joint_recovery_snapshot(legacy, tmp_path / 'legacy-restored', builds=recovery.BUILDS,
-        current_storage_root=uploads, max_seconds=120)
-    assert (restored / 'database.sqlite3').is_file()
-    assert not (restored / 'kg-artifacts').exists()
 
 
 @pytest.mark.parametrize('relative,reason', [

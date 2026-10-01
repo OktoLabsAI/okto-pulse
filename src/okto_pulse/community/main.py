@@ -35,15 +35,11 @@ from fastapi.staticfiles import StaticFiles
 from okto_pulse.community.app import (
     create_app,
     register_kg_daily_tick_job,
-    run_startup_schema_sweep,
 )
 from okto_pulse.community.adapters.sqlalchemy_database import (
     close_db,
     get_session_factory,
     init_db,
-)
-from okto_pulse.community.adapters.startup_graph_routes import (
-    adopt_existing_board_routes_before_schema_sweep,
 )
 from okto_pulse.core.services.application_kg import get_current_provider_registry
 
@@ -916,39 +912,6 @@ def create_community_app():
     async def combined_lifespan(app_instance) -> AsyncGenerator[None, None]:
         await init_db()
 
-        # 0.3.4 delivery-evidence re-anchoring (spec 793c43d0 / FR-6): copy
-        # the legacy spec ledger into the card ledger once, transactionally
-        # per board, guarded by the verdict-equivalence gate. Idempotent —
-        # re-runs skip already-migrated rows; an abort (needs_relink or
-        # verdict divergence) logs the bounded report and leaves the legacy
-        # ledger untouched (copy-not-move) for operator remediation.
-        try:
-            from okto_pulse.community.adapters.delivery_migration import (
-                DeliveryMigrationAborted,
-                migrate_all_boards,
-            )
-
-            async with _rc_session_factory() as _migration_session:
-                for _report in await migrate_all_boards(_migration_session):
-                    _STARTUP_LOGGER.info(
-                        "delivery migration board=%s copied=%s skipped_existing=%s skipped_waivers=%s",
-                        _report.get("board_id"),
-                        _report.get("copied"),
-                        _report.get("skipped_existing"),
-                        _report.get("skipped_waivers"),
-                    )
-                await _migration_session.commit()
-        except DeliveryMigrationAborted as _exc:
-            _STARTUP_LOGGER.error(
-                "delivery migration ABORTED board=%s reason=%s report=%s — "
-                "legacy ledger untouched; resolve needs_relink bindings",
-                _exc.report.get("board_id"),
-                str(_exc),
-                _exc.report,
-            )
-        except Exception as _exc:  # noqa: BLE001 — boot must never strand here
-            _STARTUP_LOGGER.exception("delivery migration failed: %s", _exc)
-
         # Rehydrate the composed settings snapshot immediately after schema
         # initialization. First-boot seeding materializes the demo graph, so it
         # must observe persisted graph-memory limits just like every later
@@ -989,11 +952,7 @@ def create_community_app():
 
         register_community_kg_events_reader(get_session_factory())
 
-        primary_commit_delivered = False
-
         def _on_primary_committed(board, agent, api_key) -> None:
-            nonlocal primary_commit_delivered
-            primary_commit_delivered = True
             print(f"\n{'=' * 60}")
             print("  Okto Pulse Community — First Boot Setup")
             print(f"{'=' * 60}")
@@ -1004,88 +963,10 @@ def create_community_app():
             print(f"{'=' * 60}\n")
 
         async with database_runtime.cancel_safe_session_scope() as db:
-            result = await seed_community_defaults(
+            await seed_community_defaults(
                 db,
                 on_primary_committed=_on_primary_committed,
             )
-            if result and not primary_commit_delivered:
-                # Compatibility with an older external seed implementation.
-                board, agent, api_key = result
-                _on_primary_committed(board, agent, api_key)
-
-        # Self-heal: Q&A respondidas herdadas sem answered_at viravam
-        # falso-abertas no badge open_qa_count (a herança não copiava o
-        # timestamp). O combined_lifespan SUBSTITUI o _default_lifespan do
-        # core, então o backfill precisa rodar aqui também. Idempotente.
-        try:
-            from okto_pulse.core.services.application_startup import (
-                backfill_qa_answered_at,
-            )
-
-            async with database_runtime.cancel_safe_session_scope() as _qa_db:
-                _qa_fixed = await backfill_qa_answered_at(_qa_db)
-            if _qa_fixed:
-                _STARTUP_LOGGER.info(
-                    "qa.answered_at.backfilled %s",
-                    _qa_fixed,
-                )
-        except Exception as _qa_exc:
-            _STARTUP_LOGGER.warning(
-                "qa.answered_at.backfill_failed err=%s",
-                _qa_exc,
-            )
-
-        # NC-10 parity with create_app's default lifespan.  The productive
-        # combined lifespan replaces that default completely, so it must run
-        # the idempotent per-board KG schema sweep itself.  Keep this before
-        # every worker and the decay scheduler so they never observe a
-        # pre-migration board graph.
-        try:
-            await adopt_existing_board_routes_before_schema_sweep(
-                uow_factory=app_instance.state.runtime_composition.uow_factory,
-                logger=_STARTUP_LOGGER,
-            )
-            await run_startup_schema_sweep(
-                uow_factory=app_instance.state.runtime_composition.uow_factory,
-                logger=_STARTUP_LOGGER,
-            )
-        except Exception as _schema_exc:
-            _STARTUP_LOGGER.debug(
-                "kg.schema.migration_skipped err=%s",
-                _schema_exc,
-                extra={"event": "kg.schema.migration_skipped"},
-            )
-
-        # Self-heal AFG (investigacao 2026-06-10): materializa finding runs
-        # de arquitetura para designs nunca avaliados (gate avaliava tabela
-        # vazia). Em background para nao atrasar o boot; o combined_lifespan
-        # substitui o lifespan default do core, entao o wiring vive aqui.
-        async def _afg_backfill_task() -> None:
-            try:
-                from okto_pulse.core.services.architecture import (
-                    backfill_architecture_finding_runs,
-                )
-
-                async with database_runtime.cancel_safe_session_scope() as _afg_db:
-                    _afg_stats = await backfill_architecture_finding_runs(
-                        _afg_db,
-                        only_missing=True,
-                    )
-                _STARTUP_LOGGER.info(
-                    "architecture.finding_backfill.completed %s",
-                    _afg_stats,
-                )
-            except Exception as _afg_exc:
-                _STARTUP_LOGGER.warning(
-                    "architecture.finding_backfill.failed err=%s",
-                    _afg_exc,
-                )
-
-        afg_backfill_task = asyncio.create_task(
-            _afg_backfill_task(),
-            name="community.startup.architecture_backfill",
-        )
-
         # Preload the embedding model before serving requests so the first
         # KG search doesn't pay the multi-second model-load cost synchronously.
         await _preload_embedding_model(settings)
@@ -1126,10 +1007,6 @@ def create_community_app():
             metrics_beacon_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await metrics_beacon_task
-        if not afg_backfill_task.done():
-            afg_backfill_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await afg_backfill_task
         await scheduler_control.shutdown(wait=False)
         worker_stop_failures = ()
         if worker_registry is not None:

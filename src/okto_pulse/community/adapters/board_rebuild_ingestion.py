@@ -196,7 +196,7 @@ def read_legacy_source_revision_state(
     from okto_pulse.community.adapters.global_discovery_recovery import (
         CommunityRelationalRecoverySnapshotFingerprint,
     )
-    from okto_pulse.community.adapters.relational_schema_steps import (
+    from okto_pulse.community.adapters.current_schema_guards import (
         global_discovery_source_revision_trigger_manifest,
     )
 

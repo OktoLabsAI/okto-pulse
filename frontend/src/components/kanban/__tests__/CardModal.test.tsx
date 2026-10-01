@@ -82,8 +82,6 @@ const permissionsMock = vi.hoisted(() => ({
 const policyComplianceMock = vi.hoisted(() => ({
   panelProps: vi.fn(),
 }));
-const historicalContextApi = vi.hoisted(() => ({ read: vi.fn() }));
-vi.mock('@/services/historical-context-api', () => ({ useHistoricalContextApi: () => historicalContextApi }));
 const learningCaptureApi = vi.hoisted(() => ({ source: vi.fn(), history: vi.fn(), create: vi.fn() }));
 vi.mock('@/services/learning-capture-api', () => ({ useLearningCaptureApi: () => learningCaptureApi }));
 
@@ -466,16 +464,13 @@ function policyRejection(
 }
 
 describe('CardModal', () => {
-  it.each(['normal', 'bug', 'test'] as const)('reads historical context for the selected %s Card without mutation', async cardType => {
+  it.each(['normal', 'bug', 'test'] as const)('offers only current context for the selected %s Card', async cardType => {
     const selected = cardForType(cardType);
     storeMock.selectedCardId = selected.id;
     apiMock.getCard.mockResolvedValue(selected);
     render(<CardModal boardId="board-1" />);
     await screen.findByText(selected.title);
-    expect(historicalContextApi.read).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('tab', { name: 'Historical context' }));
-    expect(await screen.findByText('Original Card question')).toBeInTheDocument();
-    expect(historicalContextApi.read.mock.calls[0].slice(0, 4)).toEqual(['board-1', 'card', selected.id, 0]);
+    expect(screen.queryByRole('tab', { name: 'Historical context' })).not.toBeInTheDocument();
     expect(apiMock.updateCard).not.toHaveBeenCalled();
     expect(apiMock.moveCard).not.toHaveBeenCalled();
   });
@@ -485,8 +480,6 @@ describe('CardModal', () => {
     learningCaptureApi.history.mockReset().mockResolvedValue({ items: [], next_cursor: null });
     learningCaptureApi.create.mockReset();
     vi.clearAllMocks();
-    historicalContextApi.read.mockReset().mockResolvedValue({ items: [{ binding_id: 'binding', origin: { kind: 'sprint', id: 'original' },
-      archive_id: 'archive', section: 'qa', field: null, record: { question: 'Original Card question', asked_by: 'original-author', answer: null } }], next_offset: null });
     permissionsMock.has.mockImplementation((_permission: string) => true);
     storeMock.selectedCardId = 'bug-1';
     storeMock.isCardModalOpen = true;
@@ -1716,7 +1709,7 @@ describe('CardModal', () => {
     const validationCard: Card = {
       ...cardForType('normal'),
       id: 'validation-mixed-thresholds-1',
-      validation_config: policyConfig(95, 92, 12, { min_confidence: 'card_compatibility', min_completeness: 'spec' }),
+      validation_config: policyConfig(95, 92, 12, { min_confidence: 'spec', min_completeness: 'spec' }),
       status: 'validation',
     };
     storeMock.currentBoard.settings = {
@@ -1768,7 +1761,7 @@ describe('CardModal', () => {
       }),
     ).toBeInTheDocument();
     expect(screen.getByTestId('task-validation-confidence-threshold-source'))
-      .toHaveTextContent('Threshold source: preserved Card policy');
+      .toHaveTextContent('Threshold source: spec');
     expect(screen.getByTestId('task-validation-completeness-threshold-source'))
       .toHaveTextContent('Threshold source: spec');
     expect(screen.getByTestId('task-validation-drift-threshold-source'))
@@ -1776,12 +1769,9 @@ describe('CardModal', () => {
     expect(apiMock.getSprint).not.toHaveBeenCalled();
   });
 
-  it.each([60, 90])('shows the preserved Card threshold %s without a live Sprint', async confidence => {
+  it.each([60, 90])('shows the current Spec threshold %s without changing policy', async confidence => {
     const validationCard: Card = { ...cardForType('normal'), status: 'validation',
-      validation_config: policyConfig(confidence, 92, 0, { min_confidence: 'card_compatibility', min_completeness: 'spec', max_drift: 'card_compatibility' }),
-      migrated_validation_policy: { contract_version: 'card-validation-compatibility/v1', board_id: 'board-1',
-        card_id: cardForType('normal').id, source_sprint_id: 'historical-sprint', migration_id: 'migration-1',
-        overrides: { min_confidence: confidence, max_drift: 0 } } };
+      validation_config: policyConfig(confidence, 92, 0, { min_confidence: 'spec', min_completeness: 'spec', max_drift: 'spec' }) };
     storeMock.selectedCardId = validationCard.id;
     storeMock.currentBoard.settings = { min_confidence: 70, min_completeness: 80, max_drift: 50 };
     apiMock.getCard.mockResolvedValue(validationCard);
@@ -1793,7 +1783,7 @@ describe('CardModal', () => {
     expect(await screen.findByRole('img', { name: new RegExp(`Confidence score 80 out of 100.*Minimum ${confidence}`, 'i') })).toBeInTheDocument();
     expect(screen.getByRole('img', { name: /Completeness score 80 out of 100.*Minimum 92/i })).toBeInTheDocument();
     expect(screen.getByRole('img', { name: /Drift score 20 out of 100.*Maximum 0/i })).toBeInTheDocument();
-    expect(screen.getByTestId('task-validation-confidence-threshold-source')).toHaveTextContent('preserved Card policy');
+    expect(screen.getByTestId('task-validation-confidence-threshold-source')).toHaveTextContent('spec');
     expect(screen.getByTestId('task-validation-completeness-threshold-source')).toHaveTextContent('Threshold source: spec');
     expect(apiMock.getSprint).not.toHaveBeenCalled();
     expect(apiMock.updateCard).not.toHaveBeenCalled();
@@ -1981,7 +1971,7 @@ describe('CardModal', () => {
           resolved_from: 'spec',
           resolved_sources: {
             required: 'spec',
-            min_confidence: 'sprint',
+            min_confidence: 'spec',
             min_completeness: 'spec',
             max_drift: 'board',
           },

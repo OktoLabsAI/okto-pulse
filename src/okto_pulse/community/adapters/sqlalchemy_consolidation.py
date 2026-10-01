@@ -13,9 +13,7 @@ from sqlalchemy import Text, and_, case, cast, delete, exists, func, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import aliased, selectinload
-from okto_pulse.core.ports.work_retirement import SUPERSEDED_WORK_STATUS
 from okto_pulse.core.ports.projection_effects import validated_projection_effect_extension
-from okto_pulse.community.adapters.work_retirement_sql import retired_work_origin_exists
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
     AmendmentHotfixRevision,
@@ -3020,13 +3018,13 @@ class CommunitySqlAlchemyConsolidationPersistence:
     ) -> None:
         for entry in entries:
             row = await context.get(ConsolidationQueue, entry.id, populate_existing=True)
-            if row is not None and row.status != SUPERSEDED_WORK_STATUS:
+            if row is not None:
                 _apply_queue(row, entry)
         await context.flush()
 
     async def delete_queue_entry(self, context: Any, *, entry_id: str) -> None:
         row = await context.get(ConsolidationQueue, entry_id, populate_existing=True)
-        if row is not None and row.status != SUPERSEDED_WORK_STATUS:
+        if row is not None:
             await context.delete(row)
             await context.flush()
 
@@ -3121,9 +3119,6 @@ class CommunitySqlAlchemyConsolidationPersistence:
         request: ReconcileIntentCreate,
     ) -> ReconcileIntentReceipt:
         """Insert or replay the immutable stale-reconcile queue intent."""
-        if await context.scalar(select(retired_work_origin_exists(request.board_id, request.artifact_type, request.artifact_id))):
-            raise ValueError("artifact_work_retired")
-
         _validate_deletion_identity(
             board_id=request.board_id,
             artifact_type=request.artifact_type,
@@ -3629,8 +3624,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
 
     async def count_dead_letters(self, context: Any, *, board_id: str) -> int:
         value = await context.scalar(
-            select(func.count()).where(ConsolidationDeadLetter.board_id == board_id,
-                ~retired_work_origin_exists(ConsolidationDeadLetter.board_id, ConsolidationDeadLetter.artifact_type, ConsolidationDeadLetter.artifact_id))
+            select(func.count()).where(ConsolidationDeadLetter.board_id == board_id)
         )
         return int(value or 0)
 
@@ -3643,7 +3637,6 @@ class CommunitySqlAlchemyConsolidationPersistence:
                     select(ConsolidationDeadLetter).where(
                         ConsolidationDeadLetter.board_id == board_id,
                         ConsolidationDeadLetter.attempts >= max_attempts,
-                        ~retired_work_origin_exists(ConsolidationDeadLetter.board_id, ConsolidationDeadLetter.artifact_type, ConsolidationDeadLetter.artifact_id),
                     )
                 )
             )

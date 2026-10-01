@@ -11,19 +11,12 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 import pytest
 from sqlalchemy import (
-    Boolean,
-    DateTime,
-    Float,
-    Integer,
-    JSON,
     delete,
     event,
     func,
-    insert,
     select,
 )
 from sqlalchemy.exc import IntegrityError
@@ -41,7 +34,7 @@ from okto_pulse.community.adapters.sqlalchemy_application_persistence import (
 from okto_pulse.community.adapters.relational_application import (
     CommunityRelationalApplicationAdapter,
 )
-from okto_pulse.community.adapters import relational_schema_steps
+from okto_pulse.community.adapters.current_relational_schema import current_schema_contract, initialize_current_schema
 from okto_pulse.community.adapters.sqlalchemy_kg_governance import (
     CommunitySqlAlchemyKGGovernanceStore,
 )
@@ -147,14 +140,6 @@ pytestmark = pytest.mark.asyncio
 
 NOW = datetime(2026, 7, 27, 20, 0, tzinfo=timezone.utc)
 DIGEST = "a" * 64
-EPOCH = "quality-assessment-legacy-import/v1"
-EPOCH_TABLES = (
-    "quality_assessment_legacy_import_runs",
-    "quality_assessment_legacy_import_candidates",
-    "quality_assessment_legacy_import_checkpoints",
-    "quality_assessment_legacy_import_resolutions",
-    "quality_assessment_legacy_import_completions",
-)
 
 RDL_TABLES = (
     ResearchDecisionDerivationRow,
@@ -208,16 +193,7 @@ async def _create_factory(
     def _enable_foreign_keys(dbapi_connection, _record) -> None:
         dbapi_connection.execute("PRAGMA foreign_keys=ON")
 
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
-        manifest = (
-            relational_schema_steps._quality_c7_sqlite_trigger_manifest()  # noqa: SLF001
-        )
-        for trigger_name, (_table_name, trigger_sql) in manifest.items():
-            await connection.exec_driver_sql(
-                f'DROP TRIGGER IF EXISTS "{trigger_name}"'
-            )
-            await connection.exec_driver_sql(trigger_sql)
+    await initialize_current_schema(engine, current_schema_contract())
     return engine, async_sessionmaker(
         engine,
         class_=AsyncSession,
@@ -544,118 +520,8 @@ async def _seed_subject(
     }
 
 
-def _epoch_column_value(
-    column,
-    *,
-    namespace: str,
-    board_id: str,
-    subject_id: str,
-    quality_receipt_id: str,
-) -> Any:
-    """Build a valid one-candidate epoch row without coupling to ORM names.
-
-    The epoch adapter is operation-transactional and its physical models may
-    remain intentionally private.  The test therefore targets the five stable
-    SQL table names from the C7 contract and fills their public columns.
-    """
-
-    name = column.name
-    explicit: dict[str, Any] = {
-        "board_id": board_id,
-        "epoch": EPOCH,
-        "cutoff": NOW,
-        "ordinal": 0,
-        "candidate_ordinal": 0,
-        "cursor_ordinal": 0,
-        "subject_type": "ideation",
-        "last_subject_type": "ideation",
-        "subject_id": subject_id,
-        "last_subject_id": subject_id,
-        "assessment_kind": "ambiguity",
-        "last_assessment_kind": "ambiguity",
-        "subject_version": 1,
-        "resolution": "imported",
-        "receipt_id": quality_receipt_id,
-        "source": "legacy_migration",
-        "origin": "legacy_import",
-        "channel": "migration",
-        "status": "completed",
-        "scale_kind": "ambiguity_score",
-        "scale_direction": "lower_better",
-        "scale_minimum": 1.0,
-        "scale_maximum": 5.0,
-        "score": 2.0,
-        "justification": "C7 epoch erasure fixture",
-        "legacy_source_id": "scope_assessment",
-        "contract_version": "quality-assessment-legacy-import-contract/v1",
-        "candidate_count": 1,
-        "scanned_count": 1,
-        "rejected_count": 0,
-        "processed_count": 1,
-        "imported_count": 1,
-        "native_wins_count": 0,
-        "head_revision": 1,
-        "revision": 1,
-    }
-    if name in explicit:
-        return explicit[name]
-    if name.endswith("_digest") or name.endswith("_sha256"):
-        return DIGEST
-    if name.endswith("_at") or isinstance(column.type, DateTime):
-        return NOW
-    if name.endswith("_count") or isinstance(column.type, Integer):
-        return 1
-    if isinstance(column.type, Float):
-        return 1.0
-    if isinstance(column.type, Boolean):
-        return True
-    if isinstance(column.type, JSON):
-        if "key" in name:
-            return {
-                "board_id": board_id,
-                "subject_type": "ideation",
-                "subject_id": subject_id,
-                "assessment_kind": "ambiguity",
-                "epoch": EPOCH,
-            }
-        return [] if name.endswith("s_json") else {}
-    if name == "idempotency_key":
-        return f"{EPOCH}:{namespace}"
-    if name.endswith("_id") or name == "id":
-        return f"{name}-{namespace}"
-    if name.startswith("all_") or name.startswith("zero_") or name.endswith(
-        "_consistent"
-    ):
-        return True
-    return f"{name}-{namespace}"
 
 
-async def _seed_epoch(
-    session: AsyncSession,
-    *,
-    namespace: str,
-    subject: dict[str, str],
-) -> None:
-    missing = [name for name in EPOCH_TABLES if name not in Base.metadata.tables]
-    assert not missing, (
-        "C7 Community epoch schema is not wired into Base.metadata: "
-        f"{missing}"
-    )
-    for table_name in EPOCH_TABLES:
-        table = Base.metadata.tables[table_name]
-        values = {}
-        for column in table.columns:
-            if column.autoincrement is True:
-                continue
-            values[column.name] = _epoch_column_value(
-                column,
-                namespace=namespace,
-                board_id=subject["board_id"],
-                subject_id=subject["ideation_id"],
-                quality_receipt_id=subject["quality_receipt_id"],
-            )
-        await session.execute(insert(table).values(**values))
-    await session.flush()
 
 
 async def _seed_unbound_board_rdl_outbox(
@@ -950,8 +816,6 @@ async def test_board_erasure_permit_purges_c7_rows_and_remains_narrow(
             namespace="survivor",
             board_id="board-survivor",
         )
-        await _seed_epoch(session, namespace="target", subject=target)
-        await _seed_epoch(session, namespace="survivor", subject=survivor)
         await _seed_unbound_board_rdl_outbox(
             session,
             namespace="target",
@@ -982,15 +846,6 @@ async def test_board_erasure_permit_purges_c7_rows_and_remains_narrow(
                 )
                 == 0
             ), model.__tablename__
-        for table_name in EPOCH_TABLES:
-            assert (
-                await _count_board_table(
-                    session,
-                    table_name,
-                    board_id=target["board_id"],
-                )
-                == 0
-            ), table_name
         assert (
             await session.scalar(
                 select(func.count())
@@ -1017,15 +872,6 @@ async def test_board_erasure_permit_purges_c7_rows_and_remains_narrow(
                 )
                 > 0
             ), model.__tablename__
-        for table_name in EPOCH_TABLES:
-            assert (
-                await _count_board_table(
-                    session,
-                    table_name,
-                    board_id=survivor["board_id"],
-                )
-                > 0
-            ), table_name
 
         # Permit release cannot weaken the survivor's immutable RDL trigger.
         with pytest.raises(
@@ -1040,7 +886,7 @@ async def test_board_erasure_permit_purges_c7_rows_and_remains_narrow(
         await session.rollback()
 
 
-async def test_delete_board_use_case_purges_c7_epoch_before_source_flush(
+async def test_delete_board_use_case_purges_quality_before_source_flush(
     database,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1052,11 +898,6 @@ async def test_delete_board_use_case_purges_c7_epoch_before_source_flush(
             session,
             namespace="use-case",
             board_id="board-use-case",
-        )
-        await _seed_epoch(
-            session,
-            namespace="use-case",
-            subject=target,
         )
         await _seed_unbound_board_rdl_outbox(
             session,
@@ -1142,15 +983,6 @@ async def test_delete_board_use_case_purges_c7_epoch_before_source_flush(
                 )
                 == 0
             ), model.__tablename__
-        for table_name in EPOCH_TABLES:
-            assert (
-                await _count_board_table(
-                    session,
-                    table_name,
-                    board_id=target["board_id"],
-                )
-                == 0
-            ), table_name
 
 
 async def test_direct_rdl_delete_without_permit_stays_blocked(database) -> None:

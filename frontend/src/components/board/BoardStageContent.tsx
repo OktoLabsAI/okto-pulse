@@ -3,15 +3,13 @@ import { KanbanBoard } from '@/components/kanban';
 import { RefinementsPanel } from '@/components/refinements';
 import { SpecsPanel } from '@/components/specs';
 import { StoriesPanel } from '@/components/stories';
-import { HistoricalArchivesPanel } from './HistoricalArchivesPanel';
 
 export type StageTabId =
   | 'stories'
   | 'ideations'
   | 'refinements'
   | 'specs'
-  | 'tasks'
-  | 'archives';
+  | 'tasks';
 
 interface BoardStageContentProps {
   activeTab: StageTabId;
@@ -30,9 +28,6 @@ export function BoardStageContent({
 }: BoardStageContentProps) {
   return (
     <>
-      {activeTab === 'archives' && (
-        <HistoricalArchivesPanel key={`${boardId}:${refreshKey}`} boardId={boardId} />
-      )}
       {activeTab === 'stories' && (
         <StoriesPanel key={boardId} boardId={boardId} refreshKey={refreshKey} />
       )}

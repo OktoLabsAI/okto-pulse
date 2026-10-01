@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from okto_pulse.community import serve_lock
-from okto_pulse.community.adapters.migration_runtime_fence import offline_migration_window
+from okto_pulse.community.adapters.recovery_runtime_fence import offline_recovery_window
 
 
 def _roots(tmp_path):
@@ -43,7 +43,7 @@ except ServeAlreadyRunningError:
         )
         return result.stdout.strip()
 
-    with offline_migration_window((roots[1], roots[0], roots[1])) as acquired:
+    with offline_recovery_window((roots[1], roots[0], roots[1])) as acquired:
         assert acquired == roots
         for root in roots:
             assert start(root) == "blocked"
@@ -66,7 +66,7 @@ def test_owner_refusal_preserves_records_and_releases_all_mutexes(tmp_path, monk
     owner = roots[1] / serve_lock.LOCK_FILENAME
     owner.write_bytes(raw)
     with pytest.raises(serve_lock.ServeAlreadyRunningError):
-        with offline_migration_window(roots):
+        with offline_recovery_window(roots):
             pytest.fail("an unsafe owner must not enter the migration")
     assert owner.read_bytes() == raw
     for root in roots:
@@ -77,7 +77,7 @@ def test_same_process_live_owner_is_not_a_reentrant_migration(tmp_path):
     roots = _roots(tmp_path)
     with serve_lock.ServeInstanceLock(roots[0]).acquire():
         with pytest.raises(serve_lock.ServeAlreadyRunningError):
-            with offline_migration_window(roots):
+            with offline_recovery_window(roots):
                 pytest.fail("server ownership is not migration authority")
 
 
@@ -88,7 +88,7 @@ def test_dead_stale_owner_is_preserved_and_body_failure_releases_mutexes(tmp_pat
     raw = json.dumps({"pid": 999999, "heartbeat_at": "2000-01-01T00:00:00+00:00"}).encode()
     owner.write_bytes(raw)
     with pytest.raises(RuntimeError, match="capture failed"):
-        with offline_migration_window(roots):
+        with offline_recovery_window(roots):
             raise RuntimeError("capture failed")
     assert owner.read_bytes() == raw
     for root in roots:
@@ -100,7 +100,7 @@ def test_contention_on_second_mutex_releases_first(tmp_path, monkeypatch):
     monkeypatch.setattr(serve_lock, "_ACQUIRE_MUTEX_TIMEOUT_SECONDS", 0.01)
     with serve_lock._acquisition_mutex(roots[1]):
         with pytest.raises(serve_lock.ServeAlreadyRunningError, match="every startup mutex"):
-            with offline_migration_window(roots):
+            with offline_recovery_window(roots):
                 pytest.fail("a partial fence is not an offline window")
         _assert_mutex_free(roots[0])
 
@@ -110,8 +110,8 @@ def test_invalid_roots_do_not_create_directories(tmp_path, case):
     missing = tmp_path / "missing"
     values = {"empty": (), "relative": (Path("relative"),), "missing": (missing,),
               "too_many": (tmp_path,) * 9, "parent": (tmp_path / "alias" / "..",)}
-    with pytest.raises(ValueError, match="migration_fence_"):
-        with offline_migration_window(values[case]):
+    with pytest.raises(ValueError, match="recovery_fence_"):
+        with offline_recovery_window(values[case]):
             pytest.fail("invalid roots admitted")
     assert not missing.exists()
     assert not (tmp_path / serve_lock._ACQUIRE_MUTEX_FILENAME).exists()
@@ -133,7 +133,7 @@ def test_aliases_refused_before_mutex_open(tmp_path, target):
     except OSError as failure:
         pytest.skip(f"symlink creation unavailable: {failure}")
     with pytest.raises(ValueError):
-        with offline_migration_window((candidate,) if target == "directory" else roots):
+        with offline_recovery_window((candidate,) if target == "directory" else roots):
             pytest.fail("alias admitted")
     assert marker.read_bytes() == b"do not change"
 

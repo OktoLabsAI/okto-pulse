@@ -49,7 +49,7 @@ from okto_pulse.community.adapters.logical_graph_transfer import (
 from okto_pulse.community.adapters.grafx_recovery_contracts import (
     make_grafx_recovery_logical_sink, make_grafx_recovery_logical_source,
 )
-from okto_pulse.community.adapters.migration_runtime_fence import offline_migration_window
+from okto_pulse.community.adapters.recovery_runtime_fence import offline_recovery_window
 from okto_pulse.community.adapters.native_graph_recovery_snapshot import (
     NativeGraphRecoverySnapshot, capture_native_graph_snapshot,
     verify_native_graph_snapshot, restore_native_graph_snapshot,
@@ -200,7 +200,7 @@ def joint_recovery_window(
     separate writer exclusion; a process exit releases these OS mutexes.
     max_seconds bounds capture/verification operations, not the caller's body.
     """
-    with offline_migration_window(runtime_directories) as roots:
+    with offline_recovery_window(runtime_directories) as roots:
         snapshot = _capture_joint_recovery_snapshot(source_database, graphs, recovery_directory,
             snapshot_id=snapshot_id, builds=builds, runtime_directories=roots,
             max_seconds=max_seconds, batch_size=batch_size, kg_base_dir=kg_base_dir,

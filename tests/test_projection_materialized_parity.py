@@ -27,7 +27,7 @@ from okto_pulse.community.adapters.sqlalchemy_consolidation import CommunitySqlA
 from okto_pulse.community.adapters.sqlalchemy_models import Base, Board, Spec, Card, ConsolidationQueue, ConsolidationAudit
 from okto_pulse.community.adapters.sqlalchemy_models import SpecDependency
 from okto_pulse.core.ports.projection_findings import ProjectionFindingSnapshot
-from okto_pulse.community.adapters.migration_runtime_fence import offline_migration_window
+from okto_pulse.community.adapters.recovery_runtime_fence import offline_recovery_window
 from okto_pulse.community.adapters.logical_transfer_factories import make_grafx_logical_source
 from logical_transfer_matrix_support import one_node_corpus, seed_generation
 
@@ -167,7 +167,7 @@ async def materialize(root, *, incremental, card_type=None, final_unlinked=False
                     source_rows=tuple(snapshot.rows), cognitive_rows=())
             scope = ConsolidationClaimScope(board_id='board', source='rebuild:parity',
                 reservation_lineage_id=hashlib.sha256(document).hexdigest())
-            with offline_migration_window((root, root / 'kg')):
+            with offline_recovery_window((root, root / 'kg')):
                 with issue_offline_recovery_capability(board_id='board', lifetime_probe=lambda: True) as capability:
                     with reserve_offline_consolidation(claim_scope=scope, recovery_capability=capability,
                             write_lock_port=write_port, relational_scope_factory=factory, owner_id='parity-fixture') as reserved:

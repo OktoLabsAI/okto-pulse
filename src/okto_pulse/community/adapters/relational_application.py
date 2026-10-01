@@ -71,7 +71,6 @@ def _lineage_nodes(
             # Preserve malformed top-level JSON for the canonical resolver;
             # coercing it to {} would turn corruption into a valid root.
             flags=copy.deepcopy(preset.flags),
-            migration_review=preset.permission_migration_review,
         )
         for preset in presets
     )
@@ -137,8 +136,6 @@ class CommunityPermissionPresetGateway:
             preset_id=agent.preset_id if agent is not None else None,
             presets=_lineage_nodes(preset_rows),
             board_overrides=binding.permission_overrides if binding is not None else None,
-            agent_migration_review=agent.permission_migration_review if agent is not None else None,
-            board_migration_review=binding.permission_migration_review if binding is not None else None,
             policy=self._permission_policy,
         )
         preset_name = next((row.name for row in preset_rows if row.id == agent.preset_id), None)
@@ -289,9 +286,6 @@ class CommunityPermissionPresetGateway:
         if replace or description is not None:
             preset.description = description
         if replace or flags is not None:
-            # An explicit owner policy edit replaces only this preset layer;
-            # inherited review on the base remains active in lineage resolution.
-            preset.permission_migration_review = None
             if preset.base_preset_id is None:
                 preset.flags = copy.deepcopy(flags)
             else:
@@ -448,8 +442,6 @@ class CommunityAgentAuthenticationGateway:
             agent_flags=agent.permission_flags, legacy_permissions=agent.permissions,
             preset_id=agent.preset_id, presets=_lineage_nodes(preset_rows),
             board_overrides=agent_board.permission_overrides if agent_board is not None else None,
-            agent_migration_review=agent.permission_migration_review,
-            board_migration_review=agent_board.permission_migration_review if agent_board is not None else None,
             policy=self._permission_policy,
         )
         return AgentPermissionContext(

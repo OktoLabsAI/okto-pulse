@@ -7,9 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
-from sqlalchemy import and_, func, or_, select
-from okto_pulse.core.ports.work_retirement import SUPERSEDED_WORK_STATUS
-from okto_pulse.community.adapters.work_retirement_sql import retired_work_origin_exists
+from sqlalchemy import func, select
 
 from okto_pulse.community.adapters.code_traceability_kg_sql import (
     exclude_code_traceability_artifact,
@@ -198,7 +196,6 @@ class CommunitySqlAlchemyKGOperationalReadModel(KGOperationalReadModelPort):
             await context.execute(
                 select(ConsolidationDeadLetter).where(
                     ConsolidationDeadLetter.board_id == board_id,
-                    ~retired_work_origin_exists(ConsolidationDeadLetter.board_id, ConsolidationDeadLetter.artifact_type, ConsolidationDeadLetter.artifact_id),
                 )
             )
         ).scalars().all()
@@ -222,10 +219,6 @@ class CommunitySqlAlchemyKGWorkerQueue(KGWorkerQueuePort):
         errors: Sequence[Mapping[str, Any]],
     ) -> Any:
         existing = await context.get(ConsolidationQueue, queue_entry.id, populate_existing=True)
-        if ((existing is not None and existing.status == SUPERSEDED_WORK_STATUS)
-                or await context.scalar(select(retired_work_origin_exists(
-                    queue_entry.board_id, queue_entry.artifact_type, queue_entry.artifact_id)))):
-            raise ValueError("artifact_work_retired")
         dlq_row = ConsolidationDeadLetter(
             id=str(uuid.uuid4()),
             board_id=queue_entry.board_id,
@@ -250,7 +243,6 @@ class CommunitySqlAlchemyKGWorkerQueue(KGWorkerQueuePort):
     ) -> Sequence[Any]:
         query = select(ConsolidationDeadLetter).where(
             ConsolidationDeadLetter.board_id == board_id,
-            ~retired_work_origin_exists(ConsolidationDeadLetter.board_id, ConsolidationDeadLetter.artifact_type, ConsolidationDeadLetter.artifact_id),
         )
         if not include_code_traceability:
             query = query.where(
@@ -276,8 +268,7 @@ class CommunitySqlAlchemyKGWorkerQueue(KGWorkerQueuePort):
         offset: int,
         include_code_traceability: bool = True,
     ) -> tuple[int, Sequence[Any]]:
-        where = [ConsolidationDeadLetter.board_id == board_id,
-            ~retired_work_origin_exists(ConsolidationDeadLetter.board_id, ConsolidationDeadLetter.artifact_type, ConsolidationDeadLetter.artifact_id)]
+        where = [ConsolidationDeadLetter.board_id == board_id]
         if not include_code_traceability:
             where.append(
                 exclude_code_traceability_artifact(
@@ -359,10 +350,6 @@ class CommunitySqlAlchemyKGWorkerQueue(KGWorkerQueuePort):
             query = query.where(
                 ConsolidationDeadLetter.id.in_(selected_ids)
             )
-        else:
-            query = query.where(ConsolidationDeadLetter.artifact_type != "sprint",
-                ~retired_work_origin_exists(ConsolidationDeadLetter.board_id,
-                ConsolidationDeadLetter.artifact_type, ConsolidationDeadLetter.artifact_id))
         rows = list(
             (
                 await context.execute(
@@ -379,19 +366,6 @@ class CommunitySqlAlchemyKGWorkerQueue(KGWorkerQueuePort):
             # Fail closed before touching any row.  Do not reveal whether an
             # unmatched identifier belongs to another board or artifact class.
             return blocked_selection()
-        retired = await context.scalar(select(ConsolidationDeadLetter.id).outerjoin(ConsolidationQueue, and_(
-            ConsolidationDeadLetter.board_id == ConsolidationQueue.board_id,
-            ConsolidationDeadLetter.artifact_type == ConsolidationQueue.artifact_type,
-            ConsolidationDeadLetter.artifact_id == ConsolidationQueue.artifact_id,
-        )).where(ConsolidationDeadLetter.id.in_(tuple(row.id for row in rows)),
-            or_(ConsolidationQueue.status == SUPERSEDED_WORK_STATUS, retired_work_origin_exists(
-                ConsolidationDeadLetter.board_id, ConsolidationDeadLetter.artifact_type, ConsolidationDeadLetter.artifact_id))).limit(1))
-        if retired is not None:
-            return {**blocked_selection(), "error": "work_superseded"}
-        if any(row.artifact_type == "sprint" for row in rows):
-            # Explicit mixed selection remains atomic. Only offline retirement
-            # may dispose of the historical Sprint work; never recreate it.
-            return {**blocked_selection(), "error": "retired_sprint_work_requires_offline_cutover"}
         from okto_pulse.core.ports.kg_operational import (
             classify_kg_recovery_failure,
         )

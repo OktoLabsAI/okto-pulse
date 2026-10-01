@@ -13,12 +13,8 @@ from okto_pulse.community.adapters.permission_preset_reconciliation import (
 )
 from okto_pulse.community.adapters.sqlalchemy_models import (
     Base,
-    PermissionIntroductionAudit,
 )
 from okto_pulse.community.adapters.sqlalchemy_repositories import PermissionPreset
-from okto_pulse.core.ports.permission_policy import (
-    permission_introduction_manifests,
-)
 
 
 async def _factory():
@@ -58,46 +54,17 @@ def test_reconcile_twice_emits_no_second_write_and_preserves_custom() -> None:
                         PermissionPreset.is_builtin.is_(True)
                     )
                 )
-                audits = list(
-                    (
-                        await session.execute(
-                            select(PermissionIntroductionAudit).where(
-                                PermissionIntroductionAudit.phase
-                                == "preset_reconciliation"
-                            )
-                        )
-                    )
-                    .scalars()
-                    .all()
-                )
-                return first, second, custom, builtin_count, audits
+                return first, second, custom, builtin_count
         finally:
             await engine.dispose()
 
-    first, second, custom, builtin_count, audits = asyncio.run(drive())
+    first, second, custom, builtin_count = asyncio.run(drive())
     assert first.changed is True
     assert second.changed is False
     assert builtin_count == 6
     assert custom is not None
     assert custom.name == "My custom preset"
     assert custom.flags == {"board": {"read": False}}
-    manifests = permission_introduction_manifests()
-    expected_versions = [manifest.version for manifest in manifests]
-    assert len(audits) == 2 * len(manifests)
-    assert {audit.manifest_version for audit in audits} == set(expected_versions)
-    for manifest_order, version in enumerate(expected_versions):
-        version_rows = [audit for audit in audits if audit.manifest_version == version]
-        assert sorted(audit.mutation_count for audit in version_rows) == [0, 6]
-        assert all(
-            audit.details["manifest_order"] == manifest_order for audit in version_rows
-        )
-    assert all(
-        len(audit.before_digest) == 64 and len(audit.after_digest) == 64
-        for audit in audits
-    )
-    replay_audits = [audit for audit in audits if audit.mutation_count == 0]
-    assert len(replay_audits) == len(manifests)
-    assert all(audit.before_digest == audit.after_digest for audit in replay_audits)
 
 
 def test_reconcile_updates_only_drifted_builtin() -> None:
@@ -161,9 +128,6 @@ def test_failure_mid_plan_rolls_back_and_retry_converges() -> None:
                         PermissionPreset.is_builtin.is_(True)
                     )
                 )
-                audit_after_failure = await session.scalar(
-                    select(func.count(PermissionIntroductionAudit.id))
-                )
 
             retry = await reconcile_community_permission_presets(
                 session_factory=factory
@@ -174,12 +138,11 @@ def test_failure_mid_plan_rolls_back_and_retry_converges() -> None:
                         PermissionPreset.is_builtin.is_(True)
                     )
                 )
-            return after_failure, audit_after_failure, retry, after_retry
+            return after_failure, retry, after_retry
         finally:
             await engine.dispose()
 
-    after_failure, audit_after_failure, retry, after_retry = asyncio.run(drive())
+    after_failure, retry, after_retry = asyncio.run(drive())
     assert after_failure == 0
-    assert audit_after_failure == 0
     assert retry.changed is True
     assert after_retry == 6

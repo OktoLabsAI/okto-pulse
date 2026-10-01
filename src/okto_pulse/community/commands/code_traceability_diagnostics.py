@@ -323,7 +323,7 @@ def validate_policy(
 def validate_schema(connection: sqlite3.Connection) -> dict[str, Any]:
     """Validate the Code Traceability table/trigger census and FK integrity."""
 
-    from okto_pulse.community.adapters.relational_schema_steps import (
+    from okto_pulse.community.adapters.current_schema_guards import (
         code_traceability_sqlite_trigger_manifest,
     )
 

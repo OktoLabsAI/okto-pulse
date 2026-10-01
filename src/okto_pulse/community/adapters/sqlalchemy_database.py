@@ -402,10 +402,21 @@ def install_community_sqlite_pragmas(engine: AsyncEngine) -> None:
     if engine.url.get_backend_name() != "sqlite":
         return
 
+    from .current_relational_schema import (
+        current_schema_contract,
+        inspect_current_schema,
+        require_current_database_file,
+    )
+
+    contract = current_schema_contract()
+    require_current_database_file(str(engine.url), contract)
+
     @event.listens_for(engine.sync_engine, "connect")
     def _set_community_sqlite_pragmas(dbapi_conn, _conn_record):  # noqa: ANN001
         cursor = dbapi_conn.cursor()
         try:
+            # No persistent PRAGMA may precede admission of the current format.
+            inspect_current_schema(cursor, contract)
             cursor.execute("PRAGMA journal_mode=WAL")
             cursor.execute("PRAGMA busy_timeout=30000")
             cursor.execute("PRAGMA synchronous=NORMAL")
@@ -661,11 +672,9 @@ async def init_db() -> None:
     """Run the composed schema lifecycle through the Core lifecycle port."""
 
     from okto_pulse.core.ports.relational_runtime import init_db as initialize_schema
-    from .retirement_runtime_admission import require_retirement_runtime_admission
 
     runtime = resolve_community_database_runtime()
     async with _serialized_schema_lifecycle(runtime):
-        await require_retirement_runtime_admission(runtime.engine)
         await initialize_schema()
 
 

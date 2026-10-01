@@ -6,7 +6,6 @@ advance the durable generation inside their audit/outbox transaction.
 """
 
 from __future__ import annotations
-from okto_pulse.community.adapters.work_retirement_sql import retired_work_origin_exists
 from okto_pulse.community.adapters.materialization_health_observability import (
     FilesystemMetadataSnapshot, FilesystemMutationGuardResult,
 )
@@ -530,7 +529,6 @@ class CommunitySqlAlchemyMaterializationCensus:
             count(
                 ConsolidationDeadLetter,
                 ConsolidationDeadLetter.board_id == board_id,
-                ~retired_work_origin_exists(ConsolidationDeadLetter.board_id, ConsolidationDeadLetter.artifact_type, ConsolidationDeadLetter.artifact_id),
             ).label("consolidation_dead_letter"),
             count(GlobalUpdateOutbox, *terminal_outbox_filter).label("outbox_terminal"),
         )

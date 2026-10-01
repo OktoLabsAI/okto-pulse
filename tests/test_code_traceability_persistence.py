@@ -24,7 +24,7 @@ from okto_pulse.community.adapters.board_source_reader import (
     read_realm_source_snapshot,
 )
 from okto_pulse.community.adapters.graph_ddl import COMMON_NODE_ATTRIBUTES
-from okto_pulse.community.adapters.relational_schema_steps import (
+from okto_pulse.community.adapters.current_schema_guards import (
     code_traceability_sqlite_trigger_manifest,
 )
 from okto_pulse.community.adapters.sqlalchemy_kg_governance import (

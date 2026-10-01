@@ -792,24 +792,20 @@ class CommunitySqlAlchemyApplicationPersistence:
         """Load policy facts within the existing compact relational query budget."""
         row = (await context.execute(select(
             models.Agent.permission_flags, models.Agent.permissions, models.Agent.preset_id,
-            models.AgentBoard.permission_overrides, models.Agent.permission_migration_review,
-            models.AgentBoard.permission_migration_review,
+            models.AgentBoard.permission_overrides,
         ).outerjoin(models.AgentBoard, and_(models.AgentBoard.agent_id == models.Agent.id,
             models.AgentBoard.board_id == board_id))
         .where(models.Agent.created_by == user_id).limit(1))).first()
         if row is None:
             return resolve_effective_permissions(None, None, None)
-        flags, legacy, preset_id, overrides, agent_review, board_review = row
+        flags, legacy, preset_id, overrides = row
         presets = ()
         if preset_id:
             rows = (await context.execute(select(models.PermissionPreset.id,
-                models.PermissionPreset.base_preset_id, models.PermissionPreset.flags,
-                models.PermissionPreset.permission_migration_review).order_by(models.PermissionPreset.id))).all()
-            presets = tuple(PermissionPresetLineageNode(item.id, item.flags, item.base_preset_id,
-                migration_review=item.permission_migration_review) for item in rows)
+                models.PermissionPreset.base_preset_id, models.PermissionPreset.flags).order_by(models.PermissionPreset.id))).all()
+            presets = tuple(PermissionPresetLineageNode(item.id, item.flags, item.base_preset_id) for item in rows)
         return resolve_agent_permission_facts(agent_flags=flags, legacy_permissions=legacy,
-            preset_id=preset_id, presets=presets, board_overrides=overrides,
-            agent_migration_review=agent_review, board_migration_review=board_review)
+            preset_id=preset_id, presets=presets, board_overrides=overrides)
 
     async def list(
         self, context: Any, query: ApplicationQuery
@@ -1308,35 +1304,6 @@ class CommunitySqlAlchemyApplicationPersistence:
         await context.rollback()
         self._clear_tracking(context)
 
-    async def backfill_qa_answered_at(self, context: Any) -> dict[str, int]:
-        from sqlalchemy import text
-
-        tables = (
-            ("ideation_qa_items", True),
-            ("refinement_qa_items", True),
-            ("spec_qa_items", True),
-            ("qa_items", False),
-        )
-        fixed: dict[str, int] = {}
-        for table, has_selected in tables:
-            answered = "(answer IS NOT NULL AND answer != '')"
-            if has_selected:
-                answered = (
-                    f"({answered} OR (selected IS NOT NULL "
-                    "AND CAST(selected AS TEXT) NOT IN ('', '[]', 'null')))"
-                )
-            result = await context.execute(
-                text(
-                    f"UPDATE {table} "
-                    "SET answered_at = COALESCE(created_at, CURRENT_TIMESTAMP) "
-                    f"WHERE answered_at IS NULL AND {answered}"
-                )
-            )
-            count = result.rowcount if result.rowcount and result.rowcount > 0 else 0
-            if count:
-                fixed[table] = count
-        await context.commit()
-        return fixed
 
 
 __all__ = ["CommunitySqlAlchemyApplicationPersistence"]

@@ -23,7 +23,7 @@ import uuid
 import httpx
 import pytest
 from fastapi import FastAPI
-from sqlalchemy import event, select, text
+from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -31,14 +31,13 @@ from sqlalchemy.ext.asyncio import (
 )
 
 import okto_pulse.community.app as _community_app  # noqa: F401
-from okto_pulse.community.adapters.relational_schema_steps import (
-    semantic_guideline_sqlite_trigger_manifest,
+from okto_pulse.community.adapters.current_relational_schema import (
+    current_schema_contract, initialize_current_schema,
 )
 from okto_pulse.community.adapters.sqlalchemy_database import (
     install_community_sqlite_pragmas,
 )
 from okto_pulse.community.adapters.sqlalchemy_models import Board, Card, Ideation, IdeationQAItem, Refinement, SemanticSubjectVersionEventRow, SemanticSubjectVersionRow, Spec
-from legacy_sprint_schema import Base, Sprint
 from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
     CommunitySemanticSession,
 )
@@ -98,10 +97,7 @@ def _sqlite_engine(path):
 
 async def _database(path):
     engine = _sqlite_engine(path)
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
-        for _name, (_table, ddl) in semantic_guideline_sqlite_trigger_manifest().items():
-            await connection.execute(text(ddl))
+    await initialize_current_schema(engine, current_schema_contract())
     return engine, async_sessionmaker(
         engine,
         class_=AsyncSession,
@@ -111,8 +107,8 @@ async def _database(path):
 
 
 async def _seed(session: AsyncSession, *, questions: int) -> dict[str, object]:
-    board_id, ideation_id, refinement_id, spec_id, sprint_id, card_id = (
-        _id() for _ in range(6)
+    board_id, ideation_id, refinement_id, spec_id, card_id = (
+        _id() for _ in range(5)
     )
     session.add(Board(id=board_id, name="Concurrency", owner_id=OWNER, realm_id="local"))
     await session.flush()
@@ -159,20 +155,6 @@ async def _seed(session: AsyncSession, *, questions: int) -> dict[str, object]:
     )
     await session.flush()
     session.add(
-        Sprint(
-            id=sprint_id,
-            board_id=board_id,
-            spec_id=spec_id,
-            title="Sprint",
-            description="Initial sprint",
-            spec_version=1,
-            status="draft",
-            version=1,
-            created_by="seed",
-        )
-    )
-    await session.flush()
-    session.add(
         Card(
             id=card_id,
             board_id=board_id,
@@ -208,7 +190,6 @@ async def _seed(session: AsyncSession, *, questions: int) -> dict[str, object]:
         "ideation_id": ideation_id,
         "refinement_id": refinement_id,
         "spec_id": spec_id,
-        "sprint_id": sprint_id,
         "card_id": card_id,
         "qa_ids": qa_ids,
     }

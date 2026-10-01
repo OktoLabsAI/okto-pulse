@@ -18,10 +18,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from okto_pulse.core.application.startup import (
     apply_persisted_runtime_settings,
-    backfill_qa_answered_at,
     compute_tick_catch_up_next_run,
     emit_daily_tick,
-    run_startup_schema_sweep,
 )
 from okto_pulse.core.application.kg_runtime_access import resolve_graph_lifecycle
 from okto_pulse.core import configure_auth
@@ -29,15 +27,11 @@ from okto_pulse.core import configure_settings
 from okto_pulse.community.adapters.sqlalchemy_database import (
     close_db,
     get_engine,
-    get_session_factory,
     init_db,
     is_database_runtime_configured,
 )
 from okto_pulse.community.adapters.sprint_origin_integrity import (
     inspect_sprint_origin_integrity,
-)
-from okto_pulse.community.adapters.startup_graph_routes import (
-    adopt_existing_board_routes_before_schema_sweep,
 )
 from okto_pulse.core import StorageProvider, configure_storage
 from okto_pulse.core.composition import (
@@ -421,8 +415,8 @@ def create_app(
     async def _default_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await init_db()
 
-        # Apply persisted runtime settings BEFORE any module opens a Kùzu
-        # Database instance. The graph adapter reads configured edition settings,
+        # Apply persisted runtime settings BEFORE any module opens an Okto Grafx
+        # database instance. The graph adapter reads configured edition settings,
         # so we just need configure_settings() to be updated by then.
         try:
             await apply_persisted_runtime_settings()
@@ -431,92 +425,6 @@ def create_app(
             # already cover the safe budget.
             pass
 
-        # Self-heal: Q&A respondidas herdadas sem answered_at viravam
-        # falso-abertas no badge open_qa_count (a herança não copiava o
-        # timestamp). Idempotente — só carimba linhas respondidas órfãs.
-        try:
-            factory = get_session_factory()
-            async with factory() as _qa_session:
-                _qa_fixed = await backfill_qa_answered_at(_qa_session)
-            if _qa_fixed:
-                logger.info(
-                    "qa.answered_at.backfilled %s",
-                    _qa_fixed,
-                    extra={
-                        "event": "qa.answered_at.backfilled",
-                        "fixed": _qa_fixed,
-                    },
-                )
-        except Exception as _exc:
-            logger.warning(
-                "qa.answered_at.backfill_failed err=%s",
-                _exc,
-                extra={"event": "qa.answered_at.backfill_failed"},
-            )
-
-        # Self-heal AFG (investigacao 2026-06-10): findings de arquitetura
-        # so nasciam em saves pos-feature; 83% dos designs nunca tiveram
-        # run e o gate avaliava tabela vazia. O sweep re-avalia os designs
-        # (payloads re-hidratados) em BACKGROUND para nao atrasar o boot.
-        async def _afg_backfill_task() -> None:
-            try:
-                from okto_pulse.core.services.architecture import (
-                    backfill_architecture_finding_runs,
-                )
-
-                factory = get_session_factory()
-                async with factory() as _afg_session:
-                    _afg_stats = await backfill_architecture_finding_runs(
-                        _afg_session,
-                        only_missing=True,
-                    )
-                logger.info(
-                    "architecture.finding_backfill.completed %s",
-                    _afg_stats,
-                    extra={
-                        "event": "architecture.finding_backfill.completed",
-                        **_afg_stats,
-                    },
-                )
-            except Exception as _afg_exc:
-                logger.warning(
-                    "architecture.finding_backfill.failed err=%s",
-                    _afg_exc,
-                    extra={"event": "architecture.finding_backfill.failed"},
-                )
-
-        _afg_task = asyncio.create_task(_afg_backfill_task())
-
-        # NC-10 fix: migrate per-board KG schemas idempotently on boot.
-        # Boards created before SCHEMA_VERSION 0.3.3 lack the
-        # ``last_recomputed_at`` column on every node type, which floods
-        # the daily tick with ``Cannot find property last_recomputed_at``
-        # warnings and silently skips those boards' decay recompute.
-        # ``apply_schema_to_connection`` is idempotent (CREATE NODE TABLE
-        # IF NOT EXISTS, ALTER TABLE ADD COLUMN IF NOT EXISTS) so this is
-        # safe to run on every startup; soft-fail per board so a single
-        # broken Kùzu file does not block the app from booting.
-        try:
-            await adopt_existing_board_routes_before_schema_sweep(
-                uow_factory=composition.uow_factory,
-                logger=logger,
-            )
-            await run_startup_schema_sweep(
-                uow_factory=composition.uow_factory,
-                logger=logger,
-            )
-        except Exception as _exc:
-            # Tabela ainda não existe em fresh install ou Kùzu não
-            # instalado — não bloqueia boot.
-            logger.debug(
-                "kg.schema.migration_skipped err=%s",
-                _exc,
-                extra={"event": "kg.schema.migration_skipped"},
-            )
-
-        # R08C: start graph-consuming workers only after legacy route adoption
-        # and the schema sweep. Otherwise a worker can observe an existing
-        # unbound database as absent, or race a pre-migration schema.
         if runtime_worker_registry is not None:
             await runtime_worker_registry.start_all()
             for failure in runtime_worker_registry.start_failures:

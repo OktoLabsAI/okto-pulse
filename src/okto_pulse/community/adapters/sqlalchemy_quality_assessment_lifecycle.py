@@ -22,11 +22,6 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     IdeationHistory,
     IdeationQAItem,
     QualityAssessmentHeadRow,
-    QualityAssessmentLegacyImportCandidateRow,
-    QualityAssessmentLegacyImportCheckpointRow,
-    QualityAssessmentLegacyImportCompletionRow,
-    QualityAssessmentLegacyImportResolutionRow,
-    QualityAssessmentLegacyImportRunRow,
     QualityAssessmentLifecycleStaleTransitionRow,
     QualityAssessmentLifecycleTransitionRow,
     QualityAssessmentOutboxRow,
@@ -81,7 +76,6 @@ from okto_pulse.core.ports.quality_assessment_lifecycle import (
 
 
 _QUALITY_HISTORY_ACTIONS = (
-    "quality_assessment_legacy_imported",
     "quality_assessment_lifecycle",
 )
 _RESEARCH_DECISION_EVENT_TYPES = tuple(
@@ -1026,41 +1020,6 @@ class CommunitySqlAlchemyQualityAssessmentLifecycle:
                         ActivityLog.action.in_(_QUALITY_HISTORY_ACTIONS),
                     )
                 )
-        elif resource is AssessmentPurgeResource.LEGACY_IMPORT_RESOLUTIONS:
-            await self._session.execute(
-                delete(QualityAssessmentLegacyImportResolutionRow).where(
-                    QualityAssessmentLegacyImportResolutionRow.board_id
-                    == target.board_id
-                )
-            )
-        elif resource is AssessmentPurgeResource.LEGACY_IMPORT_CHECKPOINTS:
-            await self._session.execute(
-                delete(QualityAssessmentLegacyImportCheckpointRow).where(
-                    QualityAssessmentLegacyImportCheckpointRow.board_id
-                    == target.board_id
-                )
-            )
-        elif resource is AssessmentPurgeResource.LEGACY_IMPORT_COMPLETIONS:
-            await self._session.execute(
-                delete(QualityAssessmentLegacyImportCompletionRow).where(
-                    QualityAssessmentLegacyImportCompletionRow.board_id
-                    == target.board_id
-                )
-            )
-        elif resource is AssessmentPurgeResource.LEGACY_IMPORT_CANDIDATES:
-            await self._session.execute(
-                delete(QualityAssessmentLegacyImportCandidateRow).where(
-                    QualityAssessmentLegacyImportCandidateRow.board_id
-                    == target.board_id
-                )
-            )
-        elif resource is AssessmentPurgeResource.LEGACY_IMPORT_RUNS:
-            await self._session.execute(
-                delete(QualityAssessmentLegacyImportRunRow).where(
-                    QualityAssessmentLegacyImportRunRow.board_id
-                    == target.board_id
-                )
-            )
 
     async def _count_rows(self, model, *filters) -> int:
         return int(
@@ -1279,28 +1238,6 @@ class CommunitySqlAlchemyQualityAssessmentLifecycle:
                 else 0
             )
             return history_count + activity_count
-        epoch_models = {
-            AssessmentPurgeResource.LEGACY_IMPORT_RESOLUTIONS: (
-                QualityAssessmentLegacyImportResolutionRow
-            ),
-            AssessmentPurgeResource.LEGACY_IMPORT_CHECKPOINTS: (
-                QualityAssessmentLegacyImportCheckpointRow
-            ),
-            AssessmentPurgeResource.LEGACY_IMPORT_COMPLETIONS: (
-                QualityAssessmentLegacyImportCompletionRow
-            ),
-            AssessmentPurgeResource.LEGACY_IMPORT_CANDIDATES: (
-                QualityAssessmentLegacyImportCandidateRow
-            ),
-            AssessmentPurgeResource.LEGACY_IMPORT_RUNS: (
-                QualityAssessmentLegacyImportRunRow
-            ),
-        }
-        if resource in epoch_models:
-            return await self._count_rows(
-                epoch_models[resource],
-                epoch_models[resource].board_id == target.board_id,
-            )
         raise AssessmentPurgePostconditionConflict(
             f"assessment_purge_resource_unmapped:{resource.value}"
         )
@@ -1377,14 +1314,6 @@ class CommunitySqlAlchemyQualityAssessmentLifecycle:
                     AssessmentPurgeResource.RESEARCH_OUTBOX,
                     AssessmentPurgeResource.RESEARCH_EVENTS,
                 }
-            ),
-            epoch_consistency_preserved=(
-                target.scope is AssessmentPurgeScope.SUBJECT
-                or not any(
-                    item.count
-                    for item in residuals
-                    if item.resource.value.startswith("legacy_import_")
-                )
             ),
             verified_at=datetime.now(timezone.utc),
         )

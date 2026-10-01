@@ -2312,7 +2312,7 @@ export interface RefinementAmbiguityGateSkipReceipt {
   edition?: number;
 }
 
-export type TaskValidationPolicySource = 'card_compatibility' | 'spec' | 'board' | 'default';
+export type TaskValidationPolicySource = 'spec' | 'board' | 'default';
 
 /** Read-only policy resolved by Core for the current Card. */
 export interface TaskValidationConfig {
@@ -2341,8 +2341,6 @@ export interface Card {
     truncated: boolean;
   } | null;
   validation_config?: TaskValidationConfig | null;
-  /** Deprecated migration-only compatibility. Never send this in Card writes. */
-  migrated_validation_policy?: MigratedTaskValidationPolicy | null;
   id: string;
   board_id: string;
   subject_version?: number;
@@ -2460,34 +2458,18 @@ export interface TaskValidationResolvedThresholds {
   min_confidence: number;
   min_completeness: number;
   max_drift: number;
-  resolved_from?: 'card_compatibility' | 'sprint' | 'spec' | 'board' | 'default';
+  resolved_from?: 'spec' | 'board' | 'default';
   resolved_sources?: {
-    required: 'card_compatibility' | 'sprint' | 'spec' | 'board' | 'default';
-    min_confidence: 'card_compatibility' | 'sprint' | 'spec' | 'board' | 'default';
-    min_completeness: 'card_compatibility' | 'sprint' | 'spec' | 'board' | 'default';
-    max_drift: 'card_compatibility' | 'sprint' | 'spec' | 'board' | 'default';
+    required: 'spec' | 'board' | 'default';
+    min_confidence: 'spec' | 'board' | 'default';
+    min_completeness: 'spec' | 'board' | 'default';
+    max_drift: 'spec' | 'board' | 'default';
   };
   /**
    * The submit response can contain the complete resolved board gate config.
    * Keep additional settings readable without weakening the canonical scores.
    */
   [key: string]: unknown;
-}
-
-/** Deprecated preservation of migrated policy; provenance IDs are historical. */
-export interface MigratedTaskValidationPolicy {
-  contract_version: 'card-validation-compatibility/v1';
-  board_id: string;
-  card_id: string;
-  source_sprint_id: string;
-  source_spec_id?: string | null;
-  migration_id: string;
-  overrides: {
-    required?: boolean | null;
-    min_confidence?: number | null;
-    min_completeness?: number | null;
-    max_drift?: number | null;
-  };
 }
 
 export interface TaskValidationReviewerSeparation {

@@ -10,8 +10,7 @@ from okto_pulse.core.ports.semantic_subject_projection import (
     SemanticAssessmentV2CapabilitySnapshot,
 )
 
-from .relational_schema_steps import (
-    semantic_pinpoint_v2_postgresql_ddl,
+from .current_schema_guards import (
     semantic_pinpoint_v2_sqlite_trigger_manifest,
 )
 
@@ -60,18 +59,6 @@ class CommunitySemanticAssessmentV2Capabilities:
             actual = {str(row[0]) for row in rows}
             expected = set(semantic_pinpoint_v2_sqlite_trigger_manifest())
             triggers_ready = expected <= actual
-        elif dialect == "postgresql":
-            rows = (
-                await connection.execute(
-                    text(
-                        "SELECT tg.tgname FROM pg_trigger AS tg "
-                        "WHERE NOT tg.tgisinternal"
-                    )
-                )
-            ).all()
-            actual = {str(row[0]) for row in rows}
-            _function_sql, specifications = semantic_pinpoint_v2_postgresql_ddl()
-            triggers_ready = set(specifications) <= actual
         else:
             triggers_ready = False
         return SemanticAssessmentV2CapabilitySnapshot(
