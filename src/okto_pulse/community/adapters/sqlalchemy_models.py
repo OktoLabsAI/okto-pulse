@@ -62,8 +62,6 @@ GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES: tuple[str, ...] = (
     "canonical_debt",
     "cards",
     "code_evidence",
-    "code_evidence_classification_events",
-    "code_evidence_classification_heads",
     "code_evidence_dispositions",
     "code_evidence_spec_links",
     "code_investigation_heads",
@@ -364,7 +362,7 @@ class Board(Base):
     # Lives OUTSIDE Board.settings so it never affects BoardSettings/governance
     # normalization. Shape: {template_id, template_version, scope, applied_at,
     # applied_by, override_summary}. Null for boards created via the no-active-template
-    # fallback or legacy boards (no backfill — TR4).
+    # fallback or legacy boards (no backfill â€” TR4).
     default_config_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -467,7 +465,7 @@ class ResourceNotApplicable(Base):
 
 
 class Topic(Base):
-    """Topic — board-scoped grouping entity for optional pre-ideation Stories."""
+    """Topic â€” board-scoped grouping entity for optional pre-ideation Stories."""
 
     __tablename__ = "topics"
     __table_args__ = (
@@ -500,7 +498,7 @@ class Topic(Base):
 
 
 class Story(Base):
-    """Story — lightweight optional intake item that can converge into ideations."""
+    """Story â€” lightweight optional intake item that can converge into ideations."""
 
     __tablename__ = "stories"
     __table_args__ = (
@@ -606,7 +604,7 @@ class StoryIdeationLink(Base):
 
 
 class Ideation(Base):
-    """Ideation — the starting point of the framework. A raw idea that may be refined into specs."""
+    """Ideation â€” the starting point of the framework. A raw idea that may be refined into specs."""
 
     __tablename__ = "ideations"
     __table_args__ = (
@@ -668,7 +666,7 @@ class Ideation(Base):
     archived: Mapped[bool] = mapped_column(nullable=False, server_default=text("false"))
     pre_archive_status: Mapped[str | None] = mapped_column(String(50), nullable=True)
     # Max ambiguity gate (spec 2485780b): per-ideation opt-out of the board's
-    # ideation ambiguity gate. Explicit top-level column — NOT stored inside
+    # ideation ambiguity gate. Explicit top-level column â€” NOT stored inside
     # scope_assessment (which is evaluation-owned). Default false; the write
     # path works while the ideation is in evaluating status.
     skip_ambiguity_gate: Mapped[bool] = mapped_column(
@@ -781,7 +779,7 @@ class IdeationHistory(Base):
 
 
 class IdeationQAItem(Base):
-    """Q&A on an ideation — same pattern as spec Q&A with text + choice support."""
+    """Q&A on an ideation â€” same pattern as spec Q&A with text + choice support."""
 
     __tablename__ = "ideation_qa_items"
 
@@ -886,7 +884,7 @@ class IdeationKnowledgeBase(Base):
 
 
 class Refinement(Base):
-    """Refinement — a focused analysis of one aspect of an ideation."""
+    """Refinement â€” a focused analysis of one aspect of an ideation."""
 
     __tablename__ = "refinements"
     __table_args__ = (
@@ -1137,7 +1135,7 @@ class RefinementHistory(Base):
 
 
 class RefinementQAItem(Base):
-    """Q&A on a refinement — same pattern with text + choice support."""
+    """Q&A on a refinement â€” same pattern with text + choice support."""
 
     __tablename__ = "refinement_qa_items"
 
@@ -1291,21 +1289,21 @@ class Spec(Base):
     # [{id, title, rationale, context, alternatives_considered, supersedes_decision_id,
     #   linked_requirements, linked_task_ids, status, notes}]
     decisions: Mapped[list | None] = mapped_column(JSON, nullable=True)
-    # If true, spec can move to Done without full test coverage — set by user only
+    # If true, spec can move to Done without full test coverage â€” set by user only
     skip_test_coverage: Mapped[bool] = mapped_column(
         nullable=False, server_default=text("false")
     )
-    # If true, cards can start without full FR→BR coverage — set by user only
+    # If true, cards can start without full FRâ†’BR coverage â€” set by user only
     skip_rules_coverage: Mapped[bool] = mapped_column(
         nullable=False, server_default=text("false")
     )
-    # If true, cards can start without full TR→Task coverage
+    # If true, cards can start without full TRâ†’Task coverage
     skip_trs_coverage: Mapped[bool] = mapped_column(
         nullable=False, server_default=text("false")
     )
-    # Decisions coverage gate — default False (enforced) since ideação #10
-    # Fase 1 para paridade com TR/BR/Contract. Specs migradas pré-ideação #10
-    # mantêm True via migration backward-compat.
+    # Decisions coverage gate â€” default False (enforced) since ideaÃ§Ã£o #10
+    # Fase 1 para paridade com TR/BR/Contract. Specs migradas prÃ©-ideaÃ§Ã£o #10
+    # mantÃªm True via migration backward-compat.
     skip_decisions_coverage: Mapped[bool] = mapped_column(
         nullable=False, default=False, server_default=text("false")
     )
@@ -1313,11 +1311,11 @@ class Spec(Base):
     skip_contract_coverage: Mapped[bool] = mapped_column(
         nullable=False, server_default=text("false")
     )
-    # If true, spec can move forward without full IR→Task coverage
+    # If true, spec can move forward without full IRâ†’Task coverage
     skip_ir_coverage: Mapped[bool] = mapped_column(
         nullable=False, server_default=text("false")
     )
-    # If true, spec can move forward without full OR→Task coverage
+    # If true, spec can move forward without full ORâ†’Task coverage
     skip_or_coverage: Mapped[bool] = mapped_column(
         nullable=False, server_default=text("false")
     )
@@ -1326,12 +1324,12 @@ class Spec(Base):
     skip_code_evidence_coverage: Mapped[bool] = mapped_column(
         nullable=False, server_default=text("false")
     )
-    # If true, spec→done proceeds without complete delivery proof (auditable
+    # If true, specâ†’done proceeds without complete delivery proof (auditable
     # override; the rollup projection keeps the truthful verdict)
     skip_delivery_evidence: Mapped[bool] = mapped_column(
         nullable=False, server_default=text("false")
     )
-    # If true, spec can skip qualitative validation (validated→in_progress without evaluations)
+    # If true, spec can skip qualitative validation (validatedâ†’in_progress without evaluations)
     skip_qualitative_validation: Mapped[bool] = mapped_column(
         nullable=False, server_default=text("false")
     )
@@ -1349,13 +1347,13 @@ class Spec(Base):
     validation_max_drift: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Qualitative evaluations: [{id, evaluator_id, evaluator_name, evaluator_type, dimensions, overall_score, overall_justification, recommendation, stale, created_at}]
     evaluations: Mapped[list | None] = mapped_column(JSON, nullable=True)
-    # Spec Validation Gate — append-only history of validation records.
+    # Spec Validation Gate â€” append-only history of validation records.
     # Each record: {id, spec_id, board_id, reviewer_id, reviewer_name,
     #  completeness, completeness_justification, assertiveness, assertiveness_justification,
     #  ambiguity, ambiguity_justification, general_justification, recommendation,
     #  outcome, threshold_violations, resolved_thresholds, created_at}
     validations: Mapped[list | None] = mapped_column(JSON, nullable=True)
-    # Pointer to the current active validation id — NULL when a new Draft edition starts.
+    # Pointer to the current active validation id â€” NULL when a new Draft edition starts.
     # Content lock is ACTIVE when this is non-NULL and the pointed record has outcome='success'.
     current_validation_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # Archive support
@@ -1445,7 +1443,7 @@ class Spec(Base):
 
 
 class SpecHistory(Base):
-    """Detailed change history for a spec — tracks every modification with field-level diffs."""
+    """Detailed change history for a spec â€” tracks every modification with field-level diffs."""
 
     __tablename__ = "spec_history"
 
@@ -2050,7 +2048,7 @@ for _dependency_trigger_name, (
 
 
 class SpecQAItem(Base):
-    """Q&A item on a spec — bidirectional communication between humans and agents during spec refinement.
+    """Q&A item on a spec â€” bidirectional communication between humans and agents during spec refinement.
 
     Supports three question types:
     - text: Free-text question with free-text answer (default)
@@ -2111,7 +2109,7 @@ class SpecQAItem(Base):
 
 
 class SpecKnowledgeBase(Base):
-    """Knowledge base item attached to a spec — reference documents and context for AI agents."""
+    """Knowledge base item attached to a spec â€” reference documents and context for AI agents."""
 
     __tablename__ = "spec_knowledge_bases"
 
@@ -2221,7 +2219,7 @@ class Card(Base):
     labels: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     # Test scenario IDs from the linked spec that this card addresses
     test_scenario_ids: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
-    # Conclusions: [{text, author_id, created_at}] — required when moving to Done
+    # Conclusions: [{text, author_id, created_at}] â€” required when moving to Done
     conclusions: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # Screen mockups: [{id, title, description, screen_type, html_content, annotations, order}]
     screen_mockups: Mapped[list | None] = mapped_column(JSON, nullable=True)
@@ -2878,10 +2876,10 @@ class Agent(Base):
     api_key_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     is_active: Mapped[bool] = mapped_column(default=True)
     permissions: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
-    # Granular permission flags (new system) — JSON dict with nested flags
+    # Granular permission flags (new system) â€” JSON dict with nested flags
     permission_flags: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # Internal migration provenance, never accepted in AgentCreate/AgentUpdate.
-    # Preset ID — FK to permission_presets (nullable, agent may have custom flags without preset)
+    # Preset ID â€” FK to permission_presets (nullable, agent may have custom flags without preset)
     preset_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_by: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -2922,7 +2920,7 @@ class AgentBoard(Base):
     granted_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
-    # Board-scoped permission overrides (AND with agent flags — can only restrict)
+    # Board-scoped permission overrides (AND with agent flags â€” can only restrict)
     permission_overrides: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     # Relationships
@@ -2931,7 +2929,7 @@ class AgentBoard(Base):
 
 
 class PermissionPreset(Base):
-    """Permission preset — reusable set of permission flags."""
+    """Permission preset â€” reusable set of permission flags."""
 
     __tablename__ = "permission_presets"
 
@@ -3047,7 +3045,7 @@ class BoardShare(Base):
 
 
 class Guideline(Base):
-    """Reusable guideline — can be global or board-scoped."""
+    """Reusable guideline â€” can be global or board-scoped."""
 
     __tablename__ = "guidelines"
 
@@ -6925,7 +6923,7 @@ class SpecValidationPointerRepairRow(Base):
 
 
 class DesignSystem(Base):
-    """Reusable Design System — a global catalog entry or a board-inline artifact
+    """Reusable Design System â€” a global catalog entry or a board-inline artifact
     (spec 3a006f65 / card 1392f59d). Versioned catalog row: ``version`` bumps on a
     title/payload change (including inline) so the mockup gate can compare a stable
     persisted version/snapshot. Inline systems require ``board_id`` and are never
@@ -6964,7 +6962,7 @@ class DesignSystem(Base):
 
 class BoardDesignSystem(Base):
     """The single effective Design System linked to a board (spec 3a006f65 / card
-    1392f59d). One row per board (UniqueConstraint) — singular effective cardinality;
+    1392f59d). One row per board (UniqueConstraint) â€” singular effective cardinality;
     link/unlink upserts/deletes it. Captures ``design_system_version`` at link time so
     the gate can compare a stable identity."""
 
@@ -7000,7 +6998,7 @@ class DesignSystemGateAudit(Base):
     3a006f65 / card 0192f58d). Advisory persists the mockup but records a warning row
     so the gate decision is reconstituible by query (mockup_id, board_id, expected
     Design System identity + reason). Blocking failures abort the transaction and are
-    surfaced as a structured error instead — no row here."""
+    surfaced as a structured error instead â€” no row here."""
 
     __tablename__ = "design_system_gate_audit"
 
@@ -7056,7 +7054,7 @@ class DefaultBoardConfiguration(Base):
     provider that resolves the active template and applies it to a new board's
     effective settings. The applied snapshot metadata lives on
     ``Board.default_config_snapshot`` (OUTSIDE ``Board.settings``); future template
-    changes never mutate existing boards (TR5). New table — created by
+    changes never mutate existing boards (TR5). New table â€” created by
     ``Base.metadata.create_all`` on init (no Alembic here).
     """
 
@@ -7081,7 +7079,7 @@ class DefaultBoardConfiguration(Base):
     )
     # Effective default settings, validated as BoardSettings by the service (TR1).
     settings_payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-    # Guideline refs consumed by the guidelines adapter (card #3) — stored here,
+    # Guideline refs consumed by the guidelines adapter (card #3) â€” stored here,
     # materialized there within the same create_board transaction (TR10).
     guideline_default_refs: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # Design System default ref consumed by the design-system adapter (card #4).
@@ -7106,7 +7104,7 @@ class DefaultBoardConfigurationAudit(Base):
 
     Templates are global (no ``board_id``), so they cannot use the board-scoped
     ``ActivityLog``. Board-scoped events (template applied to a board, no-template
-    fallback) stay in ``ActivityLog``. New table — created by ``create_all``.
+    fallback) stay in ``ActivityLog``. New table â€” created by ``create_all``.
     """
 
     __tablename__ = "default_board_configuration_audit"
@@ -7134,7 +7132,7 @@ class AmendmentHotfixRevision(Base):
     (AC1). Eligibility is decided by the pure policy in
     ``core.domain.amendment_eligibility`` (status x lineage_state); this row only
     stores the durable lineage + lifecycle state + audit-relevant metadata. New
-    table — created by ``Base.metadata.create_all`` on init (no Alembic here).
+    table â€” created by ``Base.metadata.create_all`` on init (no Alembic here).
     """
 
     __tablename__ = "amendment_hotfix_revisions"
@@ -7167,7 +7165,7 @@ class AmendmentHotfixRevision(Base):
     regression_test_task_ids: Mapped[list[str] | None] = mapped_column(
         JSON, nullable=True
     )
-    # Automated regression artifacts (e.g. a pytest node id) — first-class so a
+    # Automated regression artifacts (e.g. a pytest node id) â€” first-class so a
     # tooling/test-infra regression counts as evidence, not only a product scenario.
     automated_regression_refs: Mapped[list[str] | None] = mapped_column(
         JSON, nullable=True
@@ -7195,14 +7193,14 @@ class AmendmentHotfixRevision(Base):
 # ---------------------------------------------------------------------------
 # Knowledge Graph Foundation (MVP Fase 0)
 # ---------------------------------------------------------------------------
-# Four operational tables that bridge SQLite state to the per-board Kùzu
+# Four operational tables that bridge SQLite state to the per-board KÃ¹zu
 # graphs: consolidation_queue (pending triggers), consolidation_audit (session
 # history + undo), kuzu_node_refs (back-references for compensating delete),
 # global_update_outbox (transactional outbox for the global discovery layer).
 
 
 class ConsolidationQueue(Base):
-    """Pending consolidation triggers — populated by state transitions,
+    """Pending consolidation triggers â€” populated by state transitions,
     consumed by the agent on-demand via the primitives MCP."""
 
     __tablename__ = "consolidation_queue"
@@ -7292,7 +7290,7 @@ class ConsolidationQueue(Base):
         Text, nullable=True
     )  # Error message from failed processing
 
-    # Spec bdcda842 (Consolidation Queue resilience) — v0.2.0 columns.
+    # Spec bdcda842 (Consolidation Queue resilience) â€” v0.2.0 columns.
     # Added by _migrate_add_consolidation_resilience_columns; ORM model
     # mirrors the schema so newly-created rows from the model stay in sync.
     worker_id: Mapped[str | None] = mapped_column(
@@ -7428,7 +7426,7 @@ class CanonicalDebt(Base):
 
 class ConsolidationDeadLetter(Base):
     """Dead-letter queue for items that exceeded ``kg_queue_max_attempts``
-    consecutive failures. Spec bdcda842 (TR2) — items move here after the
+    consecutive failures. Spec bdcda842 (TR2) â€” items move here after the
     last failed attempt and are removed from ConsolidationQueue.
 
     The ``errors`` JSON array preserves the full attempt history so an
@@ -7471,7 +7469,7 @@ class ConsolidationDeadLetter(Base):
 
 
 class ConsolidationAudit(Base):
-    """Per-session audit trail — primary log of every consolidation commit.
+    """Per-session audit trail â€” primary log of every consolidation commit.
     session_id is the PK because everything else (kuzu_node_refs, undo chain)
     joins back here."""
 
@@ -7513,7 +7511,7 @@ class ConsolidationAudit(Base):
 
 
 class KuzuNodeRef(Base):
-    """Back-reference from SQLite to Kùzu nodes created by a session.
+    """Back-reference from SQLite to KÃ¹zu nodes created by a session.
     Powers compensating delete on abort and undo on demand."""
 
     __tablename__ = "kuzu_node_refs"
@@ -7541,7 +7539,7 @@ class KuzuNodeRef(Base):
 class GlobalUpdateOutbox(Base):
     """Transactional outbox for the global discovery layer sync worker.
     Events are INSERTed in the same SQLite transaction as the audit row;
-    a background worker later drains them into the global Kùzu meta-graph
+    a background worker later drains them into the global KÃ¹zu meta-graph
     with retry + dead-letter semantics."""
 
     __tablename__ = "global_update_outbox"
@@ -8037,7 +8035,7 @@ class DomainEventHandlerExecution(Base):
 
 
 # ============================================================================
-# Discovery — user-facing intent catalog, saved searches, search history
+# Discovery â€” user-facing intent catalog, saved searches, search history
 # ============================================================================
 
 
@@ -8080,7 +8078,7 @@ class DiscoveryIntent(Base):
 
 class DiscoverySavedSearch(Base):
     """A named search saved on a board. Shared with all members of the
-    board — per-user private saved searches are a v2 concern.
+    board â€” per-user private saved searches are a v2 concern.
     """
 
     __tablename__ = "discovery_saved_searches"
@@ -8148,7 +8146,7 @@ class DiscoverySearchHistory(Base):
 
 
 # ============================================================================
-# KG operational telemetry — daily decay tick run log (spec 28583299, IMPL-F)
+# KG operational telemetry â€” daily decay tick run log (spec 28583299, IMPL-F)
 # ============================================================================
 
 
@@ -8159,7 +8157,7 @@ class KGTickRun(Base):
     the most recent ``completed_at IS NOT NULL`` row to surface
     ``last_decay_tick_at`` and ``nodes_recomputed_in_last_tick``. Distinct
     from KG Decision nodes (which audit BUSINESS-meaningful boost changes
-    on individual nodes) — this table is purely operational.
+    on individual nodes) â€” this table is purely operational.
 
     Created via Base.metadata.create_all on first server startup, no Alembic
     migration required (the codebase uses a create_all-based bootstrap).
@@ -8206,12 +8204,12 @@ class KGTickRun(Base):
 
 class KGCognitiveSource(Base):
     """Durable append-only source of truth for canonical COGNITIVE nodes
-    (Learning / Alternative / Assumption) — spec MKG-A-S1.
+    (Learning / Alternative / Assumption) â€” spec MKG-A-S1.
 
     One immutable row per committed cognitive node generation. Written by
     the consolidation commit BEFORE it reports success (fail-closed) and
     replayed literally by the KG rebuild when the pre-purge graph snapshot
-    is unreadable — cognitive knowledge no longer dies with the graph
+    is unreadable â€” cognitive knowledge no longer dies with the graph
     (incident 2026-07-10). Rows are never UPDATEd or DELETEd; idempotency
     is enforced by UNIQUE(node_id, generation).
 
@@ -8388,7 +8386,7 @@ class KGCognitiveSourceFingerprintEpochReceipt(Base):
 
 class KGEquivalenceLedger(Base):
     """Off-graph, append-only ledger of node-equivalence decisions
-    (merges) — spec MKG-C-S1.
+    (merges) â€” spec MKG-C-S1.
 
     One row per merge decision: ``merged_ids`` fold into ``survivor_id``.
     ``evidence`` carries the COMPLETE pre-operation snapshot (node attrs +
@@ -8466,7 +8464,7 @@ class KGCurationProposal(Base):
 
 class KGNodeSubtype(Base):
     """Declarative subtype vocabulary (spec MKG-E-S1): kind_of under one of
-    the 11 closed physical node types. Data, not schema — declarations
+    the 11 closed physical node types. Data, not schema â€” declarations
     never bump SCHEMA_VERSION (D6)."""
 
     __tablename__ = "kg_node_subtypes"
@@ -11153,21 +11151,10 @@ class CodeInvestigationReceiptRow(Base):
             name="ck_code_investigation_receipt_acceptance",
         ),
         CheckConstraint(
-            "outcome IN ('accessible', 'partial', 'unavailable')",
-            name="ck_code_investigation_receipt_outcome",
-        ),
-        CheckConstraint(
-            "(delivery_context IS NULL AND contextual_outcome IS NULL "
-            "AND context_contract_version IS NULL) OR "
             "(delivery_context IN ('brownfield', 'greenfield', 'hybrid') "
             "AND contextual_outcome IN ('evidence_applicable', "
             "'no_relevant_existing_implementation', 'partial', 'unavailable') "
             "AND context_contract_version = 2 "
-            "AND ((contextual_outcome IN ('evidence_applicable', "
-            "'no_relevant_existing_implementation') AND outcome = 'accessible') "
-            "OR (contextual_outcome = 'partial' AND outcome = 'partial') "
-            "OR (contextual_outcome = 'unavailable' "
-            "AND outcome = 'unavailable')) "
             "AND (contextual_outcome <> "
             "'no_relevant_existing_implementation' "
             "OR delivery_context = 'greenfield'))",
@@ -11263,10 +11250,9 @@ class CodeInvestigationReceiptRow(Base):
         server_default=text("'single_attestation'"),
     )
     acceptance_status: Mapped[str] = mapped_column(String(16), nullable=False)
-    outcome: Mapped[str] = mapped_column(String(16), nullable=False)
-    delivery_context: Mapped[str | None] = mapped_column(String(16), nullable=True)
-    contextual_outcome: Mapped[str | None] = mapped_column(String(48), nullable=True)
-    context_contract_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    delivery_context: Mapped[str] = mapped_column(String(16), nullable=False)
+    contextual_outcome: Mapped[str] = mapped_column(String(48), nullable=False)
+    context_contract_version: Mapped[int] = mapped_column(Integer, nullable=False)
     capabilities: Mapped[list] = mapped_column(JSON, nullable=False)
     source_ref: Mapped[str] = mapped_column(String(512), nullable=False)
     source_identity_digest: Mapped[str | None] = mapped_column(
@@ -11417,18 +11403,10 @@ class CodeEvidenceRow(Base):
         ),
         CheckConstraint(
             "source_role IN ('current_implementation', 'existing_scaffold', "
-            "'existing_constraint', 'reference_pattern', "
-            "'uncategorized_legacy')",
+            "'existing_constraint', 'reference_pattern')",
             name="ck_code_evidence_source_role",
         ),
         CheckConstraint(
-            "(source_role = 'uncategorized_legacy' "
-            "AND relevance_summary IS NULL AND scope_relation IS NULL "
-            "AND source_origin IS NULL AND interpretation_limit IS NULL "
-            "AND baseline_presence IS NULL "
-            "AND baseline_workspace_state_id IS NULL "
-            "AND baseline_provenance_note IS NULL "
-            "AND context_contract_version IS NULL) OR "
             "(source_role IN ('current_implementation', 'existing_scaffold', "
             "'existing_constraint', 'reference_pattern') "
             "AND relevance_summary IS NOT NULL "
@@ -11560,19 +11538,17 @@ class CodeEvidenceRow(Base):
     source_role: Mapped[str] = mapped_column(
         String(32),
         nullable=False,
-        default="uncategorized_legacy",
-        server_default=text("'uncategorized_legacy'"),
     )
-    relevance_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
-    scope_relation: Mapped[str | None] = mapped_column(Text, nullable=True)
-    source_origin: Mapped[str | None] = mapped_column(Text, nullable=True)
+    relevance_summary: Mapped[str] = mapped_column(Text, nullable=False)
+    scope_relation: Mapped[str] = mapped_column(Text, nullable=False)
+    source_origin: Mapped[str] = mapped_column(Text, nullable=False)
     interpretation_limit: Mapped[str | None] = mapped_column(Text, nullable=True)
-    baseline_presence: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    baseline_workspace_state_id: Mapped[str | None] = mapped_column(
-        String(255), nullable=True
+    baseline_presence: Mapped[str] = mapped_column(String(32), nullable=False)
+    baseline_workspace_state_id: Mapped[str] = mapped_column(
+        String(255), nullable=False
     )
     baseline_provenance_note: Mapped[str | None] = mapped_column(Text, nullable=True)
-    context_contract_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    context_contract_version: Mapped[int] = mapped_column(Integer, nullable=False)
     declared_revision: Mapped[str | None] = mapped_column(String(255), nullable=True)
     workspace_state_id: Mapped[str] = mapped_column(String(255), nullable=False)
     declared_dirty: Mapped[bool] = mapped_column(Boolean, nullable=False)
@@ -11620,201 +11596,8 @@ CODE_EVIDENCE_CLASSIFICATION_BATCH_ID_MAX_LENGTH = 255
 CODE_EVIDENCE_CLASSIFICATION_IDEMPOTENCY_KEY_MAX_LENGTH = 512
 
 
-class CodeEvidenceClassificationEventRow(Base):
-    """Immutable human classification of one legacy Code Evidence item.
-
-    Batch identity is repeated on every event by design.  This keeps the
-    authority append-only while allowing the store to write and replay a
-    bounded multi-item classification atomically without a mutable batch row.
-    """
-
-    __tablename__ = "code_evidence_classification_events"
-    __table_args__ = (
-        UniqueConstraint(
-            "board_id",
-            "evidence_id",
-            "revision",
-            name="uq_code_evidence_classification_event_revision",
-        ),
-        UniqueConstraint(
-            "batch_id",
-            "batch_item_index",
-            name="uq_code_evidence_classification_batch_index",
-        ),
-        UniqueConstraint(
-            "batch_id",
-            "evidence_id",
-            name="uq_code_evidence_classification_batch_evidence",
-        ),
-        UniqueConstraint(
-            "predecessor_classification_id",
-            name="uq_code_evidence_classification_predecessor",
-        ),
-        UniqueConstraint(
-            "board_id",
-            "classified_by",
-            "idempotency_key",
-            "batch_item_index",
-            name="uq_code_evidence_classification_replay_item",
-        ),
-        CheckConstraint(
-            "revision >= 1 AND "
-            "((revision = 1 AND predecessor_classification_id IS NULL) OR "
-            "(revision > 1 AND predecessor_classification_id IS NOT NULL))",
-            name="ck_code_evidence_classification_lineage",
-        ),
-        CheckConstraint(
-            "source_role IN ('current_implementation', 'existing_scaffold', "
-            "'existing_constraint', 'reference_pattern')",
-            name="ck_code_evidence_classification_role",
-        ),
-        CheckConstraint(
-            "length(trim(relevance_summary)) >= 1 "
-            "AND length(trim(scope_relation)) >= 1 "
-            "AND length(trim(source_origin)) >= 1 "
-            "AND length(trim(justification)) >= 1 "
-            "AND (source_role NOT IN "
-            "('existing_scaffold', 'reference_pattern') "
-            "OR (interpretation_limit IS NOT NULL "
-            "AND length(trim(interpretation_limit)) >= 1))",
-            name="ck_code_evidence_classification_context",
-        ),
-        CheckConstraint(
-            "baseline_presence IN "
-            "('committed_snapshot', 'preexisting_worktree') "
-            "AND (baseline_presence <> 'preexisting_worktree' "
-            "OR (baseline_provenance_note IS NOT NULL "
-            "AND length(trim(baseline_provenance_note)) >= 1))",
-            name="ck_code_evidence_classification_baseline",
-        ),
-        CheckConstraint(
-            "batch_item_count >= 1 AND batch_item_count <= 100 "
-            "AND batch_item_index >= 1 "
-            "AND batch_item_index <= batch_item_count",
-            name="ck_code_evidence_classification_batch_bounds",
-        ),
-        CheckConstraint(
-            "length(trim(batch_id)) >= 1 "
-            "AND length(batch_id) <= 255 "
-            "AND length(trim(idempotency_key)) >= 1 "
-            "AND length(idempotency_key) <= 512",
-            name="ck_code_evidence_classification_request_identity",
-        ),
-        CheckConstraint(
-            "context_contract_version = 2",
-            name="ck_code_evidence_classification_contract",
-        ),
-        CheckConstraint(
-            "length(evidence_payload_sha256) = 64 "
-            "AND length(request_sha256) = 64 "
-            "AND length(classification_sha256) = 64",
-            name="ck_code_evidence_classification_digests",
-        ),
-        Index(
-            "ix_code_evidence_classification_event_batch",
-            "board_id",
-            "batch_id",
-        ),
-        Index(
-            "ix_code_evidence_classification_event_evidence",
-            "board_id",
-            "evidence_id",
-            "revision",
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    batch_id: Mapped[str] = mapped_column(
-        String(CODE_EVIDENCE_CLASSIFICATION_BATCH_ID_MAX_LENGTH),
-        nullable=False,
-    )
-    board_id: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("boards.id", ondelete="CASCADE", onupdate="RESTRICT"),
-        nullable=False,
-    )
-    evidence_id: Mapped[str] = mapped_column(
-        String(64),
-        ForeignKey("code_evidence.id", ondelete="RESTRICT", onupdate="RESTRICT"),
-        nullable=False,
-    )
-    evidence_payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
-    revision: Mapped[int] = mapped_column(Integer, nullable=False)
-    predecessor_classification_id: Mapped[str | None] = mapped_column(
-        String(64),
-        ForeignKey(
-            "code_evidence_classification_events.id",
-            ondelete="RESTRICT",
-            onupdate="RESTRICT",
-        ),
-        nullable=True,
-    )
-    source_role: Mapped[str] = mapped_column(String(32), nullable=False)
-    relevance_summary: Mapped[str] = mapped_column(Text, nullable=False)
-    scope_relation: Mapped[str] = mapped_column(Text, nullable=False)
-    source_origin: Mapped[str] = mapped_column(Text, nullable=False)
-    interpretation_limit: Mapped[str | None] = mapped_column(Text, nullable=True)
-    baseline_presence: Mapped[str] = mapped_column(String(32), nullable=False)
-    baseline_workspace_state_id: Mapped[str] = mapped_column(
-        String(255), nullable=False
-    )
-    baseline_provenance_note: Mapped[str | None] = mapped_column(Text, nullable=True)
-    classified_by: Mapped[str] = mapped_column(String(255), nullable=False)
-    classified_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
-    justification: Mapped[str] = mapped_column(Text, nullable=False)
-    idempotency_key: Mapped[str] = mapped_column(
-        String(CODE_EVIDENCE_CLASSIFICATION_IDEMPOTENCY_KEY_MAX_LENGTH),
-        nullable=False,
-    )
-    request_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
-    batch_item_count: Mapped[int] = mapped_column(Integer, nullable=False)
-    batch_item_index: Mapped[int] = mapped_column(Integer, nullable=False)
-    context_contract_version: Mapped[int] = mapped_column(Integer, nullable=False)
-    classification_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
-class CodeEvidenceClassificationHeadRow(Base):
-    """Strict CAS pointer to the current legacy classification event."""
-
-    __tablename__ = "code_evidence_classification_heads"
-    __table_args__ = (
-        UniqueConstraint(
-            "current_classification_id",
-            name="uq_code_evidence_classification_head_current",
-        ),
-        CheckConstraint(
-            "revision >= 1 AND length(evidence_payload_sha256) = 64",
-            name="ck_code_evidence_classification_head_shape",
-        ),
-        Index(
-            "ix_code_evidence_classification_head_revision",
-            "board_id",
-            "revision",
-        ),
-    )
-
-    board_id: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("boards.id", ondelete="CASCADE", onupdate="RESTRICT"),
-        primary_key=True,
-    )
-    evidence_id: Mapped[str] = mapped_column(
-        String(64),
-        ForeignKey("code_evidence.id", ondelete="RESTRICT", onupdate="RESTRICT"),
-        primary_key=True,
-    )
-    current_classification_id: Mapped[str] = mapped_column(
-        String(64),
-        ForeignKey(
-            "code_evidence_classification_events.id",
-            ondelete="RESTRICT",
-            onupdate="RESTRICT",
-        ),
-        nullable=False,
-    )
-    evidence_payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
-    revision: Mapped[int] = mapped_column(Integer, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 
 class CodeEvidenceSpecLinkRow(Base):

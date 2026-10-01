@@ -63,7 +63,7 @@ const emptyRoleCounts = {
   existing_scaffold_count: 0,
   existing_constraint_count: 0,
   reference_pattern_count: 0,
-  uncategorized_legacy_count: 0,
+
 };
 
 function sourceContext(
@@ -78,7 +78,7 @@ function sourceContext(
     },
     investigation_outcome: 'evidence_applicable',
     role_counts: { ...emptyRoleCounts, current_implementation_count: 1 },
-    classification_state: { classified_count: 1, uncategorized_legacy_count: 0 },
+
     evidence_applicable: true,
     interpretation_rule: 'Only current implementation may support implementation coverage.',
     items_not_current_implementation_count: 0,
@@ -279,7 +279,7 @@ describe('Code Evidence source context presentation', () => {
         },
         investigation_outcome: 'no_relevant_existing_implementation',
         role_counts: emptyRoleCounts,
-        classification_state: { classified_count: 0, uncategorized_legacy_count: 0 },
+
         evidence_applicable: false,
         interpretation_rule: 'No existing implementation is required for this greenfield scope.',
       }),
@@ -290,7 +290,7 @@ describe('Code Evidence source context presentation', () => {
         dispositioned: 0,
         pending: 0,
         pending_ids: [],
-        unresolved_applicability_count: 0,
+
         coverage_pct: null,
         projection_complete: true,
       },
@@ -316,7 +316,7 @@ describe('Code Evidence source context presentation', () => {
         delivery_context: 'greenfield',
         investigation_outcome: 'no_relevant_existing_implementation',
         role_counts: emptyRoleCounts,
-        classification_state: { classified_count: 0, uncategorized_legacy_count: 0 },
+
         evidence_applicable: false,
       }),
       source_context_items: [],
@@ -326,7 +326,7 @@ describe('Code Evidence source context presentation', () => {
         dispositioned: 0,
         pending: 0,
         pending_ids: [],
-        unresolved_applicability_count: 0,
+
         coverage_pct: null,
         projection_complete: false,
       },
@@ -378,7 +378,7 @@ describe('Code Evidence source context presentation', () => {
           existing_constraint_count: 1,
           reference_pattern_count: 1,
         },
-        classification_state: { classified_count: 3, uncategorized_legacy_count: 0 },
+
         evidence_applicable: false,
         items_not_current_implementation_count: 3,
       }),
@@ -402,7 +402,7 @@ describe('Code Evidence source context presentation', () => {
         dispositioned: 0,
         pending: 0,
         pending_ids: [],
-        unresolved_applicability_count: 0,
+
         coverage_pct: null,
         projection_complete: true,
       },
@@ -451,13 +451,13 @@ describe('Code Evidence source context presentation', () => {
         },
         investigation_outcome: 'partial',
         role_counts: emptyRoleCounts,
-        classification_state: { classified_count: 0, uncategorized_legacy_count: 0 },
+
         evidence_applicable: false,
         technical_details_available: false,
       }),
       current_receipts: [{
         id: 'receipt-partial',
-        outcome: 'partial',
+        contextual_outcome: 'partial',
         source_ref: 'repository:payments',
         omission_manifest: [{
           reason_code: 'permission_denied',
@@ -490,13 +490,13 @@ describe('Code Evidence source context presentation', () => {
         },
         investigation_outcome: 'unavailable',
         role_counts: emptyRoleCounts,
-        classification_state: { classified_count: 0, uncategorized_legacy_count: 0 },
+
         evidence_applicable: false,
         technical_details_available: false,
       }),
       current_receipts: [{
         id: 'receipt-unavailable',
-        outcome: 'unavailable',
+        contextual_outcome: 'unavailable',
         source_ref: 'repository:payments',
         omission_manifest: [{
           reason_code: 'timeout',
@@ -519,38 +519,9 @@ describe('Code Evidence source context presentation', () => {
     expect(screen.queryByText('timeout')).not.toBeInTheDocument();
   });
 
-  it('ts_e6933912 — does not infer role or applicability for unclassified legacy evidence', async () => {
-    apiMock.getCodeTraceabilityProjection.mockResolvedValue(projection({
-      source_context: sourceContext({
-        investigation_outcome: 'partial',
-        role_counts: { ...emptyRoleCounts, uncategorized_legacy_count: 1 },
-        classification_state: { classified_count: 0, uncategorized_legacy_count: 1 },
-        evidence_applicable: null,
-        items_not_current_implementation_count: 1,
-      }),
-      source_context_items: [contextItem({
-        source_role: 'uncategorized_legacy',
-        relevance_summary: null,
-        scope_relation: null,
-        source_origin: null,
-        context_origin: 'unclassified_legacy',
-        context_contract_version: null,
-        evidence_applicable: null,
-      })],
-      evidence: [{ ...evidence, source_role: 'current_implementation' }],
-    }));
 
-    renderPanel();
 
-    expect((await screen.findAllByText('Needs classification')).length).toBeGreaterThan(0);
-    expect(screen.getByRole('heading', { name: 'Classification not provided' })).toBeInTheDocument();
-    expect(screen.getByText('Applicability unresolved')).toBeInTheDocument();
-    expect(screen.getByText(/Applicability remains unresolved/i)).toBeInTheDocument();
-    expect(screen.queryByText('Implementation evidence')).not.toBeInTheDocument();
-    expect(screen.queryByText('Existing implementation')).not.toBeInTheDocument();
-  });
-
-  it('keeps legacy Evidence readable as audit-only when the contextual contract is absent', async () => {
+  it('does not infer context when the current projection is incomplete', async () => {
     apiMock.getCodeTraceabilityProjection.mockResolvedValue(projection({
       evidence: [evidence],
     }));
@@ -558,9 +529,9 @@ describe('Code Evidence source context presentation', () => {
     renderPanel();
 
     expect(await screen.findByText('Source context unavailable')).toBeInTheDocument();
-    expect(screen.getByText(/remains available below for audit/i)).toBeInTheDocument();
+    expect(screen.getByText(/does not include source context/i)).toBeInTheDocument();
     expect(screen.getByText('The agent observed a reusable authorization hook.')).toBeInTheDocument();
-    expect(screen.getByText('Context not projected')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Context not projected' })).toBeInTheDocument();
     expect(screen.getByText(/role and applicability are not inferred/i)).toBeInTheDocument();
     expect(screen.getByText('Technical evidence details')).toBeInTheDocument();
     expect(screen.getByText('Agent-attested')).toBeInTheDocument();
@@ -623,7 +594,7 @@ describe('Code Evidence source context presentation', () => {
           existing_scaffold_count: 2,
           reference_pattern_count: 1,
         },
-        classification_state: { classified_count: 3, uncategorized_legacy_count: 0 },
+
         evidence_applicable: false,
         items_not_current_implementation_count: 3,
       }),
@@ -667,7 +638,7 @@ describe('Code Evidence source context presentation', () => {
       .mockResolvedValueOnce(projection({
         source_context: sourceContext({
           role_counts: emptyRoleCounts,
-          classification_state: { classified_count: 0, uncategorized_legacy_count: 0 },
+
           evidence_applicable: null,
         }),
       }));

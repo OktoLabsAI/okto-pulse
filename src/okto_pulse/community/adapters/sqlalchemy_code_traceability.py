@@ -33,8 +33,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
     Card,
-    CodeEvidenceClassificationEventRow,
-    CodeEvidenceClassificationHeadRow,
     CodeEvidenceDispositionRow,
     CodeEvidenceRow,
     CodeEvidenceSpecLinkRow,
@@ -175,17 +173,12 @@ def _receipt_from_row(
         acceptance_status=domain.CodeInvestigationAcceptanceStatus(
             row.acceptance_status
         ),
-        outcome=domain.CodeInvestigationOutcome(row.outcome),
         delivery_context=(
             None
             if row.delivery_context is None
             else domain.DeliveryContext(row.delivery_context)
         ),
-        contextual_outcome=(
-            None
-            if row.contextual_outcome is None
-            else domain.ContextualInvestigationOutcomeV2(row.contextual_outcome)
-        ),
+        contextual_outcome=domain.ContextualInvestigationOutcomeV2(row.contextual_outcome),
         context_contract_version=row.context_contract_version,
         capabilities=tuple(
             domain.CodeInvestigationCapability(item) for item in row.capabilities
@@ -283,17 +276,12 @@ def _receipt_row(receipt: domain.CodeInvestigationReceipt) -> dict[str, object]:
         "predecessor_receipt_id": receipt.predecessor_receipt_id,
         "trust_level": receipt.trust_level.value,
         "acceptance_status": receipt.acceptance_status.value,
-        "outcome": receipt.outcome.value,
         "delivery_context": (
             None
             if receipt.delivery_context is None
             else receipt.delivery_context.value
         ),
-        "contextual_outcome": (
-            None
-            if receipt.contextual_outcome is None
-            else receipt.contextual_outcome.value
-        ),
+        "contextual_outcome": receipt.contextual_outcome.value,
         "context_contract_version": receipt.context_contract_version,
         "capabilities": _enum_values(receipt.capabilities),
         "source_ref": receipt.source_ref,
@@ -486,98 +474,10 @@ def _evidence_from_row(
     )
 
 
-def _classification_row(
-    classification: domain.CodeEvidenceLegacyClassification,
-) -> dict[str, object]:
-    baseline = classification.baseline_provenance
-    return {
-        "id": classification.id,
-        "batch_id": classification.batch_id,
-        "board_id": classification.board_id,
-        "evidence_id": classification.evidence_id,
-        "evidence_payload_sha256": classification.evidence_payload_sha256,
-        "revision": classification.revision,
-        "predecessor_classification_id": (
-            classification.predecessor_classification_id
-        ),
-        "source_role": classification.source_role.value,
-        "relevance_summary": classification.relevance_summary,
-        "scope_relation": classification.scope_relation,
-        "source_origin": classification.source_origin,
-        "interpretation_limit": classification.interpretation_limit,
-        "baseline_presence": baseline.presence.value,
-        "baseline_workspace_state_id": baseline.workspace_state_id,
-        "baseline_provenance_note": baseline.provenance_note,
-        "classified_by": classification.classified_by,
-        "classified_at": classification.classified_at,
-        "justification": classification.justification,
-        "idempotency_key": classification.idempotency_key,
-        "request_sha256": classification.request_sha256,
-        "batch_item_count": classification.batch_item_count,
-        "batch_item_index": classification.batch_item_index,
-        "context_contract_version": classification.context_contract_version,
-        "classification_sha256": classification.classification_sha256,
-    }
 
 
-def _classification_from_row(
-    row: CodeEvidenceClassificationEventRow,
-) -> domain.CodeEvidenceLegacyClassification:
-    return domain.CodeEvidenceLegacyClassification(
-        id=row.id,
-        batch_id=row.batch_id,
-        board_id=row.board_id,
-        evidence_id=row.evidence_id,
-        evidence_payload_sha256=row.evidence_payload_sha256,
-        revision=row.revision,
-        predecessor_classification_id=row.predecessor_classification_id,
-        source_role=domain.CodeEvidenceSourceRole(row.source_role),
-        relevance_summary=row.relevance_summary,
-        scope_relation=row.scope_relation,
-        source_origin=row.source_origin,
-        interpretation_limit=row.interpretation_limit,
-        baseline_provenance=domain.CodeEvidenceBaselineProvenance(
-            presence=domain.CodeEvidenceBaselinePresence(row.baseline_presence),
-            workspace_state_id=row.baseline_workspace_state_id,
-            provenance_note=row.baseline_provenance_note,
-        ),
-        classified_by=row.classified_by,
-        classified_at=row.classified_at,
-        justification=row.justification,
-        idempotency_key=row.idempotency_key,
-        request_sha256=row.request_sha256,
-        batch_item_count=row.batch_item_count,
-        batch_item_index=row.batch_item_index,
-        context_contract_version=row.context_contract_version,
-        classification_sha256=row.classification_sha256,
-    )
 
 
-def _classification_replay_semantics(
-    classification: domain.CodeEvidenceLegacyClassification,
-) -> tuple[object, ...]:
-    """Return human-request semantics, excluding generated batch metadata."""
-
-    return (
-        classification.board_id,
-        classification.evidence_id,
-        classification.evidence_payload_sha256,
-        classification.revision,
-        classification.predecessor_classification_id,
-        classification.source_role,
-        classification.relevance_summary,
-        classification.scope_relation,
-        classification.source_origin,
-        classification.interpretation_limit,
-        classification.baseline_provenance,
-        classification.classified_by,
-        classification.justification,
-        classification.idempotency_key,
-        classification.request_sha256,
-        classification.batch_item_count,
-        classification.batch_item_index,
-        classification.context_contract_version,
-    )
 
 
 def _spec_link_from_row(row: CodeEvidenceSpecLinkRow) -> domain.CodeEvidenceSpecLink:
@@ -995,7 +895,7 @@ class CommunitySqlAlchemyCodeInvestigationStore:
             )
         if query.outcome is not None:
             statement = statement.where(
-                CodeInvestigationReceiptRow.outcome == query.outcome.value
+                CodeInvestigationReceiptRow.contextual_outcome == query.outcome.value
             )
         if query.cursor is not None:
             statement = statement.where(
@@ -2014,493 +1914,15 @@ class CommunitySqlAlchemyCodeTraceabilityStore:
             ) from exc
         return evidence
 
-    @staticmethod
-    def _classification_value(
-        row: CodeEvidenceClassificationEventRow,
-    ) -> domain.CodeEvidenceLegacyClassification:
-        try:
-            return _classification_from_row(row)
-        except (TypeError, ValueError) as exc:
-            raise traceability_port.LegacyEvidenceClassificationPersistenceConflict(
-                "code_evidence_legacy_classification_row_invalid",
-                details={"classification_id": row.id},
-            ) from exc
 
-    async def _lock_classification_board_write(self, board_id: str) -> None:
-        try:
-            await self._lock_board_write(board_id)
-        except traceability_port.CodeTraceabilityPersistenceError as exc:
-            raise traceability_port.LegacyEvidenceClassificationPersistenceConflict(
-                "code_evidence_legacy_classification_write_lock_failed",
-                details={"board_id": board_id},
-            ) from exc
 
-    async def _classification_replay_rows(
-        self,
-        *,
-        board_id: str,
-        classified_by: str,
-        idempotency_key: str,
-    ) -> tuple[CodeEvidenceClassificationEventRow, ...]:
-        rows = tuple(
-            (
-                await self._session.execute(
-                    select(CodeEvidenceClassificationEventRow)
-                    .where(
-                        CodeEvidenceClassificationEventRow.board_id == board_id,
-                        CodeEvidenceClassificationEventRow.classified_by
-                        == classified_by,
-                        CodeEvidenceClassificationEventRow.idempotency_key
-                        == idempotency_key,
-                    )
-                    .order_by(
-                        CodeEvidenceClassificationEventRow.batch_item_index,
-                        CodeEvidenceClassificationEventRow.evidence_id,
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        return rows
 
-    def _classification_receipt_from_rows(
-        self,
-        rows: tuple[CodeEvidenceClassificationEventRow, ...],
-        *,
-        replayed: bool,
-    ) -> domain.CodeEvidenceLegacyClassificationBatchReceipt | None:
-        if not rows:
-            return None
-        first = rows[0]
-        if (
-            len({row.batch_id for row in rows}) != 1
-            or len({row.request_sha256 for row in rows}) != 1
-            or len(rows) != first.batch_item_count
-        ):
-            raise traceability_port.LegacyEvidenceClassificationPersistenceConflict(
-                "code_evidence_legacy_classification_replay_corrupt",
-                details={
-                    "board_id": first.board_id,
-                    "idempotency_key": first.idempotency_key,
-                },
-            )
-        try:
-            classifications = tuple(
-                self._classification_value(row) for row in rows
-            )
-            return domain.CodeEvidenceLegacyClassificationBatchReceipt(
-                batch_id=first.batch_id,
-                board_id=first.board_id,
-                classified_by=first.classified_by,
-                classified_at=first.classified_at,
-                idempotency_key=first.idempotency_key,
-                request_sha256=first.request_sha256,
-                classifications=classifications,
-                replayed=replayed,
-            )
-        except traceability_port.LegacyEvidenceClassificationPersistenceConflict:
-            raise
-        except (TypeError, ValueError) as exc:
-            raise traceability_port.LegacyEvidenceClassificationPersistenceConflict(
-                "code_evidence_legacy_classification_replay_corrupt",
-                details={"batch_id": first.batch_id},
-            ) from exc
 
-    @staticmethod
-    def _assert_classification_replay_matches(
-        persisted: domain.CodeEvidenceLegacyClassificationBatchReceipt,
-        requested: domain.CodeEvidenceLegacyClassificationBatchReceipt,
-    ) -> None:
-        persisted_items = {
-            item.evidence_id: _classification_replay_semantics(item)
-            for item in persisted.classifications
-        }
-        requested_items = {
-            item.evidence_id: _classification_replay_semantics(item)
-            for item in requested.classifications
-        }
-        if (
-            persisted.board_id != requested.board_id
-            or persisted.classified_by != requested.classified_by
-            or persisted.idempotency_key != requested.idempotency_key
-            or persisted.request_sha256 != requested.request_sha256
-            or persisted_items != requested_items
-        ):
-            raise traceability_port.LegacyEvidenceClassificationIdempotencyConflict(
-                details={
-                    "board_id": requested.board_id,
-                    "idempotency_key": requested.idempotency_key,
-                }
-            )
 
-    async def get_latest_evidence_classification(
-        self,
-        *,
-        board_id: str,
-        evidence_id: str,
-    ) -> domain.CodeEvidenceLegacyClassification | None:
-        try:
-            result = await self._session.execute(
-                select(
-                    CodeEvidenceClassificationHeadRow,
-                    CodeEvidenceClassificationEventRow,
-                )
-                .outerjoin(
-                    CodeEvidenceClassificationEventRow,
-                    CodeEvidenceClassificationEventRow.id
-                    == CodeEvidenceClassificationHeadRow.current_classification_id,
-                )
-                .where(
-                    CodeEvidenceClassificationHeadRow.board_id == board_id,
-                    CodeEvidenceClassificationHeadRow.evidence_id == evidence_id,
-                )
-            )
-            pair = result.one_or_none()
-            if pair is None:
-                return None
-            head, event = pair
-            if (
-                event is None
-                or event.board_id != head.board_id
-                or event.evidence_id != head.evidence_id
-                or event.revision != head.revision
-                or event.evidence_payload_sha256
-                != head.evidence_payload_sha256
-            ):
-                raise traceability_port.LegacyEvidenceClassificationPersistenceConflict(
-                    "code_evidence_legacy_classification_head_corrupt",
-                    details={"board_id": board_id, "evidence_id": evidence_id},
-                )
-            return self._classification_value(event)
-        except traceability_port.LegacyEvidenceClassificationPersistenceConflict:
-            raise
-        except SQLAlchemyError as exc:
-            raise traceability_port.LegacyEvidenceClassificationPersistenceConflict(
-                details={"board_id": board_id, "evidence_id": evidence_id},
-            ) from exc
 
-    async def get_evidence_classification(
-        self,
-        *,
-        board_id: str,
-        evidence_id: str,
-        revision: int,
-    ) -> domain.CodeEvidenceLegacyClassification | None:
-        try:
-            row = await self._session.scalar(
-                select(CodeEvidenceClassificationEventRow).where(
-                    CodeEvidenceClassificationEventRow.board_id == board_id,
-                    CodeEvidenceClassificationEventRow.evidence_id == evidence_id,
-                    CodeEvidenceClassificationEventRow.revision == revision,
-                )
-            )
-            return None if row is None else self._classification_value(row)
-        except traceability_port.LegacyEvidenceClassificationPersistenceConflict:
-            raise
-        except SQLAlchemyError as exc:
-            raise traceability_port.LegacyEvidenceClassificationPersistenceConflict(
-                details={
-                    "board_id": board_id,
-                    "evidence_id": evidence_id,
-                    "revision": revision,
-                },
-            ) from exc
 
-    async def list_latest_evidence_classifications(
-        self,
-        *,
-        board_id: str,
-        evidence_ids: tuple[str, ...],
-    ) -> tuple[domain.CodeEvidenceLegacyClassification, ...]:
-        requested_ids = tuple(sorted(set(evidence_ids)))
-        if not requested_ids:
-            return ()
-        values: dict[str, domain.CodeEvidenceLegacyClassification] = {}
-        try:
-            for offset in range(
-                0,
-                len(requested_ids),
-                _CLASSIFICATION_EVIDENCE_ID_CHUNK_SIZE,
-            ):
-                chunk = requested_ids[
-                    offset : offset + _CLASSIFICATION_EVIDENCE_ID_CHUNK_SIZE
-                ]
-                rows = (
-                    await self._session.execute(
-                        select(
-                            CodeEvidenceClassificationHeadRow,
-                            CodeEvidenceClassificationEventRow,
-                        )
-                        .outerjoin(
-                            CodeEvidenceClassificationEventRow,
-                            CodeEvidenceClassificationEventRow.id
-                            == CodeEvidenceClassificationHeadRow.current_classification_id,
-                        )
-                        .where(
-                            CodeEvidenceClassificationHeadRow.board_id == board_id,
-                            CodeEvidenceClassificationHeadRow.evidence_id.in_(chunk),
-                        )
-                    )
-                ).all()
-                for head, event in rows:
-                    if (
-                        event is None
-                        or event.board_id != head.board_id
-                        or event.evidence_id != head.evidence_id
-                        or event.revision != head.revision
-                        or event.evidence_payload_sha256
-                        != head.evidence_payload_sha256
-                        or head.evidence_id in values
-                    ):
-                        raise traceability_port.LegacyEvidenceClassificationPersistenceConflict(
-                            "code_evidence_legacy_classification_head_corrupt",
-                            details={
-                                "board_id": board_id,
-                                "evidence_id": head.evidence_id,
-                            },
-                        )
-                    values[head.evidence_id] = self._classification_value(event)
-        except traceability_port.LegacyEvidenceClassificationPersistenceConflict:
-            raise
-        except SQLAlchemyError as exc:
-            raise traceability_port.LegacyEvidenceClassificationPersistenceConflict(
-                details={"board_id": board_id},
-            ) from exc
-        return tuple(values[evidence_id] for evidence_id in sorted(values))
 
-    async def resolve_legacy_classification_batch_replay(
-        self,
-        *,
-        board_id: str,
-        classified_by: str,
-        idempotency_key: str,
-    ) -> domain.CodeEvidenceLegacyClassificationBatchReceipt | None:
-        await self._lock_classification_board_write(board_id)
-        try:
-            rows = await self._classification_replay_rows(
-                board_id=board_id,
-                classified_by=classified_by,
-                idempotency_key=idempotency_key,
-            )
-            return self._classification_receipt_from_rows(rows, replayed=True)
-        except traceability_port.LegacyEvidenceClassificationPersistenceConflict:
-            raise
-        except SQLAlchemyError as exc:
-            raise traceability_port.LegacyEvidenceClassificationPersistenceConflict(
-                details={
-                    "board_id": board_id,
-                    "classified_by": classified_by,
-                    "idempotency_key": idempotency_key,
-                },
-            ) from exc
 
-    async def append_legacy_evidence_classification_batch(
-        self,
-        *,
-        receipt: domain.CodeEvidenceLegacyClassificationBatchReceipt,
-        expected_revisions: Mapping[str, int],
-    ) -> domain.CodeEvidenceLegacyClassificationBatchReceipt:
-        items = receipt.classifications
-        expected = dict(expected_revisions)
-        item_ids = {item.evidence_id for item in items}
-        if (
-            set(expected) != item_ids
-            or any(
-                type(expected.get(item.evidence_id)) is not int
-                or expected[item.evidence_id] < 0
-                or item.revision != expected[item.evidence_id] + 1
-                for item in items
-            )
-        ):
-            raise traceability_port.LegacyEvidenceClassificationRevisionConflict(
-                "code_evidence_legacy_classification_expected_revision_invalid",
-                details={"board_id": receipt.board_id},
-            )
-
-        await self._lock_classification_board_write(receipt.board_id)
-        try:
-            replay_rows = await self._classification_replay_rows(
-                board_id=receipt.board_id,
-                classified_by=receipt.classified_by,
-                idempotency_key=receipt.idempotency_key,
-            )
-            replay = self._classification_receipt_from_rows(
-                replay_rows,
-                replayed=True,
-            )
-            if replay is not None:
-                self._assert_classification_replay_matches(replay, receipt)
-                return replay
-
-            evidence_rows = tuple(
-                (
-                    await self._session.execute(
-                        select(CodeEvidenceRow)
-                        .where(
-                            CodeEvidenceRow.board_id == receipt.board_id,
-                            CodeEvidenceRow.id.in_(tuple(sorted(item_ids))),
-                        )
-                        .with_for_update()
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            evidence_by_id = {row.id: row for row in evidence_rows}
-            if len(evidence_by_id) != len(item_ids):
-                raise traceability_port.LegacyEvidenceClassificationPersistenceConflict(
-                    "code_evidence_legacy_classification_evidence_missing",
-                    details={"board_id": receipt.board_id},
-                )
-            for item in items:
-                evidence = evidence_by_id[item.evidence_id]
-                baseline = item.baseline_provenance
-                baseline_is_dirty = (
-                    baseline.presence
-                    is domain.CodeEvidenceBaselinePresence.PREEXISTING_WORKTREE
-                )
-                if (
-                    evidence.payload_sha256 != item.evidence_payload_sha256
-                    or evidence.source_role
-                    != domain.CodeEvidenceSourceRole.UNCATEGORIZED_LEGACY.value
-                    or evidence.lifecycle_status
-                    != domain.CodeTraceabilityLifecycleStatus.ACTIVE.value
-                    or evidence.workspace_state_id != baseline.workspace_state_id
-                    or bool(evidence.declared_dirty) is not baseline_is_dirty
-                ):
-                    raise traceability_port.LegacyEvidenceClassificationPersistenceConflict(
-                        "code_evidence_legacy_classification_evidence_conflict",
-                        details={"evidence_id": item.evidence_id},
-                    )
-
-            head_rows = tuple(
-                (
-                    await self._session.execute(
-                        select(CodeEvidenceClassificationHeadRow)
-                        .where(
-                            CodeEvidenceClassificationHeadRow.board_id
-                            == receipt.board_id,
-                            CodeEvidenceClassificationHeadRow.evidence_id.in_(
-                                tuple(sorted(item_ids))
-                            ),
-                        )
-                        .with_for_update()
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            heads = {row.evidence_id: row for row in head_rows}
-            for item in items:
-                expected_revision = expected[item.evidence_id]
-                head = heads.get(item.evidence_id)
-                if expected_revision == 0:
-                    valid = (
-                        head is None
-                        and item.revision == 1
-                        and item.predecessor_classification_id is None
-                    )
-                else:
-                    valid = (
-                        head is not None
-                        and head.revision == expected_revision
-                        and head.current_classification_id
-                        == item.predecessor_classification_id
-                        and head.evidence_payload_sha256
-                        == item.evidence_payload_sha256
-                    )
-                if not valid:
-                    raise traceability_port.LegacyEvidenceClassificationRevisionConflict(
-                        details={
-                            "evidence_id": item.evidence_id,
-                            "expected_revision": expected_revision,
-                            "actual_revision": None if head is None else head.revision,
-                        }
-                    )
-
-            async with self._session.begin_nested():
-                self._session.add_all(
-                    CodeEvidenceClassificationEventRow(
-                        **_classification_row(item)
-                    )
-                    for item in items
-                )
-                await self._session.flush()
-                for item in items:
-                    expected_revision = expected[item.evidence_id]
-                    if expected_revision == 0:
-                        self._session.add(
-                            CodeEvidenceClassificationHeadRow(
-                                board_id=item.board_id,
-                                evidence_id=item.evidence_id,
-                                current_classification_id=item.id,
-                                evidence_payload_sha256=(
-                                    item.evidence_payload_sha256
-                                ),
-                                revision=item.revision,
-                                updated_at=item.classified_at,
-                            )
-                        )
-                        continue
-                    advance = await self._session.execute(
-                        update(CodeEvidenceClassificationHeadRow)
-                        .where(
-                            CodeEvidenceClassificationHeadRow.board_id
-                            == item.board_id,
-                            CodeEvidenceClassificationHeadRow.evidence_id
-                            == item.evidence_id,
-                            CodeEvidenceClassificationHeadRow.revision
-                            == expected_revision,
-                            CodeEvidenceClassificationHeadRow.current_classification_id
-                            == item.predecessor_classification_id,
-                            CodeEvidenceClassificationHeadRow.evidence_payload_sha256
-                            == item.evidence_payload_sha256,
-                        )
-                        .values(
-                            current_classification_id=item.id,
-                            revision=item.revision,
-                            updated_at=item.classified_at,
-                        )
-                    )
-                    if advance.rowcount != 1:
-                        raise traceability_port.LegacyEvidenceClassificationRevisionConflict(
-                            details={
-                                "evidence_id": item.evidence_id,
-                                "expected_revision": expected_revision,
-                            }
-                        )
-                await self._session.flush()
-        except (
-            traceability_port.LegacyEvidenceClassificationIdempotencyConflict,
-            traceability_port.LegacyEvidenceClassificationPersistenceConflict,
-            traceability_port.LegacyEvidenceClassificationRevisionConflict,
-        ):
-            raise
-        except IntegrityError as exc:
-            try:
-                replay_rows = await self._classification_replay_rows(
-                    board_id=receipt.board_id,
-                    classified_by=receipt.classified_by,
-                    idempotency_key=receipt.idempotency_key,
-                )
-                replay = self._classification_receipt_from_rows(
-                    replay_rows,
-                    replayed=True,
-                )
-                if replay is not None:
-                    self._assert_classification_replay_matches(replay, receipt)
-                    return replay
-            except SQLAlchemyError:
-                pass
-            raise traceability_port.LegacyEvidenceClassificationPersistenceConflict(
-                details={"batch_id": receipt.batch_id},
-            ) from exc
-        except SQLAlchemyError as exc:
-            raise traceability_port.LegacyEvidenceClassificationPersistenceConflict(
-                details={"batch_id": receipt.batch_id},
-            ) from exc
-        return receipt
 
     async def get_spec_link(
         self,
@@ -4302,18 +3724,6 @@ class CommunitySqlAlchemyCodeTraceabilityStore:
             overlaps = overlaps[:overlap_limit]
         return tuple(overlaps)
 
-    @staticmethod
-    def _source_context_actor_visible(
-        query: traceability_port.CodeTraceabilityProjectionQuery,
-    ) -> bool:
-        return (
-            query.profile
-            in {
-                domain.CodeTraceabilityProjectionProfile.DETAIL,
-                domain.CodeTraceabilityProjectionProfile.FULL,
-            }
-            and query.context_scope is not domain.CodeTraceabilityContextScope.GATE
-        )
 
     @staticmethod
     def _source_context_error(
@@ -4428,8 +3838,6 @@ class CommunitySqlAlchemyCodeTraceabilityStore:
             "context_contract_version",
             "context_origin",
             "context_sha256",
-            "classification_revision",
-            "classification_sha256",
         }
         entries: dict[str, Mapping[str, object]] = {}
         ordered_ids: list[str] = []
@@ -4445,8 +3853,6 @@ class CommunitySqlAlchemyCodeTraceabilityStore:
             lifecycle_status = item.get("lifecycle_status")
             context_origin = item.get("context_origin")
             context_contract_version = item.get("context_contract_version")
-            classification_revision = item.get("classification_revision")
-            classification_sha256 = item.get("classification_sha256")
             if (
                 not isinstance(evidence_id, str)
                 or not evidence_id.strip()
@@ -4467,25 +3873,10 @@ class CommunitySqlAlchemyCodeTraceabilityStore:
                     reason="frozen_evidence_manifest_enum_invalid",
                     evidence_id=evidence_id,
                 ) from exc
-            if origin is domain.CodeEvidenceContextOrigin.UNCLASSIFIED_LEGACY:
-                contextual_shape_valid = (
-                    context_contract_version is None
-                    and classification_revision is None
-                    and classification_sha256 is None
-                )
-            elif origin is domain.CodeEvidenceContextOrigin.AUTHORED:
-                contextual_shape_valid = (
-                    context_contract_version == 2
-                    and classification_revision is None
-                    and classification_sha256 is None
-                )
-            else:
-                contextual_shape_valid = (
-                    context_contract_version == 2
-                    and type(classification_revision) is int
-                    and classification_revision > 0
-                    and cls._sha256_text(classification_sha256)
-                )
+            contextual_shape_valid = (
+                context_contract_version == 2
+                and origin is domain.CodeEvidenceContextOrigin.AUTHORED
+            )
             if not contextual_shape_valid:
                 raise cls._source_context_error(
                     query,
@@ -4509,7 +3900,6 @@ class CommunitySqlAlchemyCodeTraceabilityStore:
         summary: domain.SourceContextSummaryV2,
     ) -> dict[str, object]:
         counts = summary.role_counts
-        classification = summary.classification_state
         return {
             "contract_version": 2,
             "subject_type": domain.CodeTraceabilitySubjectType.SPEC.value,
@@ -4529,17 +3919,6 @@ class CommunitySqlAlchemyCodeTraceabilityStore:
                 "existing_scaffold_count": counts.existing_scaffold_count,
                 "existing_constraint_count": counts.existing_constraint_count,
                 "reference_pattern_count": counts.reference_pattern_count,
-                "uncategorized_legacy_count": counts.uncategorized_legacy_count,
-            },
-            "classification_state": {
-                "classified_count": classification.classified_count,
-                "uncategorized_legacy_count": (
-                    classification.uncategorized_legacy_count
-                ),
-            },
-            "classification_fence": {
-                "revision": None,
-                "payload_sha256": None,
             },
             "interpretation_rule": summary.interpretation_rule,
             "items_not_current_implementation_count": (
@@ -4658,7 +4037,6 @@ class CommunitySqlAlchemyCodeTraceabilityStore:
         evidence: tuple[domain.CodeEvidence, ...],
         entries: Mapping[str, Mapping[str, object]],
     ) -> tuple[domain.SourceContextEvidenceItemV2, ...]:
-        include_actor = self._source_context_actor_visible(query)
         items: list[domain.SourceContextEvidenceItemV2] = []
         try:
             for value in evidence:
@@ -4675,29 +4053,7 @@ class CommunitySqlAlchemyCodeTraceabilityStore:
                         reason="frozen_evidence_payload_mismatch",
                         evidence_id=value.id,
                     )
-                revision = entry.get("classification_revision")
-                classification = None
-                if revision is not None:
-                    classification = await self.get_evidence_classification(
-                        board_id=query.board_id,
-                        evidence_id=value.id,
-                        revision=revision,
-                    )
-                    if (
-                        classification is None
-                        or classification.classification_sha256
-                        != entry.get("classification_sha256")
-                    ):
-                        raise self._source_context_error(
-                            query,
-                            reason="frozen_evidence_classification_missing",
-                            evidence_id=value.id,
-                        )
-                item = domain.source_context_evidence_item_v2(
-                    value,
-                    classification,
-                    include_classification_actor=include_actor,
-                )
+                item = domain.source_context_evidence_item_v2(value)
                 if (
                     item.context_contract_version
                     != entry.get("context_contract_version")
@@ -4840,7 +4196,6 @@ class CommunitySqlAlchemyCodeTraceabilityStore:
     ) -> tuple[
         domain.SourceContextSummaryV2 | None,
         tuple[domain.SourceContextEvidenceItemV2, ...],
-        tuple[domain.SourceContextClassificationInputV2, ...],
     ]:
         try:
             evidence_rows = tuple(
@@ -4864,18 +4219,6 @@ class CommunitySqlAlchemyCodeTraceabilityStore:
                 .all()
             )
             evidence = await self._evidence_values(evidence_rows)
-            classifications = await self.list_latest_evidence_classifications(
-                board_id=query.board_id,
-                evidence_ids=tuple(item.id for item in evidence),
-            )
-            classifications_by_evidence = {
-                item.evidence_id: item for item in classifications
-            }
-            if len(classifications_by_evidence) != len(classifications):
-                raise self._source_context_error(
-                    query,
-                    reason="current_classification_heads_ambiguous",
-                )
             delivery_context = (
                 None
                 if refinement.delivery_context is None
@@ -4901,37 +4244,20 @@ class CommunitySqlAlchemyCodeTraceabilityStore:
                 is domain.CodeTraceabilityLifecycleStatus.ACTIVE
             )
             if delivery_context is None and not evidence and not outcomes:
-                return None, (), ()
+                return None, ()
             summary = domain.build_source_context_summary_v2(
                 delivery_context=delivery_context,
                 delivery_context_provenance=provenance,
                 current_investigation_outcomes=outcomes,
                 evidence=evidence,
-                classifications=classifications,
             )
-            include_actor = self._source_context_actor_visible(query)
             items = tuple(
                 domain.source_context_evidence_item_v2(
                     item,
-                    classifications_by_evidence.get(item.id),
-                    include_classification_actor=include_actor,
                 )
                 for item in active_visible_evidence
             )
-            classification_inputs = (
-                tuple(
-                    domain.source_context_classification_input_v2(
-                        item,
-                        classifications_by_evidence.get(item.id),
-                    )
-                    for item in active_visible_evidence
-                    if item.source_role
-                    is domain.CodeEvidenceSourceRole.UNCATEGORIZED_LEGACY
-                )
-                if self._source_context_actor_visible(query)
-                else ()
-            )
-            return summary, items, classification_inputs
+            return summary, items
         except traceability_port.CodeTraceabilityPersistenceError:
             raise
         except (domain.CodeTraceabilityContractError, TypeError, ValueError) as exc:
@@ -5769,14 +5095,10 @@ class CommunitySqlAlchemyCodeTraceabilityStore:
         evidence = await self._evidence_values(evidence_rows)
         source_context: domain.SourceContextSummaryV2 | None = None
         source_context_items: tuple[domain.SourceContextEvidenceItemV2, ...] = ()
-        source_context_classification_inputs: tuple[
-            domain.SourceContextClassificationInputV2, ...
-        ] = ()
         if isinstance(subject, Refinement):
             (
                 source_context,
                 source_context_items,
-                source_context_classification_inputs,
             ) = (
                 await self._current_refinement_source_context(
                     query,
@@ -5893,9 +5215,6 @@ class CommunitySqlAlchemyCodeTraceabilityStore:
             source_refinement_version=lineage[2],
             source_context=source_context,
             source_context_items=source_context_items,
-            source_context_classification_inputs=(
-                source_context_classification_inputs
-            ),
         )
 
     async def refinement_context(

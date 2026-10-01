@@ -2722,16 +2722,9 @@ export type CodeEvidenceSourceRole =
   | 'current_implementation'
   | 'existing_scaffold'
   | 'existing_constraint'
-  | 'reference_pattern'
-  | 'uncategorized_legacy';
-export type AuthoredCodeEvidenceSourceRole = Exclude<
-  CodeEvidenceSourceRole,
-  'uncategorized_legacy'
->;
-export type CodeEvidenceContextOrigin =
-  | 'authored'
-  | 'human_legacy_classification'
-  | 'unclassified_legacy';
+  | 'reference_pattern';
+export type AuthoredCodeEvidenceSourceRole = CodeEvidenceSourceRole;
+export type CodeEvidenceContextOrigin = 'authored';
 export type CodeEvidenceBaselinePresence =
   | 'committed_snapshot'
   | 'preexisting_worktree';
@@ -2778,20 +2771,17 @@ export interface SourceContextRoleCountsV2 {
   existing_scaffold_count: number;
   existing_constraint_count: number;
   reference_pattern_count: number;
-  uncategorized_legacy_count: number;
+
 }
 
-export interface SourceContextClassificationStateV2 {
-  classified_count: number;
-  uncategorized_legacy_count: number;
-}
+
 
 export interface SourceContextSummaryV2 {
   delivery_context: DeliveryContext | null;
   delivery_context_provenance: DeliveryContextProvenance | null;
   investigation_outcome: ContextualInvestigationOutcomeV2 | null;
   role_counts: SourceContextRoleCountsV2;
-  classification_state: SourceContextClassificationStateV2;
+
   evidence_applicable: boolean | null;
   interpretation_rule: string;
   items_not_current_implementation_count: number;
@@ -2809,26 +2799,16 @@ export interface SourceContextEvidenceItemV2 {
   context_origin: CodeEvidenceContextOrigin;
   context_contract_version: 2 | null;
   evidence_applicable: boolean | null;
-  classification_revision?: number | null;
-  classification_sha256?: string | null;
-  classification_id?: string | null;
-  classified_by?: string | null;
-  classified_at?: string | null;
+
+
+
+
+
 }
 
-export interface SourceContextClassificationBaselineInputV2 {
-  presence: CodeEvidenceBaselinePresence;
-  workspace_state_id: string;
-  provenance_note: string | null;
-  provenance_note_required: boolean;
-}
 
-export interface SourceContextClassificationInputV2 {
-  evidence_id: string;
-  expected_evidence_payload_sha256: string;
-  expected_classification_revision: number;
-  baseline_provenance: SourceContextClassificationBaselineInputV2;
-}
+
+
 
 export interface ContextualEvidenceCoverage {
   total: number;
@@ -2836,7 +2816,7 @@ export interface ContextualEvidenceCoverage {
   dispositioned: number;
   pending: number;
   pending_ids: string[];
-  unresolved_applicability_count: number;
+
   coverage_pct: number | null;
   projection_complete: boolean;
 }
@@ -2853,57 +2833,13 @@ export interface ObligationEvidenceMapping {
   source_role: CodeEvidenceSourceRole | null;
 }
 
-export interface LegacyEvidenceClassificationItemRequest {
-  evidence_id: string;
-  expected_evidence_payload_sha256: string;
-  expected_classification_revision: number;
-  source_role: AuthoredCodeEvidenceSourceRole;
-  relevance_summary: string;
-  scope_relation: string;
-  source_origin: string;
-  interpretation_limit: string | null;
-  baseline_provenance: CodeEvidenceBaselineProvenance;
-}
 
-export interface LegacyEvidenceClassificationBatchRequest {
-  items: LegacyEvidenceClassificationItemRequest[];
-  justification: string;
-  idempotency_key: string;
-}
 
-export interface CodeEvidenceLegacyClassificationView {
-  id: string;
-  batch_id: string;
-  board_id: string;
-  evidence_id: string;
-  evidence_payload_sha256: string;
-  revision: number;
-  predecessor_classification_id?: string | null;
-  source_role: AuthoredCodeEvidenceSourceRole;
-  relevance_summary: string;
-  scope_relation: string;
-  source_origin: string;
-  interpretation_limit?: string | null;
-  baseline_provenance: CodeEvidenceBaselineProvenanceView;
-  classified_by: string;
-  classified_at: string;
-  justification: string;
-  request_sha256: string;
-  batch_item_count: number;
-  batch_item_index: number;
-  context_contract_version: 2;
-  classification_sha256: string;
-}
 
-export interface LegacyEvidenceClassificationBatchResult {
-  batch_id: string;
-  board_id: string;
-  classified_by: string;
-  classified_at: string;
-  request_sha256: string;
-  classifications: CodeEvidenceLegacyClassificationView[];
-  replayed: boolean;
-}
+
+
+
+
 
 export type CodeTraceabilityReceiptCurrentness =
   | 'current'
@@ -2936,7 +2872,6 @@ export interface CodeInvestigationReceipt {
   predecessor_receipt_id: string | null;
   trust_level: 'single_attestation' | 'corroborated' | 'conflicted' | string;
   acceptance_status: 'accepted' | 'rejected' | string;
-  outcome: 'accessible' | 'partial' | 'unavailable';
   capabilities: string[];
   source_ref: string;
   source_identity_digest: string | null;
@@ -2963,11 +2898,10 @@ export interface CodeInvestigationReceipt {
   expires_at: string;
   observation_sha256: string;
   payload_sha256: string;
-  /** Present on current Core projections; optional for legacy snapshots. */
-  idempotency_key?: string;
-  delivery_context?: DeliveryContext | null;
-  contextual_outcome?: ContextualInvestigationOutcomeV2 | null;
-  context_contract_version?: 2 | null;
+  idempotency_key: string;
+  delivery_context: DeliveryContext;
+  contextual_outcome: ContextualInvestigationOutcomeV2;
+  context_contract_version: 2;
 }
 
 export interface CodeInvestigationReceiptReadResult {
@@ -3209,13 +3143,13 @@ export interface CodeTraceabilityProjection {
   source_refinement_version?: number | null;
   source_context?: SourceContextSummaryV2 | null;
   source_context_items?: SourceContextEvidenceItemV2[];
-  source_context_classification_inputs?: SourceContextClassificationInputV2[];
+
   contextual_evidence_coverage?: ContextualEvidenceCoverage;
   obligation_evidence_mappings?: ObligationEvidenceMapping[];
   /** Current bounded receipts are included by contextual projections that expose omission detail. */
   current_receipts?: Array<Pick<
     CodeInvestigationReceipt,
-    'id' | 'outcome' | 'source_ref' | 'omission_manifest'
+    'id' | 'contextual_outcome' | 'source_ref' | 'omission_manifest'
   >>;
   evidence: CodeTraceabilityEvidence[];
   inherited_evidence_ids: string[];

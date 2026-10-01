@@ -50,9 +50,7 @@ function AuthoritySurfaces({ boardId }: { boardId: string }) {
       {authority.canRevokeEvidence && (
         <button type="button">Revoke evidence</button>
       )}
-      {authority.canClassifyLegacyEvidence && (
-        <button type="button">Review unclassified Evidence</button>
-      )}
+
       {authority.canCreateTarget && (
         <button type="button">Add semantic target</button>
       )}
@@ -145,7 +143,7 @@ describe('Code Traceability UI authority is fail-closed', () => {
     expect(screen.getByRole('tab', { name: 'Implementation Targets' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Revoke receipt' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Revoke evidence' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Review unclassified Evidence' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Review unclassified Evidence' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Add semantic target' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Acknowledge overlap' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Create human waiver' })).toBeInTheDocument();
@@ -192,7 +190,7 @@ describe('Code Traceability UI authority is fail-closed', () => {
       .not.toBeInTheDocument();
   });
 
-  it('requires the historical edit authority in addition to the classify leaf', async () => {
+  it('never exposes the removed action when an old classify leaf is supplied', async () => {
     const boardId = 'ct-authority-classify-no-history';
     getMyPermissionsMock.mockResolvedValueOnce(response(boardId, {
       code_traceability: {

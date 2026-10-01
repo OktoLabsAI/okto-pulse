@@ -642,7 +642,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
             "declared_revision": receipt.declared_revision,
             "workspace_state_id": receipt.workspace_state_id,
             "trust_level": receipt.trust_level,
-            "outcome": receipt.outcome,
+            "contextual_outcome": receipt.contextual_outcome,
             "generation": receipt.generation,
             "payload_sha256": receipt.payload_sha256,
             "content_hash": receipt.payload_sha256,

@@ -1499,7 +1499,12 @@ def main():
     traceability_receipts.add_argument("board_id", help="Board UUID")
     traceability_receipts.add_argument(
         "--outcome",
-        choices=("accessible", "partial", "unavailable"),
+        choices=(
+            "evidence_applicable",
+            "no_relevant_existing_implementation",
+            "partial",
+            "unavailable",
+        ),
     )
     traceability_receipts.add_argument("--limit", type=int, default=50)
     traceability_receipts.add_argument("--json", action="store_true")

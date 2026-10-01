@@ -208,12 +208,9 @@ const gateProjection: CodeTraceabilityProjection = {
       existing_scaffold_count: 0,
       existing_constraint_count: 0,
       reference_pattern_count: 0,
-      uncategorized_legacy_count: 0,
+
     },
-    classification_state: {
-      classified_count: 1,
-      uncategorized_legacy_count: 0,
-    },
+
     evidence_applicable: true,
     interpretation_rule: 'Only current implementation evidence contributes to coverage.',
     items_not_current_implementation_count: 0,
@@ -230,8 +227,8 @@ const gateProjection: CodeTraceabilityProjection = {
     context_origin: 'authored',
     context_contract_version: 2,
     evidence_applicable: true,
-    classification_revision: null,
-    classification_sha256: null,
+
+
   }],
   contextual_evidence_coverage: {
     total: 1,
@@ -239,7 +236,7 @@ const gateProjection: CodeTraceabilityProjection = {
     dispositioned: 0,
     pending: 0,
     pending_ids: [],
-    unresolved_applicability_count: 0,
+
     coverage_pct: 100,
     projection_complete: true,
   },
@@ -270,7 +267,10 @@ const receiptResult: CodeInvestigationReceiptReadResult = {
     predecessor_receipt_id: null,
     trust_level: 'single_attestation',
     acceptance_status: 'accepted',
-    outcome: 'accessible',
+    contextual_outcome: 'partial',
+    delivery_context: 'brownfield',
+    context_contract_version: 2,
+    idempotency_key: 'receipt-1',
     capabilities: ['file_read', 'symbol_search'],
     source_ref: 'source:opaque-1',
     source_identity_digest: 'sha256:source',
@@ -455,7 +455,7 @@ describe('Code Traceability passive Community surfaces', () => {
         dispositioned: 0,
         pending: 1,
         pending_ids: ['evidence-2'],
-        unresolved_applicability_count: 0,
+
         coverage_pct: 37.5,
         projection_complete: true,
       },
@@ -547,7 +547,7 @@ describe('Code Traceability passive Community surfaces', () => {
         dispositioned: 3,
         pending: 2,
         pending_ids: ['evidence-pending-a', 'evidence-pending-b'],
-        unresolved_applicability_count: 0,
+
         coverage_pct: 42.75,
         projection_complete: true,
       },
@@ -674,7 +674,7 @@ describe('Code Traceability passive Community surfaces', () => {
         dispositioned: 0,
         pending: 0,
         pending_ids: [],
-        unresolved_applicability_count: 0,
+
         coverage_pct: null,
         projection_complete: true,
       },
@@ -718,54 +718,7 @@ describe('Code Traceability passive Community surfaces', () => {
     expect(screen.queryByText(/waiver|warning/i)).not.toBeInTheDocument();
   });
 
-  it('does not treat raw legacy links as coverage while applicability is unresolved', async () => {
-    apiMock.getCodeTraceabilityProjection.mockResolvedValue({
-      ...gateProjection,
-      source_context: {
-        ...gateProjection.source_context!,
-        delivery_context: 'hybrid',
-        evidence_applicable: null,
-        investigation_outcome: null,
-      },
-      source_context_items: [{
-        ...gateProjection.source_context_items![0],
-        source_role: 'uncategorized_legacy',
-        context_origin: 'unclassified_legacy',
-        evidence_applicable: null,
-        context_contract_version: null,
-      }],
-      contextual_evidence_coverage: {
-        ...gateProjection.contextual_evidence_coverage!,
-        linked: 0,
-        pending: 0,
-        pending_ids: [],
-        unresolved_applicability_count: 1,
-        coverage_pct: null,
-      },
-      obligation_evidence_mappings: [{
-        ...gateProjection.obligation_evidence_mappings![0],
-        evidence_applicable: null,
-        context_origin: 'unclassified_legacy',
-        source_role: 'uncategorized_legacy',
-      }],
-    });
 
-    render(
-      <EvidenceMatrixPanel
-        boardId="board-1"
-        subjectId="spec-1"
-        subjectVersion={7}
-        obligationTitles={{ 'TR-2': 'TR-1: Acquire the lock before persistence' }}
-      />,
-    );
-
-    expect(await screen.findByTestId('code-evidence-coverage-status'))
-      .toHaveTextContent('Needs classification');
-    expect(screen.getAllByText('Needs classification', { selector: 'span' })).toHaveLength(2);
-    expect(screen.getByText('TR-1: Acquire the lock before persistence')).toBeInTheDocument();
-    expect(screen.getByText('Applicability unresolved')).toBeInTheDocument();
-    expect(screen.queryByText('100%')).not.toBeInTheDocument();
-  });
 
   it('shows contextual associations in every obligation column without changing server coverage', async () => {
     const kinds = ['spec', 'functional_requirement', 'technical_requirement', 'business_rule',
@@ -776,7 +729,7 @@ describe('Code Traceability passive Community surfaces', () => {
       source_context_items: [{ ...gateProjection.source_context_items![0], evidence_applicable: false }],
       contextual_evidence_coverage: {
         total: 0, linked: 0, dispositioned: 0, pending: 0, pending_ids: [],
-        unresolved_applicability_count: 0, coverage_pct: null, projection_complete: true,
+         coverage_pct: null, projection_complete: true,
       },
       obligation_evidence_mappings: kinds.map((kind) => ({
         ...gateProjection.obligation_evidence_mappings![0],

@@ -17,8 +17,6 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     Board,
     BoardErasureJob,
     BoardErasurePermit,
-    CodeEvidenceClassificationEventRow,
-    CodeEvidenceClassificationHeadRow,
     CodeEvidenceDispositionRow,
     CodeEvidenceRow,
     CodeEvidenceSpecLinkRow,
@@ -343,18 +341,6 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 delete(CodeEvidenceSpecLinkRow).where(
                     CodeEvidenceSpecLinkRow.board_id == board_id
                 )
-            )
-            await context.execute(
-                delete(CodeEvidenceClassificationHeadRow).where(
-                    CodeEvidenceClassificationHeadRow.board_id == board_id
-                )
-            )
-            await _delete_restrict_history(
-                context,
-                model=CodeEvidenceClassificationEventRow,
-                identity=CodeEvidenceClassificationEventRow.id,
-                reference=CodeEvidenceClassificationEventRow.predecessor_classification_id,
-                predicate=CodeEvidenceClassificationEventRow.board_id == board_id,
             )
             await _delete_restrict_history(
                 context,
@@ -728,9 +714,7 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 CodeInvestigationReceiptRevocationRow,
                 CodeInvestigationHeadRow,
                 CodeEvidenceRow,
-                CodeEvidenceClassificationHeadRow,
-                CodeEvidenceClassificationEventRow,
-                SemanticGuidelineAssessmentV2Row,
+                                        SemanticGuidelineAssessmentV2Row,
                 SemanticGuidelineMetricResultV2Row,
                 SemanticGuidelineFindingV2Row,
                 CodeEvidenceSpecLinkRow,

@@ -16,7 +16,6 @@ import type {
   CodeTraceabilityDisposition,
   CodeTraceabilityEvidence,
   CodeTraceabilityProjection,
-  SourceContextClassificationInputV2,
   SourceContextEvidenceItemV2,
 } from '@/types';
 import { ReceiptDetailModal } from './ReceiptDetailModal';
@@ -35,11 +34,8 @@ import {
   codeEvidenceSourceRoleLabel,
   groupSourceContextEvidence,
 } from './sourceContextPresentation';
-import { sanitizeCodeEvidenceProjectionForAuthority } from './codeEvidenceAuthority';
-import {
-  LegacyEvidenceClassificationDrawer,
-  type LegacyEvidenceClassificationSnapshot,
-} from './LegacyEvidenceClassificationDrawer';
+
+
 
 interface Props {
   boardId: string;
@@ -47,39 +43,11 @@ interface Props {
   subjectVersion: number;
 }
 
-interface OpenLegacyClassificationDrawer {
-  evidenceIds: readonly string[];
-  snapshot: LegacyEvidenceClassificationSnapshot;
-  opener: HTMLElement | null;
-}
 
-function isCurrentRefinementProjection(
-  projection: CodeTraceabilityProjection,
-  subjectId: string,
-  subjectVersion: number,
-): boolean {
-  return projection.subject_type === 'refinement'
-    && projection.subject_id === subjectId
-    && projection.subject_version === subjectVersion
-    && projection.profile === 'detail'
-    && projection.context_scope === 'default';
-}
 
-function legacyClassificationSnapshot(
-  projection: CodeTraceabilityProjection,
-  evidenceIds: readonly string[],
-): LegacyEvidenceClassificationSnapshot {
-  const selected = new Set(evidenceIds);
-  return {
-    classificationInputs: (projection.source_context_classification_inputs ?? []).filter(
-      (input: SourceContextClassificationInputV2) => selected.has(input.evidence_id),
-    ),
-    effectiveItems: (projection.source_context_items ?? []).filter(
-      (item) => selected.has(item.evidence_id),
-    ),
-    evidence: projection.evidence.filter((item) => selected.has(item.id)),
-  };
-}
+
+
+
 
 function lineRange(evidence: CodeTraceabilityEvidence) {
   if (!evidence.snapshot_line_start) return null;
@@ -113,7 +81,7 @@ const SOURCE_ROLE_BADGE_STYLES: Readonly<Record<CodeEvidenceSourceRole, string>>
   existing_scaffold: 'bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300',
   existing_constraint: 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300',
   reference_pattern: 'bg-violet-50 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300',
-  uncategorized_legacy: 'bg-orange-50 text-orange-700 dark:bg-orange-950/40 dark:text-orange-300',
+
 };
 
 const CLASSIFIED_SOURCE_ROLE_ORDER = [
@@ -129,18 +97,18 @@ function EvidenceCard({
   projection,
   onViewReceipt,
   canRevoke,
-  canChangeClassification,
+
   onRevoke,
-  onChangeClassification,
+
 }: {
   evidence: CodeTraceabilityEvidence;
   sourceContextItem: SourceContextEvidenceItemV2 | null;
   projection: CodeTraceabilityProjection;
   onViewReceipt: (receiptId: string) => void;
   canRevoke: boolean;
-  canChangeClassification: boolean;
+
   onRevoke: (evidenceId: string, reason: string) => Promise<void>;
-  onChangeClassification: (evidenceId: string, opener: HTMLElement) => void;
+
 }) {
   const [showRevoke, setShowRevoke] = useState(false);
   const [reason, setReason] = useState('');
@@ -318,17 +286,7 @@ function EvidenceCard({
               {evidence.lifecycle_status}
             </span>
           </div>
-          {canChangeClassification && (
-            <div className="flex justify-end">
-              <button
-                type="button"
-                onClick={(event) => onChangeClassification(evidence.id, event.currentTarget)}
-                className="btn btn-secondary text-xs"
-              >
-                Change classification
-              </button>
-            </div>
-          )}
+
           <div className="rounded-md border border-gray-100 bg-gray-50/70 px-3 py-2.5 dark:border-gray-700/70 dark:bg-gray-900/40">
             <div className="flex min-w-0 items-center gap-2 text-xs text-gray-700 dark:text-gray-200">
               <FileCode2 size={13} className="shrink-0 text-gray-400" />
@@ -404,14 +362,11 @@ function EvidenceCard({
                     ? null
                     : `V${sourceContextItem.context_contract_version}`}
                 />
-                <TechnicalValue
-                  label="Classification revision"
-                  value={sourceContextItem.classification_revision}
-                />
-                <TechnicalValue label="Classification identifier" value={sourceContextItem.classification_id} mono />
-                <TechnicalValue label="Classification digest" value={sourceContextItem.classification_sha256} mono />
-                <TechnicalValue label="Classified by" value={sourceContextItem.classified_by} mono />
-                <TechnicalValue label="Classified at" value={sourceContextItem.classified_at} />
+
+
+
+
+
               </>
             )}
             {evidence.workspace_state && (
@@ -506,7 +461,6 @@ export function CodeEvidencePanel({ boardId, subjectId, subjectVersion }: Props)
   const api = useDashboardApi();
   const {
     canReadProjection,
-    canClassifyLegacyEvidence,
     canRevokeEvidence,
     isLoading: authorityLoading,
     error: authorityError,
@@ -516,10 +470,10 @@ export function CodeEvidencePanel({ boardId, subjectId, subjectVersion }: Props)
   const [error, setError] = useState<string | null>(null);
   const [receiptId, setReceiptId] = useState<string | null>(null);
   const [showSubmissionGuide, setShowSubmissionGuide] = useState(false);
-  const [classificationDrawer, setClassificationDrawer] = useState<OpenLegacyClassificationDrawer | null>(null);
-  const [classificationSuccess, setClassificationSuccess] = useState<string | null>(null);
-  const classificationSuccessRef = useRef<HTMLParagraphElement>(null);
-  const classificationFocusFallbackRef = useRef<HTMLHeadingElement>(null);
+
+
+
+
   const projectionRequestGeneration = useRef(0);
 
   const load = useCallback(async (signal?: AbortSignal) => {
@@ -545,10 +499,7 @@ export function CodeEvidencePanel({ boardId, subjectId, subjectVersion }: Props)
         !signal?.aborted
         && projectionRequestGeneration.current === requestGeneration
       ) {
-        setProjection(sanitizeCodeEvidenceProjectionForAuthority(
-          nextProjection,
-          canClassifyLegacyEvidence,
-        ));
+        setProjection(nextProjection);
       }
     } catch (caught) {
       if (
@@ -564,13 +515,13 @@ export function CodeEvidencePanel({ boardId, subjectId, subjectVersion }: Props)
         && projectionRequestGeneration.current === requestGeneration
       ) setLoading(false);
     }
-  }, [api, boardId, canClassifyLegacyEvidence, canReadProjection, subjectId, subjectVersion]);
+  }, [api, boardId, canReadProjection, subjectId, subjectVersion]);
 
   useEffect(() => {
     setReceiptId(null);
     setShowSubmissionGuide(false);
-    setClassificationDrawer(null);
-    setClassificationSuccess(null);
+
+
     if (!canReadProjection) {
       projectionRequestGeneration.current += 1;
       setProjection(null);
@@ -588,15 +539,13 @@ export function CodeEvidencePanel({ boardId, subjectId, subjectVersion }: Props)
     const groups = groupSourceContextEvidence({
       evidence: projection.evidence,
       sourceContextItems: projection.source_context_items ?? [],
-      classificationInputs: canClassifyLegacyEvidence
-        ? projection.source_context_classification_inputs ?? []
-        : [],
+
       obligationMappings: projection.obligation_evidence_mappings ?? [],
     }).flatMap((group) => (
       group.evidence ? [{ ...group, evidence: group.evidence }] : []
     ));
     return groups;
-  }, [canClassifyLegacyEvidence, projection]);
+  }, [projection]);
 
   const classifiedEvidenceSections = useMemo(() => CLASSIFIED_SOURCE_ROLE_ORDER
     .map((role) => ({
@@ -605,108 +554,23 @@ export function CodeEvidencePanel({ boardId, subjectId, subjectVersion }: Props)
     }))
     .filter((section) => section.groups.length > 0), [evidenceGroups]);
 
-  const unclassifiedEvidenceGroups = useMemo(() => evidenceGroups.filter((group) => (
+  const unavailableContextGroups = useMemo(() => evidenceGroups.filter((group) => (
     !group.sourceContextItem
-    || group.sourceContextItem.source_role === 'uncategorized_legacy'
   )), [evidenceGroups]);
 
-  const currentClassificationInputs = useMemo(() => {
-    if (
-      !projection
-      || !canClassifyLegacyEvidence
-      || !isCurrentRefinementProjection(projection, subjectId, subjectVersion)
-    ) return [];
-    return projection.source_context_classification_inputs ?? [];
-  }, [canClassifyLegacyEvidence, projection, subjectId, subjectVersion]);
 
-  const classificationInputIds = useMemo(
-    () => new Set(currentClassificationInputs.map((input) => input.evidence_id)),
-    [currentClassificationInputs],
-  );
 
-  const unclassifiedClassificationIds = useMemo(() => {
-    if (!projection) return [];
-    const evidenceIds = new Set(projection.evidence.map((item) => item.id));
-    return (projection.source_context_items ?? [])
-      .filter((item) => (
-        classificationInputIds.has(item.evidence_id)
-        && evidenceIds.has(item.evidence_id)
-        && item.context_origin === 'unclassified_legacy'
-        && item.source_role === 'uncategorized_legacy'
-      ))
-      .map((item) => item.evidence_id);
-  }, [classificationInputIds, projection]);
 
-  const reclassifiableEvidenceIds = useMemo(() => new Set(
-    (projection?.source_context_items ?? [])
-      .filter((item) => (
-        classificationInputIds.has(item.evidence_id)
-        && item.context_origin === 'human_legacy_classification'
-      ))
-      .map((item) => item.evidence_id),
-  ), [classificationInputIds, projection]);
 
-  const openLegacyClassification = useCallback((
-    evidenceIds: readonly string[],
-    opener: HTMLElement,
-  ) => {
-    if (
-      !projection
-      || !canClassifyLegacyEvidence
-      || !isCurrentRefinementProjection(projection, subjectId, subjectVersion)
-    ) return;
-    const snapshot = legacyClassificationSnapshot(projection, evidenceIds);
-    if (
-      snapshot.classificationInputs.length === 0
-      || snapshot.classificationInputs.length !== evidenceIds.length
-      || snapshot.evidence.length !== evidenceIds.length
-    ) return;
-    setClassificationSuccess(null);
-    setClassificationDrawer({
-      evidenceIds: snapshot.classificationInputs.map((input) => input.evidence_id),
-      snapshot,
-      opener,
-    });
-  }, [canClassifyLegacyEvidence, projection, subjectId, subjectVersion]);
 
-  const refetchAfterLegacyClassification = useCallback(async (
-    evidenceIds: readonly string[],
-    signal: AbortSignal,
-  ): Promise<LegacyEvidenceClassificationSnapshot> => {
-    const requestGeneration = ++projectionRequestGeneration.current;
-    const nextProjection = await api.getCodeTraceabilityProjection(
-      boardId,
-      'refinement',
-      subjectId,
-      subjectVersion,
-      { profile: 'detail', signal },
-    );
-    if (signal.aborted || projectionRequestGeneration.current !== requestGeneration) {
-      throw new DOMException('Canonical projection request was superseded.', 'AbortError');
-    }
-    if (!isCurrentRefinementProjection(nextProjection, subjectId, subjectVersion)) {
-      throw new Error('The canonical response no longer matches this Refinement.');
-    }
-    const sanitized = sanitizeCodeEvidenceProjectionForAuthority(
-      nextProjection,
-      canClassifyLegacyEvidence,
-    );
-    setProjection(sanitized);
-    setError(null);
-    setLoading(false);
-    return legacyClassificationSnapshot(sanitized, evidenceIds);
-  }, [api, boardId, canClassifyLegacyEvidence, subjectId, subjectVersion]);
 
-  const closeLegacyClassification = useCallback(() => {
-    const opener = classificationDrawer?.opener ?? null;
-    setClassificationDrawer(null);
-    const restoreFocus = () => {
-      if (opener?.isConnected) opener.focus();
-      else (classificationSuccessRef.current ?? classificationFocusFallbackRef.current)?.focus();
-    };
-    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(restoreFocus);
-    else window.setTimeout(restoreFocus, 0);
-  }, [classificationDrawer]);
+
+
+
+
+
+
+
 
   const revokeEvidence = async (evidenceId: string, reason: string) => {
     try {
@@ -731,7 +595,7 @@ export function CodeEvidencePanel({ boardId, subjectId, subjectVersion }: Props)
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2
-            ref={classificationFocusFallbackRef}
+
             tabIndex={-1}
             className="text-sm font-semibold text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 dark:text-white"
           >
@@ -786,28 +650,15 @@ export function CodeEvidencePanel({ boardId, subjectId, subjectVersion }: Props)
           </button>
         </div>
       )}
-      {classificationSuccess && (
-        <p
-          ref={classificationSuccessRef}
-          className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-200"
-          role="status"
-          aria-live="polite"
-          tabIndex={-1}
-        >
-          {classificationSuccess}
-        </p>
-      )}
+
       {!loading && !error && projection && (
         <SourceContextOverview
           sourceContext={projection.source_context}
           contextualEvidenceCoverage={projection.contextual_evidence_coverage}
           visibleContextItemCount={projection.source_context_items?.length ?? 0}
           currentReceipts={projection.current_receipts ?? []}
-          unclassifiedActionCount={unclassifiedClassificationIds.length}
-          onReviewUnclassifiedEvidence={(opener) => openLegacyClassification(
-            unclassifiedClassificationIds,
-            opener,
-          )}
+
+
         />
       )}
       {!loading && !error && projection && !projection.source_context && evidenceGroups.length === 0 && (
@@ -843,25 +694,22 @@ export function CodeEvidencePanel({ boardId, subjectId, subjectVersion }: Props)
                   projection={projection}
                   onViewReceipt={setReceiptId}
                   canRevoke={canRevokeEvidence}
-                  canChangeClassification={reclassifiableEvidenceIds.has(group.evidenceId)}
+
                   onRevoke={revokeEvidence}
-                  onChangeClassification={(evidenceId, opener) => openLegacyClassification(
-                    [evidenceId],
-                    opener,
-                  )}
+
                 />
               ))}
             </section>
           ))}
-          {unclassifiedEvidenceGroups.length > 0 && (
-            <section aria-labelledby="code-evidence-unclassified" className="space-y-2">
+          {unavailableContextGroups.length > 0 && (
+            <section aria-labelledby="code-evidence-context-unavailable" className="space-y-2">
               <h4
-                id="code-evidence-unclassified"
+                id="code-evidence-context-unavailable"
                 className="text-xs font-semibold text-orange-800 dark:text-orange-300"
               >
-                Classification not provided
+                Context not projected
               </h4>
-              {unclassifiedEvidenceGroups.map((group) => (
+              {unavailableContextGroups.map((group) => (
                 <EvidenceCard
                   key={group.evidenceId}
                   evidence={group.evidence}
@@ -869,12 +717,9 @@ export function CodeEvidencePanel({ boardId, subjectId, subjectVersion }: Props)
                   projection={projection}
                   onViewReceipt={setReceiptId}
                   canRevoke={canRevokeEvidence}
-                  canChangeClassification={reclassifiableEvidenceIds.has(group.evidenceId)}
+
                   onRevoke={revokeEvidence}
-                  onChangeClassification={(evidenceId, opener) => openLegacyClassification(
-                    [evidenceId],
-                    opener,
-                  )}
+
                 />
               ))}
             </section>
@@ -899,30 +744,7 @@ export function CodeEvidencePanel({ boardId, subjectId, subjectVersion }: Props)
           onClose={() => setShowSubmissionGuide(false)}
         />
       )}
-      {classificationDrawer && (
-        <LegacyEvidenceClassificationDrawer
-          snapshot={classificationDrawer.snapshot}
-          canClassify={canClassifyLegacyEvidence}
-          opener={classificationDrawer.opener}
-          focusFallback={classificationFocusFallbackRef.current}
-          onClose={closeLegacyClassification}
-          onApplyBatch={(request, signal) => api.classifyLegacyCodeEvidence(
-            boardId,
-            request,
-            signal,
-          )}
-          onCanonicalRefetch={(signal) => refetchAfterLegacyClassification(
-            classificationDrawer.evidenceIds,
-            signal,
-          )}
-          onApplied={() => {
-            const count = classificationDrawer.evidenceIds.length;
-            setClassificationSuccess(
-              `${count} Evidence classification${count === 1 ? '' : 's'} updated.`,
-            );
-          }}
-        />
-      )}
+
     </div>
   );
 }

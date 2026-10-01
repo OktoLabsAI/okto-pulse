@@ -137,15 +137,15 @@ def list_receipts(
     """List receipt attestations and current/revoked lineage metadata."""
 
     bounded_limit = _bounded_limit(limit)
-    if outcome is not None and outcome not in {"accessible", "partial", "unavailable"}:
+    if outcome is not None and outcome not in {"evidence_applicable", "no_relevant_existing_implementation", "partial", "unavailable"}:
         raise CodeTraceabilityDiagnosticsError(
             "code_investigation_receipt_outcome_invalid",
-            "outcome must be accessible, partial, or unavailable",
+            "outcome must be evidence_applicable, no_relevant_existing_implementation, partial, or unavailable",
         )
     predicate = "receipt.board_id = ?"
     parameters: list[Any] = [board_id]
     if outcome is not None:
-        predicate += " AND receipt.outcome = ?"
+        predicate += " AND receipt.contextual_outcome = ?"
         parameters.append(outcome)
     parameters.append(bounded_limit)
     try:
@@ -155,7 +155,7 @@ def list_receipts(
                 "receipt.subject_type, receipt.subject_id, receipt.subject_version, "
                 "receipt.attestor_actor_id, receipt.generation, "
                 "receipt.predecessor_receipt_id, receipt.trust_level, "
-                "receipt.acceptance_status, receipt.outcome, receipt.capabilities, "
+                "receipt.acceptance_status, receipt.contextual_outcome, receipt.capabilities, "
                 "receipt.source_ref, receipt.declared_revision, "
                 "receipt.workspace_state_id, receipt.declared_dirty, "
                 "receipt.reproducibility_claim, receipt.omission_count, "
@@ -208,7 +208,7 @@ def inspect_record(
                 "receipt.subject_type, receipt.subject_id, receipt.subject_version, "
                 "receipt.attestor_actor_id, receipt.generation, "
                 "receipt.predecessor_receipt_id, receipt.trust_level, "
-                "receipt.acceptance_status, receipt.outcome, receipt.capabilities, "
+                "receipt.acceptance_status, receipt.contextual_outcome, receipt.capabilities, "
                 "receipt.source_ref, receipt.declared_revision, "
                 "receipt.workspace_state_id, receipt.declared_dirty, "
                 "receipt.reproducibility_claim, receipt.omission_count, "

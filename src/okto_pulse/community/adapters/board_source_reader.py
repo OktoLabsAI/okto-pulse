@@ -104,7 +104,7 @@ CODE_TRACEABILITY_SOURCE_MANIFESTS: dict[str, tuple[str, ...]] = {
         "id", "request_id", "board_id", "subject_type", "subject_id",
         "subject_version", "attestor_actor_id", "generation",
         "predecessor_receipt_id", "trust_level", "acceptance_status",
-        "outcome", "delivery_context", "contextual_outcome",
+        "delivery_context", "contextual_outcome",
         "context_contract_version", "capabilities", "source_ref",
         "source_identity_digest",
         "canonicalization_profile", "limits_profile", "selector_scope_digest",
@@ -1109,7 +1109,7 @@ def _code_traceability_source_rows(
             "declared_revision": receipt["declared_revision"],
             "workspace_state_id": receipt["workspace_state_id"],
             "trust_level": str(receipt["trust_level"]),
-            "outcome": str(receipt["outcome"]),
+            "contextual_outcome": str(receipt["contextual_outcome"]),
             "is_current": is_current,
         }
         if working_ttl_days is not None:

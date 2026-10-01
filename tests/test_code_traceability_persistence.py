@@ -492,10 +492,11 @@ def _attestation_bundle(
         request_payload_sha256=_C,
         idempotency_key="request-idempotency-1",
     )
-    observation_sha256 = domain.code_investigation_observation_sha256(
+    observation_sha256 = domain.code_investigation_observation_sha256_v2(
         source_ref=request.source_ref,
         selector_scope_digest=request.selector_scope_digest,
-        outcome=domain.CodeInvestigationOutcome.ACCESSIBLE,
+        delivery_context=domain.DeliveryContext.BROWNFIELD,
+        outcome=domain.ContextualInvestigationOutcomeV2.EVIDENCE_APPLICABLE,
         capabilities=capabilities,
         source_identity_digest=_A,
         declared_revision=workspace.declared_revision,
@@ -514,7 +515,9 @@ def _attestation_bundle(
         predecessor_receipt_id=None,
         trust_level=domain.CodeInvestigationTrustLevel.SINGLE_ATTESTATION,
         acceptance_status=domain.CodeInvestigationAcceptanceStatus.ACCEPTED,
-        outcome=domain.CodeInvestigationOutcome.ACCESSIBLE,
+        delivery_context=domain.DeliveryContext.BROWNFIELD,
+        context_contract_version=2,
+        contextual_outcome=domain.ContextualInvestigationOutcomeV2.EVIDENCE_APPLICABLE,
         capabilities=capabilities,
         source_ref=request.source_ref,
         source_identity_digest=_A,
@@ -604,6 +607,15 @@ def test_spec_context_keeps_active_v3_evidence_in_v4_snapshot_denominator(
             received_at=now + timedelta(seconds=2),
             payload_sha256=_E,
             idempotency_key="evidence-refinement-v3",
+            source_role=domain.CodeEvidenceSourceRole.CURRENT_IMPLEMENTATION,
+            context_contract_version=2,
+            relevance_summary="Current implementation behavior.",
+            scope_relation="same delivery scope",
+            source_origin="repository baseline",
+            baseline_provenance=domain.CodeEvidenceBaselineProvenance(
+                presence=domain.CodeEvidenceBaselinePresence.COMMITTED_SNAPSHOT,
+                workspace_state_id=workspace.workspace_state_id,
+            ),
         )
         manifest = json.dumps(
             [
@@ -997,6 +1009,15 @@ def test_evidence_racing_a_newer_preflight_fails_closed_without_busy_error(
             received_at=now + timedelta(seconds=2),
             payload_sha256=_D,
             idempotency_key="evidence-losing-race",
+            source_role=domain.CodeEvidenceSourceRole.CURRENT_IMPLEMENTATION,
+            context_contract_version=2,
+            relevance_summary="Current implementation behavior.",
+            scope_relation="same delivery scope",
+            source_origin="repository baseline",
+            baseline_provenance=domain.CodeEvidenceBaselineProvenance(
+                presence=domain.CodeEvidenceBaselinePresence.COMMITTED_SNAPSHOT,
+                workspace_state_id=workspace.workspace_state_id,
+            ),
         )
         async with sessions() as session:
             investigations = (
@@ -1197,6 +1218,15 @@ def test_transaction_bound_stores_persist_only_submitted_attestations(
                 received_at=now + timedelta(seconds=2),
                 payload_sha256=_A,
                 idempotency_key="evidence-idempotency-1",
+                source_role=domain.CodeEvidenceSourceRole.CURRENT_IMPLEMENTATION,
+                context_contract_version=2,
+                relevance_summary="Current implementation behavior.",
+                scope_relation="same delivery scope",
+                source_origin="repository baseline",
+                baseline_provenance=domain.CodeEvidenceBaselineProvenance(
+                    presence=domain.CodeEvidenceBaselinePresence.COMMITTED_SNAPSHOT,
+                    workspace_state_id=workspace.workspace_state_id,
+                ),
             )
             assert (
                 await traceability.create_evidence(
@@ -1545,7 +1575,7 @@ def test_transaction_bound_stores_persist_only_submitted_attestations(
                 "declared_revision": receipt.declared_revision,
                 "workspace_state_id": workspace.workspace_state_id,
                 "trust_level": receipt.trust_level.value,
-                "outcome": receipt.outcome.value,
+                "contextual_outcome": receipt.contextual_outcome.value,
                 "generation": receipt.generation,
                 "payload_sha256": receipt.payload_sha256,
                 "content_hash": receipt.payload_sha256,

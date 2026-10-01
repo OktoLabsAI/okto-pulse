@@ -266,7 +266,6 @@ export function EvidenceMatrixPanel({
     const semanticStateMustRemainVisible = [
       'projection_unavailable',
       'projection_incomplete',
-      'classification_required',
       'not_applicable',
       'investigation_partial',
       'investigation_unavailable',
@@ -293,7 +292,6 @@ export function EvidenceMatrixPanel({
     const classNameByKind: Record<typeof coveragePresentation.kind, string> = {
       projection_unavailable: 'bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-300',
       projection_incomplete: 'bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-300',
-      classification_required: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
       not_applicable: 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300',
       investigation_partial: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
       investigation_unavailable: 'bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-300',
