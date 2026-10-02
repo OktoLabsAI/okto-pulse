@@ -9,7 +9,6 @@ from okto_pulse.core.kg.interfaces.graph_transaction import (
     ProjectionActiveSetIntent, ProjectionActiveSetReconciliationError, ProjectionEdgeRef,
 )
 
-OLD = 'derives_from/cooccurrence@v2.0'
 CURRENT = 'derives_from/explicit_link@v2.1'
 
 
@@ -28,18 +27,19 @@ async def provider(tmp_path):
     async with await result.begin('board') as scope:
         for kind, identity, ref in [('Entity', 'root', 'spec:owner'),
                 ('Decision', 'current', 'spec:owner:decision:dec_one'),
-                ('Decision', 'legacy', 'spec:owner:decision_legacy:old'),
+                ('Decision', 'second', 'spec:owner:decision:dec_two'),
                 ('Decision', 'foreign', 'spec:other:decision:other'),
                 ('Requirement', 'fr', 'spec:owner:fr:fr_one'),
+                ('Requirement', 'fr_stale', 'spec:owner:fr:fr_two'),
                 ('Constraint', 'tr', 'spec:owner:tr:tr_one')]:
             scope.create_node(kind, identity, {'source_artifact_ref': ref}, source_session_id='seed')
         for source, target_type, target, rule, writer in [
-                ('current', 'Requirement', 'fr', OLD, 'worker_layer1'),
-                ('legacy', 'Requirement', 'fr', OLD, 'worker_layer1'),
-                ('current', 'Constraint', 'tr', 'derives_from/explicit_link@v2.0', 'worker_layer1'),
+                ('current', 'Requirement', 'fr_stale', CURRENT, 'worker_layer1'),
+                ('second', 'Requirement', 'fr', CURRENT, 'worker_layer1'),
+                ('current', 'Constraint', 'tr', CURRENT, 'worker_layer1'),
                 ('current', 'Requirement', 'fr', CURRENT, 'worker_layer1'),
-                ('current', 'Requirement', 'fr', OLD, 'human'),
-                ('foreign', 'Requirement', 'fr', OLD, 'worker_layer1'),
+                ('current', 'Requirement', 'fr', CURRENT, 'human'),
+                ('foreign', 'Requirement', 'fr', CURRENT, 'worker_layer1'),
                 ('current', 'Constraint', 'tr', 'derives_from/unknown@v9', 'worker_layer1')]:
             scope.create_edge('derives_from', 'Decision', target_type, source, target,
                 {'rule_id': rule, 'layer': 'deterministic' if writer == 'worker_layer1' else 'cognitive',

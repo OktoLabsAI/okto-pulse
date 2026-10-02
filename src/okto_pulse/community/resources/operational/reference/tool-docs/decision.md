@@ -33,28 +33,13 @@ Args:
 Returns:
     JSON with created decision and spec coverage snapshot
 
-## `okto_pulse_migrate_spec_decisions`
-
-One-shot migrator: extract "## Decisions" markdown bullets from spec.context
-into structured spec.decisions[] entries, then remove the block from context.
-
-Idempotent — running twice on a migrated spec is a no-op. Existing
-decisions are preserved; only the markdown-sourced ones are added, and
-duplicates (same title) are skipped.
-
-Args:
-    board_id: Board ID
-    spec_id: Spec ID
-
-Returns:
-    JSON with migration summary (decisions_added, context_modified)
 
 ## `okto_pulse_remove_spec_entity` (`target_type="decision"`)
 
 Remove a Decision (soft-delete: status becomes "revoked").
 
 Preserves history so the KG still surfaces the decision with its
-revocation reason. Use okto_pulse_update_decision with status=active to
+revocation reason. Use okto_pulse_update_spec_entity with entity_type=decision and operation=restore to
 restore.
 
 Args:
@@ -66,24 +51,7 @@ Args:
 Returns:
     JSON confirmation
 
-## `okto_pulse_update_decision`
+## `okto_pulse_update_spec_entity` — decision
 
-Update an existing Decision. Only non-empty fields are changed; pass "CLEAR"
-to wipe optional string/list fields.
-
-Args:
-    board_id: Board ID
-    spec_id: Spec ID
-    decision_id: Decision ID ("dec_...")
-    title: New title (optional)
-    rationale: New rationale (optional)
-    context: New context (optional, "CLEAR" to remove)
-    alternatives_considered: Pipe-separated list (optional, "CLEAR" to remove)
-    supersedes_decision_id: New target Decision id, or "CLEAR" to unset
-    linked_requirements: Pipe-separated requirement refs. Accepted forms:
-        FR index/fr_id/text and structured TR id/text. Pass "CLEAR" to empty.
-    notes: Notes (optional, "CLEAR" to remove)
-    status: One of "active", "superseded", "revoked" (optional)
-
-Returns:
-    JSON with updated decision
+Use `entity_type="decision", entity_id`, `operation="update"` and an object `payload_json` containing the fields to change. Omit unchanged fields; use JSON null to clear optional fields. Use exact same-Spec IDs for links.
+Use the explicit `restore`, `revoke` or `supersede` operation for lifecycle changes. Existing granular permissions and impact checks apply.
