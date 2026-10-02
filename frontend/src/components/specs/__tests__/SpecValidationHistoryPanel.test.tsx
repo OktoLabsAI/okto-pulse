@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import toast from 'react-hot-toast';
 import type { SpecValidationList } from '@/types';
 import { SpecValidationHistoryPanel } from '../SpecValidationHistoryPanel';
 
@@ -23,6 +24,8 @@ const validationHistory: SpecValidationList = {
   validations: [
     {
       id: 'validation-1',
+      edition: 1,
+      validation_edition: 1,
       spec_id: 'spec-1',
       board_id: 'board-1',
       reviewer_id: 'reviewer-1',
@@ -100,8 +103,8 @@ describe('SpecValidationHistoryPanel score presentation', () => {
     expect(within(completeness).getByText('/100')).toBeInTheDocument();
   });
 
-  it('preserves expandable per-dimension justifications for legacy history', async () => {
-    render(<SpecValidationHistoryPanel specId="spec-1" />);
+  it('preserves expandable per-dimension justifications for previous history', async () => {
+    render(<SpecValidationHistoryPanel specId="spec-1" currentEdition={2} view="previous" />);
 
     fireEvent.click(
       await screen.findByRole('button', {
@@ -309,46 +312,11 @@ describe('SpecValidationHistoryPanel score presentation', () => {
       .not.toBeInTheDocument();
   });
 
-  it('keeps a null-edition legacy validation in Previous and never promotes it to Current', async () => {
-    const legacyValidation = {
-      ...validationHistory.validations[0],
-      id: 'legacy-validation',
-      edition: null,
-      lifecycle_state: 'current' as const,
-      active: true,
-    };
-    apiMock.listSpecValidations.mockResolvedValue({
-      ...validationHistory,
-      current_validation_id: 'legacy-validation',
-      validations: [legacyValidation],
-    });
-
-    const previousRender = render(
-      <SpecValidationHistoryPanel
-        specId="spec-1"
-        currentEdition={2}
-        view="previous"
-      />,
-    );
-
-    expect(await screen.findByText('Legacy')).toBeInTheDocument();
-    expect(screen.getByText(/Historical result · Attempt 1/))
-      .toBeInTheDocument();
-    expect(screen.queryByText('Edition 1')).not.toBeInTheDocument();
-    previousRender.unmount();
-
-    render(
-      <SpecValidationHistoryPanel
-        specId="spec-1"
-        currentEdition={2}
-        view="current"
-        currentValidation={legacyValidation}
-      />,
-    );
-
-    expect(await screen.findByText(
-      'No current validation result for Edition 2.',
-    )).toBeInTheDocument();
+  it('surfaces incompatible-history refusal without rendering a legacy result', async () => {
+    apiMock.listSpecValidations.mockRejectedValue(new Error('spec_validation_edition_required'));
+    render(<SpecValidationHistoryPanel specId="spec-1" currentEdition={2} view="previous" />);
+    expect(await screen.findByText('No previous validation results are available.')).toBeInTheDocument();
+    expect(toast.error).toHaveBeenCalledWith('spec_validation_edition_required');
     expect(screen.queryByText('Legacy')).not.toBeInTheDocument();
   });
 

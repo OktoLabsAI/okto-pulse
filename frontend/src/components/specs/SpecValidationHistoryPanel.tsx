@@ -26,7 +26,6 @@ function belongsToCurrentEdition(
   validation: SpecValidation,
   currentEdition?: number,
 ): boolean {
-  if (validation.edition == null) return false;
   if (currentEdition === undefined) return validation.active === true;
   return validation.edition === currentEdition
     && (
@@ -216,14 +215,10 @@ function ValidationRecord({
   const legacyDimensions = typeof validation.completeness === 'number'
     && typeof validation.assertiveness === 'number'
     && typeof validation.ambiguity === 'number';
-  const editionLabel = validation.edition == null
-    ? 'Legacy'
-    : `Edition ${validation.edition}`;
+  const editionLabel = `Edition ${validation.edition}`;
   const historyLabel = current
     ? null
-    : validation.edition == null
-      ? 'Historical result'
-      : currentEdition !== undefined && validation.edition === currentEdition
+    : currentEdition !== undefined && validation.edition === currentEdition
         ? 'Superseded attempt'
         : 'Previous edition';
 

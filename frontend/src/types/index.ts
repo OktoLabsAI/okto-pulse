@@ -3292,7 +3292,7 @@ export interface SpecValidationPinpoint {
 export interface SpecValidation {
   id: string;
   validation_id?: string;
-  validation_edition?: number;
+  validation_edition: number;
   is_current?: boolean;
   spec_id: string;
   board_id: string;
@@ -3331,9 +3331,8 @@ export interface SpecValidation {
   created_at: string;
   spec_status?: string | null;
   active?: boolean | null;
-  /** Null marks legacy evidence that is available only in previous results. */
-  edition?: number | null;
-  lifecycle_state?: 'current' | 'previous' | 'history_only' | null;
+  edition: number;
+  lifecycle_state?: 'current' | 'previous' | null;
 }
 
 export interface SpecValidationSubmitPayload {

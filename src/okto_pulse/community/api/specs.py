@@ -2601,7 +2601,7 @@ class SpecValidationAcceptedResponse(BaseModel):
 
 
 class SpecValidationListResponse(BaseModel):
-    """Typed lifecycle-aware history without inventing fields on legacy rows."""
+    """Typed history for native edition-bound validation attempts."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -2613,7 +2613,7 @@ class SpecValidationListResponse(BaseModel):
     total: int = Field(ge=0)
     limit: int = Field(ge=1, le=100)
     offset: int = Field(ge=0)
-    lifecycle_state: Literal["all", "current", "previous", "history_only"]
+    lifecycle_state: Literal["all", "current", "previous"]
     has_more: bool
     validations: list[SpecValidationResponse]
 
@@ -2703,7 +2703,7 @@ async def submit_spec_validation(
 )
 async def list_spec_validations(
     spec_id: str,
-    lifecycle_state: Literal["all", "current", "previous", "history_only"] = Query(
+    lifecycle_state: Literal["all", "current", "previous"] = Query(
         default="all"
     ),
     offset: int = Query(default=0, ge=0),

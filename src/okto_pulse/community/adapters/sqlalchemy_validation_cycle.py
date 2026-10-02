@@ -50,6 +50,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
 from okto_pulse.community.adapters.sqlalchemy_quality_assessment import (
     _quality_actor_permissions,
 )
+from okto_pulse.core.domain.spec_validation import require_spec_validation_edition
 from okto_pulse.core.domain.quality_assessment import (
     AssessmentKind,
     AssessmentSubjectType,
@@ -1473,9 +1474,7 @@ def _spec_result(record: Mapping[str, Any]) -> ValidationCycleResultSummary:
     return ValidationCycleResultSummary(
         result_id=str(record["id"]),
         result_type=ValidationCycleResultType.SPEC_VALIDATION,
-        subject_edition=(
-            None if record.get("edition") is None else int(record["edition"])
-        ),
+        subject_edition=require_spec_validation_edition(record),
         status=str(record.get("outcome") or "completed"),
         summary={
             key: record.get(key)
@@ -1498,6 +1497,8 @@ def _spec_result(record: Mapping[str, Any]) -> ValidationCycleResultSummary:
 def _current_spec_validation_record(subject: object) -> Mapping[str, Any] | None:
     """Resolve the pointer only when it names evidence for this edition."""
 
+    for record in (getattr(subject, "validations", None) or ()):
+        require_spec_validation_edition(record)
     pointer_id = getattr(subject, "current_validation_id", None)
     if not isinstance(pointer_id, str) or not pointer_id:
         return None
@@ -2627,11 +2628,7 @@ class CommunitySqlAlchemyValidationCycleReader:
                         or not isinstance(record.get("digests"), dict)
                     ):
                         raise ValidationCycleResultNotFound()
-                    edition = (
-                        None
-                        if record.get("edition") is None
-                        else int(record["edition"])
-                    )
+                    edition = require_spec_validation_edition(record)
                     details = ValidationTechnicalAuditDetails(
                         receipt_id=result_id,
                         subject_version=int(record["subject_version"]),

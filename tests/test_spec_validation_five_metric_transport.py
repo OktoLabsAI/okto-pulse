@@ -62,6 +62,24 @@ def _array_item_ref(schema: dict[str, object]) -> str:
     return array_schema["items"]["$ref"]
 
 
+def test_history_only_filter_is_refused_before_use_case(client, monkeypatch):
+    async def unexpected(*args, **kwargs):
+        raise AssertionError("removed history filter reached the use case")
+    monkeypatch.setattr(ListSpecValidationsUseCase, "execute", unexpected)
+    response = client.get("/api/v1/specs/spec-1/validations?lifecycle_state=history_only")
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("route", ["validations", "validations/current"])
+def test_incompatible_history_error_is_reported_without_conversion(client, monkeypatch, route):
+    async def refused(*args, **kwargs):
+        raise ValueError("spec_validation_edition_required")
+    monkeypatch.setattr(ListSpecValidationsUseCase, "execute", refused)
+    response = client.get(f"/api/v1/specs/spec-1/{route}")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "spec_validation_edition_required"
+
+
 def test_openapi_publishes_five_metric_input_and_typed_history(
     client: TestClient,
 ) -> None:

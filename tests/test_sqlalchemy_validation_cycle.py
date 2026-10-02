@@ -18,7 +18,6 @@ from okto_pulse.community.adapters import sqlalchemy_validation_cycle
 from okto_pulse.community.adapters.sqlalchemy_models import (
     Base,
     Board,
-    ChecklistValidationBindingSnapshotRow,
     Guideline,
     GuidelineBoardBindingRow,
     GuidelineRevisionRow,
@@ -1342,6 +1341,7 @@ async def test_cycle_keeps_history_findings_and_audit_lazy(cycle_rig) -> None:
                 "id": "validation-previous",
                 "receipt_id": "validation-previous",
                 "edition": 1,
+                "validation_edition": 1,
                 "subject_version": 1,
                 "head_revision": 1,
                 "score": 72,
@@ -1354,6 +1354,7 @@ async def test_cycle_keeps_history_findings_and_audit_lazy(cycle_rig) -> None:
                 "id": "validation-current",
                 "receipt_id": "validation-current",
                 "edition": 2,
+                "validation_edition": 2,
                 "subject_version": 3,
                 "head_revision": 2,
                 "score": 91,
@@ -1793,111 +1794,32 @@ async def test_legacy_null_edition_ambiguity_is_previous_only_and_auditable(
     assert project_validation_technical_audit(audit)["subject_edition"] is None
 
 
-async def test_legacy_null_edition_spec_validation_is_previous_only_and_auditable(
-    cycle_rig,
-) -> None:
-    digests = {
-        name: character * 64
-        for name, character in zip(
-            ("content", "clarification", "ruleset", "taxonomy", "policy", "input"),
-            "cdefab",
-            strict=True,
-        )
-    }
+async def test_null_edition_spec_validation_is_refused_without_repair(cycle_rig):
+    record = {"id": "incompatible", "receipt_id": "incompatible", "edition": None,
+        "validation_edition": None, "subject_version": 1, "head_revision": 1,
+        "outcome": "success", "digests": {}}
     async with cycle_rig.factory() as session:
         spec = await session.get(Spec, "spec-cycle-04")
-        assert spec is not None
-        spec.edition = 2
-        spec.version = 4
-        spec.current_validation_id = "validation-legacy-null"
-        spec.validations = [
-            {
-                "id": "validation-legacy-null",
-                "receipt_id": "validation-legacy-null",
-                "edition": None,
-                "subject_version": 1,
-                "head_revision": 1,
-                "score": 80,
-                "summary": "Imported before lifecycle editions existed.",
-                "outcome": "success",
-                "digests": digests,
-            }
-        ]
-        session.add_all(
-            (
-                _requirement_lint_receipt(
-                    receipt_id="lint-current-for-legacy-validation",
-                    spec_id=spec.id,
-                    edition=2,
-                ),
-                QualityAssessmentHeadRow(
-                    board_id=BOARD_ID,
-                    subject_type="spec",
-                    subject_id=spec.id,
-                    assessment_kind="requirement_lint",
-                    receipt_id="lint-current-for-legacy-validation",
-                    revision=1,
-                    updated_at=NOW,
-                ),
-                ChecklistValidationBindingSnapshotRow(
-                    board_id=BOARD_ID,
-                    spec_id=spec.id,
-                    spec_edition=2,
-                    target_type="spec",
-                    phase="spec_validation",
-                    template_version="checklist-off/v1",
-                    mode="off",
-                    binding_version=1,
-                    binding_revision=0,
-                    binding_digest="f" * 64,
-                    captured_at=NOW,
-                ),
-            )
-        )
+        spec.validations = [record]
+        spec.current_validation_id = "incompatible"
         await session.commit()
-
     reader = CommunitySqlAlchemyValidationCycleReader(cycle_rig.factory)
-    cycle = await reader.get_validation_cycle(
-        subject_type=AssessmentSubjectType.SPEC,
-        subject_id="spec-cycle-04",
-        include_previous=True,
-        offset=0,
-        limit=25,
-        actor_id="owner",
-        realm_scope=RealmScope.local(),
-    )
-    batch = await reader.get_validation_cycles(
-        subjects=(
-            ValidationCycleSubjectRef(
-                AssessmentSubjectType.SPEC,
-                "spec-cycle-04",
-            ),
-        ),
-        actor_id="owner",
-        realm_scope=RealmScope.local(),
-    )
-
-    assert cycle.current_result is None
-    assert cycle.previous_result_count == 1
-    assert cycle.previous_results[0].subject_edition is None
-    assert tuple(item.status for item in cycle.checks) == ("passed", "off", "off")
-    assert cycle.remaining_actions == ("submit_spec_validation",)
-    assert batch[0].current_result is None
-    assert batch[0].previous_result_count == 1
-    assert tuple(item.status for item in batch[0].checks) == ("passed", "off", "off")
-    assert batch[0].remaining_actions == ("submit_spec_validation",)
-
-    audit = await reader.get_result_technical_audit(
-        subject_type=AssessmentSubjectType.SPEC,
-        subject_id="spec-cycle-04",
-        result_id="validation-legacy-null",
-        result_type=ValidationCycleResultType.SPEC_VALIDATION,
-        actor_id="owner",
-        realm_scope=RealmScope.local(),
-    )
-    assert audit.subject_edition is None
-    assert audit.technical_audit.exceptions == ()
-    assert project_validation_technical_audit(audit)["subject_edition"] is None
+    for include_previous in (False, True):
+        with pytest.raises(ValueError, match="spec_validation_edition_required"):
+            await reader.get_validation_cycle(subject_type=AssessmentSubjectType.SPEC,
+                subject_id="spec-cycle-04", include_previous=include_previous, offset=0, limit=25,
+                actor_id="owner", realm_scope=RealmScope.local())
+    with pytest.raises(ValueError, match="spec_validation_edition_required"):
+        await reader.get_validation_cycles(subjects=(ValidationCycleSubjectRef(
+            AssessmentSubjectType.SPEC, "spec-cycle-04"),), actor_id="owner", realm_scope=RealmScope.local())
+    with pytest.raises(ValueError, match="spec_validation_edition_required"):
+        await reader.get_result_technical_audit(subject_type=AssessmentSubjectType.SPEC,
+            subject_id="spec-cycle-04", result_id="incompatible",
+            result_type=ValidationCycleResultType.SPEC_VALIDATION, actor_id="owner", realm_scope=RealmScope.local())
+    async with cycle_rig.factory() as session:
+        spec = await session.get(Spec, "spec-cycle-04")
+        assert spec.validations == [record]
+        assert spec.current_validation_id == "incompatible"
 
 
 async def test_requirement_lint_preflight_closes_transaction_before_agent_wait(
@@ -1992,6 +1914,7 @@ async def _seed_authorization_results(cycle_rig, spec_id: str) -> None:
                 "id": f"{spec_id}-validation",
                 "receipt_id": f"{spec_id}-validation",
                 "edition": 2,
+                "validation_edition": 2,
                 "subject_version": 4,
                 "head_revision": 1,
                 "score": 91,
