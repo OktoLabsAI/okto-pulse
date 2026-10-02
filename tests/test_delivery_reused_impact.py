@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from dataclasses import replace
 
 import pytest
 from sqlalchemy import insert, select, update
@@ -6,7 +7,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from test_delivery_inline_execution import composed as _composed, db as _db
 from test_delivery_net_impact import delta
-from test_delivery_execution_sets import clone_request
+from test_delivery_execution_sets import clone_request, seed_scope, native_verifier as _native_verifier
 from okto_pulse.community.adapters.sqlalchemy_models import (
     Board, Card, Spec, CardDeliveryEvidenceRecordRow as Record,
     CodeInvestigationReceiptRow as Receipt, CodeInvestigationHeadRow as Head,
@@ -22,6 +23,8 @@ from okto_pulse.core.services.impact_evidence import require_current_report_impa
 
 db = _db
 composed = _composed
+native_verifier = _native_verifier
+pytestmark = pytest.mark.usefixtures("native_verifier")
 SCOPE = CardDeliveryScope("b", "c", "s", 1)
 
 
@@ -37,6 +40,19 @@ async def observation(session, identity, *, revision=None, source_identity=None)
         values["declared_revision"] = revision
     if source_identity is not None:
         values["source_identity_digest"] = source_identity
+    from okto_pulse.community.adapters.sqlalchemy_code_traceability import _receipt_from_row
+    from okto_pulse.core.domain.code_traceability import code_investigation_observation_sha256_v2
+    original = _receipt_from_row(receipt)
+    workspace = original.workspace_state
+    if revision is not None and workspace is not None:
+        workspace = replace(workspace, declared_revision=revision)
+    values["observation_sha256"] = code_investigation_observation_sha256_v2(
+        source_ref=original.source_ref, selector_scope_digest=original.selector_scope_digest,
+        delivery_context=original.delivery_context, outcome=original.contextual_outcome,
+        capabilities=original.capabilities, source_identity_digest=values["source_identity_digest"],
+        declared_revision=values["declared_revision"], workspace_state=workspace,
+        omission_manifest=original.omission_manifest,
+    )
     await session.execute(insert(Receipt).values(**values))
     await session.execute(update(Head).where(Head.board_id == "b").values(current_receipt_id=identity, latest_receipt_id=identity, revision=Head.revision + 1))
     await session.commit()
@@ -60,6 +76,7 @@ def register_report_adapters():
 
 async def prepare(composed, *, fresh=True):
     session, uow, use_case, actor = composed
+    await seed_scope(session)
     await session.execute(update(Board).where(Board.id == "b").values(realm_id="local", settings={"impact_evidence_mode": "require", "delivery_evidence_gate": "advisory"}))
     head = (await session.scalars(select(Head))).one()
     saved = await use_case.execute(delta("impact", head.source_ref, "b" * 40, "a" * 40, "created"), actor=actor, uow=uow)
@@ -162,3 +179,51 @@ async def test_same_known_base_observed_again_does_not_invalidate_report(compose
         await writer.commit()
         await observation(writer, "same-base-observation")
         assert (await CommunityDeliveryEvidenceStore(writer).report_impact_status(SCOPE))["current"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["off", "advisory", "require"])
+async def test_completion_impact_policy_is_independent_of_advisory_delivery(composed, mode, tmp_path, monkeypatch):
+    from okto_pulse.community.adapters.rebuild_audit_storage import CommunityFileSystemRebuildAuditArtifactStore
+    from okto_pulse.core.kg.cognitive_closeout_gate import CognitiveCloseoutGate
+    from okto_pulse.core.kg.rebuild_audit import CognitiveConsolidationItemStore
+    from okto_pulse.core.services import main
+    from okto_pulse.core.ports.relational_services import register_resource_gate_adapter_factory
+    from okto_pulse.community.adapters.sqlalchemy_resource_gate_service import CommunitySqlAlchemyResourceGateAdapter
+    register_resource_gate_adapter_factory(CommunitySqlAlchemyResourceGateAdapter)
+    # Run the real cognitive gate over disposable artifacts, without a graph runtime.
+    gate = CognitiveCloseoutGate(store=CognitiveConsolidationItemStore(
+        artifact_store=CommunityFileSystemRebuildAuditArtifactStore(tmp_path / "cognitive")))
+    monkeypatch.setattr(main, "_build_default_cognitive_closeout_gate", lambda: gate)
+    factory, request, _ = await prepare(composed)
+    from okto_pulse.community.adapters.sqlalchemy_knowledge_propagation import CommunitySqlAlchemyKnowledgePropagationStore
+    from okto_pulse.core.ports.knowledge_propagation import register_knowledge_propagation_port
+    register_knowledge_propagation_port(CommunitySqlAlchemyKnowledgePropagationStore(factory))
+    from okto_pulse.community.adapters.sqlalchemy_unit_of_work import CommunityUnitOfWork
+    from okto_pulse.core.application.use_cases.base import ActorContext
+    owner = ActorContext("owner", "rest", actor_kind="human", realm_scope=RealmScope.local())
+    async with factory() as writer, CommunityUnitOfWork(writer, actor=owner, realm_scope=RealmScope.local()) as uow:
+        # The shared origin fixture inserts its Card with raw SQL. Author current
+        # content through the composed session so semantic authority is recorded.
+        authored = await writer.get(Card, "c")
+        authored.description = "Current implementation subject for completion policy"
+        await uow.commit()
+        request.delivery_selection.expected_card_version = authored.policy_version
+        await CardService(writer).move_card("c", "owner", request)
+        await uow.commit()
+        await observation(writer, "changed-base", revision="c" * 40)
+        board = await writer.get(Board, "b")
+        board.settings = {**board.settings, "impact_evidence_mode": mode}
+        await writer.commit()
+    async with factory() as reader:
+        service = CardService(reader)
+        card = await service.get_card("c")
+        board = await reader.get(Board, "b")
+        before = list(card.conclusions)
+        assert board.settings["delivery_evidence_gate"] == "advisory"
+        assert not (await CommunityDeliveryEvidenceStore(reader).report_impact_status(SCOPE))["current"]
+        failures = await service._task_completion_gate_failures(card=card, board=board)
+        assert any(row.code == "impact_evidence_required" for row in failures) == (mode == "require")
+        assert not any(row.code == "delivery_evidence_incomplete" for row in failures)
+        assert (await reader.get(Card, "c")).conclusions == before
+        assert (await reader.get(Card, "c")).status == "validation"
