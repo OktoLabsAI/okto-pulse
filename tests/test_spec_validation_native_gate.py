@@ -3,6 +3,7 @@
 Requirement Lint acceptance is a fixture input; its admission has separate suites.
 The policy transition, semantic projection and commits below use real adapters.
 """
+
 import uuid
 from datetime import datetime, timezone
 
@@ -10,16 +11,29 @@ import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
-    Board, Card, CardStatus, CardType, Ideation, IdeationStatus, Refinement,
-    RefinementSnapshot, RefinementStatus, Spec, SpecStatus,
+    Board,
+    Card,
+    CardStatus,
+    CardType,
+    Ideation,
+    IdeationStatus,
+    Refinement,
+    RefinementSnapshot,
+    RefinementStatus,
+    Spec,
+    SpecStatus,
 )
-from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import CommunitySemanticSession
+from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
+    CommunitySemanticSession,
+)
 from okto_pulse.community.adapters.sqlalchemy_unit_of_work import CommunityUnitOfWork
 from okto_pulse.core.application.use_cases.base import ActorContext
 from okto_pulse.core.domain.realm import RealmScope
 from okto_pulse.core.domain.code_traceability import (
-    DeliveryContext, RefinementDeliveryContextProvenance,
-    RefinementSourceContextManifestV2, SpecDeliveryContextProvenance,
+    DeliveryContext,
+    RefinementDeliveryContextProvenance,
+    RefinementSourceContextManifestV2,
+    SpecDeliveryContextProvenance,
     build_source_context_summary_v2,
 )
 from okto_pulse.core.services.main import SpecService
@@ -29,31 +43,55 @@ from test_delivery_reused_impact import register_report_adapters
 BOARD_ID = "validation-board-001"
 SPEC_ID = "validation-spec-001"
 USER_ID = "user-test-001"
-ACTOR = ActorContext(USER_ID, "rest", actor_kind="human", realm_scope=RealmScope.local())
+ACTOR = ActorContext(
+    USER_ID, "rest", actor_kind="human", realm_scope=RealmScope.local()
+)
 
 
 @pytest.fixture
 async def db_factory(tmp_path, monkeypatch):
     engine, _ = await _runtime(tmp_path / "spec-validation.db")
     register_report_adapters()
-    from okto_pulse.community.adapters.sqlalchemy_resource_gate_service import CommunitySqlAlchemyResourceGateAdapter
-    from okto_pulse.core.ports.relational_services import register_resource_gate_adapter_factory
+    from okto_pulse.community.adapters.sqlalchemy_resource_gate_service import (
+        CommunitySqlAlchemyResourceGateAdapter,
+    )
+    from okto_pulse.core.ports.relational_services import (
+        register_resource_gate_adapter_factory,
+    )
+
     register_resource_gate_adapter_factory(CommunitySqlAlchemyResourceGateAdapter)
+
     async def accepted_lint(_service, _spec):
         return None
-    monkeypatch.setattr(SpecService, "_enforce_spec_requirement_lint_gate", accepted_lint)
-    factory = async_sessionmaker(engine, expire_on_commit=False,
-        sync_session_class=CommunitySemanticSession, info={"realm_scope": RealmScope.local()})
-    from okto_pulse.community.adapters.sqlalchemy_knowledge_propagation import CommunitySqlAlchemyKnowledgePropagationStore
-    from okto_pulse.core.ports.knowledge_propagation import register_knowledge_propagation_port
-    register_knowledge_propagation_port(CommunitySqlAlchemyKnowledgePropagationStore(factory))
+
+    monkeypatch.setattr(
+        SpecService, "_enforce_spec_requirement_lint_gate", accepted_lint
+    )
+    factory = async_sessionmaker(
+        engine,
+        expire_on_commit=False,
+        sync_session_class=CommunitySemanticSession,
+        info={"realm_scope": RealmScope.local()},
+    )
+    from okto_pulse.community.adapters.sqlalchemy_knowledge_propagation import (
+        CommunitySqlAlchemyKnowledgePropagationStore,
+    )
+    from okto_pulse.core.ports.knowledge_propagation import (
+        register_knowledge_propagation_port,
+    )
+
+    register_knowledge_propagation_port(
+        CommunitySqlAlchemyKnowledgePropagationStore(factory)
+    )
     try:
         yield factory
     finally:
         await engine.dispose()
 
 
-async def _seed_board(db_factory, board_id=None, spec_id=None) -> None:
+async def _seed_board(
+    db_factory, board_id=None, spec_id=None, *, execution_ready=False
+) -> None:
     """Create a board with ideation → refinement → spec chain.
 
     Idempotent — skips if board already seeded.
@@ -63,10 +101,14 @@ async def _seed_board(db_factory, board_id=None, spec_id=None) -> None:
         board_id = BOARD_ID
     if spec_id is None:
         spec_id = SPEC_ID
-    return await _seed_board_with_ids(db_factory, board_id, spec_id)
+    return await _seed_board_with_ids(
+        db_factory, board_id, spec_id, execution_ready=execution_ready
+    )
 
 
-async def _seed_board_with_ids(db_factory, board_id, spec_id) -> None:
+async def _seed_board_with_ids(
+    db_factory, board_id, spec_id, *, execution_ready=False
+) -> None:
     """Create a board with ideation → refinement → spec chain.
 
     Idempotent — skips if board already seeded.
@@ -104,6 +146,8 @@ async def _seed_board_with_ids(db_factory, board_id, spec_id) -> None:
         source_refinement_version=1,
     )
     async with db_factory() as db:
+        from okto_pulse.core.domain.execution_contract import new_execution_contract
+
         db.add(
             Board(
                 id=board_id,
@@ -115,6 +159,9 @@ async def _seed_board_with_ids(db_factory, board_id, spec_id) -> None:
                     "min_spec_confidence": 70,
                     "min_spec_assertiveness": 80,
                     "max_spec_ambiguity": 30,
+                    "delivery_evidence_gate": "advisory"
+                    if execution_ready
+                    else "blocking",
                 },
             )
         )
@@ -161,10 +208,32 @@ async def _seed_board_with_ids(db_factory, board_id, spec_id) -> None:
                 ideation_id=ideation_id,
                 refinement_id=ref_id,
                 title="Validation Gate Spec",
+                execution_contract=new_execution_contract(
+                    board_id=board_id,
+                    spec_id=spec_id,
+                    edition=1,
+                    actor_id=USER_ID,
+                    origin="new_spec",
+                ),
+                evaluations=(
+                    [
+                        {
+                            "spec_edition": 1,
+                            "evaluator_id": "reviewer",
+                            "recommendation": "approve",
+                            "overall_score": 100,
+                        }
+                    ]
+                    if execution_ready
+                    else []
+                ),
+                skip_qualitative_validation=execution_ready,
                 architecture_adoption={
                     "contract_version": "architecture-adoption/v1",
-                    "board_id": board_id, "spec_id": spec_id,
-                    "adopted_in_edition": 1, "actor_id": USER_ID,
+                    "board_id": board_id,
+                    "spec_id": spec_id,
+                    "adopted_in_edition": 1,
+                    "actor_id": USER_ID,
                     "inherited_resource_ids": [],
                 },
                 status=SpecStatus.APPROVED,
@@ -172,9 +241,7 @@ async def _seed_board_with_ids(db_factory, board_id, spec_id) -> None:
                 delivery_context=DeliveryContext.BROWNFIELD.value,
                 delivery_context_provenance={
                     "value": spec_context_provenance.value.value,
-                    "inherited_value": (
-                        spec_context_provenance.inherited_value.value
-                    ),
+                    "inherited_value": (spec_context_provenance.inherited_value.value),
                     "source_refinement_id": (
                         spec_context_provenance.source_refinement_id
                     ),
@@ -191,7 +258,10 @@ async def _seed_board_with_ids(db_factory, board_id, spec_id) -> None:
                 acceptance_criteria=[
                     {"id": "ac_0", "text": "AC1: System returns 200 on health check"},
                     {"id": "ac_1", "text": "AC2: System returns 401 on invalid token"},
-                    {"id": "ac_2", "text": "AC3: System returns 404 on unknown resource"},
+                    {
+                        "id": "ac_2",
+                        "text": "AC3: System returns 404 on unknown resource",
+                    },
                 ],
                 functional_requirements=[
                     {"id": "fr_0", "text": "FR1: Health endpoint exists"},
@@ -328,7 +398,9 @@ async def _seed_board_with_ids(db_factory, board_id, spec_id) -> None:
                 updated_at=yesterday,
             )
         )
-        async with CommunityUnitOfWork(db, actor=ACTOR, realm_scope=RealmScope.local()) as uow:
+        async with CommunityUnitOfWork(
+            db, actor=ACTOR, realm_scope=RealmScope.local()
+        ) as uow:
             await uow.commit()
 
 
@@ -342,15 +414,32 @@ def _canonical_submit_data(
     recommendation: str = "approve",
 ) -> dict:
     from okto_pulse.core.domain.spec_validation import SpecValidationPinpoint
-    from okto_pulse.core.domain.guideline_semantic_v2 import AnchorSnapshot, SemanticAnchorAvailability
+    from okto_pulse.core.domain.guideline_semantic_v2 import (
+        AnchorSnapshot,
+        SemanticAnchorAvailability,
+    )
+
     # The service receives snapshots sealed by its public use case. Admission
     # of anchors is covered by transport/use-case suites; this is fixture input.
-    pinpoint = SpecValidationPinpoint.from_dict({
-        "metric": "decidability", "anchor_type": "field",
-        "anchor_ref": "technical_requirements.tr_availability",
-        "detail": "State the required scaling bounds.",
-    }).seal(AnchorSnapshot(label="Availability", excerpt="Required scaling bounds",
-        source_version="1", availability_at_seal=SemanticAnchorAvailability.AVAILABLE)).to_dict()
+    pinpoint = (
+        SpecValidationPinpoint.from_dict(
+            {
+                "metric": "decidability",
+                "anchor_type": "field",
+                "anchor_ref": "technical_requirements.tr_availability",
+                "detail": "State the required scaling bounds.",
+            }
+        )
+        .seal(
+            AnchorSnapshot(
+                label="Availability",
+                excerpt="Required scaling bounds",
+                source_version="1",
+                availability_at_seal=SemanticAnchorAvailability.AVAILABLE,
+            )
+        )
+        .to_dict()
+    )
     return {
         "confidence": confidence,
         "confidence_justification": "The evaluator inspected the complete Spec.",
@@ -387,7 +476,9 @@ async def _submit_spec_validation(service, db, *args, **kwargs):
             ),
         )
     kwargs["data"] = data
-    async with CommunityUnitOfWork(db, actor=ACTOR, realm_scope=RealmScope.local()) as uow:
+    async with CommunityUnitOfWork(
+        db, actor=ACTOR, realm_scope=RealmScope.local()
+    ) as uow:
         result = await service.submit_spec_validation(*args, **kwargs)
         await uow.commit()
     return result
@@ -433,9 +524,18 @@ class TestCanonicalFiveMetricGate:
             assert stored.status == SpecStatus.VALIDATED
             assert stored.current_validation_id == result["id"]
             assert stored.validations[-1]["pinpoints"] == result["pinpoints"]
-            for metric in ("confidence", "clarity", "assertiveness", "decidability", "ambiguity"):
+            for metric in (
+                "confidence",
+                "clarity",
+                "assertiveness",
+                "decidability",
+                "ambiguity",
+            ):
                 assert stored.validations[-1][metric] == result[metric]
-                assert stored.validations[-1][metric + "_justification"] == result[metric + "_justification"]
+                assert (
+                    stored.validations[-1][metric + "_justification"]
+                    == result[metric + "_justification"]
+                )
 
     async def test_every_canonical_threshold_participates_in_gate_outcome(
         self,
@@ -471,4 +571,7 @@ class TestCanonicalFiveMetricGate:
             stored = await reader.get(Spec, SPEC_ID)
             assert stored.status == SpecStatus.APPROVED
             assert stored.validations[-1]["outcome"] == "failed"
-            assert stored.validations[-1]["threshold_violations"] == result["threshold_violations"]
+            assert (
+                stored.validations[-1]["threshold_violations"]
+                == result["threshold_violations"]
+            )
