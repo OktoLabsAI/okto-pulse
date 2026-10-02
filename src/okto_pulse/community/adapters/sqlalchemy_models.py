@@ -10099,7 +10099,7 @@ class ChecklistExecutionRow(Base):
             name="ck_checklist_execution_versions",
         ),
         CheckConstraint(
-            "spec_edition IS NULL OR spec_edition >= 1",
+            "spec_edition >= 1",
             name="ck_checklist_execution_spec_edition",
         ),
         CheckConstraint(
@@ -10140,7 +10140,7 @@ class ChecklistExecutionRow(Base):
     )
     spec_version: Mapped[int] = mapped_column(Integer, nullable=False)
     # NULL rows predate lifecycle editions and are history-only.
-    spec_edition: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    spec_edition: Mapped[int] = mapped_column(Integer, nullable=False)
     content_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     input_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     template_version: Mapped[str] = mapped_column(
@@ -10184,7 +10184,7 @@ class ChecklistReceiptRow(Base):
             name="ck_checklist_receipt_versions",
         ),
         CheckConstraint(
-            "spec_edition IS NULL OR spec_edition >= 1",
+            "spec_edition >= 1",
             name="ck_checklist_receipt_spec_edition",
         ),
         CheckConstraint(
@@ -10229,7 +10229,7 @@ class ChecklistReceiptRow(Base):
         nullable=True,
     )
     spec_version: Mapped[int] = mapped_column(Integer, nullable=False)
-    spec_edition: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    spec_edition: Mapped[int] = mapped_column(Integer, nullable=False)
     content_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     input_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     template_version: Mapped[str] = mapped_column(

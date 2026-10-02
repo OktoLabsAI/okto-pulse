@@ -956,7 +956,7 @@ class CommunitySqlAlchemyChecklist:
         board_id: str,
         spec_id: str,
         phase: ChecklistPhase,
-        spec_edition: int | None = None,
+        spec_edition: int,
     ) -> tuple[ChecklistReceipt, ChecklistExecutionHead] | None:
         row = (
             await self._session.execute(
@@ -975,7 +975,7 @@ class CommunitySqlAlchemyChecklist:
         )
         if receipt is None:
             raise ChecklistPersistenceError("checklist_head_receipt_missing")
-        if spec_edition is not None and receipt.spec_edition != spec_edition:
+        if receipt.spec_edition != spec_edition:
             return None
         return (
             receipt,
@@ -1131,50 +1131,37 @@ class CommunitySqlAlchemyChecklist:
             ChecklistReceiptRow.board_id == query.board_id,
             ChecklistReceiptRow.spec_id == query.spec_id,
         )
-        if query.state is ChecklistReceiptState.HISTORY_ONLY:
-            where += (ChecklistReceiptRow.spec_edition.is_(None),)
-        elif query.state is not None:
-            if query.current_spec_edition is None:
-                # No lifecycle edition can ever make an evidence row current.
+        if query.state is not None:
+            is_current_head = exists(
+                select(ChecklistExecutionHeadRow.receipt_id).where(
+                    ChecklistExecutionHeadRow.board_id
+                    == ChecklistReceiptRow.board_id,
+                    ChecklistExecutionHeadRow.spec_id
+                    == ChecklistReceiptRow.spec_id,
+                    ChecklistExecutionHeadRow.phase
+                    == ChecklistPhase.SPEC_VALIDATION.value,
+                    ChecklistExecutionHeadRow.receipt_id
+                    == ChecklistReceiptRow.id,
+                )
+            )
+            if query.state is ChecklistReceiptState.CURRENT:
                 where += (
-                    ChecklistReceiptRow.id.is_(None)
-                    if query.state is ChecklistReceiptState.CURRENT
-                    # ``previous`` is the human-facing complete history and
-                    # therefore deliberately includes legacy NULL editions.
-                    else ChecklistReceiptRow.id.is_not(None),
+                    ChecklistReceiptRow.spec_edition
+                    == query.current_spec_edition,
+                    is_current_head,
                 )
-            else:
-                is_current_head = exists(
-                    select(ChecklistExecutionHeadRow.receipt_id).where(
-                        ChecklistExecutionHeadRow.board_id
-                        == ChecklistReceiptRow.board_id,
-                        ChecklistExecutionHeadRow.spec_id
-                        == ChecklistReceiptRow.spec_id,
-                        ChecklistExecutionHeadRow.phase
-                        == ChecklistPhase.SPEC_VALIDATION.value,
-                        ChecklistExecutionHeadRow.receipt_id
-                        == ChecklistReceiptRow.id,
-                    )
-                )
-                if query.state is ChecklistReceiptState.CURRENT:
-                    where += (
+            elif query.state is ChecklistReceiptState.PREVIOUS:
+                where += (
+                    or_(
                         ChecklistReceiptRow.spec_edition
-                        == query.current_spec_edition,
-                        is_current_head,
-                    )
-                elif query.state is ChecklistReceiptState.PREVIOUS:
-                    where += (
-                        or_(
-                            ChecklistReceiptRow.spec_edition.is_(None),
+                        != query.current_spec_edition,
+                        and_(
                             ChecklistReceiptRow.spec_edition
-                            != query.current_spec_edition,
-                            and_(
-                                ChecklistReceiptRow.spec_edition
-                                == query.current_spec_edition,
-                                ~is_current_head,
-                            ),
+                            == query.current_spec_edition,
+                            ~is_current_head,
                         ),
-                    )
+                    ),
+                )
         total = int(
             (
                 await self._session.execute(

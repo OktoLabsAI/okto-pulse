@@ -79,6 +79,10 @@ async def test_fresh_schema_restart_preserves_data_and_identity(tmp_path, contra
             )).scalar_one()
             assert "source = 'native'" in ddl
             assert "legacy_unverified" not in ddl
+            for table in ("checklist_receipts", "checklist_executions"):
+                fields = (await connection.exec_driver_sql(f"PRAGMA table_info({table})")).all()
+                edition = next(row for row in fields if row[1] == "spec_edition")
+                assert edition[3] == 1  # NOT NULL in the actual fresh/restarted database.
     finally:
         await engine.dispose()
 

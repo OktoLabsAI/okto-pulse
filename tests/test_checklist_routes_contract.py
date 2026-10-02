@@ -391,6 +391,20 @@ def test_checklist_history_invalid_pagination_is_typed_400(query: str) -> None:
     assert response.json()["detail"]["retryable"] is False
 
 
+def test_checklist_history_refuses_removed_history_only_filter() -> None:
+    app = FastAPI()
+    app.include_router(checklists.router, prefix="/api/v1")
+    app.dependency_overrides[checklists.require_user] = lambda: "human-1"
+    app.dependency_overrides[checklists.get_realm_id] = lambda: None
+    app.dependency_overrides[checklists.get_unit_of_work] = lambda: object()
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/v1/boards/board-1/specs/spec-1/checklist-executions"
+            "?lifecycle_state=history_only"
+        )
+    assert response.status_code == 422
+
+
 @pytest.mark.asyncio
 async def test_checklist_history_uses_canonical_page_totals(monkeypatch) -> None:
     async def fake_execute(self, command, *, actor, uow):

@@ -231,6 +231,7 @@ async def _preflight(
         board_id=BOARD_ID,
         spec_id=SPEC_ID,
         phase=ChecklistPhase.SPEC_VALIDATION,
+        spec_edition=subject.spec_edition,
     )
     return ChecklistPreflight(
         subject=subject,
@@ -465,6 +466,7 @@ async def test_complete_receipts_gate_pagination_and_off_zero_write(
     )
     page = await service.list_executions(
         ChecklistListQuery(
+            current_spec_edition=1,
             board_id=BOARD_ID,
             spec_id=SPEC_ID,
             offset=0,
@@ -500,6 +502,7 @@ async def test_complete_receipts_gate_pagination_and_off_zero_write(
     )
     empty_page = await service.list_executions(
         ChecklistListQuery(
+            current_spec_edition=1,
             board_id=BOARD_ID,
             spec_id=SPEC_ID,
             offset=99,
@@ -625,6 +628,7 @@ async def test_current_head_refreshes_preloaded_identity(
         board_id=BOARD_ID,
         spec_id=SPEC_ID,
         phase=ChecklistPhase.SPEC_VALIDATION,
+        spec_edition=1,
     )
     assert current is not None
     assert current[1].revision == 7
