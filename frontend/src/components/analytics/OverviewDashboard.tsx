@@ -69,12 +69,16 @@ interface SpecValidationGateData {
   success_rate: number | null;
   avg_attempts_per_spec: number | null;
   avg_scores: {
-    completeness: number | null;
+    confidence: number | null;
+    clarity: number | null;
+    decidability: number | null;
     assertiveness: number | null;
     ambiguity: number | null;
   };
   rejection_reasons: {
-    completeness_below: number;
+    confidence_below: number;
+    clarity_below: number;
+    decidability_below: number;
     assertiveness_below: number;
     ambiguity_above: number;
     reject_recommendation: number;
@@ -556,8 +560,8 @@ export function OverviewDashboard({ from, to, onSelectBoard }: OverviewDashboard
           total={data.spec_validation_gate?.total_submitted ?? 0}
           successRate={data.spec_validation_gate?.success_rate ?? null}
           failedCount={data.spec_validation_gate?.total_failed ?? 0}
-          avgLabel="avg completeness"
-          avgValue={data.spec_validation_gate?.avg_scores?.completeness ?? null}
+          avgLabel="avg confidence"
+          avgValue={data.spec_validation_gate?.avg_scores?.confidence ?? null}
           attemptsLabel="attempts/spec"
           attemptsValue={data.spec_validation_gate?.avg_attempts_per_spec ?? null}
           topReasons={Object.entries(data.spec_validation_gate?.rejection_reasons ?? {})
@@ -874,6 +878,8 @@ const REASON_LABELS: Record<string, string> = {
   assertiveness_below: 'assertiveness',
   ambiguity_above: 'ambiguity',
   confidence_below: 'confidence',
+  clarity_below: 'clarity',
+  decidability_below: 'decidability',
   drift_above: 'drift',
   reject_recommendation: 'rejected',
 };

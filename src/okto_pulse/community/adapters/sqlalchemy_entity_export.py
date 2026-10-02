@@ -900,17 +900,16 @@ def _sealed_mockups(value: Any) -> Any:
     return seal_screen_mockups(_json_value(value))
 
 
-def _validate_spec_validation_pinpoints(value: Any) -> Any:
-    from okto_pulse.core.models.schemas import SpecValidationPinpointResponse
+def _validate_spec_validation_history(value: Any) -> Any:
+    from okto_pulse.core.models.schemas import SpecValidationResponse
 
     normalized = _json_value(value)
+    if normalized is None:
+        return None
     if not isinstance(normalized, list):
-        return normalized
+        raise ValueError("spec_validation_history_invalid")
     for validation in normalized:
-        if not isinstance(validation, dict):
-            raise ValueError("spec_validation_history_invalid")
-        for pinpoint in validation.get("pinpoints") or ():
-            SpecValidationPinpointResponse.model_validate(pinpoint)
+        SpecValidationResponse.model_validate(validation)
     return normalized
 
 
@@ -1813,7 +1812,7 @@ class CommunitySqlAlchemyEntityExportReader:
             if field_name == "screen_mockups":
                 value = _sealed_mockups(value)
             elif definition.key == "spec_validation" and field_name == "validations":
-                value = _validate_spec_validation_pinpoints(value)
+                value = _validate_spec_validation_history(value)
             elif definition.key == "card_validation" and field_name == "validations":
                 value = [
                     _human_task_validation(item)

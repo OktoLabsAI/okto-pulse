@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from copy import deepcopy
 import json
+from spec_validation_fixtures import native_validation
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -289,7 +290,7 @@ async def test_denied_section_is_not_selected_or_counted_and_current_does_not_le
                     title="Spec",
                     created_by="u",
                     test_scenarios=[{"id": "must-not-leak"}],
-                    validations=[{"id": "prior", "edition": 1, "score": 80}],
+                    validations=[native_validation("prior", 1, confidence=80)],
                     edition=2,
                 ),
             ]

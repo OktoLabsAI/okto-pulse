@@ -89,8 +89,8 @@ interface ValidationsResponse {
     total_failed: number;
     success_rate: number | null;
     avg_attempts_per_spec: number | null;
-    avg_scores: { completeness: number | null; assertiveness: number | null; ambiguity: number | null };
-    rejection_reasons: { completeness_below: number; assertiveness_below: number; ambiguity_above: number; reject_recommendation: number };
+    avg_scores: { confidence: number | null; clarity: number | null; decidability: number | null; assertiveness: number | null; ambiguity: number | null };
+    rejection_reasons: { confidence_below: number; clarity_below: number; decidability_below: number; assertiveness_below: number; ambiguity_above: number; reject_recommendation: number };
     specs_with_validation: number;
     per_spec: Array<{
       spec_id: string;
@@ -98,7 +98,9 @@ interface ValidationsResponse {
       status: string;
       attempts: number;
       last_outcome: string | null;
-      last_completeness: number | null;
+      last_confidence: number | null;
+      last_clarity: number | null;
+      last_decidability: number | null;
       last_assertiveness: number | null;
       last_ambiguity: number | null;
       success_count: number;
@@ -1317,7 +1319,9 @@ export function BoardDashboard({
               </div>
               <div className="grid grid-cols-4 gap-2 mb-3">
                 <MiniStat label="success rate" value={validations.spec_validation_gate.success_rate} unit="%" />
-                <MiniStat label="avg complete" value={validations.spec_validation_gate.avg_scores.completeness} unit="%" />
+                <MiniStat label="avg confidence" value={validations.spec_validation_gate.avg_scores.confidence} unit="%" />
+                <MiniStat label="avg clarity" value={validations.spec_validation_gate.avg_scores.clarity} unit="%" />
+                <MiniStat label="avg decidability" value={validations.spec_validation_gate.avg_scores.decidability} unit="%" />
                 <MiniStat label="avg assert" value={validations.spec_validation_gate.avg_scores.assertiveness} unit="%" />
                 <MiniStat label="avg ambig" value={validations.spec_validation_gate.avg_scores.ambiguity} unit="%" invert />
               </div>

@@ -2,11 +2,13 @@
 
 from copy import deepcopy
 
+from spec_validation_fixtures import native_validation
+
 import pytest
 from pydantic import ValidationError
 
 from okto_pulse.community.adapters.sqlalchemy_entity_export import (
-    _validate_spec_validation_pinpoints,
+    _validate_spec_validation_history,
 )
 from okto_pulse.core.domain.guideline_semantic_v2 import (
     AnchorSnapshot, SemanticAnchorAvailability,
@@ -25,9 +27,9 @@ def _pinpoint():
 
 
 def test_export_preserves_native_snapshot_without_reconstruction():
-    history = [{"id": "validation", "pinpoints": [_pinpoint()]}]
+    history = [native_validation(pinpoints=[_pinpoint()])]
     original = deepcopy(history)
-    assert _validate_spec_validation_pinpoints(history) == original
+    assert _validate_spec_validation_history(history) == original
     assert history == original
 
 
@@ -37,8 +39,17 @@ def test_export_refuses_old_snapshot_without_mutating_history(snapshot):
     pinpoint.pop("anchor_snapshot")
     if snapshot is not None:
         pinpoint["anchor_snapshot"] = snapshot
-    history = [{"id": "incompatible", "pinpoints": [pinpoint]}]
+    history = [native_validation("incompatible", pinpoints=[pinpoint])]
     original = deepcopy(history)
     with pytest.raises(ValidationError):
-        _validate_spec_validation_pinpoints(history)
+        _validate_spec_validation_history(history)
+    assert history == original
+
+
+@pytest.mark.parametrize("field", ["score", "summary", "completeness", "general_justification"])
+def test_export_refuses_old_record_fields_without_converting_them(field):
+    history = [{**native_validation(), field: None}]
+    original = deepcopy(history)
+    with pytest.raises(ValidationError):
+        _validate_spec_validation_history(history)
     assert history == original

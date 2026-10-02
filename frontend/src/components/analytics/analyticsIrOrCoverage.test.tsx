@@ -75,8 +75,8 @@ const validations = {
     total_failed: 0,
     success_rate: null,
     avg_attempts_per_spec: null,
-    avg_scores: { completeness: null, assertiveness: null, ambiguity: null },
-    rejection_reasons: { completeness_below: 0, assertiveness_below: 0, ambiguity_above: 0, reject_recommendation: 0 },
+    avg_scores: { confidence: 91, clarity: 89, decidability: 87, assertiveness: 85, ambiguity: 12 },
+    rejection_reasons: { confidence_below: 0, clarity_below: 0, decidability_below: 0, assertiveness_below: 0, ambiguity_above: 0, reject_recommendation: 0 },
     specs_with_validation: 0,
     per_spec: [],
   },
@@ -300,6 +300,20 @@ describe('analytics IR/OR coverage UI', () => {
         }
       ]
     });
+  });
+
+  it('shows all five Spec validation averages without the old completeness dimension', async () => {
+    mockApi.getBoardAnalyticsCoverage.mockResolvedValue([]);
+    render(<BoardDashboard boardId="board-1" from="" to="" onSelectEntity={vi.fn()} />);
+    const heading = await screen.findByText('Spec Validation Gate');
+    const panel = within(heading.parentElement!.parentElement!);
+    expect(panel.getByText('avg confidence')).toBeInTheDocument();
+    expect(panel.getByText('avg clarity')).toBeInTheDocument();
+    expect(panel.getByText('avg decidability')).toBeInTheDocument();
+    expect(panel.getByText('avg assert')).toBeInTheDocument();
+    expect(panel.getByText('avg ambig')).toBeInTheDocument();
+    expect(panel.queryByText('avg complete')).not.toBeInTheDocument();
+    expect(screen.getByText('avg complete')).toBeInTheDocument();
   });
 
   it('renders canonical Spec, policy and resource readiness independently', async () => {

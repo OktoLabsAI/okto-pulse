@@ -227,7 +227,7 @@ from okto_pulse.core.services.analytics_service import (  # noqa: E402
 # ---------------------------------------------------------------------------
 #
 # Spec Validation Gate records (spec.validations) shape:
-#   {id, completeness, assertiveness, ambiguity, recommendation (approve|reject),
+#   {id, confidence, clarity, assertiveness, decidability, ambiguity, recommendation,
 #    outcome (success|failed), threshold_violations: [str], resolved_thresholds, ...}
 #
 # Task Validation Gate records (card.validations) shape:
@@ -235,7 +235,7 @@ from okto_pulse.core.services.analytics_service import (  # noqa: E402
 #    recommendation, outcome, threshold_violations: [str], ...}
 #
 # D3 (multi-count): a single failed record can contribute to multiple rejection
-# reason buckets (e.g. completeness_below + ambiguity_above). Total rejection
+# reason buckets (e.g. confidence_below + ambiguity_above). Total rejection
 # reasons per gate may exceed total failed count.
 #
 # D4 (all history): aggregations walk the full array regardless of active flag.

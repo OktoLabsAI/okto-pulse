@@ -18,7 +18,8 @@ function overview() {
     total_business_rules: 4, specs_with_rules: 2, total_api_contracts: 1, specs_with_contracts: 1,
     avg_completeness: 88, avg_drift: 8, avg_cycle_hours: 12,
     cycle_time: { ideation: 1, spec: 3, card: 12 },
-    spec_validation_gate: { total_submitted: 3, total_success: 2, total_failed: 1, success_rate: 66.7 },
+    spec_validation_gate: { total_submitted: 3, total_success: 2, total_failed: 1, success_rate: 66.7,
+      avg_scores: { confidence: 91, clarity: 89, decidability: 87, assertiveness: 85, ambiguity: 12 } },
     task_validation_gate: { total_submitted: 4, total_success: 3, total_failed: 1, first_pass_rate: 50 },
     spec_evaluation: { total_submitted: 2, total_approve: 1, total_reject: 0, total_request_changes: 1,
       approve_rate: 50, avg_overall_score: 80, specs_with_evaluation: 1 },
@@ -44,6 +45,9 @@ describe('overview after Sprint aggregate retirement', () => {
     render(<OverviewDashboard from="2026-09-01" to="2026-09-21" onSelectBoard={onSelectBoard} />);
     await screen.findByText('My Board');
     expect(screen.getByText('Spec Validation Gate')).toBeInTheDocument();
+    expect(screen.getByText('avg confidence')).toBeInTheDocument();
+    expect(screen.getByText('91%')).toBeInTheDocument();
+    expect(screen.queryByText('avg completeness')).not.toBeInTheDocument();
     expect(screen.getByText('Task Validation Gate')).toBeInTheDocument();
     expect(screen.getByText('Spec Evaluation')).toBeInTheDocument();
     expect(screen.getByText('88%')).toBeInTheDocument();
