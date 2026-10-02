@@ -296,7 +296,6 @@ function primarySemanticState(
   view: SemanticPolicyViewModel,
 ): SemanticPolicyUiState {
   if (view.currentness === 'stale') return 'stale';
-  if (view.contractVersion === 'v1') return 'legacy';
   const priority: SemanticPolicyUiState[] = [
     'fail',
     'waived_fail_finding',
@@ -323,8 +322,6 @@ function SemanticStateChip({ state }: { state: SemanticPolicyUiState }) {
       ? 'Warning · Passed'
       : state === 'waived_fail_finding'
         ? 'Waiver active'
-        : state === 'legacy'
-          ? 'V1 · Read-only'
           : state.split('_').join(' ');
   return (
     <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${tone}`}>

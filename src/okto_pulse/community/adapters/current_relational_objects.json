@@ -1999,15 +1999,9 @@
   },
   {
     "kind": "trigger",
-    "name": "trg_semantic_pinpoint_v2_legacy_receipt_i",
-    "table": "semantic_guideline_assessment_receipts",
-    "sql": "CREATE TRIGGER \"trg_semantic_pinpoint_v2_legacy_receipt_i\"\nBEFORE INSERT ON \"semantic_guideline_assessment_receipts\"\nWHEN EXISTS (\n    SELECT 1 FROM \"semantic_guideline_assessments_v2\" AS v2\n    WHERE v2.board_id = NEW.board_id\n      AND v2.idempotency_key = NEW.idempotency_key\n)\nBEGIN\n    SELECT RAISE(ABORT, 'semantic_assessment_idempotency_contract_conflict');\nEND"
-  },
-  {
-    "kind": "trigger",
     "name": "trg_semantic_pinpoint_v2_receipt_i",
     "table": "semantic_guideline_assessments_v2",
-    "sql": "CREATE TRIGGER \"trg_semantic_pinpoint_v2_receipt_i\"\nBEFORE INSERT ON \"semantic_guideline_assessments_v2\"\nWHEN NEW.contract_version <> 'semantic-guideline-assessment/v2'\n  OR json_type(NEW.payload) <> 'object'\n  OR json_extract(NEW.payload, '$.contract_version') <> 2\n  OR EXISTS (\n      SELECT 1 FROM semantic_guideline_assessment_receipts AS legacy\n      WHERE legacy.board_id = NEW.board_id\n        AND legacy.idempotency_key = NEW.idempotency_key\n  )\nBEGIN\n    SELECT RAISE(ABORT, 'semantic_assessment_idempotency_contract_conflict');\nEND"
+    "sql": "CREATE TRIGGER \"trg_semantic_pinpoint_v2_receipt_i\"\nBEFORE INSERT ON \"semantic_guideline_assessments_v2\"\nWHEN NEW.contract_version IS NOT 'semantic-guideline-assessment/v2'\n  OR json_type(NEW.payload) IS NOT 'object'\n  OR json_extract(NEW.payload, '$.contract_version') IS NOT 2\nBEGIN\n    SELECT RAISE(ABORT, 'semantic_assessment_v2_contract_invalid');\nEND"
   },
   {
     "kind": "trigger",

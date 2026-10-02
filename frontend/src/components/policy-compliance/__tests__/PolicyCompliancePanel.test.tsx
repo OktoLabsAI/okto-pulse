@@ -262,6 +262,48 @@ function currentV2Assessment(
   };
 }
 
+function nativeCurrentAssessment({
+  validationEdition = null,
+  receiptId = 'receipt-1',
+  metricResults = [metric()],
+}: {
+  validationEdition?: number | null;
+  receiptId?: string;
+  metricResults?: SemanticMetricResultDetail[];
+} = {}) {
+  const base = currentV2Assessment('spec', 'spec-1');
+  const nativeMetric = base.assessment.metrics[0];
+  return {
+    contract_version: 'v2' as const,
+    assessment: {
+      ...base.assessment,
+      receipt_id: receiptId,
+      validation_edition: validationEdition,
+      metrics: metricResults.map((scenario) => ({
+        ...nativeMetric,
+        metric_result_id: scenario.metric_result_id,
+        metric_id: scenario.metric_id,
+        metric_code: scenario.metric_code,
+        score: scenario.score,
+        direction: scenario.direction,
+        default_threshold: scenario.default_threshold,
+        effective_threshold: scenario.effective_threshold,
+        threshold_source: scenario.threshold_source,
+        outcome: scenario.outcome,
+        blocking: scenario.outcome === 'fail',
+        pinpoints: [{
+          ...nativeMetric.pinpoints[0],
+          pinpoint_key: `pinpoint-${scenario.metric_id}`,
+          kind: scenario.outcome === 'fail' ? 'issue' as const : 'evidence' as const,
+          severity: scenario.outcome === 'fail' ? 'high' as const : null,
+          remediation: scenario.outcome === 'fail' ? 'Resolve the boundary issue.' : null,
+          blocking: scenario.outcome === 'fail',
+        }],
+      })),
+    },
+  };
+}
+
 function adoptedGuideline() {
   return {
     id: 'guideline-1',
@@ -663,10 +705,7 @@ beforeEach(() => {
   policyApiMock.listSemanticGuidelineAssessments.mockResolvedValue(
     page([assessment()]),
   );
-  policyApiMock.getCurrentSemanticGuidelineAssessment.mockResolvedValue({
-    contract_version: 'v1',
-    assessment: assessment(),
-  });
+  policyApiMock.getCurrentSemanticGuidelineAssessment.mockResolvedValue(nativeCurrentAssessment());
   policyApiMock.listSemanticGuidelineFindings.mockResolvedValue(page([]));
   policyApiMock.listSemanticMetricWaivers.mockResolvedValue(page([]));
   policyApiMock.listSemanticPolicySkips.mockResolvedValue(page([]));
@@ -1349,7 +1388,7 @@ describe('guideline compliance summary', () => {
     expect(
       within(card).getByTestId('compliance-enforcement-advisory'),
     ).toBeVisible();
-    expect(within(card).getByText('V1 · Read-only')).toBeVisible();
+    expect(within(card).getByText('Passed')).toBeVisible();
     expect(
       within(card).getByTitle('Business vs technical separation.'),
     ).toHaveTextContent('Segregation');
@@ -1376,10 +1415,7 @@ describe('guideline compliance summary', () => {
     policyApiMock.getGuidelineRevision.mockResolvedValue(
       guidelineRevisionFor('spec'),
     );
-    policyApiMock.getCurrentSemanticGuidelineAssessment.mockResolvedValue({
-      contract_version: 'v1',
-      assessment: current,
-    });
+    policyApiMock.getCurrentSemanticGuidelineAssessment.mockResolvedValue(nativeCurrentAssessment({ validationEdition: current.validation_edition, receiptId: current.receipt_id }));
     policyApiMock.listSemanticGuidelineAssessments.mockResolvedValue(
       page([current, previous]),
     );
@@ -1426,7 +1462,7 @@ describe('guideline compliance summary', () => {
     );
   });
 
-  it('keeps same-edition evidence visible when live currentness marks it stale after a version-only change', async () => {
+  it('keeps native same-edition evidence visible after a version-only change', async () => {
     const stale = assessment({
       receiptId: 'receipt-stale-edition-2',
       validationEdition: 2,
@@ -1437,10 +1473,7 @@ describe('guideline compliance summary', () => {
     policyApiMock.getGuidelineRevision.mockResolvedValue(
       guidelineRevisionFor('spec'),
     );
-    policyApiMock.getCurrentSemanticGuidelineAssessment.mockResolvedValue({
-      contract_version: 'v1',
-      assessment: stale,
-    });
+    policyApiMock.getCurrentSemanticGuidelineAssessment.mockResolvedValue(nativeCurrentAssessment({ validationEdition: stale.validation_edition, receiptId: stale.receipt_id }));
     policyApiMock.listSemanticGuidelineAssessments.mockResolvedValue(
       page([stale]),
     );
@@ -1572,65 +1605,6 @@ describe('guideline compliance summary', () => {
       );
     },
   );
-
-  it('renders a legacy policy pinpoint as metric, human target with stable ID, then rationale', async () => {
-    const legacyMetric = metric({
-      code: 'architecture.segregation',
-    });
-    legacyMetric.rationale = 'The requirement leaves the adapter boundary explicit.';
-    legacyMetric.pinpoints = [{
-      anchor_type: 'structured_child',
-      anchor_ref: 'technical_requirements.tr_boundary',
-      excerpt_hash: HASH_B,
-      input_digest: HASH_A,
-    }];
-    dashboardApiMock.getBoardGuidelines.mockResolvedValue([adoptedGuideline()]);
-    policyApiMock.getGuidelineRevision.mockResolvedValue(
-      guidelineRevisionFor('spec'),
-    );
-    policyApiMock.getCurrentSemanticGuidelineAssessment.mockResolvedValue({
-      contract_version: 'v1',
-      assessment: assessment({
-        validationEdition: 2,
-        metricResults: [legacyMetric],
-      }),
-    });
-
-    renderPanel({
-      subjectEdition: 2,
-      presentationMode: 'lifecycle-edition',
-      lifecycleSnapshot: frozenLifecycleDetails(),
-      resolveSemanticAnchor: () => ({
-        state: 'available',
-        navigationTarget: 'spec:requirement:tr_boundary',
-        displayText: 'TR-1: Runtime adapters remain outside the domain boundary.',
-        stableReference: 'tr_boundary',
-      }),
-    });
-
-    const card = await screen.findByTestId('actionable-pinpoint');
-    expect(within(card).getByTestId('actionable-pinpoint-metric'))
-      .toHaveTextContent('Segregation');
-    expect(within(card).getByTestId('actionable-pinpoint-target'))
-      .toHaveTextContent(
-        'TR-1: Runtime adapters remain outside the domain boundary. (tr_boundary)',
-      );
-    expect(within(card).getByTestId('actionable-pinpoint-detail'))
-      .toHaveTextContent(
-        'The requirement leaves the adapter boundary explicit.',
-      );
-    expect(within(card).queryByText('Legacy assessment evidence'))
-      .not.toBeInTheDocument();
-    expect(within(card).queryByText('Legacy location'))
-      .not.toBeInTheDocument();
-    const content = card.textContent ?? '';
-    expect(content.indexOf('Segregation')).toBeLessThan(
-      content.indexOf('TR-1:'),
-    );
-    expect(content.indexOf('TR-1:')).toBeLessThan(
-      content.indexOf('The requirement leaves'),
-    );
-  });
 
   it('uses a frozen binding without a receipt and never substitutes a later live revision', async () => {
     dashboardApiMock.getBoardGuidelines.mockResolvedValue([{
@@ -1769,17 +1743,14 @@ describe('guideline compliance summary', () => {
   });
 
   it('shows a fully waived binding as resolved and labels the waived finding', async () => {
-    policyApiMock.getCurrentSemanticGuidelineAssessment.mockResolvedValue({
-      contract_version: 'v1',
-      assessment: assessment({
+    policyApiMock.getCurrentSemanticGuidelineAssessment.mockResolvedValue(nativeCurrentAssessment({
         validationEdition: 10,
         metricResults: [metric({
           score: 60,
           defaultThreshold: 75,
           effectiveThreshold: 75,
         })],
-      }),
-    });
+      }));
 
     renderPanel({
       subjectEdition: 10,
@@ -1827,9 +1798,7 @@ describe('guideline compliance summary', () => {
         assessment_outcome: 'failed',
       },
     ];
-    policyApiMock.getCurrentSemanticGuidelineAssessment.mockResolvedValue({
-      contract_version: 'v1',
-      assessment: assessment({
+    policyApiMock.getCurrentSemanticGuidelineAssessment.mockResolvedValue(nativeCurrentAssessment({
         validationEdition: 11,
         metricResults: [
           metric({
@@ -1846,8 +1815,7 @@ describe('guideline compliance summary', () => {
             effectiveThreshold: 75,
           }),
         ],
-      }),
-    });
+      }));
 
     renderPanel({
       subjectEdition: 11,
@@ -1894,17 +1862,14 @@ describe('guideline compliance summary', () => {
       policyApiMock.listSemanticMetricWaivers.mockResolvedValue(
         page([inactiveWaiver]),
       );
-      policyApiMock.getCurrentSemanticGuidelineAssessment.mockResolvedValue({
-        contract_version: 'v1',
-        assessment: assessment({
+      policyApiMock.getCurrentSemanticGuidelineAssessment.mockResolvedValue(nativeCurrentAssessment({
           validationEdition: 12,
           metricResults: [metric({
             score: 60,
             defaultThreshold: 75,
             effectiveThreshold: 75,
           })],
-        }),
-      });
+        }));
 
       renderPanel({
         subjectEdition: 12,
@@ -1971,10 +1936,7 @@ describe('guideline compliance summary', () => {
 
   it('signals when frozen policy text was bounded instead of hiding truncation', async () => {
     const current = assessment({ validationEdition: 9 });
-    policyApiMock.getCurrentSemanticGuidelineAssessment.mockResolvedValue({
-      contract_version: 'v1',
-      assessment: current,
-    });
+    policyApiMock.getCurrentSemanticGuidelineAssessment.mockResolvedValue(nativeCurrentAssessment({ validationEdition: current.validation_edition, receiptId: current.receipt_id }));
     renderPanel({
       subjectEdition: 9,
       presentationMode: 'lifecycle-edition',
@@ -2015,10 +1977,7 @@ describe('guideline compliance summary', () => {
   it('keeps verified frozen cards visible when another scope item is inconsistent', async () => {
     const snapshot = frozenLifecycleDetails();
     snapshot.counts.scope_inconsistent = 1;
-    policyApiMock.getCurrentSemanticGuidelineAssessment.mockResolvedValue({
-      contract_version: 'v1',
-      assessment: assessment({ validationEdition: 8 }),
-    });
+    policyApiMock.getCurrentSemanticGuidelineAssessment.mockResolvedValue(nativeCurrentAssessment({ validationEdition: 8 }));
 
     renderPanel({
       subjectEdition: 8,

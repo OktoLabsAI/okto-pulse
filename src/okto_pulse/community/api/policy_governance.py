@@ -1222,6 +1222,11 @@ class SemanticAssessmentCurrentV2Response(_ClosedModel):
     metrics: list[SemanticMetricResultV2Response]
 
 
+class CurrentSemanticAssessmentResponse(_ClosedModel):
+    contract_version: Literal["v2"]
+    assessment: SemanticAssessmentCurrentV2Response
+
+
 class RecordedSemanticAssessmentV2Response(_ClosedModel):
     contract_version: Literal["v2"]
     receipt_id: str
@@ -1391,7 +1396,7 @@ _SEMANTIC_OPERATION_TYPES: dict[str, tuple[str, str, str]] = {
     "get_current_semantic_assessment": (
         "okto_pulse.core.application.use_cases.semantic_guideline_v2",
         "GetCurrentSemanticGuidelineAssessmentCommand",
-        "GetCurrentSemanticGuidelineAssessmentAnyUseCase",
+        "GetCurrentSemanticGuidelineAssessmentV2UseCase",
     ),
     "list_semantic_findings": (
         "okto_pulse.core.application.use_cases.semantic_guideline_governance",
@@ -2444,7 +2449,7 @@ async def list_semantic_guideline_assessments(
 
 @router.get(
     "/boards/{board_id}/semantic-guideline-assessments/current",
-    response_model=SemanticAssessmentResponse,
+    response_model=CurrentSemanticAssessmentResponse,
     response_model_exclude_unset=True,
 )
 async def get_current_semantic_guideline_assessment(

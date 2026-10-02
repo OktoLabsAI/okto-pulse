@@ -1,6 +1,6 @@
 """Relational adapter for actionable semantic guideline assessments v2.
 
-The v2 ledger is additive and deliberately does not reuse the v1 JSON shape.
+The native ledger seals immutable assessments and resolves current authority.
 Every row carries an explicit bounded contract namespace, while the complete
 Core projection is retained losslessly in a closed JSON payload.
 """
@@ -61,7 +61,6 @@ from .semantic_guideline_kg_events import (
     stage_semantic_guideline_projection_events,
 )
 from .sqlalchemy_models import (
-    SemanticGuidelineAssessmentReceiptRow,
     SemanticGuidelineAssessmentV2Row,
     SemanticGuidelineFindingV2Row,
     SemanticGuidelineMetricResultV2Row,
@@ -339,21 +338,6 @@ class CommunitySqlAlchemySemanticGuidelineAssessmentV2:
                     receipt_id=replay.receipt_id,
                 ),
             )
-        legacy_replay = (
-            await self._session.execute(
-                select(SemanticGuidelineAssessmentReceiptRow.receipt_id).where(
-                    SemanticGuidelineAssessmentReceiptRow.board_id
-                    == request.subject.board_id,
-                    SemanticGuidelineAssessmentReceiptRow.idempotency_key
-                    == request.idempotency_key,
-                )
-            )
-        ).first()
-        if legacy_replay is not None:
-            raise GuidelinePolicyIdempotencyConflict(
-                "semantic_assessment_idempotency_contract_conflict"
-            )
-
         snapshot = await self._v1.resolve_policy_subject_snapshot(
             board_id=request.subject.board_id,
             entity_type=request.subject.entity_type,

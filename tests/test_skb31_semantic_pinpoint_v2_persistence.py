@@ -301,7 +301,6 @@ def test_current_sqlite_manifest_covers_semantic_pinpoint_ledger():
     sqlite_manifest = semantic_pinpoint_v2_sqlite_trigger_manifest()
 
     assert {table for table, _ddl in sqlite_manifest.values()} == {
-        "semantic_guideline_assessment_receipts",
         "semantic_guideline_assessments_v2",
         "semantic_guideline_metric_results_v2",
         "semantic_guideline_findings_v2",
@@ -374,6 +373,41 @@ async def test_v2_round_trip_findings_idempotency_and_immutability(tmp_path):
                 "UPDATE semantic_guideline_assessments_v2 SET confidence=99"
             )
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_native_receipt_trigger_rejects_predecessor_and_missing_payload_version(tmp_path):
+    from sqlalchemy import insert
+    from sqlalchemy.exc import IntegrityError
+
+    engine = _engine(tmp_path / "native-semantic-contract-guard.db")
+    factory = build_community_session_factory(engine)
+    await initialize_current_schema(engine, current_schema_contract())
+    try:
+        async with factory() as session, session.begin():
+            request = _request(*await _seed_semantic_authority(session))
+            adapter = CommunitySqlAlchemySemanticGuidelineAssessmentV2(session)
+            created = await adapter.save_semantic_assessment_v2(request)
+            row = await session.get(SemanticGuidelineAssessmentV2Row, created.receipt_id)
+            values = {column.name: getattr(row, column.name)
+                      for column in SemanticGuidelineAssessmentV2Row.__table__.columns}
+            for version in (1, None):
+                payload = dict(row.payload)
+                if version is None:
+                    payload.pop("contract_version")
+                else:
+                    payload["contract_version"] = version
+                with pytest.raises(IntegrityError, match="semantic_assessment_v2_contract_invalid"):
+                    async with session.begin_nested():
+                        await session.execute(insert(SemanticGuidelineAssessmentV2Row).values({
+                            **values, "receipt_id": f"invalid-{version}",
+                            "idempotency_key": f"invalid-{version}", "payload": payload,
+                        }))
+            assert await adapter.get_semantic_assessment_v2(
+                board_id=request.subject.board_id, receipt_id=created.receipt_id,
+            ) == created.receipt
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio

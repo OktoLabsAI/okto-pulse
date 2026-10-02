@@ -549,12 +549,7 @@ export interface SemanticAssessmentCurrentV2 {
   metrics: SemanticMetricResultV2[];
 }
 
-export type SemanticCurrentAssessmentResponse =
-  | {
-      contract_version: 'v1';
-      assessment: SemanticAssessmentDetail;
-    }
-  | {
+export type SemanticCurrentAssessmentResponse = {
       contract_version: 'v2';
       assessment: SemanticAssessmentCurrentV2;
     };

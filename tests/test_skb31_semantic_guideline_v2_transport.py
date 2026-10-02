@@ -273,7 +273,7 @@ def test_v2_rest_missing_storage_is_exact_and_records_no_success() -> None:
     }
 
 
-def test_current_route_accepts_explicit_dual_read_v2_projection() -> None:
+def test_current_route_accepts_native_v2_projection() -> None:
     class Facade:
         async def execute(self, operation, values, *, actor, uow):
             assert operation == "get_current_semantic_assessment"
@@ -326,3 +326,12 @@ def test_current_route_accepts_explicit_dual_read_v2_projection() -> None:
     assert response.json()["contract_version"] == "v2"
     assert response.json()["assessment"]["receipt_id"] == "receipt-v2"
     assert response.json()["assessment"]["confidence"] == 93
+
+
+def test_current_response_rejects_predecessor_contract_and_missing_discriminator() -> None:
+    from pydantic import ValidationError
+    from okto_pulse.community.api.policy_governance import CurrentSemanticAssessmentResponse
+
+    for payload in ({"contract_version": "v1", "assessment": {}}, {"assessment": {}}):
+        with pytest.raises(ValidationError):
+            CurrentSemanticAssessmentResponse.model_validate(payload)

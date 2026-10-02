@@ -38,7 +38,6 @@ const STATE_LABELS: Record<SemanticPolicyUiState, string> = {
   non_blocking_warning: 'Non-blocking warning',
   waived_fail_finding: 'Waiver active',
   stale: 'Stale evidence',
-  legacy: 'Legacy read-only',
   removed: 'Removed location',
   inaccessible: 'Restricted location',
   loading: 'Loading',
@@ -191,7 +190,7 @@ export function ActionablePinpoint({
         )}
       </section>
 
-      {pinpoint.kind !== 'legacy' && (
+      {(
         <h4
           className="mt-3 text-sm font-semibold text-surface-800 dark:text-surface-100"
           data-testid="actionable-pinpoint-title"
@@ -200,7 +199,7 @@ export function ActionablePinpoint({
         </h4>
       )}
       <p
-        className={`${pinpoint.kind === 'legacy' ? 'mt-3' : 'mt-1'} whitespace-pre-wrap text-xs leading-5 text-surface-700 dark:text-surface-300`}
+        className={'mt-1 whitespace-pre-wrap text-xs leading-5 text-surface-700 dark:text-surface-300'}
         data-testid="actionable-pinpoint-detail"
       >
         {pinpoint.detail}

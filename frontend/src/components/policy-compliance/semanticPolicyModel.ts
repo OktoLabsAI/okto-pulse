@@ -1396,12 +1396,6 @@ export function parseCurrentSemanticAssessmentResponse(
     throw new Error('Semantic guideline current response is invalid.');
   }
   exactFields(value, CURRENT_RESPONSE_FIELDS, 'current response');
-  if (value.contract_version === 'v1') {
-    return {
-      contract_version: 'v1',
-      assessment: parseSemanticAssessmentDetail(value.assessment, expected),
-    };
-  }
   if (value.contract_version === 'v2') {
     return {
       contract_version: 'v2',
@@ -1417,7 +1411,6 @@ export type SemanticPolicyUiState =
   | 'non_blocking_warning'
   | 'waived_fail_finding'
   | 'stale'
-  | 'legacy'
   | 'removed'
   | 'inaccessible'
   | 'loading'
@@ -1447,9 +1440,9 @@ export interface SemanticPinpointTechnicalDetails {
 }
 
 export interface SemanticPinpointViewModel {
-  contractVersion: 'v1' | 'v2';
-  state: 'available' | 'removed' | 'inaccessible' | 'legacy';
-  kind: 'evidence' | 'issue' | 'legacy';
+  contractVersion: 'v2';
+  state: 'available' | 'removed' | 'inaccessible';
+  kind: 'evidence' | 'issue';
   title: string;
   detail: string;
   severity: SemanticPinpointV2['severity'];
@@ -1491,7 +1484,7 @@ export interface SemanticPolicyMetricViewModel {
 }
 
 export interface SemanticPolicyViewModel {
-  contractVersion: 'v1' | 'v2';
+  contractVersion: 'v2';
   currentness: PolicyCurrentness;
   uiStates: SemanticPolicyUiState[];
   confidence: number;
@@ -1507,26 +1500,11 @@ export interface SemanticPolicyResolverOptions {
   waivedMetricCodes?: ReadonlySet<string>;
 }
 
-const OPAQUE_ID = /^(?:[0-9a-f]{8}-[0-9a-f-]{27,}|[0-9a-f]{32,})$/iu;
-
 function stableAnchorReference(anchorRef: string | null): string | null {
   const trimmed = anchorRef?.trim();
   if (!trimmed) return null;
   const stableReference = trimmed.split('.').at(-1)?.trim();
   return stableReference || trimmed;
-}
-
-function bestEffortLegacyLabel(pinpoint: SemanticPinpoint): string {
-  if (pinpoint.anchor_type === 'whole_artifact') return 'Whole artifact';
-  if (pinpoint.anchor_type === 'qa') return 'Question or answer';
-  if (!pinpoint.anchor_ref || OPAQUE_ID.test(pinpoint.anchor_ref)) {
-    return pinpoint.anchor_type === 'field'
-      ? 'Referenced field'
-      : 'Referenced item';
-  }
-  return pinpoint.anchor_ref
-    .replace(/[_-]+/gu, ' ')
-    .replace(/\b\p{L}/gu, (letter) => letter.toUpperCase());
 }
 
 function safeResolution(
@@ -1598,62 +1576,6 @@ function v2PinpointView(
   };
 }
 
-function legacyPinpointView(
-  pinpoint: SemanticPinpoint,
-  rationale: string,
-  outcome: SemanticMetricOutcome,
-  options: SemanticPolicyResolverOptions,
-): SemanticPinpointViewModel {
-  const resolution = safeResolution(options.resolveAnchor, pinpoint);
-  const inaccessible = resolution.state === 'inaccessible';
-  const removed = resolution.state === 'removed';
-  const locationReference = inaccessible
-    ? null
-    : resolution.state === 'available'
-      ? resolution.stableReference ?? stableAnchorReference(pinpoint.anchor_ref)
-      : stableAnchorReference(pinpoint.anchor_ref);
-  return {
-    contractVersion: 'v1',
-    state: inaccessible || removed ? resolution.state : 'legacy',
-    kind: 'legacy',
-    title: 'Legacy assessment evidence',
-    detail: rationale,
-    severity: null,
-    remediation: null,
-    blocking: outcome === 'fail',
-    categoryLabel: anchorCategoryLabel(pinpoint.anchor_type),
-    locationLabel: inaccessible
-      ? 'Restricted assessment location'
-      : resolution.state === 'available' && resolution.displayText?.trim()
-        ? resolution.displayText.trim()
-        : removed
-          ? 'Referenced item'
-          : bestEffortLegacyLabel(pinpoint),
-    locationReference,
-    excerpt: null,
-    navigationTarget: resolution.state === 'available'
-      ? resolution.navigationTarget
-      : null,
-    unavailableMessage: removed
-      ? 'Referenced element is no longer available.'
-      : inaccessible
-        ? 'Location unavailable with your current access.'
-        : null,
-    technicalDetails: options.canViewTechnicalDetails
-      ? {
-          anchorType: pinpoint.anchor_type,
-          ...(!inaccessible && pinpoint.anchor_ref
-            ? { anchorReference: pinpoint.anchor_ref }
-            : {}),
-          ...(!inaccessible && pinpoint.excerpt_hash
-            ? { excerptHash: pinpoint.excerpt_hash }
-            : {}),
-          ...(!inaccessible ? { inputDigest: pinpoint.input_digest } : {}),
-        }
-      : null,
-  };
-}
-
 function uniqueStates(states: SemanticPolicyUiState[]): SemanticPolicyUiState[] {
   return [...new Set(states)];
 }
@@ -1663,39 +1585,6 @@ export function resolveSemanticPolicyViewModel(
   response: SemanticCurrentAssessmentResponse,
   options: SemanticPolicyResolverOptions = {},
 ): SemanticPolicyViewModel {
-  if (response.contract_version === 'v1') {
-    const metrics = response.assessment.metric_results.map((metric) => ({
-      metricCode: metric.metric_code,
-      score: metric.score,
-      direction: metric.direction,
-      effectiveThreshold: metric.effective_threshold,
-      outcome: metric.outcome,
-      uiState: response.assessment.currentness === 'stale'
-        ? 'stale' as const
-        : 'legacy' as const,
-      rationale: metric.rationale,
-      pinpoints: metric.pinpoints.map((pinpoint) => legacyPinpointView(
-        pinpoint,
-        metric.rationale,
-        metric.outcome,
-        options,
-      )),
-    }));
-    return {
-      contractVersion: 'v1',
-      currentness: response.assessment.currentness,
-      uiStates: uniqueStates([
-        response.assessment.currentness === 'stale' ? 'stale' : 'legacy',
-        ...metrics.flatMap((metric) => metric.pinpoints
-          .filter((pinpoint) => pinpoint.state !== 'legacy')
-          .map((pinpoint) => pinpoint.state as 'removed' | 'inaccessible')),
-      ]),
-      confidence: response.assessment.confidence,
-      recordedAt: response.assessment.recorded_at,
-      metrics,
-    };
-  }
-
   const metrics = response.assessment.metrics.map((metric) => {
     const waived = options.waivedMetricCodes?.has(metric.metric_code) ?? false;
     const uiState: SemanticPolicyUiState = metric.outcome === 'fail'
@@ -1736,13 +1625,12 @@ export type SemanticPolicyRenderOutcome =
   | 'stale'
   | 'waived'
   | 'unavailable'
-  | 'legacy'
   | 'system_error';
 
 export interface SemanticPolicyRenderTelemetry {
   metric: 'pulse_policy_compliance_render_total';
   labels: {
-    contract_version: 'v1' | 'v2' | 'none';
+    contract_version: 'v2' | 'none';
     outcome: SemanticPolicyRenderOutcome;
   };
 }
@@ -1750,14 +1638,12 @@ export interface SemanticPolicyRenderTelemetry {
 /** Closed, payload-free telemetry labels safe for any frontend sink. */
 export function semanticPolicyRenderTelemetry(
   state: SemanticPolicyUiState,
-  contractVersion: 'v1' | 'v2' | 'none',
+  contractVersion: 'v2' | 'none',
 ): SemanticPolicyRenderTelemetry {
   const outcome: SemanticPolicyRenderOutcome = state === 'stale'
     ? 'stale'
     : state === 'waived_fail_finding'
       ? 'waived'
-      : state === 'legacy'
-        ? 'legacy'
         : state === 'removed'
           || state === 'inaccessible'
           || state === 'no_assessment'

@@ -95,67 +95,8 @@ function response(metrics: unknown[], validationEdition: number | null = null) {
   };
 }
 
-function legacyResponse(currentness: 'current' | 'stale' = 'current') {
-  return {
-    contract_version: 'v1',
-    assessment: {
-      projection: 'detail',
-      receipt_id: 'receipt-v1',
-      board_id: 'board-1',
-      entity_type: 'spec',
-      subject_id: 'spec-1',
-      subject_version: 7,
-      validation_edition: null,
-      lifecycle_state: 'history_only',
-      binding_id: 'binding-1',
-      guideline_id: 'guideline-1',
-      guideline_revision_id: 'revision-1',
-      enforcement: 'blocking',
-      state: 'passed',
-      currentness,
-      currentness_reasons: currentness === 'stale'
-        ? ['subject_version_changed']
-        : [],
-      confidence: 90,
-      minimum_confidence: 80,
-      metric_count: 1,
-      failed_metric_count: 0,
-      recorded_at: '2026-08-08T12:00:00Z',
-      binding_revision: 2,
-      assessor_agent_id: 'agent-1',
-      assessor_model_id: null,
-      assessor_independent: true,
-      confidence_admissible: true,
-      metric_results: [{
-        metric_result_id: 'result-v1',
-        metric_id: 'metric-v1',
-        metric_code: 'Legacy.Clarity',
-        score: 90,
-        direction: 'minimum',
-        default_threshold: 80,
-        effective_threshold: 80,
-        threshold_source: 'default',
-        outcome: 'pass',
-        rationale: 'The legacy rationale remains the explanation.',
-        evidence_refs: [{
-          source_type: 'spec',
-          source_id: 'spec-1',
-          source_version: 7,
-          content_hash: digest,
-        }],
-        pinpoints: [{
-          anchor_type: 'structured_child',
-          anchor_ref: 'technical_requirements.tr_boundary',
-          excerpt_hash: digest,
-          input_digest: digest,
-        }],
-      }],
-    },
-  };
-}
-
-describe('semanticPolicyModel v2 dual-read resolver', () => {
-  it('discriminates exact v1 and v2 field sets without fallback', () => {
+describe('semanticPolicyModel native resolver', () => {
+  it('accepts only the native contract and rejects unknown fields', () => {
     const v2 = response([
       metric('Architecture', [
         pinpoint('whole', anchor('whole_artifact', null)),
@@ -164,8 +105,9 @@ describe('semanticPolicyModel v2 dual-read resolver', () => {
 
     expect(parseCurrentSemanticAssessmentResponse(v2, expected))
       .toMatchObject({ contract_version: 'v2' });
-    expect(parseCurrentSemanticAssessmentResponse(legacyResponse(), expected))
-      .toMatchObject({ contract_version: 'v1' });
+    expect(() => parseCurrentSemanticAssessmentResponse(
+      { ...v2, contract_version: 'v1' }, expected,
+    )).toThrow(/unsupported/u);
 
     expect(() => parseCurrentSemanticAssessmentResponse(
       { ...v2, unexpected: true },
@@ -288,39 +230,6 @@ describe('semanticPolicyModel v2 dual-read resolver', () => {
     expect(JSON.stringify(view)).not.toContain(digest);
   });
 
-  it('preserves legacy rationale without inventing severity or remediation', () => {
-    const parsed = parseCurrentSemanticAssessmentResponse(
-      legacyResponse(),
-      expected,
-    );
-    const model = resolveSemanticPolicyViewModel(parsed, {
-      resolveAnchor: () => ({
-        state: 'available',
-        navigationTarget: '/focus/technical-requirements',
-        displayText: 'TR-2: Keep persistence outside the domain boundary.',
-        stableReference: 'tr_boundary',
-      }),
-      canViewTechnicalDetails: true,
-    });
-    const [view] = model.metrics[0].pinpoints;
-
-    expect(model.uiStates).toEqual(['legacy']);
-    expect(view).toMatchObject({
-      state: 'legacy',
-      kind: 'legacy',
-      detail: 'The legacy rationale remains the explanation.',
-      severity: null,
-      remediation: null,
-      locationLabel: 'TR-2: Keep persistence outside the domain boundary.',
-      locationReference: 'tr_boundary',
-    });
-    expect(view.technicalDetails).toMatchObject({
-      anchorReference: 'technical_requirements.tr_boundary',
-      excerptHash: digest,
-      inputDigest: digest,
-    });
-  });
-
   it('preserves fail, warning, waived, stale and unavailable UI states', () => {
     const warning = pinpoint(
       'warning',
@@ -353,10 +262,6 @@ describe('semanticPolicyModel v2 dual-read resolver', () => {
       'waived_fail_finding',
     ]);
     expect(model.uiStates).toContain('removed');
-    const stale = resolveSemanticPolicyViewModel(
-      parseCurrentSemanticAssessmentResponse(legacyResponse('stale'), expected),
-    );
-    expect(stale.uiStates).toContain('stale');
   });
 
   it('emits only closed render labels and never assessment payload', () => {
@@ -366,10 +271,8 @@ describe('semanticPolicyModel v2 dual-read resolver', () => {
     });
     expect(semanticPolicyRenderTelemetry('waived_fail_finding', 'v2')
       .labels.outcome).toBe('waived');
-    expect(semanticPolicyRenderTelemetry('stale', 'v1').labels.outcome)
+    expect(semanticPolicyRenderTelemetry('stale', 'v2').labels.outcome)
       .toBe('stale');
-    expect(semanticPolicyRenderTelemetry('legacy', 'v1').labels.outcome)
-      .toBe('legacy');
     expect(semanticPolicyRenderTelemetry('removed', 'v2').labels.outcome)
       .toBe('unavailable');
     expect(semanticPolicyRenderTelemetry(
