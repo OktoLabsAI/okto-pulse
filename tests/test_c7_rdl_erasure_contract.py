@@ -100,6 +100,8 @@ from okto_pulse.core.domain.enums import (
     RefinementStatus,
     SpecStatus,
 )
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+from okto_pulse.core.domain.execution_contract import new_execution_contract
 from okto_pulse.core.domain.quality_assessment import AssessmentSubjectType
 from okto_pulse.core.domain.quality_assessment_lifecycle import (
     AssessmentPurgeResource,
@@ -261,6 +263,14 @@ async def _seed_subject(
             ),
             Spec(
                 id=spec_id,
+                architecture_adoption=ArchitectureAdoptionScope(
+                    board_id=board_id, spec_id=spec_id, adopted_in_edition=1,
+                    actor_id=f"owner-{namespace}", inherited_resource_ids=(),
+                ).model_dump(mode="json"),
+                execution_contract=new_execution_contract(
+                    board_id=board_id, spec_id=spec_id, edition=1,
+                    actor_id=f"owner-{namespace}", origin="new_spec",
+                ),
                 board_id=board_id,
                 ideation_id=ideation_id,
                 refinement_id=refinement_id,
@@ -339,6 +349,7 @@ async def _seed_subject(
                 subject_type="refinement",
                 subject_id=refinement_id,
                 subject_version=2,
+                subject_edition=1,
                 assessment_kind="ambiguity",
                 origin="human_or_agent",
                 source="native",
@@ -402,6 +413,7 @@ async def _seed_subject(
                 board_id=board_id,
                 spec_id=spec_id,
                 spec_version=1,
+                spec_edition=1,
                 content_digest=DIGEST,
                 input_digest=DIGEST,
                 template_version=template_version,
@@ -467,6 +479,7 @@ async def _seed_subject(
                 spec_id=spec_id,
                 execution_id=checklist_execution_id,
                 spec_version=1,
+                spec_edition=1,
                 content_digest=DIGEST,
                 input_digest=DIGEST,
                 template_version=template_version,
@@ -1113,6 +1126,7 @@ async def test_archive_restore_reconciles_quality_lifecycle_in_same_uow(
             ("refinement", subject["refinement_id"]),
             ("spec", subject["spec_id"]),
         }
+        assert all(row.before_edition == row.after_edition == 1 for row in transitions)
         head = await session.get(
             QualityAssessmentHeadRow,
             (
@@ -1136,6 +1150,13 @@ async def test_archive_restore_reconciles_quality_lifecycle_in_same_uow(
         await session.commit()
 
     async with factory() as session:
+        head = await session.get(QualityAssessmentHeadRow, (
+            subject["board_id"], "refinement", subject["refinement_id"], "ambiguity",
+        ))
+        assert head is not None
+        assert head.receipt_id == subject["quality_receipt_id"]
+        receipt = await session.get(QualityAssessmentReceiptRow, head.receipt_id)
+        assert receipt.subject_edition == 1
         assert (
             await session.scalar(
                 select(func.count())

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -46,13 +47,25 @@ from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
 from okto_pulse.community.adapters.sqlalchemy_quality_assessment import (
     CommunitySqlAlchemyQualityAssessmentPreflightReader,
 )
+from okto_pulse.community.adapters.sqlalchemy_quality_assessment_lifecycle import (
+    CommunitySqlAlchemyQualityAssessmentLifecycle,
+)
 from okto_pulse.community.adapters.sqlalchemy_validation_cycle import (
     CommunitySqlAlchemyValidationCycleReader,
     _spec_remaining_actions,
 )
 from okto_pulse.core.domain.enums import IdeationStatus, RefinementStatus, SpecStatus
 from okto_pulse.core.domain.quality_assessment import (
+    AssessmentSubjectRef,
     AssessmentSubjectType,
+)
+from okto_pulse.core.domain.quality_assessment_lifecycle import (
+    AssessmentLifecycleAction,
+    AssessmentLifecycleSubjectSnapshot,
+    AssessmentLifecycleTransition,
+)
+from okto_pulse.core.services.quality_assessment_lifecycle import (
+    QualityAssessmentLifecycleService,
 )
 from okto_pulse.core.domain.realm import RealmScope
 from okto_pulse.core.domain.validation_cycle import (
@@ -273,6 +286,76 @@ async def cycle_rig(tmp_path, monkeypatch):
         yield SimpleNamespace(engine=engine, factory=factory)
     finally:
         await engine.dispose()
+
+
+@pytest.mark.parametrize("receipt_edition", [1, 2])
+async def test_restore_reconciles_only_native_current_edition_and_keeps_history(
+    cycle_rig, receipt_edition
+):
+    subject_id = "ideation-restore-edition"
+    receipt_id = "restore-native-result"
+    async with cycle_rig.factory() as session:
+        session.add(Ideation(
+            id=subject_id, board_id=BOARD_ID, title="Restore edition",
+            created_by="owner", edition=2, version=9,
+        ))
+        session.add(_ambiguity_receipt(
+            receipt_id=receipt_id, subject_id=subject_id,
+            edition=receipt_edition, score=2, head_revision=3,
+        ))
+        await session.flush()
+        session.add(QualityAssessmentHeadRow(
+            board_id=BOARD_ID, subject_type="ideation", subject_id=subject_id,
+            assessment_kind="ambiguity", receipt_id=receipt_id,
+            revision=3, updated_at=NOW,
+        ))
+        await session.commit()
+
+    subject = AssessmentSubjectRef(
+        board_id=BOARD_ID, subject_type=AssessmentSubjectType.IDEATION,
+        subject_id=subject_id, subject_version=9, subject_edition=2,
+    )
+    before = AssessmentLifecycleSubjectSnapshot(
+        subject=subject, status="draft", archived=True,
+    )
+    transition = AssessmentLifecycleTransition(
+        action=AssessmentLifecycleAction.RESTORE,
+        before=before, after=replace(before, archived=False),
+        idempotency_key="restore-native-edition", actor_id="owner", occurred_at=NOW,
+    )
+    async with cycle_rig.factory() as session:
+        adapter = CommunitySqlAlchemyQualityAssessmentLifecycle(session)
+        heads, receipts = await adapter.load_lifecycle_state(
+            board_id=BOARD_ID, subject_type="ideation", subject_id=subject_id,
+        )
+        plan = QualityAssessmentLifecycleService().prepare_transition(
+            transition, heads=heads, receipts=receipts,
+        )
+        await adapter.apply_lifecycle_plan(plan)
+        await session.commit()
+
+    async with cycle_rig.factory() as session:
+        head = await session.get(QualityAssessmentHeadRow, (
+            BOARD_ID, "ideation", subject_id, "ambiguity",
+        ))
+        assert (head.receipt_id if head else None) == (
+            receipt_id if receipt_edition == 2 else None
+        )
+        if head:
+            assert head.revision == 3
+        receipt = await session.get(QualityAssessmentReceiptRow, receipt_id)
+        assert receipt.subject_edition == receipt_edition
+        assert receipt.subject_version == 7
+        audit = await session.get(
+            QualityAssessmentLifecycleTransitionRow, transition.transition_digest,
+        )
+        assert audit.head_rebuilds_json[0]["selected_state"] == (
+            "current" if receipt_edition == 2 else None
+        )
+        assert audit.head_rebuilds_json[0]["stale_transition_key"] is None
+        # A retry uses the same transition and does not recreate a cleared head.
+        await CommunitySqlAlchemyQualityAssessmentLifecycle(session).apply_lifecycle_plan(plan)
+        await session.commit()
 
 
 async def _count_selects(engine, operation):
