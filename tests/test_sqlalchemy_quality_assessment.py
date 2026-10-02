@@ -13,6 +13,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import event, func, select, update
+from sqlalchemy.exc import IntegrityError
+from okto_pulse.core.kg.board_source_store import (SPEC_CONTENT_COLUMNS, canonical_content_hash, projected_root_content_hash)
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -32,7 +34,6 @@ from okto_pulse.community.adapters.relational_application import (
 )
 from okto_pulse.community.adapters.sqlalchemy_models import (
     ActivityLog,
-    Base,
     Board,
     DomainEventHandlerExecution,
     DomainEventRow,
@@ -60,6 +61,7 @@ from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
 from okto_pulse.community.adapters.sqlalchemy_consolidation import (
     CommunitySqlAlchemyConsolidationPersistence,
 )
+from okto_pulse.community.adapters.current_relational_schema import current_schema_contract, initialize_current_schema
 from okto_pulse.community.adapters.sqlalchemy_database import (
     install_community_sqlite_pragmas,
 )
@@ -67,6 +69,8 @@ from okto_pulse.community.api.quality_summary_projection import (
     load_quality_summaries_for_page,
     quality_summary_field,
 )
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+from okto_pulse.core.domain.execution_contract import new_execution_contract
 from okto_pulse.core.domain.enums import (
     IdeationStatus,
     RefinementStatus,
@@ -410,8 +414,7 @@ async def _schema_engine(path: Path) -> AsyncEngine:
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
 
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    await initialize_current_schema(engine, current_schema_contract())
     return engine
 
 
@@ -464,11 +467,13 @@ async def rig(tmp_path: Path):
                     id=BOARD_ID,
                     name="Quality",
                     owner_id="owner",
+                    realm_id="local",
                 ),
                 Board(
                     id=OTHER_BOARD_ID,
                     name="Other",
                     owner_id="owner",
+                    realm_id="local",
                 ),
                 Spec(
                     id=SPEC_ID,
@@ -488,6 +493,14 @@ async def rig(tmp_path: Path):
                     status=SpecStatus.IN_PROGRESS,
                     version=7,
                     created_by="owner",
+                    architecture_adoption=ArchitectureAdoptionScope(
+                        board_id=BOARD_ID, spec_id=SPEC_ID, adopted_in_edition=1,
+                        actor_id="owner", inherited_resource_ids=(),
+                    ).model_dump(mode="json"),
+                    execution_contract=new_execution_contract(
+                        board_id=BOARD_ID, spec_id=SPEC_ID, edition=1,
+                        actor_id="owner", origin="new_spec",
+                    ),
                 ),
             ]
         )
@@ -1574,16 +1587,26 @@ async def test_board_source_root_hash_ignores_subject_version_stale_quality_head
         if row["source_ref"] == f"spec:{SPEC_ID}"
     )
 
-    async with rig() as session:
-        await session.execute(
-            update(QualityAssessmentReceiptRow)
-            .where(
-                QualityAssessmentReceiptRow.id == bundle.receipt.id,
-                QualityAssessmentReceiptRow.board_id == BOARD_ID,
-            )
-            .values(justification="Changed stale receipt must not rehash the root.")
+    # The stored receipt remains immutable history. Prove the current root is
+    # calculated with no quality head, rather than mutating history to probe it.
+    with sqlite3.connect(database_path) as connection:
+        connection.row_factory = sqlite3.Row
+        row = connection.execute("SELECT * FROM specs WHERE id = ?", (SPEC_ID,)).fetchone()
+        assert first_root_hash == projected_root_content_hash(
+            canonical_content_hash(row, SPEC_CONTENT_COLUMNS),
+            quality_head_fingerprints=(),
         )
-        await session.commit()
+    async with rig() as session:
+        with pytest.raises(IntegrityError, match="quality_c7_row_immutable"):
+            await session.execute(
+                update(QualityAssessmentReceiptRow)
+                .where(
+                    QualityAssessmentReceiptRow.id == bundle.receipt.id,
+                    QualityAssessmentReceiptRow.board_id == BOARD_ID,
+                )
+                .values(justification="Changed stale receipt must not rehash the root.")
+            )
+        await session.rollback()
 
     second_snapshot = CommunityBoardSourceReader(database_path).fetch(BOARD_ID)
     assert second_snapshot.complete is True
@@ -1632,16 +1655,26 @@ async def test_board_source_root_hash_ignores_clarification_stale_quality_head(
         if row["source_ref"] == f"spec:{SPEC_ID}"
     )
 
-    async with rig() as session:
-        await session.execute(
-            update(QualityAssessmentReceiptRow)
-            .where(
-                QualityAssessmentReceiptRow.id == bundle.receipt.id,
-                QualityAssessmentReceiptRow.board_id == BOARD_ID,
-            )
-            .values(justification="A stale clarification receipt is historical.")
+    # The stored receipt remains immutable history. Prove the current root is
+    # calculated with no quality head, rather than mutating history to probe it.
+    with sqlite3.connect(database_path) as connection:
+        connection.row_factory = sqlite3.Row
+        row = connection.execute("SELECT * FROM specs WHERE id = ?", (SPEC_ID,)).fetchone()
+        assert first_root_hash == projected_root_content_hash(
+            canonical_content_hash(row, SPEC_CONTENT_COLUMNS),
+            quality_head_fingerprints=(),
         )
-        await session.commit()
+    async with rig() as session:
+        with pytest.raises(IntegrityError, match="quality_c7_row_immutable"):
+            await session.execute(
+                update(QualityAssessmentReceiptRow)
+                .where(
+                    QualityAssessmentReceiptRow.id == bundle.receipt.id,
+                    QualityAssessmentReceiptRow.board_id == BOARD_ID,
+                )
+                .values(justification="A stale clarification receipt is historical.")
+            )
+        await session.rollback()
 
     second_snapshot = CommunityBoardSourceReader(database_path).fetch(BOARD_ID)
     assert second_snapshot.complete is True
@@ -1652,4 +1685,4 @@ async def test_board_source_root_hash_ignores_clarification_stale_quality_head(
     )
 
     assert second_root_hash == first_root_hash
-    # End-to-end guard: legacy history must not perturb the current root hash.
+    # Native previous assessments do not participate in the current root hash.

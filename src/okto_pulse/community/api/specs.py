@@ -1008,7 +1008,7 @@ def _link_task_not_found_detail(exc: EntityNotFoundError) -> str:
     if exc.entity_type == "spec":
         return "Spec not found"
     if exc.entity_type == "card":
-        return f"Card '{exc.entity_id}' not found â€” cannot link a non-existent card."
+        return f"Card '{exc.entity_id}' not found — cannot link a non-existent card."
     return f"Scenario '{exc.entity_id}' not found in spec."
 
 
@@ -1019,7 +1019,7 @@ def _link_ir_not_found_detail(exc: EntityNotFoundError) -> str:
     if exc.entity_type == "spec":
         return "Spec not found"
     if exc.entity_type == "card":
-        return f"Card '{exc.entity_id}' not found â€” cannot link a non-existent card."
+        return f"Card '{exc.entity_id}' not found — cannot link a non-existent card."
     return f"Integration requirement '{exc.entity_id}' not found in spec."
 
 
@@ -1030,7 +1030,7 @@ def _link_or_not_found_detail(exc: EntityNotFoundError) -> str:
     if exc.entity_type == "spec":
         return "Spec not found"
     if exc.entity_type == "card":
-        return f"Card '{exc.entity_id}' not found â€” cannot link a non-existent card."
+        return f"Card '{exc.entity_id}' not found — cannot link a non-existent card."
     return f"Observability requirement '{exc.entity_id}' not found in spec."
 
 
