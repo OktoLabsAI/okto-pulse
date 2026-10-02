@@ -77,7 +77,8 @@ async def test_card_gate_projection_keeps_history_bodies_inside_sqlite(tmp_path)
                     "validations": [
                         {
                             "id": f"validation-{index}",
-                            "verdict": "pass" if index == 9 else "fail",
+                            "outcome": "success" if index == 9 else "failed",
+                            "confidence": 91, "estimated_completeness": 92, "estimated_drift": 3,
                             "private_body": "V" * 20_000,
                         }
                         for index in range(10)
@@ -111,6 +112,8 @@ async def test_card_gate_projection_keeps_history_bodies_inside_sqlite(tmp_path)
             fields = (
                 "id",
                 "validations_count",
+                "validations_fail_count", "validations_has_pass",
+                "first_pass_confidence", "first_pass_completeness", "first_pass_drift",
                 "recent_validation_1",
                 "recent_validation_2",
                 "recent_validation_3",
@@ -145,6 +148,10 @@ async def test_card_gate_projection_keeps_history_bodies_inside_sqlite(tmp_path)
     assert len(projected) == 1
     assert set(projected[0].values) == set(fields)
     assert projected[0].validations_count == 10
+    assert projected[0].validations_fail_count == 9
+    assert projected[0].validations_has_pass
+    assert (projected[0].first_pass_confidence, projected[0].first_pass_completeness,
+            projected[0].first_pass_drift) == (91, 92, 3)
     assert "validation-9" in projected[0].recent_validation_1
     assert "validation-5" in projected[0].recent_validation_5
     assert "validation-4" not in repr(projected[0].values)
@@ -420,6 +427,9 @@ async def test_spec_lifecycle_fence_serializes_concurrent_validation_heads(tmp_p
                     "id": spec_id,
                     "board_id": board_id,
                     "title": "Concurrent validation",
+                    "architecture_adoption": {"contract_version": "architecture-adoption/v1",
+                        "board_id": board_id, "spec_id": spec_id, "adopted_in_edition": 3,
+                        "actor_id": "owner-1", "inherited_resource_ids": []},
                     "status": "approved",
                     "edition": 3,
                     "version": 8,
@@ -528,6 +538,9 @@ async def test_deferred_allow_audit_does_not_lock_sqlite_during_read_phase(
                     "id": spec_id,
                     "board_id": board_id,
                     "title": "Read-only authorization phase",
+                    "architecture_adoption": {"contract_version": "architecture-adoption/v1",
+                        "board_id": board_id, "spec_id": spec_id, "adopted_in_edition": 1,
+                        "actor_id": "owner-1", "inherited_resource_ids": []},
                     "status": "review",
                     "created_by": "owner-1",
                 },

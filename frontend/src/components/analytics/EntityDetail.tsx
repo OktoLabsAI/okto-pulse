@@ -1331,7 +1331,7 @@ function CardDetailView({ data }: { data: CardAnalytics }) {
           <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-3">Task Validation History</h3>
           <div className="space-y-3">
             {data.validations!.map((v: any, idx: number) => {
-              const isSuccess = v.outcome === 'success' || v.verdict === 'pass';
+              const isSuccess = v.outcome === 'success';
               return (
                 <div key={v.id || idx} className="border-l-2 border-gray-200 dark:border-gray-700 pl-3">
                   <div className="flex items-center gap-2 mb-1">
@@ -1353,11 +1353,11 @@ function CardDetailView({ data }: { data: CardAnalytics }) {
                     </div>
                     <div>
                       <span className="text-gray-400">completeness:</span>{' '}
-                      <span className="font-semibold text-gray-700 dark:text-gray-200">{v.completeness ?? v.estimated_completeness ?? '--'}%</span>
+                      <span className="font-semibold text-gray-700 dark:text-gray-200">{v.estimated_completeness ?? '--'}%</span>
                     </div>
                     <div>
                       <span className="text-gray-400">drift:</span>{' '}
-                      <span className="font-semibold text-gray-700 dark:text-gray-200">{v.drift ?? v.estimated_drift ?? '--'}%</span>
+                      <span className="font-semibold text-gray-700 dark:text-gray-200">{v.estimated_drift ?? '--'}%</span>
                     </div>
                   </div>
                   {v.threshold_violations && v.threshold_violations.length > 0 && (
@@ -1369,9 +1369,9 @@ function CardDetailView({ data }: { data: CardAnalytics }) {
                       ))}
                     </div>
                   )}
-                  {(v.general_justification || v.summary) && (
+                  {(v.general_justification) && (
                     <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1 italic">
-                      {v.general_justification || v.summary}
+                      {v.general_justification}
                     </p>
                   )}
                 </div>

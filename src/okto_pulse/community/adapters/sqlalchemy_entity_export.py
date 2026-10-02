@@ -1148,32 +1148,27 @@ def _human_card_payload(row: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _human_task_validation(row: Mapping[str, Any]) -> dict[str, Any]:
-    """Collapse dual aliases and omit the idempotency receipt plumbing."""
+    """Render canonical validation fields and omit internal ledger fields."""
 
     result: dict[str, Any] = {}
     for field_name in ("id", "created_at"):
         if row.get(field_name) not in (None, ""):
             result[field_name] = row[field_name]
-    # A reader needs to know who performed the assessment, not the opaque
-    # identity key used to authorize it.  New task-validation records persist
-    # ``reviewer_name``; ``evaluator_name`` remains a tolerated cross-surface
-    # alias.  Legacy rows that only carry an ID deliberately omit the reviewer
-    # rather than promoting an implementation identifier into report content.
-    reviewer_name = _first_present(row, "reviewer_name", "evaluator_name")
+    reviewer_name = row.get("reviewer_name")
     if reviewer_name is not None:
         result["reviewer"] = reviewer_name
-    for metric, legacy_metric in (
+    for metric, source_field in (
         ("confidence", "confidence"),
         ("completeness", "estimated_completeness"),
         ("drift", "estimated_drift"),
     ):
-        score = _first_present(row, metric, legacy_metric)
+        score = row.get(source_field)
         if score is not None:
             result[metric] = score
         justification = row.get(f"{metric}_justification")
         if justification not in (None, ""):
             result[f"{metric}_justification"] = justification
-    summary = _first_present(row, "summary", "general_justification")
+    summary = row.get("general_justification")
     if summary is not None:
         result["summary"] = summary
     for field_name in (
@@ -1187,7 +1182,7 @@ def _human_task_validation(row: Mapping[str, Any]) -> dict[str, Any]:
     if failures := _human_reason_codes(row.get("threshold_violations")):
         result["threshold_failures"] = failures
     if "validation_outcome" not in result:
-        outcome = _first_present(row, "outcome", "verdict")
+        outcome = row.get("outcome")
         if outcome is not None:
             result["validation_outcome"] = outcome
     failures = row.get("completion_gate_failures")

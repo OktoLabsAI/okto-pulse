@@ -31,15 +31,11 @@ function displayName(id: string, nameMap: Record<string, string>): string {
 }
 
 function validationFailed(validation: NonNullable<CardSummary['validations']>[number]): boolean {
-  if (validation.verdict) return validation.verdict === 'fail';
-  if (validation.outcome) return validation.outcome === 'failed';
-  return validation.recommendation === 'reject';
+  return validation.outcome === 'failed';
 }
 
 function validationPassed(validation: NonNullable<CardSummary['validations']>[number]): boolean {
-  if (validation.verdict) return validation.verdict === 'pass';
-  if (validation.outcome) return validation.outcome === 'success';
-  return validation.recommendation === 'approve';
+  return validation.outcome === 'success';
 }
 
 export function KanbanCard({ card, onClick, nameMap, canDrag = true, cognitiveBadge }: KanbanCardProps) {
@@ -233,11 +229,11 @@ export function KanbanCard({ card, onClick, nameMap, canDrag = true, cognitiveBa
               <span className="text-[9px] px-1.5 py-0.5 rounded font-medium bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300" title={`Confidence: ${passedEntry.confidence}%`}>
                 Conf: {passedEntry.confidence}%
               </span>
-              <span className="text-[9px] px-1.5 py-0.5 rounded font-medium bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300" title={`Completeness: ${passedEntry.completeness}%`}>
-                Compl: {passedEntry.completeness}%
+              <span className="text-[9px] px-1.5 py-0.5 rounded font-medium bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300" title={`Completeness: ${passedEntry.estimated_completeness}%`}>
+                Compl: {passedEntry.estimated_completeness}%
               </span>
-              <span className="text-[9px] px-1.5 py-0.5 rounded font-medium bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300" title={`Drift: ${passedEntry.drift}%`}>
-                Drift: {passedEntry.drift}%
+              <span className="text-[9px] px-1.5 py-0.5 rounded font-medium bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300" title={`Drift: ${passedEntry.estimated_drift}%`}>
+                Drift: {passedEntry.estimated_drift}%
               </span>
             </div>
           )}

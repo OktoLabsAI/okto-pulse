@@ -27,7 +27,7 @@ function card(overrides: Partial<CardSummary> = {}): CardSummary {
     validations: [{
       id: 'validation-1',
       confidence: 60,
-      verdict: 'fail',
+      outcome: 'failed',
       recommendation: 'reject',
       created_at: '2026-08-14T00:01:00Z',
     }],
@@ -90,14 +90,14 @@ describe('KanbanCard Rejected projection', () => {
         {
           id: 'validation-0',
           confidence: 95,
-          verdict: 'pass',
+          outcome: 'success',
           recommendation: 'approve',
           created_at: '2026-08-13T23:59:00Z',
         },
         {
           id: 'validation-1',
           confidence: 60,
-          verdict: 'fail',
+          outcome: 'failed',
           recommendation: 'reject',
           created_at: '2026-08-14T00:01:00Z',
         },

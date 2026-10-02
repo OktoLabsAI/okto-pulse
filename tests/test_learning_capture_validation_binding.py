@@ -94,9 +94,14 @@ async def test_selected_capture_binds_real_validation_done_and_outbox_with_exact
         case = SubmitTaskValidationUseCase()
         result = await case.execute(SubmitTaskValidationCommand(request.bug_id, data), actor=reviewer(), uow=uow)
         assert result.validation['completion_outcome'] == 'completed'
+        retired = {'evaluator_id', 'evaluator_name', 'completeness', 'drift', 'summary', 'verdict'}
+        assert retired.isdisjoint(result.validation)
+        assert result.validation['reviewer_id'] == 'owner'
+        assert result.validation['estimated_completeness'] == 100
         bug = await session.get(Card, request.bug_id)
         assert bug.status.value == 'done'
         assert len(bug.learning_closeout_bindings) == len(bug.validations) == 1
+        assert retired.isdisjoint(bug.validations[0])
         binding = bug.learning_closeout_bindings[0]
         closed = await assembler.assemble_semantic(session, board_id=BOARD, bug_id=bug.id)
         assert closeout_binding_is_current(binding, closed)

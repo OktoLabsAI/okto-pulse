@@ -525,7 +525,7 @@ async def test_card_rejection_export_separates_current_cause_from_history() -> N
                             "id": "validation-current",
                             "card_id": "card",
                             "board_id": "b",
-                            "evaluator_id": "reviewer-1",
+                            "reviewer_id": "reviewer-1",
                             "reviewer_name": "Clara Reviewer",
                             "confidence": 91,
                             "confidence_justification": "Evidence was reproducible.",
@@ -587,8 +587,8 @@ async def test_card_rejection_export_separates_current_cause_from_history() -> N
                     validations=[
                         {
                             "id": "validation-gate",
-                            "evaluator_id": "agent-opaque-2",
-                            "evaluator_name": "Gate Evaluation Agent",
+                            "reviewer_id": "agent-opaque-2",
+                            "reviewer_name": "Gate Evaluation Agent",
                             "confidence": 96,
                             "confidence_justification": "The implementation is clear.",
                             "completeness": 100,

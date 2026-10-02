@@ -2161,14 +2161,12 @@ export function exportCard(card: Card, spec?: Spec | null): string {
         .find((validation) => (
           validation.card_status === 'rejected'
           || validation.completion_outcome === 'rejected'
-          || validation.verdict === 'fail'
           || validation.outcome === 'failed'
           || validation.recommendation === 'reject'
         ));
     body += '## Rework Required\n\n';
     body += card.current_rejection_summary
       || currentAttempt?.rejection_cause?.summary
-      || currentAttempt?.summary
       || currentAttempt?.general_justification
       || 'The latest governed completion attempt did not pass.';
     if (currentAttempt?.completion_gate_failures?.length) {
@@ -2221,13 +2219,11 @@ export function exportCard(card: Card, spec?: Spec | null): string {
   // Validations
   if (card.validations?.length) {
     const entries = card.validations.map((v: ValidationEntry, i: number) => {
-      const passed = v.verdict === 'pass'
-        || v.outcome === 'success'
-        || v.recommendation === 'approve';
+      const passed = v.outcome === 'success';
       const completionRejected = v.completion_outcome === 'rejected';
-      const completeness = v.completeness ?? v.estimated_completeness;
-      const drift = v.drift ?? v.estimated_drift;
-      const reviewerName = v.evaluator_name || v.reviewer_name;
+      const completeness = v.estimated_completeness;
+      const drift = v.estimated_drift;
+      const reviewerName = v.reviewer_name;
       const resultLabel = completionRejected && passed
         ? 'ASSESSMENT PASSED — COMPLETION REJECTED'
         : passed ? 'PASSED' : 'FAILED';
@@ -2236,7 +2232,7 @@ export function exportCard(card: Card, spec?: Spec | null): string {
       e += `| Confidence | ${v.confidence} |\n`;
       e += `| Completeness | ${completeness ?? 'Not reported'} |\n`;
       e += `| Drift | ${drift ?? 'Not reported'} |\n\n`;
-      const summary = v.summary || v.general_justification;
+      const summary = v.general_justification;
       if (summary) e += `**Summary:** ${summary}\n\n`;
       if (v.completion_gate_failures?.length) {
         e += '**Completion gates requiring action:**\n\n';

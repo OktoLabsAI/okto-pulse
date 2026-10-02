@@ -231,7 +231,7 @@ from okto_pulse.core.services.analytics_service import (  # noqa: E402
 #    outcome (success|failed), threshold_violations: [str], resolved_thresholds, ...}
 #
 # Task Validation Gate records (card.validations) shape:
-#   {id, confidence, estimated_completeness | completeness, estimated_drift | drift,
+#   {id, confidence, estimated_completeness, estimated_drift,
 #    recommendation, outcome, threshold_violations: [str], ...}
 #
 # D3 (multi-count): a single failed record can contribute to multiple rejection

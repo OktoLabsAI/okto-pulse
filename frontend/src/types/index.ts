@@ -2489,44 +2489,28 @@ export interface TaskValidationReviewerSeparation {
   source: string;
 }
 
-/**
- * Task-validation history entry.
- *
- * Current writes persist both the legacy API names and the clean UI aliases.
- * All aliases remain optional because cards created before the dual-write
- * migration may carry only one side of each pair.
- */
+/** Current Task Validation history contract. */
 export interface ValidationEntry {
   id: string;
   card_id?: string;
   board_id?: string;
 
-  // Reviewer identity: legacy name + clean UI alias.
   reviewer_id?: string | null;
-  evaluator_id?: string | null;
   reviewer_name?: string | null;
-  evaluator_name?: string | null;
 
   confidence: number;
   confidence_justification?: string | null;
 
-  // Completeness: legacy name + clean UI alias.
   estimated_completeness?: number;
-  completeness?: number;
   completeness_justification?: string | null;
 
-  // Drift: legacy name + clean UI alias.
   estimated_drift?: number;
-  drift?: number;
   drift_justification?: string | null;
 
-  // General rationale: legacy name + clean UI alias.
   general_justification?: string | null;
-  summary?: string | null;
 
   recommendation?: TaskValidationRecommendation;
   outcome?: TaskValidationOutcome;
-  verdict?: TaskValidationVerdict;
   threshold_violations?: string[];
   resolved_thresholds?: TaskValidationResolvedThresholds | null;
   reviewer_separation?: TaskValidationReviewerSeparation | null;

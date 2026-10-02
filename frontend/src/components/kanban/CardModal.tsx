@@ -3698,11 +3698,7 @@ function QATab({
 function validationVerdict(
   validation: ValidationEntry,
 ): 'pass' | 'fail' {
-  if (validation.verdict) return validation.verdict;
-  if (validation.outcome) {
-    return validation.outcome === 'success' ? 'pass' : 'fail';
-  }
-  return validation.recommendation === 'approve' ? 'pass' : 'fail';
+  return validation.outcome === 'success' ? 'pass' : 'fail';
 }
 
 function validationMetricStatus(
@@ -4029,8 +4025,7 @@ function ValidationsTab({
               <p className="mt-1 text-xs text-rose-800 dark:text-rose-200">
                 {card.current_rejection_summary
                   || (rejectionFeedbackValidation
-                  ? rejectionFeedbackValidation.summary
-                    || rejectionFeedbackValidation.general_justification
+                  ? rejectionFeedbackValidation.general_justification
                     || 'The latest Task Validation did not pass.'
                   : 'The latest governed completion attempt did not pass. Review the available validation, policy and activity feedback before rework.')}
               </p>
@@ -4267,10 +4262,10 @@ function ValidationsTab({
               const isExpanded = expandedId === v.id;
               const verdict = validationVerdict(v);
               const completenessScore =
-                v.completeness ?? v.estimated_completeness ?? 0;
-              const driftScore = v.drift ?? v.estimated_drift ?? 0;
-              const summary = v.summary || v.general_justification;
-              const evaluatorId = v.evaluator_id || v.reviewer_id;
+                v.estimated_completeness ?? 0;
+              const driftScore = v.estimated_drift ?? 0;
+              const summary = v.general_justification;
+              const evaluatorId = v.reviewer_id;
               return (
                 <div key={v.id} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
                   <div

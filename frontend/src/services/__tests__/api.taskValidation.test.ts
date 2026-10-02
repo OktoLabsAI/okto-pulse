@@ -37,20 +37,20 @@ describe('task validation REST client', () => {
       card_id: 'card-1',
       board_id: 'board-1',
       reviewer_id: 'reviewer-1',
-      evaluator_id: 'reviewer-1',
+
       confidence: 91,
       confidence_justification: payload.confidence_justification,
       estimated_completeness: 94,
-      completeness: 94,
+
       completeness_justification: payload.completeness_justification,
       estimated_drift: 8,
-      drift: 8,
+
       drift_justification: payload.drift_justification,
       general_justification: payload.general_justification,
-      summary: payload.general_justification,
+
       recommendation: 'approve',
       outcome: 'success',
-      verdict: 'pass',
+
       threshold_violations: [],
       resolved_thresholds: {
         required: true,
@@ -94,9 +94,9 @@ describe('task validation REST client', () => {
   });
 
   it('keeps legacy-only validation aliases representable', () => {
-    const legacyEntry: ValidationEntry = {
+    const historyEntry: ValidationEntry = {
       id: 'legacy-val-1',
-      reviewer_id: 'legacy-reviewer',
+      reviewer_id: 'reviewer',
       confidence: 75,
       estimated_completeness: 82,
       estimated_drift: 20,
@@ -107,14 +107,14 @@ describe('task validation REST client', () => {
       created_at: '2025-12-01T10:00:00Z',
     };
 
-    expect(legacyEntry.evaluator_id ?? legacyEntry.reviewer_id).toBe(
-      'legacy-reviewer',
+    expect(historyEntry.reviewer_id).toBe(
+      'reviewer',
     );
     expect(
-      legacyEntry.completeness ?? legacyEntry.estimated_completeness,
+      historyEntry.estimated_completeness,
     ).toBe(82);
-    expect(legacyEntry.drift ?? legacyEntry.estimated_drift).toBe(20);
-    expect(legacyEntry.summary ?? legacyEntry.general_justification).toContain(
+    expect(historyEntry.estimated_drift).toBe(20);
+    expect(historyEntry.general_justification).toContain(
       'Historical entry',
     );
   });

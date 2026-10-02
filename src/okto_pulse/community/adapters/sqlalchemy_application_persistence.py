@@ -491,12 +491,12 @@ def _projection_expression(model: Any, field_name: str) -> Any:
         entries = func.json_each(
             func.coalesce(models.Card.validations, "[]")
         ).table_valued("key", "value", joins_implicitly=True)
-        verdict = func.json_extract(entries.c.value, "$.verdict")
+        outcome = func.json_extract(entries.c.value, "$.outcome")
         if field_name == "validations_fail_count":
             return (
                 select(func.count())
                 .select_from(entries)
-                .where(verdict == "fail")
+                .where(outcome == "failed")
                 .correlate(models.Card)
                 .scalar_subquery()
                 .label(field_name)
@@ -504,7 +504,7 @@ def _projection_expression(model: Any, field_name: str) -> Any:
         return (
             select(1)
             .select_from(entries)
-            .where(verdict == "pass")
+            .where(outcome == "success")
             .correlate(models.Card)
             .exists()
             .label(field_name)
@@ -519,7 +519,7 @@ def _projection_expression(model: Any, field_name: str) -> Any:
         first_pass_key = (
             select(func.min(key_entries.c.key))
             .select_from(key_entries)
-            .where(func.json_extract(key_entries.c.value, "$.verdict") == "pass")
+            .where(func.json_extract(key_entries.c.value, "$.outcome") == "success")
             .correlate(models.Card)
             .scalar_subquery()
         )
@@ -527,7 +527,8 @@ def _projection_expression(model: Any, field_name: str) -> Any:
             func.coalesce(models.Card.validations, "[]")
         ).table_valued("key", "value", joins_implicitly=True)
         return (
-            select(func.json_extract(entries.c.value, f"$.{metric}"))
+            select(func.json_extract(entries.c.value,
+                f"$.{metric if metric == 'confidence' else 'estimated_' + metric}"))
             .select_from(entries)
             .where(entries.c.key == first_pass_key)
             .correlate(models.Card)
