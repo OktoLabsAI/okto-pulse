@@ -103,11 +103,9 @@ const EXPORTED_BINDING_KEYS = [
   'physical_source_kind',
   'binding_origin',
   'materialization',
-  'legacy_source_id',
-  'legacy_guideline_version',
-  'legacy_template_id',
-  'legacy_template_version',
-  'legacy_version_unresolvable',
+  'materialized_revision_number',
+  'materialized_template_id',
+  'materialized_template_version',
   'evidence_refs',
   'binding_digest',
 ] as const;
@@ -735,25 +733,17 @@ function validateBinding(
     invalidEnvelope(`${path}.binding.source_kind`);
   }
 
-  canonicalText(
-    exported.physical_source_kind,
-    `${path}.physical_source_kind`,
-  );
+  if (exported.physical_source_kind !== 'native') {
+    invalidEnvelope(`${path}.physical_source_kind`);
+  }
   canonicalText(exported.binding_origin, `${path}.binding_origin`);
   if (exported.materialization !== 'live'
     && exported.materialization !== 'candidate') {
     invalidEnvelope(`${path}.materialization`);
   }
-  for (const key of [
-    'legacy_source_id',
-    'legacy_guideline_version',
-    'legacy_template_id',
-    'legacy_template_version',
-  ] as const) {
-    nullableCanonicalText(exported[key], `${path}.${key}`);
-  }
-  if (typeof exported.legacy_version_unresolvable !== 'boolean') {
-    invalidEnvelope(`${path}.legacy_version_unresolvable`);
+  nullableCanonicalText(exported.materialized_template_id, `${path}.materialized_template_id`);
+  for (const key of ['materialized_revision_number', 'materialized_template_version'] as const) {
+    if (exported[key] !== null) strictInteger(exported[key], `${path}.${key}`, 1);
   }
   if (!Array.isArray(exported.evidence_refs)) {
     invalidEnvelope(`${path}.evidence_refs`);

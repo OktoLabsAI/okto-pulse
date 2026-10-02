@@ -141,11 +141,9 @@ function envelopeWithBinding(): GuidelineExportEnvelopeV3 {
         physical_source_kind: 'native',
         binding_origin: 'native',
         materialization: 'live',
-        legacy_source_id: null,
-        legacy_guideline_version: null,
-        legacy_template_id: null,
-        legacy_template_version: null,
-        legacy_version_unresolvable: false,
+        materialized_revision_number: null,
+        materialized_template_id: null,
+        materialized_template_version: null,
         evidence_refs: [['source', 'kb:architecture']],
         binding_digest: 'd'.repeat(64),
       }],
@@ -769,6 +767,18 @@ describe('GuidelinesPanel immutable policy import/export', () => {
           revisions: [{ ...aggregate.revisions[0], [field]: null }],
         }],
       }, 'guidelines[0].revisions[0]');
+    },
+  );
+
+  it.each(['legacy_source_id', 'legacy_guideline_version', 'legacy_template_id',
+    'legacy_template_version', 'legacy_version_unresolvable'])(
+    'rejects removed binding metadata %s before API access', async (field) => {
+      const envelope = envelopeWithBinding();
+      const aggregate = envelope.guidelines[0];
+      await expectEnvelopeRejected({
+        ...envelope,
+        guidelines: [{ ...aggregate, bindings: [{ ...aggregate.bindings[0], [field]: null }] }],
+      }, 'guidelines[0].bindings[0]');
     },
   );
 

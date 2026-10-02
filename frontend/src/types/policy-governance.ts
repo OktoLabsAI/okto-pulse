@@ -900,14 +900,12 @@ export interface GuidelineExportLogicalBindingV3
 
 export interface GuidelineExportBindingV3 {
   binding: GuidelineExportLogicalBindingV3;
-  physical_source_kind: string;
+  physical_source_kind: 'native';
   binding_origin: string;
   materialization: GuidelineBindingMaterialization;
-  legacy_source_id: string | null;
-  legacy_guideline_version: string | null;
-  legacy_template_id: string | null;
-  legacy_template_version: string | null;
-  legacy_version_unresolvable: boolean;
+  materialized_revision_number: number | null;
+  materialized_template_id: string | null;
+  materialized_template_version: number | null;
   evidence_refs: Array<[name: string, value: string]>;
   binding_digest: string;
 }

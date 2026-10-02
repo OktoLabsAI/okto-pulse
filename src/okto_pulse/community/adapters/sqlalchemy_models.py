@@ -3414,10 +3414,6 @@ class GuidelineBoardBindingRow(Base):
             "idempotency_key",
             name="uq_guideline_binding_idempotency",
         ),
-        UniqueConstraint(
-            "legacy_source_id",
-            name="uq_guideline_binding_legacy_source",
-        ),
         CheckConstraint(
             "binding_revision >= 1",
             name="ck_guideline_binding_positive_revision",
@@ -3446,8 +3442,7 @@ class GuidelineBoardBindingRow(Base):
             name="ck_guideline_binding_state",
         ),
         CheckConstraint(
-            "source_kind IN "
-            "('native', 'legacy_board_guideline', 'legacy_inline_guideline')",
+            "source_kind = 'native'",
             name="ck_guideline_binding_source_kind",
         ),
         CheckConstraint(
@@ -3496,25 +3491,17 @@ class GuidelineBoardBindingRow(Base):
         default="native",
         server_default=text("'native'"),
     )
-    legacy_source_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    legacy_guideline_version: Mapped[int | None] = mapped_column(
+    materialized_revision_number: Mapped[int | None] = mapped_column(
         Integer,
         nullable=True,
     )
-    legacy_template_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    legacy_template_version: Mapped[int | None] = mapped_column(
+    materialized_template_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    materialized_template_version: Mapped[int | None] = mapped_column(
         Integer,
         nullable=True,
-    )
-    legacy_version_unresolvable: Mapped[bool] = mapped_column(
-        nullable=False,
-        default=False,
-        server_default=text("false"),
     )
     idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     request_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    # Kept last deliberately: B04 upgrades append this column to the exact B03
-    # SQLite table, and the strict owned-schema audit includes column order.
     state: Mapped[str] = mapped_column(
         String(20),
         nullable=False,

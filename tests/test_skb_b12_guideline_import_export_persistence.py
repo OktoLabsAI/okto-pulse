@@ -192,11 +192,9 @@ def _binding_row(
         adopted_at=NOW + timedelta(minutes=10 + binding_revision),
         enforcement="advisory",
         source_kind="native",
-        legacy_source_id=None,
-        legacy_guideline_version=None,
-        legacy_template_id=None,
-        legacy_template_version=None,
-        legacy_version_unresolvable=False,
+        materialized_revision_number=None,
+        materialized_template_id=None,
+        materialized_template_version=None,
         idempotency_key=None,
         request_digest=None,
         state="active",
@@ -441,7 +439,7 @@ def _source_binding(
             state=GuidelineBindingState.ACTIVE,
             source_kind=GuidelineBindingProvenance.NATIVE,
         ),
-        physical_source_kind="guideline_board_bindings",
+        physical_source_kind="native",
         binding_origin="native",
         materialization=GuidelineBindingMaterialization.LIVE,
         evidence_refs=(
@@ -814,7 +812,7 @@ async def test_apply_is_atomic_replay_safe_and_keeps_bindings_inert(
             for item in exported_bindings
         )
         assert all(
-            item.physical_source_kind == "guideline_board_bindings"
+            item.physical_source_kind == "native"
             for item in exported_bindings
         )
 

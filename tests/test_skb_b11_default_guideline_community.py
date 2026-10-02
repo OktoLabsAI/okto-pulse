@@ -11,12 +11,16 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import select, insert
+from sqlalchemy.exc import IntegrityError
 
 import okto_pulse.community.app as _community_app  # noqa: F401
 import okto_pulse.core.infra.database as database_module
 from okto_pulse.community.adapters.relational_application import (
     CommunityRelationalApplicationAdapter,
+)
+from okto_pulse.community.adapters.current_relational_schema import (
+    current_schema_contract, initialize_current_schema,
 )
 from okto_pulse.community.adapters.sqlalchemy_database import (
     get_engine,
@@ -30,7 +34,6 @@ from okto_pulse.community.adapters.sqlalchemy_guideline_policy import (
     guideline_revision_content_digest,
 )
 from okto_pulse.community.adapters.sqlalchemy_models import (
-    Base,
     Board,
     DefaultBoardConfiguration,
     GuidelineBoardBindingRow,
@@ -60,8 +63,7 @@ OWNER_ID = "actor-b11"
 
 async def _fresh_database(path: Path) -> None:
     database_module.create_database(f"sqlite+aiosqlite:///{path.as_posix()}")
-    async with get_engine().begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    await initialize_current_schema(get_engine(), current_schema_contract())
 
 
 def _revision(
@@ -579,9 +581,36 @@ async def test_b11_materialization_keeps_exact_pin_and_rolls_back_partial_batch(
             ).scalar_one()
             assert exact.revision_id == revision_1.revision_id
             assert exact.revision_id != revision_2.revision_id
-            assert exact.legacy_template_id == template.id
-            assert exact.legacy_template_version == template.version
-            assert exact.legacy_guideline_version == revision_1.revision_number
+            assert exact.materialized_template_id == template.id
+            assert exact.materialized_template_version == template.version
+            assert exact.materialized_revision_number == revision_1.revision_number
+            exported = await CommunitySqlAlchemyGuidelinePolicy(session).export_guideline_snapshot(
+                guideline_ids=(guideline_id,), owner_id=OWNER_ID,
+                board_id="board-b11-exact", include_binding_history=True,
+            )
+            proof = exported.aggregates[0].bindings[0]
+            assert proof.materialized_template_id == template.id
+            assert proof.materialized_template_version == template.version
+            assert proof.materialized_revision_number == revision_1.revision_number
+
+            forged = {column.name: getattr(exact, column.name)
+                      for column in GuidelineBoardBindingRow.__table__.columns}
+
+        async with get_session_factory()() as session:
+            session.add(Board(id="board-forged-proof", name="Forged proof",
+                              owner_id=OWNER_ID, realm_id="local",
+                              default_config_snapshot={"template_id": template.id,
+                                                       "template_version": template.version}))
+            await session.commit()
+        async with get_session_factory()() as session:
+            forged.update(binding_id="binding-forged-proof", board_id="board-forged-proof",
+                          materialized_revision_number=99)
+            with pytest.raises(IntegrityError, match="guideline_impact_preview_required"):
+                await session.execute(insert(GuidelineBoardBindingRow).values(**forged))
+            await session.rollback()
+            assert (await session.execute(select(GuidelineBoardBindingRow).where(
+                GuidelineBoardBindingRow.board_id == "board-forged-proof"
+            ))).scalars().all() == []
 
         async with get_session_factory()() as session:
             rollback_template = DefaultBoardConfiguration(
@@ -591,7 +620,7 @@ async def test_b11_materialization_keeps_exact_pin_and_rolls_back_partial_batch(
                 is_active=False,
                 scope="global",
                 settings_payload={},
-                guideline_default_refs=[],
+                guideline_default_refs=[_pin(guideline_id, revision_1, priority=1)],
                 created_by=OWNER_ID,
             )
             rollback_board = Board(

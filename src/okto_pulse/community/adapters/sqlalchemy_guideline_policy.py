@@ -531,11 +531,9 @@ _GUIDELINE_EXPORT_BINDING_FIELDS = frozenset(
         "physical_source_kind",
         "binding_origin",
         "materialization",
-        "legacy_source_id",
-        "legacy_guideline_version",
-        "legacy_template_id",
-        "legacy_template_version",
-        "legacy_version_unresolvable",
+        "materialized_revision_number",
+        "materialized_template_id",
+        "materialized_template_version",
         "evidence_refs",
         "binding_digest",
     }
@@ -562,11 +560,9 @@ def _guideline_export_binding_from_payload(
             physical_source_kind=payload["physical_source_kind"],
             binding_origin=payload["binding_origin"],
             materialization=GuidelineBindingMaterialization(payload["materialization"]),
-            legacy_source_id=payload.get("legacy_source_id"),
-            legacy_guideline_version=payload.get("legacy_guideline_version"),
-            legacy_template_id=payload.get("legacy_template_id"),
-            legacy_template_version=payload.get("legacy_template_version"),
-            legacy_version_unresolvable=payload["legacy_version_unresolvable"],
+            materialized_revision_number=payload.get("materialized_revision_number"),
+            materialized_template_id=payload.get("materialized_template_id"),
+            materialized_template_version=payload.get("materialized_template_version"),
             evidence_refs=tuple(tuple(item) for item in evidence_refs),
             binding_digest=payload.get("binding_digest"),
         )
@@ -796,19 +792,9 @@ def _export_binding_from_live_row(
         physical_source_kind=row.source_kind,
         binding_origin=row.binding_origin,
         materialization=GuidelineBindingMaterialization.LIVE,
-        legacy_source_id=row.legacy_source_id,
-        legacy_guideline_version=(
-            str(row.legacy_guideline_version)
-            if row.legacy_guideline_version is not None
-            else None
-        ),
-        legacy_template_id=row.legacy_template_id,
-        legacy_template_version=(
-            str(row.legacy_template_version)
-            if row.legacy_template_version is not None
-            else None
-        ),
-        legacy_version_unresolvable=bool(row.legacy_version_unresolvable),
+        materialized_revision_number=row.materialized_revision_number,
+        materialized_template_id=row.materialized_template_id,
+        materialized_template_version=row.materialized_template_version,
         evidence_refs=evidence_refs,
     )
 
@@ -977,23 +963,21 @@ def _binding_row(
         enforcement=binding.enforcement.value,
         state=binding.state.value,
         source_kind="native",
-        legacy_source_id=None,
-        legacy_guideline_version=(
+        materialized_revision_number=(
             materialization_proof.guideline_revision_number
             if materialization_proof is not None
             else None
         ),
-        legacy_template_id=(
+        materialized_template_id=(
             materialization_proof.template_id
             if materialization_proof is not None
             else None
         ),
-        legacy_template_version=(
+        materialized_template_version=(
             materialization_proof.template_version
             if materialization_proof is not None
             else None
         ),
-        legacy_version_unresolvable=False,
         idempotency_key=idempotency_key,
         request_digest=request_digest,
         impact_receipt_id=impact_receipt_id,
@@ -3990,10 +3974,10 @@ class CommunitySqlAlchemyGuidelinePolicy:
                     "guideline_binding_idempotency_digest_mismatch"
                 )
             if materialization_proof is not None and (
-                replay.legacy_template_id != materialization_proof.template_id
-                or replay.legacy_template_version
+                replay.materialized_template_id != materialization_proof.template_id
+                or replay.materialized_template_version
                 != materialization_proof.template_version
-                or replay.legacy_guideline_version
+                or replay.materialized_revision_number
                 != materialization_proof.guideline_revision_number
             ):
                 raise GuidelinePolicyIdempotencyConflict(

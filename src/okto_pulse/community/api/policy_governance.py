@@ -1080,20 +1080,14 @@ class GuidelineExportLogicalBindingV3(_ClosedModel):
 
 class GuidelineExportBindingV3(_ClosedModel):
     binding: GuidelineExportLogicalBindingV3
-    physical_source_kind: str = Field(min_length=1, max_length=40)
+    physical_source_kind: Literal["native"]
     binding_origin: str = Field(min_length=1, max_length=32)
     materialization: GuidelineBindingMaterialization
-    legacy_source_id: str | None = Field(max_length=GUIDELINE_ID_MAX_LENGTH)
-    legacy_guideline_version: str | None = Field(
-        max_length=GUIDELINE_SEMANTIC_VERSION_MAX_LENGTH,
-    )
-    legacy_template_id: str | None = Field(
+    materialized_revision_number: int | None = Field(strict=True, ge=1, le=POLICY_SQL_INTEGER_MAX)
+    materialized_template_id: str | None = Field(
         max_length=GUIDELINE_ID_MAX_LENGTH,
     )
-    legacy_template_version: str | None = Field(
-        max_length=GUIDELINE_SEMANTIC_VERSION_MAX_LENGTH,
-    )
-    legacy_version_unresolvable: bool
+    materialized_template_version: int | None = Field(strict=True, ge=1, le=POLICY_SQL_INTEGER_MAX)
     evidence_refs: list[tuple[str, str]]
     binding_digest: str
 
