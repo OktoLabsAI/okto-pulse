@@ -137,14 +137,6 @@ class CommunitySettings(CoreSettings, BaseSettings):
     # legacy runtime-settings API continues to govern the board pool unchanged.
     kg_decay_tick_batch_size: int = 200
     kg_write_barrier_mode: str = "soft"
-    mcp_legacy_coverage: bool = Field(
-        False,
-        validation_alias="OKTO_PULSE_LEGACY_COVERAGE",
-    )
-    mcp_legacy_offset: bool = Field(
-        False,
-        validation_alias="OKTO_PULSE_LEGACY_OFFSET",
-    )
 
     def __init__(self, **values: object) -> None:
         """Resolve the data-home path and its provenance as one identity.
