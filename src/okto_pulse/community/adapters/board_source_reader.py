@@ -38,9 +38,6 @@ from okto_pulse.core.kg.interfaces.board_source_reader import (
     SourceUnavailableError,
 )
 from okto_pulse.core.domain.quality_assessment import AssessmentDigestSet
-from okto_pulse.core.domain.quality_canonicalization import (
-    SEMANTIC_FIELD_MANIFEST_V1,
-)
 from okto_pulse.core.ports.kg_cognitive_source import (
     canonical_cognitive_source_fingerprint,
     CognitiveSourceConflict,
@@ -57,28 +54,6 @@ _QUALITY_SUBJECT_TABLES = {
     "refinement": "refinements",
     "spec": "specs",
 }
-_QUALITY_QA_TABLES = {
-    "ideation": ("ideation_qa_items", "ideation_id"),
-    "refinement": ("refinement_qa_items", "refinement_id"),
-    "spec": ("spec_qa_items", "spec_id"),
-}
-_QUALITY_JSON_FIELDS = frozenset(
-    {
-        "acceptance_criteria",
-        "api_contracts",
-        "business_rules",
-        "decisions",
-        "functional_requirements",
-        "in_scope",
-        "integration_requirements",
-        "observability_requirements",
-        "out_of_scope",
-        "technical_requirements",
-        "test_scenarios",
-    }
-)
-
-
 # SQL table ownership lives in the edition adapter. Core retains only the DTO
 # and hash rules consumed above.
 ARTIFACT_QUERIES: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
@@ -415,156 +390,31 @@ def _quality_json_value(
         ) from exc
 
 
-def _quality_board_settings(value: object) -> dict[str, object]:
-    if value is None:
-        return {}
-    resolved = (
-        _quality_json_value(value, field_name="boards.settings")
-        if isinstance(value, str)
-        else value
-    )
-    if not isinstance(resolved, dict):
-        raise sqlite3.DatabaseError(
-            "quality projection board settings are invalid"
-        )
-    return dict(resolved)
-
-
-def _quality_projection_contexts(
+def _quality_projection_subjects(
     conn: sqlite3.Connection,
     *,
     board_id: str | None,
     realm_id: str | None,
-) -> tuple[
-    dict[tuple[str, str, str], dict[str, object]],
-    dict[tuple[str, str, str], tuple[dict[str, object], ...]],
-    dict[str, dict[str, object]],
-]:
+) -> dict[tuple[str, str, str], dict[str, object]]:
     if (board_id is None) == (realm_id is None):
         raise ValueError("exactly one projection scope is required")
-    if board_id is not None:
-        board_rows = conn.execute(
-            "SELECT id, settings FROM boards WHERE id = ?",
-            (board_id,),
-        ).fetchall()
-    else:
-        board_rows = conn.execute(
-            "SELECT id, settings FROM boards WHERE realm_id = ? "
-            "ORDER BY id COLLATE BINARY",
-            (str(realm_id),),
-        ).fetchall()
-    board_settings = {
-        str(row["id"]): _quality_board_settings(row["settings"])
-        for row in board_rows
-    }
-
     subjects: dict[tuple[str, str, str], dict[str, object]] = {}
-    qa_items: dict[tuple[str, str, str], list[dict[str, object]]] = {}
     for subject_type, table_name in _QUALITY_SUBJECT_TABLES.items():
-        if board_id is not None:
-            subject_rows = conn.execute(
-                f'SELECT subject.* FROM "{table_name}" AS subject '
-                "WHERE subject.board_id = ? "
-                "ORDER BY subject.id COLLATE BINARY",
-                (board_id,),
-            ).fetchall()
-        else:
-            subject_rows = conn.execute(
-                f'SELECT subject.* FROM "{table_name}" AS subject '
-                "INNER JOIN boards AS board "
-                "ON board.id = subject.board_id "
-                "WHERE board.realm_id = ? "
-                "ORDER BY subject.board_id COLLATE BINARY, "
-                "subject.id COLLATE BINARY",
-                (str(realm_id),),
-            ).fetchall()
-        for row in subject_rows:
-            subject_board_id = str(row["board_id"])
-            subject_id = str(row["id"])
-            payload: dict[str, object] = {
-                "id": subject_id,
-                "version": int(row["version"]),
-                "edition": int(row["edition"]),
+        predicate = "board.id = ?" if board_id is not None else "board.realm_id = ?"
+        rows = conn.execute(
+            f'SELECT subject.id, subject.board_id, subject.version, subject.edition '
+            f'FROM "{table_name}" AS subject '
+            "INNER JOIN boards AS board ON board.id = subject.board_id "
+            f"WHERE {predicate} "
+            "ORDER BY subject.board_id COLLATE BINARY, subject.id COLLATE BINARY",
+            (board_id if board_id is not None else realm_id,),
+        ).fetchall()
+        for row in rows:
+            key = (str(row["board_id"]), subject_type, str(row["id"]))
+            subjects[key] = {
+                "id": row["id"], "version": row["version"], "edition": row["edition"],
             }
-            for field_name in SEMANTIC_FIELD_MANIFEST_V1[subject_type]:
-                raw_value = row[field_name]
-                payload[field_name] = (
-                    _quality_json_value(
-                        raw_value,
-                        field_name=f"{table_name}.{field_name}",
-                    )
-                    if field_name in _QUALITY_JSON_FIELDS
-                    else raw_value
-                )
-            key = (subject_board_id, subject_type, subject_id)
-            subjects[key] = payload
-            qa_items[key] = []
-
-        qa_table, subject_fk = _QUALITY_QA_TABLES[subject_type]
-        if board_id is not None:
-            qa_rows = conn.execute(
-                f'SELECT qa.*, subject.board_id AS subject_board_id '
-                f'FROM "{qa_table}" AS qa '
-                f'INNER JOIN "{table_name}" AS subject '
-                f"ON subject.id = qa.{subject_fk} "
-                "WHERE subject.board_id = ? "
-                "ORDER BY qa.id COLLATE BINARY",
-                (board_id,),
-            ).fetchall()
-        else:
-            qa_rows = conn.execute(
-                f'SELECT qa.*, subject.board_id AS subject_board_id '
-                f'FROM "{qa_table}" AS qa '
-                f'INNER JOIN "{table_name}" AS subject '
-                f"ON subject.id = qa.{subject_fk} "
-                "INNER JOIN boards AS board "
-                "ON board.id = subject.board_id "
-                "WHERE board.realm_id = ? "
-                "ORDER BY subject.board_id COLLATE BINARY, "
-                "qa.id COLLATE BINARY",
-                (str(realm_id),),
-            ).fetchall()
-        for row in qa_rows:
-            key = (
-                str(row["subject_board_id"]),
-                subject_type,
-                str(row[subject_fk]),
-            )
-            if key not in qa_items:
-                raise sqlite3.DatabaseError(
-                    "quality projection Q&A has no current subject"
-                )
-            qa_items[key].append(
-                {
-                    "id": str(row["id"]),
-                    "revision": int(row["revision"]),
-                    "question": row["question"],
-                    "question_type": row["question_type"],
-                    "choices": _quality_json_value(
-                        row["choices"],
-                        field_name=f"{qa_table}.choices",
-                    )
-                    or [],
-                    "allow_free_text": bool(row["allow_free_text"]),
-                    "answer": row["answer"],
-                    "selected": _quality_json_value(
-                        row["selected"],
-                        field_name=f"{qa_table}.selected",
-                    )
-                    or [],
-                    "answered_at": row["answered_at"],
-                    "lifecycle": row["lifecycle"],
-                    "tombstoned": bool(row["tombstoned"]),
-                }
-            )
-    return (
-        subjects,
-        {
-            key: tuple(items)
-            for key, items in qa_items.items()
-        },
-        board_settings,
-    )
+    return subjects
 
 
 def _current_quality_head_fingerprints(
@@ -614,7 +464,7 @@ def _current_quality_head_fingerprints(
     ).fetchall()
     if not rows:
         return {}
-    subjects, qa_items, settings_by_board = _quality_projection_contexts(
+    subjects = _quality_projection_subjects(
         conn,
         board_id=board_id,
         realm_id=realm_id,
@@ -635,8 +485,7 @@ def _current_quality_head_fingerprints(
             str(row["subject_id"]),
         )
         subject = subjects.get(key)
-        settings = settings_by_board.get(key[0])
-        if subject is None or settings is None:
+        if subject is None:
             raise sqlite3.DatabaseError(
                 "quality assessment head has no current subject context"
             )
@@ -657,18 +506,12 @@ def _current_quality_head_fingerprints(
                 subject_type=key[1],
                 subject_id=key[2],
                 assessed_subject_version=int(row["subject_version"]),
-                assessed_subject_edition=(
-                    int(row["subject_edition"])
-                    if row["subject_edition"] is not None
-                    else None
-                ),
+                assessed_subject_edition=row["subject_edition"],
                 assessed_digests=assessed_digests,
                 assessment_kind=str(row["assessment_kind"]),
                 origin=str(row["origin"]),
                 source=str(row["source"]),
                 current_subject=subject,
-                qa_items=qa_items.get(key, ()),
-                board_settings=settings,
             )
         except ValueError as exc:
             raise sqlite3.DatabaseError(

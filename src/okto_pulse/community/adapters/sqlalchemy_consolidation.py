@@ -37,7 +37,6 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     ExactRebuildConsolidationCompensation,
     GlobalUpdateOutbox,
     Ideation,
-    IdeationQAItem,
     KGTakedownStateEvent,
     KuzuNodeRef,
     ImplementationTargetEvidenceLinkRow,
@@ -46,12 +45,10 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     QualityAssessmentHeadRow,
     QualityAssessmentReceiptRow,
     Refinement,
-    RefinementQAItem,
     ResearchDecisionEntryRow,
     ResearchDecisionHeadRow,
     Spec,
     SpecDependency,
-    SpecQAItem,
     Story,
 )
 from okto_pulse.core.ports.consolidation import (
@@ -117,11 +114,6 @@ _MODELS = {
     "amendment_hotfix_revision": AmendmentHotfixRevision,
 }
 
-_QUALITY_QA_BINDINGS = {
-    "ideation": (IdeationQAItem, "ideation_id"),
-    "refinement": (RefinementQAItem, "refinement_id"),
-    "spec": (SpecQAItem, "spec_id"),
-}
 
 _DELETION_INTENT_SCHEMA_VERSION = 1
 _GOVERNED_DELETION_ARTIFACT_TYPES = frozenset(
@@ -960,8 +952,6 @@ class CommunitySqlAlchemyConsolidationPersistence:
             ):
                 raise RuntimeError("quality_projection_scope_mismatch")
 
-        board_settings: dict[str, object] = {}
-        qa_items: list[object] = []
         if quality_rows:
             expected_model = _MODELS[artifact_type]
             if (
@@ -971,29 +961,8 @@ class CommunitySqlAlchemyConsolidationPersistence:
                 or str(getattr(artifact, "board_id", "")) != board_id
             ):
                 raise RuntimeError("quality_projection_subject_mismatch")
-            qa_model, subject_fk = _QUALITY_QA_BINDINGS[artifact_type]
-            context_rows = (
-                await context.execute(
-                    select(Board.settings, qa_model)
-                    .select_from(Board)
-                    .outerjoin(
-                        qa_model,
-                        getattr(qa_model, subject_fk) == artifact_id,
-                    )
-                    .where(Board.id == board_id)
-                    .order_by(qa_model.id.asc())
-                )
-            ).all()
-            if not context_rows:
+            if await context.scalar(select(Board.id).where(Board.id == board_id)) is None:
                 raise RuntimeError("quality_projection_board_missing")
-            settings_value = context_rows[0][0]
-            if settings_value is not None and not isinstance(
-                settings_value,
-                dict,
-            ):
-                raise RuntimeError("quality_projection_board_settings_invalid")
-            board_settings = dict(settings_value or {})
-            qa_items = [row[1] for row in context_rows if row[1] is not None]
 
         quality_assessments: list[CurrentQualityAssessmentSummary] = []
         for head, receipt in quality_rows:
@@ -1018,8 +987,6 @@ class CommunitySqlAlchemyConsolidationPersistence:
                     origin=receipt.origin,
                     source=receipt.source,
                     current_subject=artifact,
-                    qa_items=qa_items,
-                    board_settings=board_settings,
                 )
             except (QualityProjectionCurrentnessError, ValueError) as exc:
                 raise RuntimeError(
