@@ -777,7 +777,6 @@ class CommunitySqlAlchemyChecklist:
                 source=receipt.source.value,
                 request_digest=receipt.request_digest,
                 idempotency_key=receipt.idempotency_key,
-                manual_checklist_ref=receipt.manual_checklist_ref,
                 predecessor_receipt_id=receipt.predecessor_receipt_id,
                 created_by=receipt.created_by,
                 created_at=receipt.created_at,
@@ -1041,7 +1040,6 @@ class CommunitySqlAlchemyChecklist:
                 created_at=row.created_at,
                 head_revision=row.head_revision,
                 idempotency_key=row.idempotency_key,
-                manual_checklist_ref=row.manual_checklist_ref,
                 predecessor_receipt_id=row.predecessor_receipt_id,
             )
         except (TypeError, ValueError) as exc:

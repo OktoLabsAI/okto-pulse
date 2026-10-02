@@ -10172,7 +10172,7 @@ class ChecklistReceiptRow(Base):
             name="uq_checklist_receipt_idempotency",
         ),
         CheckConstraint(
-            "source IN ('native', 'legacy_unverified')",
+            "source = 'native'",
             name="ck_checklist_receipt_source",
         ),
         CheckConstraint(
@@ -10244,7 +10244,6 @@ class ChecklistReceiptRow(Base):
     source: Mapped[str] = mapped_column(String(24), nullable=False)
     request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    manual_checklist_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
     predecessor_receipt_id: Mapped[str | None] = mapped_column(
         String(64),
         nullable=True,

@@ -27,7 +27,6 @@ from okto_pulse.core.domain.checklist import (
     ChecklistCommitResult,
     ChecklistExecution,
     ChecklistExecutionStartResult,
-    ChecklistReceipt,
     ChecklistReceiptSource,
     ChecklistMode,
 )
@@ -361,29 +360,9 @@ def test_checklist_state_distinguishes_not_started_from_failed() -> None:
     )
 
 
-def test_legacy_unverified_receipt_never_projects_a_vacuous_pass() -> None:
-    receipt = ChecklistReceipt(
-        id="receipt-legacy",
-        board_id="board-1",
-        spec_id="spec-1",
-        spec_version=4,
-        content_digest="c" * 64,
-        input_digest="d" * 64,
-        template_version="/specify/v1",
-        template_digest=SPECIFY_CHECKLIST_TEMPLATE_V1.digest,
-        binding_version=1,
-        binding_digest="b" * 64,
-        binding_mode=ChecklistMode.BLOCKING,
-        items=(),
-        source=ChecklistReceiptSource.LEGACY_UNVERIFIED,
-        request_digest="f" * 64,
-        created_by="legacy-import",
-        created_at=datetime(2026, 7, 27, tzinfo=timezone.utc),
-        head_revision=1,
-        manual_checklist_ref="legacy://manual-checklist",
-    )
-
-    assert checklists._receipt_payload(receipt)["outcome"] == "fail"
+def test_removed_receipt_source_is_rejected() -> None:
+    with pytest.raises(ValueError):
+        ChecklistReceiptSource("legacy_unverified")
 
 
 @pytest.mark.parametrize(

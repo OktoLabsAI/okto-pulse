@@ -70,6 +70,15 @@ async def test_fresh_schema_restart_preserves_data_and_identity(tmp_path, contra
                 "SELECT count(*) FROM sqlite_master WHERE type='table' "
                 "AND name='quality_assessment_lifecycle_stale_transitions'"
             )).scalar() == 0
+            columns = (await connection.exec_driver_sql(
+                "PRAGMA table_info(checklist_receipts)"
+            )).all()
+            assert "manual_checklist_ref" not in {row[1] for row in columns}
+            ddl = (await connection.exec_driver_sql(
+                "SELECT sql FROM sqlite_master WHERE name='checklist_receipts'"
+            )).scalar_one()
+            assert "source = 'native'" in ddl
+            assert "legacy_unverified" not in ddl
     finally:
         await engine.dispose()
 
@@ -79,6 +88,7 @@ async def test_fresh_schema_restart_preserves_data_and_identity(tmp_path, contra
     "PRAGMA user_version=399",
     "PRAGMA application_id=0",
     "ALTER TABLE cards ADD COLUMN sprint_id TEXT",
+    "ALTER TABLE checklist_receipts ADD COLUMN manual_checklist_ref TEXT",
     "ALTER TABLE cards ADD COLUMN knowledge_bases JSON",
     "ALTER TABLE card_delivery_evidence_records ADD COLUMN migrated_from JSON",
     "ALTER TABLE guideline_revisions ADD COLUMN rules JSON",
