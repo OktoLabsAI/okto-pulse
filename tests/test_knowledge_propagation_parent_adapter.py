@@ -7,16 +7,12 @@ from datetime import datetime, timezone
 import pytest
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import (
-    AsyncSession,
-    async_sessionmaker,
     create_async_engine,
 )
 
-from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
-    CommunitySemanticSession,
-)
 from okto_pulse.community.adapters.sqlalchemy_database import (
     install_community_sqlite_pragmas,
+    build_community_session_factory,
 )
 from okto_pulse.community.adapters.sqlalchemy_application_persistence import (
     CommunitySqlAlchemyApplicationPersistence,
@@ -91,21 +87,43 @@ ACTOR_ID = "actor-imp4"
 NOW = datetime(2026, 7, 23, 15, 0, tzinfo=timezone.utc)
 
 
+def _native_spec(**values):
+    from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+    from okto_pulse.core.domain.execution_contract import new_execution_contract
+
+    board_id, spec_id, actor_id = values["board_id"], values["id"], values["created_by"]
+    edition = values.get("edition", 1)
+    return Spec(
+        **values,
+        architecture_adoption=ArchitectureAdoptionScope(
+            board_id=board_id,
+            spec_id=spec_id,
+            adopted_in_edition=edition,
+            actor_id=actor_id,
+            inherited_resource_ids=(),
+        ).model_dump(mode="json"),
+        execution_contract=new_execution_contract(
+            board_id=board_id,
+            spec_id=spec_id,
+            edition=edition,
+            actor_id=actor_id,
+            origin="new_spec",
+        ),
+    )
+
+
 @pytest.fixture
 async def propagation_runtime(tmp_path):
     engine = create_async_engine(
         f"sqlite+aiosqlite:///{tmp_path / 'knowledge-propagation-imp4.db'}"
     )
     install_community_sqlite_pragmas(engine)
-    sessions = async_sessionmaker(
-        engine,
-        class_=AsyncSession,
-        sync_session_class=CommunitySemanticSession,
-        expire_on_commit=False,
-    )
+    sessions = build_community_session_factory(engine)
     from okto_pulse.community.adapters.current_relational_schema import (
-        current_schema_contract, initialize_current_schema,
+        current_schema_contract,
+        initialize_current_schema,
     )
+
     await initialize_current_schema(engine, current_schema_contract())
     try:
         async with sessions() as session:
@@ -146,7 +164,7 @@ async def propagation_runtime(tmp_path):
             await session.flush()
             session.add_all(
                 [
-                    Spec(
+                    _native_spec(
                         id=PARENT_SPEC_ID,
                         board_id=BOARD_ID,
                         refinement_id="refinement-parent-imp4",
@@ -154,20 +172,20 @@ async def propagation_runtime(tmp_path):
                         status=SpecStatus.APPROVED,
                         functional_requirements=[
                             {"id": "fr-local", "title": "Local FR"},
-                            {"title": "Incomplete legacy row"},
+                            {"title": "Malformed requirement without identity"},
                         ],
                         acceptance_criteria=[{"id": "ac-local", "title": "Local AC"}],
                         test_scenarios=[{"id": "ts-local", "title": "Local scenario"}],
                         created_by=ACTOR_ID,
                     ),
-                    Spec(
+                    _native_spec(
                         id="spec-foreign-imp4",
                         board_id=BOARD_ID,
                         title="Foreign parent in same board",
                         status=SpecStatus.APPROVED,
                         created_by=ACTOR_ID,
                     ),
-                    Spec(
+                    _native_spec(
                         id="spec-cross-board-imp4",
                         board_id=OTHER_BOARD_ID,
                         title="Foreign board",
@@ -222,7 +240,7 @@ async def propagation_runtime(tmp_path):
                         title="Existing deterministic target",
                         created_by=ACTOR_ID,
                     ),
-                    Spec(
+                    _native_spec(
                         id="spec-second-target",
                         board_id=BOARD_ID,
                         title="Second mutation target",
@@ -270,6 +288,18 @@ async def test_application_add_normalizes_exact_target_primary_key_collision(
 ) -> None:
     _, sessions = propagation_runtime
     persistence = CommunitySqlAlchemyApplicationPersistence()
+    spec_contracts = {}
+    if entity == "spec":
+        candidate = _native_spec(
+            id=record_id,
+            board_id=BOARD_ID,
+            title="Concurrent loser",
+            created_by=ACTOR_ID,
+        )
+        spec_contracts = {
+            "architecture_adoption": candidate.architecture_adoption,
+            "execution_contract": candidate.execution_contract,
+        }
     record = ApplicationRecord(
         entity,
         {
@@ -277,6 +307,7 @@ async def test_application_add_normalizes_exact_target_primary_key_collision(
             "board_id": BOARD_ID,
             "title": "Concurrent loser",
             "created_by": ACTOR_ID,
+            **spec_contracts,
         },
     )
 
@@ -305,9 +336,7 @@ async def test_application_add_normalizes_sqlite_busy_snapshot_creation_race(
         stale_session.info["realm_scope"] = RealmScope.local()
         await stale_session.execute(text("BEGIN"))
         assert (
-            await stale_session.scalar(
-                select(Card.id).where(Card.id == target_id)
-            )
+            await stale_session.scalar(select(Card.id).where(Card.id == target_id))
             is None
         )
         async with sessions() as winner:
@@ -341,11 +370,14 @@ async def test_application_add_normalizes_sqlite_busy_snapshot_creation_race(
 
     assert caught.value.entity == "card"
     assert caught.value.record_id == target_id
-    assert getattr(
-        getattr(caught.value.__cause__, "orig", None),
-        "sqlite_errorcode",
-        None,
-    ) == 517
+    assert (
+        getattr(
+            getattr(caught.value.__cause__, "orig", None),
+            "sqlite_errorcode",
+            None,
+        )
+        == 517
+    )
     assert is_knowledge_creation_race_error(
         caught.value.__cause__,
         target_type=KnowledgeTargetType.CARD,
@@ -637,9 +669,7 @@ async def test_target_parent_change_is_fenced_before_scope_cas(
         with pytest.raises(KnowledgePropagationPortError) as raised:
             await store.stage_mutation(session, plan)
         assert raised.value.code == "knowledge_propagation_parent_changed"
-        assert raised.value.details["expected_parent"]["parent_id"] == (
-            PARENT_SPEC_ID
-        )
+        assert raised.value.details["expected_parent"]["parent_id"] == (PARENT_SPEC_ID)
         assert raised.value.details["actual_parent"]["parent_id"] == (
             "spec-foreign-imp4"
         )
@@ -647,9 +677,7 @@ async def test_target_parent_change_is_fenced_before_scope_cas(
 
     async with sessions() as session:
         assert (
-            await session.scalar(
-                select(func.count(KnowledgePropagationScopeRecord.id))
-            )
+            await session.scalar(select(func.count(KnowledgePropagationScopeRecord.id)))
             == 0
         )
         assert (
@@ -690,9 +718,7 @@ async def test_reparent_race_from_stale_wal_snapshot_fails_closed(
 
     async with sessions() as session:
         assert (
-            await session.scalar(
-                select(func.count(KnowledgePropagationScopeRecord.id))
-            )
+            await session.scalar(select(func.count(KnowledgePropagationScopeRecord.id)))
             == 0
         )
         assert (
@@ -741,9 +767,7 @@ async def test_parent_source_evidence_is_locked_and_revalidated_fresh(
 
     async with sessions() as session:
         assert (
-            await session.scalar(
-                select(func.count(KnowledgePropagationScopeRecord.id))
-            )
+            await session.scalar(select(func.count(KnowledgePropagationScopeRecord.id)))
             == 0
         )
         assert (
@@ -1028,10 +1052,7 @@ async def test_first_create_collision_is_normalized_but_unrelated_pk_is_not(
         )
         with pytest.raises(KnowledgePropagationPortError) as not_creation:
             await store.stage_mutation(session, noncreation_plan)
-        assert (
-            not_creation.value.code
-            == "knowledge_propagation_constraint_conflict"
-        )
+        assert not_creation.value.code == "knowledge_propagation_constraint_conflict"
         await session.rollback()
 
     first_target = _target(
@@ -1051,7 +1072,7 @@ async def test_first_create_collision_is_normalized_but_unrelated_pk_is_not(
 
     async with sessions() as session:
         session.add(
-            Spec(
+            _native_spec(
                 id="spec-third-target",
                 board_id=BOARD_ID,
                 title="Third target",
