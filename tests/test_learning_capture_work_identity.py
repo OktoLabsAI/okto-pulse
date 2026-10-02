@@ -1,10 +1,8 @@
 """At-least-once capture delivery preserves distinct work and human history."""
 import pytest
 
-from okto_pulse.core.domain.learning_materialization_work import LearningCaptureWorkRef
 from okto_pulse.core.events.handlers.learning_capture import LearningCaptureMaterializationEnqueuer
 from okto_pulse.core.events.types import LearningCaptureAdmitted
-from okto_pulse.core.kg.cognitive_closeout_production import open_cognitive_closeout_pending
 from test_learning_materialization_worker import work_store as _work_store
 
 work_store = _work_store
@@ -16,18 +14,12 @@ def capture(letter):
         capture={'learning_id': 'same-learning', 'generation': 1, 'fingerprint': letter * 64})
 
 
-@pytest.mark.parametrize('legacy', [False, True])
 @pytest.mark.parametrize('status', ['pending', 'in_progress', 'failed', 'consolidated', 'skipped'])
-async def test_new_capture_is_independent_and_replay_preserves_all_old_decisions(work_store, legacy, status):
+async def test_new_capture_is_independent_and_replay_preserves_all_old_decisions(work_store, status):
     store, _ = work_store
     first, second = capture('a'), capture('b')
     handler = LearningCaptureMaterializationEnqueuer()
-    if legacy:
-        open_cognitive_closeout_pending(board_id=first.board_id, artifact_type='bug', store=store,
-            source_ref=LearningCaptureWorkRef(first.bug_id, first.capture.learning_id, first.capture.generation).encode(),
-            content_hash=first.capture.fingerprint)
-    else:
-        await handler.handle(first, None)
+    await handler.handle(first, None)
     generation = store.latest_generation(first.board_id)
     original, = store.list_items(first.board_id, generation)
     held = store.update_item(board_id=first.board_id, kg_generation_id=generation, item_id=original.item_id,

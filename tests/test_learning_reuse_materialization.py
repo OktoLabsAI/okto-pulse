@@ -144,7 +144,7 @@ async def test_old_work_waits_for_admitted_reuse_then_recovers_current_revision(
     assert await persister.persist_authored_learning(BOARD, 'bug-context', selection)
     _, reused = await stage_reuse(graph_runtime)
     history = await store.enumerate(BOARD)
-    work = LearningCaptureWorkRef('bug-context', original.node_id, original.generation)
+    work = LearningCaptureWorkRef('bug-context', original.node_id, original.generation, selection.fingerprint)
     waiting = await materialize_capture_work(factory, board_id=BOARD, work=work,
         fingerprint=selection.fingerprint, persister=persister)
     assert (waiting.outcome, waiting.reason) == (
