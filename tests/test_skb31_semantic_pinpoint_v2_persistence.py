@@ -1,4 +1,4 @@
-"""SK-B3.1 relational ledger and cross-database guard regressions."""
+"""Native semantic pinpoint persistence and SQLite guard regressions."""
 
 from __future__ import annotations
 
@@ -6,32 +6,24 @@ import inspect
 from dataclasses import replace
 
 import pytest
-from sqlalchemy import event, select, text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import (
-    AsyncSession,
-    async_sessionmaker,
     create_async_engine,
 )
 
-import okto_pulse.community.adapters.relational_schema_steps as schema_steps
 from okto_pulse.community.adapters.semantic_assessment_v2_capabilities import (
     CommunitySemanticAssessmentV2Capabilities,
 )
-from okto_pulse.community.adapters.relational_schema_steps import (
-    semantic_pinpoint_v2_postgresql_ddl,
+from okto_pulse.community.adapters.current_schema_guards import (
     semantic_pinpoint_v2_sqlite_trigger_manifest,
 )
 from okto_pulse.community.adapters.sqlalchemy_models import (
-    Base,
     Ideation,
     Refinement,
     SemanticGuidelineAssessmentV2Row,
     SemanticGuidelineFindingV2Row,
     SemanticGuidelineMetricResultV2Row,
     Spec,
-)
-from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
-    CommunitySemanticSession,
 )
 from okto_pulse.community.adapters.sqlalchemy_semantic_guideline_v2 import (
     ASSESSMENT_CONTRACT_V2,
@@ -41,6 +33,9 @@ from okto_pulse.community.adapters.sqlalchemy_semantic_guideline_v2 import (
 )
 from okto_pulse.community.adapters.sqlalchemy_semantic_subject_projection import (
     CommunitySqlAlchemySemanticSubjectProjection,
+)
+from okto_pulse.community.adapters.sqlalchemy_semantic_guideline_assessment import (
+    CommunitySqlAlchemySemanticGuidelineAssessment,
 )
 from okto_pulse.core.domain.guideline_policy import (
     PolicyEntityType,
@@ -78,7 +73,19 @@ from okto_pulse.core.ports.semantic_subject_projection import (
     SemanticSubjectProjectionRequest,
 )
 
+from okto_pulse.community.adapters.current_relational_schema import (
+    current_schema_contract,
+)
+from okto_pulse.community.adapters.current_relational_schema import (
+    initialize_current_schema,
+)
+from okto_pulse.community.adapters.sqlalchemy_database import (
+    build_community_session_factory,
+    install_community_sqlite_pragmas,
+)
+
 from test_skb3_semantic_guideline_persistence import (
+    _now,
     _seed_semantic_authority,
 )
 
@@ -86,11 +93,7 @@ from test_skb3_semantic_guideline_persistence import (
 def _engine(path):
     engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
 
-    @event.listens_for(engine.sync_engine, "connect")
-    def _foreign_keys(dbapi_connection, _connection_record):
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.close()
+    install_community_sqlite_pragmas(engine)
 
     return engine
 
@@ -222,15 +225,9 @@ async def test_v2_capability_resolver_enforces_readers_first_and_runtime_probes(
     tmp_path,
 ):
     engine = _engine(tmp_path / "semantic-pinpoint-v2-capabilities.db")
-    factory = async_sessionmaker(engine, expire_on_commit=False)
+    factory = build_community_session_factory(engine)
     original_settings = get_settings()
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
-        for _name, (
-            _table,
-            ddl,
-        ) in semantic_pinpoint_v2_sqlite_trigger_manifest().items():
-            await connection.execute(text(ddl))
+    await initialize_current_schema(engine, current_schema_contract())
 
     try:
         async with factory() as session:
@@ -298,14 +295,8 @@ async def test_subject_projection_resolves_human_field_and_denies_other_actor(
     tmp_path,
 ):
     engine = _engine(tmp_path / "semantic-pinpoint-v2-projection.db")
-    factory = async_sessionmaker(
-        engine,
-        class_=AsyncSession,
-        sync_session_class=CommunitySemanticSession,
-        expire_on_commit=False,
-    )
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    factory = build_community_session_factory(engine)
+    await initialize_current_schema(engine, current_schema_contract())
 
     async with factory() as session, session.begin():
         board_id, ideation_id, revision, _binding = await _seed_semantic_authority(
@@ -345,9 +336,8 @@ async def test_subject_projection_resolves_human_field_and_denies_other_actor(
     await engine.dispose()
 
 
-def test_sqlite_and_postgresql_manifests_cover_parallel_v2_ledger():
+def test_current_sqlite_manifest_covers_semantic_pinpoint_ledger():
     sqlite_manifest = semantic_pinpoint_v2_sqlite_trigger_manifest()
-    function_sql, postgres_specs = semantic_pinpoint_v2_postgresql_ddl()
 
     assert {table for table, _ddl in sqlite_manifest.values()} == {
         "semantic_guideline_assessment_receipts",
@@ -355,74 +345,13 @@ def test_sqlite_and_postgresql_manifests_cover_parallel_v2_ledger():
         "semantic_guideline_metric_results_v2",
         "semantic_guideline_findings_v2",
     }
-    assert {table for table, _operation, _kind in postgres_specs.values()} == {
-        "semantic_guideline_assessment_receipts",
-        "semantic_guideline_assessments_v2",
-        "semantic_guideline_metric_results_v2",
-        "semantic_guideline_findings_v2",
-    }
-    assert "semantic_assessment_idempotency_contract_conflict" in function_sql
-    assert "semantic_pinpoint_v2_immutable" in function_sql
-    assert all(len(name.encode("utf-8")) <= 63 for name in postgres_specs)
-
-
-@pytest.mark.asyncio
-async def test_v2_migration_is_idempotent_and_preserves_v1_shape(tmp_path, monkeypatch):
-    engine = _engine(tmp_path / "semantic-pinpoint-v2-migration.db")
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
-        before = tuple(
-            row[1]
-            for row in (
-                await connection.exec_driver_sql(
-                    'PRAGMA table_info("semantic_guideline_assessment_receipts")'
-                )
-            ).all()
-        )
-    monkeypatch.setattr(schema_steps, "get_engine", lambda: engine)
-
-    assert await schema_steps._migrate_semantic_pinpoint_v2_schema() is None
-    assert await schema_steps._migrate_semantic_pinpoint_v2_schema() == "skipped"
-
-    async with engine.connect() as connection:
-        after = tuple(
-            row[1]
-            for row in (
-                await connection.exec_driver_sql(
-                    'PRAGMA table_info("semantic_guideline_assessment_receipts")'
-                )
-            ).all()
-        )
-        triggers = {
-            row[0]
-            for row in (
-                await connection.exec_driver_sql(
-                    "SELECT name FROM sqlite_master WHERE type='trigger' "
-                    "AND name LIKE 'trg_semantic_pinpoint_v2%'"
-                )
-            ).all()
-        }
-    assert after == before
-    assert triggers == set(semantic_pinpoint_v2_sqlite_trigger_manifest())
-    await engine.dispose()
 
 
 @pytest.mark.asyncio
 async def test_v2_round_trip_findings_idempotency_and_immutability(tmp_path):
     engine = _engine(tmp_path / "semantic-pinpoint-v2-roundtrip.db")
-    factory = async_sessionmaker(
-        engine,
-        class_=AsyncSession,
-        sync_session_class=CommunitySemanticSession,
-        expire_on_commit=False,
-    )
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
-        for _name, (
-            _table,
-            ddl,
-        ) in semantic_pinpoint_v2_sqlite_trigger_manifest().items():
-            await connection.execute(text(ddl))
+    factory = build_community_session_factory(engine)
+    await initialize_current_schema(engine, current_schema_contract())
 
     async with factory() as session, session.begin():
         board_id, ideation_id, revision, binding = await _seed_semantic_authority(
@@ -483,15 +412,6 @@ async def test_v2_round_trip_findings_idempotency_and_immutability(tmp_path):
             await connection.exec_driver_sql(
                 "UPDATE semantic_guideline_assessments_v2 SET confidence=99"
             )
-        legacy_columns = tuple(
-            row[1]
-            for row in (
-                await connection.exec_driver_sql(
-                    'PRAGMA table_info("semantic_guideline_assessment_receipts")'
-                )
-            ).all()
-        )
-    assert "contract_version" not in legacy_columns
     await engine.dispose()
 
 
@@ -508,17 +428,10 @@ async def test_board_erasure_removes_v2_findings_before_releasing_permit(tmp_pat
     )
 
     engine = _engine(tmp_path / "semantic-v2-erasure.db")
-    factory = async_sessionmaker(
-        engine,
-        class_=AsyncSession,
-        sync_session_class=CommunitySemanticSession,
-        expire_on_commit=False,
-    )
+    factory = build_community_session_factory(engine)
     try:
-        async with engine.begin() as connection:
-            await connection.run_sync(Base.metadata.create_all)
-            for _, (_, ddl) in semantic_pinpoint_v2_sqlite_trigger_manifest().items():
-                await connection.execute(text(ddl))
+        await initialize_current_schema(engine, current_schema_contract())
+
         async with factory() as session, session.begin():
             board_id, ideation_id, revision, binding = await _seed_semantic_authority(
                 session, metric_count=2
@@ -532,6 +445,9 @@ async def test_board_erasure_removes_v2_findings_before_releasing_permit(tmp_pat
             with pytest.raises(
                 IntegrityError, match="semantic_assessment_v2_immutable"
             ):
+                await session.execute(delete(SemanticGuidelineAssessmentV2Row))
+            await session.rollback()
+            with pytest.raises(IntegrityError, match="semantic_.*_immutable"):
                 await session.execute(delete(Board).where(Board.id == board_id))
             await session.rollback()
         async with factory() as session, session.begin():
@@ -575,19 +491,8 @@ async def test_v2_persistence_records_and_fences_validation_edition(
     model,
 ):
     engine = _engine(tmp_path / f"semantic-v2-{entity_type.value}-edition-fence.db")
-    factory = async_sessionmaker(
-        engine,
-        class_=AsyncSession,
-        sync_session_class=CommunitySemanticSession,
-        expire_on_commit=False,
-    )
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
-        for _name, (
-            _table,
-            ddl,
-        ) in semantic_pinpoint_v2_sqlite_trigger_manifest().items():
-            await connection.execute(text(ddl))
+    factory = build_community_session_factory(engine)
+    await initialize_current_schema(engine, current_schema_contract())
 
     try:
         async with factory() as session, session.begin():
@@ -628,6 +533,17 @@ async def test_v2_persistence_records_and_fences_validation_edition(
             assert subject is not None
             subject.edition = 2
             await session.flush((subject,))
+            await CommunitySqlAlchemySemanticGuidelineAssessment(
+                session
+            ).record_semantic_subject_mutation(
+                board_id=board_id,
+                entity_type=entity_type,
+                subject_id=subject_id,
+                actor_id="artifact-author",
+                idempotency_key=f"{entity_type.value}-edition-2",
+                request_digest=canonical_sha256({"subject": subject_id, "edition": 2}),
+                changed_at=_now(),
+            )
 
             with pytest.raises(
                 GuidelinePolicyEditionConflict,
