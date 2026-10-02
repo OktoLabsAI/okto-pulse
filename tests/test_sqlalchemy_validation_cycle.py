@@ -1684,16 +1684,16 @@ async def test_requirement_lint_result_has_subject_scoped_technical_audit(
     assert audit.technical_audit.subject_version == 4
 
 
-async def test_legacy_null_edition_ambiguity_is_previous_only_and_auditable(
+async def test_native_previous_edition_ambiguity_is_previous_only_and_auditable(
     cycle_rig,
 ) -> None:
     digest = "b" * 64
     async with cycle_rig.factory() as session:
         session.add(
             Ideation(
-                id="ideation-legacy-ambiguity",
+                id="ideation-native-ambiguity",
                 board_id=BOARD_ID,
-                title="Legacy ambiguity",
+                title="Native ambiguity",
                 created_by="owner",
                 edition=2,
                 version=3,
@@ -1701,23 +1701,23 @@ async def test_legacy_null_edition_ambiguity_is_previous_only_and_auditable(
         )
         session.add(
             QualityAssessmentReceiptRow(
-                id="ambiguity-legacy-null",
+                id="ambiguity-previous",
                 board_id=BOARD_ID,
                 subject_type="ideation",
-                subject_id="ideation-legacy-ambiguity",
+                subject_id="ideation-native-ambiguity",
                 subject_version=1,
-                subject_edition=None,
+                subject_edition=1,
                 assessment_kind="ambiguity",
-                origin="legacy_import",
-                source="legacy_migration",
-                channel="migration",
+                origin="human_or_agent",
+                source="native",
+                channel="mcp",
                 outcome="recorded",
                 scale_kind="ambiguity_score",
                 scale_minimum=1,
                 scale_maximum=5,
                 scale_direction="lower_better",
                 score=2,
-                justification="Imported before lifecycle editions existed.",
+                justification="Recorded in the previous lifecycle edition.",
                 content_digest=digest,
                 clarification_digest=digest,
                 ruleset_digest=digest,
@@ -1727,19 +1727,19 @@ async def test_legacy_null_edition_ambiguity_is_previous_only_and_auditable(
                 canonicalization_version="quality-canonicalization/v1",
                 ruleset_version="ambiguity/v1",
                 taxonomy_version="ambiguity-taxonomy/v1",
-                analyzer_version="legacy-import",
+                analyzer_version="reviewer",
                 policy_version="quality-policy/v1",
                 run_identity_digest=digest,
                 authority_digest=digest,
-                idempotency_key="ambiguity-legacy-null",
+                idempotency_key="ambiguity-previous",
                 request_digest=digest,
-                created_by="legacy-import",
+                created_by="reviewer",
                 created_at=NOW,
                 predecessor_receipt_id=None,
                 contract_version="quality-assessment/v1",
-                event_id="ambiguity-legacy-event",
-                history_id="ambiguity-legacy-history",
-                outbox_id="ambiguity-legacy-outbox",
+                event_id="ambiguity-native-event",
+                history_id="ambiguity-native-history",
+                outbox_id="ambiguity-native-outbox",
                 head_revision=1,
             )
         )
@@ -1747,9 +1747,9 @@ async def test_legacy_null_edition_ambiguity_is_previous_only_and_auditable(
             QualityAssessmentHeadRow(
                 board_id=BOARD_ID,
                 subject_type="ideation",
-                subject_id="ideation-legacy-ambiguity",
+                subject_id="ideation-native-ambiguity",
                 assessment_kind="ambiguity",
-                receipt_id="ambiguity-legacy-null",
+                receipt_id="ambiguity-previous",
                 revision=1,
                 updated_at=NOW,
             )
@@ -1759,7 +1759,7 @@ async def test_legacy_null_edition_ambiguity_is_previous_only_and_auditable(
     reader = CommunitySqlAlchemyValidationCycleReader(cycle_rig.factory)
     cycle = await reader.get_validation_cycle(
         subject_type=AssessmentSubjectType.IDEATION,
-        subject_id="ideation-legacy-ambiguity",
+        subject_id="ideation-native-ambiguity",
         include_previous=True,
         offset=0,
         limit=25,
@@ -1770,7 +1770,7 @@ async def test_legacy_null_edition_ambiguity_is_previous_only_and_auditable(
         subjects=(
             ValidationCycleSubjectRef(
                 AssessmentSubjectType.IDEATION,
-                "ideation-legacy-ambiguity",
+                "ideation-native-ambiguity",
             ),
         ),
         actor_id="owner",
@@ -1779,25 +1779,25 @@ async def test_legacy_null_edition_ambiguity_is_previous_only_and_auditable(
 
     assert cycle.current_result is None
     assert cycle.previous_result_count == 1
-    assert cycle.previous_results[0].subject_edition is None
+    assert cycle.previous_results[0].subject_edition == 1
     assert batch[0].current_result is None
     assert batch[0].previous_result_count == 1
     assert (
         project_validation_cycle(cycle)["previous_results"][0]["subject_edition"]
-        is None
+        == 1
     )
 
     audit = await reader.get_result_technical_audit(
         subject_type=AssessmentSubjectType.IDEATION,
-        subject_id="ideation-legacy-ambiguity",
-        result_id="ambiguity-legacy-null",
+        subject_id="ideation-native-ambiguity",
+        result_id="ambiguity-previous",
         result_type=ValidationCycleResultType.AMBIGUITY_ASSESSMENT,
         actor_id="owner",
         realm_scope=RealmScope.local(),
     )
-    assert audit.subject_edition is None
+    assert audit.subject_edition == 1
     assert audit.technical_audit.exceptions == ()
-    assert project_validation_technical_audit(audit)["subject_edition"] is None
+    assert project_validation_technical_audit(audit)["subject_edition"] == 1
 
 
 async def test_null_edition_spec_validation_is_refused_without_repair(cycle_rig):

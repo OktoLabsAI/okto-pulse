@@ -100,7 +100,6 @@ from okto_pulse.core.domain.quality_canonicalization import (
 from okto_pulse.core.domain.realm import LOCAL_REALM_ID, RealmScope
 from okto_pulse.core.ports.quality_assessment import (
     AssessmentAuthorityConflict,
-    AssessmentCurrentnessInput,
     AssessmentHeadRevisionConflict,
     AssessmentIdempotencyConflict,
     AssessmentInputDigestConflict,
@@ -778,61 +777,6 @@ def _semantic_links(detail: AssessmentReceiptDetail) -> set[tuple[str, str]]:
         for link in detail.finding_qa_links
     }
 
-
-def _currentness_inputs_for(
-    *,
-    context: _QualitySubjectContext,
-    subject_type: AssessmentSubjectType,
-) -> tuple[AssessmentCurrentnessInput, ...]:
-    identities: tuple[
-        tuple[AssessmentKind, AssessmentOrigin, AssessmentSource], ...
-    ]
-    if subject_type in {
-        AssessmentSubjectType.IDEATION,
-        AssessmentSubjectType.REFINEMENT,
-    }:
-        identities = (
-            (
-                AssessmentKind.AMBIGUITY,
-                AssessmentOrigin.HUMAN_OR_AGENT,
-                AssessmentSource.NATIVE,
-            ),
-            (
-                AssessmentKind.AMBIGUITY,
-                AssessmentOrigin.LEGACY_IMPORT,
-                AssessmentSource.LEGACY_MIGRATION,
-            ),
-        )
-    else:
-        identities = (
-            (
-                AssessmentKind.SPEC_VALIDATION,
-                AssessmentOrigin.LEGACY_IMPORT,
-                AssessmentSource.LEGACY_MIGRATION,
-            ),
-            (
-                AssessmentKind.REQUIREMENT_LINT,
-                AssessmentOrigin.SEMANTIC_WRITER,
-                AssessmentSource.NATIVE,
-            ),
-        )
-    return tuple(
-        AssessmentCurrentnessInput(
-            assessment_kind=assessment_kind,
-            origin=origin,
-            source=source,
-            digests=current_quality_projection_digests(
-                subject_type=subject_type,
-                assessment_kind=assessment_kind,
-                origin=origin,
-                source=source,
-                subject=context.subject,
-                qa_items=context.qa_items,
-                board_settings=context.board.settings,
-            ),
-        )
-        for assessment_kind, origin, source in identities
-    )
 
 
 def _gate_inputs_for(

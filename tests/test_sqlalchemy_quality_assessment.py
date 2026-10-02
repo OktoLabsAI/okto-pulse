@@ -590,6 +590,29 @@ async def _count(session: AsyncSession, model: type) -> int:
     )
 
 
+@pytest.mark.parametrize("field,value", [("origin", "legacy_import"), ("source", "legacy_migration")])
+async def test_schema_refuses_imported_quality_receipts_without_conversion(rig, field, value):
+    bundle = _lint_bundle(namespace="native-only")
+    async with rig() as session:
+        await _adapter(session).apply_bundle_cas(bundle)
+        await session.commit()
+    async with rig() as session:
+        row = await session.get(QualityAssessmentReceiptRow, bundle.receipt.id)
+        payload = {column.name: getattr(row, column.name) for column in row.__table__.columns}
+        for key in ("id", "event_id", "history_id", "outbox_id", "idempotency_key"):
+            payload[key] = f"incompatible-{key}"
+        payload[field] = value
+        session.add(QualityAssessmentReceiptRow(**payload))
+        with pytest.raises(IntegrityError, match=f"ck_quality_receipt_{field}"):
+            await session.flush()
+        await session.rollback()
+    async with rig() as session:
+        assert await session.scalar(select(func.count()).select_from(QualityAssessmentReceiptRow)) == 1
+        row = await session.get(QualityAssessmentReceiptRow, bundle.receipt.id)
+        assert row.source == "native"
+        assert row.origin == bundle.receipt.origin.value
+
+
 async def test_round_trip_audit_projection_pagination_and_board_isolation(
     rig,
 ) -> None:

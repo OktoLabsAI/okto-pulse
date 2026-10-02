@@ -599,9 +599,8 @@ export interface QualityAssessmentReceipt {
   origin:
     | 'human_or_agent'
     | 'spec_validation'
-    | 'semantic_writer'
-    | 'legacy_import';
-  source: 'native' | 'legacy_migration';
+    | 'semantic_writer';
+  source: 'native';
   channel: string;
   outcome: 'recorded' | 'advisory';
   scale: QualityReceiptScale;

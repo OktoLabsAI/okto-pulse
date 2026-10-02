@@ -9095,12 +9095,11 @@ class QualityAssessmentReceiptRow(Base):
         ),
         CheckConstraint(
             "origin IN "
-            "('human_or_agent', 'spec_validation', 'semantic_writer', "
-            "'legacy_import')",
+            "('human_or_agent', 'spec_validation', 'semantic_writer')",
             name="ck_quality_receipt_origin",
         ),
         CheckConstraint(
-            "source IN ('native', 'legacy_migration')",
+            "source IN ('native')",
             name="ck_quality_receipt_source",
         ),
         CheckConstraint(
