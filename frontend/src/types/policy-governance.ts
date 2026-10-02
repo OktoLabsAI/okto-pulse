@@ -846,7 +846,7 @@ export interface GuidelineAdoptionResponse {
   receipt: GuidelineImpactReceipt;
 }
 
-export type GuidelineHistoryStatus = 'complete' | 'baseline_only';
+export type GuidelineHistoryStatus = 'complete';
 export type GuidelineImportTransactionStatus =
   | 'planned'
   | 'dry_run'
@@ -888,9 +888,7 @@ export interface GuidelineExportRevisionV3 {
   tags: string[];
   published_head_revision: number;
   published_head_updated_at: string;
-  legacy_version: string | null;
-  legacy_version_unresolvable: boolean;
-  legacy_tags: string[] | null;
+
 }
 
 export type GuidelineExportRetirementV3 = GuidelineRetirement;
@@ -921,7 +919,7 @@ export interface GuidelineExportAggregateV3 {
   retirement: GuidelineExportRetirementV3 | null;
   bindings: GuidelineExportBindingV3[];
   history_status: GuidelineHistoryStatus;
-  migration_notes: string[];
+  import_notes: string[];
 }
 
 export interface GuidelineExportEnvelopeV3 {

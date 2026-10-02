@@ -138,9 +138,6 @@ def _revision_row(
         published_head_revision=revision_number,
         published_head_updated_at=revision.created_at,
         parent_revision_id=parent_revision_id,
-        legacy_version=None,
-        legacy_version_unresolvable=False,
-        legacy_tags=None,
         idempotency_key=None,
         request_digest=None,
     )

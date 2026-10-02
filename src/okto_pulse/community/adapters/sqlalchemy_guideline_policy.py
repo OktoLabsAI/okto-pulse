@@ -927,12 +927,8 @@ def _revision_row(
         published_head_revision=published_head.head_revision,
         published_head_updated_at=published_head.updated_at,
         parent_revision_id=revision.parent_revision_id,
-        legacy_version=None,
-        legacy_version_unresolvable=False,
-        legacy_tags=None,
         idempotency_key=idempotency_key,
         request_digest=request_digest,
-        legacy_version_text=None,
     )
 
 
@@ -1863,12 +1859,9 @@ class CommunitySqlAlchemyGuidelinePolicy:
     ) -> GuidelineExportSnapshot:
         """Project live authority plus inert candidates into one Core snapshot.
 
-        ``include_binding_history=False`` is a compatibility hint only:
-        ``guideline-export/v2`` cannot represent a lone revision N without the
-        contiguous 1..N chain, so persistence always returns a closed history.
-        ``migration_notes`` are codec/import diagnostics rather than policy
-        authority and are intentionally reconstructed only when relational
-        provenance proves a legacy baseline.
+        The export always preserves the contiguous revision and binding
+        history required by the current contract. Import diagnostics belong
+        to the operation result and are not persisted as policy authority.
         """
 
         rows = await self._guideline_export_rows(
@@ -1951,64 +1944,22 @@ class CommunitySqlAlchemyGuidelinePolicy:
         for identity_row in rows.identities:
             identity = _guideline_from_row(identity_row)
             revision_rows = tuple(revisions_by_guideline.get(identity.guideline_id, ()))
-            unresolvable = tuple(
-                row for row in revision_rows if row.legacy_version_unresolvable
+            history_status = GuidelineHistoryStatus.COMPLETE
+            exported_revisions = tuple(
+                GuidelineExportRevision(
+                    revision=hydrated_by_id[row.revision_id],
+                    published_head_revision=row.published_head_revision,
+                    published_head_updated_at=_utc(row.published_head_updated_at),
+                )
+                for row in revision_rows
             )
-            if unresolvable:
-                if (
-                    len(revision_rows) != 1
-                    or len(unresolvable) != 1
-                    or (
-                        unresolvable[0].legacy_version is None
-                        and unresolvable[0].legacy_version_text is None
-                    )
-                ):
-                    raise GuidelinePolicyDigestConflict(
-                        "guideline_export_legacy_history_shape_unsupported"
-                    )
-                history_status = GuidelineHistoryStatus.BASELINE_ONLY
-                exported_revisions = (
-                    GuidelineExportRevision(
-                        revision=hydrated_by_id[
-                            unresolvable[0].revision_id
-                        ],
-                        published_head_revision=(
-                            unresolvable[0].published_head_revision
-                        ),
-                        published_head_updated_at=(
-                            _utc(unresolvable[0].published_head_updated_at)
-                        ),
-                        legacy_version=(
-                            unresolvable[0].legacy_version_text
-                            or str(unresolvable[0].legacy_version)
-                        ),
-                        legacy_version_unresolvable=True,
-                        legacy_tags=(
-                            tuple(unresolvable[0].legacy_tags)
-                            if unresolvable[0].legacy_tags is not None
-                            else None
-                        ),
-                    ),
-                )
-                exported_bindings: tuple[GuidelineExportBinding, ...] = ()
-                migration_notes = ("legacy_history_unresolvable",)
-            else:
-                history_status = GuidelineHistoryStatus.COMPLETE
-                exported_revisions = tuple(
-                    GuidelineExportRevision(
-                        revision=hydrated_by_id[row.revision_id],
-                        published_head_revision=row.published_head_revision,
-                        published_head_updated_at=_utc(row.published_head_updated_at),
-                    )
-                    for row in revision_rows
-                )
-                exported_bindings = tuple(
-                    bindings_by_guideline.get(
-                        identity.guideline_id,
-                        {},
-                    ).values()
-                )
-                migration_notes = ()
+            exported_bindings = tuple(
+                bindings_by_guideline.get(
+                    identity.guideline_id,
+                    {},
+                ).values()
+            )
+            import_notes = ()
             head_row = heads_by_guideline.get(identity.guideline_id)
             if head_row is None:
                 raise GuidelinePolicyDigestConflict(
@@ -2027,7 +1978,7 @@ class CommunitySqlAlchemyGuidelinePolicy:
                     ),
                     bindings=exported_bindings,
                     history_status=history_status,
-                    migration_notes=migration_notes,
+                    import_notes=import_notes,
                 )
             )
         return GuidelineExportSnapshot(
@@ -2451,7 +2402,6 @@ class CommunitySqlAlchemyGuidelinePolicy:
                     revision_id=resolved_revision_ids[source_revision.revision_id],
                     parent_revision_id=resolved_parent_id,
                 )
-                legacy_version = exported_revision.legacy_version_as_int
                 revision_rows.append(
                     GuidelineRevisionRow(
                         revision_id=resolved_revision.revision_id,
@@ -2472,18 +2422,8 @@ class CommunitySqlAlchemyGuidelinePolicy:
                             exported_revision.published_head_updated_at
                         ),
                         parent_revision_id=(resolved_revision.parent_revision_id),
-                        legacy_version=legacy_version,
-                        legacy_version_unresolvable=(
-                            exported_revision.legacy_version_unresolvable
-                        ),
-                        legacy_tags=(
-                            list(exported_revision.legacy_tags)
-                            if exported_revision.legacy_tags is not None
-                            else None
-                        ),
                         idempotency_key=None,
                         request_digest=None,
-                        legacy_version_text=(exported_revision.legacy_version),
                     )
                 )
                 semantic_revision_rows.append(

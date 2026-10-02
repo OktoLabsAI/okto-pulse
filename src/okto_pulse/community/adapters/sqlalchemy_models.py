@@ -3251,24 +3251,8 @@ class GuidelineRevisionRow(Base):
         String(36),
         nullable=True,
     )
-    # Honest legacy bridge: one 1.0.0 baseline captures the observed row.
-    # A counter above one is retained but never expanded into invented history.
-    legacy_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    legacy_version_unresolvable: Mapped[bool] = mapped_column(
-        nullable=False,
-        default=False,
-        server_default=text("false"),
-    )
-    legacy_tags: Mapped[list | None] = mapped_column(JSON, nullable=True)
     idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     request_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    # Exact textual provenance for legacy v1 imports. ``legacy_version`` stays
-    # integer-compatible for the historical B03 bridge; values such as
-    # ``"draft"`` or ``"1.5"`` remain lossless here.
-    legacy_version_text: Mapped[str | None] = mapped_column(
-        String(64),
-        nullable=True,
-    )
 
 
 class GuidelineHeadRow(Base):

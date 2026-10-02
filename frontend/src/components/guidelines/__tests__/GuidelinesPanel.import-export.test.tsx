@@ -93,9 +93,6 @@ function envelopeWithMetrics(
         tags: [],
         published_head_revision: 1,
         published_head_updated_at: '2026-07-29T00:00:00Z',
-        legacy_version: null,
-        legacy_version_unresolvable: false,
-        legacy_tags: null,
       }],
       head: {
         guideline_id: 'g1',
@@ -108,7 +105,7 @@ function envelopeWithMetrics(
       retirement: null,
       bindings: [],
       history_status: 'complete',
-      migration_notes: [],
+      import_notes: [],
     }],
   };
 }
@@ -759,6 +756,28 @@ describe('GuidelinesPanel immutable policy import/export', () => {
     expectedPath,
   ) => {
     await expectEnvelopeRejected(buildEnvelope(), expectedPath);
+  });
+
+  it.each(['legacy_version', 'legacy_version_unresolvable', 'legacy_tags'])(
+    'rejects removed revision metadata %s before API access', async (field) => {
+      const envelope = envelopeWithMetrics([]);
+      const aggregate = envelope.guidelines[0];
+      await expectEnvelopeRejected({
+        ...envelope,
+        guidelines: [{
+          ...aggregate,
+          revisions: [{ ...aggregate.revisions[0], [field]: null }],
+        }],
+      }, 'guidelines[0].revisions[0]');
+    },
+  );
+
+  it('rejects baseline-only history before API access', async () => {
+    const envelope = envelopeWithMetrics([]);
+    await expectEnvelopeRejected({
+      ...envelope,
+      guidelines: [{ ...envelope.guidelines[0], history_status: 'baseline_only' }],
+    }, 'guidelines[0].history_status');
   });
 
   it('rejects legacy and malformed envelopes before any API mutation', async () => {

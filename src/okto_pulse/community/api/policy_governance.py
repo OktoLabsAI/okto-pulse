@@ -506,7 +506,6 @@ class GuidelineBindingMaterialization(str, Enum):
 
 class GuidelineHistoryStatus(str, Enum):
     COMPLETE = "complete"
-    BASELINE_ONLY = "baseline_only"
 
 
 class GuidelineImportTransactionStatus(str, Enum):
@@ -1009,9 +1008,7 @@ class GuidelineExportRevisionV3(_ClosedModel):
     tags: list[str]
     published_head_revision: int = Field(ge=1, le=POLICY_SQL_INTEGER_MAX)
     published_head_updated_at: datetime
-    legacy_version: str | None = Field(max_length=GUIDELINE_SEMANTIC_VERSION_MAX_LENGTH)
-    legacy_version_unresolvable: bool
-    legacy_tags: list[str] | None
+
 
 
 class GuidelineExportIdentityV3(_ClosedModel):
@@ -1108,7 +1105,7 @@ class GuidelineExportAggregateV3(_ClosedModel):
     retirement: GuidelineExportRetirementV3 | None
     bindings: list[GuidelineExportBindingV3]
     history_status: GuidelineHistoryStatus
-    migration_notes: list[str]
+    import_notes: list[str]
 
 
 class GuidelineExportV3Request(_ClosedModel):

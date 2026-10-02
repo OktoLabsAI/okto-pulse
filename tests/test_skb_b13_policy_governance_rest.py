@@ -259,9 +259,6 @@ def _minimal_v3_envelope() -> dict:
                         "tags": [],
                         "published_head_revision": 1,
                         "published_head_updated_at": created_at,
-                        "legacy_version": None,
-                        "legacy_version_unresolvable": False,
-                        "legacy_tags": None,
                     }
                 ],
                 "head": {
@@ -275,7 +272,7 @@ def _minimal_v3_envelope() -> dict:
                 "retirement": None,
                 "bindings": [],
                 "history_status": "complete",
-                "migration_notes": [],
+                "import_notes": [],
             }
         ],
     }
@@ -555,8 +552,6 @@ def test_export_preserves_required_nullable_fields_for_import_roundtrip() -> Non
     aggregate["retirement"] = None
     revision = aggregate["revisions"][0]
     revision["parent_revision_id"] = None
-    revision["legacy_version"] = None
-    revision["legacy_tags"] = None
 
     export_route = next(
         route

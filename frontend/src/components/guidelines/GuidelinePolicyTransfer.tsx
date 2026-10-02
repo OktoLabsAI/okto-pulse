@@ -34,7 +34,7 @@ const AGGREGATE_KEYS = [
   'retirement',
   'bindings',
   'history_status',
-  'migration_notes',
+  'import_notes',
 ] as const;
 
 const IDENTITY_KEYS = [
@@ -61,9 +61,6 @@ const REVISION_KEYS = [
   'tags',
   'published_head_revision',
   'published_head_updated_at',
-  'legacy_version',
-  'legacy_version_unresolvable',
-  'legacy_tags',
 ] as const;
 
 const HEAD_KEYS = [
@@ -204,8 +201,6 @@ interface ValidatedRevision {
   parentRevisionId: string | null;
   metricCodes: Set<string>;
   metricCount: number;
-  legacyVersion: string | null;
-  legacyVersionUnresolvable: boolean;
 }
 
 interface ValidatedIdentity {
@@ -498,26 +493,6 @@ function validateRevision(
   if (publishedHeadUpdatedAt < createdAt) {
     invalidEnvelope(`${path}.published_head_updated_at`);
   }
-  const legacyVersion = revision.legacy_version === null
-    ? null
-    : semanticVersion(
-        revision.legacy_version,
-        `${path}.legacy_version`,
-      ).raw;
-  if (typeof revision.legacy_version_unresolvable !== 'boolean') {
-    invalidEnvelope(`${path}.legacy_version_unresolvable`);
-  }
-  if (
-    revision.legacy_version_unresolvable !== (legacyVersion !== null)
-  ) {
-    invalidEnvelope(`${path}.legacy_version`);
-  }
-  if (revision.legacy_tags !== null) {
-    uniqueTextList(revision.legacy_tags, `${path}.legacy_tags`);
-    if (!revision.legacy_version_unresolvable) {
-      invalidEnvelope(`${path}.legacy_tags`);
-    }
-  }
   return {
     revisionId,
     guidelineId,
@@ -530,8 +505,6 @@ function validateRevision(
     parentRevisionId,
     metricCodes: new Set(metrics.map((metric) => metric.code)),
     metricCount: metrics.length,
-    legacyVersion,
-    legacyVersionUnresolvable: revision.legacy_version_unresolvable,
   };
 }
 
@@ -1001,25 +974,10 @@ function validateAggregate(
   }
   validateBindingHistories(bindings, `${path}.bindings`);
 
-  if (
-    aggregate.history_status !== 'complete'
-    && aggregate.history_status !== 'baseline_only'
-  ) {
+  if (aggregate.history_status !== 'complete') {
     invalidEnvelope(`${path}.history_status`);
   }
-  uniqueTextList(aggregate.migration_notes, `${path}.migration_notes`);
-  if (aggregate.history_status === 'baseline_only') {
-    if (
-      revisions.length !== 1
-      || !revisions[0].legacyVersionUnresolvable
-      || revisions[0].metricCount !== 0
-      || bindings.length !== 0
-    ) {
-      invalidEnvelope(`${path}.history_status`);
-    }
-  } else if (revisions.some((revision) => revision.legacyVersion !== null)) {
-    invalidEnvelope(`${path}.revisions`);
-  }
+  uniqueTextList(aggregate.import_notes, `${path}.import_notes`);
   if (
     sourceBoardId !== null
     && identity.scope === 'inline'
