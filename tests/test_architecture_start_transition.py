@@ -14,7 +14,7 @@ from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionSco
 from okto_pulse.core.domain.code_traceability import DeliveryContext, DirectSpecDeliveryContextProvenance
 from okto_pulse.core.domain.delivery_inventory import COLLECTIONS
 from okto_pulse.core.domain.execution_contract import new_execution_contract
-from okto_pulse.core.services.main import _direct_spec_source_context_manifest
+from okto_pulse.core.domain.code_traceability import build_direct_spec_source_context_manifest
 
 import test_architecture_classification_transports as transport
 import test_architecture_classification_use_case as classification
@@ -28,7 +28,7 @@ async def complete_start_fixture(db, tmp_path, candidate_count=3):
     register_community_relational_effects(settings=SimpleNamespace(data_dir=str(tmp_path), port=1, environment="test"))
     provenance = DirectSpecDeliveryContextProvenance(
         value=DeliveryContext.GREENFIELD, source_spec_id="spec", source_spec_version=1)
-    manifest, digest = _direct_spec_source_context_manifest(spec_id="spec",
+    manifest, digest = build_direct_spec_source_context_manifest(spec_id="spec",
         delivery_context=DeliveryContext.GREENFIELD, provenance=provenance)
     fields = {field: [] for _, field in COLLECTIONS}
     fields.update(
@@ -41,12 +41,12 @@ async def complete_start_fixture(db, tmp_path, candidate_count=3):
                 {"requirement_type": "business_rule", "requirement_id": "br"}]}],
         business_rules=[{"id": "br", "title": "Complete procedure", "rule": "Every required step must be displayed",
             "when": "The procedure view opens", "then": "All required steps are visible",
-            "linked_requirements": ["Show the operating procedure"], "linked_task_ids": ["task"],
+            "linked_requirements": ["fr"], "linked_task_ids": ["task"],
             "verification": {"mode": "explicit", "required_profiles": ["functional"]},
             "implementation_plan": {"contributions": [{"card_id": "task", "scope": "whole_requirement"}]}}],
         decisions=[{"id": "decision", "title": "Document operating procedure",
             "rationale": "This Spec delivers the procedure", "status": "active", "linked_task_ids": ["task"]}],
-        refinement_id=None, status="draft", test_scenarios=[{"id": "scenario", "title": "Procedure display", "scenario_type": "manual", "linked_task_ids": ["test"],
+        refinement_id=None, status="draft", test_scenarios=[{"id": "scenario", "title": "Procedure display", "scenario_type": "integration", "linked_task_ids": ["test"],
             "status": "ready", "given": "A stored procedure", "when": "The procedure view opens",
             "then": "All steps are displayed", "verification_method": "automated_test", "linked_criteria": ["ac-procedure"]}],
         evaluations=[{"evaluator_id": "reviewer", "recommendation": "approve", "overall_score": 95}],

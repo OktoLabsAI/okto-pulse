@@ -5,7 +5,7 @@ boards; we materialise the minimum needed to land the user on a populated UI:
 
 * ``My Board`` — the empty default board the user owns.
 * ``Local Agent`` — an MCP-ready agent with an API key.
-* ``Demo`` — optional demo board with a real consolidated Kùzu graph so the
+* ``Demo`` — optional demo board with a real consolidated Okto Grafx graph so the
   KG explorer isn't empty on first open. Controlled by
   ``OKTO_PULSE_SKIP_DEMO_SEED=1`` (useful for CI / enterprise installs).
 
@@ -28,6 +28,12 @@ from sqlalchemy import bindparam, text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from okto_pulse.core.domain.realm import LOCAL_REALM_ID
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+from okto_pulse.core.domain.execution_contract import new_execution_contract
+from okto_pulse.core.domain.code_traceability import (
+    DeliveryContext, DirectSpecDeliveryContextProvenance,
+    build_direct_spec_source_context_manifest,
+)
 from okto_pulse.core.services.application_agents import credential_marker, hash_api_key
 from okto_pulse.core.services.spec_entity_canonicalization import (
     canonicalize_spec_requirement_fields,
@@ -151,8 +157,7 @@ async def seed_community_defaults(
     )
 
     # Demo is a separate relational UoW: the primary board/agent are already
-    # durable, but no partial Demo insert (including a failed requirement-lint
-    # write) may escape this boundary.  Fail closed after rolling that UoW back
+    # durable, but no partial Demo insert may escape this boundary.  Fail closed after rolling that UoW back
     # so callers cannot mistake an incomplete seed for a successful startup.
     try:
         await _seed_demo_board(db)
@@ -295,18 +300,32 @@ async def _seed_demo_board(db: AsyncSession) -> str | None:
             "realm_id": LOCAL_REALM_ID,
         },
     )
+    provenance = DirectSpecDeliveryContextProvenance(
+        value=DeliveryContext.GREENFIELD, source_spec_id=demo_spec_id, source_spec_version=1,
+    )
+    source_manifest, source_digest = build_direct_spec_source_context_manifest(
+        spec_id=demo_spec_id, delivery_context=DeliveryContext.GREENFIELD, provenance=provenance,
+    )
     spec_insert = sa_text(
         "INSERT INTO specs "
         "(id, board_id, title, description, context, functional_requirements, "
-        " technical_requirements, acceptance_criteria, business_rules, status, version, created_by) "
+        " technical_requirements, acceptance_criteria, business_rules, status, version, created_by, "
+        " architecture_adoption, execution_contract, delivery_context, delivery_context_provenance, "
+        " source_context_manifest, source_context_sha256) "
         "VALUES "
         "(:id, :board_id, :title, :description, :context, :functional_requirements, "
-        " :technical_requirements, :acceptance_criteria, :business_rules, :status, :version, :created_by)"
+        " :technical_requirements, :acceptance_criteria, :business_rules, :status, :version, :created_by, "
+        " :architecture_adoption, :execution_contract, :delivery_context, :delivery_context_provenance, "
+        " :source_context_manifest, :source_context_sha256)"
     ).bindparams(
         bindparam("functional_requirements", type_=sa_JSON),
         bindparam("technical_requirements", type_=sa_JSON),
         bindparam("acceptance_criteria", type_=sa_JSON),
         bindparam("business_rules", type_=sa_JSON),
+        bindparam("architecture_adoption", type_=sa_JSON),
+        bindparam("execution_contract", type_=sa_JSON),
+        bindparam("delivery_context_provenance", type_=sa_JSON),
+        bindparam("source_context_manifest", type_=sa_JSON),
     )
     canonical_requirements = canonicalize_spec_requirement_fields(
         {
@@ -359,9 +378,22 @@ async def _seed_demo_board(db: AsyncSession) -> str | None:
                 "acceptance_criteria"
             ],
             "business_rules": [
-                {"title": "BR-1", "rule": "Demo content is read-only in spirit — users can delete."}
+                {"id": "br_demo", "title": "BR-1", "rule": "Demo content is read-only in spirit — users can delete."}
             ],
-            "status": "done",
+            # Illustrative authorship carries no completed execution or approval.
+            "status": "draft",
+            "architecture_adoption": ArchitectureAdoptionScope(
+                board_id=demo_board_id, spec_id=demo_spec_id, adopted_in_edition=1,
+                actor_id="local-user", inherited_resource_ids=(),
+            ).model_dump(mode="json"),
+            "execution_contract": new_execution_contract(
+                board_id=demo_board_id, spec_id=demo_spec_id, edition=1,
+                actor_id="local-user", origin="new_spec",
+            ),
+            "delivery_context": "greenfield",
+            "delivery_context_provenance": source_manifest["delivery_context_provenance"],
+            "source_context_manifest": source_manifest,
+            "source_context_sha256": source_digest,
             "version": 1,
             "created_by": "local-user",
         },
@@ -452,7 +484,7 @@ async def _commit_demo_graph(board_id: str, spec_id: str) -> None:
             # outer semantic provider is restored and can no longer reach this
             # handle.  The shared shutdown boundary also checkpoints/closes the
             # Demo board cache, so first boot never relies on interpreter
-            # destructors to make graph.lbug(.wal) durable.
+            # destructors to make the graph store durable.
             import asyncio
 
             from okto_pulse.community.adapters.kg_shutdown import (

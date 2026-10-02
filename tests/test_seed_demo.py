@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,7 +23,7 @@ for p in reversed(source_paths):
 
 
 async def _demo_seed_factory(tmp_path, name: str):
-    from okto_pulse.community.adapters.sqlalchemy_base import Base
+    from okto_pulse.community.adapters.current_relational_schema import current_schema_contract, initialize_current_schema
 
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / name}")
     factory = async_sessionmaker(
@@ -30,8 +31,7 @@ async def _demo_seed_factory(tmp_path, name: str):
         class_=AsyncSession,
         expire_on_commit=False,
     )
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    await initialize_current_schema(engine, current_schema_contract())
     return engine, factory
 
 
@@ -72,7 +72,7 @@ async def test_primary_commit_delivers_key_before_demo_cancellation(
                     ),
                 )
             )
-            await commit_started.wait()
+            await asyncio.wait_for(commit_started.wait(), timeout=10)
             seed_task.cancel()
             release_commit.set()
             with pytest.raises(asyncio.CancelledError):
@@ -338,7 +338,7 @@ async def test_first_boot_demo_seed_persists_valid_status_and_card_kinds(
 ):
     """Raw seed SQL must supply realm/lifecycle defaults on the first boot."""
     from okto_pulse.community import seed as seed_mod
-    from okto_pulse.community.adapters.sqlalchemy_base import Base
+    from okto_pulse.community.adapters.current_relational_schema import current_schema_contract, initialize_current_schema
     from okto_pulse.core.domain.realm import LOCAL_REALM_ID
 
     engine = create_async_engine(
@@ -349,8 +349,7 @@ async def test_first_boot_demo_seed_persists_valid_status_and_card_kinds(
         class_=AsyncSession,
         expire_on_commit=False,
     )
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    await initialize_current_schema(engine, current_schema_contract())
 
     committed_graphs: list[tuple[str, str]] = []
 
@@ -391,6 +390,23 @@ async def test_first_boot_demo_seed_persists_valid_status_and_card_kinds(
         ]
         assert [row["status"] for row in rows] == ["not_started"] * 3
         assert [row["card_type"] for row in rows] == ["normal", "bug", "test"]
+        from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+        from okto_pulse.core.domain.execution_contract import SpecExecutionContract
+        from okto_pulse.core.domain.code_traceability import canonical_code_traceability_sha256
+
+        async with factory() as db:
+            seeded = (await db.execute(sa_text("SELECT * FROM specs"))).mappings().one()
+            adoption = ArchitectureAdoptionScope.model_validate(json.loads(seeded["architecture_adoption"]))
+            execution = SpecExecutionContract.model_validate(json.loads(seeded["execution_contract"]))
+            manifest = json.loads(seeded["source_context_manifest"])
+            assert adoption.board_id == execution.board_id == seeded["board_id"]
+            assert adoption.spec_id == execution.spec_id == seeded["id"]
+            assert adoption.inherited_resource_ids == ()
+            assert seeded["status"] == "draft"
+            assert seeded["delivery_context"] == manifest["delivery_context"] == "greenfield"
+            assert seeded["source_context_sha256"] == canonical_code_traceability_sha256(manifest)
+            assert manifest["current_receipts"] == []
+            assert (await db.execute(sa_text("SELECT COUNT(*) FROM quality_assessment_receipts"))).scalar_one() == 0
     finally:
         await engine.dispose()
 
