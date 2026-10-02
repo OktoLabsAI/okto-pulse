@@ -6,13 +6,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+from okto_pulse.core.domain.execution_contract import new_execution_contract
 from sqlalchemy import select, text, update
 
-import okto_pulse.core.infra.database as database_module
-from okto_pulse.community.adapters.relational_schema_steps import (
-    _migrate_guideline_impact_substrate,
-    _migrate_guideline_impact_v1_schema,
-)
+from test_skb_b08_guideline_impact_persistence import _fresh_database
 from okto_pulse.community.adapters.sqlalchemy_database import (
     get_engine,
     get_session_factory,
@@ -22,7 +20,6 @@ from okto_pulse.community.adapters.sqlalchemy_guideline_policy import (
     _impact_receipt_row,
 )
 from okto_pulse.community.adapters.sqlalchemy_models import (
-    Base,
     Board,
     GuidelineImpactAdoptionRow,
     GuidelineImpactItemRow,
@@ -63,14 +60,6 @@ NOW = datetime(2026, 7, 29, 18, 30, tzinfo=timezone.utc)
 BOARD_ID = "board-b08-impact-list"
 GUIDELINE_ID = "guideline-b08-impact-list"
 RECEIPT_ID = "receipt-b08-impact-list"
-
-
-async def _fresh_database(path: Path) -> None:
-    database_module.create_database(f"sqlite+aiosqlite:///{path.as_posix()}")
-    async with get_engine().begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
-    assert await _migrate_guideline_impact_substrate() == "skipped"
-    assert await _migrate_guideline_impact_v1_schema() is None
 
 
 async def _seed_preview(
@@ -126,6 +115,7 @@ async def _seed_preview(
         session.add(
             Board(
                 id=board_id,
+                realm_id="local",
                 name="B08 impact listing",
                 owner_id="author-b08",
             )
@@ -150,6 +140,11 @@ async def _seed_preview(
                 description="Semantic impact pagination fixture.",
                 version=subject.subject_version,
                 created_by="agent-b08",
+                architecture_adoption=ArchitectureAdoptionScope(
+                    board_id=board_id, spec_id=subject.subject_id, adopted_in_edition=1,
+                    actor_id="agent-b08", inherited_resource_ids=()).model_dump(mode="json"),
+                execution_contract=new_execution_contract(board_id=board_id,
+                    spec_id=subject.subject_id, edition=1, actor_id="agent-b08", origin="new_spec"),
             )
             for subject in subjects
         )

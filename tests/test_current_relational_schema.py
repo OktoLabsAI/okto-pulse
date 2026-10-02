@@ -88,6 +88,10 @@ async def test_fresh_schema_restart_preserves_data_and_identity(tmp_path, contra
     "CREATE TABLE sprints (id TEXT PRIMARY KEY)",
     "DROP INDEX ix_boards_realm_id",
     "DROP TRIGGER trg_global_discovery_source_revision_singleton_delete_guard",
+    "DROP TRIGGER trg_guideline_impact_v2_binding_insert",
+    "DROP TRIGGER trg_guideline_impact_v2_guideline_impact_adoptions_insert",
+    "DROP TRIGGER trg_guideline_impact_v2_guideline_impact_unlinks_insert",
+    "DROP TRIGGER trg_guideline_impact_v2_guideline_retirement_impacts_insert",
 ])
 async def test_incompatible_schema_is_refused_without_wal_or_content_changes(tmp_path, contract, mutation):
     path = tmp_path / "incompatible.db"
