@@ -1,21 +1,13 @@
-"""Guideline API endpoints.
+"""Current guideline catalog, context creation and Board unlink REST adapter.
 
-Spec R01A REST-FU7-S3: every endpoint here now routes through a transport-free
-use case (``application/use_cases/guidelines_crud.py``) over a
-``PulseUnitOfWork`` — no endpoint binds ``get_db`` / a raw ``AsyncSession``
-anymore. This module is a thin inbound adapter: it builds the command/actor,
-maps the typed use-case errors back to the EXACT legacy HTTP status + detail
-(``EntityNotFoundError`` → the per-entity 404 string, ``CommandValidationError``
-→ the 422 inline-create detail), and returns the use case's shaped payloads.
+Revision editing, retirement, adoption and import/export use policy_governance.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.encoders import jsonable_encoder
 
 from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.core.application.use_cases import (
     ActorContext,
-    CommandValidationError,
     EntityNotFoundError,
     PermissionDeniedError,
 )
@@ -25,42 +17,25 @@ from okto_pulse.core.application.use_cases.policy_governance import (
 from okto_pulse.core.application.use_cases.guidelines_crud import (
     CreateGuidelineCommand,
     CreateGuidelineUseCase,
-    DeleteGuidelineCommand,
-    DeleteGuidelineUseCase,
     GetBoardGuidelinesCommand,
     GetBoardGuidelinesUseCase,
     GetGuidelineCommand,
     GetGuidelineUseCase,
-    LinkOrCreateBoardGuidelineCommand,
-    LinkOrCreateBoardGuidelineUseCase,
+    CreateBoardGuidelineCommand,
+    CreateBoardGuidelineUseCase,
     ListGuidelinesCommand,
     ListGuidelinesUseCase,
     UnlinkBoardGuidelineCommand,
     UnlinkBoardGuidelineUseCase,
-    UpdateBoardGuidelinePriorityCommand,
-    UpdateBoardGuidelinePriorityUseCase,
-    UpdateGuidelineCommand,
-    UpdateGuidelineUseCase,
-)
-from okto_pulse.core.application.use_cases.guideline_import_export import (
-    ExportGuidelinePolicyCommand,
-    ExportGuidelinePolicyV3UseCase,
-    ImportGuidelinePolicyCommand,
-    ImportGuidelinePolicyUseCase,
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.community.api.auth_deps import require_principal, require_user
 from okto_pulse.core.ports.authentication import Principal
 from okto_pulse.core.ports.application_persistence import PAGE_OFFSET_MAX
-from okto_pulse.core.ports.guideline_policy import (
-    GuidelinePolicyBindingConflict,
-)
-from okto_pulse.core.domain.guideline_import_export import guideline_export_payload
 from okto_pulse.core.models.schemas import (
-    BoardGuidelineLinkRequest,
+    BoardGuidelineCreate,
     GuidelineCreate,
     GuidelineResponse,
-    GuidelineUpdate,
 )
 from okto_pulse.core.repositories import PulseUnitOfWork
 
@@ -76,17 +51,17 @@ _NOT_FOUND_DETAIL = {
 
 
 def _not_found(exc: EntityNotFoundError) -> str:
-    """Map the typed ``EntityNotFoundError`` back to the exact legacy 404 detail."""
+    """Map the typed ``EntityNotFoundError`` back to the typed 404 detail."""
     return _NOT_FOUND_DETAIL.get(exc.entity_type, "Not found")
 
 
-def _legacy_policy_actor(
+def _guideline_policy_actor(
     principal: Principal,
     *,
     capability: str,
     board_id: str | None = None,
 ):
-    """Authorize legacy PATCH/DELETE against the introduced SK-B leaves."""
+    """Authorize guideline creation or unlink through the current capabilities."""
 
     actor = RESTAdapterContract.actor_from_principal(
         principal,
@@ -119,33 +94,15 @@ def _require_board_guideline_adoption_manager(
     board_id: str,
     principal: Principal = Depends(require_principal),
 ) -> ActorContext:
-    """Authorize the legacy unlink before FastAPI resolves its UoW."""
+    """Authorize unlink before FastAPI resolves its UoW."""
 
-    return _legacy_policy_actor(
+    return _guideline_policy_actor(
         principal,
         capability="guidelines.adoption.manage",
         board_id=board_id,
     )
 
 
-def _guideline_adoption_preview_required() -> HTTPException:
-    """Project the governed replacement for legacy link/priority mutation."""
-
-    from okto_pulse.core.inbound.guideline_policy_error import (
-        guideline_policy_http_status,
-        project_guideline_policy_error,
-    )
-    from okto_pulse.core.ports.guideline_policy import (
-        GuidelinePolicyBindingConflict,
-    )
-
-    error = GuidelinePolicyBindingConflict(
-        "guideline_impact_preview_required"
-    )
-    return HTTPException(
-        status_code=guideline_policy_http_status(error),
-        detail=project_guideline_policy_error(error),
-    )
 
 
 # ============================================================================
@@ -181,7 +138,7 @@ async def create_guideline(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Create a guideline identity and its immutable initial revision."""
-    actor = _legacy_policy_actor(
+    actor = _guideline_policy_actor(
         principal,
         capability="guidelines.revisions.create",
         board_id=data.board_id,
@@ -192,74 +149,6 @@ async def create_guideline(
         uow=uow,
     )
     return result.guideline
-
-
-# NOTE: the literal /guidelines/export and /guidelines/import routes MUST be
-# declared BEFORE the parametric /guidelines/{guideline_id} below — FastAPI
-# matches in registration order, so the param route would otherwise swallow
-# "export" as a guideline id (same shadowing as /guidelines/default-candidates,
-# see api/router.py).
-
-
-@router.get("/guidelines/export")
-async def export_guidelines(
-    board_id: str | None = Query(None),
-    principal: Principal = Depends(require_principal),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-):
-    """Compatibility URL for the lossless governed ``guideline-export/v3``."""
-
-    actor = _legacy_policy_actor(
-        principal,
-        capability="guidelines.revisions.read",
-        board_id=board_id,
-    )
-    try:
-        result = await ExportGuidelinePolicyV3UseCase().execute(
-            ExportGuidelinePolicyCommand(board_id=board_id),
-            actor=actor,
-            uow=uow,
-        )
-    except Exception as error:
-        raise _policy_http_error(error)
-    return guideline_export_payload(result.envelope)
-
-
-@router.post("/guidelines/import")
-async def import_guidelines(
-    envelope: dict,
-    dry_run: bool = Query(False),
-    board_id: str | None = Query(None),
-    principal: Principal = Depends(require_principal),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-):
-    """Compatibility URL for atomic governed v1/v2/v3 guideline imports.
-
-    Schema v1 becomes context-only, rule-empty v2 becomes context-only, v2
-    executable rules are rejected atomically, and v3 preserves semantic
-    metrics.  ``board_id`` remains the optional target-board remap.
-    """
-    # Authorize before the governed codec interprets the document.  The use
-    # case repeats the check and additionally requires metrics.author when a
-    # v3 envelope contains semantic metrics.
-    actor = _legacy_policy_actor(
-        principal,
-        capability="guidelines.revisions.create",
-        board_id=board_id,
-    )
-    try:
-        result = await ImportGuidelinePolicyUseCase().execute(
-            ImportGuidelinePolicyCommand(
-                envelope=envelope,
-                target_board_id=board_id,
-                dry_run=dry_run,
-            ),
-            actor=actor,
-            uow=uow,
-        )
-    except Exception as error:
-        raise _policy_http_error(error)
-    return jsonable_encoder(result.result)
 
 
 @router.get("/guidelines/{guideline_id}", response_model=GuidelineResponse)
@@ -280,48 +169,8 @@ async def get_guideline(
     return result.guideline
 
 
-@router.patch("/guidelines/{guideline_id}", response_model=GuidelineResponse)
-async def update_guideline(
-    guideline_id: str,
-    data: GuidelineUpdate,
-    principal: Principal = Depends(require_principal),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-):
-    """Update a guideline."""
-    actor = _legacy_policy_actor(
-        principal,
-        capability="guidelines.revisions.create",
-    )
-    try:
-        result = await UpdateGuidelineUseCase().execute(
-            UpdateGuidelineCommand(guideline_id, data),
-            actor=actor,
-            uow=uow,
-        )
-    except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
-    return result.guideline
 
 
-@router.delete("/guidelines/{guideline_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_guideline(
-    guideline_id: str,
-    principal: Principal = Depends(require_principal),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-):
-    """Delete a guideline."""
-    actor = _legacy_policy_actor(
-        principal,
-        capability="guidelines.revisions.retire",
-    )
-    try:
-        await DeleteGuidelineUseCase().execute(
-            DeleteGuidelineCommand(guideline_id),
-            actor=actor,
-            uow=uow,
-        )
-    except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
 
 
 # ============================================================================
@@ -348,34 +197,23 @@ async def get_board_guidelines(
 
 
 @router.post("/boards/{board_id}/guidelines", status_code=status.HTTP_201_CREATED)
-async def link_or_create_board_guideline(
+async def create_board_guideline(
     board_id: str,
-    data: BoardGuidelineLinkRequest,
+    data: BoardGuidelineCreate,
     principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Create inline context; governed links require preview then adoption."""
-    actor = _legacy_policy_actor(
+    actor = _guideline_policy_actor(
         principal,
-        capability=(
-            "guidelines.adoption.manage"
-            if data.guideline_id
-            else "guidelines.revisions.create"
-        ),
+        capability="guidelines.revisions.create",
         board_id=board_id,
     )
     try:
-        result = await LinkOrCreateBoardGuidelineUseCase().execute(
-            LinkOrCreateBoardGuidelineCommand(board_id, data),
+        result = await CreateBoardGuidelineUseCase().execute(
+            CreateBoardGuidelineCommand(board_id, data),
             actor=actor,
             uow=uow,
-        )
-    except GuidelinePolicyBindingConflict:
-        raise _guideline_adoption_preview_required()
-    except CommandValidationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=str(exc),
         )
     except EntityNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
@@ -400,38 +238,3 @@ async def unlink_board_guideline(
         )
     except EntityNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
-
-
-@router.patch("/boards/{board_id}/guidelines/{guideline_id}")
-async def update_board_guideline_priority(
-    board_id: str,
-    guideline_id: str,
-    data: dict,
-    principal: Principal = Depends(require_principal),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-):
-    """Reject the legacy direct mutation in favor of preview then adoption."""
-    priority = data.get("priority", 0)
-    actor = _legacy_policy_actor(
-        principal,
-        capability="guidelines.adoption.manage",
-        board_id=board_id,
-    )
-    try:
-        await UpdateBoardGuidelinePriorityUseCase().execute(
-            UpdateBoardGuidelinePriorityCommand(
-                board_id,
-                guideline_id,
-                priority,
-            ),
-            actor=actor,
-            uow=uow,
-        )
-    except GuidelinePolicyBindingConflict:
-        raise _guideline_adoption_preview_required()
-    except EntityNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=_not_found(exc),
-        )
-    raise RuntimeError("legacy guideline priority unexpectedly mutated state")

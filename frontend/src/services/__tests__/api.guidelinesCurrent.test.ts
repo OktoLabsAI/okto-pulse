@@ -14,15 +14,15 @@ vi.mock('@/contexts/ApiContext', () => ({
   useApiClient: () => mockApiClient,
 }));
 
-describe('legacy guideline compatibility during SK-B migration', () => {
+describe('current guideline context and governed revisions', () => {
   beforeEach(() => {
     mockApiClient.fetchJson.mockReset();
   });
 
-  it('preserves listGuidelines as the legacy offset array contract', async () => {
-    const legacy: Guideline = {
+  it('lists native guideline context with bounded pagination', async () => {
+    const context: Guideline = {
       id: 'guideline-1',
-      title: 'Legacy guideline',
+      title: 'Native guideline',
       content: 'Context for every agent.',
       tags: [],
       scope: 'global',
@@ -32,7 +32,7 @@ describe('legacy guideline compatibility during SK-B migration', () => {
       created_at: '2026-07-30T00:00:00Z',
       updated_at: '2026-07-30T00:00:00Z',
     };
-    mockApiClient.fetchJson.mockResolvedValue([legacy]);
+    mockApiClient.fetchJson.mockResolvedValue([context]);
     const { result } = renderHook(() => useDashboardApi());
 
     const guidelines: Guideline[] = await result.current.listGuidelines(
@@ -41,14 +41,21 @@ describe('legacy guideline compatibility during SK-B migration', () => {
       'architecture',
     );
 
-    expect(guidelines).toEqual([legacy]);
+    expect(guidelines).toEqual([context]);
     expect(mockApiClient.fetchJson).toHaveBeenCalledWith(
       '/guidelines?offset=25&limit=50&tag=architecture',
     );
   });
 
-  it('keeps the legacy mutable model separate from the policy root', () => {
-    const legacyScope: GuidelineScope = 'inline';
+  it('exposes only current mutation clients', () => {
+    const { result } = renderHook(() => useDashboardApi());
+    for (const name of ['updateGuideline', 'deleteGuideline', 'linkGuidelineToBoard', 'updateGuidelinePriority']) {
+      expect(result.current).not.toHaveProperty(name);
+    }
+  });
+
+  it('keeps the read projection separate from the immutable identity', () => {
+    const contextScope: GuidelineScope = 'inline';
     const policyRoot: PolicyGuidelineRoot = {
       guideline_id: 'guideline-1',
       owner_id: 'owner-1',
@@ -58,7 +65,7 @@ describe('legacy guideline compatibility during SK-B migration', () => {
       created_at: '2026-07-30T00:00:00Z',
     };
 
-    expect(legacyScope).toBe(policyRoot.scope);
+    expect(contextScope).toBe(policyRoot.scope);
     expect(policyRoot).not.toHaveProperty('content');
     expect(policyRoot).not.toHaveProperty('version');
   });

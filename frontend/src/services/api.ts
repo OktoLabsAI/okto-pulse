@@ -2390,27 +2390,15 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       return apiClient.fetchJson<Guideline>(`/guidelines/${id}`);
     },
 
-    async updateGuideline(id: string, data: { title?: string; content?: string; tags?: string[] }): Promise<Guideline> {
-      return apiClient.fetchJson<Guideline>(`/guidelines/${id}`, {
-        method: 'PATCH',
-        body: JSON.stringify(data),
-      });
-    },
 
-    async deleteGuideline(id: string): Promise<void> {
-      await apiClient.fetch(`/guidelines/${id}`, { method: 'DELETE' });
-    },
+
+
 
     async getBoardGuidelines(boardId: string): Promise<BoardGuidelineEntry[]> {
       return apiClient.fetchJson<BoardGuidelineEntry[]>(`/boards/${boardId}/guidelines`);
     },
 
-    async linkGuidelineToBoard(boardId: string, guidelineId: string, priority?: number): Promise<void> {
-      await apiClient.fetchJson(`/boards/${boardId}/guidelines`, {
-        method: 'POST',
-        body: JSON.stringify({ guideline_id: guidelineId, priority }),
-      });
-    },
+
 
     async createInlineGuideline(boardId: string, data: { title: string; content: string; tags?: string[]; priority?: number }): Promise<void> {
       await apiClient.fetchJson(`/boards/${boardId}/guidelines`, {
@@ -2423,12 +2411,7 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       await apiClient.fetch(`/boards/${boardId}/guidelines/${guidelineId}`, { method: 'DELETE' });
     },
 
-    async updateGuidelinePriority(boardId: string, guidelineId: string, priority: number): Promise<void> {
-      await apiClient.fetchJson(`/boards/${boardId}/guidelines/${guidelineId}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ priority }),
-      });
-    },
+
 
     // ==================== ANALYTICS ====================
 
