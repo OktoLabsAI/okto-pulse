@@ -1405,30 +1405,6 @@
   },
   {
     "kind": "trigger",
-    "name": "trg_kg_cognitive_source_immutable_kg_cognitive_source_fingerprint_epoch_permits_insert",
-    "table": "kg_cognitive_source_fingerprint_epoch_permits",
-    "sql": "CREATE TRIGGER \"trg_kg_cognitive_source_immutable_kg_cognitive_source_fingerprint_epoch_permits_insert\"\nBEFORE INSERT ON \"kg_cognitive_source_fingerprint_epoch_permits\"\nWHEN EXISTS (\n    SELECT 1 FROM \"kg_cognitive_source_fingerprint_epoch_receipts\" AS receipt\n    WHERE receipt.epoch = NEW.epoch\n)\nBEGIN\n    SELECT RAISE(ABORT, 'kg_cognitive_source_epoch_sealed');\nEND"
-  },
-  {
-    "kind": "trigger",
-    "name": "trg_kg_cognitive_source_immutable_kg_cognitive_source_fingerprint_epoch_permits_update",
-    "table": "kg_cognitive_source_fingerprint_epoch_permits",
-    "sql": "CREATE TRIGGER \"trg_kg_cognitive_source_immutable_kg_cognitive_source_fingerprint_epoch_permits_update\"\nBEFORE UPDATE ON \"kg_cognitive_source_fingerprint_epoch_permits\"\nBEGIN\n    SELECT RAISE(ABORT, 'kg_cognitive_source_immutable');\nEND"
-  },
-  {
-    "kind": "trigger",
-    "name": "trg_kg_cognitive_source_immutable_kg_cognitive_source_fingerprint_epoch_receipts_delete",
-    "table": "kg_cognitive_source_fingerprint_epoch_receipts",
-    "sql": "CREATE TRIGGER \"trg_kg_cognitive_source_immutable_kg_cognitive_source_fingerprint_epoch_receipts_delete\"\nBEFORE DELETE ON \"kg_cognitive_source_fingerprint_epoch_receipts\"\nBEGIN\n    SELECT RAISE(ABORT, 'kg_cognitive_source_immutable');\nEND"
-  },
-  {
-    "kind": "trigger",
-    "name": "trg_kg_cognitive_source_immutable_kg_cognitive_source_fingerprint_epoch_receipts_update",
-    "table": "kg_cognitive_source_fingerprint_epoch_receipts",
-    "sql": "CREATE TRIGGER \"trg_kg_cognitive_source_immutable_kg_cognitive_source_fingerprint_epoch_receipts_update\"\nBEFORE UPDATE ON \"kg_cognitive_source_fingerprint_epoch_receipts\"\nBEGIN\n    SELECT RAISE(ABORT, 'kg_cognitive_source_immutable');\nEND"
-  },
-  {
-    "kind": "trigger",
     "name": "trg_kg_cognitive_source_immutable_kg_cognitive_source_revisions_delete",
     "table": "kg_cognitive_source_revisions",
     "sql": "CREATE TRIGGER \"trg_kg_cognitive_source_immutable_kg_cognitive_source_revisions_delete\"\nBEFORE DELETE ON \"kg_cognitive_source_revisions\"\nWHEN NOT EXISTS (\n    SELECT 1\n    FROM \"kg_board_erasure_permits\" AS permit\n    JOIN \"kg_cognitive_sources\" AS source\n      ON source.board_id = permit.board_id\n    WHERE source.id = OLD.cognitive_source_id\n)\nBEGIN\n    SELECT RAISE(ABORT, 'kg_cognitive_source_immutable');\nEND"
@@ -1437,7 +1413,7 @@
     "kind": "trigger",
     "name": "trg_kg_cognitive_source_immutable_kg_cognitive_source_revisions_update",
     "table": "kg_cognitive_source_revisions",
-    "sql": "CREATE TRIGGER \"trg_kg_cognitive_source_immutable_kg_cognitive_source_revisions_update\"\nBEFORE UPDATE ON \"kg_cognitive_source_revisions\"\nWHEN NOT (\n    NEW.id IS OLD.id\n        AND NEW.cognitive_source_id IS OLD.cognitive_source_id\n        AND NEW.source_revision IS OLD.source_revision\n        AND NEW.payload IS OLD.payload\n        AND NEW.evidence_refs IS OLD.evidence_refs\n        AND NEW.source_session_id IS OLD.source_session_id\n        AND NEW.committed_at IS OLD.committed_at\n    AND EXISTS (\n        SELECT 1\n        FROM \"kg_cognitive_source_fingerprint_epoch_permits\" AS permit\n        WHERE permit.revision_id = OLD.id\n          AND permit.epoch = 'cognitive-source-fingerprint/v3'\n          AND permit.old_fingerprint = OLD.record_fingerprint\n          AND permit.new_fingerprint = NEW.record_fingerprint\n    )\n)\nBEGIN\n    SELECT RAISE(ABORT, 'kg_cognitive_source_immutable');\nEND"
+    "sql": "CREATE TRIGGER \"trg_kg_cognitive_source_immutable_kg_cognitive_source_revisions_update\"\nBEFORE UPDATE ON \"kg_cognitive_source_revisions\"\nBEGIN\n    SELECT RAISE(ABORT, 'kg_cognitive_source_immutable');\nEND"
   },
   {
     "kind": "trigger",

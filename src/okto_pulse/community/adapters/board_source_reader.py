@@ -1506,48 +1506,26 @@ def read_realm_cognitive_source_snapshot(
     captured: dict[str, list[dict[str, Any]]] = {
         board_id: [] for board_id in board_ids
     }
-    revision_table_exists = connection.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' "
-        "AND name = 'kg_cognitive_source_revisions'"
-    ).fetchone()
-    if revision_table_exists is None:
-        # Legacy databases remain readable before the additive create-all
-        # boundary.  Their immutable parent row is revision zero.
-        query = (
-            "SELECT source.board_id, source.node_id, source.node_type, "
-            "source.generation, source.payload, source.evidence_refs, "
-            "source.source_session_id, source.committed_at, "
-            "0 AS source_revision, NULL AS record_fingerprint "
-            "FROM kg_cognitive_sources AS source "
-            "INNER JOIN boards AS board ON board.id = source.board_id "
-            "WHERE board.realm_id = ? "
-            "ORDER BY source.board_id COLLATE BINARY, "
-            "source.committed_at ASC, source.node_id COLLATE BINARY, "
-            "source.generation ASC"
-        )
-    else:
-        # Audit the complete immutable history before selecting current heads.
-        # MAX(revision) here used to hide corrupt unselected revisions from
-        # rebuild/upgrade consumers. Preserve raw JSON cells in the projection.
-        query = (
-            "SELECT source.board_id, source.node_id, source.node_type, "
-            "source.generation, source.payload, source.evidence_refs, "
-            "source.source_session_id, source.committed_at, "
-            "0 AS source_revision, NULL AS record_fingerprint "
-            "FROM kg_cognitive_sources AS source "
-            "INNER JOIN boards AS board ON board.id = source.board_id "
-            "WHERE board.realm_id = ? "
-            "UNION ALL "
-            "SELECT source.board_id, source.node_id, source.node_type, source.generation, "
-            "revision.payload, revision.evidence_refs, revision.source_session_id, "
-            "revision.committed_at, revision.source_revision, revision.record_fingerprint "
-            "FROM kg_cognitive_source_revisions AS revision "
-            "INNER JOIN kg_cognitive_sources AS source ON source.id = revision.cognitive_source_id "
-            "INNER JOIN boards AS board ON board.id = source.board_id "
-            "WHERE board.realm_id = ? "
-            "ORDER BY board_id COLLATE BINARY, committed_at ASC, node_id COLLATE BINARY, generation ASC, source_revision ASC"
-        )
-    parameters = (normalized_realm_id,) * (1 if revision_table_exists is None else 2)
+    # Read the complete native ledger; missing revisions never imply revision zero.
+    query = (
+        "SELECT source.board_id, source.node_id, source.node_type, "
+        "source.generation, source.payload, source.evidence_refs, "
+        "source.source_session_id, source.committed_at, "
+        "0 AS source_revision, NULL AS record_fingerprint "
+        "FROM kg_cognitive_sources AS source "
+        "INNER JOIN boards AS board ON board.id = source.board_id "
+        "WHERE board.realm_id = ? "
+        "UNION ALL "
+        "SELECT source.board_id, source.node_id, source.node_type, source.generation, "
+        "revision.payload, revision.evidence_refs, revision.source_session_id, "
+        "revision.committed_at, revision.source_revision, revision.record_fingerprint "
+        "FROM kg_cognitive_source_revisions AS revision "
+        "INNER JOIN kg_cognitive_sources AS source ON source.id = revision.cognitive_source_id "
+        "INNER JOIN boards AS board ON board.id = source.board_id "
+        "WHERE board.realm_id = ? "
+        "ORDER BY board_id COLLATE BINARY, committed_at ASC, node_id COLLATE BINARY, generation ASC, source_revision ASC"
+    )
+    parameters = (normalized_realm_id, normalized_realm_id)
     total_bytes = 0
     for ordinal, row in enumerate(connection.execute(query, parameters), start=1):
         total_bytes += len(json.dumps(dict(row), ensure_ascii=False).encode('utf-8'))
@@ -1578,8 +1556,9 @@ def read_realm_cognitive_source_snapshot(
         )
         stored_fingerprint = row["record_fingerprint"]
         if (
-            stored_fingerprint is not None
-            and str(stored_fingerprint) != canonical_fingerprint
+            (row["source_revision"] > 0 and stored_fingerprint is None)
+            or (stored_fingerprint is not None
+                and str(stored_fingerprint) != canonical_fingerprint)
         ):
             raise ValueError(
                 "cognitive source record_fingerprint does not match its "

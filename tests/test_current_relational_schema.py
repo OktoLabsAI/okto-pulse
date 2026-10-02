@@ -85,6 +85,8 @@ async def test_fresh_schema_restart_preserves_data_and_identity(tmp_path, contra
     "CREATE TABLE semantic_guideline_legacy_migrations (migration_id TEXT PRIMARY KEY)",
     "CREATE TABLE card_rejected_lifecycle_migrations (migration_id TEXT PRIMARY KEY)",
     "CREATE TABLE spec_validation_pointer_repairs (migration_id TEXT PRIMARY KEY)",
+    "CREATE TABLE kg_cognitive_source_fingerprint_epoch_permits (revision_id TEXT PRIMARY KEY)",
+    "CREATE TABLE kg_cognitive_source_fingerprint_epoch_receipts (epoch TEXT PRIMARY KEY)",
     "CREATE TABLE sprints (id TEXT PRIMARY KEY)",
     "DROP INDEX ix_boards_realm_id",
     "DROP TRIGGER trg_global_discovery_source_revision_singleton_delete_guard",
