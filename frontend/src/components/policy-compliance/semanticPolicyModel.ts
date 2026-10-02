@@ -29,6 +29,7 @@ import type {
 const CURRENTNESS_REASONS =
   new Set<SemanticAssessmentCurrentnessReason>([
     'current_snapshot_missing',
+    'subject_edition_changed',
     'subject_version_changed',
     'subject_content_changed',
     'guideline_revision_changed',
@@ -52,20 +53,15 @@ const ASSESSMENT_DETAIL_FIELDS = [
   'binding_id',
   'guideline_id',
   'guideline_revision_id',
-  'enforcement',
   'state',
   'currentness',
   'currentness_reasons',
   'confidence',
-  'minimum_confidence',
   'metric_count',
   'failed_metric_count',
   'recorded_at',
   'binding_revision',
   'assessor_agent_id',
-  'assessor_model_id',
-  'assessor_independent',
-  'confidence_admissible',
   'metric_results',
 ] as const;
 
@@ -531,9 +527,8 @@ function parseMetricResult(value: unknown): SemanticMetricResultDetail {
       'metric evidence references',
     ),
     pinpoints: uniqueBy(
-      value.pinpoints.map(parsePinpoint),
-      (item) =>
-        `${item.anchor_type}:${item.anchor_ref ?? ''}:${item.excerpt_hash ?? ''}:${item.input_digest}`,
+      value.pinpoints.map((pinpoint) => parseV2Pinpoint(pinpoint, computed)),
+      (item) => item.pinpoint_key,
       'metric pinpoints',
     ),
   };
@@ -551,20 +546,11 @@ export function parseSemanticAssessmentDetail(
     throw new Error('Semantic guideline assessment projection is not detail.');
   }
   matchesSubject(value, expected);
-  if (value.enforcement !== 'advisory' && value.enforcement !== 'blocking') {
-    throw new Error('Semantic guideline enforcement is invalid.');
-  }
   if (
     value.state !== 'passed'
     && value.state !== 'metric_threshold_failed'
   ) {
     throw new Error('Semantic guideline assessment state is invalid.');
-  }
-  if (
-    typeof value.assessor_independent !== 'boolean'
-    || typeof value.confidence_admissible !== 'boolean'
-  ) {
-    throw new Error('Semantic guideline assessor admission is invalid.');
   }
   const resolvedCurrentness = currentness(value);
   const validationEdition = value.validation_edition === null
@@ -573,13 +559,10 @@ export function parseSemanticAssessmentDetail(
   if (
     value.lifecycle_state !== 'current'
     && value.lifecycle_state !== 'previous'
-    && value.lifecycle_state !== 'history_only'
   ) {
     throw new Error('Semantic guideline assessment lifecycle state is invalid.');
   }
-  const expectedLifecycleState = validationEdition === null
-    ? 'history_only'
-    : resolvedCurrentness.currentness === 'current'
+  const expectedLifecycleState = resolvedCurrentness.currentness === 'current'
       ? 'current'
       : 'previous';
   if (value.lifecycle_state !== expectedLifecycleState) {
@@ -596,15 +579,6 @@ export function parseSemanticAssessmentDetail(
     );
   }
   const confidence = boundedScore(value.confidence, 'confidence');
-  const minimumConfidence = boundedScore(
-    value.minimum_confidence,
-    'minimum confidence',
-  );
-  if (value.confidence_admissible !== (confidence >= minimumConfidence)) {
-    throw new Error(
-      'Semantic guideline confidence admission contradicts its threshold.',
-    );
-  }
   if (!Array.isArray(value.metric_results)) {
     throw new Error('Semantic guideline metric results are invalid.');
   }
@@ -655,12 +629,10 @@ export function parseSemanticAssessmentDetail(
       value.guideline_revision_id,
       'guideline revision identity',
     ),
-    enforcement: value.enforcement,
     state: value.state,
     currentness: resolvedCurrentness.currentness,
     currentness_reasons: resolvedCurrentness.reasons,
     confidence,
-    minimum_confidence: minimumConfidence,
     metric_count: metricCount,
     failed_metric_count: failedMetricCount,
     recorded_at: timestamp(value.recorded_at, 'recorded timestamp'),
@@ -672,12 +644,6 @@ export function parseSemanticAssessmentDetail(
       value.assessor_agent_id,
       'assessor identity',
     ),
-    assessor_model_id: nullableText(
-      value.assessor_model_id,
-      'assessor model identity',
-    ),
-    assessor_independent: value.assessor_independent,
-    confidence_admissible: value.confidence_admissible,
     metric_results: metricResults,
   };
 }

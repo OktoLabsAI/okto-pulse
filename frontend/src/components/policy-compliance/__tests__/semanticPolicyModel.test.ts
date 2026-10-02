@@ -46,24 +46,19 @@ function assessment(overrides: Record<string, unknown> = {}) {
     subject_id: 'spec-1',
     subject_version: 7,
     validation_edition: null,
-    lifecycle_state: 'history_only',
+    lifecycle_state: 'current',
     binding_id: 'binding-1',
     guideline_id: 'guideline-1',
     guideline_revision_id: 'revision-1',
-    enforcement: 'blocking',
     state: 'passed',
     currentness: 'current',
     currentness_reasons: [],
     confidence: 90,
-    minimum_confidence: 80,
     metric_count: 1,
     failed_metric_count: 0,
     recorded_at: '2026-07-30T12:00:00Z',
     binding_revision: 2,
     assessor_agent_id: 'agent-1',
-    assessor_model_id: 'model-1',
-    assessor_independent: true,
-    confidence_admissible: true,
     metric_results: [{
       metric_result_id: 'result-1',
       metric_id: 'metric-1',
@@ -76,7 +71,13 @@ function assessment(overrides: Record<string, unknown> = {}) {
       outcome: 'pass',
       rationale: 'The architecture boundary is explicit.',
       evidence_refs: [evidence()],
-      pinpoints: [pinpoint()],
+      pinpoints: [{
+        contract_version: 'v2', pinpoint_key: 'boundary', kind: 'evidence',
+        title: 'Explicit boundary', detail: 'The boundary is independently described.',
+        severity: null, remediation: null, blocking: false,
+        anchor: { anchor_type: 'field', anchor_ref: 'architecture', excerpt_hash: digest },
+        anchor_snapshot: { label: 'Architecture', excerpt: null, source_version: '7', availability_at_seal: 'available' },
+      }],
     }],
     ...overrides,
   };
@@ -207,7 +208,7 @@ describe('semanticPolicyModel', () => {
 
   it('requires lifecycle placement to agree with edition and currentness', () => {
     expect(parseSemanticAssessmentDetail(assessment(), expected)
-      .lifecycle_state).toBe('history_only');
+      .lifecycle_state).toBe('current');
     expect(parseSemanticAssessmentDetail(assessment({
       validation_edition: 2,
       lifecycle_state: 'current',
@@ -221,14 +222,14 @@ describe('semanticPolicyModel', () => {
     expect(() => parseSemanticAssessmentDetail(assessment({
       validation_edition: 2,
       lifecycle_state: 'history_only',
-    }), expected)).toThrow(/lifecycle state is inconsistent/u);
+    }), expected)).toThrow(/lifecycle state is invalid/u);
   });
 
   it.each([
     ['unknown field', { unexpected: true }],
     ['mismatched subject', { subject_id: 'spec-2' }],
     ['invalid timestamp', { recorded_at: 'not-a-time' }],
-    ['contradictory confidence', { confidence_admissible: false }],
+    ['predecessor admission field', { confidence_admissible: false }],
     ['contradictory counts', { failed_metric_count: 1 }],
   ])('rejects assessment %s', (_label, override) => {
     expect(() =>

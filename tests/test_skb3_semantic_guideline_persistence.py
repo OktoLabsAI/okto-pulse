@@ -139,9 +139,7 @@ from okto_pulse.core.ports.guideline_policy import (
     GuidelinePolicyDigestConflict,
     GuidelinePolicyEditionConflict,
     GuidelinePolicyHeadConflict,
-    GuidelinePolicyInvalidCursor,
     GuidelinePolicyPersistencePort,
-    SemanticAssessmentListQuery,
     SemanticFindingListQuery,
     SemanticGuidelineAssessmentPersistencePort,
 )
@@ -151,8 +149,6 @@ from okto_pulse.core.application.use_cases.policy_governance import (
     ASSESSMENTS_RECORD,
 )
 from okto_pulse.core.application.use_cases.semantic_guideline_governance import (
-    ListSemanticGuidelineAssessmentsCommand,
-    ListSemanticGuidelineAssessmentsUseCase,
     ListSemanticGuidelineFindingsCommand,
     ListSemanticGuidelineFindingsUseCase,
 )
@@ -2809,7 +2805,7 @@ async def test_semantic_receipt_keyset_pagination_and_initial_seal_guard(
 
 
 @pytest.mark.asyncio
-async def test_semantic_assessment_and_finding_keysets_exceed_200_without_leakage(
+async def test_semantic_finding_keysets_exceed_200_without_leakage(
     tmp_path,
 ):
     engine = _sqlite_engine(tmp_path / "semantic-large-keysets.db")
@@ -2871,38 +2867,6 @@ async def test_semantic_assessment_and_finding_keysets_exceed_200_without_leakag
             permissions=(ASSESSMENTS_READ, "guidelines.read"),
         )
 
-        async def collect_assessments(projection):
-            cursor = None
-            collected = []
-            seen_cursors = set()
-            while True:
-                result = await ListSemanticGuidelineAssessmentsUseCase().execute(
-                    ListSemanticGuidelineAssessmentsCommand(
-                        SemanticAssessmentListQuery(
-                            board_id=board_id,
-                            limit=73,
-                            cursor=cursor,
-                            projection=projection,
-                        )
-                    ),
-                    actor=actor,
-                    uow=uow,
-                )
-                page = result.page
-                collected.extend(page.items)
-                if page.next_cursor is None:
-                    assert page.has_more is False
-                    break
-                assert page.has_more is True
-                identity = (
-                    page.next_cursor.recorded_at,
-                    page.next_cursor.item_id,
-                )
-                assert identity not in seen_cursors
-                seen_cursors.add(identity)
-                cursor = page.next_cursor
-            return tuple(collected)
-
         async def collect_findings(projection):
             cursor = None
             collected = []
@@ -2928,71 +2892,13 @@ async def test_semantic_assessment_and_finding_keysets_exceed_200_without_leakag
                 cursor = page.next_cursor
             return tuple(collected)
 
-        assessment_summary = await collect_assessments(
-            SemanticGuidelineProjection.SUMMARY
-        )
-        assessment_detail = await collect_assessments(
-            SemanticGuidelineProjection.DETAIL
-        )
         finding_summary = await collect_findings(SemanticGuidelineProjection.SUMMARY)
         finding_detail = await collect_findings(SemanticGuidelineProjection.DETAIL)
-        assert len(assessment_summary) == len(assessment_detail) == 205
         assert len(finding_summary) == len(finding_detail) == 205
-        assert [item.receipt_id for item in assessment_summary] == [
-            item.receipt_id for item in assessment_detail
-        ]
         assert [item.finding_id for item in finding_summary] == [
             item.finding_id for item in finding_detail
         ]
-        assert len({item.receipt_id for item in assessment_summary}) == 205
         assert len({item.finding_id for item in finding_summary}) == 205
-        assert all(not hasattr(item, "metric_results") for item in assessment_summary)
-        assert all(len(item.metric_results) == 1 for item in assessment_detail)
-
-        first = await ListSemanticGuidelineAssessmentsUseCase().execute(
-            ListSemanticGuidelineAssessmentsCommand(
-                SemanticAssessmentListQuery(
-                    board_id=board_id,
-                    limit=73,
-                    projection=SemanticGuidelineProjection.SUMMARY,
-                )
-            ),
-            actor=actor,
-            uow=uow,
-        )
-        cursor = first.page.next_cursor
-        assert cursor is not None
-        with pytest.raises(
-            GuidelinePolicyInvalidCursor,
-            match="semantic_assessment_cursor_context_mismatch",
-        ):
-            SemanticAssessmentListQuery(
-                board_id=other_board_id,
-                cursor=cursor,
-                projection=SemanticGuidelineProjection.SUMMARY,
-            )
-        with pytest.raises(
-            GuidelinePolicyInvalidCursor,
-            match="semantic_assessment_cursor_context_mismatch",
-        ):
-            SemanticAssessmentListQuery(
-                board_id=board_id,
-                cursor=type(cursor)(
-                    at=cursor.recorded_at,
-                    item_id=cursor.item_id,
-                    filter_digest="0" * 64,
-                    projection_digest=cursor.projection_digest,
-                ),
-                projection=SemanticGuidelineProjection.SUMMARY,
-            )
-
-        (
-            other_receipts,
-            other_receipt_cursor,
-        ) = await adapter.list_semantic_assessment_receipts(
-            board_id=other_board_id,
-            limit=200,
-        )
         (
             other_findings,
             other_finding_cursor,
@@ -3000,11 +2906,8 @@ async def test_semantic_assessment_and_finding_keysets_exceed_200_without_leakag
             board_id=other_board_id,
             limit=200,
         )
-        assert len(other_receipts) == len(other_findings) == 5
-        assert other_receipt_cursor is other_finding_cursor is None
-        assert {item.receipt_id for item in other_receipts}.isdisjoint(
-            {item.receipt_id for item in assessment_summary}
-        )
+        assert len(other_findings) == 5
+        assert other_finding_cursor is None
         assert {item.finding_id for item in other_findings}.isdisjoint(
             {item.finding_id for item in finding_summary}
         )

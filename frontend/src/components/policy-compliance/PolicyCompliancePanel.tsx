@@ -238,8 +238,6 @@ function toneForAssessment(
 ): string {
   if (
     assessment.currentness === 'stale'
-    || !assessment.confidence_admissible
-    || !assessment.assessor_independent
   ) {
     return 'border-amber-300 bg-amber-50/50 dark:border-amber-800 dark:bg-amber-950/20';
   }
@@ -523,13 +521,10 @@ function AssessmentCard({
           </h5>
           <p className="mt-1 text-[11px] text-surface-500 dark:text-surface-400">
             Binding {shortIdentity(assessment.binding_id)} · revision{' '}
-            {assessment.binding_revision} · {assessment.enforcement}
+            {assessment.binding_revision}
           </p>
           <p className="mt-1 text-[11px] text-surface-500 dark:text-surface-400">
             Assessed by {assessment.assessor_agent_id}
-            {assessment.assessor_model_id
-              ? ` (${assessment.assessor_model_id})`
-              : ''}
             {' '}at {formatTimestamp(assessment.recorded_at)}
           </p>
         </div>
@@ -552,9 +547,7 @@ function AssessmentCard({
         </div>
       </header>
 
-      {(assessment.currentness === 'stale'
-        || !assessment.confidence_admissible
-        || !assessment.assessor_independent) && (
+      {assessment.currentness === 'stale' && (
         <div
           role="alert"
           className="mt-3 rounded-lg border border-amber-300 bg-white/70 p-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-surface-950/30 dark:text-amber-200"
@@ -564,29 +557,14 @@ function AssessmentCard({
               Stale: {assessment.currentness_reasons.join(', ')}.
             </p>
           )}
-          {!assessment.confidence_admissible && (
-            <p>
-              Confidence is below the binding minimum; this receipt is
-              inadmissible for a gate.
-            </p>
-          )}
-          {!assessment.assessor_independent && (
-            <p>
-              Assessor separation was not satisfied; this receipt is
-              inadmissible for a gate.
-            </p>
-          )}
         </div>
       )}
 
       <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <MetricScoreRing
-          label="Confidence"
-          value={assessment.confidence}
-          direction="higher-is-better"
-          threshold={assessment.minimum_confidence}
-          testId="semantic-confidence-ring"
-        />
+        <div data-testid="semantic-confidence-score" className="text-center">
+          <p className="text-xs text-surface-500 dark:text-surface-400">Confidence</p>
+          <p className="text-xl font-semibold">{assessment.confidence} / 100</p>
+        </div>
         {assessment.metric_results.map((metric) => (
           <MetricScoreRing
             key={metric.metric_result_id}
@@ -648,17 +626,12 @@ function AssessmentCard({
                 </p>
                 <ul className="space-y-2">
                   {metric.pinpoints.map((pinpoint) => (
-                    <li
-                      key={`${pinpoint.anchor_type}:${pinpoint.anchor_ref ?? ''}:${pinpoint.input_digest}`}
-                      className="rounded-lg border border-surface-200 bg-surface-50 p-2 text-surface-600 dark:border-surface-700 dark:bg-surface-900/60 dark:text-surface-300"
-                    >
-                      <span className="font-semibold">
-                        {pinpoint.anchor_type}
-                      </span>
-                      {pinpoint.anchor_ref ? ` · ${pinpoint.anchor_ref}` : ''}
-                      <code className="mt-1 block break-all text-[10px] text-surface-500 dark:text-surface-400">
-                        input sha256:{pinpoint.input_digest}
-                      </code>
+                    <li key={pinpoint.pinpoint_key}
+                      className="rounded-lg border border-surface-200 bg-surface-50 p-2 text-surface-600 dark:border-surface-700 dark:bg-surface-900/60 dark:text-surface-300">
+                      <p className="font-semibold">{pinpoint.title}</p>
+                      <p>{pinpoint.anchor_snapshot.label}</p>
+                      <p className="whitespace-pre-wrap">{pinpoint.detail}</p>
+                      {pinpoint.remediation && <p>{pinpoint.remediation}</p>}
                     </li>
                   ))}
                 </ul>
@@ -1849,9 +1822,7 @@ export function PolicyCompliancePanel({
     && currentResolution.items.length > 0
     && currentResolution.items.every(
       (assessment) =>
-        assessment.currentness === 'current'
-        && assessment.confidence_admissible
-        && assessment.assessor_independent,
+        assessment.currentness === 'current',
     );
   const currentLifecycleReceiptIds = new Set(
     Object.values(currentSemantic.responses).map(

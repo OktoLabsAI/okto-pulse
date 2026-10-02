@@ -1158,11 +1158,7 @@ class SemanticSkipPageResponse(_SemanticPageResponse):
 
 
 class SemanticAssessmentResponse(_ClosedModel):
-    contract_version: Literal["v1", "v2"] = "v1"
-    assessment: Union[
-        SemanticAssessmentProjectionResponse,
-        "SemanticAssessmentCurrentV2Response",
-    ]
+    assessment: SemanticAssessmentProjectionResponse
 
 
 

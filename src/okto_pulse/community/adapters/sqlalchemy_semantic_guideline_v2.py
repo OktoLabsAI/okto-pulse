@@ -501,6 +501,8 @@ class CommunitySqlAlchemySemanticGuidelineAssessmentV2:
         receipt = SemanticAssessmentReceiptProjectionV2(
             receipt_id=receipt_id,
             receipt_digest=receipt_digest,
+            request_digest=request_digest,
+            idempotency_key=request.idempotency_key,
             subject=request.subject,
             subject_content_digest=snapshot.content_digest,
             guideline_id=revision.guideline_id,
@@ -657,6 +659,8 @@ class CommunitySqlAlchemySemanticGuidelineAssessmentV2:
         return SemanticAssessmentReceiptProjectionV2(
             receipt_id=row.receipt_id,
             receipt_digest=row.receipt_digest,
+            request_digest=row.request_digest,
+            idempotency_key=row.idempotency_key,
             subject=PolicySubjectRef(
                 board_id=row.board_id,
                 entity_type=PolicyEntityType(row.subject_type),

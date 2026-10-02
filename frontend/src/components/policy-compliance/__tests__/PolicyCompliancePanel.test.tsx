@@ -135,12 +135,13 @@ function metric({
     outcome,
     rationale: `${code} was assessed against the immutable subject.`,
     evidence_refs: [evidence()],
-    pinpoints: [{
-      anchor_type: 'field',
-      anchor_ref: 'description',
-      excerpt_hash: HASH_B,
-      input_digest: HASH_A,
-    }],
+    pinpoints: currentV2Assessment('spec', 'spec-1').assessment.metrics[0].pinpoints.map((pinpoint) => ({
+      ...pinpoint,
+      kind: outcome === 'fail' ? 'issue' as const : 'evidence' as const,
+      severity: outcome === 'fail' ? 'high' as const : null,
+      remediation: outcome === 'fail' ? 'Clarify the boundary.' : null,
+      blocking: outcome === 'fail',
+    })),
   };
 }
 
@@ -149,8 +150,6 @@ function assessment({
   bindingId = 'binding-1',
   guidelineId = 'guideline-1',
   confidence = 92,
-  minimumConfidence = 80,
-  assessorIndependent = true,
   currentness = 'current',
   currentnessReasons = [],
   validationEdition = null,
@@ -160,8 +159,6 @@ function assessment({
   bindingId: string;
   guidelineId: string;
   confidence: number;
-  minimumConfidence: number;
-  assessorIndependent: boolean;
   currentness: 'current' | 'stale';
   currentnessReasons: SemanticAssessmentCurrentnessReason[];
   validationEdition: number | null;
@@ -178,27 +175,20 @@ function assessment({
     subject_id: 'spec-1',
     subject_version: 7,
     validation_edition: validationEdition,
-    lifecycle_state: validationEdition === null
-      ? 'history_only'
-      : currentness === 'current' ? 'current' : 'previous',
+    lifecycle_state: currentness === 'current' ? 'current' : 'previous',
     binding_id: bindingId,
     guideline_id: guidelineId,
     guideline_revision_id: `${guidelineId}-revision-3`,
-    enforcement: 'blocking',
     state:
       failedMetricCount === 0 ? 'passed' : 'metric_threshold_failed',
     currentness,
     currentness_reasons: currentnessReasons,
     confidence,
-    minimum_confidence: minimumConfidence,
     metric_count: metricResults.length,
     failed_metric_count: failedMetricCount,
     recorded_at: '2026-07-30T01:00:00Z',
     binding_revision: 3,
     assessor_agent_id: 'assessor-agent',
-    assessor_model_id: 'semantic-model-v1',
-    assessor_independent: assessorIndependent,
-    confidence_admissible: confidence >= minimumConfidence,
     metric_results: metricResults,
   };
 }
@@ -801,11 +791,8 @@ describe('PolicyCompliancePanel semantic guideline contract', () => {
 
     const cards = await screen.findAllByTestId('semantic-assessment-card');
     expect(cards).toHaveLength(2);
-    expect(
-      within(cards[0]).getByRole('img', {
-        name: /Confidence score 93 out of 100.*minimum 80.*threshold met/i,
-      }),
-    ).toHaveAttribute('data-direction', 'higher-is-better');
+    expect(within(cards[0]).getByTestId('semantic-confidence-score'))
+      .toHaveTextContent('93 / 100');
     expect(
       within(cards[0]).getByRole('img', {
         name: /architecture\.segregation score 88 out of 100.*minimum 75.*threshold met/i,
@@ -1262,7 +1249,7 @@ describe('PolicyCompliancePanel semantic guideline contract', () => {
     });
   });
 
-  it('labels stale binding evidence and marks current inadmissible evidence explicitly', async () => {
+  it('labels historical evidence whose native authority changed', async () => {
     policyApiMock.listSemanticGuidelineAssessments.mockResolvedValue(
       page([
         assessment({
@@ -1270,13 +1257,6 @@ describe('PolicyCompliancePanel semantic guideline contract', () => {
           bindingId: 'binding-stale',
           currentness: 'stale',
           currentnessReasons: ['subject_content_changed'],
-        }),
-        assessment({
-          receiptId: 'receipt-inadmissible',
-          bindingId: 'binding-inadmissible',
-          confidence: 55,
-          minimumConfidence: 80,
-          assessorIndependent: false,
         }),
       ]),
     );
@@ -1287,27 +1267,11 @@ describe('PolicyCompliancePanel semantic guideline contract', () => {
     const staleCard = cards.find((item) =>
       item.textContent?.includes('Binding binding-stale'),
     );
-    const inadmissibleCard = cards.find((item) =>
-      item.textContent?.includes('Binding binding-…ssible'),
-    );
     expect(staleCard).toBeDefined();
     expect(staleCard).toHaveTextContent('stale');
     expect(staleCard).toHaveTextContent(
       'Stale: subject_content_changed.',
     );
-    expect(inadmissibleCard).toBeDefined();
-    expect(inadmissibleCard).toHaveTextContent(
-      'Confidence is below the binding minimum',
-    );
-    expect(inadmissibleCard).toHaveTextContent(
-      'Assessor separation was not satisfied',
-    );
-    expect(
-      within(inadmissibleCard!).getByRole('img', {
-        name: /Confidence score 55 out of 100.*threshold not met/i,
-      }),
-    ).toHaveAttribute('data-status', 'not-met');
-
     fireEvent.click(
       screen.getByTestId('policy-compliance-history-toggle'),
     );
@@ -2011,17 +1975,19 @@ describe('guideline compliance summary', () => {
       }),
     });
 
-    expect(await screen.findByText('Domain boundary is explicit')).toBeVisible();
+    const currentCard = await screen.findByTestId('guideline-compliance-binding-1');
+    expect(await within(currentCard).findByText('Domain boundary is explicit')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
       /last valid evidence remains visible/i,
     );
-    expect(screen.getByText('Domain boundary is explicit')).toBeVisible();
+    expect(within(screen.getByTestId('guideline-compliance-binding-1')).getByText('Domain boundary is explicit')).toBeVisible();
     expect(screen.getByRole('button', { name: 'Retry' })).toBeVisible();
   });
 
   it('renders a no-assessment state with reassessment guidance and no score input', async () => {
+    policyApiMock.listSemanticGuidelineAssessments.mockResolvedValue(page([]));
     dashboardApiMock.getBoardGuidelines.mockResolvedValue([adoptedGuideline()]);
     policyApiMock.getGuidelineRevision.mockResolvedValue(
       guidelineRevisionFor('spec'),

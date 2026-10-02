@@ -159,6 +159,7 @@ export type SemanticAssessmentOutcome =
 export type SemanticMetricOutcome = 'pass' | 'fail';
 export type SemanticThresholdSource = 'default' | 'override';
 export type SemanticAssessmentCurrentnessReason =
+  | 'subject_edition_changed'
   | 'current_snapshot_missing'
   | 'subject_version_changed'
   | 'subject_content_changed'
@@ -202,7 +203,7 @@ export interface SemanticMetricResultDetail {
   outcome: SemanticMetricOutcome;
   rationale: string;
   evidence_refs: SemanticEvidenceRef[];
-  pinpoints: SemanticPinpoint[];
+  pinpoints: SemanticPinpointV2[];
 }
 
 export interface SemanticMetricResultFull
@@ -216,19 +217,17 @@ interface SemanticAssessmentBase {
   entity_type: PolicyEntityType;
   subject_id: string;
   subject_version: number;
-  /** Spec validation edition; null is legacy history-only evidence. */
+  /** Human validation edition; null identifies an uneditioned native subject. */
   validation_edition: number | null;
   /** Human lifecycle placement, separate from technical currentness drift. */
-  lifecycle_state: 'current' | 'previous' | 'history_only';
+  lifecycle_state: 'current' | 'previous';
   binding_id: string;
   guideline_id: string;
   guideline_revision_id: string;
-  enforcement: GuidelineEnforcement;
   state: SemanticAssessmentOutcome;
   currentness: PolicyCurrentness;
   currentness_reasons: SemanticAssessmentCurrentnessReason[];
   confidence: number;
-  minimum_confidence: number;
   metric_count: number;
   failed_metric_count: number;
   recorded_at: string;
@@ -244,9 +243,6 @@ export interface SemanticAssessmentDetail
   projection: 'detail';
   binding_revision: number;
   assessor_agent_id: string;
-  assessor_model_id: string | null;
-  assessor_independent: boolean;
-  confidence_admissible: boolean;
   metric_results: SemanticMetricResultDetail[];
 }
 
@@ -255,12 +251,8 @@ export interface SemanticAssessmentFull
   projection: 'full';
   metric_results: SemanticMetricResultFull[];
   subject_content_digest: string;
-  last_semantic_editor_id: string;
   guideline_revision_digest: string;
   binding_configuration_digest: string;
-  policy_set_digest: string;
-  binding_head_digest: string;
-  input_digest: string;
   request_digest: string;
   idempotency_key: string;
   receipt_digest: string;
@@ -481,7 +473,7 @@ export interface SemanticAssessmentResponse {
   assessment: SemanticAssessmentListItem;
 }
 
-export type SemanticAssessmentContractVersion = 'v1' | 'v2';
+export type SemanticAssessmentContractVersion = 'v2';
 export type SemanticPinpointKind = 'evidence' | 'issue';
 export type SemanticPinpointSeverity = 'low' | 'medium' | 'high' | 'critical';
 export type SemanticAnchorAvailability =

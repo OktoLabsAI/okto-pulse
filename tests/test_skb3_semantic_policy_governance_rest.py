@@ -1039,7 +1039,6 @@ def test_semantic_detail_page_preserves_nested_required_nulls() -> None:
     from datetime import timezone
 
     from okto_pulse.core.domain.guideline_policy import (
-        GuidelineEnforcement,
         GuidelineMetricDirection,
         PolicyCurrentness,
         PolicyEntityType,
@@ -1055,8 +1054,21 @@ def test_semantic_detail_page_preserves_nested_required_nulls() -> None:
         SemanticEvidenceProjection,
         SemanticGuidelineProjection,
         SemanticMetricResultDetail,
-        SemanticPinpointProjection,
+        NativeSemanticPinpointProjection,
     )
+
+    from okto_pulse.core.domain.guideline_semantic_v2 import AnchorSnapshot, SemanticAnchorAvailability, SemanticPinpointKind
+    from okto_pulse.core.domain.quality_assessment import UnboundFindingAnchor, FindingAnchorType
+
+    def pinpoint(anchor_type, anchor_ref):
+        return NativeSemanticPinpointProjection(
+            contract_version="v2", pinpoint_key=anchor_type, kind=SemanticPinpointKind.EVIDENCE,
+            title="Verified location", detail="The evidence is tied to this source.",
+            severity=None, remediation=None, blocking=False,
+            anchor=UnboundFindingAnchor(anchor_type=FindingAnchorType(anchor_type), anchor_ref=anchor_ref),
+            anchor_snapshot=AnchorSnapshot(label="Subject", excerpt=None, source_version="73",
+                                           availability_at_seal=SemanticAnchorAvailability.AVAILABLE),
+        )
 
     digest = "4d" * 32
     item = SemanticAssessmentDetail(
@@ -1071,20 +1083,15 @@ def test_semantic_detail_page_preserves_nested_required_nulls() -> None:
         binding_id="binding-nested-null",
         guideline_id="guideline-nested-null",
         guideline_revision_id="revision-nested-null",
-        enforcement=GuidelineEnforcement("advisory"),
         state=SemanticAssessmentState("passed"),
         currentness=PolicyCurrentness("current"),
         currentness_reasons=(),
         confidence=85,
-        minimum_confidence=70,
         metric_count=1,
         failed_metric_count=0,
         recorded_at=datetime(2026, 8, 1, 16, 48, tzinfo=timezone.utc),
         binding_revision=2,
         assessor_agent_id="agent-skb3",
-        assessor_model_id=None,
-        assessor_independent=False,
-        confidence_admissible=True,
         metric_results=(
             SemanticMetricResultDetail(
                 metric_result_id="metric-result-nested-null",
@@ -1106,18 +1113,8 @@ def test_semantic_detail_page_preserves_nested_required_nulls() -> None:
                     ),
                 ),
                 pinpoints=(
-                    SemanticPinpointProjection(
-                        anchor_type="structured_child",
-                        anchor_ref="tr_48629e78",
-                        excerpt_hash=None,
-                        input_digest=digest,
-                    ),
-                    SemanticPinpointProjection(
-                        anchor_type="whole_artifact",
-                        anchor_ref=None,
-                        excerpt_hash=None,
-                        input_digest=digest,
-                    ),
+                    pinpoint("structured_child", "tr_48629e78"),
+                    pinpoint("whole_artifact", None),
                 ),
             ),
         ),
@@ -1144,7 +1141,8 @@ def test_semantic_detail_page_preserves_nested_required_nulls() -> None:
 
     validated = SemanticAssessmentPageResponse.model_validate(page)
     pinpoints = validated.items[0].metric_results[0].pinpoints
-    assert pinpoints[0].excerpt_hash is None
-    assert pinpoints[0].anchor_ref == "tr_48629e78"
-    assert pinpoints[1].anchor_ref is None
-    assert validated.items[0].assessor_model_id is None
+    assert pinpoints[0].anchor.excerpt_hash is None
+    assert pinpoints[0].anchor.anchor_ref == "tr_48629e78"
+    assert pinpoints[1].anchor.anchor_ref is None
+    assert pinpoints[0].anchor_snapshot.excerpt is None
+    assert pinpoints[1].severity is None and pinpoints[1].remediation is None
