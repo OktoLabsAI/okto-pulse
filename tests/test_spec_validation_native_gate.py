@@ -106,6 +106,30 @@ async def _seed_board(
     )
 
 
+async def _seed_native_checklist_board(db, board_id):
+    """Model the explicit Advisory binding installed by native Board creation."""
+    from okto_pulse.community.adapters.sqlalchemy_checklist import CommunitySqlAlchemyChecklist
+    from sqlalchemy import select
+    from okto_pulse.core.domain.checklist import ChecklistMode, ChecklistPhase, ChecklistTargetType
+    from okto_pulse.core.services.checklist import ChecklistService
+
+    adapter = CommunitySqlAlchemyChecklist(db)
+    service = ChecklistService()
+    binding = service.prepare_binding(
+        board_id=board_id, mode=ChecklistMode.ADVISORY, current_binding=None,
+    )
+    await service.apply_binding(binding, previous_binding=None, persistence=adapter)
+    # This suite seeds admitted Specs directly. Their native lifecycle pin is
+    # fixture setup, not a reader-side backfill in the product.
+    specs = (await db.execute(select(Spec).where(Spec.board_id == board_id))).scalars().all()
+    for spec in specs:
+        if spec.status in {SpecStatus.APPROVED, SpecStatus.VALIDATED, SpecStatus.IN_PROGRESS, SpecStatus.DONE}:
+            await adapter.freeze_validation_binding(
+                board_id=board_id, spec_id=spec.id, spec_edition=spec.edition,
+                target_type=ChecklistTargetType.SPEC, phase=ChecklistPhase.SPEC_VALIDATION,
+            )
+
+
 async def _seed_board_with_ids(
     db_factory, board_id, spec_id, *, execution_ready=False
 ) -> None:
@@ -401,6 +425,8 @@ async def _seed_board_with_ids(
         async with CommunityUnitOfWork(
             db, actor=ACTOR, realm_scope=RealmScope.local()
         ) as uow:
+            await db.flush()
+            await _seed_native_checklist_board(db, board_id)
             await uow.commit()
 
 

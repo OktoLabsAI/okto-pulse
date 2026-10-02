@@ -270,7 +270,7 @@ class CommunitySqlAlchemyQualityAssessmentLifecycle:
                 )
             )
 
-        # Freeze checklist governance, including an explicit synthetic OFF,
+        # Freeze the explicitly configured checklist governance, including OFF,
         # when a Spec edition first enters its validation stage. The same row
         # is reused by every read/write for that edition.
         if (

@@ -36,6 +36,7 @@ from test_spec_validation_native_gate import (
     db_factory as _native_db_factory,
     _seed_board,
     _seed_board_with_ids,
+    _seed_native_checklist_board,
     _canonical_submit_data,
     _submit_spec_validation,
     ACTOR,
@@ -105,9 +106,26 @@ def _valid_submit_data(
 
 
 async def _commit(db):
+    new_board_ids = [row.id for row in db.new if isinstance(row, Board)]
+    admitted_specs = [row for row in db.new if isinstance(row, Spec)
+                      and row.status == SpecStatus.APPROVED
+                      and row.board_id not in new_board_ids]
     async with CommunityUnitOfWork(
         db, actor=ACTOR, realm_scope=RealmScope.local()
     ) as uow:
+        await db.flush()
+        for board_id in new_board_ids:
+            await _seed_native_checklist_board(db, board_id)
+        if admitted_specs:
+            from okto_pulse.community.adapters.sqlalchemy_checklist import CommunitySqlAlchemyChecklist
+            from okto_pulse.core.domain.checklist import ChecklistPhase, ChecklistTargetType
+
+            adapter = CommunitySqlAlchemyChecklist(db)
+            for spec in admitted_specs:
+                await adapter.freeze_validation_binding(
+                    board_id=spec.board_id, spec_id=spec.id, spec_edition=spec.edition,
+                    target_type=ChecklistTargetType.SPEC, phase=ChecklistPhase.SPEC_VALIDATION,
+                )
         await uow.commit()
 
 

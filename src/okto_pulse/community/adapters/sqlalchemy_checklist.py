@@ -375,7 +375,7 @@ class CommunitySqlAlchemyChecklist:
             )
         ).scalar_one_or_none()
         if head is None:
-            binding = ChecklistBinding.synthetic_off(board_id=board_id)
+            raise ChecklistPersistenceError("checklist_board_binding_missing")
         else:
             row = (
                 await self._session.execute(
@@ -439,10 +439,6 @@ class CommunitySqlAlchemyChecklist:
         expected_digest: str | None,
     ) -> ChecklistBinding:
         await self._ensure_template()
-        if binding.revision != binding.version:
-            raise ChecklistBindingConflict(
-                "checklist_binding_synthetic_persist_forbidden"
-            )
         head = (
             await self._session.execute(
                 select(ChecklistBindingHeadRow)

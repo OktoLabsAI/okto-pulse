@@ -10021,15 +10021,14 @@ class ChecklistValidationBindingSnapshotRow(Base):
     """Immutable checklist-governance pin for one Spec lifecycle edition.
 
     The row deliberately stores the resolved binding value rather than a
-    foreign key to the live head.  This also represents the synthetic OFF
-    configuration (revision zero), ensuring that enabling the board checklist
-    later cannot retroactively add work to an edition already in validation.
+    foreign key to the live head. Explicit OFF is frozen like any other mode;
+    later Board changes apply only to a subsequent lifecycle edition.
     """
 
     __tablename__ = "checklist_validation_binding_snapshots"
     __table_args__ = (
         CheckConstraint(
-            "spec_edition >= 1 AND binding_version >= 1 AND binding_revision >= 0",
+            "spec_edition >= 1 AND binding_version >= 1 AND binding_revision >= 1",
             name="ck_checklist_validation_binding_snapshot_versions",
         ),
         CheckConstraint(
@@ -10045,8 +10044,7 @@ class ChecklistValidationBindingSnapshotRow(Base):
             name="ck_checklist_validation_binding_snapshot_mode",
         ),
         CheckConstraint(
-            "(binding_revision = 0 AND binding_version = 1 AND mode = 'off') "
-            "OR binding_revision = binding_version",
+            "binding_revision = binding_version AND binding_version >= 1",
             name="ck_checklist_validation_binding_snapshot_revision",
         ),
         CheckConstraint(
