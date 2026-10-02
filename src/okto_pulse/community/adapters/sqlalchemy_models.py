@@ -9119,7 +9119,7 @@ class QualityAssessmentReceiptRow(Base):
             name="ck_quality_receipt_subject_version",
         ),
         CheckConstraint(
-            "subject_edition IS NULL OR subject_edition >= 1",
+            "subject_edition >= 1",
             name="ck_quality_receipt_subject_edition",
         ),
         CheckConstraint(
@@ -9184,8 +9184,7 @@ class QualityAssessmentReceiptRow(Base):
     subject_type: Mapped[str] = mapped_column(String(24), nullable=False)
     subject_id: Mapped[str] = mapped_column(String(64), nullable=False)
     subject_version: Mapped[int] = mapped_column(Integer, nullable=False)
-    # NULL is reserved for evidence recorded before lifecycle editions existed.
-    subject_edition: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    subject_edition: Mapped[int] = mapped_column(Integer, nullable=False)
     assessment_kind: Mapped[str] = mapped_column(String(32), nullable=False)
     origin: Mapped[str] = mapped_column(String(32), nullable=False)
     source: Mapped[str] = mapped_column(String(32), nullable=False)

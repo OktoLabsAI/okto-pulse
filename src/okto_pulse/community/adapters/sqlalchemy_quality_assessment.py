@@ -992,6 +992,7 @@ class CommunitySqlAlchemyQualityAssessmentPreflightReader:
                 subject_type=AssessmentSubjectType(row.subject_type),
                 subject_id=row.subject_id,
                 subject_version=row.subject_version,
+                subject_edition=row.subject_edition,
                 assessment_kind=AssessmentKind(row.assessment_kind),
                 request_fingerprint=row.request_digest,
                 receipt_id=row.id,
@@ -1241,7 +1242,6 @@ class CommunitySqlAlchemyQualityAssessmentPreflightReader:
                     subject_version=int(getattr(context.subject, "version")),
                     subject_edition=int(getattr(context.subject, "edition")),
                 ),
-                currentness_inputs=(),
                 gate_inputs=_gate_inputs_for(
                     context=context,
                     subject_type=subject_type,
@@ -2326,10 +2326,11 @@ class CommunitySqlAlchemyQualityAssessment:
         self,
         query: AssessmentListQuery,
     ) -> QualityPage[AssessmentReceiptView]:
-        if query.current_subject_version is None or (
-            query.current_subject_edition is None
-            and
-            query.current_digests is None and not query.currentness_inputs
+        if (
+            type(query.current_subject_version) is not int
+            or query.current_subject_version < 1
+            or type(query.current_subject_edition) is not int
+            or query.current_subject_edition < 1
         ):
             raise QualityAssessmentPersistenceError(
                 "assessment_current_projection_inputs_required"
@@ -2361,79 +2362,19 @@ class CommunitySqlAlchemyQualityAssessment:
             == QualityAssessmentReceiptRow.assessment_kind,
         )
         is_head = QualityAssessmentHeadRow.receipt_id == QualityAssessmentReceiptRow.id
-        lifecycle_edition_mode = query.current_subject_edition is not None
-        if lifecycle_edition_mode:
-            current_inputs_match = (
-                QualityAssessmentReceiptRow.subject_edition
-                == query.current_subject_edition
-            )
-        elif query.currentness_inputs:
-            current_inputs_match = or_(
-                *(
-                    and_(
-                        QualityAssessmentReceiptRow.assessment_kind
-                        == item.assessment_kind.value,
-                        QualityAssessmentReceiptRow.origin == item.origin.value,
-                        QualityAssessmentReceiptRow.source == item.source.value,
-                        QualityAssessmentReceiptRow.subject_version
-                        == query.current_subject_version,
-                        QualityAssessmentReceiptRow.content_digest
-                        == item.digests.content_digest,
-                        QualityAssessmentReceiptRow.clarification_digest
-                        == item.digests.clarification_digest,
-                        QualityAssessmentReceiptRow.ruleset_digest
-                        == item.digests.ruleset_digest,
-                        QualityAssessmentReceiptRow.taxonomy_digest
-                        == item.digests.taxonomy_digest,
-                        QualityAssessmentReceiptRow.policy_digest
-                        == item.digests.policy_digest,
-                    )
-                    for item in query.currentness_inputs
-                )
-            )
-        else:
-            assert query.current_digests is not None
-            current_inputs_match = and_(
-                QualityAssessmentReceiptRow.subject_version
-                == query.current_subject_version,
-                QualityAssessmentReceiptRow.content_digest
-                == query.current_digests.content_digest,
-                QualityAssessmentReceiptRow.clarification_digest
-                == query.current_digests.clarification_digest,
-                QualityAssessmentReceiptRow.ruleset_digest
-                == query.current_digests.ruleset_digest,
-                QualityAssessmentReceiptRow.taxonomy_digest
-                == query.current_digests.taxonomy_digest,
-                QualityAssessmentReceiptRow.policy_digest
-                == query.current_digests.policy_digest,
-            )
-        if lifecycle_edition_mode and query.state is AssessmentReceiptState.PREVIOUS:
-            filtered_conditions.append(
-                or_(
-                    QualityAssessmentHeadRow.receipt_id.is_(None),
-                    QualityAssessmentHeadRow.receipt_id
-                    != QualityAssessmentReceiptRow.id,
-                    QualityAssessmentReceiptRow.subject_edition.is_(None),
-                    QualityAssessmentReceiptRow.subject_edition
-                    != query.current_subject_edition,
-                )
-            )
-        elif lifecycle_edition_mode and query.state in {
-            AssessmentReceiptState.STALE,
-            AssessmentReceiptState.SUPERSEDED,
-        }:
-            filtered_conditions.append(QualityAssessmentReceiptRow.id.is_(None))
-        elif query.state is AssessmentReceiptState.SUPERSEDED:
-            filtered_conditions.append(
-                or_(
-                    QualityAssessmentHeadRow.receipt_id.is_(None),
-                    not_(is_head),
-                )
-            )
+        current_edition_matches = (
+            QualityAssessmentReceiptRow.subject_edition == query.current_subject_edition
+        )
+        if query.state is AssessmentReceiptState.PREVIOUS:
+            filtered_conditions.append(or_(
+                QualityAssessmentHeadRow.receipt_id.is_(None),
+                not_(is_head),
+                not_(current_edition_matches),
+            ))
         elif query.state is AssessmentReceiptState.CURRENT:
-            filtered_conditions.extend((is_head, current_inputs_match))
-        elif query.state is AssessmentReceiptState.STALE:
-            filtered_conditions.extend((is_head, not_(current_inputs_match)))
+            filtered_conditions.extend((is_head, current_edition_matches))
+        elif query.state is not None:
+            raise QualityAssessmentPersistenceError("assessment_state_filter_invalid")
 
         total_overall = int(
             (
@@ -2511,44 +2452,14 @@ class CommunitySqlAlchemyQualityAssessment:
             subject_version=query.current_subject_version,
             subject_edition=query.current_subject_edition,
         )
-        input_by_identity = {
-            (item.assessment_kind, item.origin, item.source): item.digests
-            for item in query.currentness_inputs
-        }
         projected: list[AssessmentReceiptView] = []
         for receipt in map(_receipt_from_row, rows):
-            current_digests = (
-                receipt.digests
-                if lifecycle_edition_mode
-                else input_by_identity.get(
-                    (
-                        receipt.assessment_kind,
-                        receipt.origin,
-                        receipt.source,
-                    )
-                )
-                if input_by_identity
-                else query.current_digests
-            )
-            if current_digests is None:
-                raise QualityAssessmentPersistenceError(
-                    "assessment_current_projection_identity_unsupported"
-                )
             view = project_assessment_receipt_view(
                     receipt,
                     head_receipt_id=heads.get(receipt.assessment_kind),
                     current_subject=current_subject,
-                    current_digests=current_digests,
+                    current_digests=receipt.digests,
                 )
-            if lifecycle_edition_mode:
-                state = (
-                    AssessmentReceiptState.CURRENT
-                    if view.is_head
-                    and receipt.subject.subject_edition
-                    == query.current_subject_edition
-                    else AssessmentReceiptState.PREVIOUS
-                )
-                view = replace(view, state=state)
             projected.append(view)
         items = tuple(projected)
         return QualityPage(

@@ -218,6 +218,8 @@ async def test_quality_sql_pages_emit_bounded_query_observability(
 
     await adapter.list_assessments(
         AssessmentListQuery(
+            current_subject_version=7,
+            current_subject_edition=1,
             subject=AssessmentSubjectIdentity(
                 board_id="board-1",
                 subject_type=AssessmentSubjectType.IDEATION,

@@ -593,8 +593,7 @@ export interface QualityAssessmentReceipt {
   subject_type: QualitySubjectType;
   subject_id: string;
   subject_version: number;
-  /** Null is reserved for evidence created before lifecycle editions. */
-  subject_edition?: number | null;
+  subject_edition: number;
   assessment_kind: QualityAssessmentKind;
   origin:
     | 'human_or_agent'
@@ -746,7 +745,7 @@ export interface RecordAmbiguityAssessmentResponse {
   replayed: boolean;
   receipt_id: string;
   head_revision: number;
-  subject_edition?: number | null;
+  subject_edition: number;
   qa_id_map: Record<string, string>;
 }
 

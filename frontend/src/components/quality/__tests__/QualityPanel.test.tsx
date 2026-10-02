@@ -46,6 +46,7 @@ function receipt(
     subject_type: 'ideation',
     subject_id: 'ideation-1',
     subject_version: 7,
+    subject_edition: 1,
     assessment_kind: 'ambiguity',
     origin: 'human_or_agent',
     source: 'native',

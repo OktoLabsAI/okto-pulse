@@ -54,6 +54,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
 )
 from okto_pulse.community.adapters.sqlalchemy_quality_assessment import (
     CommunitySqlAlchemyQualityAssessment,
+    CommunitySqlAlchemyQualityAssessmentPreflightReader,
 )
 from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
     CommunitySemanticSession,
@@ -70,6 +71,7 @@ from okto_pulse.community.api.quality_summary_projection import (
     quality_summary_field,
 )
 from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+from okto_pulse.core.domain.realm import RealmScope
 from okto_pulse.core.domain.execution_contract import new_execution_contract
 from okto_pulse.core.domain.enums import (
     IdeationStatus,
@@ -764,7 +766,6 @@ async def test_round_trip_audit_projection_pagination_and_board_isolation(
                 offset=0,
                 limit=1,
                 current_subject_version=7, current_subject_edition=1,
-                current_digests=second.receipt.digests,
             )
         )
         assert page.total_overall == page.total_filtered == 2
@@ -781,7 +782,6 @@ async def test_round_trip_audit_projection_pagination_and_board_isolation(
                     offset=0,
                     limit=1,
                     current_subject_version=7, current_subject_edition=1,
-                    current_digests=second.receipt.digests,
                 ),
                 offset=1,
             )
@@ -800,7 +800,6 @@ async def test_round_trip_audit_projection_pagination_and_board_isolation(
                 limit=10,
                 state=AssessmentReceiptState.CURRENT,
                 current_subject_version=7, current_subject_edition=1,
-                current_digests=second.receipt.digests,
             )
         )
         assert current_only.total_filtered == 1
@@ -871,7 +870,6 @@ async def test_round_trip_audit_projection_pagination_and_board_isolation(
                 offset=0,
                 limit=10,
                 current_subject_version=7, current_subject_edition=1,
-                current_digests=second.receipt.digests,
             )
         )
         assert isolated.total_overall == isolated.total_filtered == 0
@@ -920,6 +918,19 @@ async def test_idempotent_replay_and_fingerprint_conflict(rig) -> None:
     async with rig() as session:
         await _adapter(session).apply_bundle_cas(bundle)
         await session.commit()
+
+    reader = CommunitySqlAlchemyQualityAssessmentPreflightReader(rig)
+    replay = await reader.lookup_assessment_replay(
+        board_id=BOARD_ID, idempotency_key=bundle.idempotency_key,
+        actor_id=bundle.receipt.created_by, realm_scope=RealmScope.local(),
+    )
+    assert replay.replayed is True
+    assert replay.subject_edition == bundle.receipt.subject.subject_edition == 1
+    assert replay.receipt_id == bundle.receipt.id
+    assert await reader.lookup_assessment_replay(
+        board_id=BOARD_ID, idempotency_key=bundle.idempotency_key,
+        actor_id="another-actor", realm_scope=RealmScope.local(),
+    ) is None
 
     rebuilt = _lint_bundle(
         namespace="rebuilt",
@@ -1453,24 +1464,14 @@ async def test_native_projection_and_rebuild_share_edition_selector_and_immutabl
         assert receipt.justification == "External review of this edition."
 
 
-async def test_projection_refuses_editionless_receipt_without_repair_or_silent_omission(rig):
-    from okto_pulse.community.adapters.board_source_reader import CommunityBoardSourceReader, _current_quality_head_fingerprints
-    from okto_pulse.core.kg.interfaces.board_source_reader import SourceReadError
-    database_path = await _seed_projection_receipt(rig, edition=None)
+@pytest.mark.parametrize("edition", [None, 0, -1])
+async def test_storage_refuses_non_native_receipt_edition_without_repair(rig, edition):
+    expected_error = "NOT NULL" if edition is None else "validation_edition_invalid"
+    with pytest.raises(IntegrityError, match=expected_error):
+        await _seed_projection_receipt(rig, edition=edition)
     async with rig() as session:
-        artifact = await session.get(Spec, SPEC_ID)
-        with pytest.raises(RuntimeError, match="quality_projection_currentness_unresolvable"):
-            await CommunitySqlAlchemyConsolidationPersistence().load_projection_inputs(
-                session, board_id=BOARD_ID, artifact_type="spec", artifact_id=SPEC_ID,
-                artifact=artifact,
-            )
-    with sqlite3.connect(database_path) as connection:
-        connection.row_factory = sqlite3.Row
-        before = tuple(connection.execute("SELECT * FROM quality_assessment_receipts").fetchone())
-        with pytest.raises(sqlite3.DatabaseError, match="quality assessment currentness cannot be derived"):
-            _current_quality_head_fingerprints(connection, board_id=BOARD_ID)
-        assert tuple(connection.execute("SELECT * FROM quality_assessment_receipts").fetchone()) == before
-        assert connection.execute("SELECT subject_edition FROM quality_assessment_receipts").fetchone()[0] is None
-    with pytest.raises(SourceReadError) as error:
-        CommunityBoardSourceReader(database_path).fetch(BOARD_ID)
-    assert error.value.code == "read_error"
+        assert await _count(session, QualityAssessmentReceiptRow) == 0
+        assert await _count(session, QualityAssessmentHeadRow) == 0
+        subject = await session.get(Spec, SPEC_ID)
+        assert subject.edition == 1
+        assert subject.version == 7
