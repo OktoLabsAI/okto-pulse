@@ -63,19 +63,17 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
   const mine = data?.per_card?.find(entry => entry.card_id === card.id) ?? null;
   const obligations = mine?.obligations ?? [];
   const acceptedProofs = (data?.implementations ?? []).filter(i => i.card_id === card.id
-    && (i.admitted_obligation_refs ? i.admitted_obligation_refs.length > 0 : i.current_accepted_execution));
-  const proofFor = (ref: string) => acceptedProofs.find(p => p.ready_obligation_refs
-    ? p.ready_obligation_refs.includes(ref)
-    : (p.bindings ?? []).some(b => b.obligation_ref === ref) && (p.contributions == null || p.contributions.some(c => c.binding.obligation_ref === ref && c.contribution === 'complete')));
-  const partialFor = (ref: string) => acceptedProofs.some(p => (!p.admitted_obligation_refs || p.admitted_obligation_refs.includes(ref))
-    && p.contributions?.some(c => c.binding.obligation_ref === ref && c.contribution === 'partial'));
+    && i.admitted_obligation_refs.length > 0);
+  const proofFor = (ref: string) => acceptedProofs.find(p => p.ready_obligation_refs.includes(ref));
+  const partialFor = (ref: string) => acceptedProofs.some(p => p.admitted_obligation_refs.includes(ref)
+    && p.contributions.some(c => c.binding.obligation_ref === ref && c.contribution === 'partial'));
   const unproven = obligations.filter(o => !o.implementation_satisfied);
   const canRecordKind = isTest ? canTest : canRecord;
   const candidates = (data?.candidates ?? []).filter(c => c.card_id === card.id && c.kind === (isTest ? 'test' : 'implementation'));
   const selectableRefs = isTest
     ? (data?.rows ?? []).map(row => ({ ref: row.obligation.binding.obligation_ref, title: row.obligation.title, satisfied: row.test_satisfied }))
     : obligations.map(o => ({ ref: o.ref, title: o.title, satisfied: o.implementation_satisfied }));
-  const verifiableImpls = (data?.implementations ?? []).filter(i => (i.ready_obligation_refs ? i.ready_obligation_refs.length > 0 : i.current_accepted_execution) && !data?.rejected_record_ids.includes(i.id));
+  const verifiableImpls = (data?.implementations ?? []).filter(i => i.ready_obligation_refs.length > 0 && !data?.rejected_record_ids.includes(i.id));
   const compose = !isTest && composeProofs;
   const setsReady = refs.length > 0 && refs.every(ref => executionSets[ref]?.length
     && executionSets[ref].every(id => candidates.some(candidate => candidate.id === id)));
@@ -173,7 +171,6 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
               </span>
               <span className={`shrink-0 text-xs font-medium ${ok ? 'text-green-600 dark:text-green-400' : 'text-amber-600 dark:text-amber-400'}`}>
                 {ok ? '✓ Implementation' : partialFor(ob.ref) ? '◌ Partial contribution' : '◌ No accepted proof'}
-                {proof && proof.contributions == null && <span className="block text-[10px] font-normal">Legacy record · contribution not declared</span>}
               </span>
             </li>;
           })}
@@ -261,7 +258,7 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
                 {verifiableImpls.map(i => (
                   <label key={i.id} className="flex items-start gap-2 text-sm">
                     <input type="checkbox" checked={testedIds.includes(i.id)} onChange={e => setTestedIds(e.target.checked ? [...testedIds, i.id] : testedIds.filter(v => v !== i.id))} />
-                    <span className="min-w-0"><span className="block truncate">{i.executions ? i.executions.map(proof => proof.relative_path).join(', ') : i.relative_path}{i.symbol ? ` · ${i.symbol}` : ''}</span><code className="text-[10px] text-gray-400">{i.id}</code></span>
+                    <span className="min-w-0"><span className="block truncate">{i.executions.map(proof => `${proof.relative_path}${proof.symbol ? ` · ${proof.symbol}` : ''}`).join(', ')}</span><code className="text-[10px] text-gray-400">{i.id}</code></span>
                   </label>
                 ))}
               </div>

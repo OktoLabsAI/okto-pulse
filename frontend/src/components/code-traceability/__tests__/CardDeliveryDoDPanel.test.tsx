@@ -19,7 +19,11 @@ function projection(): DeliveryEvidenceProjection {
     blockers: ['delivery_implementation_missing'], rejected_record_ids: [],
     rows: [],
     implementations: [
-      { id: 'card_delivery_abc111', card_id: 'task-1', bindings: [{ obligation_ref: 'fr:fr_3a9f', semantic_sha256: 'a'.repeat(64) }], relative_path: 'src/api.py', symbol: 'record', result_revision: 'r'.repeat(40), current_accepted_execution: true },
+      { id: 'card_delivery_abc111', card_id: 'task-1', explanation: 'Observed implementation',
+        bindings: [{ obligation_ref: 'fr:fr_3a9f', semantic_sha256: 'a'.repeat(64) }],
+        contributions: [{ binding: { obligation_ref: 'fr:fr_3a9f', semantic_sha256: 'a'.repeat(64) }, contribution: 'complete', execution_ids: ['execution-1'] }],
+        admitted_obligation_refs: ['fr:fr_3a9f'], ready_obligation_refs: ['fr:fr_3a9f'],
+        executions: [{ execution_id: 'execution-1', target_id: 'target-1', source_ref: 'repo', relative_path: 'src/api.py', symbol: 'record', result_revision: 'r'.repeat(40), current_accepted_execution: true }] },
     ],
     tests: [],
     candidates: [
@@ -167,17 +171,13 @@ it('declares complete separately from partial for two obligations', async () => 
 it('shows a partial receipt after reload without marking implementation complete', async () => {
   const value = projection();
   value.per_card![0].obligations[0].implementation_satisfied = false;
-  value.implementations[0].contributions = [{ binding: { obligation_ref: 'fr:fr_3a9f', semantic_sha256: 'a'.repeat(64) }, contribution: 'partial' }];
+  value.implementations[0].ready_obligation_refs = [];
+  value.implementations[0].contributions = [{ binding: { obligation_ref: 'fr:fr_3a9f', semantic_sha256: 'a'.repeat(64) }, contribution: 'partial', execution_ids: ['execution-1'] }];
   api.getDeliveryEvidence.mockResolvedValue(value);
   render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord />);
   expect(await screen.findByText('◌ Partial contribution')).toBeTruthy();
   expect(screen.queryByText('✓ Implementation')).toBeNull();
   expect(screen.getByTestId('dod-gate-pill').textContent).toContain('2 of 2 unproven');
-});
-
-it('identifies legacy proof without inventing a complete declaration', async () => {
-  render(<CardDeliveryDoDPanel boardId="b" card={CARD} />);
-  expect(await screen.findByText('Legacy record · contribution not declared')).toBeTruthy();
 });
 
 it('names exact receipt sets per obligation without a Cartesian assignment', async () => {
@@ -210,12 +210,13 @@ it('names exact receipt sets per obligation without a Cartesian assignment', asy
 it('uses server readiness per binding when another receipt in the record is stale', async () => {
   const value = projection();
   value.per_card![0].obligations.forEach(obligation => { obligation.implementation_satisfied = false; });
-  value.implementations[0] = { ...value.implementations[0], current_accepted_execution: false,
+  value.implementations[0] = { ...value.implementations[0],
+    executions: [{ ...value.implementations[0].executions[0], current_accepted_execution: false }],
     admitted_obligation_refs: ['ac:ac_77ce'], ready_obligation_refs: ['ac:ac_77ce'],
     bindings: [{ obligation_ref: 'fr:fr_3a9f', semantic_sha256: 'a'.repeat(64) }, { obligation_ref: 'ac:ac_77ce', semantic_sha256: 'b'.repeat(64) }],
     contributions: [
-      { binding: { obligation_ref: 'fr:fr_3a9f', semantic_sha256: 'a'.repeat(64) }, contribution: 'complete' },
-      { binding: { obligation_ref: 'ac:ac_77ce', semantic_sha256: 'b'.repeat(64) }, contribution: 'complete' },
+      { binding: { obligation_ref: 'fr:fr_3a9f', semantic_sha256: 'a'.repeat(64) }, contribution: 'complete', execution_ids: ['execution-1'] },
+      { binding: { obligation_ref: 'ac:ac_77ce', semantic_sha256: 'b'.repeat(64) }, contribution: 'complete', execution_ids: ['execution-2'] },
     ],
   };
   api.getDeliveryEvidence.mockResolvedValue(value);

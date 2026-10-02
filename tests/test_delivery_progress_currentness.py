@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy import insert
 
 from test_delivery_inline_execution import composed as _composed, db as _db, counts
-from test_delivery_execution_sets import composite_batch, seed_scope, clone_request
+from test_delivery_execution_sets import native_verifier as _native_verifier, composite_batch, seed_scope, clone_request
 from test_delivery_progress import command as progress_command
 from okto_pulse.community.adapters.sqlalchemy_models import (
     CardDeliveryEvidenceRecordRow as Record,
@@ -16,6 +16,8 @@ from okto_pulse.core.services.delivery_evidence import require_card_delivery
 
 db = _db
 composed = _composed
+native_verifier = _native_verifier
+pytestmark = pytest.mark.usefixtures("native_verifier")
 
 
 def checkpoint(**changes):
@@ -76,7 +78,7 @@ async def test_rebinding_old_observation_or_clean_note_cannot_restore_proof(comp
     rebind = CardDeliveryEvidenceCommand(
         board_id="b", card_id="c", spec_id="s", expected_card_version=1, expected_spec_edition=1,
         idempotency_key="rebind", kind="implementation", execution_id=old,
-        obligation_refs=["fr:fr"], justification="Reuse old result",
+        bindings=[dict(obligation_ref="fr:fr", contribution="complete")], justification="Reuse old result",
     )
     with pytest.raises(ValueError, match="accepted_committed"):
         await use_case.execute(rebind, actor=actor, uow=uow)
@@ -100,8 +102,8 @@ async def test_rebinding_old_observation_or_clean_note_cannot_restore_proof(comp
     await session.commit()
     result = await use_case.execute(rebind.model_copy(update={"execution_id": "new-execution"}), actor=actor, uow=uow)
     snapshot = await uow.services.delivery_evidence.load_card_snapshot(CardDeliveryScope("b", "c", "s", 1))
-    assert next(item for item in snapshot.implementations if item.id == result["id"]).current_accepted_execution
-    assert not next(item for item in snapshot.implementations if item.id == saved["entries"][2]["id"]).current_accepted_execution
+    assert all(proof.current_accepted_execution for proof in next(item for item in snapshot.implementations if item.id == result["id"]).executions)
+    assert not all(proof.current_accepted_execution for proof in next(item for item in snapshot.implementations if item.id == saved["entries"][2]["id"]).executions)
 
 
 @pytest.mark.asyncio
@@ -130,7 +132,7 @@ async def test_dirty_checkpoint_hidden_by_summary_cap_still_blocks_and_revoke_is
     await store.record_card(revoke, actor_id="reviewer", actor_kind="human")
     await session.commit()
     snapshot = await store.load_card_snapshot(CardDeliveryScope("b", "c", "s", 1))
-    assert next(item for item in snapshot.implementations if item.id == saved["entries"][2]["id"]).current_accepted_execution
+    assert all(proof.current_accepted_execution for proof in next(item for item in snapshot.implementations if item.id == saved["entries"][2]["id"]).executions)
     assert await session.get(Record, dirty["id"]) is not None
 
 

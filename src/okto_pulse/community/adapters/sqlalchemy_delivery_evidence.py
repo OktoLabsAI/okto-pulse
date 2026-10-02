@@ -192,9 +192,8 @@ class CommunityDeliveryEvidenceStore:
         return ImplementationDeliveryFact(
             id=record.id, scope=scope, card_id=card.id,
             card_type=CardType(card.card_type), card_status=CardStatus(card.status),
-            bindings=bindings, source_ref="", result_revision="", relative_path="",
-            explanation=payload["justification"], receipt_id="",
-            current_accepted_execution=len(proofs) == len(identities) and all(proof.current_accepted_execution for proof in proofs),
+            bindings=bindings,
+            explanation=payload["justification"],
             actor_id=record.actor_id, contributions=contributions, executions=tuple(proofs),
             blocking_progress_ids=tuple(sorted({identity for proof in proofs for identity in proof.blocking_progress_ids}))[:20],
             blocking_progress_truncated=any(proof.blocking_progress_truncated for proof in proofs) or len({identity for proof in proofs for identity in proof.blocking_progress_ids}) > 20,

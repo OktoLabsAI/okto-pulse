@@ -10,8 +10,11 @@ const result = {
   actions: { record_progress: false }, progress: { total: 25 }, latest_checkpoint: { actor_id: 'author-A', summary: 'Short note' },
   accumulated_impact: { status: 'needs_reconciliation', history_count: 3 },
   obligations: { complete: false, total: 1, items: [{ ref: 'fr', title: 'Behavior', implementation_satisfied: false, test_satisfied: false }] },
-  implementation_proofs: { total: 1, items: [{ record_id: 'proof', actor_id: 'author-A', source_ref: 'repo', result_revision: 'abc',
-    relative_path: 'parser.py', current_obligation_refs: [], contributions: [{ obligation_ref: 'fr', declaration: 'partial' }] }] },
+  implementation_proofs: { total: 1, items: [{ record_id: 'proof', actor_id: 'author-A',
+    executions: [{ execution_id: 'receipt-parser', source_ref: 'repo', result_revision: 'abc', relative_path: 'parser.py' },
+      { execution_id: 'receipt-test', source_ref: 'repo', result_revision: 'abc', relative_path: 'parser.test.py' }],
+    execution_total: 2, executions_truncated: false,
+    current_obligation_refs: [], contributions: [{ obligation_ref: 'fr', declaration: 'partial', execution_ids: ['receipt-parser', 'receipt-test'] }] }] },
   tests: { total: 0, items: [] }, targets: { truncated: true, items: [] },
 };
 beforeEach(() => { vi.resetAllMocks(); api.getCardDeliveryResume.mockResolvedValue(result); });
@@ -23,6 +26,8 @@ it('distinguishes partial declarations, stale proof, unknown recovery and frozen
   fireEvent.click(screen.getByText('Read accumulated delivery context'));
   await screen.findByText(/Latest checkpoint by author-A/);
   expect(screen.getByText('fr: declared partial.')).toBeInTheDocument();
+  expect(screen.getByText(/parser.py · repo @ abc · receipt-parser/)).toBeInTheDocument();
+  expect(screen.getByText(/parser.test.py · repo @ abc · receipt-test/)).toBeInTheDocument();
   expect(screen.getByText('Currently admitted obligations: None.')).toBeInTheDocument();
   expect(screen.getByText(/Workspace access and recovery are unknown/)).toBeInTheDocument();
   expect(screen.getByText(/Progress recording is unavailable/)).toBeInTheDocument();

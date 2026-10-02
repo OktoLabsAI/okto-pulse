@@ -44,10 +44,11 @@ export function CardResumePanel({ boardId, cardId, specId, edition }: {
       <ul>{data.obligations.items.map(row => <li key={row.ref}>{row.title}: implementation {row.implementation_satisfied ? 'satisfied' : 'pending'}, test {row.test_satisfied ? 'satisfied' : 'pending'}.</li>)}</ul>
       <p>{data.implementation_proofs.total} implementation records in this Card’s current delivery selection.</p>
       {data.implementation_proofs.items.map(proof => <article key={proof.record_id}>
-        <p>{proof.actor_id} · {proof.relative_path} · {proof.source_ref} @ {proof.result_revision}</p>
+        <p>{proof.actor_id}</p>
+        {proof.executions.map(execution => <p key={execution.execution_id}>{execution.relative_path} · {execution.source_ref} @ {execution.result_revision} · {execution.execution_id}</p>)}
+        {proof.executions_truncated && <p>This record’s execution list is shortened ({proof.execution_total} total).</p>}
         <p>Currently admitted obligations: {proof.current_obligation_refs.join(', ') || 'None'}.</p>
         {proof.contributions.map(row => <p key={row.obligation_ref}>{row.obligation_ref}: declared {row.declaration}.</p>)}
-        {proof.declaration_origin === 'legacy_unknown' && <p>Legacy contribution declaration is unknown.</p>}
         {proof.bindings_truncated && <p>This proof’s binding list is shortened.</p>}
       </article>)}
       {data.verification_plan && <>

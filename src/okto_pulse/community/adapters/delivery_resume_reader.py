@@ -60,13 +60,15 @@ async def read_card_resume(store, query, *, actor_id):
                    and implementation_scope_current(snapshot, fact, binding)]
         proofs.append({
             "record_id": fact.id, "actor_id": fact.actor_id,
-            "receipt_id": fact.receipt_id, "source_ref": fact.source_ref,
-            "result_revision": fact.result_revision, "relative_path": fact.relative_path,
+            "executions": [{"execution_id": execution.execution_id,
+                "source_ref": execution.source_ref, "result_revision": execution.result_revision,
+                "relative_path": execution.relative_path} for execution in fact.executions[:20]],
+            "execution_total": len(fact.executions), "executions_truncated": len(fact.executions) > 20,
             "current_obligation_refs": current[:20], "current_obligation_total": len(current),
             "bindings_truncated": len(fact.bindings) > 20,
             "contributions": [{"obligation_ref": row.binding.obligation_ref,
-                "declaration": row.contribution} for row in (fact.contributions or ())[:20]],
-            "declaration_origin": "recorded" if fact.contributions is not None else "legacy_unknown",
+                "declaration": row.contribution, "execution_ids": list(row.execution_ids)}
+                for row in fact.contributions[:20]],
         })
     card, spec, _ = await store._card_scope_guard(scope)
     if generation != await store._delivery_revision(scope) or version != (card.policy_version, spec.version, card.status):

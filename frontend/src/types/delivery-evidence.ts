@@ -48,7 +48,7 @@ export interface DeliveryEvidenceProjection {
     missing_card_ids?: string[];
     missing_criteria?: Array<[string, string]>;
   }>;
-  implementations: Array<{ id: string; card_id: string; relative_path: string; result_revision: string; current_accepted_execution: boolean; source_ref?: string; symbol?: string; explanation?: string; bindings?: Array<{ obligation_ref: string; semantic_sha256?: string }>; contributions?: Array<{ binding: { obligation_ref: string; semantic_sha256: string }; contribution: 'partial' | 'complete'; execution_ids?: string[] }> | null; admitted_obligation_refs?: string[]; ready_obligation_refs?: string[]; executions?: Array<{ execution_id: string; target_id: string; relative_path: string; result_revision: string; current_accepted_execution: boolean }> | null }>;
+  implementations: Array<{ id: string; card_id: string; explanation: string; bindings: Array<{ obligation_ref: string; semantic_sha256: string }>; contributions: Array<{ binding: { obligation_ref: string; semantic_sha256: string }; contribution: 'partial' | 'complete'; execution_ids: string[] }>; admitted_obligation_refs: string[]; ready_obligation_refs: string[]; executions: Array<{ execution_id: string; target_id: string; source_ref: string; relative_path: string; result_revision: string; symbol?: string | null; current_accepted_execution: boolean }> }>;
   tests?: Array<{ id: string; card_id: string; scenario_id: string; result: string; current_verified_run?: boolean }>;
   candidates: Array<{ kind: 'implementation' | 'test'; id: string; card_id: string; card_version?: number; label: string }>;
   records: Array<{ id: string; kind: string; actor_id: string; created_at: string; revoked: boolean; payload: { justification: string; card_id?: string; scenario_id?: string; execution_id?: string; phase?: string } }>;
@@ -136,9 +136,11 @@ export interface CardDeliveryResume {
     ref: string; title: string; implementation_satisfied: boolean; test_satisfied: boolean;
   }> };
   implementation_proofs: { total: number; truncated: boolean; items: Array<{
-    record_id: string; actor_id: string; source_ref: string; result_revision: string;
-    relative_path: string; current_obligation_refs: string[]; bindings_truncated: boolean;
-    declaration_origin: string; contributions: Array<{ obligation_ref: string; declaration: string }>;
+    record_id: string; actor_id: string;
+    executions: Array<{ execution_id: string; source_ref: string; result_revision: string; relative_path: string }>;
+    execution_total: number; executions_truncated: boolean;
+    current_obligation_refs: string[]; bindings_truncated: boolean;
+    contributions: Array<{ obligation_ref: string; declaration: string; execution_ids: string[] }>;
   }> };
   verification_plan?: { complete: boolean; status: string; total: number; truncated: boolean; test_cards_truncated: boolean;
     items: Array<{ scenario_id: string; method: string | null; criterion_ids: string[]; test_card_ids: string[]; blockers: string[]; links_truncated: boolean }> };

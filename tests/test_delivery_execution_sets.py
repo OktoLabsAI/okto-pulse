@@ -143,6 +143,17 @@ async def test_inline_set_is_atomic_replayable_and_staleness_is_per_binding(comp
         == "card-binding-contribution/v2"
     )
     assert "client_ref" not in str(stored.payload["contributions"])
+    from okto_pulse.core.models.delivery_evidence import DeliveryEvidenceReadQuery
+    resumed = await uow.services.delivery_evidence.card_resume(
+        DeliveryEvidenceReadQuery(board_id="b", spec_id="s", card_id="c", view="resume"),
+        actor_id="successor",
+    )
+    resumed_proof = next(item for item in resumed["implementation_proofs"]["items"] if item["record_id"] == complete_id)
+    assert resumed_proof["execution_total"] == 2
+    assert not resumed_proof["executions_truncated"]
+    assert {item["execution_id"] for item in resumed_proof["executions"]} == set(ids)
+    assert resumed_proof["contributions"][0]["execution_ids"] == ids
+    assert resumed_proof["contributions"][1]["execution_ids"] == ids[:1]
     await session.close()
     assert await use_case.execute(request, actor=actor, uow=uow) == {
         **saved,
@@ -165,7 +176,7 @@ async def test_inline_set_is_atomic_replayable_and_staleness_is_per_binding(comp
     fact = next(
         item for item in projection["implementations"] if item["id"] == complete_id
     )
-    assert not fact["current_accepted_execution"]
+    assert not all(execution["current_accepted_execution"] for execution in fact["executions"])
     assert fact["ready_obligation_refs"] == ["tr:tr"]
     assert {
         row["obligation"]["binding"]["obligation_ref"]: row["implementation_satisfied"]

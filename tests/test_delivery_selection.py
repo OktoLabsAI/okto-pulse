@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy import update
 
 from test_delivery_inline_execution import composed as _composed, db as _db, counts
-from test_delivery_execution_sets import composite_batch, seed_scope
+from test_delivery_execution_sets import native_verifier as _native_verifier, composite_batch, seed_scope
 from test_delivery_progress_currentness import checkpoint
 from okto_pulse.community.adapters.sqlalchemy_models import Card
 from okto_pulse.core.domain.delivery_evidence import CardDeliveryScope, implementation_binding_ready
@@ -12,6 +12,8 @@ from okto_pulse.core.models.delivery_selection import DeliverySelectionInput
 
 db = _db
 composed = _composed
+native_verifier = _native_verifier
+pytestmark = pytest.mark.usefixtures("native_verifier")
 SCOPE = CardDeliveryScope("b", "c", "s", 1)
 
 
@@ -60,7 +62,7 @@ async def test_omitting_material_checkpoint_cannot_restore_selected_proof(compos
     await frozen(session, manifest)
     snapshot = await store.load_card_snapshot(SCOPE)
     fact = snapshot.implementations[0]
-    assert not fact.current_accepted_execution
+    assert not all(proof.current_accepted_execution for proof in fact.executions)
     assert [implementation_binding_ready(fact, row.binding) for row in snapshot.obligations] == [False, True]
 
 

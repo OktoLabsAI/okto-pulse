@@ -2,12 +2,15 @@ import pytest
 
 from test_delivery_inline_execution import composed as origin_composed, db as progress_db, command
 from test_delivery_progress import command as progress_command
+from test_delivery_execution_sets import seed_scope, native_verifier as _native_verifier
 from test_delivery_net_impact import delta, A, B, C
 from okto_pulse.community.adapters.sqlalchemy_models import ImplementationTargetRow as Target
 from okto_pulse.core.models.delivery_evidence import CardDeliveryEvidenceBatchCommand, DeliveryEvidenceReadQuery
 
 db = progress_db
 composed = origin_composed
+native_verifier = _native_verifier
+pytestmark = pytest.mark.usefixtures("native_verifier")
 
 
 def query():
@@ -17,16 +20,22 @@ def query():
 @pytest.mark.asyncio
 async def test_resume_keeps_partial_proof_author_and_invalidates_it_after_dirty_work(composed):
     session, uow, use_case, actor = composed
+    await seed_scope(session)
     payload = command().model_dump(mode="json")
     payload["entries"][0]["obligation_refs"] = []
-    payload["entries"][0]["bindings"] = [{"obligation_ref": "card:c", "contribution": "partial"}]
+    payload["entries"][0]["bindings"] = [{"obligation_ref": "fr:fr", "contribution": "partial"}]
     await use_case.execute(CardDeliveryEvidenceBatchCommand.model_validate(payload), actor=actor, uow=uow)
     store = uow.services.delivery_evidence
     before = await store.card_resume(query(), actor_id="successor")
     proof = before["implementation_proofs"]["items"][0]
     assert proof["actor_id"] == actor.actor_id
-    assert proof["current_obligation_refs"] == ["card:c"]
-    assert proof["contributions"] == [{"obligation_ref": "card:c", "declaration": "partial"}]
+    assert proof["current_obligation_refs"] == ["fr:fr"]
+    assert proof["execution_total"] == 1 and not proof["executions_truncated"]
+    assert proof["executions"][0]["relative_path"]
+    assert proof["executions"][0]["source_ref"]
+    assert proof["executions"][0]["result_revision"]
+    assert proof["contributions"] == [{"obligation_ref": "fr:fr", "declaration": "partial",
+        "execution_ids": [proof["executions"][0]["execution_id"]]}]
     assert not before["obligations"]["items"][0]["implementation_satisfied"]
     await store.record_card(progress_command(idempotency_key="new-dirty"), actor_id="successor", actor_kind="agent")
     await session.commit()
