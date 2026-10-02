@@ -18,13 +18,13 @@ export interface DeliveryNetImpact {
   issues_truncated: boolean;
 }
 export interface DeliverySelectionManifest {
-  contract_version: 'card-delivery-selection/v1' | 'card-delivery-selection/v2';
+  contract_version: 'card-delivery-selection/v2';
   board_id: string; card_id: string; spec_id: string; spec_edition: number;
   card_version: number; delivery_revision: number; sha256: string;
   scope_sha256: string; impact_sha256: string;
   records: Array<{ id: string; kind: 'progress' | 'implementation' | 'test'; sha256: string }>;
-  impact_basis?: Array<{ source_ref: string; source_identity_sha256: string; base_revision: string;
-    result_revision: string; observation_receipt_id: string; record_ids: string[] }>;
+  impact_basis: Array<{ source_ref: string; source_identity_sha256: string; base_revision: string;
+    result_revision: string; observation_receipt_id: string; record_ids: string[] }> | null;
 }
 export interface DeliveryEvidenceInput {
   expected_edition: number;
