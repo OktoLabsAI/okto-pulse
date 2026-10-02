@@ -18,7 +18,7 @@ from okto_pulse.community.adapters.relational_schema_lifecycle import (
     CommunityRelationalSchemaLifecycleOrchestrator,
 )
 from okto_pulse.community.adapters.sqlalchemy_database import (
-    CommunityDatabaseRuntime, build_community_session_factory, install_community_sqlite_pragmas,
+    CommunityDatabaseRuntime, build_community_engine, build_community_session_factory, install_community_sqlite_pragmas,
 )
 from okto_pulse.community.adapters.sqlalchemy_models import Base, Board, DiscoveryIntent
 
@@ -26,6 +26,14 @@ from okto_pulse.community.adapters.sqlalchemy_models import Base, Board, Discove
 @pytest.fixture(scope="module")
 def contract():
     return current_schema_contract()
+
+
+def test_community_refuses_postgresql_before_engine_or_storage_access(contract):
+    url = "postgresql://localhost/unavailable"
+    with pytest.raises(StorageFormatError, match="backend"):
+        require_current_database_file(url, contract)
+    with pytest.raises(ValueError, match="community_database_requires_sqlite"):
+        build_community_engine(url)
 
 
 def snapshot(path):

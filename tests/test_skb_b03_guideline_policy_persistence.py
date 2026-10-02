@@ -1,27 +1,26 @@
-"""SK-B/B03 immutable guideline authority and legacy backfill."""
+"""SK-B/B03 native policy storage, immutable history, scope and exact replay."""
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import json
+from importlib.resources import files
 
 import pytest
-from sqlalchemy import delete, func, select, text, update
+from sqlalchemy import delete, event, func, select, text, update
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import create_async_engine
 
 import okto_pulse.community.app as _community_app  # noqa: F401
-import okto_pulse.core.infra.database as database_module
-from okto_pulse.community.adapters.relational_schema_steps import (
-    _migrate_guideline_policy_v1_schema,
-    _migrate_semantic_guideline_governance_schema,
-    audit_guideline_policy_postgresql_trigger_rows,
-    guideline_policy_postgresql_immutability_ddl,
-    guideline_policy_postgresql_trigger_contracts,
-)
+
 from okto_pulse.community.adapters.sqlalchemy_database import (
+    CommunityDatabaseRuntime,
+    build_community_session_factory,
     get_engine,
     get_session_factory,
 )
+from okto_pulse.core.ports.relational_runtime import configure_database_runtime
 from okto_pulse.community.adapters.sqlalchemy_guideline_policy import (
     CommunitySqlAlchemyGuidelinePolicy,
     guideline_revision_content_digest,
@@ -32,9 +31,7 @@ from okto_pulse.community.adapters.sqlalchemy_kg_governance import (
 from okto_pulse.community.adapters.sqlalchemy_models import (
     Base,
     Board,
-    BoardGuideline,
-    DefaultBoardConfiguration,
-    Guideline as LegacyGuideline,
+    Guideline as GuidelineIdentityRow,
     GuidelineBoardBindingRow,
     GuidelineHeadRow,
     GuidelineRevisionRow,
@@ -57,9 +54,42 @@ from okto_pulse.core.ports.guideline_policy import (
 
 
 async def _fresh_database(path: Path) -> None:
-    database_module.create_database(f"sqlite+aiosqlite:///{path.as_posix()}")
+    # This fixture exercises the policy persistence seam, not runtime admission.
+    engine = create_async_engine(f"sqlite+aiosqlite:///{path.as_posix()}")
+    @event.listens_for(engine.sync_engine, "connect")
+    def foreign_keys(connection, _record):
+        cursor = connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA busy_timeout=10000")
+        cursor.close()
+    configure_database_runtime(runtime=CommunityDatabaseRuntime(
+        engine=engine, session_factory=build_community_session_factory(engine)))
     async with get_engine().begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
+        # Isolated policy storage seam: use current policy DDL, without running
+        # a converter. Adoption/impact authority is qualified by full-schema suites.
+        definitions = json.loads(files("okto_pulse.community.adapters").joinpath(
+            "current_relational_objects.json").read_text(encoding="utf-8"))
+        for item in definitions:
+            if item["name"].startswith(("trg_guideline_policy_", "trg_guideline_revision_noop_")):
+                await connection.exec_driver_sql(item["sql"])
+
+
+async def _seed_native_guidelines(board_1, board_2, global_id, inline_id, now):
+    async with get_session_factory()() as session:
+        session.add_all([Board(id=board_id, realm_id="local", name=board_id, owner_id="actor-b03")
+            for board_id in (board_1, board_2)])
+        await session.flush()
+        adapter = CommunitySqlAlchemyGuidelinePolicy(session)
+        for guideline_id, scope, board_id in ((global_id, GuidelineScope.GLOBAL, None),
+            (inline_id, GuidelineScope.INLINE, board_1)):
+            revision = _revision(guideline_id=guideline_id, revision_id=guideline_id + "-revision",
+                number=1, created_at=now, parent_revision_id=None)
+            await adapter.create_guideline(guideline=Guideline(guideline_id=guideline_id,
+                owner_id="actor-b03", scope=scope, board_id=board_id, created_at=now),
+                initial_revision=revision, initial_head=_head(revision, updated_at=now),
+                idempotency_key=guideline_id + "-create", request_digest="a" * 64)
+        await session.commit()
 
 
 async def _count(session, model) -> int:
@@ -69,191 +99,25 @@ async def _count(session, model) -> int:
 
 
 @pytest.mark.asyncio
-async def test_b03_backfill_replay_guards_defaults_and_board_erasure(
-    tmp_path: Path,
-) -> None:
-    await _fresh_database(tmp_path / "b03-backfill.sqlite3")
+async def test_b03_native_immutability_and_board_erasure(tmp_path: Path) -> None:
+    await _fresh_database(tmp_path / "b03-native.sqlite3")
     observed_at = datetime(2026, 7, 29, 12, 0, tzinfo=timezone.utc)
     board_id = "board-b03"
-    global_id = "guideline-global-b03"
-    inline_id = "guideline-inline-b03"
-    link_id = "link-global-b03"
-    default_id = "default-b03"
-
+    global_id, inline_id = "guideline-global-b03", "guideline-inline-b03"
+    await _seed_native_guidelines(board_id, "board-b03-other", global_id, inline_id, observed_at)
     async with get_session_factory()() as session:
-        session.add(
-            Board(
-                id=board_id,
-                name="B03",
-                owner_id="owner-b03",
-            )
-        )
-        session.add_all(
-            [
-                LegacyGuideline(
-                    id=global_id,
-                    title="  Global observed  ",
-                    content="\nObserved global content\t",
-                    tags=["legacy", "v3"],
-                    scope="global",
-                    board_id=None,
-                    owner_id="owner-b03",
-                    version=3,
-                    created_at=observed_at,
-                    updated_at=observed_at + timedelta(minutes=3),
-                ),
-                LegacyGuideline(
-                    id=inline_id,
-                    title="Inline observed",
-                    content="Observed inline content",
-                    tags=None,
-                    scope="inline",
-                    board_id=board_id,
-                    owner_id="owner-b03",
-                    version=1,
-                    created_at=observed_at + timedelta(minutes=1),
-                    updated_at=observed_at + timedelta(minutes=1),
-                ),
-            ]
-        )
-        await session.flush()
-        session.add(
-            BoardGuideline(
-                id=link_id,
-                board_id=board_id,
-                guideline_id=global_id,
-                priority=7,
-                added_at=observed_at + timedelta(minutes=2),
-                template_id="template-b03",
-                template_version=4,
-                guideline_version=2,
-            )
-        )
-        original_ref = {
-            "custom_first": "preserve",
-            "guideline_id": global_id,
-            "priority": 7,
-            "guideline_version": 2,
-        }
-        session.add(
-            DefaultBoardConfiguration(
-                id=default_id,
-                version=4,
-                status="active",
-                is_active=True,
-                scope="global",
-                settings_payload={},
-                guideline_default_refs=[original_ref],
-                created_by="owner-b03",
-                created_at=observed_at,
-                updated_at=observed_at,
-            )
-        )
+        adapter = CommunitySqlAlchemyGuidelinePolicy(session)
+        for guideline_id in (global_id, inline_id):
+            revision = await adapter.get_revision(guideline_id=guideline_id, revision_id=guideline_id + "-revision")
+            await adapter.append_binding_cas(binding=BoardGuidelineBinding(
+                binding_id=guideline_id + "-binding", board_id=board_id, guideline_id=guideline_id,
+                revision_id=revision.revision_id, semantic_version=revision.semantic_version,
+                revision_digest=revision.revision_digest, priority=0, binding_revision=1,
+                adopted_by="actor-b03", adopted_at=observed_at),
+                expected_binding_revision=None, idempotency_key=guideline_id + "-bind", request_digest="a" * 64)
         await session.commit()
-
-    assert await _migrate_guideline_policy_v1_schema() is None
-    assert await _migrate_semantic_guideline_governance_schema() is None
-    async with get_session_factory()() as session:
-        first_ids = tuple(
-            (
-                await session.execute(
-                    select(GuidelineRevisionRow.revision_id).order_by(
-                        GuidelineRevisionRow.revision_id
-                    )
-                )
-            ).scalars()
-        )
-        assert await _count(session, GuidelineRevisionRow) == 2
-        assert await _count(session, GuidelineHeadRow) == 2
-        assert await _count(session, GuidelineBoardBindingRow) == 2
-
-        global_revision = (
-            await session.execute(
-                select(GuidelineRevisionRow).where(
-                    GuidelineRevisionRow.guideline_id == global_id
-                )
-            )
-        ).scalar_one()
-        assert global_revision.semantic_version == "1.0.0"
-        assert global_revision.title == "Global observed"
-        assert global_revision.content == "Observed global content"
-        assert global_revision.content_digest == (
-            guideline_revision_content_digest(
-                title="Global observed",
-                content="Observed global content",
-                tags=("legacy", "v3"),
-            )
-        )
-        assert global_revision.legacy_version == 3
-        assert global_revision.legacy_version_unresolvable is True
-        assert global_revision.tags == ["legacy", "v3"]
-        assert global_revision.legacy_tags == ["legacy", "v3"]
-
-        link_binding = await session.get(
-            GuidelineBoardBindingRow,
-            (link_id, 1),
-        )
-        assert link_binding is not None
-        assert link_binding.revision_id == global_revision.revision_id
-        assert link_binding.revision_digest == global_revision.content_digest
-        assert link_binding.source_kind == "legacy_board_guideline"
-        assert link_binding.legacy_template_id == "template-b03"
-        assert link_binding.legacy_template_version == 4
-        assert link_binding.legacy_version_unresolvable is True
-        inline_binding = (
-            await session.execute(
-                select(GuidelineBoardBindingRow).where(
-                    GuidelineBoardBindingRow.guideline_id == inline_id
-                )
-            )
-        ).scalar_one()
-        assert inline_binding.source_kind == "legacy_inline_guideline"
-
-        default = await session.get(DefaultBoardConfiguration, default_id)
-        migrated_ref = default.guideline_default_refs[0]
-        assert list(migrated_ref) == [
-            "custom_first",
-            "guideline_id",
-            "priority",
-            "guideline_version",
-            "revision_id",
-            "semantic_version",
-            "revision_digest",
-            "revision_number",
-            "legacy_version",
-            "legacy_version_unresolvable",
-        ]
-        assert migrated_ref["custom_first"] == "preserve"
-        assert migrated_ref["revision_id"] == global_revision.revision_id
-        assert migrated_ref["revision_number"] == 1
-        assert migrated_ref["guideline_version"] == 1
-        assert migrated_ref["legacy_version"] == 2
-        assert migrated_ref["legacy_version_unresolvable"] is True
-        legacy_global = await session.get(LegacyGuideline, global_id)
-        assert legacy_global.title == "  Global observed  "
-        assert legacy_global.content == "\nObserved global content\t"
-        rehydrated = await CommunitySqlAlchemyGuidelinePolicy(session).get_revision(
-            guideline_id=global_id,
-            revision_id=global_revision.revision_id,
-        )
-        assert rehydrated is not None
-        assert rehydrated.revision_digest == global_revision.content_digest
-
-    assert await _migrate_guideline_policy_v1_schema() == "skipped"
-    async with get_session_factory()() as session:
-        second_ids = tuple(
-            (
-                await session.execute(
-                    select(GuidelineRevisionRow.revision_id).order_by(
-                        GuidelineRevisionRow.revision_id
-                    )
-                )
-            ).scalars()
-        )
-        assert second_ids == first_ids
         assert await _count(session, GuidelineRevisionRow) == 2
         assert await _count(session, GuidelineBoardBindingRow) == 2
-
         with pytest.raises(IntegrityError, match="guideline_revision_immutable"):
             await session.execute(
                 update(GuidelineRevisionRow)
@@ -296,12 +160,10 @@ async def test_b03_backfill_replay_guards_defaults_and_board_erasure(
                 )
             )
         await session.rollback()
-        # B04 will replace legacy DELETE with append-only retirement.  Until
-        # that authority exists, a migrated identity must fail closed instead
-        # of cascading away revision history.
+        # Identity deletion must not cascade away immutable revision history.
         with pytest.raises(IntegrityError, match="immutable"):
             await session.execute(
-                delete(LegacyGuideline).where(LegacyGuideline.id == global_id)
+                delete(GuidelineIdentityRow).where(GuidelineIdentityRow.id == global_id)
             )
         await session.rollback()
 
@@ -366,151 +228,8 @@ async def test_b03_backfill_replay_guards_defaults_and_board_erasure(
         assert (await session.execute(text("PRAGMA foreign_key_check"))).all() == []
 
 
-@pytest.mark.asyncio
-async def test_b03_active_dangling_default_fails_and_rolls_back(
-    tmp_path: Path,
-) -> None:
-    await _fresh_database(tmp_path / "b03-dangling-active.sqlite3")
-    now = datetime(2026, 7, 29, 14, 0, tzinfo=timezone.utc)
-    original_refs = [
-        {"guideline_id": "existing-guideline", "priority": 1},
-        {"guideline_id": "missing-guideline", "priority": 2},
-    ]
-    async with get_session_factory()() as session:
-        session.add(
-            LegacyGuideline(
-                id="existing-guideline",
-                title="Existing",
-                content="Existing content",
-                tags=["preserved"],
-                scope="global",
-                board_id=None,
-                owner_id="owner-b03",
-                version=1,
-                created_at=now,
-                updated_at=now,
-            )
-        )
-        session.add(
-            DefaultBoardConfiguration(
-                id="active-default-with-dangling-ref",
-                version=1,
-                status="active",
-                is_active=True,
-                scope="global",
-                settings_payload={},
-                guideline_default_refs=original_refs,
-                created_by="owner-b03",
-                created_at=now,
-                updated_at=now,
-            )
-        )
-        await session.commit()
-
-    with pytest.raises(
-        RuntimeError,
-        match="unresolved_active_reference.*dangling_reference",
-    ):
-        await _migrate_guideline_policy_v1_schema()
-
-    async with get_session_factory()() as session:
-        assert await _count(session, GuidelineRevisionRow) == 0
-        assert await _count(session, GuidelineHeadRow) == 0
-        assert await _count(session, GuidelineBoardBindingRow) == 0
-        default = await session.get(
-            DefaultBoardConfiguration,
-            "active-default-with-dangling-ref",
-        )
-        assert default.guideline_default_refs == original_refs
-        owned_triggers = (
-            await session.execute(
-                text(
-                    "SELECT name FROM sqlite_master "
-                    "WHERE type='trigger' "
-                    "AND name LIKE 'trg_guideline_policy_immutable%'"
-                )
-            )
-        ).all()
-        assert owned_triggers == []
 
 
-@pytest.mark.asyncio
-async def test_b03_inline_default_active_rolls_back_and_inactive_stays_unpinned(
-    tmp_path: Path,
-) -> None:
-    await _fresh_database(tmp_path / "b03-inline-default.sqlite3")
-    now = datetime(2026, 7, 29, 14, 30, tzinfo=timezone.utc)
-    board_id = "inline-default-board"
-    guideline_id = "inline-default-guideline"
-    default_id = "inline-default-template"
-    original_refs = [
-        {
-            "guideline_id": guideline_id,
-            "priority": 0,
-            "guideline_version": 1,
-        }
-    ]
-    async with get_session_factory()() as session:
-        session.add(Board(id=board_id, name="Inline", owner_id="owner-b03"))
-        session.add(
-            LegacyGuideline(
-                id=guideline_id,
-                title="Inline default",
-                content="Inline defaults cannot be globally adopted.",
-                tags=None,
-                scope="inline",
-                board_id=board_id,
-                owner_id="owner-b03",
-                version=1,
-                created_at=now,
-                updated_at=now,
-            )
-        )
-        session.add(
-            DefaultBoardConfiguration(
-                id=default_id,
-                version=1,
-                status="active",
-                is_active=True,
-                scope="global",
-                settings_payload={},
-                guideline_default_refs=original_refs,
-                created_by="owner-b03",
-                created_at=now,
-                updated_at=now,
-            )
-        )
-        await session.commit()
-
-    with pytest.raises(
-        RuntimeError,
-        match="unresolved_active_reference.*inline_reference",
-    ):
-        await _migrate_guideline_policy_v1_schema()
-    async with get_session_factory()() as session:
-        assert await _count(session, GuidelineRevisionRow) == 0
-        assert await _count(session, GuidelineHeadRow) == 0
-        assert await _count(session, GuidelineBoardBindingRow) == 0
-        default = await session.get(DefaultBoardConfiguration, default_id)
-        assert default.guideline_default_refs == original_refs
-        default.status = "inactive"
-        default.is_active = False
-        await session.commit()
-
-    assert await _migrate_guideline_policy_v1_schema() is None
-    assert await _migrate_semantic_guideline_governance_schema() is None
-    async with get_session_factory()() as session:
-        default = await session.get(DefaultBoardConfiguration, default_id)
-        historical = default.guideline_default_refs[0]
-        assert historical["revision_id"] is None
-        assert historical["legacy_version"] == 1
-        assert historical["legacy_version_unresolvable"] is True
-        assert "semantic_version" not in historical
-        assert "revision_digest" not in historical
-        assert await _count(session, GuidelineRevisionRow) == 1
-        assert await _count(session, GuidelineHeadRow) == 1
-        assert await _count(session, GuidelineBoardBindingRow) == 1
-    assert await _migrate_guideline_policy_v1_schema() == "skipped"
 
 
 @pytest.mark.asyncio
@@ -523,40 +242,7 @@ async def test_b03_binding_insert_guards_lineage_sequence_and_scope(
     board_2 = "binding-board-2"
     global_id = "binding-global-guideline"
     inline_id = "binding-inline-guideline"
-    async with get_session_factory()() as session:
-        session.add_all(
-            [
-                Board(id=board_1, name="One", owner_id="owner-b03"),
-                Board(id=board_2, name="Two", owner_id="owner-b03"),
-                LegacyGuideline(
-                    id=global_id,
-                    title="Global",
-                    content="Global can bind any board.",
-                    tags=None,
-                    scope="global",
-                    board_id=None,
-                    owner_id="owner-b03",
-                    version=1,
-                    created_at=now,
-                    updated_at=now,
-                ),
-                LegacyGuideline(
-                    id=inline_id,
-                    title="Inline",
-                    content="Inline stays on its board.",
-                    tags=None,
-                    scope="inline",
-                    board_id=board_1,
-                    owner_id="owner-b03",
-                    version=1,
-                    created_at=now,
-                    updated_at=now,
-                ),
-            ]
-        )
-        await session.commit()
-    assert await _migrate_guideline_policy_v1_schema() is None
-    assert await _migrate_semantic_guideline_governance_schema() is None
+    await _seed_native_guidelines(board_1, board_2, global_id, inline_id, now)
 
     async with get_session_factory()() as session:
         global_revision = (
@@ -768,6 +454,7 @@ async def test_b03_adapter_returns_materialized_replay_and_never_commits(
                 id="adapter-board-b03",
                 name="Adapter board",
                 owner_id="actor-b03",
+                realm_id="local",
             )
         )
         revision_1 = _revision(
@@ -798,7 +485,7 @@ async def test_b03_adapter_returns_materialized_replay_and_never_commits(
         await session.rollback()
 
     async with get_session_factory()() as session:
-        assert await session.get(LegacyGuideline, guideline_id) is None
+        assert await session.get(GuidelineIdentityRow, guideline_id) is None
 
     async with get_session_factory()() as session:
         adapter = CommunitySqlAlchemyGuidelinePolicy(session)
@@ -807,6 +494,7 @@ async def test_b03_adapter_returns_materialized_replay_and_never_commits(
                 id="adapter-board-b03",
                 name="Adapter board",
                 owner_id="actor-b03",
+                realm_id="local",
             )
         )
         revision_1 = _revision(
@@ -836,8 +524,8 @@ async def test_b03_adapter_returns_materialized_replay_and_never_commits(
         await session.commit()
 
     async with get_session_factory()() as session:
-        legacy = await session.get(LegacyGuideline, guideline_id)
-        assert legacy.tags == ["alpha", "zeta"]
+        identity = await session.get(GuidelineIdentityRow, guideline_id)
+        assert identity.tags == ["alpha", "zeta"]
 
     revision_2 = _revision(
         guideline_id=guideline_id,
@@ -1053,46 +741,3 @@ async def test_b03_adapter_returns_materialized_replay_and_never_commits(
             == binding_count_before_invalid_adoption
         )
         await session.rollback()
-
-
-def test_b03_postgresql_guards_fail_closed() -> None:
-    ddl = "\n".join(guideline_policy_postgresql_immutability_ddl())
-    assert "BoardErasurePermit".lower() not in ddl.lower()
-    assert "board_erasure_permits" in ddl
-    assert "BEFORE UPDATE OR DELETE" in ddl
-    assert "BEFORE INSERT OR UPDATE OR DELETE" in ddl
-    assert "guideline_revision_immutable" in ddl
-    assert "guideline_head_immutable" in ddl
-    assert "guideline_binding_immutable" in ddl
-
-    contracts = guideline_policy_postgresql_trigger_contracts()
-    rows = [
-        {
-            "name": name,
-            "table_name": contract["table_name"],
-            "function_name": contract["function_name"],
-            "tgenabled": "O",
-            "tgtype": contract["tgtype"],
-            "tgqual": None,
-        }
-        for name, contract in contracts.items()
-    ]
-    assert audit_guideline_policy_postgresql_trigger_rows(rows) == ((), ())
-
-    predecessor_rows = [dict(row) for row in rows]
-    binding_name = "trg_guideline_policy_immutable_binding_guard"
-    next(row for row in predecessor_rows if row["name"] == binding_name)["tgtype"] = 27
-    assert audit_guideline_policy_postgresql_trigger_rows(predecessor_rows) == (
-        (),
-        (binding_name,),
-    )
-
-    corrupt_when = [dict(row) for row in rows]
-    corrupt_when[0]["tgqual"] = "false"
-    with pytest.raises(RuntimeError, match="trigger is corrupt"):
-        audit_guideline_policy_postgresql_trigger_rows(corrupt_when)
-
-    disabled = [dict(row) for row in rows]
-    disabled[0]["tgenabled"] = "D"
-    with pytest.raises(RuntimeError, match="trigger is corrupt"):
-        audit_guideline_policy_postgresql_trigger_rows(disabled)

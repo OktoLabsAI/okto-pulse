@@ -9,18 +9,9 @@ from pathlib import Path
 import pytest
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.schema import CreateTable
 
 import okto_pulse.community.app as _community_app  # noqa: F401
-import okto_pulse.core.infra.database as database_module
-from okto_pulse.community.adapters.relational_schema_steps import (
-    _migrate_guideline_impact_substrate,
-    _migrate_guideline_policy_lifecycle_substrate,
-    _migrate_guideline_policy_v1_schema,
-    audit_guideline_policy_postgresql_trigger_rows,
-    guideline_policy_postgresql_immutability_ddl,
-    guideline_policy_postgresql_trigger_contracts,
-)
+from test_skb_b03_guideline_policy_persistence import _fresh_database
 from okto_pulse.community.adapters.relational_application import (
     CommunityRelationalApplicationAdapter,
 )
@@ -41,11 +32,10 @@ from okto_pulse.community.adapters.sqlalchemy_kg_governance import (
     CommunitySqlAlchemyKGGovernanceStore,
 )
 from okto_pulse.community.adapters.sqlalchemy_models import (
-    Base,
     Board,
     BoardGuideline,
     DefaultBoardConfiguration,
-    Guideline as LegacyGuideline,
+    Guideline as GuidelineIdentityRow,
     GuidelineBoardBindingRow,
     GuidelineRetirementRow,
     GuidelineRevisionNoopReplayRow,
@@ -87,89 +77,16 @@ from okto_pulse.core.ports.relational_application import (
     register_relational_application_adapter,
     reset_relational_application_adapter_for_tests,
 )
-from okto_pulse.core.models.schemas import GuidelineCreate, GuidelineUpdate
+from okto_pulse.core.models.schemas import GuidelineCreate
+from okto_pulse.core.domain.guideline_lifecycle import (
+    GuidelineRevisionPatch, GuidelinePatchCommand, GuidelinePatchNoop,
+    GuidelineLifecycleError, execute_guideline_patch,
+)
 from okto_pulse.core.services.default_board_configuration import (
     DefaultBoardConfigurationError,
     DefaultBoardConfigurationService,
 )
 from okto_pulse.core.services.main import GuidelineService
-
-
-async def _fresh_database(path: Path) -> None:
-    database_module.create_database(f"sqlite+aiosqlite:///{path.as_posix()}")
-    async with get_engine().begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
-    assert await _migrate_guideline_policy_lifecycle_substrate() is None
-    assert await _migrate_guideline_policy_lifecycle_substrate() == "skipped"
-    assert await _migrate_guideline_policy_v1_schema() is None
-
-
-@pytest.mark.asyncio
-async def test_b04_substrate_upgrades_exact_b03_sqlite_table_before_strict_audit(
-    tmp_path: Path,
-) -> None:
-    database_module.create_database(
-        f"sqlite+aiosqlite:///{(tmp_path / 'b04-b03-upgrade.sqlite3').as_posix()}"
-    )
-    binding_table = GuidelineBoardBindingRow.__table__
-    async with get_engine().begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
-        current_ddl = await connection.run_sync(
-            lambda sync_conn: str(
-                CreateTable(binding_table).compile(dialect=sync_conn.dialect)
-            )
-        )
-        b08_binding_fragments = (
-            "\timpact_receipt_id VARCHAR",
-            "\tbinding_origin VARCHAR",
-            "\timpact_adoption_id VARCHAR",
-            "\timpact_unlink_id VARCHAR",
-            "ck_guideline_binding_origin",
-            "fk_guideline_binding_impact_receipt",
-            "fk_guideline_binding_impact_adoption",
-            "fk_guideline_binding_impact_unlink",
-        )
-        b03_lines = [
-            line
-            for line in current_ddl.splitlines()
-            if "\tstate VARCHAR" not in line
-            and "ck_guideline_binding_state" not in line
-            and not any(fragment in line for fragment in b08_binding_fragments)
-        ]
-        closing_index = next(
-            index
-            for index in range(len(b03_lines) - 1, -1, -1)
-            if b03_lines[index].strip() == ")"
-        )
-        last_contract_index = next(
-            index
-            for index in range(closing_index - 1, -1, -1)
-            if b03_lines[index].strip()
-        )
-        b03_lines[last_contract_index] = b03_lines[last_contract_index].rstrip(" ,")
-        b03_ddl = "\n".join(b03_lines)
-        assert "state VARCHAR" not in b03_ddl
-        assert "impact_receipt_id" not in b03_ddl
-        await connection.exec_driver_sql(
-            'DROP TABLE "guideline_revision_noop_replays"'
-        )
-        await connection.exec_driver_sql('DROP TABLE "guideline_retirements"')
-        await connection.exec_driver_sql('DROP TABLE "guideline_board_bindings"')
-        await connection.exec_driver_sql(b03_ddl)
-        for index in binding_table.indexes:
-            await connection.run_sync(
-                lambda sync_conn, owned=index: owned.create(sync_conn)
-            )
-
-    assert await _migrate_guideline_policy_lifecycle_substrate() is None
-    # Release ordering appends B04 lifecycle state first, then B08 impact pins;
-    # the following strict B03 audit must accept that canonical additive result
-    # and install the current trigger contract without inventing history.
-    assert await _migrate_guideline_impact_substrate() is None
-    assert await _migrate_guideline_policy_v1_schema() is None
-    assert await _migrate_guideline_policy_lifecycle_substrate() == "skipped"
-    assert await _migrate_guideline_impact_substrate() == "skipped"
-    assert await _migrate_guideline_policy_v1_schema() == "skipped"
 
 
 def _revision(
@@ -281,7 +198,7 @@ async def test_b04_retirement_is_terminal_but_allows_safe_unlink(
     )
 
     async with get_session_factory()() as session:
-        session.add(Board(id=board_id, name="B04", owner_id="actor-b04"))
+        session.add(Board(realm_id="local", id=board_id, name="B04", owner_id="actor-b04"))
         adapter = CommunitySqlAlchemyGuidelinePolicy(session)
         await adapter.create_guideline(
             guideline=Guideline(
@@ -424,7 +341,7 @@ async def test_b04_retirement_is_terminal_but_allows_safe_unlink(
         assert await adapter.list_bindings(board_id=board_id) == ()
         second_board_id = "board-b04-terminal-second"
         session.add(
-            Board(
+            Board(realm_id="local",
                 id=second_board_id,
                 name="B04 second",
                 owner_id="actor-b04",
@@ -931,7 +848,7 @@ async def test_b04_native_restart_reuses_revision_and_inline_binding(
         state=GuidelineBindingState.ACTIVE,
     )
     async with get_session_factory()() as session:
-        session.add(Board(id=board_id, name="Inline", owner_id="actor-b04"))
+        session.add(Board(realm_id="local", id=board_id, name="Inline", owner_id="actor-b04"))
         adapter = CommunitySqlAlchemyGuidelinePolicy(session)
         await adapter.create_guideline(
             guideline=Guideline(
@@ -957,7 +874,7 @@ async def test_b04_native_restart_reuses_revision_and_inline_binding(
         )
         await session.commit()
 
-    assert await _migrate_guideline_policy_v1_schema() == "skipped"
+    await get_engine().dispose()
     async with get_session_factory()() as session:
         revision_rows = list(
             (
@@ -1011,7 +928,7 @@ async def test_b04_native_restart_reuses_revision_and_inline_binding(
 
     async with get_session_factory()() as session:
         assert await session.get(Board, board_id) is None
-        assert await session.get(LegacyGuideline, guideline_id) is None
+        assert await session.get(GuidelineIdentityRow, guideline_id) is None
         for model in (
             GuidelineRevisionRow,
             GuidelineBoardBindingRow,
@@ -1028,7 +945,7 @@ async def test_b04_native_restart_reuses_revision_and_inline_binding(
 
 
 @pytest.mark.asyncio
-async def test_b04_native_restart_preserves_numbered_default_and_pins_unpinned_to_head(
+async def test_b04_native_restart_preserves_explicit_default_pins(
     tmp_path: Path,
 ) -> None:
     await _fresh_database(tmp_path / "b04-native-default-restart.sqlite3")
@@ -1080,14 +997,15 @@ async def test_b04_native_restart_preserves_numbered_default_and_pins_unpinned_t
         session.add_all(
             [
                 DefaultBoardConfiguration(
-                    id="template-b04-native-unpinned",
+                    id="template-b04-native-latest-pin",
                     version=1,
                     status="inactive",
                     is_active=False,
                     scope="global",
                     settings_payload={},
                     guideline_default_refs=[
-                        {"guideline_id": guideline_id, "priority": 2}
+                        {"guideline_id": guideline_id, "priority": 2, "revision_id": revision_2.revision_id,
+                         "revision_number": 2, "semantic_version": revision_2.semantic_version, "revision_digest": revision_2.revision_digest}
                     ],
                     created_by="actor-b04",
                 ),
@@ -1103,6 +1021,9 @@ async def test_b04_native_restart_preserves_numbered_default_and_pins_unpinned_t
                             "guideline_id": guideline_id,
                             "priority": 3,
                             "revision_number": 1,
+                            "revision_id": revision_1.revision_id,
+                            "semantic_version": revision_1.semantic_version,
+                            "revision_digest": revision_1.revision_digest,
                         }
                     ],
                     created_by="actor-b04",
@@ -1111,25 +1032,25 @@ async def test_b04_native_restart_preserves_numbered_default_and_pins_unpinned_t
         )
         await session.commit()
 
-    assert await _migrate_guideline_policy_v1_schema() is None
+    await get_engine().dispose()
     async with get_session_factory()() as session:
-        unpinned = await session.get(
+        latest_pin = await session.get(
             DefaultBoardConfiguration,
-            "template-b04-native-unpinned",
+            "template-b04-native-latest-pin",
         )
         numbered = await session.get(
             DefaultBoardConfiguration,
             "template-b04-native-numbered",
         )
-        assert unpinned.guideline_default_refs[0]["revision_id"] == (
+        assert latest_pin.guideline_default_refs[0]["revision_id"] == (
             revision_2.revision_id
         )
-        assert unpinned.guideline_default_refs[0]["revision_number"] == 2
+        assert latest_pin.guideline_default_refs[0]["revision_number"] == 2
         assert numbered.guideline_default_refs[0]["revision_id"] == (
             revision_1.revision_id
         )
         assert numbered.guideline_default_refs[0]["revision_number"] == 1
-    assert await _migrate_guideline_policy_v1_schema() == "skipped"
+    await get_engine().dispose()
 
 
 @pytest.mark.asyncio
@@ -1254,11 +1175,6 @@ async def test_b04_default_guideline_fact_tracks_head_and_retirement_without_tem
                 "guideline_id": guideline_id,
                 "title": revision_2.title,
                 "scope": "global",
-                "guideline_version": revision_2.revision_number,
-                "revision_id": revision_2.revision_id,
-                "revision_number": revision_2.revision_number,
-                "semantic_version": revision_2.semantic_version,
-                "revision_digest": revision_2.revision_digest,
                 "head_revision": {
                     "revision_id": revision_2.revision_id,
                     "revision_number": revision_2.revision_number,
@@ -1281,7 +1197,7 @@ async def test_b04_default_guideline_fact_tracks_head_and_retirement_without_tem
 
 
 @pytest.mark.asyncio
-async def test_b04_guideline_service_facade_uses_append_only_authority_end_to_end(
+async def test_b04_service_reads_follow_native_revision_and_impact_authority(
     tmp_path: Path,
 ) -> None:
     await _fresh_database(tmp_path / "b04-service-facade.sqlite3")
@@ -1332,6 +1248,25 @@ async def test_b04_guideline_service_facade_uses_append_only_authority_end_to_en
             )
             policy = CommunitySqlAlchemyGuidelinePolicy(session)
 
+            async def patch_revision(patch, key):
+                head = await policy.get_head(guideline_id=global_v1.id)
+                current = await policy.get_revision(guideline_id=global_v1.id, revision_id=head.revision_id)
+                result = execute_guideline_patch(GuidelinePatchCommand(
+                    current_revision=current, current_head=head, patch=patch,
+                    next_revision_id=key + "-revision", actor_id=owner_id,
+                    occurred_at=head.updated_at + timedelta(seconds=1), idempotency_key=key,
+                    declared_semantic_version="1.0.1"),
+                    retirement=await policy.get_retirement(guideline_id=global_v1.id))
+                if isinstance(result, GuidelinePatchNoop):
+                    await policy.record_revision_noop_cas(replay=GuidelineRevisionNoopReplay(
+                        revision=current, original_head=head, request_digest=result.request_digest),
+                        idempotency_key=key)
+                else:
+                    await policy.append_revision_cas(revision=result.revision, next_head=result.head,
+                        expected_head_revision=result.expected_head_revision, idempotency_key=key,
+                        request_digest=result.request_digest)
+                return await service.get_guideline(global_v1.id, owner_id=owner_id)
+
             async def preview_and_adopt(
                 *,
                 priority: int,
@@ -1371,11 +1306,7 @@ async def test_b04_guideline_service_facade_uses_append_only_authority_end_to_en
                     )
                 ).scalar_one()
             )
-            no_op = await service.update_guideline(
-                global_v1.id,
-                owner_id,
-                GuidelineUpdate(),
-            )
+            no_op = await patch_revision(GuidelineRevisionPatch(), "facade-noop")
             assert no_op is not None
             assert no_op.revision_id == global_v1.revision_id
             assert (
@@ -1392,14 +1323,8 @@ async def test_b04_guideline_service_facade_uses_append_only_authority_end_to_en
                 == 1
             )
 
-            global_v2 = await service.update_guideline(
-                global_v1.id,
-                owner_id,
-                GuidelineUpdate(
-                    title="Global policy v2",
-                    content="The reviewed second global revision.",
-                ),
-            )
+            global_v2 = await patch_revision(GuidelineRevisionPatch(
+                title="Global policy v2", content="The reviewed second global revision."), "facade-revision-2")
             assert global_v2 is not None
             assert global_v2.version == 2
             assert global_v2.revision_id != global_v1.revision_id
@@ -1476,48 +1401,30 @@ async def test_b04_guideline_service_facade_uses_append_only_authority_end_to_en
                     != global_v2.revision_id
                 )
 
-            legacy_identity = await session.get(
-                LegacyGuideline,
+            identity = await session.get(
+                GuidelineIdentityRow,
                 global_v1.id,
             )
-            assert legacy_identity is not None
-            await session.refresh(legacy_identity)
+            assert identity is not None
+            await session.refresh(identity)
             assert (
-                legacy_identity.title,
-                legacy_identity.content,
-                legacy_identity.version,
+                identity.title,
+                identity.content,
+                identity.version,
             ) == (
                 global_v1.title,
                 global_v1.content,
                 1,
             )
 
-            with pytest.raises(
-                GuidelinePolicyBindingConflict,
-                match="guideline_impact_preview_required",
-            ):
-                await service.link_guideline_to_board(
-                    board_id,
-                    global_v1.id,
-                    2,
-                    owner_id=owner_id,
-                )
+            assert not hasattr(service, "link_guideline_to_board")
             link_1, link_1_receipt_id = await preview_and_adopt(
                 priority=2,
                 preview_key="b04-preview-link-1",
                 adoption_key="b04-adopt-link-1",
             )
             assert link_1.binding_revision == 1
-            with pytest.raises(
-                GuidelinePolicyBindingConflict,
-                match="guideline_impact_preview_required",
-            ):
-                await service.update_priority(
-                    board_id,
-                    global_v1.id,
-                    5,
-                    owner_id=owner_id,
-                )
+            assert not hasattr(service, "update_priority")
             priority_2, priority_2_receipt_id = await preview_and_adopt(
                 priority=5,
                 preview_key="b04-preview-priority-2",
@@ -1589,78 +1496,32 @@ async def test_b04_guideline_service_facade_uses_append_only_authority_end_to_en
                 == 0
             )
 
-            with pytest.raises(
-                ValueError,
-                match="default_guideline_revision_not_found",
-            ):
-                await service.apply_default_guidelines(
-                    default_board_id,
-                    [
-                        {
-                            "guideline_id": global_v1.id,
-                            "revision_number": 999,
-                        }
-                    ],
-                    template_id="template-invalid-number",
-                    template_version=1,
-                )
-            with pytest.raises(
-                ValueError,
-                match="default_guideline_revision_invalid",
-            ):
-                await service.apply_default_guidelines(
-                    default_board_id,
-                    [
-                        {
-                            "guideline_id": global_v1.id,
-                            "revision_number": 1.9,
-                        }
-                    ],
-                    template_id="template-fractional-number",
-                    template_version=1,
-                )
-            for invalid_priority in (-1, 1.9, True, "1"):
-                with pytest.raises(
-                    ValueError,
-                    match="default_guideline_priority_invalid",
-                ):
-                    await service.apply_default_guidelines(
-                        default_board_id,
-                        [
-                            {
-                                "guideline_id": global_v1.id,
-                                "priority": invalid_priority,
-                            }
-                        ],
-                        template_id="template-invalid-priority",
-                        template_version=1,
-                    )
-            with pytest.raises(
-                ValueError,
-                match="default_guideline_pin_mismatch",
-            ):
-                await service.apply_default_guidelines(
-                    default_board_id,
-                    [
-                        {
-                            "guideline_id": global_v1.id,
-                            "revision_id": global_v1.revision_id,
-                            "guideline_version": 999,
-                        }
-                    ],
-                    template_id="template-invalid-alias",
-                    template_version=1,
-                )
-            with pytest.raises(
-                ValueError,
-                match="default_guideline_not_global",
-            ):
-                await service.apply_default_guidelines(
-                    default_board_id,
-                    [{"guideline_id": inline_v1.id}],
-                    template_id="template-inline",
-                    template_version=1,
-                )
+            def native_ref(guideline=global_v1, **changes):
+                return dict(guideline_id=guideline.id, priority=0,
+                    revision_id=guideline.revision_id, revision_number=guideline.version,
+                    semantic_version=guideline.semantic_version,
+                    revision_digest=guideline.revision_digest) | changes
+
+            invalid_defaults = [
+                (native_ref(revision_id="missing-revision", revision_number=999), ValueError,
+                    "default_guideline_revision_not_found"),
+                (native_ref(revision_number=1.9), DefaultBoardConfigurationError,
+                    "default_guideline_revision_invalid"),
+                (native_ref(guideline_version=999), DefaultBoardConfigurationError,
+                    "default_guideline_ref_invalid"),
+                (native_ref(revision_digest="f" * 64), ValueError,
+                    "default_guideline_pin_mismatch"),
+                (native_ref(inline_v1), ValueError, "default_guideline_not_global"),
+                ({"guideline_id": global_v1.id}, DefaultBoardConfigurationError,
+                    "default_guideline_pin_incomplete"),
+                *[(native_ref(priority=priority), DefaultBoardConfigurationError,
+                    "default_guideline_priority_invalid") for priority in (-1, 1.9, True, "1")],
+            ]
+            for ref, error, code in invalid_defaults:
+                with pytest.raises(error, match=code):
+                    await service.apply_default_guidelines(default_board_id, [ref],
+                        template_id="invalid-template", template_version=1)
+                assert await policy.get_binding(board_id=default_board_id, guideline_id=global_v1.id) is None
 
             exact_default = await service.apply_default_guidelines(
                 default_board_id,
@@ -1717,10 +1578,11 @@ async def test_b04_guideline_service_facade_uses_append_only_authority_end_to_en
                     )
                 ).scalar_one()
             )
-            assert await service.delete_guideline(
-                global_v1.id,
-                owner_id,
-            )
+            current_head = await policy.get_head(guideline_id=global_v1.id)
+            current_revision = await policy.get_revision(guideline_id=global_v1.id, revision_id=current_head.revision_id)
+            await policy.retire_guideline_cas(retirement=_retirement(current_revision,
+                at=current_head.updated_at + timedelta(seconds=1)), expected_head_revision=current_head.head_revision,
+                idempotency_key="facade-retirement", request_digest="e" * 64)
             assert await policy.get_retirement(guideline_id=global_v1.id) is not None
             assert (
                 await service.get_guideline(
@@ -1738,23 +1600,9 @@ async def test_b04_guideline_service_facade_uses_append_only_authority_end_to_en
             )
             assert {item["id"] for item in effective_board} == {inline_v1.id}
 
-            assert (
-                await service.update_guideline(
-                    global_v1.id,
-                    owner_id,
-                    GuidelineUpdate(title="Forbidden after retirement"),
-                )
-                is None
-            )
-            assert (
-                await service.link_guideline_to_board(
-                    board_id,
-                    global_v1.id,
-                    1,
-                    owner_id=owner_id,
-                )
-                is None
-            )
+            with pytest.raises(GuidelineLifecycleError, match="guideline_is_terminal"):
+                await patch_revision(GuidelineRevisionPatch(title="Forbidden after retirement"), "forbidden-revision")
+            assert not hasattr(service, "link_guideline_to_board")
             assert (
                 int(
                     (
@@ -1793,31 +1641,3 @@ async def test_b04_guideline_service_facade_uses_append_only_authority_end_to_en
     finally:
         reset_application_persistence_port_for_tests()
         reset_relational_application_adapter_for_tests()
-
-
-def test_b04_postgresql_trigger_contract_has_exact_lifecycle_upgrade() -> None:
-    ddl = guideline_policy_postgresql_immutability_ddl()
-    assert len(ddl) == 8
-    assert "guideline_retirement_immutable" in "\n".join(ddl)
-    contracts = guideline_policy_postgresql_trigger_contracts()
-    assert contracts["trg_guideline_policy_immutable_revision_guard"]["tgtype"] == 31
-    assert contracts["trg_guideline_policy_immutable_retirement_guard"]["tgtype"] == 31
-
-    rows = [
-        {
-            "name": name,
-            "table_name": contract["table_name"],
-            "function_name": contract["function_name"],
-            "tgenabled": "O",
-            "tgtype": contract["tgtype"],
-            "tgqual": None,
-        }
-        for name, contract in contracts.items()
-        if not name.endswith("_retirement_guard")
-    ]
-    revision = next(row for row in rows if row["name"].endswith("_revision_guard"))
-    revision["tgtype"] = 27
-    assert audit_guideline_policy_postgresql_trigger_rows(rows) == (
-        ("trg_guideline_policy_immutable_retirement_guard",),
-        ("trg_guideline_policy_immutable_revision_guard",),
-    )
