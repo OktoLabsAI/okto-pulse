@@ -183,36 +183,21 @@ class CommunityDeliveryEvidenceStore:
         if card is None or card.board_id != scope.board_id or card.spec_id != scope.spec_id:
             return None
         contributions = read_delivery_contributions(payload, bindings)
-        if payload.get("contribution_contract_version") == "card-binding-contribution/v2":
-            identities = delivery_execution_ids(payload)
-            proofs = []
-            for identity in identities:
-                proof = await self._execution_proof(identity, scope, card)
-                if proof is not None:
-                    proofs.append(proof)
-            return ImplementationDeliveryFact(
-                id=record.id, scope=scope, card_id=card.id,
-                card_type=CardType(card.card_type), card_status=CardStatus(card.status),
-                bindings=bindings, source_ref="", result_revision="", relative_path="",
-                explanation=payload["justification"], receipt_id="",
-                current_accepted_execution=len(proofs) == len(identities) and all(proof.current_accepted_execution for proof in proofs),
-                actor_id=record.actor_id, contributions=contributions, executions=tuple(proofs),
-                blocking_progress_ids=tuple(sorted({identity for proof in proofs for identity in proof.blocking_progress_ids}))[:20],
-                blocking_progress_truncated=any(proof.blocking_progress_truncated for proof in proofs) or len({identity for proof in proofs for identity in proof.blocking_progress_ids}) > 20,
-            )
-        proof = await self._execution_proof(payload.get("execution_id"), scope, card)
-        if proof is None:
-            return None
+        identities = delivery_execution_ids(payload)
+        proofs = []
+        for identity in identities:
+            proof = await self._execution_proof(identity, scope, card)
+            if proof is not None:
+                proofs.append(proof)
         return ImplementationDeliveryFact(
             id=record.id, scope=scope, card_id=card.id,
             card_type=CardType(card.card_type), card_status=CardStatus(card.status),
-            bindings=bindings, source_ref=proof.source_ref,
-            result_revision=proof.result_revision, relative_path=proof.relative_path,
-            explanation=payload["justification"], receipt_id=proof.execution_id,
-            current_accepted_execution=proof.current_accepted_execution,
-            actor_id=record.actor_id, symbol=proof.symbol, contributions=contributions,
-            blocking_progress_ids=proof.blocking_progress_ids,
-            blocking_progress_truncated=proof.blocking_progress_truncated,
+            bindings=bindings, source_ref="", result_revision="", relative_path="",
+            explanation=payload["justification"], receipt_id="",
+            current_accepted_execution=len(proofs) == len(identities) and all(proof.current_accepted_execution for proof in proofs),
+            actor_id=record.actor_id, contributions=contributions, executions=tuple(proofs),
+            blocking_progress_ids=tuple(sorted({identity for proof in proofs for identity in proof.blocking_progress_ids}))[:20],
+            blocking_progress_truncated=any(proof.blocking_progress_truncated for proof in proofs) or len({identity for proof in proofs for identity in proof.blocking_progress_ids}) > 20,
         )
 
     async def _execution_proof(self, execution_id, scope, card):
@@ -1121,10 +1106,10 @@ class CommunityDeliveryEvidenceStore:
                 ).with_for_update()
             )
         if command.bindings is not None:
-            payload["contribution_contract_version"] = "card-binding-contribution/v2" if command.composite_execution else "card-binding-contribution/v1"
+            payload["contribution_contract_version"] = "card-binding-contribution/v2"
             payload["contributions"] = [{
                 "obligation_ref": item.obligation_ref, "contribution": item.contribution,
-                **({"execution_ids": [ref.execution_id for ref in item.execution_refs]} if command.composite_execution else {}),
+                "execution_ids": [ref.execution_id for ref in item.execution_refs] if command.composite_execution else [command.execution_id],
             } for item in command.bindings]
         payload["bindings"] = [
             asdict(inventory[ref]) for ref in refs

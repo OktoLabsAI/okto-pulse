@@ -58,11 +58,11 @@ async def test_mixed_declarations_persist_and_gate_matches_rollup(
     record = await session.get(Record, saved["entries"][0]["id"])
     assert (
         record.payload["contribution_contract_version"]
-        == "card-binding-contribution/v1"
+        == "card-binding-contribution/v2"
     )
     assert record.payload["contributions"] == [
-        dict(obligation_ref="fr:fr", contribution="partial"),
-        dict(obligation_ref="tr:tr", contribution="complete"),
+        dict(obligation_ref="fr:fr", contribution="partial", execution_ids=[record.payload["execution_id"]]),
+        dict(obligation_ref="tr:tr", contribution="complete", execution_ids=[record.payload["execution_id"]]),
     ]
     assert all(
         len(binding["semantic_sha256"]) == 64 for binding in record.payload["bindings"]

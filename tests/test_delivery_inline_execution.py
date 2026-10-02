@@ -454,4 +454,9 @@ async def test_rest_inline_and_mcp_replay_use_origin_composition(
         record = await session.get(
             CardDeliveryEvidenceRecordRow, saved.json()["entries"][0]["id"]
         )
-        assert record.payload["contributions"] == payload["entries"][0]["bindings"]
+        assert record.payload["contribution_contract_version"] == "card-binding-contribution/v2"
+        assert record.payload["contributions"] == [
+            dict(obligation_ref=item["obligation_ref"], contribution=item["contribution"],
+                 execution_ids=[record.payload["execution_id"]])
+            for item in payload["entries"][0]["bindings"]
+        ]

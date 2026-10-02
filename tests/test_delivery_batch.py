@@ -184,7 +184,7 @@ async def test_invalid_execution_does_not_degrade_to_progress(db):
         "bindings": [dict(obligation_ref="ac:ac", contribution="complete")],
         "justification": "Not admitted",
     }
-    with pytest.raises(DeliveryBatchEntryError, match="accepted_committed"):
+    with pytest.raises(DeliveryBatchEntryError, match="delivery_execution_set_unresolved"):
         await save(store, batch(progress, proof))
     await session.commit()
     assert await session.scalar(select(func.count()).select_from(Record)) == 0
