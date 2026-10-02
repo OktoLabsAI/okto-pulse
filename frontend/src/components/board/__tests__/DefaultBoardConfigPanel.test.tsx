@@ -103,8 +103,6 @@ function candidate(
     guideline_id: guidelineId,
     title: guidelineId === 'g1' ? 'Already default' : 'Not default yet',
     scope: 'global',
-    guideline_version: 1,
-    ...head,
     head_revision: head,
     default_revision: isDefault
       ? revisionPin(guidelineId, defaultRevisionNumber)

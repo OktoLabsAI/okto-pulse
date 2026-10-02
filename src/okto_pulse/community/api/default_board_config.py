@@ -83,23 +83,6 @@ class GuidelineDefaultRefRequest(BaseModel):
     revision_digest: RevisionDigest
 
 
-class _CompatibleGuidelineDefaultRefRequest(GuidelineDefaultRefRequest):
-    """Compatibility-only aliases accepted by board-config import.
-
-    They are never exposed by native create/update endpoints.  This lets a
-    historical export retain honest legacy provenance while the live write
-    surface remains closed to the six canonical B11 fields.
-    """
-
-    revision_id: NonEmptyString | None = None
-    revision_number: PositiveInt | None = None
-    semantic_version: NonEmptyString | None = None
-    revision_digest: RevisionDigest | None = None
-    guideline_version: PositiveInt | None = None
-    legacy_version: PositiveInt | None = None
-    legacy_version_unresolvable: bool | None = None
-
-
 class GuidelineRevisionPinResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -110,22 +93,13 @@ class GuidelineRevisionPinResponse(BaseModel):
 
 
 class DefaultGuidelineCandidateResponse(BaseModel):
-    """Unambiguous head-vs-default candidate projection.
-
-    The scalar revision fields are retained additively for old readers and
-    always mirror ``head_revision``.  New clients should use the nested objects.
-    """
+    """Exact current head and immutable template default, without scalar aliases."""
 
     model_config = ConfigDict(extra="forbid")
 
     guideline_id: NonEmptyString
     title: str
     scope: str
-    guideline_version: PositiveInt
-    revision_id: NonEmptyString
-    revision_number: PositiveInt
-    semantic_version: NonEmptyString
-    revision_digest: RevisionDigest
     head_revision: GuidelineRevisionPinResponse
     default_revision: GuidelineRevisionPinResponse | None
     retired: bool
@@ -153,14 +127,6 @@ class DefaultBoardConfigVersionCreateRequest(BaseModel):
     design_system_default_ref: dict[str, Any] | None = None
     spec_checklist_mode: Literal["off", "advisory", "blocking"] | None = None
     activate: bool = False
-
-
-class _DefaultBoardConfigImportVersionRequest(
-    DefaultBoardConfigVersionCreateRequest
-):
-    """Import twin that alone accepts the documented legacy pin aliases."""
-
-    guideline_default_refs: list[_CompatibleGuidelineDefaultRefRequest] | None = None
 
 
 class UpdateDefaultGuidelineRefsRequest(BaseModel):
@@ -348,7 +314,7 @@ async def import_default_board_config(
             reject_bypass_fields(payload)
         except AmendmentRevisionApiError as exc:
             raise ImportItemError(-1, exc.to_dict())
-        return _DefaultBoardConfigImportVersionRequest.model_validate(
+        return DefaultBoardConfigVersionCreateRequest.model_validate(
             payload
         ).model_dump(exclude_unset=True)
 

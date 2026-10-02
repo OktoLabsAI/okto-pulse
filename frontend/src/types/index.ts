@@ -3983,11 +3983,6 @@ export interface DefaultGuidelineCandidate {
   guideline_id: string;
   title: string;
   scope: string;
-  guideline_version: number;
-  revision_id: string;
-  revision_number: number;
-  semantic_version: string;
-  revision_digest: string;
   head_revision: DefaultGuidelineRevisionPin;
   default_revision: DefaultGuidelineRevisionPin | null;
   retired: boolean;

@@ -215,26 +215,6 @@ def test_b11_native_ref_is_closed_and_requires_an_exact_pin() -> None:
         with pytest.raises(ValidationError):
             api.GuidelineDefaultRefRequest.model_validate(invalid)
 
-    compatible = api._CompatibleGuidelineDefaultRefRequest.model_validate(
-        {
-            "guideline_id": "legacy-guideline",
-            "guideline_version": 7,
-            "legacy_version": 11,
-            "legacy_version_unresolvable": True,
-        }
-    )
-    assert compatible.revision_id is None
-    assert compatible.guideline_version == 7
-    assert compatible.model_dump(exclude_unset=True) == {
-        "guideline_id": "legacy-guideline",
-        "guideline_version": 7,
-        "legacy_version": 11,
-        "legacy_version_unresolvable": True,
-    }
-    with pytest.raises(ValidationError):
-        api._CompatibleGuidelineDefaultRefRequest.model_validate(
-            {"guideline_id": "legacy-guideline", "unknown_legacy_alias": 1}
-        )
 
 
 @pytest.mark.asyncio
@@ -308,7 +288,7 @@ async def test_b11_update_route_dumps_refs_and_rejects_duplicates_before_use_cas
 
 
 @pytest.mark.asyncio
-async def test_b11_board_config_import_preserves_only_supplied_compat_fields(
+async def test_b11_board_config_import_preserves_exact_pin(
     monkeypatch,
 ) -> None:
     captured: list[dict] = []
@@ -326,12 +306,13 @@ async def test_b11_board_config_import_preserves_only_supplied_compat_fields(
         )
 
     monkeypatch.setattr(api.ImportBoardConfigUseCase, "execute", execute)
-    legacy_ref = {
-        "guideline_id": "legacy-guideline",
+    native_ref = {
+        "guideline_id": "guideline-1",
         "priority": 3,
-        "guideline_version": 7,
-        "legacy_version": 11,
-        "legacy_version_unresolvable": True,
+        "revision_id": "revision-1",
+        "revision_number": 1,
+        "semantic_version": "1.0.0",
+        "revision_digest": "a" * 64,
     }
     response = await api.import_default_board_config(
         envelope={
@@ -341,7 +322,7 @@ async def test_b11_board_config_import_preserves_only_supplied_compat_fields(
             "items": [
                 {
                     "scope": "global",
-                    "guideline_default_refs": [legacy_ref],
+                    "guideline_default_refs": [native_ref],
                     "is_active": False,
                 }
             ],
@@ -352,8 +333,33 @@ async def test_b11_board_config_import_preserves_only_supplied_compat_fields(
     )
 
     assert response["dry_run"] is True
-    assert captured[0]["guideline_default_refs"] == [legacy_ref]
+    assert captured[0]["guideline_default_refs"] == [native_ref]
     assert captured[0]["activate"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("refs", [
+    [{"guideline_id": "old", "guideline_version": 7}],
+    [{"guideline_id": "incomplete"}],
+    [{"guideline_id": "old", "revision_id": "r", "revision_number": 1,
+      "semantic_version": "1.0.0", "revision_digest": "a" * 64,
+      "legacy_version": 1}],
+])
+async def test_b11_import_rejects_old_or_incomplete_pins_before_use_case(monkeypatch, refs):
+    async def forbidden(*args, **kwargs):
+        pytest.fail("Invalid pins must never enter the write use case")
+
+    monkeypatch.setattr(api.ImportBoardConfigUseCase, "execute", forbidden)
+    with pytest.raises(HTTPException) as caught:
+        await api.import_default_board_config(
+            envelope={"schema_version": "1", "kind": "board_config",
+                      "exported_at": NOW.isoformat(),
+                      "items": [{"scope": "global", "guideline_default_refs": refs}]},
+            dry_run=False, db=object(),
+            principal=Principal(subject=OWNER_ID, realm_id="local"),
+        )
+    assert caught.value.status_code == 400
+    assert caught.value.detail["created"] == 0
 
 
 def test_b11_candidate_rest_projection_is_closed_and_reasoned(monkeypatch) -> None:
@@ -378,11 +384,6 @@ def test_b11_candidate_rest_projection_is_closed_and_reasoned(monkeypatch) -> No
                 "guideline_id": "guideline-active",
                 "title": "Active",
                 "scope": "global",
-                "guideline_version": 2,
-                "revision_id": head["revision_id"],
-                "revision_number": head["revision_number"],
-                "semantic_version": head["semantic_version"],
-                "revision_digest": head["revision_digest"],
                 "head_revision": head,
                 "default_revision": default,
                 "retired": False,
@@ -395,11 +396,6 @@ def test_b11_candidate_rest_projection_is_closed_and_reasoned(monkeypatch) -> No
                 "guideline_id": "guideline-retired",
                 "title": "Retired",
                 "scope": "global",
-                "guideline_version": 2,
-                "revision_id": head["revision_id"],
-                "revision_number": head["revision_number"],
-                "semantic_version": head["semantic_version"],
-                "revision_digest": head["revision_digest"],
                 "head_revision": head,
                 "default_revision": None,
                 "retired": True,
