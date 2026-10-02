@@ -90,14 +90,14 @@ async def test_adapter_satisfies_port_protocol(store):
 
 async def test_semantic_capture_survives_sql_roundtrip(store):
     adapter, factory = store
-    payload = {'capture_format': 'learning-capture/v1', 'capture_id': 'capture-sql',
+    payload = {'capture_format': 'learning-capture/v2', 'capture_id': 'capture-sql',
         'author_id': 'author-a', 'captured_at': '2026-09-24T12:00:00+00:00',
         'content': 'Retry idempotent operations only.', 'context': 'Worker retries',
         'applicability': 'Operations with a verified idempotency key',
         'source': {'board_id': BOARD, 'bug_id': 'bug-a', 'policy_version': 2,
             'digest': 'a' * 64, 'evidence_refs': ['test_task:test-a']},
         'intent': {'kind': 'create', 'target_node_id': None, 'target_generation': None,
-            'expected_fingerprint': None, 'reason': None}}
+            'expected_fingerprint': None, 'reason': None, 'scope': None}}
     record = CognitiveSourceRecord(board_id=BOARD, node_type='Learning', node_id='capture-learning',
         generation=0, payload=payload, evidence_refs=('test_task:test-a',))
     async with factory() as session:

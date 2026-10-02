@@ -72,9 +72,9 @@ function parseCandidates(value: unknown): LearningCandidates {
   return { status: 'available', items, limitation: null, limitations: value.limitations as string[] };
 }
 function parseIntent(value: unknown, format: unknown, learning: string, generation: number): CaptureIntent {
-  if (!object(value) || !['learning-capture/v1', 'learning-capture/v2'].includes(String(format))) invalid();
-  const scoped = format === 'learning-capture/v2';
-  const keys = ['kind', 'target_node_id', 'target_generation', 'expected_fingerprint', 'reason', ...(scoped ? ['scope'] : [])];
+  if (!object(value) || format !== 'learning-capture/v2') invalid();
+  const scoped = value.scope !== null;
+  const keys = ['kind', 'target_node_id', 'target_generation', 'expected_fingerprint', 'reason', 'scope'];
   if (Object.keys(value).length !== keys.length || !keys.every(key => key in value)) invalid();
   if (value.kind === 'create') {
     if (scoped || [value.target_node_id, value.target_generation, value.expected_fingerprint, value.reason].some(field => field !== null)) invalid();

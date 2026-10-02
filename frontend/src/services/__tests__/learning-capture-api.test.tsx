@@ -11,10 +11,10 @@ const source = { contract_version: 'learning-capture-context/v1', board_id: 'boa
   source_digest: 'a'.repeat(64), source_policy_version: 1,
   scenarios: [{ id: 'scenario', title: 'Inspection', authenticated: true }] };
 const item = { learning_id: 'learning', generation: 0, source_revision: 1, fingerprint: 'b'.repeat(64),
-  capture: { capture_format: 'learning-capture/v1', capture_id: 'capture', author_id: 'author',
+  capture: { capture_format: 'learning-capture/v2', capture_id: 'capture', author_id: 'author',
     captured_at: '2026-09-24T15:00:00Z', content: 'Lesson', context: 'Context', applicability: 'Scope',
     source: { board_id: 'board', bug_id: 'bug', digest: 'a'.repeat(64), policy_version: 1 },
-    intent: { kind: 'create', target_node_id: null, target_generation: null, expected_fingerprint: null, reason: null } } };
+    intent: { kind: 'create', target_node_id: null, target_generation: null, expected_fingerprint: null, reason: null, scope: null } } };
 const history = { contract_version: 'learning-capture-history/v1', board_id: 'board', bug_id: 'bug', items: [item], next_cursor: null };
 
 const suggestions = { contract_version: 'learning-candidates/v1', status: 'available', exhaustive: false,
@@ -102,11 +102,11 @@ it.each(['not_recorded', 'history_limit', 'history_capability_unavailable', 'tar
   expect(parseCaptureHistory({ ...raw, items: [row] }, 'board', 'bug').items[0].lineage).toEqual({ state: 'unverified', limitation });
 });
 
-it('keeps legacy replacement unscoped and accepts reuse only for the selected identity', () => {
+it('keeps explicit null scope unscoped and accepts reuse only for the selected identity', () => {
   const { scope: _scope, ...intent } = scopedHistory().items[0].capture.intent;
-  const legacy = { ...item, capture: { ...item.capture, intent } };
-  expect(parseCaptureHistory({ ...history, items: [legacy] }, 'board', 'bug').items[0].capture.intent).not.toHaveProperty('scope');
-  const reuse = { ...item, capture: { ...item.capture, intent: { ...intent, kind: 'reuse', target_node_id: item.learning_id } } };
+  const unscoped = { ...item, capture: { ...item.capture, intent: { ...intent, scope: null } } };
+  expect(parseCaptureHistory({ ...history, items: [unscoped] }, 'board', 'bug').items[0].capture.intent).not.toHaveProperty('scope');
+  const reuse = { ...item, capture: { ...item.capture, intent: { ...intent, scope: null, kind: 'reuse', target_node_id: item.learning_id } } };
   expect(parseCaptureHistory({ ...history, items: [reuse] }, 'board', 'bug').items[0].capture.intent.kind).toBe('reuse');
   reuse.capture.intent.target_node_id = 'foreign';
   expect(() => parseCaptureHistory({ ...history, items: [reuse] }, 'board', 'bug')).toThrow();
@@ -161,4 +161,13 @@ it('rejects an unrelated acknowledgement and a non-advancing history cursor', as
   await expect(result.current.history('board', 'bug', 'same', signal)).rejects.toThrow();
   await expect(result.current.create('bug', { board_id: 'board', capture_id: 'capture', expected_source_digest: 'a'.repeat(64),
     expected_source_version: 1, content: 'L', context: 'C', applicability: 'A', scenario_ids: ['scenario'] }, signal)).rejects.toThrow();
+});
+
+it.each(['old_format', 'missing_scope'])('refuses incompatible capture without rewriting history: %s', damage => {
+  const bad = structuredClone(history);
+  if (damage === 'old_format') bad.items[0].capture.capture_format = 'learning-capture/v1';
+  else Reflect.deleteProperty(bad.items[0].capture.intent, 'scope');
+  const before = structuredClone(bad);
+  expect(() => parseCaptureHistory(bad, 'board', 'bug')).toThrow();
+  expect(bad).toEqual(before);
 });
