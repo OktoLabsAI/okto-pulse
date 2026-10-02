@@ -76,20 +76,12 @@ EXPECTED_PULSE_VERSION = tomllib.loads(
 )["project"]["version"]
 assert tomllib.loads((CORE_REPO / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"] == EXPECTED_PULSE_VERSION
 BOARD_CENSUS_SIZE = 1_500
-EXPECTED_TOOL_COUNT = 301
-EXPECTED_CANONICAL_TOOL_COUNT = 294
+EXPECTED_TOOL_COUNT = 291
+EXPECTED_CANONICAL_TOOL_COUNT = 291
 EXPECTED_TOOL_INVENTORY_SHA256 = (
-    "87584aac5163215b5d302078198d3ebd425d6061b1ce931302ea7184cd90f688"
+    "38cdb6a9aa2aebfa1e6780a230b47d1758d954b1e103405952ddee0e40636aa9"
 )
-EXPECTED_TOOL_ALIASES = {
-    "okto_pulse_ask_ideation_question": "okto_pulse_ask",
-    "okto_pulse_ask_question": "okto_pulse_ask",
-    "okto_pulse_ask_refinement_question": "okto_pulse_ask",
-    "okto_pulse_ask_spec_question": "okto_pulse_ask",
-    "okto_pulse_remove_api_contract": "okto_pulse_remove_spec_entity",
-    "okto_pulse_remove_business_rule": "okto_pulse_remove_spec_entity",
-    "okto_pulse_remove_decision": "okto_pulse_remove_spec_entity",
-}
+EXPECTED_TOOL_ALIASES = {}
 
 pytestmark = [
     pytest.mark.e2e,

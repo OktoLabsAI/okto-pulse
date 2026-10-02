@@ -32,9 +32,9 @@ from typing import Any
 
 EXPECTED_VERSION = "0.3.4"
 EXPECTED_GRAFX_VERSION = "0.0.7"
-EXPECTED_MCP_TOOL_COUNT = 301
-EXPECTED_CANONICAL_TOOL_COUNT = 294
-EXPECTED_TOOL_ALIAS_COUNT = 7
+EXPECTED_MCP_TOOL_COUNT = 291
+EXPECTED_CANONICAL_TOOL_COUNT = 291
+EXPECTED_TOOL_ALIAS_COUNT = 0
 EXPECTED_RESOURCE_COUNT = 54
 MINIMUM_SUPPORTED_PYTHON = (3, 11)
 COMMUNITY_REPO = Path(__file__).resolve().parents[1]
@@ -859,7 +859,8 @@ async def main():
     assert frozen_ska_tools <= set(names)
     assert "okto_pulse_ask" in names
     assert "okto_pulse_remove_spec_entity" in names
-    assert aliases["okto_pulse_ask_question"] == "okto_pulse_ask"
+    assert aliases == {}
+    assert "okto_pulse_ask_question" not in names
     print("MCP_HTTP_PROBE=" + json.dumps({
         "transport": "streamable-http-loopback",
         "server_version": initialized.serverInfo.version,

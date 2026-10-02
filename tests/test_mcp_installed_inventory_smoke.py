@@ -62,4 +62,5 @@ async def test_live_catalog_initialize_tools_list_and_manifest_agree(
     assert frozen_ska_tools <= set(names)
     assert "okto_pulse_ask" in names
     assert "okto_pulse_remove_spec_entity" in names
-    assert aliases["okto_pulse_ask_question"] == "okto_pulse_ask"
+    assert aliases == {}
+    assert "okto_pulse_ask_question" not in names

@@ -49,7 +49,7 @@ Args:
 Returns:
     JSON with migration summary (decisions_added, context_modified)
 
-## `okto_pulse_remove_decision`
+## `okto_pulse_remove_spec_entity` (`target_type="decision"`)
 
 Remove a Decision (soft-delete: status becomes "revoked").
 
@@ -60,7 +60,8 @@ restore.
 Args:
     board_id: Board ID
     spec_id: Spec ID
-    decision_id: Decision ID ("dec_...")
+    target_type: decision
+    entity_id: Decision ID ("dec_...")
 
 Returns:
     JSON confirmation
