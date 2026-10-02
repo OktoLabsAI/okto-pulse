@@ -1,10 +1,4 @@
-"""Semantic-guideline outbox and KG lineage regressions.
-
-The historical B14 suite asserted deterministic ``Rule -> Constraint``
-materialization.  SK-B3 deliberately retires that projection: semantic
-guideline authority is now represented by physical ``Entity`` subtypes while
-old rule ``Constraint`` nodes remain terminal audit history.
-"""
+"""Native semantic-guideline outbox, graph lineage and repair regressions."""
 
 from __future__ import annotations
 
@@ -37,11 +31,9 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
 )
 from okto_pulse.community.adapters.sqlalchemy_policy_constraint_projection import (
     CommunitySqlAlchemyPolicyConstraintProjection,
-    POLICY_CONSTRAINT_ACTOR,
     PolicyConstraintProjectionConflict,
     SEMANTIC_GUIDELINE_KG_ACTOR,
     SEMANTIC_GUIDELINE_KG_CONTRACT,
-    SEMANTIC_GUIDELINE_LEGACY_TERMINATED_REASON,
     SEMANTIC_GUIDELINE_SOURCE_REMOVED_REASON,
     _decode_semantic_context,
     _desired_semantic_node,
@@ -117,18 +109,6 @@ class _SemanticGraphScope:
                 for node_id, attrs in sorted(self.nodes["Entity"].items())
             ]
             return GraphStatementResult.from_rows(rows)
-        if normalized.startswith("MATCH (n:Constraint) RETURN n.id"):
-            rows = [
-                (
-                    node_id,
-                    attrs.get("source_artifact_ref"),
-                    attrs.get("created_by_agent"),
-                    attrs.get("revocation_reason"),
-                    attrs.get("superseded_by"),
-                )
-                for node_id, attrs in sorted(self.nodes["Constraint"].items())
-            ]
-            return GraphStatementResult.from_rows(rows)
         if normalized.startswith(
             "MATCH (n:Entity) WHERE n.source_artifact_ref = $source_ref"
         ):
@@ -169,12 +149,6 @@ class _SemanticGraphScope:
                 if "reason" in params:
                     node["superseded_by"] = None
                     node["revocation_reason"] = params["reason"]
-            return GraphStatementResult()
-        if normalized.startswith("MATCH (n:Constraint {id: $node_id}) SET"):
-            node = self.nodes["Constraint"][str(params["node_id"])]
-            node["superseded_by"] = None
-            node["superseded_at"] = params["ended_at"]
-            node["revocation_reason"] = params["reason"]
             return GraphStatementResult()
         raise AssertionError(f"unexpected statement: {normalized}")
 
@@ -580,12 +554,13 @@ def test_waiver_projection_tombstone_precedence(
 @pytest.mark.asyncio
 async def test_semantic_projection_is_entity_only_complete_and_replay_safe():
     graph = _SemanticGraph()
-    graph.scope.nodes["Constraint"]["guideline-revision:old:rule:old"] = {
-        "source_artifact_ref": "guideline-revision:old:rule:old",
-        "created_by_agent": POLICY_CONSTRAINT_ACTOR,
+    foreign_constraint = {
+        "source_artifact_ref": "architecture:constraint-1",
+        "created_by_agent": "architecture-author",
         "superseded_by": None,
         "revocation_reason": None,
     }
+    graph.scope.nodes["Constraint"]["constraint-1"] = deepcopy(foreign_constraint)
     projector = CommunitySqlAlchemyPolicyConstraintProjection(
         graph_transaction_resolver=lambda: graph
     )
@@ -600,7 +575,7 @@ async def test_semantic_projection_is_entity_only_complete_and_replay_safe():
     )
 
     assert first.activated_count == 7
-    assert first.ended_count == 1
+    assert first.ended_count == 0
     assert first.active_count == 7
     assert all(
         node["created_by_agent"] == SEMANTIC_GUIDELINE_KG_ACTOR
@@ -608,8 +583,7 @@ async def test_semantic_projection_is_entity_only_complete_and_replay_safe():
         if node_id.startswith("semantic-guideline:")
     )
     assert len(graph.scope.nodes["Constraint"]) == 1
-    legacy = graph.scope.nodes["Constraint"]["guideline-revision:old:rule:old"]
-    assert legacy["revocation_reason"] == SEMANTIC_GUIDELINE_LEGACY_TERMINATED_REASON
+    assert graph.scope.nodes["Constraint"]["constraint-1"] == foreign_constraint
 
     lineage_edges = {
         (from_id, to_id)
@@ -678,7 +652,7 @@ async def test_semantic_projection_is_entity_only_complete_and_replay_safe():
     assert rebuilt.activated_count == 2
     assert rebuilt.active_count == 7
     assert len(graph.scope.nodes["Constraint"]) == 1
-    assert legacy["revocation_reason"]
+    assert graph.scope.nodes["Constraint"]["constraint-1"] == foreign_constraint
 
 
 @pytest.mark.asyncio

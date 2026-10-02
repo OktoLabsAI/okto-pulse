@@ -6,8 +6,7 @@ reconciles stable physical ``Entity`` subtypes into the graph.  At-least-once
 delivery is safe because every node uses a stable public identity and every
 replay derives the full board state again.
 
-The adapter never creates historical rule ``Constraint`` nodes and terminates
-any that are still active.
+The adapter reconciles only its native semantic ``Entity`` projections.
 """
 
 from __future__ import annotations
@@ -77,7 +76,7 @@ async def _run_blocking_graph_io(
         raise
 
 
-POLICY_CONSTRAINT_ACTOR = "policy-constraint-projector"
+POLICY_BOARD_ROOT_ACTOR = "policy-board-root-projector"
 
 
 class PolicyConstraintProjectionConflict(RuntimeError):
@@ -133,7 +132,7 @@ def _root_node_id(scope: Any, *, board_id: str, source_session_id: str) -> str:
             "graph_layer": "canonical",
             "maturity_status": "canonical_eligible",
             "created_at": datetime.now(timezone.utc).isoformat(),
-            "created_by_agent": POLICY_CONSTRAINT_ACTOR,
+            "created_by_agent": POLICY_BOARD_ROOT_ACTOR,
             "source_confidence": 1.0,
             "relevance_score": 0.5,
             "priority_boost": 0.0,
@@ -153,9 +152,6 @@ SEMANTIC_GUIDELINE_KG_ROOT_RULE = (
 )
 SEMANTIC_GUIDELINE_KG_LINEAGE_RULE = (
     "supersedes/semantic_guideline_lineage@semantic-guideline-kg/v1"
-)
-SEMANTIC_GUIDELINE_LEGACY_TERMINATED_REASON = (
-    "semantic_guideline_legacy_rule_projection_retired"
 )
 SEMANTIC_GUIDELINE_SOURCE_REMOVED_REASON = (
     "semantic_guideline_relational_source_removed"
@@ -221,19 +217,6 @@ class _SemanticGraphNode:
     @property
     def active(self) -> bool:
         return not self.superseded_by and not self.revocation_reason
-
-
-@dataclass(frozen=True, slots=True)
-class _LegacyRuleNode:
-    node_id: str
-    source_artifact_ref: str
-    created_by_agent: str
-    revocation_reason: str
-    superseded_by: str
-
-    @property
-    def active(self) -> bool:
-        return not self.revocation_reason and not self.superseded_by
 
 
 def _db_utc(value: datetime) -> datetime:
@@ -483,34 +466,6 @@ def _semantic_graph_nodes(scope: Any) -> tuple[_SemanticGraphNode, ...]:
             )
         )
     return tuple(sorted(nodes, key=lambda item: item.node_id))
-
-
-def _legacy_rule_nodes(scope: Any) -> tuple[_LegacyRuleNode, ...]:
-    result = scope.execute(
-        "MATCH (n:Constraint) RETURN n.id, n.source_artifact_ref, "
-        "n.created_by_agent, n.revocation_reason, n.superseded_by"
-    )
-    nodes = []
-    for row in result.rows:
-        node_id = str(row[0] or "")
-        source_ref = str(row[1] or "")
-        actor = str(row[2] or "")
-        if not (
-            actor == POLICY_CONSTRAINT_ACTOR
-            or source_ref.startswith("guideline-revision:")
-            or node_id.startswith("guideline-revision:")
-        ):
-            continue
-        nodes.append(
-            _LegacyRuleNode(
-                node_id=node_id,
-                source_artifact_ref=source_ref,
-                created_by_agent=actor,
-                revocation_reason=str(row[3] or ""),
-                superseded_by=str(row[4] or ""),
-            )
-        )
-    return tuple(nodes)
 
 
 def _prefetch_semantic_edges(
@@ -1368,23 +1323,6 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
                     )
                     ended += 1
 
-                legacy = _legacy_rule_nodes(scope)
-                for node in legacy:
-                    if not node.active:
-                        continue
-                    scope.execute(
-                        "MATCH (n:Constraint {id: $node_id}) SET "
-                        "n.superseded_by = NULL, "
-                        "n.superseded_at = timestamp($ended_at), "
-                        "n.revocation_reason = $reason",
-                        {
-                            "node_id": node.node_id,
-                            "ended_at": projected_at.isoformat(),
-                            "reason": SEMANTIC_GUIDELINE_LEGACY_TERMINATED_REASON,
-                        },
-                    )
-                    ended += 1
-
                 root_id = (
                     _root_node_id(
                         scope,
@@ -1494,10 +1432,6 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
                     raise PolicyConstraintProjectionConflict(
                         "semantic_guideline_reconciliation_unconfirmed"
                     )
-                if any(node.active for node in _legacy_rule_nodes(scope)):
-                    raise PolicyConstraintProjectionConflict(
-                        "semantic_guideline_legacy_constraint_active"
-                    )
                 scope.execute("COMMIT")
                 transaction_open = False
             except BaseException:
@@ -1589,12 +1523,11 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
 
 __all__ = [
     "CommunitySqlAlchemyPolicyConstraintProjection",
-    "POLICY_CONSTRAINT_ACTOR",
+    "POLICY_BOARD_ROOT_ACTOR",
     "PolicyConstraintProjectionConflict",
     "SEMANTIC_GUIDELINE_KG_ACTOR",
     "SEMANTIC_GUIDELINE_KG_CONTRACT",
     "SEMANTIC_GUIDELINE_KG_LINEAGE_RULE",
     "SEMANTIC_GUIDELINE_KG_NODE_TYPE",
     "SEMANTIC_GUIDELINE_KG_ROOT_RULE",
-    "SEMANTIC_GUIDELINE_LEGACY_TERMINATED_REASON",
 ]
