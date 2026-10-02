@@ -172,6 +172,18 @@ def test_submit_route_forwards_canonical_contract_and_returns_only_acknowledgeme
     }
 
 
+@pytest.mark.parametrize('old_field', ['score', 'summary', 'completeness',
+                                     'general_justification', 'expected_spec_edition'])
+def test_removed_fields_are_refused_before_use_case(client, monkeypatch, old_field):
+    async def unexpected(*args, **kwargs):
+        raise AssertionError('incompatible input reached the use case')
+    monkeypatch.setattr(SubmitSpecValidationUseCase, 'execute', unexpected)
+    response = client.post('/api/v1/specs/spec-1/validation',
+                           json={**_canonical_submit_payload(), old_field: None})
+    assert response.status_code == 422, response.text
+    assert old_field in response.text
+
+
 def test_history_preserves_native_previous_edition(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
