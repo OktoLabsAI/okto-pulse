@@ -598,8 +598,7 @@ export interface QualityAssessmentReceipt {
   assessment_kind: QualityAssessmentKind;
   origin:
     | 'human_or_agent'
-    | 'spec_validation'
-    | 'semantic_writer';
+    | 'spec_validation';
   source: 'native';
   channel: string;
   outcome: 'recorded' | 'advisory';

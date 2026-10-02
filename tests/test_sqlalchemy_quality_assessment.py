@@ -118,15 +118,7 @@ from okto_pulse.core.ports.quality_assessment import (
     FindingListQuery,
     QualityAssessmentPersistencePort,
 )
-from okto_pulse.core.ports.requirement_lint import (
-    RequirementLintWriteCommand,
-    RequirementLintWriter,
-)
 from okto_pulse.core.ports.domain_event_delivery import StoredDomainEvent
-from okto_pulse.core.services.requirement_lint_assessment import (
-    RequirementLintAssessmentInput,
-    build_requirement_lint_assessment_bundle,
-)
 from okto_pulse.core.services.ska_observability import (
     reset_ska_metric_samples_for_tests,
     ska_metric_samples,
@@ -218,11 +210,11 @@ def _spec_payload() -> dict[str, Any]:
 def _lint_authority(actor: str = "agent-quality") -> AssessmentAuthoritySnapshot:
     return AssessmentAuthoritySnapshot(
         domain_write=True,
-        quality_assess=False,
+        quality_assess=True,
         qa_ask=False,
         reviewer_separation_satisfied=True,
         authority_digest=canonical_sha256(
-            {"authority": "semantic-writer", "actor": actor}
+            {"authority": "external-reviewer", "actor": actor}
         ),
     )
 
@@ -238,30 +230,52 @@ def _lint_bundle(
     head_receipt_id: str | None = None,
     now: datetime = NOW,
 ):
+    # Native external assessment input. These adapter tests inject authority and
+    # input resolution; they do not qualify the external preflight use case.
+    from okto_pulse.core.domain.requirement_lint import external_requirement_lint_digests_v1
     payload = _spec_payload() if payload is None else payload
-    command = RequirementLintWriteCommand(
-        board_id=BOARD_ID,
-        spec_id=SPEC_ID,
-        spec_version=spec_version,
-        actor_id=actor,
-        writer=RequirementLintWriter.BULK_UPDATE,
-        spec_status="in_progress",
-        spec_archived=False,
-        changed_fields=("functional_requirements",),
-        spec_payload=payload,
+    digests = external_requirement_lint_digests_v1(
+        content_digest=semantic_content_digest_v1(AssessmentSubjectType.SPEC, payload),
+        clarification_digest=clarification_digest_v1(()),
     )
-    return build_requirement_lint_assessment_bundle(
-        RequirementLintAssessmentInput(
-            command=command,
-            authority=_lint_authority(actor),
-            qa_items=(),
-            default_locale=locale,
-            current_head_revision=head_revision,
-            current_head_receipt_id=head_receipt_id,
+    category = "functional_scope_behavior"
+    finding = QualityFindingDraft(
+        finding_key="native-review", category_code=category,
+        severity=FindingSeverity.HIGH, confidence=0.91,
+        deterministic=False, blocking_eligible=False,
+        title="Clarify observable behavior", detail="The response is unspecified.",
+        remediation="Specify the response contract.", rule_code="external-review",
+        anchor=FindingAnchor(
+            board_id=BOARD_ID, subject_type=AssessmentSubjectType.SPEC,
+            subject_id=SPEC_ID, subject_version=spec_version,
+            input_digest=digests.input_digest, anchor_type=FindingAnchorType.STRUCTURED_CHILD,
+            anchor_ref="fr-vague", excerpt_hash=canonical_sha256("O fluxo deve ser fácil."),
         ),
-        quality_service=QualityAssessmentService(
-            id_factory=_Ids(namespace),
-            clock=lambda: now,
+    )
+    scale = AssessmentScale(AssessmentScaleKind.FINDING_COUNT, 0, 10, ScoreDirection.LOWER_BETTER)
+    submission = AssessmentSubmission(
+        board_id=BOARD_ID, subject_type=AssessmentSubjectType.SPEC, subject_id=SPEC_ID,
+        assessment_kind=AssessmentKind.REQUIREMENT_LINT,
+        idempotency_key=f"external-lint:{spec_version}:{locale.value}",
+        expected_subject_version=spec_version, expected_subject_edition=1,
+        expected_head_revision=head_revision, score=1, scale=scale,
+        justification=f"External assessment {locale.value}.", findings=(finding,),
+        proposed_questions=(),
+    )
+    return QualityAssessmentService(id_factory=_Ids(namespace), clock=lambda: now).prepare_submission(
+        submission, actor_id=actor,
+        preflight=AssessmentPreflight(
+            subject=AssessmentSubjectRef(
+                board_id=BOARD_ID, subject_type=AssessmentSubjectType.SPEC,
+                subject_id=SPEC_ID, subject_version=spec_version, subject_edition=1,
+            ),
+            status="approved", current_head_revision=head_revision,
+            current_head_receipt_id=head_receipt_id, channel="mcp",
+            expected_scale=scale, digests=digests,
+            versions=AssessmentVersionSet("external-lint/v1", "taxonomy/v1", "reviewer/v1", "policy/v1"),
+            anchors=AssessmentAnchorCatalog(structured_child_ids=frozenset({"fr-vague"})),
+            allowed_category_codes=frozenset({category}), authority=_lint_authority(actor),
+            origin=AssessmentOrigin.HUMAN_OR_AGENT,
         ),
     )
 
@@ -316,6 +330,7 @@ def _manual_bundle(
         subject_type=subject_type,
         subject_id=subject_id,
         subject_version=3,
+        subject_edition=1,
     )
     category = "functional_scope_behavior"
     finding_key = f"manual:{subject_type.value}:{subject_id}"
@@ -326,6 +341,7 @@ def _manual_bundle(
         assessment_kind=AssessmentKind.AMBIGUITY,
         idempotency_key=f"manual:{namespace}",
         expected_subject_version=3,
+        expected_subject_edition=1,
         expected_head_revision=0,
         score=2,
         justification="One pinpointed ambiguity remains.",
@@ -490,7 +506,7 @@ async def rig(tmp_path: Path):
                     integration_requirements=payload["integration_requirements"],
                     observability_requirements=payload["observability_requirements"],
                     decisions=payload["decisions"],
-                    status=SpecStatus.IN_PROGRESS,
+                    status=SpecStatus.APPROVED,
                     version=7,
                     created_by="owner",
                     architecture_adoption=ArchitectureAdoptionScope(
@@ -590,7 +606,7 @@ async def _count(session: AsyncSession, model: type) -> int:
     )
 
 
-@pytest.mark.parametrize("field,value", [("origin", "legacy_import"), ("source", "legacy_migration")])
+@pytest.mark.parametrize("field,value", [("origin", "legacy_import"), ("origin", "semantic_writer"), ("source", "legacy_migration")])
 async def test_schema_refuses_imported_quality_receipts_without_conversion(rig, field, value):
     bundle = _lint_bundle(namespace="native-only")
     async with rig() as session:
@@ -674,24 +690,12 @@ async def test_round_trip_audit_projection_pagination_and_board_isolation(
         assert sample["value"] == 1
         assert sample["duration_ms"] >= 0
         assert sample["payload_bytes"] > 0
-        assert summaries == {
-            SPEC_ID: {
-                "requirement_lint": {
-                    "edition": 1,
-                    "state": "not_started",
-                    # The NULL-edition receipt is legacy history, never the
-                    # current lifecycle result.
-                    "previous_count": 1,
-                    "current_result": None,
-                },
-                "spec_validation": {
-                    "edition": 1,
-                    "state": "not_started",
-                    "previous_count": 0,
-                    "current_result": None,
-                },
-            }
-        }
+        lint_summary = summaries[SPEC_ID]["requirement_lint"]
+        assert lint_summary["edition"] == 1
+        assert lint_summary["state"] == "current"
+        assert lint_summary["previous_count"] == 0
+        assert lint_summary["current_result"]["score"] == first.receipt.score
+        assert summaries[SPEC_ID]["spec_validation"]["state"] == "not_started"
 
     async with rig() as session:
         adapter = _adapter(session)
@@ -732,7 +736,7 @@ async def test_round_trip_audit_projection_pagination_and_board_isolation(
                 ),
                 offset=0,
                 limit=1,
-                current_subject_version=7,
+                current_subject_version=7, current_subject_edition=1,
                 current_digests=second.receipt.digests,
             )
         )
@@ -749,14 +753,14 @@ async def test_round_trip_audit_projection_pagination_and_board_isolation(
                     ),
                     offset=0,
                     limit=1,
-                    current_subject_version=7,
+                    current_subject_version=7, current_subject_edition=1,
                     current_digests=second.receipt.digests,
                 ),
                 offset=1,
             )
         )
         assert adjacent.items[0].receipt.id == first.receipt.id
-        assert adjacent.items[0].state is AssessmentReceiptState.SUPERSEDED
+        assert adjacent.items[0].state is AssessmentReceiptState.PREVIOUS
 
         current_only = await adapter.list_assessments(
             AssessmentListQuery(
@@ -768,36 +772,19 @@ async def test_round_trip_audit_projection_pagination_and_board_isolation(
                 offset=0,
                 limit=10,
                 state=AssessmentReceiptState.CURRENT,
-                current_subject_version=7,
+                current_subject_version=7, current_subject_edition=1,
                 current_digests=second.receipt.digests,
             )
         )
         assert current_only.total_filtered == 1
         assert current_only.total_overall == 2
-        changed_digests = AssessmentDigestSet(
-            content_digest=canonical_sha256("changed semantic content"),
-            clarification_digest=second.receipt.digests.clarification_digest,
-            ruleset_digest=second.receipt.digests.ruleset_digest,
-            taxonomy_digest=second.receipt.digests.taxonomy_digest,
-            policy_digest=second.receipt.digests.policy_digest,
-        )
-        stale_only = await adapter.list_assessments(
-            AssessmentListQuery(
-                subject=AssessmentSubjectIdentity(
-                    board_id=BOARD_ID,
-                    subject_type=AssessmentSubjectType.SPEC,
-                    subject_id=SPEC_ID,
-                ),
-                offset=0,
-                limit=10,
-                state=AssessmentReceiptState.STALE,
-                current_subject_version=7,
-                current_digests=changed_digests,
-            )
-        )
-        assert stale_only.total_filtered == 1
-        assert stale_only.items[0].receipt.id == second.receipt.id
-        assert stale_only.items[0].freshness.stale_reasons
+        previous = await adapter.list_assessments(AssessmentListQuery(
+            subject=AssessmentSubjectIdentity(board_id=BOARD_ID, subject_type=AssessmentSubjectType.SPEC, subject_id=SPEC_ID),
+            offset=0, limit=10, state=AssessmentReceiptState.PREVIOUS,
+            current_subject_version=7, current_subject_edition=2,
+        ))
+        assert previous.total_filtered == 2
+        assert {item.receipt.id for item in previous.items} == {first.receipt.id, second.receipt.id}
 
         finding_page = await adapter.list_findings(
             FindingListQuery(
@@ -856,19 +843,14 @@ async def test_round_trip_audit_projection_pagination_and_board_isolation(
                 ),
                 offset=0,
                 limit=10,
-                current_subject_version=7,
+                current_subject_version=7, current_subject_edition=1,
                 current_digests=second.receipt.digests,
             )
         )
         assert isolated.total_overall == isolated.total_filtered == 0
 
-        qa_row = await session.get(
-            SpecQAItem,
-            first.proposed_questions[0].qa_id,
-        )
-        # Requirement Lint records proposed-question evidence, but Community
-        # must not materialize it as an owned Spec QA item automatically.
-        assert qa_row is None
+        assert first.proposed_questions == ()
+        assert await _count(session, SpecQAItem) == 0
         receipt_row = await session.get(
             QualityAssessmentReceiptRow,
             first.receipt.id,
@@ -920,7 +902,7 @@ async def test_idempotent_replay_and_fingerprint_conflict(rig) -> None:
     assert rebuilt.request_fingerprint == bundle.request_fingerprint
     assert rebuilt.receipt.id != bundle.receipt.id
     assert rebuilt.audit_intent.event_id != bundle.audit_intent.event_id
-    assert rebuilt.proposed_questions[0].qa_id != (bundle.proposed_questions[0].qa_id)
+    assert rebuilt.proposed_questions == bundle.proposed_questions == ()
     async with rig() as session:
         result = await _adapter(session).apply_bundle_cas(rebuilt)
         assert result.replayed
@@ -997,7 +979,7 @@ async def test_fail_closed_authority_input_and_subject_fences(rig) -> None:
             await _adapter(session).apply_bundle_cas(bundle)
         await session.rollback()
         await session.execute(
-            update(Spec).where(Spec.id == SPEC_ID).values(status=SpecStatus.IN_PROGRESS)
+            update(Spec).where(Spec.id == SPEC_ID).values(status=SpecStatus.APPROVED)
         )
         await session.commit()
 
@@ -1037,7 +1019,7 @@ async def test_lifecycle_winner_rejects_stale_quality_writer_with_zero_rows(
     async with rig() as quality_session, rig() as lifecycle_session:
         preloaded = await quality_session.get(Spec, SPEC_ID)
         assert preloaded is not None
-        assert preloaded.status is SpecStatus.IN_PROGRESS
+        assert preloaded.status is SpecStatus.APPROVED
 
         # Hold the production-WAL writer mutex with the lifecycle winner while
         # the quality command, built from the preloaded state, reaches its own

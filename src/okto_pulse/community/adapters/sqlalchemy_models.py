@@ -9095,7 +9095,7 @@ class QualityAssessmentReceiptRow(Base):
         ),
         CheckConstraint(
             "origin IN "
-            "('human_or_agent', 'spec_validation', 'semantic_writer')",
+            "('human_or_agent', 'spec_validation')",
             name="ck_quality_receipt_origin",
         ),
         CheckConstraint(

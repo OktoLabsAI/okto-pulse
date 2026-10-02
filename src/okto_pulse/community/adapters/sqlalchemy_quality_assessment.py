@@ -1563,15 +1563,6 @@ class CommunitySqlAlchemyQualityAssessment:
         receipt = bundle.receipt
         if snapshot.authority_digest != bundle.expected_authority_digest:
             raise AssessmentAuthorityConflict("assessment_authority_fence_mismatch")
-        semantic_lint = (
-            receipt.subject.subject_type is AssessmentSubjectType.SPEC
-            and receipt.assessment_kind is AssessmentKind.REQUIREMENT_LINT
-            and receipt.origin is AssessmentOrigin.SEMANTIC_WRITER
-        )
-        if semantic_lint:
-            if not snapshot.domain_write:
-                raise AssessmentAuthorityConflict("assessment_authority_fence_mismatch")
-            return
         external_lint = (
             receipt.subject.subject_type is AssessmentSubjectType.SPEC
             and receipt.assessment_kind is AssessmentKind.REQUIREMENT_LINT
@@ -2044,9 +2035,7 @@ class CommunitySqlAlchemyQualityAssessment:
         }
         if subject.subject_edition is not None:
             payload["subject_edition"] = subject.subject_edition
-        actor_type = (
-            "agent" if receipt.origin is AssessmentOrigin.SEMANTIC_WRITER else "user"
-        )
+        actor_type = "user"
         self._session.add(
             DomainEventRow(
                 id=audit.event_id,

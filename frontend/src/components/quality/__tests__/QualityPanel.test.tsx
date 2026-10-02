@@ -1074,8 +1074,8 @@ describe('QualityPanel', () => {
         subject_id: 'spec-1',
         subject_version: 9,
         assessment_kind: 'requirement_lint',
-        origin: 'semantic_writer',
-        channel: 'semantic_writer:bulk_update',
+        origin: 'human_or_agent',
+        channel: 'mcp',
         outcome: 'advisory',
         scale: {
           kind: 'finding_count',
