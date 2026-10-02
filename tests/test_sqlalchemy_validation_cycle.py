@@ -386,7 +386,6 @@ def _semantic_authority_rows(
             content=f"Frozen policy {suffix}",
             content_digest=source_digest,
             tags=[],
-            rules=[],
             created_by="owner",
             created_at=NOW,
             published_head_revision=1,

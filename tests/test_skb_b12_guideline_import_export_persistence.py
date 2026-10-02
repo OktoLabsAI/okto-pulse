@@ -132,7 +132,6 @@ def _revision_row(
         content=content,
         content_digest=revision.revision_digest,
         tags=[],
-        rules=[],
         created_by="actor-b12",
         created_at=revision.created_at,
         published_head_revision=revision_number,

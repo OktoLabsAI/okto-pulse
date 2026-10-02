@@ -3120,12 +3120,10 @@ class BoardGuideline(Base):
 
 
 class GuidelineRevisionRow(Base):
-    """Immutable content/ruleset revision for one stable legacy Guideline identity.
+    """Immutable published content for one stable Guideline identity.
 
-    The existing ``guidelines`` row remains the stable identity during the
-    register-before-remove migration.  Published content lives here and is
-    protected by dialect-specific UPDATE/DELETE guards installed by the
-    Community schema lifecycle.
+    Community schema guards protect UPDATE/DELETE. Ordered semantic metrics
+    are stored in the matching SemanticGuidelineRevisionRow.
     """
 
     __tablename__ = "guideline_revisions"
@@ -3222,12 +3220,6 @@ class GuidelineRevisionRow(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     content_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     tags: Mapped[list] = mapped_column(
-        JSON,
-        nullable=False,
-        default=list,
-        server_default=text("'[]'"),
-    )
-    rules: Mapped[list] = mapped_column(
         JSON,
         nullable=False,
         default=list,
@@ -5032,12 +5024,10 @@ class PolicyWaiverEventRow(Base):
 
 
 class SemanticGuidelineRevisionRow(Base):
-    """Append-only semantic authority layered over one immutable revision.
+    """Ordered metric definitions and digest for one immutable revision.
 
-    The unreleased ``policy/v1`` payload remains on ``guideline_revisions`` as
-    inert audit evidence.  This row is the only executable semantic authority:
-    it stores the ordered metric definitions and their v3 digest without
-    pretending that legacy predicates were equivalent metrics.
+    The matching GuidelineRevisionRow stores the published content. Exact
+    revision identity and source digest bind the two native snapshots.
     """
 
     __tablename__ = "semantic_guideline_revisions"
@@ -5048,7 +5038,7 @@ class SemanticGuidelineRevisionRow(Base):
                 "guideline_revisions.guideline_id",
                 "guideline_revisions.revision_id",
             ],
-            name="fk_sg_revision_legacy_revision",
+            name="fk_sg_revision_content_revision",
             ondelete="CASCADE",
             onupdate="RESTRICT",
             deferrable=True,

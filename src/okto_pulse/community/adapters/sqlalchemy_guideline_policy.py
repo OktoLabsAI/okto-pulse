@@ -901,7 +901,6 @@ def _revision_row(
         content=revision.content,
         content_digest=revision.revision_digest,
         tags=list(revision.tags),
-        rules=[],
         created_by=revision.created_by,
         created_at=revision.created_at,
         published_head_revision=published_head.head_revision,
@@ -2384,7 +2383,6 @@ class CommunitySqlAlchemyGuidelinePolicy:
                         content=resolved_revision.content,
                         content_digest=resolved_revision.revision_digest,
                         tags=list(resolved_revision.tags),
-                        rules=[],
                         created_by=resolved_revision.created_by,
                         created_at=resolved_revision.created_at,
                         published_head_revision=(
