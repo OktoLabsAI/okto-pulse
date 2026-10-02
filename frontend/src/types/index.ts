@@ -3464,10 +3464,8 @@ export interface ChecklistSpecState {
 
 export interface ChecklistExecutionStartResult {
   execution_id: string;
-  items: ChecklistTemplateItem[];
-  subject_digest: string;
-  template_digest: string;
   spec_edition: number;
+  status: 'started';
 }
 
 export interface ChecklistExecutionStartRequest {
@@ -3484,9 +3482,9 @@ export interface ChecklistExecutionSubmitRequest {
 }
 
 export interface ChecklistExecutionSubmitResult {
-  receipt_id: string;
-  outcome: 'pass' | 'fail';
-  head_revision: number;
+  result_id: string;
+  spec_edition: number;
+  status: 'passed' | 'failed';
 }
 
 export interface ChecklistReceiptView {

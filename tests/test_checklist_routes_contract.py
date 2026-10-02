@@ -200,6 +200,27 @@ async def test_api09_success_is_exact_and_any_failed_item_fails_outcome(
     }
 
 
+@pytest.mark.parametrize("field", ["expected_spec_edition", "binding_digest", "idempotency_key"])
+def test_start_request_refuses_retired_aliases(field):
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        checklists.ChecklistExecutionStartRequest.model_validate({
+            "spec_edition": 3, "expected_spec_version": 4, "binding_version": 2,
+            field: "old-input",
+        })
+
+
+@pytest.mark.parametrize("field", ["items", "expected_execution_revision", "idempotency_key"])
+def test_submit_request_refuses_retired_aliases(field):
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        checklists.ChecklistExecutionSubmitRequest.model_validate({
+            "spec_edition": 3, "expected_spec_version": 4, "execution_id": "execution-1",
+            "item_results": [
+                {"item_id": item, "outcome": "pass", "anchor": f"spec://spec-1/{item}"}
+                for item in SPECIFY_CHECKLIST_ITEM_IDS
+            ], field: "old-input",
+        })
+
+
 def test_checklist_write_requests_are_closed() -> None:
     with pytest.raises(ValidationError):
         checklists.ChecklistBindingUpdateRequest.model_validate(

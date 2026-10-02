@@ -140,14 +140,12 @@ describe('SpecChecklistPanel', () => {
     apiMock.startChecklistExecution.mockResolvedValue({
       execution_id: 'execution-1',
       spec_edition: 1,
-      items: template.items,
-      subject_digest: 'd'.repeat(64),
-      template_digest: template.digest,
+      status: 'started',
     });
     apiMock.submitChecklistExecution.mockResolvedValue({
-      receipt_id: 'receipt-1',
-      outcome: 'pass',
-      head_revision: 1,
+      result_id: 'receipt-1',
+      spec_edition: 1,
+      status: 'passed',
     });
     apiMock.getValidationCycle.mockResolvedValue({
       subject_type: 'spec',
@@ -437,8 +435,7 @@ describe('SpecChecklistPanel', () => {
 
   it('refuses an execution from another edition before opening the form', async () => {
     apiMock.startChecklistExecution.mockResolvedValue({
-      execution_id: 'wrong-edition', items: template.items,
-      subject_digest: 'd'.repeat(64), template_digest: template.digest,
+      execution_id: 'wrong-edition', status: 'started',
       spec_edition: 2,
     });
     render(

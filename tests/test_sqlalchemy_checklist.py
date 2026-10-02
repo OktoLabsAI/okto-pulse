@@ -58,6 +58,9 @@ from okto_pulse.core.domain.checklist import (
     ChecklistTargetType,
 )
 from okto_pulse.core.domain.enums import SpecStatus
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+from okto_pulse.core.domain.execution_contract import new_execution_contract
+from okto_pulse.core.domain.realm import LOCAL_REALM_ID
 from okto_pulse.core.domain.permissions import get_builtin_presets
 from okto_pulse.core.events import EventBus
 from okto_pulse.core.events.handlers.checklist_binding_audit import (
@@ -65,6 +68,12 @@ from okto_pulse.core.events.handlers.checklist_binding_audit import (
 )
 from okto_pulse.core.events.types import ChecklistBindingChanged
 from okto_pulse.core.application.use_cases.base import ActorContext
+from okto_pulse.core.application.use_cases.checklist import (
+    StartChecklistExecutionCommand,
+    StartChecklistExecutionUseCase,
+    SubmitChecklistExecutionCommand,
+    SubmitChecklistExecutionUseCase,
+)
 from okto_pulse.core.application.use_cases.admin_catalog import (
     DefaultBoardConfigCommand,
     GetBoardDefaultConfigDiffUseCase,
@@ -158,12 +167,21 @@ async def session() -> AsyncSession:
                 id=BOARD_ID,
                 name="A3 checklist",
                 owner_id="owner-checklist",
+                realm_id=LOCAL_REALM_ID,
                 settings={},
             )
         )
         active.add(
             Spec(
                 id=SPEC_ID,
+                architecture_adoption=ArchitectureAdoptionScope(
+                    board_id=BOARD_ID, spec_id=SPEC_ID, adopted_in_edition=1,
+                    actor_id="owner-checklist", inherited_resource_ids=(),
+                ).model_dump(mode="json"),
+                execution_contract=new_execution_contract(
+                    board_id=BOARD_ID, spec_id=SPEC_ID, edition=1,
+                    actor_id="owner-checklist", origin="new_spec",
+                ),
                 board_id=BOARD_ID,
                 title="Curated checklist persistence",
                 created_by="owner-checklist",
@@ -252,6 +270,52 @@ async def _complete(
         persistence=adapter,
     )
     return started, submission, committed
+
+
+async def test_native_application_commands_preserve_start_submit_and_replay(session):
+    register_relational_application_adapter(CommunityRelationalApplicationAdapter())
+    adapter = CommunitySqlAlchemyChecklist(session)
+    service = ChecklistService()
+    binding = service.prepare_binding(
+        board_id=BOARD_ID, mode=ChecklistMode.BLOCKING, current_binding=None,
+    )
+    await service.apply_binding(binding, previous_binding=None, persistence=adapter)
+    # Native validation entry freezes this binding before commands are admitted.
+    await adapter.get_validation_binding(
+        board_id=BOARD_ID, spec_id=SPEC_ID, spec_edition=1,
+        target_type=ChecklistTargetType.SPEC, phase=ChecklistPhase.SPEC_VALIDATION,
+    )
+    await session.commit()
+    actor = _full_control_actor("owner-checklist")
+    uow = CommunityUnitOfWork(session, actor=actor)
+    start = StartChecklistExecutionCommand(
+        board_id=BOARD_ID, spec_id=SPEC_ID, spec_edition=1,
+        expected_spec_version=1, binding_version=binding.version,
+    )
+    started = await StartChecklistExecutionUseCase().execute(start, actor=actor, uow=uow)
+    replay = await StartChecklistExecutionUseCase().execute(start, actor=actor, uow=uow)
+    assert replay.replayed and replay.execution.id == started.execution.id
+    assert await session.scalar(select(func.count(ChecklistExecutionRow.id))) == 1
+    submit = SubmitChecklistExecutionCommand(
+        board_id=BOARD_ID, spec_id=SPEC_ID, spec_edition=1,
+        expected_spec_version=1, execution_id=started.execution.id,
+        item_results=_passing_items(),
+    )
+    committed = await SubmitChecklistExecutionUseCase().execute(submit, actor=actor, uow=uow)
+    repeated = await SubmitChecklistExecutionUseCase().execute(submit, actor=actor, uow=uow)
+    assert repeated.replayed and repeated.receipt_id == committed.receipt_id
+    assert committed.spec_edition == repeated.spec_edition == 1
+    assert await session.scalar(select(func.count(ChecklistItemResultRow.item_id))) == 10
+    receipt = await adapter.get_receipt(board_id=BOARD_ID, receipt_id=committed.receipt_id)
+    assert receipt.items == _passing_items()
+    with pytest.raises(ChecklistConflictError, match="checklist_binding_conflict"):
+        await StartChecklistExecutionUseCase().execute(
+            StartChecklistExecutionCommand(
+                board_id=BOARD_ID, spec_id=SPEC_ID, spec_edition=1,
+                expected_spec_version=1, binding_version=binding.version + 1,
+            ), actor=actor, uow=uow,
+        )
+    assert await session.scalar(select(func.count(ChecklistExecutionRow.id))) == 1
 
 
 async def test_complete_receipts_gate_pagination_and_off_zero_write(
