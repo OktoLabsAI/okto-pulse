@@ -4294,7 +4294,7 @@ export interface SpecEvaluationList {
     id: string;
     evaluator_name?: string;
     evaluator_id: string;
-    spec_edition?: number;
+    spec_edition: number;
     overall_score: number;
     overall_justification: string;
     recommendation: string;

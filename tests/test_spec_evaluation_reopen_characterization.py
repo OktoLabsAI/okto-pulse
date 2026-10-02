@@ -19,8 +19,7 @@ classified_context = start.classified_context
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('initial_recommendation', ['approve', 'reject'])
-@pytest.mark.parametrize('legacy', [False, True])
-async def test_reopen_requires_new_review_and_preserves_original_verdict(classified_context, tmp_path, initial_recommendation, legacy):
+async def test_reopen_requires_new_review_and_preserves_original_verdict(classified_context, tmp_path, initial_recommendation):
     db = classified_context
     app, _, _ = await start.four_profiles(db, tmp_path)
     await db.execute(update(Spec).where(Spec.id == 'spec').values(status='validated', evaluations=[]))
@@ -31,11 +30,6 @@ async def test_reopen_requires_new_review_and_preserves_original_verdict(classif
         assert initial.status_code == 201, initial.text
         original = deepcopy(initial.json()['evaluation'])
         assert original['spec_edition'] == (await db.get(Spec, 'spec', populate_existing=True)).edition
-        if legacy:
-            original.pop('spec_edition')
-            original.pop('spec_version')
-            await db.execute(update(Spec).where(Spec.id == 'spec').values(evaluations=[original]))
-            await db.commit()
         before = await db.get(Spec, 'spec', populate_existing=True)
         old_edition = before.edition
         reopened = await client.post('/api/v1/specs/spec/move', json={'status': 'draft'})
@@ -51,7 +45,8 @@ async def test_reopen_requires_new_review_and_preserves_original_verdict(classif
         assert listed.status_code == 200, listed.text
         assert listed.json()['active_count'] == 0 and listed.json()['previous_count'] == 1
         assert listed.json()['evaluations'][0]['lifecycle_state'] == 'previous'
-        assert listed.json()['evaluations'][0]['edition_origin'] == ('legacy_unknown' if legacy else 'recorded')
+        assert listed.json()['evaluations'][0]['spec_edition'] == old_edition
+        assert 'edition_origin' not in listed.json()['evaluations'][0]
         await db.execute(update(Spec).where(Spec.id == 'spec').values(status='validated'))
         await db.commit()
         missing = await client.post('/api/v1/specs/spec/move', json={'status': 'in_progress'})
@@ -87,8 +82,12 @@ async def test_new_approval_does_not_supersede_same_edition_rejection(classified
 async def test_failed_reopen_rolls_back_edition_and_evaluation_currentness(classified_context, tmp_path):
     db = classified_context
     app, _, _ = await start.four_profiles(db, tmp_path)
-    await db.execute(update(Spec).where(Spec.id == 'spec').values(status='validated'))
+    await db.execute(update(Spec).where(Spec.id == 'spec').values(status='validated', evaluations=[]))
     await db.commit()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+        review = await client.post('/api/v1/specs/spec/evaluations', json=start.semantic_evaluation(
+            True, 'Native review before injected reopen failure'))
+        assert review.status_code == 201, review.text
     spec = await db.get(Spec, 'spec', populate_existing=True)
     before = (spec.edition, deepcopy(spec.evaluations))
     await db.execute(text("""CREATE TRIGGER reject_reopen_history BEFORE INSERT ON spec_history
@@ -100,6 +99,32 @@ async def test_failed_reopen_rolls_back_edition_and_evaluation_currentness(class
     current = await db.get(Spec, 'spec', populate_existing=True)
     assert current.status == 'validated'
     assert (current.edition, current.evaluations) == before
+
+
+@pytest.mark.asyncio
+async def test_unscoped_review_is_refused_without_repair_or_lifecycle_change(classified_context, tmp_path):
+    db = classified_context
+    app, _, _ = await start.four_profiles(db, tmp_path)
+    await db.execute(update(Spec).where(Spec.id == 'spec').values(status='validated', evaluations=[]))
+    await db.commit()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+        review = await client.post('/api/v1/specs/spec/evaluations', json=start.semantic_evaluation(
+            True, 'Review used to exercise incompatible stored format refusal'))
+        assert review.status_code == 201, review.text
+        damaged = deepcopy(review.json()['evaluation'])
+        del damaged['spec_edition']
+        await db.execute(update(Spec).where(Spec.id == 'spec').values(evaluations=[damaged]))
+        await db.commit()
+        before = await db.get(Spec, 'spec', populate_existing=True)
+        snapshot = (before.edition, before.version, deepcopy(before.evaluations), before.status)
+        responses = [await client.get('/api/v1/specs/spec/evaluations')]
+        for status in ('in_progress', 'draft'):
+            responses.append(await client.post('/api/v1/specs/spec/move', json={'status': status}))
+        # The list route maps service ValueError to 404; move uses 400.
+        assert [r.status_code for r in responses] == [404, 400, 400]
+        assert all('spec_evaluation_edition_required' in r.text for r in responses)
+        after = await db.get(Spec, 'spec', populate_existing=True)
+        assert (after.edition, after.version, after.evaluations, after.status) == snapshot
 
 
 @pytest.mark.asyncio

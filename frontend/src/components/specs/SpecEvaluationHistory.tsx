@@ -38,7 +38,7 @@ export function SpecEvaluationHistory({ specId, edition, version, canRead }: {
           <h4 className="font-medium">{state === 'current' ? 'Current' : 'Previous'}</h4>
           <ul className="space-y-2">{data.evaluations.filter(item => item.lifecycle_state === state).map(item => <li key={item.id} className="rounded border border-surface-200 p-2 dark:border-surface-700">
             <p>{item.evaluator_name || item.evaluator_id}: {item.recommendation} · {item.overall_score}/100</p>
-            <p>{item.spec_edition === undefined ? 'Original edition unknown' : `Edition ${item.spec_edition}`} · <time>{item.created_at}</time></p>
+            <p>Edition {item.spec_edition} · <time>{item.created_at}</time></p>
             <p className="whitespace-pre-wrap">{item.overall_justification}</p>
           </li>)}</ul>
         </div>)}

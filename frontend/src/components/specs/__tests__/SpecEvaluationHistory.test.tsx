@@ -5,7 +5,7 @@ import { SpecEvaluationHistory } from '../SpecEvaluationHistory';
 const api = vi.hoisted(() => ({ listSpecEvaluations: vi.fn() }));
 vi.mock('@/services/api', () => ({ useDashboardApi: () => api }));
 const props = { specId: 'spec', edition: 3, version: 4, canRead: true };
-const previous = { id: 'old', evaluator_id: 'reviewer', overall_score: 95,
+const previous = { id: 'old', spec_edition: 2, evaluator_id: 'reviewer', overall_score: 95,
   recommendation: 'approve', overall_justification: 'Original verdict retained',
   created_at: '2026-09-23', lifecycle_state: 'previous' };
 
@@ -19,7 +19,7 @@ describe('Decomposition evaluation editions', () => {
     render(<SpecEvaluationHistory {...props} />);
     expect(await screen.findByText(/No current evaluation/)).toBeInTheDocument();
     expect(screen.getByText('Original verdict retained')).toBeInTheDocument();
-    expect(screen.getByText(/Original edition unknown/)).toBeInTheDocument();
+    expect(screen.getByText(/Edition 2/)).toBeInTheDocument();
     expect(screen.getByText('Edition 3: 0 current, 1 previous.')).toBeInTheDocument();
   });
   it('keeps current rejection and approval visible together without inventing gate success', async () => {
