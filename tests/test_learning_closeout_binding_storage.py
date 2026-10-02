@@ -1,52 +1,55 @@
-"""Additive upgrade never invents Learning proof for historical Done cards."""
+"""Current Learning binding storage starts unbound; incompatible files are refused."""
+import sqlite3
+from contextlib import closing
+
 import pytest
-from sqlalchemy import text
+from sqlalchemy import JSON, inspect
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from okto_pulse.community.adapters.relational_schema_steps import _ensure_learning_closeout_bindings
+from okto_pulse.community.adapters.current_relational_schema import (
+    StorageFormatError, current_schema_contract, initialize_current_schema,
+)
+from okto_pulse.community.adapters.sqlalchemy_models import Card
+from test_current_relational_schema import snapshot
+from test_kb_governance_metadata_storage import native_kb_database
+
+__all__ = ['native_kb_database']
 
 
-async def test_schema_upgrade_is_idempotent_preserves_history_and_starts_unbound(tmp_path):
-    engine = create_async_engine(f'sqlite+aiosqlite:///{tmp_path / "old.db"}')
+@pytest.mark.asyncio
+async def test_native_card_has_no_invented_learning_binding_after_restart(native_kb_database):
+    engine, factory, _ = native_kb_database
+    column = Card.__table__.c.learning_closeout_bindings
+    assert isinstance(column.type, JSON) and column.nullable
+    assert column.default is None and column.server_default is None
+    async with engine.connect() as connection:
+        columns = await connection.run_sync(lambda sync: inspect(sync).get_columns('cards'))
+        stored = next(item for item in columns if item['name'] == 'learning_closeout_bindings')
+        assert isinstance(stored['type'], JSON) and stored['nullable'] and stored['default'] is None
+    async with factory() as session:
+        session.add(Card(id='bug', board_id='board', title='Native bug', card_type='bug', created_by='author'))
+        await session.commit()
+        assert (await session.get(Card, 'bug')).learning_closeout_bindings is None
+    await engine.dispose()
+    await initialize_current_schema(engine, current_schema_contract())
+    async with factory() as session:
+        card = await session.get(Card, 'bug')
+        assert card.learning_closeout_bindings is None
+        assert card.title == 'Native bug' and card.status.value == 'not_started'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('definition', ['TEXT', 'JSON NOT NULL', "JSON DEFAULT '[]'"])
+async def test_incompatible_binding_storage_is_refused_without_repair(tmp_path, definition):
+    path = tmp_path / 'incompatible.db'
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute(f'CREATE TABLE cards (id TEXT PRIMARY KEY, learning_closeout_bindings {definition})')
+        connection.commit()
+    before = snapshot(path)
+    engine = create_async_engine(f'sqlite+aiosqlite:///{path}')
     try:
-        async with engine.begin() as connection:
-            await connection.execute(text('CREATE TABLE cards (id TEXT PRIMARY KEY, status TEXT, conclusions JSON)'))
-            await connection.execute(text("INSERT INTO cards VALUES ('old', 'done', '[{\"text\":\"Historic report\"}]')"))
-            assert await _ensure_learning_closeout_bindings(connection, create=False) == 'missing'
-            await _ensure_learning_closeout_bindings(connection)
-            assert await _ensure_learning_closeout_bindings(connection) == 'skipped'
-            row = (await connection.execute(text('SELECT * FROM cards'))).mappings().one()
-            assert dict(row) == dict(id='old', status='done', conclusions='[{"text":"Historic report"}]',
-                learning_closeout_bindings=None)
+        with pytest.raises(StorageFormatError):
+            await initialize_current_schema(engine, current_schema_contract())
     finally:
         await engine.dispose()
-
-
-@pytest.mark.parametrize('definition', ["TEXT", "JSON NOT NULL", "JSON DEFAULT '[]'"])
-async def test_existing_incompatible_storage_is_not_silently_repaired(tmp_path, definition):
-    engine = create_async_engine(f'sqlite+aiosqlite:///{tmp_path / "drift.db"}')
-    try:
-        async with engine.begin() as connection:
-            await connection.execute(text(f'CREATE TABLE cards (id TEXT PRIMARY KEY, learning_closeout_bindings {definition})'))
-            with pytest.raises(RuntimeError, match='binding_schema_drift'):
-                await _ensure_learning_closeout_bindings(connection)
-    finally:
-        await engine.dispose()
-
-
-async def test_model_and_migrator_declare_the_same_additive_contract(tmp_path):
-    from okto_pulse.community.adapters.sqlalchemy_models import Board, Card
-    from test_bug_cognitive_context_adapter import _runtime
-
-    engine, factory = await _runtime(tmp_path / 'model.db')
-    try:
-        async with engine.begin() as connection:
-            assert await _ensure_learning_closeout_bindings(connection, create=False) == 'skipped'
-        async with factory() as session:
-            session.add(Board(id='board', name='Board', owner_id='owner'))
-            session.add(Card(id='bug', board_id='board', title='Bug', card_type='bug', created_by='owner'))
-            await session.commit()
-            card = await session.get(Card, 'bug')
-            assert card.learning_closeout_bindings is None
-    finally:
-        await engine.dispose()
+    assert snapshot(path) == before

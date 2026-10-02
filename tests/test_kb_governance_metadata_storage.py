@@ -1,227 +1,101 @@
-"""Community persistence contract for knowledge-governance metadata."""
-
-from __future__ import annotations
-
-from typing import Any
+"""Native Knowledge Base storage on the complete current schema."""
+import sqlite3
+from contextlib import closing
 
 import pytest
-from sqlalchemy import JSON, bindparam, event, inspect as sa_inspect, select, text
+import pytest_asyncio
+from sqlalchemy import JSON, inspect, select, update
 from sqlalchemy.ext.asyncio import create_async_engine
 
-import okto_pulse.community.adapters.relational_schema_steps as schema_steps
+from okto_pulse.community.adapters.current_relational_schema import (
+    StorageFormatError, current_schema_contract, initialize_current_schema,
+)
+from okto_pulse.community.adapters.sqlalchemy_database import (
+    build_community_session_factory, install_community_sqlite_pragmas,
+)
 from okto_pulse.community.adapters.sqlalchemy_models import (
-    IdeationKnowledgeBase,
-    RefinementKnowledgeBase,
-    SpecKnowledgeBase,
+    Board, Ideation, Refinement, Spec,
+    IdeationKnowledgeBase, RefinementKnowledgeBase, SpecKnowledgeBase,
 )
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+from okto_pulse.core.domain.execution_contract import new_execution_contract
+from test_current_relational_schema import snapshot
+
+KB_MODELS = (IdeationKnowledgeBase, RefinementKnowledgeBase, SpecKnowledgeBase)
 
 
-KB_MODELS = (
-    IdeationKnowledgeBase,
-    RefinementKnowledgeBase,
-    SpecKnowledgeBase,
-)
+@pytest_asyncio.fixture
+async def native_kb_database(tmp_path):
+    path = tmp_path / 'knowledge.db'
+    engine = create_async_engine(f'sqlite+aiosqlite:///{path}')
+    install_community_sqlite_pragmas(engine)
+    await initialize_current_schema(engine, current_schema_contract())
+    factory = build_community_session_factory(engine)
+    try:
+        async with factory() as session:
+            session.add(Board(id='board', realm_id='local', name='Board', owner_id='author'))
+            await session.flush()
+            session.add(Ideation(id='idea', board_id='board', title='Idea', created_by='author'))
+            await session.flush()
+            session.add(Refinement(id='refinement', ideation_id='idea', board_id='board',
+                title='Refinement', created_by='author'))
+            session.add(Spec(id='spec', board_id='board', title='Spec', created_by='author',
+                architecture_adoption=ArchitectureAdoptionScope(board_id='board', spec_id='spec',
+                    adopted_in_edition=1, actor_id='author', inherited_resource_ids=()).model_dump(mode='json'),
+                execution_contract=new_execution_contract(board_id='board', spec_id='spec',
+                    edition=1, actor_id='author', origin='new_spec')))
+            await session.flush()
+            for model, parent in zip(KB_MODELS, ({'ideation_id': 'idea'},
+                {'refinement_id': 'refinement'}, {'spec_id': 'spec'}), strict=True):
+                session.add(model(id=model.__tablename__, title='Reference', content='Native content',
+                    created_by='author', **parent))
+            await session.commit()
+        yield engine, factory, path
+    finally:
+        await engine.dispose()
 
 
-def test_governance_metadata_orm_columns_are_nullable_json_without_defaults() -> None:
+def test_governance_metadata_orm_columns_are_nullable_json_without_defaults():
     for model in KB_MODELS:
         column = model.__table__.c.governance_metadata
         assert isinstance(column.type, JSON)
-        assert column.nullable is True
-        assert column.default is None
-        assert column.server_default is None
+        assert column.nullable and column.default is None and column.server_default is None
 
 
-async def _create_legacy_kb_tables(engine, *, malformed_table: str | None = None) -> None:
-    async with engine.begin() as connection:
-        for model in KB_MODELS:
-            table_name = model.__tablename__
-            extra = (
-                ", governance_metadata TEXT NOT NULL DEFAULT '{}'"
-                if table_name == malformed_table
-                else ""
-            )
-            await connection.execute(
-                text(
-                    f'CREATE TABLE "{table_name}" '
-                    f'(id VARCHAR(36) PRIMARY KEY, content TEXT NOT NULL{extra})'
-                )
-            )
-            await connection.execute(
-                text(
-                    f'INSERT INTO "{table_name}" (id, content) '
-                    "VALUES (:id, :content)"
-                ),
-                {"id": f"{table_name}-1", "content": "legacy"},
-            )
-
-
-async def _inspect_governance_columns(engine) -> dict[str, dict[str, Any] | None]:
-    def _inspect(sync_connection):
-        inspector = sa_inspect(sync_connection)
-        return {
-            model.__tablename__: next(
-                (
-                    dict(column)
-                    for column in inspector.get_columns(model.__tablename__)
-                    if column["name"] == "governance_metadata"
-                ),
-                None,
-            )
-            for model in KB_MODELS
-        }
-
+@pytest.mark.asyncio
+async def test_native_metadata_roundtrip_and_restart_preserve_exact_payload(native_kb_database):
+    engine, factory, _ = native_kb_database
+    payload = {'version': 1, 'classification': 'technical_reference', 'provenance': {'kind': 'authored'}}
     async with engine.connect() as connection:
-        return await connection.run_sync(_inspect)
-
-
-@pytest.mark.asyncio
-async def test_migration_adds_columns_preserves_legacy_rows_and_replays(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    engine = create_async_engine(
-        f"sqlite+aiosqlite:///{tmp_path / 'kb-governance-legacy.db'}"
-    )
-    monkeypatch.setattr(schema_steps, "get_engine", lambda: engine)
-    await _create_legacy_kb_tables(engine)
-
-    first = await schema_steps._migrate_add_kb_governance_metadata()
-    second = await schema_steps._migrate_add_kb_governance_metadata()
-    observed = await _inspect_governance_columns(engine)
-
-    assert first is None
-    assert second == "skipped"
-    for column in observed.values():
-        assert column is not None
-        assert str(column["type"]).lower() == "json"
-        assert column["nullable"] is True
-        assert column["default"] is None
-
-    payload = {
-        "version": 1,
-        "classification": "technical_reference",
-        "provenance": {"kind": "authored"},
-    }
-    table = IdeationKnowledgeBase.__table__
-    async with engine.begin() as connection:
-        await connection.execute(
-            text(
-                "UPDATE ideation_knowledge_bases "
-                "SET governance_metadata=:governance_metadata WHERE id=:id"
-            ).bindparams(bindparam("governance_metadata", type_=JSON)),
-            {
-                "governance_metadata": payload,
-                "id": "ideation_knowledge_bases-1",
-            },
-        )
-        stored = (
-            await connection.execute(
-                select(table.c.governance_metadata).where(
-                    table.c.id == "ideation_knowledge_bases-1"
-                )
-            )
-        ).scalar_one()
-        legacy_nulls = {}
-        for model in KB_MODELS[1:]:
-            model_table = model.__table__
-            legacy_nulls[model.__tablename__] = (
-                await connection.execute(
-                    select(model_table.c.governance_metadata).where(
-                        model_table.c.id == f"{model.__tablename__}-1"
-                    )
-                )
-            ).scalar_one()
-
-    assert stored == payload
-    assert set(legacy_nulls.values()) == {None}
+        for model in KB_MODELS:
+            columns = await connection.run_sync(lambda sync: inspect(sync).get_columns(model.__tablename__))
+            column = next(item for item in columns if item['name'] == 'governance_metadata')
+            assert isinstance(column['type'], JSON) and column['nullable'] and column['default'] is None
+    async with factory() as session:
+        for model in KB_MODELS:
+            assert await session.scalar(select(model.governance_metadata)) is None
+            await session.execute(update(model).values(governance_metadata=payload))
+        await session.commit()
     await engine.dispose()
+    await initialize_current_schema(engine, current_schema_contract())
+    async with factory() as session:
+        for model in KB_MODELS:
+            assert await session.scalar(select(model.governance_metadata)) == payload
+            assert await session.scalar(select(model.content)) == 'Native content'
 
 
 @pytest.mark.asyncio
-async def test_migration_fails_closed_before_mutating_other_tables(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    engine = create_async_engine(
-        f"sqlite+aiosqlite:///{tmp_path / 'kb-governance-malformed.db'}"
-    )
-    monkeypatch.setattr(schema_steps, "get_engine", lambda: engine)
-    await _create_legacy_kb_tables(
-        engine,
-        malformed_table="ideation_knowledge_bases",
-    )
-
-    with pytest.raises(RuntimeError, match="non-canonical"):
-        await schema_steps._migrate_add_kb_governance_metadata()
-
-    observed = await _inspect_governance_columns(engine)
-    assert observed["ideation_knowledge_bases"] is not None
-    assert observed["refinement_knowledge_bases"] is None
-    assert observed["spec_knowledge_bases"] is None
-    await engine.dispose()
-
-
-@pytest.mark.asyncio
-async def test_migration_rolls_back_every_column_when_second_alter_fails(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    engine = create_async_engine(
-        f"sqlite+aiosqlite:///{tmp_path / 'kb-governance-mid-ddl.db'}"
-    )
-    monkeypatch.setattr(schema_steps, "get_engine", lambda: engine)
-    await _create_legacy_kb_tables(engine)
-    alter_count = 0
-
-    def fail_second_alter(
-        _conn,
-        _cursor,
-        statement,
-        _parameters,
-        _context,
-        _executemany,
-    ) -> None:
-        nonlocal alter_count
-        if statement.lstrip().upper().startswith("ALTER TABLE"):
-            alter_count += 1
-            if alter_count == 2:
-                raise RuntimeError("injected second ALTER failure")
-
-    event.listen(engine.sync_engine, "before_cursor_execute", fail_second_alter)
+@pytest.mark.parametrize('definition', ['TEXT', "JSON NOT NULL DEFAULT '{}'", 'INTEGER'])
+async def test_incompatible_metadata_storage_is_refused_without_writes(tmp_path, definition):
+    path = tmp_path / 'incompatible.db'
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute(f'CREATE TABLE ideation_knowledge_bases (id TEXT PRIMARY KEY, governance_metadata {definition})')
+        connection.commit()
+    before = snapshot(path)
+    engine = create_async_engine(f'sqlite+aiosqlite:///{path}')
     try:
-        with pytest.raises(RuntimeError, match="injected second ALTER failure"):
-            await schema_steps._migrate_add_kb_governance_metadata()
+        with pytest.raises(StorageFormatError):
+            await initialize_current_schema(engine, current_schema_contract())
     finally:
-        event.remove(
-            engine.sync_engine, "before_cursor_execute", fail_second_alter
-        )
-
-    assert alter_count == 2
-    observed = await _inspect_governance_columns(engine)
-    assert set(observed.values()) == {None}
-    await engine.dispose()
-
-
-@pytest.mark.asyncio
-async def test_migration_rolls_back_when_postcondition_audit_detects_drift(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    engine = create_async_engine(
-        f"sqlite+aiosqlite:///{tmp_path / 'kb-governance-postcondition.db'}"
-    )
-    monkeypatch.setattr(schema_steps, "get_engine", lambda: engine)
-    await _create_legacy_kb_tables(engine)
-    monkeypatch.setattr(
-        schema_steps,
-        "_normalize_sqlite_contract_type",
-        lambda _raw: "injected_non_canonical_type",
-    )
-
-    with pytest.raises(RuntimeError, match="non-canonical"):
-        await schema_steps._migrate_add_kb_governance_metadata()
-
-    observed = await _inspect_governance_columns(engine)
-    assert set(observed.values()) == {None}
-    await engine.dispose()
+        await engine.dispose()
+    assert snapshot(path) == before
