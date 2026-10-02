@@ -9,12 +9,15 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import event, select, update
 from sqlalchemy.ext.asyncio import (
-    AsyncSession,
-    async_sessionmaker,
     create_async_engine,
 )
 
-from okto_pulse.community.adapters.sqlalchemy_base import Base
+from okto_pulse.community.adapters.current_relational_schema import (
+    current_schema_contract, initialize_current_schema,
+)
+from okto_pulse.community.adapters.sqlalchemy_database import (
+    build_community_session_factory, install_community_sqlite_pragmas,
+)
 from okto_pulse.community.adapters.sqlalchemy_delivery_ledger import (
     CommunitySqlAlchemyDeliveryLedger,
 )
@@ -47,28 +50,14 @@ async def delivery_store(tmp_path):
         f"sqlite+aiosqlite:///{tmp_path / 'card7-delivery-ledger.db'}"
     )
 
-    @event.listens_for(engine.sync_engine, "connect")
-    def _configure_sqlite(dbapi_connection, _connection_record):
-        cursor = dbapi_connection.cursor()
-        try:
-            cursor.execute("PRAGMA journal_mode=WAL")
-            cursor.execute("PRAGMA busy_timeout=5000")
-            cursor.execute("PRAGMA foreign_keys=ON")
-        finally:
-            cursor.close()
-
-    sessions = async_sessionmaker(
-        engine,
-        class_=AsyncSession,
-        expire_on_commit=False,
-    )
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    install_community_sqlite_pragmas(engine)
+    await initialize_current_schema(engine, current_schema_contract())
+    sessions = build_community_session_factory(engine)
     async with sessions() as session:
         session.add_all(
             [
-                Board(id=BOARD_ID, name="Card 7", owner_id="tester"),
-                Board(id=OTHER_BOARD_ID, name="Other", owner_id="tester"),
+                Board(id=BOARD_ID, realm_id="local", name="Card 7", owner_id="tester"),
+                Board(id=OTHER_BOARD_ID, realm_id="local", name="Other", owner_id="tester"),
             ]
         )
         await session.commit()
@@ -677,7 +666,7 @@ async def test_redrive_backlog_over_budget_is_fair_restart_safe_and_converges(
         ],
     }
     async with delivery_store.sessions() as session:
-        session.add(Board(id=THIRD_BOARD_ID, name="Third", owner_id="tester"))
+        session.add(Board(id=THIRD_BOARD_ID, realm_id="local", name="Third", owner_id="tester"))
         session.add_all(
             [
                 _ledger(
