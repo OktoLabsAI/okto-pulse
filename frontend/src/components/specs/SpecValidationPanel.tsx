@@ -735,7 +735,6 @@ export function SpecValidationPanel({
             canExecute={canExecuteChecklist}
             validationStageActive={specStatus === 'approved'}
             showHistory
-            presentationMode="lifecycle-edition"
             embedded
             onStateChange={refreshCycle}
           />

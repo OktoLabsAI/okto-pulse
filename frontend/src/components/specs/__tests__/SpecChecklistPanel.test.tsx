@@ -139,6 +139,7 @@ describe('SpecChecklistPanel', () => {
     });
     apiMock.startChecklistExecution.mockResolvedValue({
       execution_id: 'execution-1',
+      spec_edition: 1,
       items: template.items,
       subject_digest: 'd'.repeat(64),
       template_digest: template.digest,
@@ -187,7 +188,7 @@ describe('SpecChecklistPanel', () => {
     });
 
     render(
-      <SpecChecklistPanel
+      <SpecChecklistPanel expectedSpecEdition={1}
         boardId="board-1"
         specId="spec-1"
         expectedSpecVersion={4}
@@ -217,7 +218,7 @@ describe('SpecChecklistPanel', () => {
     });
 
     render(
-      <SpecChecklistPanel
+      <SpecChecklistPanel expectedSpecEdition={1}
         boardId="board-1"
         specId="spec-1"
         expectedSpecVersion={4}
@@ -235,7 +236,7 @@ describe('SpecChecklistPanel', () => {
 
   it('submits exactly the ten ordered template items with required anchors', async () => {
     render(
-      <SpecChecklistPanel
+      <SpecChecklistPanel expectedSpecEdition={1}
         boardId="board-1"
         specId="spec-1"
         expectedSpecVersion={4}
@@ -243,9 +244,9 @@ describe('SpecChecklistPanel', () => {
     );
 
     expect(await screen.findByTestId('checklist-state-status')).toHaveTextContent(
-      'not_started',
+      'not started',
     );
-    expect(screen.getByText('checklist_receipt_required')).toBeInTheDocument();
+    expect(screen.getByText('Complete the checklist for this edition before submitting validation.')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Start checklist' }));
     await screen.findByTestId('checklist-execution-form');
@@ -296,15 +297,15 @@ describe('SpecChecklistPanel', () => {
       items: [{
         receipt: {
           ...currentReceipt,
-          id: 'legacy-checklist-receipt',
-          spec_edition: null,
+          id: 'previous-checklist-receipt',
+          spec_edition: 1,
         },
         is_head: false,
         currentness: { current: false, stale_reasons: [] },
         gate: {
           mode: 'blocking',
           allowed: false,
-          reason: 'legacy_history_only',
+          reason: 'checklist_receipt_stale',
           currentness: { current: false, stale_reasons: [] },
         },
       }],
@@ -319,7 +320,6 @@ describe('SpecChecklistPanel', () => {
         specId="spec-1"
         expectedSpecVersion={4}
         expectedSpecEdition={1}
-        presentationMode="lifecycle-edition"
         showHistory
       />,
     );
@@ -337,8 +337,8 @@ describe('SpecChecklistPanel', () => {
     const previousResults = await screen.findByTestId(
       'checklist-previous-results-content',
     );
-    expect(previousResults).toHaveTextContent('Legacy');
-    expect(previousResults).not.toHaveTextContent('Edition 1');
+    expect(previousResults).toHaveTextContent('Edition 1');
+    expect(previousResults).not.toHaveTextContent('Legacy');
     fireEvent.click(toggle);
     fireEvent.click(toggle);
 
@@ -372,7 +372,6 @@ describe('SpecChecklistPanel', () => {
         specId="spec-1"
         expectedSpecVersion={4}
         expectedSpecEdition={1}
-        presentationMode="lifecycle-edition"
         showHistory
       />,
     );
@@ -385,6 +384,87 @@ describe('SpecChecklistPanel', () => {
     expect(screen.queryByText(/head/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/revision/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/version/i)).not.toBeInTheDocument();
+  });
+
+  it.each([
+    { spec_edition: null, source: 'native' },
+    { spec_edition: 1, source: 'legacy_unverified' },
+  ])('refuses incompatible history instead of displaying Legacy: %j', async (invalid) => {
+    apiMock.listChecklistExecutions.mockResolvedValue({
+      items: [{ receipt: { ...currentReceipt, ...invalid }, is_head: false }],
+      total_filtered: 1, total_overall: 1, offset: 0, limit: 25,
+    });
+    render(
+      <SpecChecklistPanel boardId="board-1" specId="spec-1"
+        expectedSpecVersion={4} expectedSpecEdition={1} showHistory />,
+    );
+    await screen.findByTestId('checklist-template-preview');
+    fireEvent.click(screen.getByTestId('checklist-previous-results-toggle'));
+    expect(await screen.findByRole('alert')).toHaveTextContent('do not match this subject edition');
+    expect(screen.queryByText('Legacy')).not.toBeInTheDocument();
+    expect(apiMock.startChecklistExecution).not.toHaveBeenCalled();
+  });
+
+  it('keeps native history pagination and page-size selection', async () => {
+    apiMock.listChecklistExecutions.mockResolvedValue({
+      items: [{ receipt: currentReceipt, is_head: false }],
+      total_filtered: 51, total_overall: 51, offset: 0, limit: 25,
+    });
+    render(
+      <SpecChecklistPanel boardId="board-1" specId="spec-1"
+        expectedSpecVersion={4} expectedSpecEdition={1} showHistory />,
+    );
+    await screen.findByTestId('checklist-template-preview');
+    expect(apiMock.listChecklistExecutions).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('checklist-previous-results-toggle'));
+    await screen.findByText('Edition 1');
+    fireEvent.click(screen.getByRole('button', { name: 'Next checklist results page' }));
+    await waitFor(() => expect(apiMock.listChecklistExecutions).toHaveBeenLastCalledWith('board-1', 'spec-1', 25, 25));
+    fireEvent.change(screen.getByLabelText('Checklist history page size'), { target: { value: '50' } });
+    await waitFor(() => expect(apiMock.listChecklistExecutions).toHaveBeenLastCalledWith('board-1', 'spec-1', 0, 50));
+  });
+
+  it('does not assume edition 1 when the host supplies an invalid edition', async () => {
+    render(
+      <SpecChecklistPanel boardId="board-1" specId="spec-1"
+        expectedSpecVersion={4} expectedSpecEdition={0} />,
+    );
+    expect(await screen.findByText(/Checklist readiness is unavailable/)).toBeInTheDocument();
+    expect(apiMock.getSpecChecklistState).not.toHaveBeenCalled();
+    expect(apiMock.startChecklistExecution).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'Start checklist' })).not.toBeInTheDocument();
+  });
+
+  it('refuses an execution from another edition before opening the form', async () => {
+    apiMock.startChecklistExecution.mockResolvedValue({
+      execution_id: 'wrong-edition', items: template.items,
+      subject_digest: 'd'.repeat(64), template_digest: template.digest,
+      spec_edition: 2,
+    });
+    render(
+      <SpecChecklistPanel boardId="board-1" specId="spec-1"
+        expectedSpecVersion={4} expectedSpecEdition={1} />,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Start checklist' }));
+    await waitFor(() => expect(apiMock.getSpecChecklistState).toHaveBeenCalledTimes(2));
+    expect(screen.queryByTestId('checklist-execution-form')).not.toBeInTheDocument();
+    expect(apiMock.submitChecklistExecution).not.toHaveBeenCalled();
+  });
+
+  it.each(['permission', 'stage'] as const)('blocks an open execution when its %s is revoked', async (reason) => {
+    const props = { boardId: 'board-1', specId: 'spec-1', expectedSpecVersion: 4, expectedSpecEdition: 1 };
+    const { rerender } = render(<SpecChecklistPanel {...props} canExecute validationStageActive />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Start checklist' }));
+    await screen.findByTestId('checklist-execution-form');
+    screen.getAllByRole('combobox').forEach((select) => fireEvent.change(select, { target: { value: 'pass' } }));
+    screen.getAllByPlaceholderText('Required evidence anchor (FR/AC/section)').forEach((input, index) =>
+      fireEvent.change(input, { target: { value: `FR-${index + 1}` } }));
+    const submit = screen.getByRole('button', { name: 'Submit complete checklist' });
+    expect(submit).toBeEnabled();
+    rerender(<SpecChecklistPanel {...props} canExecute={reason !== 'permission'} validationStageActive={reason !== 'stage'} />);
+    expect(submit).toBeDisabled();
+    fireEvent.click(submit);
+    expect(apiMock.submitChecklistExecution).not.toHaveBeenCalled();
   });
 
   it('keeps Spec Validation fail-closed until a blocking receipt is current', async () => {

@@ -3413,7 +3413,7 @@ export interface ChecklistReceipt {
   board_id: string;
   spec_id: string;
   spec_version: number;
-  spec_edition?: number | null;
+  spec_edition: number;
   content_digest: string;
   input_digest: string;
   template_version_id: '/specify/v1';
@@ -3421,7 +3421,7 @@ export interface ChecklistReceipt {
   binding_version: number;
   binding_id: string;
   binding_mode: ChecklistMode;
-  source: 'native' | 'legacy_unverified';
+  source: 'native';
   request_digest: string;
   head_revision: number;
   predecessor_receipt_id: string | null;
@@ -3450,7 +3450,7 @@ export interface ChecklistSpecState {
     board_id: string;
     spec_id: string;
     spec_version: number;
-    spec_edition?: number;
+    spec_edition: number;
     content_digest: string;
     input_digest: string;
     status: string;
@@ -3467,7 +3467,7 @@ export interface ChecklistExecutionStartResult {
   items: ChecklistTemplateItem[];
   subject_digest: string;
   template_digest: string;
-  spec_edition?: number;
+  spec_edition: number;
 }
 
 export interface ChecklistExecutionStartRequest {
