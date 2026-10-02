@@ -117,6 +117,7 @@ from okto_pulse.core.ports.quality_assessment import (
     AssessmentSubjectVersionConflict,
     FindingListQuery,
     QualityAssessmentPersistencePort,
+    QualityAssessmentPersistenceError,
 )
 from okto_pulse.core.ports.domain_event_delivery import StoredDomainEvent
 from okto_pulse.core.services.ska_observability import (
@@ -125,6 +126,21 @@ from okto_pulse.core.services.ska_observability import (
 )
 
 pytestmark = pytest.mark.asyncio
+
+
+@pytest.mark.parametrize("edition", [None, True, 0, -1, 1.0, "1"])
+async def test_current_rejects_invalid_edition_before_sql(edition):
+    session = SimpleNamespace(execute=AsyncMock())
+    adapter = CommunitySqlAlchemyQualityAssessment(session)
+    with pytest.raises(QualityAssessmentPersistenceError):
+        await adapter.get_current(
+            board_id=BOARD_ID,
+            subject_type=AssessmentSubjectType.SPEC,
+            subject_id=SPEC_ID,
+            assessment_kind=AssessmentKind.REQUIREMENT_LINT,
+            subject_edition=edition,
+        )
+    session.execute.assert_not_awaited()
 
 
 @pytest.fixture(autouse=True)
@@ -722,10 +738,21 @@ async def test_round_trip_audit_projection_pagination_and_board_isolation(
             subject_type=AssessmentSubjectType.SPEC,
             subject_id=SPEC_ID,
             assessment_kind=AssessmentKind.REQUIREMENT_LINT,
+            subject_edition=1,
         )
         assert current is not None
         assert current[0] == second.receipt
         assert current[1] == second.next_head
+        assert await adapter.get_current(
+            board_id=BOARD_ID,
+            subject_type=AssessmentSubjectType.SPEC,
+            subject_id=SPEC_ID,
+            assessment_kind=AssessmentKind.REQUIREMENT_LINT,
+            subject_edition=2,
+        ) is None
+        assert await adapter.get_receipt(
+            board_id=BOARD_ID, receipt_id=second.receipt.id
+        ) == second.receipt
 
         page = await adapter.list_assessments(
             AssessmentListQuery(

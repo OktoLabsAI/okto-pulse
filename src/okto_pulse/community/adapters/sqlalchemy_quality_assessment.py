@@ -2160,8 +2160,10 @@ class CommunitySqlAlchemyQualityAssessment:
         subject_type: AssessmentSubjectType,
         subject_id: str,
         assessment_kind: AssessmentKind,
-        subject_edition: int | None = None,
+        subject_edition: int,
     ) -> tuple[AssessmentReceipt, AssessmentSubjectHead] | None:
+        if type(subject_edition) is not int or subject_edition < 1:
+            raise QualityAssessmentPersistenceError("assessment_subject_edition_invalid")
         statement = (
             select(
                 QualityAssessmentReceiptRow,
@@ -2178,12 +2180,9 @@ class CommunitySqlAlchemyQualityAssessment:
                 QualityAssessmentHeadRow.subject_id == subject_id,
                 QualityAssessmentHeadRow.assessment_kind == assessment_kind.value,
                 QualityAssessmentReceiptRow.board_id == board_id,
+                QualityAssessmentReceiptRow.subject_edition == subject_edition,
             )
         )
-        if subject_edition is not None:
-            statement = statement.where(
-                QualityAssessmentReceiptRow.subject_edition == subject_edition
-            )
         statement = statement.execution_options(populate_existing=True)
         row = (
             await self._session.execute(
