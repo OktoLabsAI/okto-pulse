@@ -1512,6 +1512,14 @@ def test_revision_under_bump_and_idempotency_conflict_are_structured(
     assert response.json()["detail"]["code"] == code
 
 
+@pytest.mark.parametrize("query", ["include_binding_history=false", "include_binding_history=true", "unknown=value"])
+def test_export_rejects_removed_and_unknown_query_parameters(query: str) -> None:
+    client, _ = _client(None)
+    response = client.get(f"/api/v1/boards/board-b13/guidelines/export?{query}")
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "validation_failed"
+
+
 def test_import_and_export_require_capabilities_before_uow_access() -> None:
     class PoisonUow:
         def __getattribute__(self, name: str):

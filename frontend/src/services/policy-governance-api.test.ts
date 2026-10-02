@@ -231,7 +231,6 @@ describe('policy-governance-api', () => {
 
     const exported = await api.exportGuidelinePolicy('board/1', {
       guidelineIds: ['guide/1', 'guide-2'],
-      includeBindingHistory: false,
     });
     await api.importGuidelinePolicy('board/2', exported, {
       dryRun: true,
@@ -239,8 +238,7 @@ describe('policy-governance-api', () => {
 
     expect(fetch.mock.calls[0][0]).toBe(
       '/boards/board%2F1/guidelines/export'
-        + '?guideline_ids=guide%2F1&guideline_ids=guide-2'
-        + '&include_binding_history=false',
+        + '?guideline_ids=guide%2F1&guideline_ids=guide-2',
     );
     expect(fetch.mock.calls[1][0]).toBe(
       '/boards/board%2F2/guidelines/import?dry_run=true',

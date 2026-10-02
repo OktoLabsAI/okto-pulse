@@ -2208,9 +2208,9 @@ async def _execute(
     response_model=GuidelineExportV3Request,
 )
 async def export_guideline_policy_v3(
+    request: Request,
     board_id: BoardId,
     guideline_ids: list[GuidelineId] | None = Query(default=None),
-    include_binding_history: bool = Query(default=True),
     principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
@@ -2219,12 +2219,16 @@ async def export_guideline_policy_v3(
         ExportGuidelinePolicyV3UseCase,
     )
 
+    if set(request.query_params) - {"guideline_ids"}:
+        raise HTTPException(status_code=400, detail={
+            "code": "validation_failed", "message": "Unsupported export query parameter.",
+        })
+
     try:
         result = await ExportGuidelinePolicyV3UseCase().execute(
             ExportGuidelinePolicyCommand(
                 board_id=board_id,
                 guideline_ids=tuple(guideline_ids or ()),
-                include_binding_history=include_binding_history,
             ),
             actor=_actor(principal, board_id=board_id),
             uow=uow,

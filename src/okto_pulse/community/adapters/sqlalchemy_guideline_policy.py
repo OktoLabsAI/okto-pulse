@@ -1587,7 +1587,6 @@ class CommunitySqlAlchemyGuidelinePolicy:
         guideline_ids: tuple[str, ...] | None,
         owner_id: str | None,
         board_id: str | None,
-        include_binding_history: bool,
         trusted_import_discovery: bool = False,
     ) -> _GuidelineExportRows:
         """Read a deterministic aggregate snapshot without owning the UoW.
@@ -1838,7 +1837,6 @@ class CommunitySqlAlchemyGuidelinePolicy:
         guideline_ids: tuple[str, ...] | None = None,
         owner_id: str | None = None,
         board_id: str | None = None,
-        include_binding_history: bool = True,
         _trusted_import_discovery: bool = False,
     ) -> GuidelineExportSnapshot:
         """Project live authority plus inert candidates into one Core snapshot.
@@ -1852,7 +1850,6 @@ class CommunitySqlAlchemyGuidelinePolicy:
             guideline_ids=guideline_ids,
             owner_id=owner_id,
             board_id=board_id,
-            include_binding_history=include_binding_history,
             trusted_import_discovery=_trusted_import_discovery,
         )
         hydrated_revisions = await self._hydrate_revision_rows(
@@ -1992,7 +1989,6 @@ class CommunitySqlAlchemyGuidelinePolicy:
 
         return await self.export_guideline_snapshot(
             guideline_ids=guideline_ids,
-            include_binding_history=True,
             _trusted_import_discovery=True,
         )
 

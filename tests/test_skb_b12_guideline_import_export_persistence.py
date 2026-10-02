@@ -590,13 +590,6 @@ async def test_export_rows_are_complete_board_scoped_and_deterministic(
             guideline_ids=(GUIDELINE_ID,),
             owner_id="actor-b12",
             board_id=BOARD_ID,
-            include_binding_history=True,
-        )
-        current = await adapter._guideline_export_rows(  # noqa: SLF001
-            guideline_ids=(GUIDELINE_ID,),
-            owner_id="actor-b12",
-            board_id=BOARD_ID,
-            include_binding_history=False,
         )
 
         assert [row.id for row in complete.identities] == [GUIDELINE_ID]
@@ -607,10 +600,6 @@ async def test_export_rows_are_complete_board_scoped_and_deterministic(
         assert [row.guideline_id for row in complete.heads] == [GUIDELINE_ID]
         assert [row.retirement_id for row in complete.retirements] == ["retirement-b12"]
         assert [(row.board_id, row.binding_revision) for row in complete.bindings] == [
-            (BOARD_ID, 1),
-            (BOARD_ID, 2),
-        ]
-        assert [(row.board_id, row.binding_revision) for row in current.bindings] == [
             (BOARD_ID, 1),
             (BOARD_ID, 2),
         ]
@@ -625,7 +614,7 @@ async def test_export_rows_are_complete_board_scoped_and_deterministic(
             GUIDELINE_ID
         ]
         assert [
-            binding.binding_revision
+            binding.binding.binding_revision
             for binding in exact_snapshot.aggregates[0].bindings
         ] == [1, 2]
         assert exact_snapshot.aggregates[0].retirement is not None
@@ -650,7 +639,6 @@ async def test_export_rows_are_complete_board_scoped_and_deterministic(
                 guideline_ids=("guideline-missing",),
                 owner_id="actor-b12",
                 board_id=None,
-                include_binding_history=True,
             )
 
         with pytest.raises(
@@ -790,7 +778,6 @@ async def test_apply_is_atomic_replay_safe_and_keeps_bindings_inert(
             guideline_ids=(GUIDELINE_ID,),
             owner_id=TARGET_OWNER_ID,
             board_id=BOARD_ID,
-            include_binding_history=False,
         )
         exported_bindings = snapshot.aggregates[0].bindings
         assert all(

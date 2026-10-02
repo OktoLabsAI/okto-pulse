@@ -586,7 +586,7 @@ async def test_b11_materialization_keeps_exact_pin_and_rolls_back_partial_batch(
             assert exact.materialized_revision_number == revision_1.revision_number
             exported = await CommunitySqlAlchemyGuidelinePolicy(session).export_guideline_snapshot(
                 guideline_ids=(guideline_id,), owner_id=OWNER_ID,
-                board_id="board-b11-exact", include_binding_history=True,
+                board_id="board-b11-exact",
             )
             proof = exported.aggregates[0].bindings[0]
             assert proof.materialized_template_id == template.id

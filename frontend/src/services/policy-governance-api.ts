@@ -238,7 +238,6 @@ export interface PolicyGovernanceApi {
     boardId: string,
     options?: {
       guidelineIds?: string[];
-      includeBindingHistory?: boolean;
       signal?: AbortSignal;
     },
   ): Promise<Policy.GuidelineExportEnvelopeV3>;
@@ -387,13 +386,10 @@ export function createPolicyGovernanceApi(
       for (const guidelineId of options.guidelineIds ?? []) {
         params.append('guideline_ids', guidelineId);
       }
-      params.set(
-        'include_binding_history',
-        String(options.includeBindingHistory ?? true),
-      );
+      const query = params.toString();
       return requestJson<Policy.GuidelineExportEnvelopeV3>(
         transport,
-        `${boardRoot(boardId)}/guidelines/export?${params.toString()}`,
+        `${boardRoot(boardId)}/guidelines/export${query ? `?${query}` : ''}`,
         { signal: options.signal },
       );
     },
