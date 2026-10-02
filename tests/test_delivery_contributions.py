@@ -1,6 +1,7 @@
 """Actual receipt admission and SQL ledger, without fabricated completion flags."""
 
 import pytest
+from types import SimpleNamespace
 from sqlalchemy import select, update
 
 from test_delivery_inline_execution import (
@@ -9,6 +10,7 @@ from test_delivery_inline_execution import (
     command,
     counts,
 )
+from test_delivery_execution_sets import seed_scope, native_verifier as _native_verifier
 from okto_pulse.community.adapters.sqlalchemy_models import (
     Card,
     Spec,
@@ -21,6 +23,8 @@ from okto_pulse.core.models.delivery_evidence import (
 )
 from okto_pulse.core.domain.delivery_evidence import (
     CardDeliveryScope,
+    DeliveryBinding,
+    DeliveryScope,
     evaluate_delivery_coverage,
 )
 from okto_pulse.core.services.delivery_evidence import require_card_delivery
@@ -28,6 +32,8 @@ from okto_pulse.core.application.use_cases.base import PermissionDeniedError
 
 db = _db
 composed = _composed
+native_verifier = _native_verifier
+pytestmark = pytest.mark.usefixtures("native_verifier")
 
 
 def declared(*, states=None, second=False):
@@ -35,7 +41,7 @@ def declared(*, states=None, second=False):
     data["entries"][0].pop("obligation_refs")
     data["entries"][0]["bindings"] = [
         dict(obligation_ref=ref, contribution=state)
-        for ref, state in (states or {"card:c": "partial"}).items()
+        for ref, state in (states or {"fr:fr": "partial"}).items()
     ]
     return CardDeliveryEvidenceBatchCommand.model_validate(data)
 
@@ -45,19 +51,7 @@ async def test_mixed_declarations_persist_and_gate_matches_rollup(
     composed, monkeypatch
 ):
     session, uow, use_case, actor = composed
-    await session.execute(
-        update(Spec)
-        .where(Spec.id == "s")
-        .values(
-            functional_requirements=[
-                dict(id="fr", text="Functional scope", linked_task_ids=["c"])
-            ],
-            technical_requirements=[
-                dict(id="tr", text="Technical scope", linked_task_ids=["c"])
-            ],
-        )
-    )
-    await session.commit()
+    await seed_scope(session)
     saved = await use_case.execute(
         declared(states={"fr:fr": "partial", "tr:tr": "complete"}), actor=actor, uow=uow
     )
@@ -91,7 +85,7 @@ async def test_mixed_declarations_persist_and_gate_matches_rollup(
     assert {
         row.obligation.binding.obligation_ref: row.implementation_satisfied
         for row in result.rows
-    } == {"fr:fr": False, "tr:tr": True}
+    } == {"fr:fr": False, "tr:tr": True, "ac:ac-functional": False, "ac:ac-technical": False}
     assert not per_card[0]["satisfied"]
 
 
@@ -107,7 +101,7 @@ async def test_partial_replay_does_not_upgrade_and_explicit_complete_is_new_hist
             client_ref="again",
             kind="implementation",
             execution_client_ref="proof",
-            bindings=[dict(obligation_ref="card:c", contribution="partial")],
+            bindings=[dict(obligation_ref="fr:fr", contribution="partial")],
             justification="Another partial observation",
         )
     )
@@ -131,7 +125,8 @@ async def test_partial_replay_does_not_upgrade_and_explicit_complete_is_new_hist
     await session.commit()
     scope = CardDeliveryScope("b", "c", "s", 1)
     snapshot = await uow.services.delivery_evidence.load_card_snapshot(scope)
-    assert not evaluate_delivery_coverage(snapshot).rows[0].implementation_satisfied
+    assert not next(row for row in evaluate_delivery_coverage(snapshot).rows
+        if row.obligation.binding.obligation_ref == "fr:fr").implementation_satisfied
     complete = CardDeliveryEvidenceCommand(
         board_id="b",
         card_id="c",
@@ -142,11 +137,12 @@ async def test_partial_replay_does_not_upgrade_and_explicit_complete_is_new_hist
         kind="implementation",
         justification="Contribution consolidated",
         execution_id=first["entries"][0]["execution_id"],
-        bindings=[dict(obligation_ref="card:c", contribution="complete")],
+        bindings=[dict(obligation_ref="fr:fr", contribution="complete")],
     )
     await use_case.execute(complete, actor=actor, uow=uow)
     snapshot = await uow.services.delivery_evidence.load_card_snapshot(scope)
-    assert evaluate_delivery_coverage(snapshot).rows[0].implementation_satisfied
+    assert next(row for row in evaluate_delivery_coverage(snapshot).rows
+        if row.obligation.binding.obligation_ref == "fr:fr").implementation_satisfied
     rows = list((await session.scalars(select(Record))).all())
     assert len(rows) == 3
     assert (
@@ -184,3 +180,22 @@ async def test_declared_binding_cannot_name_another_cards_scope(composed):
         )
     await session.commit()
     assert await counts(session) == [0, 0, 0, 0]
+
+
+@pytest.mark.asyncio
+async def test_reader_refuses_missing_declarations_without_converting_the_record(composed):
+    session, uow, use_case, actor = composed
+    saved = await use_case.execute(declared(), actor=actor, uow=uow)
+    record = await session.get(Record, saved['entries'][0]['id'])
+    before = dict(record.payload)
+    bindings = tuple(DeliveryBinding(**value) for value in before['bindings'])
+    for missing in [('contribution_contract_version',), ('contributions',),
+                    ('contribution_contract_version', 'contributions')]:
+        malformed = SimpleNamespace(id=record.id, actor_id=record.actor_id,
+            payload={key: value for key, value in before.items() if key not in missing})
+        with pytest.raises(ValueError, match='delivery_contribution_payload_invalid'):
+            await uow.services.delivery_evidence._implementation(malformed, DeliveryScope('b', 's', 1), bindings)
+        assert malformed.payload == {key: value for key, value in before.items() if key not in missing}
+    await session.refresh(record)
+    assert record.payload == before
+    assert await counts(session) == [1, 1, 1, 1]

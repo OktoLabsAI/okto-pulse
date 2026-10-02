@@ -37,6 +37,17 @@ from okto_pulse.core.models.delivery_evidence import (
 db = _db
 composed = _composed
 ledger = _ledger
+pytestmark = pytest.mark.usefixtures("native_verifier")
+
+
+@pytest.fixture
+def native_verifier(tmp_path):
+    from test_evidence_v2_adapter import _ledger as evidence_ledger
+    from okto_pulse.community.adapters.test_evidence import CommunityTestEvidenceWriteVerifier
+    from okto_pulse.core.ports.test_evidence import register_test_evidence_write_verifier, reset_test_evidence_write_verifier_for_tests
+    register_test_evidence_write_verifier(CommunityTestEvidenceWriteVerifier(ledger=evidence_ledger(tmp_path / 'capability')))
+    yield
+    reset_test_evidence_write_verifier_for_tests()
 
 
 def composite_batch(*, invalid=False, duplicates=False):
@@ -81,14 +92,35 @@ async def seed_scope(session):
         .where(Spec.id == "s")
         .values(
             functional_requirements=[
-                dict(id="fr", text="Functional", linked_task_ids=["c"])
+                dict(id="fr", text="Functional", linked_task_ids=["c"],
+                    verification=dict(mode="explicit", required_profiles=["functional"]),
+                    implementation_plan=dict(contributions=[dict(card_id="c", scope="whole_requirement")]))
             ],
             technical_requirements=[
-                dict(id="tr", text="Technical", linked_task_ids=["c"])
+                dict(id="tr", text="Technical", linked_task_ids=["c"],
+                    verification=dict(mode="explicit", required_profiles=["functional"]),
+                    implementation_plan=dict(contributions=[dict(card_id="c", scope="whole_requirement")]))
             ],
+            acceptance_criteria=[
+                dict(id="ac-" + kind, text="Observed " + kind, verification_profile="functional",
+                    linked_task_ids=["criteria-card"], requirement_links=[dict(requirement_type=kind + "_requirement", requirement_id=ref)])
+                for kind, ref in [("functional", "fr"), ("technical", "tr")]
+            ],
+            test_scenarios=[dict(id="scope-test", title="Observe both requirements", scenario_type="integration",
+                verification_method="automated_test", status="draft", linked_criteria=["ac-functional", "ac-technical"],
+                given="Both requirements are implemented", when="The observation executes", then="Both criteria hold")],
         )
     )
+    session.add(Card(id="scope-test-card", board_id="b", spec_id="s", title="Verify scope",
+        status="not_started", position=1, created_by="owner", card_type="test", test_scenario_ids=["scope-test"]))
+    session.add(Card(id="criteria-card", board_id="b", spec_id="s", title="Deliver direct criteria",
+        status="in_progress", position=2, created_by="owner", card_type="normal"))
     await session.commit()
+    from okto_pulse.community.adapters.sqlalchemy_delivery_evidence import CommunityDeliveryEvidenceStore
+    plan = await CommunityDeliveryEvidenceStore(session)._execution_plan(await session.get(Spec, "s"))
+    if not plan.complete:
+        import json
+        raise AssertionError(json.dumps(plan.qualification, indent=2))
 
 
 @pytest.mark.asyncio
@@ -138,7 +170,7 @@ async def test_inline_set_is_atomic_replayable_and_staleness_is_per_binding(comp
     assert {
         row["obligation"]["binding"]["obligation_ref"]: row["implementation_satisfied"]
         for row in projection["rows"]
-    } == {"fr:fr": False, "tr:tr": True}
+    } == {"fr:fr": False, "tr:tr": True, "ac:ac-functional": False, "ac:ac-technical": False}
 
 
 @pytest.mark.asyncio
@@ -224,13 +256,13 @@ async def test_signed_test_checks_every_member_of_the_named_receipt_set(ledger, 
         obligation_refs=[],
         bindings=[
             dict(
-                obligation_ref="ac:ac-about",
+                obligation_ref=ref,
                 contribution="complete",
                 execution_refs=[
                     {"execution_id": "execution"},
                     {"execution_id": "execution-two"},
                 ],
-            ),
+            ) for ref in ("fr:fr-about", "ac:ac-about")
         ],
     )
     saved = await record(store, request)

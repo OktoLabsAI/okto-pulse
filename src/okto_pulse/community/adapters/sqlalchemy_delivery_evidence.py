@@ -448,20 +448,16 @@ class CommunityDeliveryEvidenceStore:
             )
         ).all()
         for execution in executions:
-            candidate = CardRecord(
-                id=execution.id,
-                actor_id=execution.submitted_by,
-                payload={
-                    "card_id": execution.card_id,
-                    "execution_id": execution.id,
-                    "justification": execution.justification,
-                },
-            )
-            fact = await self._implementation(candidate, scope, ())
+            card = await self._get(Card, execution.card_id)
+            if card is None or card.board_id != board_id or card.spec_id != spec_id:
+                continue
+            # A selectable execution is not a Delivery record. Authenticate its
+            # receipt without manufacturing a ledger payload with no bindings.
+            proof = await self._execution_proof(execution.id, scope, card)
             if (
-                fact
-                and fact.current_accepted_execution
-                and fact.card_type in {CardType.NORMAL, CardType.BUG}
+                proof
+                and proof.current_accepted_execution
+                and CardType(card.card_type) in {CardType.NORMAL, CardType.BUG}
             ):
                 candidates.append(
                     {
@@ -469,14 +465,7 @@ class CommunityDeliveryEvidenceStore:
                         "id": execution.id,
                         "card_id": execution.card_id,
                         # Card CAS fence for the card-scoped record surface.
-                        "card_version": int(
-                            getattr(
-                                await self._get(Card, execution.card_id),
-                                "policy_version",
-                                1,
-                            )
-                            or 1
-                        ),
+                        "card_version": int(card.policy_version),
                         "label": f"{execution.actual_relative_path} @ {execution.result_declared_revision}",
                     }
                 )
