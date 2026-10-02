@@ -1665,7 +1665,6 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
                             subjectId={refinementId}
                             subjectVersion={refinement.version}
                             subjectEdition={refinement.edition ?? 1}
-                            presentationMode="lifecycle-edition"
                             subjectStatus={refinement.status}
                             subjectArchived={refinement.archived ?? false}
                             canRead={canReadQuality}
@@ -1699,7 +1698,6 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
                         subjectId={refinementId}
                         subjectVersion={refinement.version}
                         subjectEdition={refinement.edition ?? 1}
-                        presentationMode="lifecycle-edition"
                         subjectStatus={refinement.status}
                         subjectArchived={refinement.archived ?? false}
                         canRead={canReadQuality}

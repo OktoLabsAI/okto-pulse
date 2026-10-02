@@ -759,7 +759,6 @@ export function SpecValidationPanel({
             canAssess={false}
             canProposeQuestions={false}
             anchorTexts={anchorTexts}
-            presentationMode="lifecycle-edition"
             embedded
             onAssessmentRecorded={() => {
               refreshCycle();

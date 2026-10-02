@@ -1666,7 +1666,6 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
                           subjectId={ideationId}
                           subjectVersion={ideation.version}
                           subjectEdition={ideation.edition ?? 1}
-                          presentationMode="lifecycle-edition"
                           subjectStatus={ideation.status}
                           subjectArchived={ideation.archived ?? false}
                           canRead={canReadQuality}
@@ -1697,7 +1696,6 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
                       subjectId={ideationId}
                       subjectVersion={ideation.version}
                       subjectEdition={ideation.edition ?? 1}
-                      presentationMode="lifecycle-edition"
                       subjectStatus={ideation.status}
                       subjectArchived={ideation.archived ?? false}
                       canRead={canReadQuality}

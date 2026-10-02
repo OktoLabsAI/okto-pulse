@@ -94,6 +94,8 @@ function currentAssessment(
     receipt: receipt(),
     head_revision: 4,
     currentness: 'current',
+    lifecycle_state: 'current',
+    edition: 1,
     stale_reasons: [],
     gate_preview: {
       applicable: true,
@@ -118,10 +120,8 @@ function page<T>(items: T[]) {
   };
 }
 
-describe('QualityPanel', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    apiMock.getValidationCycle.mockResolvedValue({
+function validationCycle() {
+  return {
       subject_type: 'ideation',
       subject_id: 'ideation-1',
       edition: 1,
@@ -147,7 +147,17 @@ describe('QualityPanel', () => {
         expected_subject_version: 7,
         expected_head_revision: 4,
       },
-    });
+    };
+}
+
+describe('QualityPanel', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    apiMock.getValidationCycle.mockImplementation(async (subjectType, subjectId) => ({
+      ...validationCycle(),
+      subject_type: subjectType,
+      subject_id: subjectId,
+    }));
     apiMock.getValidationTechnicalAudit.mockResolvedValue({
       subject_type: 'ideation',
       subject_id: 'ideation-1',
@@ -163,16 +173,18 @@ describe('QualityPanel', () => {
         exceptions: [],
       },
     });
-    apiMock.getCurrentQualityAssessment.mockResolvedValue(currentAssessment());
+    apiMock.getCurrentQualityAssessment.mockResolvedValue(currentAssessment({
+      receipt: receipt({ subject_type: 'spec', subject_id: 'spec-1', assessment_kind: 'requirement_lint' }),
+    }));
     apiMock.listQualityAssessments.mockResolvedValue(page([
       {
-        receipt: receipt(),
-        is_head: true,
-        state: 'current',
+        receipt: receipt({ subject_type: 'spec', subject_id: 'spec-1', assessment_kind: 'requirement_lint' }),
+        is_head: false,
+        state: 'previous',
         currentness: {
-          current: true,
-          state: 'current',
-          stale_reasons: [],
+          current: false,
+          state: 'previous',
+          stale_reasons: ['subject_edition_changed'],
         },
       },
     ]));
@@ -271,74 +283,44 @@ describe('QualityPanel', () => {
     expect(screen.queryByText(/stale/i)).not.toBeInTheDocument();
   });
 
-  it('renders currentness and keeps paginated history and pinpoint findings independently collapsible', async () => {
+  it('keeps current-edition findings filterable and paginated without a compatibility mode', async () => {
+    const findings = await apiMock.listQualityFindings();
+    apiMock.listQualityFindings.mockClear();
+    apiMock.listQualityFindings.mockResolvedValue({ ...findings, total_filtered: 60, total_overall: 60 });
     render(
-      <QualityPanel
-        subjectType="ideation"
-        subjectId="ideation-1"
-        subjectVersion={7}
-        subjectStatus="evaluating"
-        subjectArchived={false}
-        canRead
-        canAssess={false}
-        canProposeQuestions={false}
-      />,
+      <QualityPanel subjectEdition={1} subjectType="ideation" subjectId="ideation-1"
+        subjectVersion={7} subjectStatus="evaluating" subjectArchived={false}
+        canRead canAssess={false} canProposeQuestions={false} />,
     );
-
-    const scoreRing = await screen.findByTestId('quality-score-ring');
-    expect(scoreRing).toHaveAccessibleName('Ambiguity score 3 out of 5');
-    expect(scoreRing).toHaveClass('h-16', 'w-16', 'rounded-full', 'border-4', 'border-emerald-400');
-    expect(screen.getByText('Ambiguity within the allowed limit')).toBeInTheDocument();
-    expect(screen.getByText('Maximum tolerated on this board:')).toBeInTheDocument();
-    expect(screen.getByTestId('quality-gate-preview-status')).toHaveTextContent('Ready');
-    expect(screen.getByTestId('quality-history-toggle')).toHaveAttribute(
-      'aria-expanded',
-      'false',
-    );
-    expect(screen.getByTestId('quality-findings-toggle')).toHaveAttribute(
-      'aria-expanded',
-      'false',
-    );
-    expect(screen.queryByTestId('quality-history-content')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('quality-findings-content')).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByTestId('quality-findings-toggle'));
-    expect(screen.getByTestId('quality-findings-toggle')).toHaveAttribute(
-      'aria-expanded',
-      'true',
-    );
-    expect(await screen.findByText('Unclear actor')).toBeInTheDocument();
-    expect(screen.getByTestId('quality-read-only')).toHaveTextContent(
-      'permissions do not allow',
-    );
+    expect(await screen.findByRole('img', { name: 'Ambiguity score 3 out of 5' })).toBeInTheDocument();
+    expect(screen.getByTestId('quality-current-status')).toHaveTextContent('Passed');
+    expect(screen.getByTestId('quality-read-only')).toHaveTextContent('permissions do not allow');
     expect(screen.queryByRole('button', { name: 'Record assessment' })).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByTestId('quality-history-toggle'));
-    expect(screen.getByTestId('quality-history-toggle')).toHaveAttribute(
-      'aria-expanded',
-      'true',
-    );
-    const historyPaginator = screen.getByTestId('quality-history-paginator');
-    const historyContent = screen.getByTestId('quality-history-content');
-    const stateFilter = within(historyContent).getByLabelText('State');
-    expect(within(stateFilter).getAllByRole('option').map((item) => item.textContent))
-      .toEqual(['All', 'Current', 'Previous']);
-    fireEvent.change(stateFilter, { target: { value: 'previous' } });
-    await waitFor(() => expect(apiMock.listQualityAssessments).toHaveBeenCalledWith(
-      'ideation', 'ideation-1', expect.objectContaining({ state: 'previous' }),
-    ));
-    fireEvent.change(within(historyPaginator).getByLabelText('Items per page'), {
-      target: { value: '50' },
-    });
-    await waitFor(() => expect(apiMock.listQualityAssessments).toHaveBeenCalledWith(
-      'ideation',
-      'ideation-1',
-      expect.objectContaining({
-        offset: 0,
-        limit: 50,
-        assessmentKind: 'ambiguity',
+    expect(screen.getByTestId('quality-previous-results-toggle')).toHaveAttribute('aria-expanded', 'false');
+    expect(apiMock.listQualityFindings).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('quality-findings-toggle'));
+    expect(await screen.findByText('Unclear actor')).toBeInTheDocument();
+    const findingsPanel = screen.getByTestId('quality-findings-content');
+    fireEvent.change(within(findingsPanel).getByLabelText('Severity'), { target: { value: 'high' } });
+    fireEvent.change(within(findingsPanel).getByLabelText('Category'), { target: { value: 'domain_data_model' } });
+    await waitFor(() => expect(apiMock.listQualityFindings).toHaveBeenLastCalledWith(
+      'ideation', 'ideation-1', expect.objectContaining({
+        subjectEdition: 1, receiptId: 'receipt-1', severity: 'high', categoryCode: 'domain_data_model', offset: 0,
       }),
     ));
+    const paginator = screen.getByTestId('quality-findings-paginator');
+    const next = within(paginator).getByRole('button', { name: 'Next page' });
+    await waitFor(() => expect(next).toBeEnabled());
+    fireEvent.click(next);
+    await waitFor(() => expect(apiMock.listQualityFindings).toHaveBeenLastCalledWith(
+      'ideation', 'ideation-1', expect.objectContaining({ offset: 25, limit: 25, receiptId: 'receipt-1' }),
+    ));
+    fireEvent.change(within(paginator).getByLabelText('Items per page'), { target: { value: '50' } });
+    await waitFor(() => expect(apiMock.listQualityFindings).toHaveBeenLastCalledWith(
+      'ideation', 'ideation-1', expect.objectContaining({ offset: 0, limit: 50 }),
+    ));
+    expect(apiMock.getCurrentQualityAssessment).not.toHaveBeenCalled();
+    expect(apiMock.listQualityAssessments).not.toHaveBeenCalled();
   });
 
   it('loads lifecycle details without consulting the legacy receipt-state list', async () => {
@@ -411,7 +393,6 @@ describe('QualityPanel', () => {
         canRead
         canAssess={false}
         canProposeQuestions={false}
-        presentationMode="lifecycle-edition"
       />,
     );
 
@@ -535,7 +516,6 @@ describe('QualityPanel', () => {
         canRead
         canAssess={false}
         canProposeQuestions={false}
-        presentationMode="lifecycle-edition"
       />,
     );
 
@@ -549,71 +529,21 @@ describe('QualityPanel', () => {
     expect(current).not.toHaveTextContent(/stale/i);
   });
 
-  it('never treats a null-edition validation-cycle result as Current', async () => {
-    const legacyCycle = {
-      subject_type: 'ideation',
-      subject_id: 'ideation-1',
-      edition: 2,
-      subject_status: 'evaluating',
-      cycle_state: 'in_progress',
-      current_result: {
-        result_id: 'legacy-receipt',
-        result_type: 'ambiguity_assessment',
-        subject_edition: null,
-        status: 'passed',
-        summary: { score: 2, threshold: 3 },
-      },
-      previous_result_count: 1,
-      previous_results: [],
-      submission_fence: {
-        expected_validation_edition: 2,
-        expected_subject_version: 7,
-        expected_head_revision: 4,
-      },
-    } as const;
-    apiMock.getValidationCycle
-      .mockResolvedValueOnce(legacyCycle)
-      .mockResolvedValue({
-        ...legacyCycle,
-        previous_results: [{
-          result_id: 'legacy-receipt',
-          result_type: 'ambiguity_assessment',
-          subject_edition: null,
-          status: 'completed',
-          summary: {
-            score: 2,
-            scale_maximum: 5,
-            created_at: '2026-07-27T12:00:00Z',
-            created_by: 'agent-1',
-          },
-        }],
-      });
-
+  it('refuses an editionless result instead of rendering imported history', async () => {
+    const cycle = validationCycle();
+    apiMock.getValidationCycle.mockResolvedValue({
+      ...cycle, current_result: { ...cycle.current_result, subject_edition: null },
+    });
     render(
-      <QualityPanel
-        subjectType="ideation"
-        subjectId="ideation-1"
-        subjectVersion={7}
-        subjectEdition={2}
-        subjectStatus="evaluating"
-        subjectArchived={false}
-        canRead
-        canAssess={false}
-        canProposeQuestions={false}
-        presentationMode="lifecycle-edition"
-      />,
+      <QualityPanel subjectEdition={1} subjectType="ideation" subjectId="ideation-1"
+        subjectVersion={7} subjectStatus="evaluating" subjectArchived={false}
+        canRead canAssess canProposeQuestions={false} />,
     );
-
-    const current = await screen.findByTestId('quality-current-result');
-    expect(current).toHaveTextContent('No result for Edition 2');
-    expect(current).toHaveTextContent('Not started');
-    expect(current).not.toHaveTextContent('Legacy');
-    expect(current).not.toHaveTextContent('2 of 5');
-
-    fireEvent.click(screen.getByTestId('quality-previous-results-toggle'));
-    const previous = await screen.findByTestId('quality-previous-results-content');
-    expect(previous).toHaveTextContent('Legacy');
-    expect(previous).not.toHaveTextContent('Edition 1');
+    expect(await screen.findByRole('alert')).toHaveTextContent('does not match this subject edition');
+    expect(screen.queryByText('Legacy')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Record assessment' })).toBeDisabled();
+    fireEvent.click(screen.getByTestId('quality-findings-toggle'));
+    expect(apiMock.listQualityFindings).not.toHaveBeenCalled();
   });
 
   it('does not request lifecycle findings without a current edition result', async () => {
@@ -630,7 +560,6 @@ describe('QualityPanel', () => {
         canRead
         canAssess={false}
         canProposeQuestions={false}
-        presentationMode="lifecycle-edition"
       />,
     );
 
@@ -659,7 +588,7 @@ describe('QualityPanel', () => {
     'shares independent collapsed sections with $subjectType',
     async ({ subjectType, subjectStatus }) => {
       render(
-        <QualityPanel
+        <QualityPanel subjectEdition={1}
           subjectType={subjectType}
           subjectId={`${subjectType}-1`}
           subjectVersion={7}
@@ -672,10 +601,7 @@ describe('QualityPanel', () => {
       );
 
       await screen.findByTestId('quality-score-ring');
-      if (subjectType === 'spec') {
-        await screen.findByTestId('requirement-lint-summary');
-      }
-      const historyToggle = screen.getByTestId('quality-history-toggle');
+      const historyToggle = screen.getByTestId('quality-previous-results-toggle');
       const findingsToggle = screen.getByTestId('quality-findings-toggle');
 
       expect(historyToggle).toHaveAttribute('aria-expanded', 'false');
@@ -683,156 +609,66 @@ describe('QualityPanel', () => {
 
       fireEvent.click(historyToggle);
       expect(historyToggle).toHaveAttribute('aria-expanded', 'true');
-      expect(screen.getByTestId('quality-history-content')).toBeInTheDocument();
+      expect(screen.getByTestId('quality-previous-results-content')).toBeInTheDocument();
       expect(screen.queryByTestId('quality-findings-content')).not.toBeInTheDocument();
 
       fireEvent.click(historyToggle);
       expect(historyToggle).toHaveAttribute('aria-expanded', 'false');
-      expect(screen.queryByTestId('quality-history-content')).not.toBeInTheDocument();
+      expect(screen.getByTestId('quality-previous-results-content')).not.toBeVisible();
 
       fireEvent.click(findingsToggle);
       expect(findingsToggle).toHaveAttribute('aria-expanded', 'true');
       expect(screen.getByTestId('quality-findings-content')).toBeInTheDocument();
-      expect(screen.queryByTestId('quality-history-content')).not.toBeInTheDocument();
+      expect(screen.getByTestId('quality-previous-results-content')).not.toBeVisible();
     },
   );
 
   it.each([
-    {
-      caseName: 'blocked',
-      assessment: currentAssessment({
-        gate_preview: {
-          applicable: true,
-          enabled: true,
-          allowed: false,
-          reason_code: 'ambiguity_score_exceeds_threshold',
-          threshold: 2,
-          score: 3,
-          skipped: false,
-        },
-      }),
-      headline: 'Ambiguity exceeds the allowed limit',
-      ringClass: 'border-red-400',
-      iconState: 'blocked',
-    },
-    {
-      caseName: 'stale',
-      assessment: currentAssessment({
-        currentness: 'previous',
-        stale_reasons: ['subject_edition_changed'],
-        gate_preview: {
-          applicable: true,
-          enabled: true,
-          allowed: false,
-          reason_code: 'ambiguity_assessment_stale',
-          threshold: 3,
-          score: 3,
-          skipped: false,
-        },
-      }),
-      headline: 'Ambiguity assessment is a previous result',
-      ringClass: 'border-amber-400',
-      iconState: 'stale',
-    },
-    {
-      caseName: 'skipped',
-      assessment: currentAssessment({
-        gate_preview: {
-          applicable: true,
-          enabled: true,
-          allowed: true,
-          reason_code: 'ambiguity_gate_skipped',
-          threshold: 3,
-          score: 3,
-          skipped: true,
-        },
-      }),
-      headline: 'Ambiguity gate skipped by override',
-      ringClass: 'border-amber-400',
-      iconState: 'skipped',
-    },
-    {
-      caseName: 'disabled',
-      assessment: currentAssessment({
-        gate_preview: {
-          applicable: true,
-          enabled: false,
-          allowed: true,
-          reason_code: 'ambiguity_gate_disabled',
-          threshold: null,
-          score: 3,
-          skipped: false,
-        },
-      }),
-      headline: 'Ambiguity gate is disabled',
-      ringClass: 'border-blue-400',
-      iconState: 'neutral',
-    },
-  ])('keeps the $caseName receipt signal consistent with the server gate reason', async ({
-    assessment,
-    headline,
-    ringClass,
-    iconState,
-  }) => {
-    apiMock.getCurrentQualityAssessment.mockResolvedValueOnce(assessment);
-
+    { status: 'failed', headline: 'Ambiguity exceeds the allowed limit', label: 'Failed', ringClass: 'border-red-400' },
+    { status: 'passed', headline: 'Ambiguity gate skipped by override', label: 'Passed', ringClass: 'border-emerald-400' },
+    { status: 'passed', headline: 'Ambiguity gate is disabled', label: 'Passed', ringClass: 'border-emerald-400' },
+  ])('keeps the current result consistent with the server summary: $headline', async ({ status, headline, label, ringClass }) => {
+    const cycle = validationCycle();
+    apiMock.getValidationCycle.mockResolvedValue({
+      ...cycle,
+      current_result: { ...cycle.current_result, status, summary: { score: 3, threshold: 2, headline } },
+    });
     render(
-      <QualityPanel
-        subjectType="ideation"
-        subjectId="ideation-1"
-        subjectVersion={7}
-        subjectStatus="evaluating"
-        subjectArchived={false}
-        canRead
-        canAssess={false}
-        canProposeQuestions={false}
-      />,
+      <QualityPanel subjectEdition={1} subjectType="ideation" subjectId="ideation-1"
+        subjectVersion={7} subjectStatus="evaluating" subjectArchived={false}
+        canRead canAssess={false} canProposeQuestions={false} />,
     );
-
     expect(await screen.findByTestId('quality-score-ring')).toHaveClass(ringClass);
     expect(screen.getByText(headline)).toBeInTheDocument();
-    expect(screen.getByTestId('quality-receipt-status-icon')).toHaveAttribute(
-      'data-state',
-      iconState,
-    );
+    expect(screen.getByTestId('quality-current-status')).toHaveTextContent(label);
   });
 
-  it('uses the current receipt returned by the same refresh when current-only is active', async () => {
-    apiMock.getCurrentQualityAssessment
-      .mockResolvedValueOnce(currentAssessment())
-      .mockResolvedValue(
-        currentAssessment({
-          receipt: receipt({ id: 'receipt-fresh' }),
-          head_revision: 5,
-        }),
-      );
+  it('refreshes findings against the new current result in the same cycle response', async () => {
+    const cycle = validationCycle();
+    apiMock.getValidationCycle.mockResolvedValueOnce(cycle).mockResolvedValue({
+      ...cycle, current_result: { ...cycle.current_result, result_id: 'receipt-fresh' },
+    });
     render(
-      <QualityPanel
-        subjectType="ideation"
-        subjectId="ideation-1"
-        subjectVersion={7}
-        subjectStatus="evaluating"
-        subjectArchived={false}
-        canRead
-        canAssess={false}
-        canProposeQuestions={false}
-      />,
+      <QualityPanel subjectEdition={1} subjectType="ideation" subjectId="ideation-1"
+        subjectVersion={7} subjectStatus="evaluating" subjectArchived={false}
+        canRead canAssess={false} canProposeQuestions={false} />,
     );
-
     await screen.findByTestId('quality-score-ring');
     fireEvent.click(screen.getByTestId('quality-findings-toggle'));
-    fireEvent.click(screen.getByLabelText('Current receipt only'));
-
+    await waitFor(() => expect(apiMock.listQualityFindings).toHaveBeenCalledWith(
+      'ideation', 'ideation-1', expect.objectContaining({ receiptId: 'receipt-1' }),
+    ));
+    const refresh = screen.getByRole('button', { name: 'Refresh' });
+    await waitFor(() => expect(refresh).toBeEnabled());
+    fireEvent.click(refresh);
     await waitFor(() => expect(apiMock.listQualityFindings).toHaveBeenLastCalledWith(
-      'ideation',
-      'ideation-1',
-      expect.objectContaining({ receiptId: 'receipt-fresh' }),
+      'ideation', 'ideation-1', expect.objectContaining({ receiptId: 'receipt-fresh', subjectEdition: 1 }),
     ));
   });
 
   it('keeps manual ambiguity authoring unavailable outside its lifecycle without an inline warning', async () => {
     render(
-      <QualityPanel
+      <QualityPanel subjectEdition={1}
         subjectType="ideation"
         subjectId="subject-1"
         subjectVersion={7}
@@ -853,7 +689,7 @@ describe('QualityPanel', () => {
 
   it('retains the actionable archive explanation when ambiguity authoring is unavailable', async () => {
     render(
-      <QualityPanel
+      <QualityPanel subjectEdition={1}
         subjectType="refinement"
         subjectId="subject-1"
         subjectVersion={7}
@@ -874,7 +710,7 @@ describe('QualityPanel', () => {
 
   it('omits the question composer and sends no questions without the Q&A ask leaf', async () => {
     render(
-      <QualityPanel
+      <QualityPanel subjectEdition={1}
         subjectType="ideation"
         subjectId="ideation-1"
         subjectVersion={7}
@@ -900,7 +736,7 @@ describe('QualityPanel', () => {
   it('records a governed assessment with score, pinpoint finding and optional question', async () => {
     const onAssessmentRecorded = vi.fn();
     render(
-      <QualityPanel
+      <QualityPanel subjectEdition={1}
         subjectType="refinement"
         subjectId="refinement-1"
         subjectVersion={7}
@@ -993,7 +829,7 @@ describe('QualityPanel', () => {
         qa_id_map: {},
       });
     render(
-      <QualityPanel
+      <QualityPanel subjectEdition={1}
         subjectType="ideation"
         subjectId="ideation-1"
         subjectVersion={7}
@@ -1042,7 +878,7 @@ describe('QualityPanel', () => {
 
   it('clears question links when their finding is removed', async () => {
     render(
-      <QualityPanel
+      <QualityPanel subjectEdition={1}
         subjectType="refinement"
         subjectId="refinement-1"
         subjectVersion={7}
@@ -1105,7 +941,7 @@ describe('QualityPanel', () => {
       },
     }));
     render(
-      <QualityPanel
+      <QualityPanel subjectEdition={1}
         subjectType="spec"
         subjectId="spec-1"
         subjectVersion={9}
@@ -1128,7 +964,7 @@ describe('QualityPanel', () => {
       'spec-1',
       'requirement_lint',
       expect.any(AbortSignal),
-      undefined,
+      1,
     ));
     expect(
       screen.queryByRole('tab', { name: 'Spec validation' }),
@@ -1137,7 +973,7 @@ describe('QualityPanel', () => {
     expect(screen.queryByRole('tab', { name: 'Ambiguity' })).not.toBeInTheDocument();
     expect(apiMock.listQualityAssessments).not.toHaveBeenCalled();
     expect(apiMock.listQualityFindings).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByTestId('quality-history-toggle'));
+    fireEvent.click(screen.getByTestId('quality-previous-results-toggle'));
     fireEvent.click(screen.getByTestId('quality-findings-toggle'));
     await waitFor(() => expect(apiMock.listQualityAssessments).toHaveBeenCalledWith(
       'spec',
@@ -1183,9 +1019,8 @@ describe('QualityPanel', () => {
       'border-4',
       'border-blue-400',
     );
-    expect(screen.getByTestId('requirement-lint-summary')).toHaveTextContent(
-      '2 findings across 13 evaluated rules — lower is better',
-    );
+    expect(screen.getByTestId('quality-current-result')).toHaveTextContent('2 lint findings');
+    expect(screen.getByTestId('quality-current-result')).toHaveTextContent('13 rules evaluated · lower is better');
     expect(screen.getByTestId('quality-advisory-notice')).toHaveTextContent(
       'An accepted result for the current edition is required to continue',
     );
@@ -1202,9 +1037,90 @@ describe('QualityPanel', () => {
     expect(screen.queryByRole('button', { name: 'Record assessment' })).not.toBeInTheDocument();
   });
 
+  it('shows and paginates native lint history independently of current-edition findings', async () => {
+    apiMock.getCurrentQualityAssessment.mockResolvedValue(null);
+    const previous = {
+      receipt: receipt({
+        id: 'lint-edition-1', subject_type: 'spec', subject_id: 'spec-1',
+        assessment_kind: 'requirement_lint', subject_edition: 1,
+        score: 2, justification: 'Earlier lint observations',
+        scale: { kind: 'finding_count', minimum: 0, maximum: 13, direction: 'lower_better' },
+      }),
+      state: 'previous', is_head: false,
+      currentness: { current: false, state: 'previous', stale_reasons: ['subject_edition_changed'] },
+    };
+    apiMock.listQualityAssessments.mockResolvedValue({
+      ...page([previous]), total_filtered: 26, total_overall: 27,
+    });
+    render(
+      <QualityPanel subjectEdition={2} subjectType="spec" subjectId="spec-1"
+        subjectVersion={9} subjectStatus="review" subjectArchived={false}
+        canRead canAssess={false} canProposeQuestions={false} />,
+    );
+    expect(await screen.findByText('No result for Edition 2')).toBeInTheDocument();
+    expect(apiMock.listQualityAssessments).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('quality-previous-results-toggle'));
+    expect(await screen.findByText('Earlier lint observations')).toBeInTheDocument();
+    const history = screen.getByTestId('quality-previous-results');
+    expect(history).toHaveTextContent('Edition 1');
+    expect(history).toHaveTextContent('Score 2 of 13');
+    expect(history).not.toHaveTextContent('Legacy');
+    expect(apiMock.listQualityAssessments).toHaveBeenLastCalledWith(
+      'spec', 'spec-1', expect.objectContaining({ state: 'previous', assessmentKind: 'requirement_lint', offset: 0, limit: 25 }),
+    );
+    const next = within(screen.getByTestId('quality-previous-results-paginator'))
+      .getByRole('button', { name: 'Next page' });
+    await waitFor(() => expect(next).toBeEnabled());
+    fireEvent.click(next);
+    await waitFor(() => expect(apiMock.listQualityAssessments).toHaveBeenLastCalledWith(
+      'spec', 'spec-1', expect.objectContaining({ state: 'previous', offset: 25, limit: 25 }),
+    ));
+    fireEvent.click(screen.getByTestId('quality-findings-toggle'));
+    expect(apiMock.listQualityFindings).not.toHaveBeenCalled();
+  });
+
+  it('refuses editionless previous results without a Legacy display path', async () => {
+    const cycle = validationCycle();
+    apiMock.getValidationCycle.mockImplementation(async (_type, _id, options) => ({
+      ...cycle,
+      previous_results: options.includePrevious
+        ? [{ ...cycle.current_result, result_id: 'invalid-result', subject_edition: null }]
+        : [],
+    }));
+    render(
+      <QualityPanel subjectEdition={1} subjectType="ideation" subjectId="ideation-1"
+        subjectVersion={7} subjectStatus="evaluating" subjectArchived={false}
+        canRead canAssess={false} canProposeQuestions={false} />,
+    );
+    await screen.findByTestId('quality-score-ring');
+    fireEvent.click(screen.getByTestId('quality-previous-results-toggle'));
+    expect(await screen.findByRole('alert')).toHaveTextContent('history does not match this subject edition');
+    expect(screen.queryByText('Legacy')).not.toBeInTheDocument();
+    expect(screen.queryByText('invalid-result')).not.toBeInTheDocument();
+  });
+
+  it('makes no reads without permission and reloads after permission is restored', async () => {
+    const props = {
+      subjectEdition: 1, subjectType: 'ideation' as const, subjectId: 'ideation-1',
+      subjectVersion: 7, subjectStatus: 'evaluating' as const, subjectArchived: false,
+      canAssess: false, canProposeQuestions: false,
+    };
+    const { rerender } = render(<QualityPanel {...props} canRead={false} />);
+    expect(screen.queryByTestId('quality-panel')).not.toBeInTheDocument();
+    expect(apiMock.getValidationCycle).not.toHaveBeenCalled();
+    rerender(<QualityPanel {...props} canRead />);
+    await screen.findByTestId('quality-score-ring');
+    expect(apiMock.getValidationCycle).toHaveBeenCalledTimes(1);
+    rerender(<QualityPanel {...props} canRead={false} />);
+    expect(screen.queryByTestId('quality-panel')).not.toBeInTheDocument();
+    rerender(<QualityPanel {...props} canRead />);
+    await screen.findByTestId('quality-score-ring');
+    expect(apiMock.getValidationCycle).toHaveBeenCalledTimes(2);
+  });
+
   it('quotes the anchored requirement text when anchorTexts provides it', async () => {
     render(
-      <QualityPanel
+      <QualityPanel subjectEdition={1}
         subjectType="ideation"
         subjectId="ideation-1"
         subjectVersion={7}
@@ -1215,7 +1131,7 @@ describe('QualityPanel', () => {
         canProposeQuestions={false}
         anchorTexts={{
           problem_statement:
-            'AC-1: Given a legacy board, the move succeeds unchanged.',
+            'AC-1: Given an authorized board, the move succeeds.',
         }}
       />,
     );
@@ -1225,7 +1141,7 @@ describe('QualityPanel', () => {
 
     const quote = await screen.findByTestId('quality-finding-requirement');
     expect(quote).toHaveTextContent(
-      'AC-1: Given a legacy board, the move succeeds unchanged.',
+      'AC-1: Given an authorized board, the move succeeds.',
     );
   });
 
