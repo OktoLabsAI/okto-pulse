@@ -287,8 +287,8 @@ class CommunitySqlAlchemyChecklist:
         spec_edition: int,
         target_type: ChecklistTargetType,
         phase: ChecklistPhase,
-    ) -> ChecklistBinding:
-        """Resolve or atomically pin checklist governance for one edition."""
+    ) -> ChecklistBinding | None:
+        """Read a validation snapshot without creating or repairing one."""
 
         identity = (
             board_id,
@@ -318,9 +318,26 @@ class CommunitySqlAlchemyChecklist:
                     "checklist_validation_binding_snapshot_corrupt"
                 ) from exc
 
-        # A missing historical pin must never be synthesized from today's
-        # governance. Only the live Spec edition is eligible for the migration
-        # fallback.
+        return None
+
+    async def _require_validation_binding(self, **identity) -> ChecklistBinding:
+        binding = await self.get_validation_binding(**identity)
+        if binding is None:
+            raise ChecklistPersistenceError(
+                "checklist_validation_binding_snapshot_missing"
+            )
+        return binding
+
+    async def freeze_validation_binding(
+        self,
+        *,
+        board_id: str,
+        spec_id: str,
+        spec_edition: int,
+        target_type: ChecklistTargetType,
+        phase: ChecklistPhase,
+    ) -> ChecklistBinding:
+        """Pin governance in the native validation-entry transaction only."""
         spec = (
             await self._session.execute(
                 select(Spec)
@@ -338,6 +355,13 @@ class CommunitySqlAlchemyChecklist:
                 "checklist_spec_edition_mismatch",
                 details={"expected": spec_edition, "current": int(spec.edition)},
             )
+
+        existing = await self.get_validation_binding(
+            board_id=board_id, spec_id=spec_id, spec_edition=spec_edition,
+            target_type=target_type, phase=phase,
+        )
+        if existing is not None:
+            return existing
 
         head = (
             await self._session.execute(
@@ -576,7 +600,7 @@ class CommunitySqlAlchemyChecklist:
             )
         if snapshot.input_digest != execution.input_digest:
             raise ChecklistInputDigestConflict("checklist_input_digest_mismatch")
-        binding = await self.get_validation_binding(
+        binding = await self._require_validation_binding(
             board_id=execution.board_id,
             spec_id=execution.spec_id,
             spec_edition=execution.spec_edition,
@@ -845,7 +869,7 @@ class CommunitySqlAlchemyChecklist:
         ):
             raise ChecklistTemplateConflict("checklist_template_fence_mismatch")
         await self._ensure_template()
-        binding = await self.get_validation_binding(
+        binding = await self._require_validation_binding(
             board_id=receipt.board_id,
             spec_id=receipt.spec_id,
             spec_edition=bundle.expected_spec_edition,
@@ -1070,7 +1094,7 @@ class CommunitySqlAlchemyChecklist:
         )
         if snapshot is None:
             raise ChecklistSpecVersionConflict("checklist_spec_missing")
-        binding = await self.get_validation_binding(
+        binding = await self._require_validation_binding(
             board_id=submission.board_id,
             spec_id=submission.spec_id,
             spec_edition=snapshot.spec_edition,

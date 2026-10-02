@@ -39,6 +39,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     ChecklistExecutionHeadRow,
     ChecklistExecutionRow,
     ChecklistItemResultRow,
+    ChecklistValidationBindingSnapshotRow,
     DefaultBoardConfiguration,
     DomainEventHandlerExecution,
     DomainEventRow,
@@ -89,6 +90,7 @@ from okto_pulse.core.application.use_cases.mcp_board_crud import (
 from okto_pulse.core.models import BoardCreate
 from okto_pulse.core.ports.checklist import (
     ChecklistListQuery,
+    ChecklistPersistenceError,
     ChecklistSpecLifecycleConflict,
 )
 from okto_pulse.core.ports.default_board_configuration import (
@@ -213,6 +215,12 @@ async def _preflight(
         spec_id=SPEC_ID,
     )
     assert subject is not None
+    # These adapter fixtures seed directly in Approved. Explicitly model the
+    # snapshot normally created by the native lifecycle entry transaction.
+    await adapter.freeze_validation_binding(
+        board_id=BOARD_ID, spec_id=SPEC_ID, spec_edition=subject.spec_edition,
+        target_type=ChecklistTargetType.SPEC, phase=ChecklistPhase.SPEC_VALIDATION,
+    )
     binding = await adapter.get_binding(
         board_id=BOARD_ID,
         target_type=ChecklistTargetType.SPEC,
@@ -281,7 +289,7 @@ async def test_native_application_commands_preserve_start_submit_and_replay(sess
     )
     await service.apply_binding(binding, previous_binding=None, persistence=adapter)
     # Native validation entry freezes this binding before commands are admitted.
-    await adapter.get_validation_binding(
+    await adapter.freeze_validation_binding(
         board_id=BOARD_ID, spec_id=SPEC_ID, spec_edition=1,
         target_type=ChecklistTargetType.SPEC, phase=ChecklistPhase.SPEC_VALIDATION,
     )
@@ -316,6 +324,45 @@ async def test_native_application_commands_preserve_start_submit_and_replay(sess
             ), actor=actor, uow=uow,
         )
     assert await session.scalar(select(func.count(ChecklistExecutionRow.id))) == 1
+
+
+async def test_validation_snapshot_read_never_materializes_missing_policy(session):
+    adapter = CommunitySqlAlchemyChecklist(session)
+    identity = dict(board_id=BOARD_ID, spec_id=SPEC_ID, spec_edition=1,
+                    target_type=ChecklistTargetType.SPEC,
+                    phase=ChecklistPhase.SPEC_VALIDATION)
+    assert await adapter.get_validation_binding(**identity) is None
+    assert await session.scalar(select(func.count(ChecklistValidationBindingSnapshotRow.spec_id))) == 0
+    with pytest.raises(ChecklistPersistenceError, match="snapshot_missing"):
+        await adapter._require_validation_binding(**identity)
+    assert await session.scalar(select(func.count(ChecklistValidationBindingSnapshotRow.spec_id))) == 0
+
+
+async def test_validation_entry_freezes_once_and_historical_read_does_not_repair(session):
+    adapter = CommunitySqlAlchemyChecklist(session)
+    service = ChecklistService()
+    first = service.prepare_binding(board_id=BOARD_ID, mode=ChecklistMode.BLOCKING,
+                                    current_binding=None)
+    await service.apply_binding(first, previous_binding=None, persistence=adapter)
+    identity = dict(board_id=BOARD_ID, spec_id=SPEC_ID, spec_edition=1,
+                    target_type=ChecklistTargetType.SPEC,
+                    phase=ChecklistPhase.SPEC_VALIDATION)
+    frozen = await adapter.freeze_validation_binding(**identity)
+    off = service.prepare_binding(board_id=BOARD_ID, mode=ChecklistMode.OFF,
+                                  current_binding=first)
+    await service.apply_binding(off, previous_binding=first, persistence=adapter)
+    assert await adapter.freeze_validation_binding(**identity) == frozen
+    assert await adapter.get_validation_binding(**identity) == frozen
+    assert frozen.mode is ChecklistMode.BLOCKING
+    assert await session.scalar(select(func.count(ChecklistValidationBindingSnapshotRow.spec_id))) == 1
+    spec = await session.get(Spec, SPEC_ID)
+    spec.edition = 2
+    await session.flush()
+    assert await adapter.get_validation_binding(**identity) == frozen
+    identity["spec_edition"] = 2
+    assert await adapter.get_validation_binding(**identity) is None
+    assert await session.scalar(select(func.count(ChecklistValidationBindingSnapshotRow.spec_id))) == 1
+    assert (await adapter.freeze_validation_binding(**identity)).mode is ChecklistMode.OFF
 
 
 async def test_complete_receipts_gate_pagination_and_off_zero_write(
@@ -621,6 +668,10 @@ async def test_new_spec_edition_resets_current_head_and_projects_prior_history(
     spec.status = SpecStatus.APPROVED
     spec.version += 1
     await session.flush()
+    await adapter.freeze_validation_binding(
+        board_id=BOARD_ID, spec_id=SPEC_ID, spec_edition=2,
+        target_type=ChecklistTargetType.SPEC, phase=ChecklistPhase.SPEC_VALIDATION,
+    )
 
     snapshot = await adapter.get_spec_snapshot(
         board_id=BOARD_ID,

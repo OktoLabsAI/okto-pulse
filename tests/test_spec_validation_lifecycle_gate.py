@@ -12,6 +12,7 @@ import pytest
 from sqlalchemy import func, select
 from okto_pulse.community.adapters.sqlalchemy_models import (
     Board,
+    ChecklistValidationBindingSnapshotRow,
     DomainEventRow,
     Spec,
     SpecHistory,
@@ -1117,6 +1118,11 @@ class TestAppendOnlyHistory:
                 USER_ID,
                 SpecMove(status=SpecStatus.REVIEW),
             )
+            spec = await service.get_spec(SPEC_ID)
+            snapshot_identity = (
+                BOARD_ID, SPEC_ID, spec.edition, "spec", "spec_validation",
+            )
+            assert await db.get(ChecklistValidationBindingSnapshotRow, snapshot_identity) is None
             await _move_spec(
                 service,
                 db,
@@ -1124,6 +1130,9 @@ class TestAppendOnlyHistory:
                 USER_ID,
                 SpecMove(status=SpecStatus.APPROVED),
             )
+            frozen = await db.get(ChecklistValidationBindingSnapshotRow, snapshot_identity)
+            assert frozen is not None
+            assert frozen.spec_edition == spec.edition
 
             # Third submission: fails again (reject)
             result3 = await _submit_spec_validation(

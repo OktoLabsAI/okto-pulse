@@ -283,7 +283,7 @@ class CommunitySqlAlchemyQualityAssessmentLifecycle:
 
             await CommunitySqlAlchemyChecklist(
                 self._session
-            ).get_validation_binding(
+            ).freeze_validation_binding(
                 board_id=subject.board_id,
                 spec_id=subject.subject_id,
                 spec_edition=int(subject.subject_edition),
