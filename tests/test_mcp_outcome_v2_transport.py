@@ -177,18 +177,19 @@ async def test_action_required_is_structured_non_error_with_next_action():
 
 
 @pytest.mark.asyncio
-async def test_explicit_legacy_profile_preserves_text_only_shape():
+async def test_retired_profile_is_rejected_before_handler_execution():
     host = _host()
     async with Client(host) as client:
         result = await client.call_tool(
             "domain_error",
-            {"case": "not_found", "profile": "legacy"},
+            {"case": "must_not_reach_handler", "profile": "legacy"},
             raise_on_error=False,
         )
 
     assert result.is_error is True
-    assert result.structured_content is None
-    assert result.content[0].text == '{"error":"Card not found"}'
+    assert result.structured_content["error_code"] == "validation_failed"
+    assert result.structured_content["data"]["issues"][0]["type"] == "unsupported_projection"
+    assert json.loads(result.content[0].text) == result.structured_content
 
 
 @pytest.mark.asyncio

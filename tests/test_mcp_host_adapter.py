@@ -329,14 +329,18 @@ async def test_community_host_narrows_live_policy_board_schema_only_locally() ->
         if getattr(tool.fn, "__mcp_closed_schema__", False)
     )
 
-    # Code Traceability adds twenty-one governed closed-schema commands to the
+    # Code Traceability adds twenty governed closed-schema commands to the
     # original policy surface, plus two Delivery Evidence commands and one
-    # architecture classification command and one historical-context read. Keep the
+    # architecture classification command. Imported-history reads and legacy
+    # evidence classification are removed from the fresh-install contract. Keep the
     # inventory assertion explicit so a
     # schema silently falling back to FastMCP inference is still detected.
-    assert len(opted_in) == 47
-    assert {"okto_pulse_get_delivery_evidence", "okto_pulse_record_delivery_evidence", "okto_pulse_classify_architecture_candidates", "okto_pulse_get_historical_context"} <= {
+    assert len(opted_in) == 45
+    assert {"okto_pulse_get_delivery_evidence", "okto_pulse_record_delivery_evidence", "okto_pulse_classify_architecture_candidates"} <= {
         tool.name for tool in opted_in
+    }
+    assert not {"okto_pulse_get_historical_context", "okto_pulse_classify_legacy_code_evidence"} & {
+        tool.name for tool in server.mcp.iter_tools()
     }
 
     def assert_closed(value: object) -> None:
