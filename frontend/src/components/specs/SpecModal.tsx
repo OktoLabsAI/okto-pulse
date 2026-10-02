@@ -538,16 +538,13 @@ const STRUCTURED_ENTITY_BY_FIELD: Record<StructuredCollectionField, SpecStructur
   decisions: 'decision',
 };
 
-function normalizeTextEntity(item: unknown, index: number): { id: string; text: string; status: string } {
-  if (item && typeof item === 'object') {
-    const record = item as Record<string, unknown>;
-    return {
-      id: String(record.id || index),
-      text: String(record.text || record.title || ''),
-      status: String(record.status || 'active'),
-    };
+function normalizeTextEntity(item: unknown): { id: string; text: string; status: string } {
+  const record = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+  if (typeof record.id !== 'string' || !record.id.trim()
+    || typeof record.text !== 'string' || !record.text.trim()) {
+    throw new Error('incompatible_spec_requirement: stored requirement requires id and text');
   }
-  return { id: String(index), text: String(item || ''), status: 'active' };
+  return { id: record.id, text: record.text, status: String(record.status || 'active') };
 }
 
 function stableEntityPayload(item: StructuredObjectEntity): Record<string, unknown> {
@@ -2636,8 +2633,8 @@ export function SpecModal({
                 title="Technical Requirements"
                 icon={<Settings size={14} />}
                 items={(spec.technical_requirements || [])
-                  .filter((tr) => typeof tr === 'string' || ((tr as TechnicalRequirement).status || 'active') === 'active')
-                  .map((tr) => (typeof tr === 'string' ? tr : (tr as TechnicalRequirement).text || ''))}
+                  .filter((tr) => (tr.status || 'active') === 'active')
+                  .map((tr) => tr.text)}
                 placeholder="Add a technical constraint..."
                 canAdd={canStructured('technical_requirement', 'create')}
                 canEdit={canStructured('technical_requirement', 'update')}
@@ -2645,28 +2642,15 @@ export function SpecModal({
                 onAddItem={() => openDetailsStructuredEditor('trs', 'add')}
                 onOpenItemEditor={(index) => {
                   const item = (spec.technical_requirements || [])
-                    .map((tr, trIndex) =>
-                      typeof tr === 'string'
-                        ? { id: `tr_legacy_${trIndex}`, text: tr, linked_task_ids: null }
-                        : tr
-                    )
                     .filter((tr) => (tr.status || 'active') === 'active')[index] as TechnicalRequirement | undefined;
                   if (item) openDetailsStructuredEditor('trs', 'edit', item.id);
                 }}
                 onEditItem={async (index, text) => {
-                  const existingTRs = (spec.technical_requirements || []).map((tr, trIndex) =>
-                    typeof tr === 'string'
-                      ? { id: `tr_legacy_${trIndex}`, text: tr, linked_task_ids: null }
-                      : tr
-                  ).filter((tr) => (tr.status || 'active') === 'active') as TechnicalRequirement[];
+                  const existingTRs = (spec.technical_requirements || []).filter((tr) => (tr.status || 'active') === 'active') as TechnicalRequirement[];
                   await updateStructuredEntityAtIndex('technical_requirement', existingTRs as any, index, { text });
                 }}
                 onUpdate={async (items) => {
-                  const existingTRs = (spec.technical_requirements || []).map((tr, index) =>
-                    typeof tr === 'string'
-                      ? { id: `tr_legacy_${index}`, text: tr, linked_task_ids: null }
-                      : tr
-                  ).filter((tr) => (tr.status || 'active') === 'active') as TechnicalRequirement[];
+                  const existingTRs = (spec.technical_requirements || []).filter((tr) => (tr.status || 'active') === 'active') as TechnicalRequirement[];
                   const byText = new Map(existingTRs.map((tr) => [tr.text, tr]));
                   const nextTRs = items.map((text) => byText.get(text) || {
                     id: `tr_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,

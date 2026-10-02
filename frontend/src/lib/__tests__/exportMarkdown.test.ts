@@ -145,32 +145,15 @@ describe('exportMarkdown export warning collector', () => {
 });
 
 describe('exportMarkdown linked criteria resolution', () => {
-  it('resolves linked criteria by index, string index, AC label, exact text and stable id', () => {
+  it('resolves only exact IDs and reports old reference formats as unresolved', () => {
     const resolved = resolveLinkedCriteriaForExport(
       [1, '2', 'AC-3', 'Fourth criterion', 'ac-5'],
-      [
-        'First criterion',
-        'Second criterion',
-        'Third criterion',
-        'Fourth criterion',
-        { id: 'ac-5', text: 'Fifth criterion' },
-      ],
+      [{ id: 'ac-5', text: 'Fifth criterion' }],
     );
-
     expect(resolved.map((item) => item.status)).toEqual([
-      'resolved',
-      'resolved',
-      'resolved',
-      'resolved',
-      'resolved',
+      'unresolved', 'unresolved', 'unresolved', 'unresolved', 'resolved',
     ]);
-    expect(resolved.map((item) => item.text)).toEqual([
-      'First criterion',
-      'Second criterion',
-      'Third criterion',
-      'Fourth criterion',
-      'Fifth criterion',
-    ]);
+    expect(resolved[4].text).toBe('Fifth criterion');
   });
 
   it('renders unresolved linked criteria as visible Export Warnings', () => {
@@ -179,7 +162,7 @@ describe('exportMarkdown linked criteria resolution', () => {
       status: 'review',
       version: 1,
       labels: [],
-      acceptance_criteria: ['First criterion', 'Second criterion'],
+      acceptance_criteria: [{ id: 'ac-first', text: 'First criterion' }, { id: 'ac-second', text: 'Second criterion' }],
       test_scenarios: [
         {
           id: 'ts-broken',
@@ -188,7 +171,7 @@ describe('exportMarkdown linked criteria resolution', () => {
           given: 'A scenario references mixed criteria.',
           when: 'The exporter renders linked criteria.',
           then: 'Resolved criteria and warnings are both visible.',
-          linked_criteria: ['2', 'AC-999'],
+          linked_criteria: ['ac-second', 'AC-999'],
           notes: null,
           status: 'ready',
           linked_task_ids: [],
@@ -1196,9 +1179,9 @@ describe('exportMarkdown complete task family export', () => {
     status: 'in_progress',
     version: 1,
     labels: [],
-    functional_requirements: ['FR1 body'],
-    technical_requirements: ['TR1 body'],
-    acceptance_criteria: ['AC1 body'],
+    functional_requirements: [{ id: 'fr-parent', text: 'FR1 body' }],
+    technical_requirements: [{ id: 'tr-parent', text: 'TR1 body' }],
+    acceptance_criteria: [{ id: 'ac-parent', text: 'AC1 body' }],
     test_scenarios: [
       {
         id: 'ts-linked',
@@ -1207,7 +1190,7 @@ describe('exportMarkdown complete task family export', () => {
         given: 'Given linked test',
         when: 'When exported',
         then: 'Then scenario is present',
-        linked_criteria: ['1'],
+        linked_criteria: ['ac-parent'],
         notes: null,
         status: 'ready',
         linked_task_ids: ['test-card'],

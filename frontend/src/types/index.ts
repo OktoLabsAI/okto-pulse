@@ -1293,6 +1293,14 @@ export interface ObservabilityRequirement {
 }
 
 // Technical Requirement (structured)
+export interface SpecTextRequirement {
+  id: string;
+  text: string;
+  status?: 'active' | 'superseded' | 'revoked';
+  linked_task_ids?: string[] | null;
+  [key: string]: unknown;
+}
+
 export interface SpecRequirementWrite {
   id?: string;
   text: string;
@@ -2126,9 +2134,9 @@ export interface Spec extends TaskValidationGateOverride {
   title: string;
   description: string | null;
   context: string | null;
-  functional_requirements: string[] | null;
-  technical_requirements: (string | TechnicalRequirement)[] | null;
-  acceptance_criteria: string[] | null;
+  functional_requirements: SpecTextRequirement[] | null;
+  technical_requirements: TechnicalRequirement[] | null;
+  acceptance_criteria: SpecTextRequirement[] | null;
   test_scenarios: TestScenario[] | null;
   business_rules: BusinessRule[] | null;
   api_contracts: ApiContract[] | null;

@@ -20,6 +20,7 @@ import type {
   ScreenMockup,
   Story,
   TechnicalRequirement,
+  SpecTextRequirement,
   ConclusionEntry,
   ValidationEntry,
   ArchitectureWarningRecord,
@@ -401,7 +402,7 @@ function section(heading: string, body: unknown, level = 2): string {
 }
 
 /** Render a string[] as a numbered list. */
-function numberedList(items: (string | TechnicalRequirement)[]): string {
+function numberedList(items: (string | SpecTextRequirement | TechnicalRequirement)[]): string {
   return items
     .map((item, i) => {
       const text = typeof item === 'string' ? item : criterionText(item);
@@ -457,18 +458,6 @@ function criterionLabel(index: number, text: string): string {
   return `AC${index}: ${text}`;
 }
 
-function parseCriterionIndex(value: string | number): number | undefined {
-  if (typeof value === 'number' && Number.isInteger(value)) {
-    if (value === 0) return 1;
-    return value > 0 ? value : undefined;
-  }
-  const text = String(value).trim();
-  const match = text.match(/^AC[-\s_]*(\d+)$/i) || text.match(/^(\d+)$/);
-  if (!match) return undefined;
-  const parsed = Number.parseInt(match[1], 10);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
-}
-
 export function resolveLinkedCriteriaForExport(
   linkedCriteria: Array<string | number> | null | undefined,
   acceptanceCriteria: unknown[] | null | undefined,
@@ -483,11 +472,8 @@ export function resolveLinkedCriteriaForExport(
 
   return linkedCriteria.map((input) => {
     const raw = String(input).trim();
-    const parsedIndex = parseCriterionIndex(input);
-    const byIndex = parsedIndex ? criteriaRefs[parsedIndex - 1] : undefined;
-    const byId = criteriaRefs.find((item) => item.id && item.id === raw);
-    const byText = criteriaRefs.find((item) => item.text === raw || criterionLabel(item.index, item.text) === raw);
-    const resolved = byIndex || byId || byText;
+    const matches = typeof input === 'string' ? criteriaRefs.filter((item) => item.id === input) : [];
+    const resolved = matches.length === 1 ? matches[0] : undefined;
     if (resolved) {
       return {
         input,
@@ -531,14 +517,6 @@ function addMarkdownReference(
   }
 }
 
-function itemRecord(item: unknown): Record<string, unknown> | null {
-  return item && typeof item === 'object' ? item as Record<string, unknown> : null;
-}
-
-function itemId(item: unknown): string | undefined {
-  return cleanString(itemRecord(item)?.id);
-}
-
 function firstText(values: unknown[], fallback: string): string {
   for (const value of values) {
     const text = cleanString(value);
@@ -569,19 +547,6 @@ function renderLinkedReferences(
   return `**${label}:**\n${rows.map((row) => `- ${row}`).join('\n')}\n\n`;
 }
 
-function addIndexedReference(
-  map: Map<string, MarkdownReference>,
-  item: unknown,
-  index: number,
-  label: string,
-  id?: string,
-): void {
-  const keys: unknown[] = [id, index, String(index), label];
-  const text = criterionText(item);
-  if (text !== label) keys.push(text);
-  addMarkdownReference(map, keys, label, id);
-}
-
 function buildSpecReferenceIndex(spec: Spec): SpecReferenceIndex {
   const refs: SpecReferenceIndex = {
     requirements: new Map(),
@@ -596,28 +561,15 @@ function buildSpecReferenceIndex(spec: Spec): SpecReferenceIndex {
     tasks: new Map(),
   };
 
-  (spec.functional_requirements || []).forEach((item: unknown, index: number) => {
-    const id = itemId(item);
-    const text = criterionText(item);
-    addIndexedReference(refs.requirements, item, index, text, id);
-    addMarkdownReference(refs.requirements, [`FR${index + 1}`, `FR ${index + 1}`, `FR${index + 1}: ${text}`], text, id);
-  });
-
-  (spec.acceptance_criteria || []).forEach((item: unknown, index: number) => {
-    const id = itemId(item);
-    const text = criterionText(item);
-    addIndexedReference(refs.acceptanceCriteria, item, index, text, id);
-    addMarkdownReference(refs.acceptanceCriteria, [`AC${index + 1}`, `AC ${index + 1}`, criterionLabel(index + 1, text)], text, id);
-  });
-
-  (spec.technical_requirements || []).forEach((item: unknown, index: number) => {
-    const record = itemRecord(item);
-    const id = itemId(item);
-    const label = typeof item === 'string'
-      ? item
-      : firstText([record?.title, record?.text, record?.description, id], `TR #${index + 1}`);
-    addIndexedReference(refs.technicalRequirements, item, index, label, id);
-  });
+  for (const [items, map] of [
+    [spec.functional_requirements, refs.requirements],
+    [spec.acceptance_criteria, refs.acceptanceCriteria],
+    [spec.technical_requirements, refs.technicalRequirements],
+  ] as const) {
+    for (const item of items || []) {
+      addMarkdownReference(map, [item.id], item.text, item.id);
+    }
+  }
 
   (spec.test_scenarios || []).forEach((item: any, index: number) => {
     addMarkdownReference(
@@ -1385,7 +1337,7 @@ function renderQA(items: MarkdownQAItem[]): string {
 
 function renderTestScenarios(
   scenarios: TestScenario[] | null | undefined,
-  criteria?: string[] | null,
+  criteria?: SpecTextRequirement[] | null,
   warningCollector?: ExportWarningCollector,
   refs?: SpecReferenceIndex,
 ): string {
@@ -1421,10 +1373,9 @@ function renderTestScenarios(
 // Technical Requirements
 // ---------------------------------------------------------------------------
 
-function renderTechnicalRequirements(requirements: (string | TechnicalRequirement)[] | null | undefined, refs?: SpecReferenceIndex): string {
+function renderTechnicalRequirements(requirements: TechnicalRequirement[] | null | undefined, refs?: SpecReferenceIndex): string {
   if (!requirements?.length) return '';
   const items = requirements.map((item, i) => {
-    if (typeof item === 'string') return `${i + 1}. ${item}`;
     let entry = `${i + 1}. ${criterionText(item)}`;
     const details = renderKeyValues([
       ['ID', item.id],
