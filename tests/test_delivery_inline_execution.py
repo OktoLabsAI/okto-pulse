@@ -50,7 +50,7 @@ from okto_pulse.core.services.code_investigation import (
 )
 from okto_pulse.core.services.implementation_targets import ImplementationTargetService
 from okto_pulse.core.domain.code_traceability import (
-    code_investigation_observation_sha256,
+    code_investigation_observation_sha256_v2,
 )
 
 db = _db
@@ -76,10 +76,10 @@ async def composed(db, request):
         selector_scope_digest=digest,
         workspace_state=workspace,
         declared_revision=workspace.declared_revision,
-        observation_sha256=code_investigation_observation_sha256(
+        observation_sha256=code_investigation_observation_sha256_v2(
             source_ref=receipt.source_ref,
             selector_scope_digest=digest,
-            outcome=receipt.outcome,
+            delivery_context=receipt.delivery_context, outcome=receipt.contextual_outcome,
             capabilities=receipt.capabilities,
             source_identity_digest=receipt.source_identity_digest,
             declared_revision=workspace.declared_revision,
@@ -171,7 +171,7 @@ async def composed(db, request):
 def command(*, batch=True, second=False, **changes):
     entry = dict(
         kind="implementation",
-        obligation_refs=["card:c"],
+        bindings=[dict(obligation_ref="ac:ac", contribution="complete")],
         justification="Implemented parser",
         execution_submission=dict(
             target_id="target",
@@ -308,7 +308,7 @@ async def test_replay_rechecks_current_attestor_allowlist(composed):
 async def test_invalid_single_binding_rolls_back_accepted_execution(composed):
     session, uow, use_case, actor = composed
     payload = command(batch=False).model_dump()
-    payload["obligation_refs"] = ["fr:foreign"]
+    payload["bindings"][0]["obligation_ref"] = "fr:foreign"
     with pytest.raises(ValueError, match="obligation_not_found"):
         await use_case.execute(
             CardDeliveryEvidenceCommand.model_validate(payload), actor=actor, uow=uow
@@ -395,7 +395,7 @@ async def test_rest_inline_and_mcp_replay_use_origin_composition(
     if declare_contribution:
         payload["entries"][0].pop("obligation_refs")
         payload["entries"][0]["bindings"] = [
-            {"obligation_ref": "card:c", "contribution": "partial"}
+            {"obligation_ref": "ac:ac", "contribution": "partial"}
         ]
     if declare_contribution == "composite":
         payload["entries"].append(
@@ -405,7 +405,7 @@ async def test_rest_inline_and_mcp_replay_use_origin_composition(
                 justification="Consolidated receipt selection",
                 bindings=[
                     dict(
-                        obligation_ref="card:c",
+                        obligation_ref="ac:ac",
                         contribution="complete",
                         execution_refs=[{"client_ref": "proof"}],
                     )

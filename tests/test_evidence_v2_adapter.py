@@ -44,9 +44,14 @@ BOARD_ID = "board-evidence"
 SPEC_ID = "spec-evidence"
 SCENARIO_ID = "ts-about"
 ACTOR_ID = "agent-evidence"
-ACCEPTANCE_CRITERIA = [{"id": "ac-about", "text": "About reports v0.3.0"}]
+ACCEPTANCE_CRITERIA = [{
+    "id": "ac-about", "text": "About reports v0.3.0", "verification_profile": "functional",
+    "requirement_links": [{"requirement_type": "functional_requirement", "requirement_id": "fr-about"}],
+}]
 SCENARIO = {
     "id": SCENARIO_ID,
+    "verification_method": "automated_test",
+    "linked_task_ids": ["test"],
     "scenario_type": "e2e",
     "given": "the Community runtime is running",
     "when": "the health endpoint is read",

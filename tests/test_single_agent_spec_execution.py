@@ -43,13 +43,13 @@ async def seed_external_implementation(db):
         CodeInvestigationRequestRow, CodeInvestigationReceiptRow,
         ImplementationTargetRow, ImplementationTargetExecutionRecordRow,
     )
-    from okto_pulse.core.domain.code_traceability import code_investigation_observation_sha256
+    from okto_pulse.core.domain.code_traceability import code_investigation_observation_sha256_v2
     now = datetime.now(timezone.utc)
     _, consumed, receipt, _, workspace = _attestation_bundle(now, subject_id='task')
     workspace = replace(workspace, declared_revision='a' * 40)
     request = replace(consumed, board_id='board')
-    observation = code_investigation_observation_sha256(source_ref=receipt.source_ref,
-        selector_scope_digest=receipt.selector_scope_digest, outcome=receipt.outcome,
+    observation = code_investigation_observation_sha256_v2(source_ref=receipt.source_ref,
+        selector_scope_digest=receipt.selector_scope_digest, delivery_context=receipt.delivery_context, outcome=receipt.contextual_outcome,
         capabilities=receipt.capabilities, source_identity_digest=receipt.source_identity_digest,
         declared_revision=workspace.declared_revision, workspace_state=workspace, omission_manifest=())
     receipt = replace(receipt, board_id='board', declared_revision='a' * 40,

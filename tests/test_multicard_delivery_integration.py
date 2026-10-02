@@ -53,9 +53,9 @@ async def seed_authorization(session):
         challenge_token_hash="e" * 64)
     receipt = replace(receipt, id="receipt-auth", request_id=request.id, board_id=BOARD,
         declared_revision=workspace.declared_revision, workspace_state=workspace,
-        idempotency_key="receipt-auth", observation_sha256=delivery.code_investigation_observation_sha256(
+        idempotency_key="receipt-auth", observation_sha256=delivery.code_investigation_observation_sha256_v2(
             source_ref=receipt.source_ref, selector_scope_digest=receipt.selector_scope_digest,
-            outcome=receipt.outcome, capabilities=receipt.capabilities,
+            delivery_context=receipt.delivery_context, outcome=receipt.contextual_outcome, capabilities=receipt.capabilities,
             source_identity_digest=receipt.source_identity_digest, declared_revision=workspace.declared_revision,
             workspace_state=workspace, omission_manifest=()))
     session.add(Card(id="authorization", board_id=BOARD, spec_id=SPEC, title="Authorization",

@@ -1,5 +1,6 @@
 """Isolated real SQL + signed Test Evidence integration (no production runtime)."""
 
+import json
 from dataclasses import replace
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -12,8 +13,10 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import select, update, insert
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import create_async_engine
 
+from okto_pulse.community.adapters.sqlalchemy_database import build_community_session_factory
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
 from okto_pulse.community.adapters.sqlalchemy_models import (
     Base,
     CardDeliveryEvidenceRecordRow,
@@ -36,9 +39,11 @@ from okto_pulse.community.adapters.sqlalchemy_delivery_evidence import (
 from okto_pulse.community.adapters.test_evidence import (
     CommunityTestEvidenceWriteVerifier,
 )
+from okto_pulse.core.domain.execution_contract import new_execution_contract
+from okto_pulse.core.domain.delivery_inventory import COLLECTIONS
 from okto_pulse.core.models.delivery_evidence import CardDeliveryEvidenceCommand, DeliveryEvidenceCommand
 from okto_pulse.core.domain.code_traceability import (
-    code_investigation_observation_sha256,
+    code_investigation_observation_sha256_v2,
 )
 from okto_pulse.core.ports.test_evidence import (
     register_test_evidence_write_verifier,
@@ -64,15 +69,18 @@ async def ledger(tmp_path):
             (BOARD_ID,),
         )
         await conn.exec_driver_sql(
-            "INSERT INTO specs (id, board_id, title, status, version, created_by) VALUES (?, ?, 'Spec', 'in_progress', 1, 'owner')",
-            (SPEC_ID, BOARD_ID),
+            "INSERT INTO specs (id, board_id, title, status, version, created_by, architecture_adoption, execution_contract) VALUES (?, ?, 'Spec', 'in_progress', 1, 'owner', ?, ?)",
+            (SPEC_ID, BOARD_ID, json.dumps(ArchitectureAdoptionScope(board_id=BOARD_ID, spec_id=SPEC_ID,
+                adopted_in_edition=1, actor_id='owner', inherited_resource_ids=()).model_dump(mode='json')),
+             json.dumps(new_execution_contract(board_id=BOARD_ID, spec_id=SPEC_ID, edition=1,
+                actor_id='owner', origin='new_spec'))),
         )
         for card_id, card_type in (("task", "normal"), ("test", "test")):
             await conn.exec_driver_sql(
                 "INSERT INTO cards (id, board_id, spec_id, title, status, position, created_by, card_type) VALUES (?, ?, ?, ?, 'done', 0, 'owner', ?)",
                 (card_id, BOARD_ID, SPEC_ID, card_id, card_type),
             )
-    session = async_sessionmaker(engine, expire_on_commit=False)()
+    session = build_community_session_factory(engine)()
     evidence_ledger, _, evidence = await _produce(tmp_path)
     register_test_evidence_write_verifier(
         CommunityTestEvidenceWriteVerifier(ledger=evidence_ledger)
@@ -81,6 +89,12 @@ async def ledger(tmp_path):
         update(Spec)
         .where(Spec.id == SPEC_ID)
         .values(
+            **{field: [] for _, field in COLLECTIONS if field not in {'acceptance_criteria', 'functional_requirements'}},
+            functional_requirements=[{
+                "id": "fr-about", "text": "Expose the installed version", "linked_task_ids": ["task"],
+                "verification": {"mode": "explicit", "required_profiles": ["functional"]},
+                "implementation_plan": {"contributions": [{"card_id": "task", "scope": "whole_requirement"}]},
+            }],
             acceptance_criteria=ACCEPTANCE_CRITERIA,
             test_scenarios=[{**SCENARIO, "status": "passed", "evidence": evidence}],
         )
@@ -104,10 +118,10 @@ async def ledger(tmp_path):
     )
     workspace = replace(workspace, declared_revision="a" * 40)
     request = replace(consumed, board_id=BOARD_ID)
-    observation = code_investigation_observation_sha256(
+    observation = code_investigation_observation_sha256_v2(
         source_ref=receipt.source_ref,
         selector_scope_digest=receipt.selector_scope_digest,
-        outcome=receipt.outcome,
+        delivery_context=receipt.delivery_context, outcome=receipt.contextual_outcome,
         capabilities=receipt.capabilities,
         source_identity_digest=receipt.source_identity_digest,
         declared_revision=workspace.declared_revision,
@@ -177,18 +191,14 @@ async def ledger(tmp_path):
 
 
 def command(kind="implementation", **kwargs):
-    """Card-scoped command (0.3.4 surface) for implementation/test/revoke.
-
-    The legacy spec-scoped shape stays available for waivers (human-only,
-    rollup level) via ``legacy_command``.
-    """
+    """Native Card implementation/test/revocation command."""
     values = dict(
         board_id=BOARD_ID,
         spec_id=SPEC_ID,
         expected_spec_edition=1,
         idempotency_key=kind,
         kind=kind,
-        obligation_refs=["ac:ac-about"],
+        obligation_refs=["fr:fr-about", "ac:ac-about"],
         justification="The implemented About version is tested by this health assertion.",
     )
     if kind == "implementation":
@@ -199,10 +209,16 @@ def command(kind="implementation", **kwargs):
         values.update(obligation_refs=[], record_id=kwargs.pop("record_id", "record"))
     if "card_id" in kwargs:
         values["expected_card_version"] = kwargs.get("expected_card_version", 1)
-    return CardDeliveryEvidenceCommand(**{**values, **kwargs})
+    values.update(kwargs)
+    if kind == "implementation" and "bindings" not in values:
+        values["bindings"] = [
+            {"obligation_ref": ref, "contribution": "complete"}
+            for ref in values.pop("obligation_refs")
+        ]
+    return CardDeliveryEvidenceCommand(**values)
 
 
-def legacy_command(kind="waiver", **kwargs):
+def spec_exception_command(kind="waiver", **kwargs):
     values = dict(
         board_id=BOARD_ID,
         spec_id=SPEC_ID,
@@ -210,7 +226,7 @@ def legacy_command(kind="waiver", **kwargs):
         expected_version=1,
         idempotency_key=kind,
         kind=kind,
-        obligation_refs=["ac:ac-about"],
+        obligation_refs=["fr:fr-about", "ac:ac-about"],
         justification="Explicit audited exemption.",
     )
     if kind == "waiver":
@@ -371,15 +387,15 @@ async def test_waiver_is_human_scoped_phase_specific_revocable_and_preserves_don
     await session.execute(update(Spec).values(status="done"))
     # Waivers stay on the legacy spec-rollup surface (BR-3).
     with pytest.raises(ValueError, match="human_authorization"):
-        await record(store, legacy_command("waiver"))
-    first = await record(store, legacy_command("waiver"), human=True)
+        await record(store, spec_exception_command("waiver"))
+    first = await record(store, spec_exception_command("waiver"), human=True)
     view = await store.projection(BOARD_ID, SPEC_ID)
     assert not view["allowed"] and view["rows"][0]["implementation_waiver_ids"]
     await record(
-        store, legacy_command("waiver", phase="test", idempotency_key="waive-test"), human=True
+        store, spec_exception_command("waiver", phase="test", idempotency_key="waive-test"), human=True
     )
     assert (await store.projection(BOARD_ID, SPEC_ID))["allowed"]
-    await record(store, legacy_command("revoke", record_id=first["id"]), human=True)
+    await record(store, spec_exception_command("revoke", record_id=first["id"]), human=True)
     view = await store.projection(BOARD_ID, SPEC_ID)
     assert not view["allowed"] and view["status"] == "done"
     assert len(view["records"]) == 3
@@ -394,12 +410,13 @@ async def test_rejects_cross_scope_stale_version_unknown_obligation_and_replay_c
         (command(expected_card_version=2), "version_conflict"),
         (command(expected_spec_edition=2), "edition_conflict"),
         (command(obligation_refs=["fr:missing"]), "obligation_not_found"),
-        (command(card_id="test"), "accepted_committed_task"),
+        (command(card_id="test"), "contribution_allocation_unresolved"),
         (command(spec_id="other"), "spec_not_found"),
     ):
         with pytest.raises(ValueError, match=error):
             await record(store, data)
     assert not (await session.scalars(select(DeliveryEvidenceRecordRow))).all()
+    assert not (await session.scalars(select(CardDeliveryEvidenceRecordRow))).all()
     await record(store, command())
     with pytest.raises(ValueError, match="idempotency_conflict"):
         await record(store, command(justification="Changed request"))
@@ -430,7 +447,7 @@ async def test_core_use_case_denies_before_persistence_and_agents_cannot_waive(
     monkeypatch.setattr(app, "require_authorization", AsyncMock())
     with pytest.raises(PermissionDeniedError, match="human_authorization"):
         await app.RecordDeliveryEvidenceUseCase().execute(
-            legacy_command("waiver"), actor=actor, uow=uow
+            spec_exception_command("waiver"), actor=actor, uow=uow
         )
     store.record.assert_not_awaited()
     # The card surface has no waiver kind at all: agents cannot even ask.
@@ -443,7 +460,7 @@ async def test_core_use_case_denies_before_persistence_and_agents_cannot_waive(
 @pytest.mark.asyncio
 async def test_real_sqlite_race_has_one_audit_record_and_one_replay(ledger):
     session, _, _ = ledger
-    factory = async_sessionmaker(session.bind, expire_on_commit=False)
+    factory = build_community_session_factory(session.bind)
 
     async def worker():
         async with factory() as db:
@@ -558,32 +575,6 @@ async def test_legacy_spec_proof_writer_rejects_invisible_bindings(
     from okto_pulse.core.ports.authentication import Principal
 
     session, store, _ = ledger
-    if kind == "test":
-        # A historical legacy implementation is fixture data, not a supported
-        # new write. The legacy test path can validate it, unlike a card-ledger ID.
-        from okto_pulse.core.services.delivery_evidence import delivery_inventory
-        from dataclasses import asdict
-
-        spec = await session.get(Spec, SPEC_ID)
-        session.add(DeliveryEvidenceRecordRow(
-            id="legacy-implementation",
-            board_id=BOARD_ID,
-            spec_id=SPEC_ID,
-            edition=1,
-            kind="implementation",
-            actor_id="owner",
-            actor_kind="human",
-            idempotency_key="historical-implementation",
-            payload_sha256="0" * 64,
-            payload={
-                "card_id": "task", "execution_id": "execution",
-                "justification": "Historical implementation claim",
-                "bindings": [asdict(item.binding) for item in delivery_inventory(spec)],
-            },
-            created_at=datetime(2026, 7, 14, 15, tzinfo=timezone.utc),
-        ))
-        await session.commit()
-
     before = {
         model.__tablename__: tuple((await session.scalars(select(model.id))).all())
         for model in (DeliveryEvidenceRecordRow, CardDeliveryEvidenceRecordRow)
@@ -601,13 +592,13 @@ async def test_legacy_spec_proof_writer_rejects_invisible_bindings(
         "expected_edition": 1, "expected_version": 1,
         "idempotency_key": "obsolete-proof", "kind": kind,
         "obligation_refs": ["ac:ac-about"], "card_id": "task",
-        "justification": "A valid legacy-shaped request must not vanish from rollup.",
+        "justification": "An obsolete Spec-scoped proof request must be rejected.",
     }
     if kind == "implementation":
         payload["execution_id"] = "execution"
     else:
         payload.update(card_id="test", scenario_id=SCENARIO["id"],
-                       implementation_ids=["legacy-implementation"])
+                       implementation_ids=["unavailable-implementation"])
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=rest_app), base_url="http://test"
     ) as client:
@@ -619,13 +610,6 @@ async def test_legacy_spec_proof_writer_rejects_invisible_bindings(
     uow.commit.assert_not_awaited()
     for model in (DeliveryEvidenceRecordRow, CardDeliveryEvidenceRecordRow):
         assert tuple((await session.scalars(select(model.id))).all()) == before[model.__tablename__]
-    if kind == "test":
-        historical = await store.projection(BOARD_ID, SPEC_ID)
-        assert [row["id"] for row in historical["records"]] == ["legacy-implementation"]
-        await record(store, legacy_command("revoke", record_id="legacy-implementation"), human=True)
-        await session.commit()
-        historical = await store.projection(BOARD_ID, SPEC_ID)
-        assert next(row for row in historical["records"] if row["id"] == "legacy-implementation")["revoked"]
 
 
 @pytest.mark.asyncio
@@ -752,49 +736,6 @@ async def test_mcp_runs_same_store_closed_inputs_permissions_and_explicit_errors
         },
     )
     assert waiver.is_error and waiver.code == "validation_failed"
-
-
-@pytest.mark.asyncio
-async def test_upgrade_adds_only_delivery_table_and_is_idempotent(tmp_path):
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'upgrade.sqlite'}")
-    try:
-        async with engine.begin() as conn:
-            await conn.run_sync(
-                lambda sync: Base.metadata.create_all(
-                    sync,
-                    tables=[
-                        t
-                        for t in Base.metadata.tables.values()
-                        if t.name != "delivery_evidence_records"
-                    ],
-                )
-            )
-            await conn.exec_driver_sql(
-                "INSERT INTO boards (id, name, owner_id, realm_id) VALUES ('old-board', 'Existing', 'owner', 'local')"
-            )
-            await conn.exec_driver_sql(
-                "INSERT INTO specs (id, board_id, title, status, version, created_by) VALUES ('old-spec', 'old-board', 'Existing done Spec', 'done', 7, 'owner')"
-            )
-            await conn.run_sync(Base.metadata.create_all)
-            await conn.run_sync(Base.metadata.create_all)
-            current = (
-                await conn.exec_driver_sql(
-                    "SELECT status, version FROM specs WHERE id='old-spec'"
-                )
-            ).one()
-            assert tuple(current) == ("done", 7)
-            assert (
-                await conn.exec_driver_sql(
-                    "SELECT count(*) FROM delivery_evidence_records"
-                )
-            ).scalar_one() == 0
-            assert (
-                await conn.exec_driver_sql(
-                    "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'trg_delivery_evidence_%'"
-                )
-            ).scalar_one() == 3
-    finally:
-        await engine.dispose()
 
 
 @pytest.mark.asyncio

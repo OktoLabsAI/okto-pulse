@@ -1,8 +1,12 @@
+import json
+
 import pytest
 import pytest_asyncio
 from sqlalchemy import select, update, func
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from sqlalchemy.ext.asyncio import create_async_engine
 
+from okto_pulse.community.adapters.sqlalchemy_database import build_community_session_factory
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
 from okto_pulse.community.adapters.sqlalchemy_models import (
     Base,
     Card,
@@ -27,15 +31,17 @@ async def db(tmp_path):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.exec_driver_sql(
-            "INSERT INTO boards(id,name,owner_id) VALUES ('b','Board','owner')"
+            "INSERT INTO boards(id,name,owner_id,realm_id) VALUES ('b','Board','owner','local')"
         )
         await conn.exec_driver_sql(
-            "INSERT INTO specs(id,board_id,title,status,version,created_by) VALUES ('s','b','Spec','in_progress',1,'owner')"
+            "INSERT INTO specs(id,board_id,title,status,version,created_by,architecture_adoption) VALUES ('s','b','Spec','in_progress',1,'owner',?)",
+            (json.dumps(ArchitectureAdoptionScope(board_id='b', spec_id='s', adopted_in_edition=1,
+                actor_id='owner', inherited_resource_ids=()).model_dump(mode='json')),),
         )
         await conn.exec_driver_sql(
             "INSERT INTO cards(id,board_id,spec_id,title,status,position,created_by,card_type) VALUES ('c','b','s','Card','in_progress',0,'owner','normal')"
         )
-    async with async_sessionmaker(engine, expire_on_commit=False)() as session:
+    async with build_community_session_factory(engine)() as session:
         spec = await session.get(Spec, "s")
         spec.execution_contract = new_execution_contract(
             board_id="b", spec_id="s", edition=1, actor_id="owner", origin="new_spec",
