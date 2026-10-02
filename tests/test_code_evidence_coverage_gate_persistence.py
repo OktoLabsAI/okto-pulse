@@ -2,21 +2,19 @@
 
 from __future__ import annotations
 
-import asyncio
+from dataclasses import asdict
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from fastapi import Response
-from sqlalchemy import inspect, text
-from sqlalchemy.ext.asyncio import create_async_engine
 
-from okto_pulse.community.adapters import relational_schema_steps
 from okto_pulse.community.adapters.sqlalchemy_discovery_execution import _spec_fact
 from okto_pulse.community.adapters.sqlalchemy_models import Spec as SqlAlchemySpec
 from okto_pulse.community.api import specs as specs_api
 from okto_pulse.core.domain.entities import Spec
+from okto_pulse.core.domain.execution_contract import new_execution_contract
 from okto_pulse.core.models.schemas import SpecResponse, SpecUpdate
 
 
@@ -64,65 +62,6 @@ def test_discovery_spec_fact_projects_code_evidence_coverage_skip(
     assert _spec_fact(SimpleNamespace(**values)).skip_code_evidence_coverage is expected
 
 
-def test_legacy_spec_migration_is_idempotent_and_preserves_rows(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    async def drive() -> tuple[object, object, dict[str, object], tuple[str, str, int]]:
-        engine = create_async_engine(
-            f"sqlite+aiosqlite:///{tmp_path / 'code-evidence-coverage.db'}"
-        )
-        monkeypatch.setattr(relational_schema_steps, "get_engine", lambda: engine)
-        try:
-            async with engine.begin() as connection:
-                await connection.execute(
-                    text(
-                        "CREATE TABLE specs ("
-                        "id TEXT PRIMARY KEY, title TEXT NOT NULL, version INTEGER NOT NULL)"
-                    )
-                )
-                await connection.execute(
-                    text(
-                        "INSERT INTO specs (id, title, version) "
-                        "VALUES ('legacy-spec', 'Preserve me', 41)"
-                    )
-                )
-
-            first = (
-                await relational_schema_steps._migrate_add_code_evidence_coverage_skip()
-            )
-            second = (
-                await relational_schema_steps._migrate_add_code_evidence_coverage_skip()
-            )
-
-            async with engine.connect() as connection:
-                columns = await connection.run_sync(
-                    lambda sync_connection: {
-                        str(column["name"]): column
-                        for column in inspect(sync_connection).get_columns("specs")
-                    }
-                )
-                row = (
-                    await connection.execute(
-                        text(
-                            "SELECT id, title, skip_code_evidence_coverage "
-                            "FROM specs WHERE id = 'legacy-spec'"
-                        )
-                    )
-                ).one()
-            return first, second, columns["skip_code_evidence_coverage"], tuple(row)
-        finally:
-            await engine.dispose()
-
-    first, second, column, row = asyncio.run(drive())
-
-    assert first is None
-    assert second == "skipped"
-    assert column["nullable"] is False
-    assert str(column["default"]).strip("()'\"") == "0"
-    assert row == ("legacy-spec", "Preserve me", 0)
-
-
 @pytest.mark.asyncio
 async def test_spec_rest_patch_forwards_and_returns_code_evidence_skip(
     monkeypatch: Any,
@@ -136,6 +75,16 @@ async def test_spec_rest_patch_forwards_and_returns_code_evidence_skip(
         created_at=datetime(2026, 8, 14, tzinfo=timezone.utc),
         updated_at=datetime(2026, 8, 14, tzinfo=timezone.utc),
         skip_code_evidence_coverage=True,
+    )
+    updated = SimpleNamespace(
+        **asdict(updated),
+        execution_contract=new_execution_contract(
+            board_id="board-1",
+            spec_id="spec-1",
+            edition=1,
+            actor_id="user-1",
+            origin="new_spec",
+        ),
     )
 
     async def execute(

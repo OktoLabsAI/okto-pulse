@@ -4,29 +4,91 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import json
 from pathlib import Path
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from okto_pulse.community.adapters.relational_application import (
     CommunityRelationalApplicationAdapter,
 )
-from okto_pulse.community.adapters.relational_schema_steps import (
-    code_traceability_sqlite_trigger_manifest,
-    contextual_code_evidence_sqlite_trigger_manifest,
+from okto_pulse.community.adapters.current_relational_schema import (
+    current_schema_contract,
+    initialize_current_schema,
 )
-from okto_pulse.community.adapters.sqlalchemy_models import Base
+from okto_pulse.community.adapters.sqlalchemy_database import (
+    build_community_session_factory,
+    install_community_sqlite_pragmas,
+)
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+from okto_pulse.core.domain.execution_contract import new_execution_contract
+
 from okto_pulse.core.domain import code_traceability as domain
 from okto_pulse.core.ports import code_traceability as traceability_port
 from test_code_traceability_persistence import _attestation_bundle
-from test_legacy_code_evidence_classification_persistence import (
-    _classification_batch,
-    _legacy_evidence,
-)
+
+
+def _native_evidence(*, sequence, now, receipt, workspace):
+    return domain.CodeEvidence(
+        id=f"native-evidence-{sequence}",
+        board_id="board-1",
+        investigation_receipt_id=receipt.id,
+        source_ref=receipt.source_ref,
+        parent_type=domain.CodeTraceabilitySubjectType.REFINEMENT,
+        parent_id="refinement-1",
+        parent_version=3,
+        evidence_type=domain.CodeEvidenceType.STRUCTURE,
+        claim="The v3 investigation established the relevant module structure.",
+        workspace_state=workspace,
+        selector_kind=domain.CodeEvidenceSelectorKind.FILE,
+        relative_path="src/module.py",
+        language="python",
+        symbol_kind=None,
+        qualified_symbol=None,
+        symbol_signature=None,
+        snapshot_line_start=None,
+        snapshot_line_end=None,
+        excerpt=None,
+        excerpt_sha256=None,
+        declared_file_blob_sha256="b" * 64,
+        declared_source_content_sha256="c" * 64,
+        excerpt_omitted_reason="not_submitted",
+        attestation_state=(
+            domain.CodeEvidenceAttestationState.AGENT_ATTESTED_WORKTREE
+            if workspace.declared_dirty
+            else domain.CodeEvidenceAttestationState.AGENT_ATTESTED
+        ),
+        attestation_basis=(
+            domain.CodeEvidenceAttestationBasis.AUTHENTICATED_AGENT_RECEIPT
+        ),
+        lifecycle_status=domain.CodeTraceabilityLifecycleStatus.ACTIVE,
+        supersedes_evidence_id=None,
+        revocation_reason=None,
+        submitted_by="agent-1",
+        received_at=now + timedelta(seconds=2),
+        payload_sha256=str(sequence) * 64,
+        idempotency_key=f"native-evidence-{sequence}",
+        source_role=domain.CodeEvidenceSourceRole.EXISTING_CONSTRAINT
+        if sequence == 1
+        else domain.CodeEvidenceSourceRole.REFERENCE_PATTERN,
+        context_contract_version=2,
+        relevance_summary="Current implementation behavior.",
+        scope_relation="same delivery scope",
+        source_origin="repository baseline",
+        interpretation_limit="Reference context does not prove delivered behavior.",
+        baseline_provenance=domain.CodeEvidenceBaselineProvenance(
+            presence=domain.CodeEvidenceBaselinePresence.PREEXISTING_WORKTREE
+            if workspace.declared_dirty
+            else domain.CodeEvidenceBaselinePresence.COMMITTED_SNAPSHOT,
+            workspace_state_id=workspace.workspace_state_id,
+            provenance_note="Observed worktree content predates this investigation."
+            if workspace.declared_dirty
+            else None,
+        ),
+    )
 
 
 def _projection_query(
@@ -52,9 +114,8 @@ def _projection_query(
 def test_current_refinement_and_frozen_spec_card_source_context(tmp_path: Path) -> None:
     async def exercise() -> None:
         database_path = tmp_path / "contextual-source-projection.sqlite3"
-        engine = create_async_engine(
-            f"sqlite+aiosqlite:///{database_path.as_posix()}"
-        )
+        engine = create_async_engine(f"sqlite+aiosqlite:///{database_path.as_posix()}")
+        install_community_sqlite_pragmas(engine)
         now = datetime.now(timezone.utc).replace(microsecond=0)
         request, consumed, receipt, head, workspace = _attestation_bundle(
             now,
@@ -63,7 +124,7 @@ def test_current_refinement_and_frozen_spec_card_source_context(tmp_path: Path) 
             subject_version=3,
         )
         evidence = replace(
-            _legacy_evidence(
+            _native_evidence(
                 sequence=1,
                 now=now,
                 receipt=receipt,
@@ -73,8 +134,8 @@ def test_current_refinement_and_frozen_spec_card_source_context(tmp_path: Path) 
             parent_id="refinement-1",
             parent_version=3,
         )
-        clean_unclassified_evidence = replace(
-            _legacy_evidence(
+        clean_pattern_evidence = replace(
+            _native_evidence(
                 sequence=2,
                 now=now,
                 receipt=receipt,
@@ -111,10 +172,11 @@ def test_current_refinement_and_frozen_spec_card_source_context(tmp_path: Path) 
             request_id=dirty_request.id,
             source_ref=dirty_request.source_ref,
             workspace_state=dirty_workspace,
-            observation_sha256=domain.code_investigation_observation_sha256(
+            observation_sha256=domain.code_investigation_observation_sha256_v2(
                 source_ref=dirty_request.source_ref,
                 selector_scope_digest=dirty_request.selector_scope_digest,
-                outcome=receipt.outcome,
+                outcome=receipt.contextual_outcome,
+                delivery_context=receipt.delivery_context,
                 capabilities=receipt.capabilities,
                 source_identity_digest=receipt.source_identity_digest,
                 declared_revision=dirty_workspace.declared_revision,
@@ -134,12 +196,12 @@ def test_current_refinement_and_frozen_spec_card_source_context(tmp_path: Path) 
             revision=1,
             updated_at=head.updated_at,
         )
-        dirty_unclassified_evidence = replace(
-            _legacy_evidence(
+        dirty_pattern_evidence = replace(
+            _native_evidence(
                 sequence=3,
                 now=now,
                 receipt=dirty_receipt,
-                workspace=workspace,
+                workspace=dirty_workspace,
             ),
             parent_type=domain.CodeTraceabilitySubjectType.REFINEMENT,
             parent_id="refinement-1",
@@ -149,13 +211,6 @@ def test_current_refinement_and_frozen_spec_card_source_context(tmp_path: Path) 
                 domain.CodeEvidenceAttestationState.AGENT_ATTESTED_WORKTREE
             ),
         )
-        first_batch = _classification_batch(
-            (evidence,),
-            now=now,
-            batch_sequence=1,
-            classified_by="human-frozen",
-        )
-        frozen_classification = first_batch.classifications[0]
         refinement_provenance = domain.RefinementDeliveryContextProvenance(
             value=domain.DeliveryContext.BROWNFIELD,
             source_refinement_id="refinement-1",
@@ -164,9 +219,8 @@ def test_current_refinement_and_frozen_spec_card_source_context(tmp_path: Path) 
         frozen_summary = domain.build_source_context_summary_v2(
             delivery_context=domain.DeliveryContext.BROWNFIELD,
             delivery_context_provenance=refinement_provenance,
-            current_investigation_outcomes=(None,),
+            current_investigation_outcomes=(receipt.contextual_outcome,),
             evidence=(evidence,),
-            classifications=(frozen_classification,),
         )
         frozen_manifest = domain.RefinementSourceContextManifestV2(
             refinement_id="refinement-1",
@@ -179,18 +233,14 @@ def test_current_refinement_and_frozen_spec_card_source_context(tmp_path: Path) 
                     generation=receipt.generation,
                     head_revision=head.revision,
                     payload_sha256=receipt.payload_sha256,
-                    delivery_context=None,
-                    contextual_outcome=None,
-                    context_contract_version=None,
+                    delivery_context=receipt.delivery_context,
+                    contextual_outcome=receipt.contextual_outcome,
+                    context_contract_version=receipt.context_contract_version,
                 ),
-            ),
-            classification_fence=domain.source_context_classification_fence_v2(
-                (frozen_classification,)
             ),
         )
         frozen_item = domain.source_context_evidence_item_v2(
             evidence,
-            frozen_classification,
         )
         evidence_manifest = [
             {
@@ -202,8 +252,6 @@ def test_current_refinement_and_frozen_spec_card_source_context(tmp_path: Path) 
                 "context_sha256": domain.canonical_code_traceability_sha256(
                     domain.source_context_evidence_payload_v2(frozen_item)
                 ),
-                "classification_revision": frozen_item.classification_revision,
-                "classification_sha256": frozen_item.classification_sha256,
             }
         ]
         spec_provenance = domain.SpecDeliveryContextProvenance(
@@ -213,17 +261,10 @@ def test_current_refinement_and_frozen_spec_card_source_context(tmp_path: Path) 
             source_refinement_version=3,
         )
 
+        await initialize_current_schema(engine, current_schema_contract())
         async with engine.begin() as connection:
-            await connection.run_sync(Base.metadata.create_all)
-            for trigger_manifest in (
-                code_traceability_sqlite_trigger_manifest(),
-                contextual_code_evidence_sqlite_trigger_manifest(),
-            ):
-                for _name, (_table_name, ddl) in trigger_manifest.items():
-                    await connection.exec_driver_sql(ddl)
             await connection.exec_driver_sql(
-                "INSERT INTO boards (id, name, owner_id, realm_id) "
-                "VALUES (?, ?, ?, ?)",
+                "INSERT INTO boards (id, name, owner_id, realm_id) VALUES (?, ?, ?, ?)",
                 ("board-1", "Board", "owner-1", "local"),
             )
             await connection.exec_driver_sql(
@@ -272,7 +313,7 @@ def test_current_refinement_and_frozen_spec_card_source_context(tmp_path: Path) 
                 "delivery_context, delivery_context_provenance, "
                 "source_context_manifest, source_context_sha256, "
                 "technical_requirements, title, status, edition, version, "
-                "created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "created_by, architecture_adoption, execution_contract) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     "spec-1",
                     "board-1",
@@ -310,6 +351,24 @@ def test_current_refinement_and_frozen_spec_card_source_context(tmp_path: Path) 
                     1,
                     1,
                     "owner-1",
+                    json.dumps(
+                        ArchitectureAdoptionScope(
+                            board_id="board-1",
+                            spec_id="spec-1",
+                            adopted_in_edition=1,
+                            actor_id="owner-1",
+                            inherited_resource_ids=(),
+                        ).model_dump(mode="json")
+                    ),
+                    json.dumps(
+                        new_execution_contract(
+                            board_id="board-1",
+                            spec_id="spec-1",
+                            edition=1,
+                            actor_id="owner-1",
+                            origin="new_spec",
+                        )
+                    ),
                 ),
             )
             await connection.exec_driver_sql(
@@ -327,7 +386,7 @@ def test_current_refinement_and_frozen_spec_card_source_context(tmp_path: Path) 
                 ),
             )
 
-        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        sessions = build_community_session_factory(engine)
         async with sessions() as session:
             adapter = CommunityRelationalApplicationAdapter()
             investigations = adapter.code_investigations(session)
@@ -351,16 +410,12 @@ def test_current_refinement_and_frozen_spec_card_source_context(tmp_path: Path) 
                 expected_head_revision=1,
             )
             await traceability.create_evidence(
-                evidence=clean_unclassified_evidence,
+                evidence=clean_pattern_evidence,
                 expected_head_revision=1,
             )
             await traceability.create_evidence(
-                evidence=dirty_unclassified_evidence,
+                evidence=dirty_pattern_evidence,
                 expected_head_revision=1,
-            )
-            await traceability.append_legacy_evidence_classification_batch(
-                receipt=first_batch,
-                expected_revisions={evidence.id: 0},
             )
             await traceability.add_spec_link(
                 link=domain.CodeEvidenceSpecLink(
@@ -384,29 +439,6 @@ def test_current_refinement_and_frozen_spec_card_source_context(tmp_path: Path) 
                 text("UPDATE specs SET version = 2 WHERE id = 'spec-1'")
             )
 
-            second_batch = _classification_batch(
-                (evidence,),
-                now=now,
-                batch_sequence=2,
-                revision=2,
-                predecessors={evidence.id: frozen_classification.id},
-                classified_by="human-current",
-            )
-            current_classification = replace(
-                second_batch.classifications[0],
-                source_role=domain.CodeEvidenceSourceRole.REFERENCE_PATTERN,
-                relevance_summary="Current human review treats this as a pattern.",
-                interpretation_limit="It is not delivered implementation behavior.",
-                classification_sha256=None,
-            )
-            second_batch = replace(
-                second_batch,
-                classifications=(current_classification,),
-            )
-            await traceability.append_legacy_evidence_classification_batch(
-                receipt=second_batch,
-                expected_revisions={evidence.id: 1},
-            )
             await session.commit()
 
         async with sessions() as session:
@@ -439,46 +471,13 @@ def test_current_refinement_and_frozen_spec_card_source_context(tmp_path: Path) 
             )
 
             assert refinement.source_context is not None
-            assert refinement.source_context.role_counts.reference_pattern_count == 1
+            assert refinement.source_context.role_counts.reference_pattern_count == 2
             assert refinement.source_context.technical_details_available is True
-            assert refinement.source_context_items[0].classification_revision == 2
-            assert refinement.source_context_items[0].classified_by == "human-current"
-            classification_inputs = {
-                item.evidence_id: item
-                for item in refinement.source_context_classification_inputs
-            }
-            assert set(classification_inputs) == {
-                evidence.id,
-                clean_unclassified_evidence.id,
-                dirty_unclassified_evidence.id,
-            }
-            classified_input = classification_inputs[evidence.id]
-            assert classified_input.expected_evidence_payload_sha256 == (
-                evidence.payload_sha256
+            assert len(refinement.source_context_items) == 3
+            assert all(
+                item.context_origin is domain.CodeEvidenceContextOrigin.AUTHORED
+                for item in refinement.source_context_items
             )
-            assert classified_input.expected_classification_revision == 2
-            assert classified_input.baseline_provenance.presence is (
-                domain.CodeEvidenceBaselinePresence.COMMITTED_SNAPSHOT
-            )
-            assert classified_input.baseline_provenance.provenance_note_required is (
-                False
-            )
-            clean_input = classification_inputs[clean_unclassified_evidence.id]
-            assert clean_input.expected_classification_revision == 0
-            assert clean_input.baseline_provenance.presence is (
-                domain.CodeEvidenceBaselinePresence.COMMITTED_SNAPSHOT
-            )
-            assert clean_input.baseline_provenance.provenance_note_required is False
-            dirty_input = classification_inputs[dirty_unclassified_evidence.id]
-            assert dirty_input.expected_classification_revision == 0
-            assert dirty_input.baseline_provenance.presence is (
-                domain.CodeEvidenceBaselinePresence.PREEXISTING_WORKTREE
-            )
-            assert dirty_input.baseline_provenance.workspace_state_id == (
-                dirty_workspace.workspace_state_id
-            )
-            assert dirty_input.baseline_provenance.provenance_note_required is True
-            assert dirty_input.baseline_provenance.provenance_note is None
             for frozen in (spec, card):
                 assert frozen.source_context is not None
                 assert frozen.source_context.role_counts.existing_constraint_count == 1
@@ -487,9 +486,11 @@ def test_current_refinement_and_frozen_spec_card_source_context(tmp_path: Path) 
                     len(spec.source_context_items),
                     len(card.source_context_items),
                 )
-                assert frozen.source_context_items[0].classification_revision == 1
-                assert frozen.source_context_items[0].classified_by == "human-frozen"
-                assert frozen.source_context_classification_inputs == ()
+                assert len(frozen.source_context_items) == 1
+                assert (
+                    frozen.source_context_items[0].source_role
+                    is domain.CodeEvidenceSourceRole.EXISTING_CONSTRAINT
+                )
 
             summary = await read.spec_context(
                 _projection_query(
@@ -525,18 +526,13 @@ def test_current_refinement_and_frozen_spec_card_source_context(tmp_path: Path) 
                     context_scope=domain.CodeTraceabilityContextScope.GATE,
                 )
             )
-            assert refinement_summary.source_context_classification_inputs == ()
-            assert refinement_gate.source_context_classification_inputs == ()
+            assert refinement_summary.source_context is not None
+            assert refinement_gate.source_context is not None
             for redacted in (summary, gate):
                 item = redacted.source_context_items[0]
-                assert item.relevance_summary == (
-                    frozen_classification.relevance_summary
-                )
-                assert item.classified_by is None
-                assert item.classified_at is None
+                assert item.relevance_summary == (evidence.relevance_summary)
                 assert redacted.source_context is not None
                 assert redacted.source_context.technical_details_available is True
-                assert redacted.source_context_classification_inputs == ()
 
         async with sessions() as session:
             await session.execute(
@@ -547,14 +543,16 @@ def test_current_refinement_and_frozen_spec_card_source_context(tmp_path: Path) 
             )
             await session.commit()
         async with sessions() as session:
-            missing = await CommunityRelationalApplicationAdapter().code_traceability_read(
-                session
-            ).spec_context(
-                _projection_query(
-                    subject_type=domain.CodeTraceabilitySubjectType.SPEC,
-                    subject_id="spec-1",
-                    subject_version=2,
-                    profile=domain.CodeTraceabilityProjectionProfile.SUMMARY,
+            missing = (
+                await CommunityRelationalApplicationAdapter()
+                .code_traceability_read(session)
+                .spec_context(
+                    _projection_query(
+                        subject_type=domain.CodeTraceabilitySubjectType.SPEC,
+                        subject_id="spec-1",
+                        subject_version=2,
+                        profile=domain.CodeTraceabilityProjectionProfile.SUMMARY,
+                    )
                 )
             )
             assert missing.source_context is None
@@ -580,14 +578,16 @@ def test_current_refinement_and_frozen_spec_card_source_context(tmp_path: Path) 
                 traceability_port.CodeTraceabilityPersistenceError,
                 match="code_traceability_source_context_invalid",
             ):
-                await CommunityRelationalApplicationAdapter().code_traceability_read(
-                    session
-                ).spec_context(
-                    _projection_query(
-                        subject_type=domain.CodeTraceabilitySubjectType.SPEC,
-                        subject_id="spec-1",
-                        subject_version=2,
-                        profile=domain.CodeTraceabilityProjectionProfile.SUMMARY,
+                await (
+                    CommunityRelationalApplicationAdapter()
+                    .code_traceability_read(session)
+                    .spec_context(
+                        _projection_query(
+                            subject_type=domain.CodeTraceabilitySubjectType.SPEC,
+                            subject_id="spec-1",
+                            subject_version=2,
+                            profile=domain.CodeTraceabilityProjectionProfile.SUMMARY,
+                        )
                     )
                 )
 
@@ -608,14 +608,16 @@ def test_current_refinement_and_frozen_spec_card_source_context(tmp_path: Path) 
                 traceability_port.CodeTraceabilityPersistenceError,
                 match="code_traceability_source_context_invalid",
             ):
-                await CommunityRelationalApplicationAdapter().code_traceability_read(
-                    session
-                ).spec_context(
-                    _projection_query(
-                        subject_type=domain.CodeTraceabilitySubjectType.SPEC,
-                        subject_id="spec-1",
-                        subject_version=2,
-                        profile=domain.CodeTraceabilityProjectionProfile.SUMMARY,
+                await (
+                    CommunityRelationalApplicationAdapter()
+                    .code_traceability_read(session)
+                    .spec_context(
+                        _projection_query(
+                            subject_type=domain.CodeTraceabilitySubjectType.SPEC,
+                            subject_id="spec-1",
+                            subject_version=2,
+                            profile=domain.CodeTraceabilityProjectionProfile.SUMMARY,
+                        )
                     )
                 )
         await engine.dispose()

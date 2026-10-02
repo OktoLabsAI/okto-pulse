@@ -1,4 +1,4 @@
-"""TS14 — governed ConsolidationQueue migration and replay contract."""
+"""TS14 — native governed queue identity and restart contract."""
 
 from __future__ import annotations
 
@@ -8,61 +8,31 @@ from pathlib import Path
 
 import pytest
 
-from okto_pulse.community.adapters.relational_schema_steps import (
-    _migrate_add_consolidation_work_kinds,
+from okto_pulse.community.adapters.current_relational_schema import (
+    current_schema_contract,
+    initialize_current_schema,
 )
-from okto_pulse.community.adapters.sqlalchemy_database import (
-    configure_community_database,
-)
+from test_skb3_semantic_guideline_persistence import _sqlite_engine
 
 
-def _create_legacy_queue(path: Path) -> None:
-    with sqlite3.connect(path) as connection:
-        connection.executescript(
-            """
-            CREATE TABLE boards (
-                id VARCHAR(36) PRIMARY KEY
-            );
-            CREATE TABLE consolidation_queue (
-                id VARCHAR(36) PRIMARY KEY,
-                board_id VARCHAR(36) NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
-                artifact_type VARCHAR(50) NOT NULL,
-                artifact_id VARCHAR(36) NOT NULL,
-                priority VARCHAR(10) NOT NULL,
-                source VARCHAR(50) NOT NULL,
-                status VARCHAR(20) NOT NULL,
-                triggered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                triggered_by_event VARCHAR(100),
-                claimed_by_session_id VARCHAR(36),
-                claimed_at TIMESTAMP,
-                last_error TEXT,
-                worker_id VARCHAR(64),
-                claim_timeout_at TIMESTAMP,
-                attempts INTEGER NOT NULL DEFAULT 0,
-                next_retry_at TIMESTAMP,
-                CONSTRAINT uq_queue_board_artifact
-                    UNIQUE (board_id, artifact_type, artifact_id)
-            );
-            CREATE INDEX ix_consolidation_queue_board_id
-                ON consolidation_queue(board_id);
-            CREATE INDEX ix_consolidation_queue_status
-                ON consolidation_queue(status);
-
-            INSERT INTO boards(id) VALUES ('board-1');
-            INSERT INTO consolidation_queue(
+async def _create_native_queue(engine):
+    await initialize_current_schema(engine, current_schema_contract())
+    async with engine.begin() as connection:
+        await connection.exec_driver_sql(
+            "INSERT INTO boards (id, name, owner_id, realm_id) VALUES ('board-1', 'Board', 'owner', 'local')"
+        )
+        await connection.exec_driver_sql("""
+            INSERT INTO consolidation_queue (
                 id, board_id, artifact_type, artifact_id, priority, source,
-                status, triggered_by_event, claimed_by_session_id, attempts,
-                last_error
+                status, triggered_by_event, claimed_by_session_id, attempts, last_error
             ) VALUES
                 ('q-pending', 'board-1', 'card', 'card-1', 'high',
                  'state_transition', 'pending', 'card.moved', NULL, 0, NULL),
                 ('q-claimed', 'board-1', 'spec', 'spec-1', 'low',
-                 'historical_backfill', 'claimed', 'spec.moved', 'session-1',
-                 2, 'previous failure'),
+                 'state_transition', 'claimed', 'spec.moved', 'session-1', 2, 'previous failure'),
                 ('q-done', 'board-1', 'ideation', 'ideation-1', 'high',
-                 'state_transition', 'done', NULL, NULL, 3, NULL);
-            """
-        )
+                 'state_transition', 'done', NULL, NULL, 3, NULL)
+        """)
 
 
 async def _snapshot(engine) -> tuple[tuple[object, ...], ...]:
@@ -114,27 +84,23 @@ def _expect_integrity_error(path: Path, statement: str) -> None:
             connection.execute(statement)
 
 
-def test_ts_c6c7aa78_migration_backfills_replays_and_enforces_kind_identity(
+def test_ts_c6c7aa78_native_queue_preserves_restart_and_kind_identity(
     tmp_path: Path,
 ) -> None:
-    database_path = tmp_path / "legacy-queue.db"
-    _create_legacy_queue(database_path)
+    database_path = tmp_path / "native-queue.db"
 
     async def drive():
-        runtime = configure_community_database(
-            f"sqlite+aiosqlite:///{database_path.as_posix()}"
-        )
-        first_result = await _migrate_add_consolidation_work_kinds()
-        first_snapshot = await _snapshot(runtime.engine)
-        second_result = await _migrate_add_consolidation_work_kinds()
-        second_snapshot = await _snapshot(runtime.engine)
-        await runtime.close()
-        return first_result, first_snapshot, second_result, second_snapshot
+        engine = _sqlite_engine(database_path)
+        await _create_native_queue(engine)
+        first = await _snapshot(engine)
+        await engine.dispose()
+        restarted = _sqlite_engine(database_path)
+        await initialize_current_schema(restarted, current_schema_contract())
+        second = await _snapshot(restarted)
+        await restarted.dispose()
+        return first, second
 
-    first_result, first_snapshot, second_result, second_snapshot = asyncio.run(drive())
-
-    assert first_result is None
-    assert second_result == "skipped"
+    first_snapshot, second_snapshot = asyncio.run(drive())
     assert second_snapshot == first_snapshot
 
     columns, indexes, rows, table_sql = first_snapshot
@@ -166,7 +132,7 @@ def test_ts_c6c7aa78_migration_backfills_replays_and_enforces_kind_identity(
     }.issubset(index_sql)
     assert "uq_queue_board_artifact" not in str(table_sql)
 
-    # Legacy consolidate dedupe remains exact.
+    # Native consolidate identity remains exact.
     _expect_integrity_error(
         database_path,
         "INSERT INTO consolidation_queue "
@@ -208,7 +174,7 @@ def test_ts_c6c7aa78_migration_backfills_replays_and_enforces_kind_identity(
             "(id,board_id,artifact_type,artifact_id,priority,source,status,"
             "work_kind,generation,payload) VALUES "
             "('sweep-1','board-1','board','board-1','low','tick','pending',"
-            "'stale_sweep',0,'{\"cursor\":\"\",\"budget\":100,\"attempt\":0}')"
+            '\'stale_sweep\',0,\'{"cursor":"","budget":100,"attempt":0}\')'
         )
     _expect_integrity_error(
         database_path,
