@@ -172,7 +172,7 @@ def test_submit_route_forwards_canonical_contract_and_returns_only_acknowledgeme
     }
 
 
-def test_history_keeps_v1_readable_without_inventing_five_metric_scores(
+def test_history_preserves_native_previous_edition(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -197,21 +197,15 @@ def test_history_keeps_v1_readable_without_inventing_five_metric_scores(
         "pinpoints": _canonical_submit_payload()["pinpoints"],
         "recommendation": "approve",
     }
-    legacy = {
-        "id": "val_legacy",
-        "is_current": False,
-        "active": False,
-        "lifecycle_state": "history_only",
-        "completeness": 91,
-        "completeness_justification": "Legacy completeness evidence.",
-        "assertiveness": 83,
-        "assertiveness_justification": "Legacy assertiveness evidence.",
-        "ambiguity": 20,
-        "ambiguity_justification": "Legacy ambiguity evidence.",
-        "general_justification": "Historical V1 validation record.",
-        "recommendation": "approve",
-        "resolved_thresholds": {"min_spec_completeness": 80},
-    }
+    from okto_pulse.core.domain.spec_validation import SpecValidationPinpoint
+    from okto_pulse.core.domain.guideline_semantic_v2 import AnchorSnapshot, SemanticAnchorAvailability
+    current["pinpoints"] = [SpecValidationPinpoint.from_dict(item).seal(AnchorSnapshot(
+        label="Availability", excerpt="Original requirement", source_version="7",
+        availability_at_seal=SemanticAnchorAvailability.AVAILABLE,
+    )).to_dict() for item in current["pinpoints"]]
+    previous = {**current, "id": "val_previous", "validation_id": "val_previous",
+                "validation_edition": 1, "edition": 1, "is_current": False,
+                "active": False, "lifecycle_state": "previous"}
 
     async def execute(self, command, *, actor, uow):
         del self, actor, uow
@@ -227,7 +221,7 @@ def test_history_keeps_v1_readable_without_inventing_five_metric_scores(
                 "offset": 0,
                 "lifecycle_state": "all",
                 "has_more": False,
-                "validations": [current, legacy],
+                "validations": [current, previous],
             }
         )
 
@@ -239,8 +233,7 @@ def test_history_keeps_v1_readable_without_inventing_five_metric_scores(
     body = response.json()
     assert body["current_validation"]["decidability"] == 90
     historical = body["validations"][1]
-    assert historical["completeness"] == 91
-    assert historical["resolved_thresholds"] == {"min_spec_completeness": 80}
-    assert {"confidence", "clarity", "decidability", "pinpoints"}.isdisjoint(
-        historical
-    )
+    assert historical["confidence"] == 92
+    assert historical["edition"] == 1
+    assert historical["is_current"] is False
+    assert historical["pinpoints"] == previous["pinpoints"]

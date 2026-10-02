@@ -662,7 +662,7 @@ async def test_reader_includes_mockup_visual_and_architecture_diagram_payload() 
     async with sessions() as session:
         session.add(Board(id="board", name="Board", owner_id="user", realm_id="realm"))
         session.add(
-            Spec(
+            Spec(architecture_adoption={'contract_version': 'architecture-adoption/v1', 'board_id': 'board', 'spec_id': 'spec', 'adopted_in_edition': 1, 'actor_id': 'user', 'inherited_resource_ids': []},
                 id="spec",
                 board_id="board",
                 title="Export rich media",

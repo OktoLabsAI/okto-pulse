@@ -21,7 +21,7 @@ from okto_pulse.community.adapters.sqlalchemy_database import (
     build_community_session_factory,
 )
 from okto_pulse.community.adapters.sqlalchemy_models import ArchitectureDesign, ArchitectureDiagramPayload, Board, Card, CardDependency, Ideation, Refinement, Spec, SpecQAItem, Story, Topic
-from legacy_sprint_schema import Card as LegacyCard, Base, Sprint
+from okto_pulse.community.adapters.sqlalchemy_models import Base
 from okto_pulse.community.api import entity_exports as api
 from okto_pulse.community.api.auth_deps import require_principal
 from okto_pulse.community.api.deps import get_unit_of_work_factory
@@ -133,20 +133,13 @@ async def test_reader_supports_five_types_and_fences_realm_and_related_rows() ->
                     title="Refinement",
                     created_by="u",
                 ),
-                Spec(
+                Spec(architecture_adoption={'contract_version': 'architecture-adoption/v1', 'board_id': 'b1', 'spec_id': 'spec', 'adopted_in_edition': 1, 'actor_id': 'u', 'inherited_resource_ids': []},
                     id="spec",
                     board_id="b1",
                     title="Spec",
                     created_by="u",
                     test_scenarios=[{"id": "secret-scenario", "title": "Secret"}],
                     validations=[{"id": "old-validation", "edition": 1}],
-                ),
-                Sprint(
-                    id="sprint",
-                    board_id="b1",
-                    spec_id="spec",
-                    title="Sprint",
-                    created_by="u",
                 ),
                 Card(id="card", board_id="b1", title="Card", created_by="u"),
                 Card(id="foreign-card", board_id="b2", title="Foreign", created_by="u"),
@@ -218,7 +211,7 @@ async def test_reader_supports_five_types_and_fences_realm_and_related_rows() ->
 
 
 @pytest.mark.asyncio
-async def test_spec_and_card_exports_ignore_legacy_sprint_without_mutating_history():
+async def test_native_spec_and_card_exports_are_read_only_and_refuse_retired_sections():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     statements = []
     try:
@@ -228,10 +221,8 @@ async def test_spec_and_card_exports_ignore_legacy_sprint_without_mutating_histo
         async with sessions() as session:
             session.add_all([
                 Board(id="board", name="Board", owner_id="owner", realm_id="realm"),
-                Spec(id="spec", board_id="board", title="Spec", created_by="owner"),
-                Sprint(id="legacy", board_id="board", spec_id="spec", title="Archived Sprint",
-                       description="Historical source unchanged", created_by="owner"),
-                LegacyCard(id="card", board_id="board", spec_id="spec", sprint_id="legacy",
+                Spec(architecture_adoption={'contract_version': 'architecture-adoption/v1', 'board_id': 'board', 'spec_id': 'spec', 'adopted_in_edition': 1, 'actor_id': 'owner', 'inherited_resource_ids': []}, id="spec", board_id="board", title="Spec", created_by="owner"),
+                Card(id="card", board_id="board", spec_id="spec",
                      title="Card remains exportable", created_by="owner"),
             ])
             await session.commit()
@@ -267,8 +258,7 @@ async def test_spec_and_card_exports_ignore_legacy_sprint_without_mutating_histo
             assert statements == []
         event.remove(engine.sync_engine, "before_cursor_execute", capture)
         async with sessions() as session:
-            assert (await session.get(Sprint, "legacy")).description == "Historical source unchanged"
-            assert (await session.get(LegacyCard, "card")).sprint_id == "legacy"
+            assert (await session.get(Card, "card")).title == "Card remains exportable"
     finally:
         await engine.dispose()
 
@@ -293,7 +283,7 @@ async def test_denied_section_is_not_selected_or_counted_and_current_does_not_le
         session.add_all(
             [
                 Board(id="b", name="Board", owner_id="u", realm_id="realm"),
-                Spec(
+                Spec(architecture_adoption={'contract_version': 'architecture-adoption/v1', 'board_id': 'b', 'spec_id': 'spec', 'adopted_in_edition': 1, 'actor_id': 'u', 'inherited_resource_ids': []},
                     id="spec",
                     board_id="b",
                     title="Spec",
@@ -388,7 +378,7 @@ async def test_explicit_section_limit_fails_without_truncation(monkeypatch) -> N
         session.add_all(
             [
                 Board(id="b", name="Board", owner_id="u", realm_id="realm"),
-                Spec(
+                Spec(architecture_adoption={'contract_version': 'architecture-adoption/v1', 'board_id': 'b', 'spec_id': 'spec', 'adopted_in_edition': 1, 'actor_id': 'u', 'inherited_resource_ids': []},
                     id="spec",
                     board_id="b",
                     title="Spec",
@@ -428,7 +418,7 @@ async def test_reader_projects_cards_and_qa_for_human_consumption() -> None:
         session.add_all(
             [
                 Board(id="b", name="Board", owner_id="u", realm_id="realm"),
-                Spec(id="spec", board_id="b", title="Spec", created_by="u"),
+                Spec(architecture_adoption={'contract_version': 'architecture-adoption/v1', 'board_id': 'b', 'spec_id': 'spec', 'adopted_in_edition': 1, 'actor_id': 'u', 'inherited_resource_ids': []}, id="spec", board_id="b", title="Spec", created_by="u"),
                 Card(
                     id="test-card",
                     board_id="b",
@@ -829,7 +819,7 @@ async def test_reader_counts_and_emits_only_human_reportable_support_records() -
                     title="Refinement",
                     created_by="u",
                 ),
-                Spec(
+                Spec(architecture_adoption={'contract_version': 'architecture-adoption/v1', 'board_id': 'b', 'spec_id': 'spec', 'adopted_in_edition': 1, 'actor_id': 'u', 'inherited_resource_ids': []},
                     id="spec",
                     board_id="b",
                     refinement_id="refinement",
@@ -937,7 +927,9 @@ async def test_reader_counts_and_emits_only_human_reportable_support_records() -
                 "generation": 1,
                 "trust_level": "single_attestation",
                 "acceptance_status": "accepted",
-                "outcome": "accessible",
+                "delivery_context": "brownfield",
+                "contextual_outcome": "evidence_applicable",
+                "context_contract_version": 2,
                 "capabilities": ["file_read", "secret_scan"],
                 "source_ref": "source-main",
                 "canonicalization_profile": "code-investigation/v1",
@@ -1526,22 +1518,21 @@ def test_retired_sprint_export_is_not_materialized(monkeypatch, operation):
     assert response.status_code == 404
 
 
-def test_passive_rendering_keeps_preexisting_sprint_report_content():
-    # Previously produced v1 documents remain readable; this detached payload
-    # grants no access to operational entities or to the F2A archive store.
-    raw = _bundle(title="Historical Sprint report").to_dict()
-    raw["subject"]["entity_type"] = "sprint"
+def test_passive_rendering_preserves_native_spec_report_content():
+    # A detached native report retains its captured content.
+    raw = _bundle(title="Historical Spec report").to_dict()
+    raw["subject"]["entity_type"] = "spec"
     raw["sections"][0]["payload"]["record"] = {
-        "title": "Historical Sprint report", "objective": "Preserved objective",
+        "title": "Historical Spec report", "objective": "Preserved objective",
     }
     raw["sections"].append({"section_key": "qa", "schema_version": "entity-export-section/v1",
-        "payload": {"records": {"sprint_qa_items": [
+        "payload": {"records": {"spec_qa_items": [
             {"question": "Archived question", "answer": "Preserved answer"},
         ]}}})
     raw["manifest"]["entries"].append({**raw["manifest"]["entries"][0], "section_key": "qa"})
     before = deepcopy(raw)
     for rendered in (render_entity_export_markdown(raw), render_entity_export_html(raw)):
-        for text in ("Historical Sprint report", "Preserved objective", "Archived question", "Preserved answer"):
+        for text in ("Historical Spec report", "Preserved objective", "Archived question", "Preserved answer"):
             assert text in rendered
         assert "<script" not in rendered
     assert raw == before

@@ -900,33 +900,18 @@ def _sealed_mockups(value: Any) -> Any:
     return seal_screen_mockups(_json_value(value))
 
 
-def _seal_spec_validation_pinpoints(value: Any) -> Any:
+def _validate_spec_validation_pinpoints(value: Any) -> Any:
+    from okto_pulse.core.models.schemas import SpecValidationPinpointResponse
+
     normalized = _json_value(value)
     if not isinstance(normalized, list):
         return normalized
-    sealed: list[Any] = []
     for validation in normalized:
         if not isinstance(validation, dict):
-            sealed.append(validation)
-            continue
-        copy = dict(validation)
-        pinpoints = copy.get("pinpoints")
-        if isinstance(pinpoints, list):
-            normalized_pinpoints: list[Any] = []
-            for pinpoint in pinpoints:
-                if not isinstance(pinpoint, dict):
-                    normalized_pinpoints.append(pinpoint)
-                    continue
-                pinpoint_copy = dict(pinpoint)
-                if not isinstance(pinpoint_copy.get("anchor_snapshot"), dict):
-                    pinpoint_copy["anchor_snapshot"] = {
-                        "contract_version": "spec-validation-pinpoint-snapshot/v1",
-                        "availability_at_seal": "legacy_unavailable",
-                    }
-                normalized_pinpoints.append(pinpoint_copy)
-            copy["pinpoints"] = normalized_pinpoints
-        sealed.append(copy)
-    return sealed
+            raise ValueError("spec_validation_history_invalid")
+        for pinpoint in validation.get("pinpoints") or ():
+            SpecValidationPinpointResponse.model_validate(pinpoint)
+    return normalized
 
 
 def _row_payload(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -1833,7 +1818,7 @@ class CommunitySqlAlchemyEntityExportReader:
             if field_name == "screen_mockups":
                 value = _sealed_mockups(value)
             elif definition.key == "spec_validation" and field_name == "validations":
-                value = _seal_spec_validation_pinpoints(value)
+                value = _validate_spec_validation_pinpoints(value)
             elif definition.key == "card_validation" and field_name == "validations":
                 value = [
                     _human_task_validation(item)
