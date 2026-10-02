@@ -6,10 +6,9 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
-
-from okto_pulse.community.adapters.sqlalchemy_models import Base, Board, Card, Spec, Agent, AgentBoard, DomainEventRow, ActivityLog
-from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import CommunitySemanticSession
+from okto_pulse.community.adapters.sqlalchemy_models import Board, Card, Spec, Agent, AgentBoard, DomainEventRow, ActivityLog
+from okto_pulse.community.adapters.sqlalchemy_database import build_community_engine, build_community_session_factory
+from okto_pulse.community.adapters.current_relational_schema import current_schema_contract, initialize_current_schema
 from okto_pulse.community.adapters.sqlalchemy_spec_resource_propagation import CommunitySqlAlchemySpecResourcePropagationStore
 from okto_pulse.community.adapters.sqlalchemy_unit_of_work import CommunityUnitOfWorkFactory
 from okto_pulse.community.adapters.sqlalchemy_knowledge_propagation import CommunitySqlAlchemyKnowledgePropagationStore
@@ -17,13 +16,13 @@ from okto_pulse.community.api.auth_deps import require_principal
 from okto_pulse.community.api.boards import router
 from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
-from okto_pulse.core.domain.realm import RealmScope
 from okto_pulse.core.mcp import server
 from okto_pulse.core.ports.authentication import Principal
 from okto_pulse.core.ports.knowledge_propagation import register_knowledge_propagation_port, register_knowledge_mutation_audit_sink
 from okto_pulse.core.ports.spec_resource_propagation import register_spec_resource_propagation_store
 from okto_pulse.core.services.main import AgentService
 from test_delivery_reused_impact import register_report_adapters
+from test_knowledge_propagation_parent_adapter import _native_spec
 
 
 @pytest.mark.asyncio
@@ -31,9 +30,8 @@ from test_delivery_reused_impact import register_report_adapters
 @pytest.mark.parametrize('case', ['valid', 'foreign_spec', 'foreign_board', 'denied'])
 @pytest.mark.parametrize('knowledge_v2', [False, True])
 async def test_public_create_rejects_foreign_scenarios_without_partial_writes(tmp_path, monkeypatch, transport, case, knowledge_v2):
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'surfaces.db'}")
-    sessions = async_sessionmaker(engine, expire_on_commit=False,
-        sync_session_class=CommunitySemanticSession, info={'realm_scope': RealmScope.local()})
+    engine = build_community_engine(f"sqlite+aiosqlite:///{tmp_path / 'surfaces.db'}")
+    sessions = build_community_session_factory(engine)
     register_report_adapters()
     register_spec_resource_propagation_store(CommunitySqlAlchemySpecResourcePropagationStore())
     factory = CommunityUnitOfWorkFactory(sessions)
@@ -44,17 +42,16 @@ async def test_public_create_rejects_foreign_scenarios_without_partial_writes(tm
     principal = Principal('owner', realm_id='local', actor_kind='agent', claims={'permissions': permissions})
     context = SimpleNamespace(agent_id='owner', agent_name='Author', board_id='board', realm_id='local', permissions=permissions)
     try:
-        async with engine.begin() as connection:
-            await connection.run_sync(Base.metadata.create_all)
+        await initialize_current_schema(engine, current_schema_contract())
         async with sessions() as db:
             db.add_all([Board(id='board', realm_id='local', name='Board', owner_id='owner'),
                         Board(id='foreign', realm_id='local', name='Other', owner_id='other')])
             db.add(Agent(id='owner', name='Author', api_key='fixture', api_key_hash=AgentService.hash_api_key('fixture'),
                          created_by='owner', permissions=permissions))
             db.add(AgentBoard(id='grant', board_id='board', agent_id='owner', granted_by='owner'))
-            db.add(Spec(id='spec', board_id='board', title='Spec', created_by='owner', status='approved',
+            db.add(_native_spec(id='spec', board_id='board', title='Spec', created_by='owner', status='approved',
                         test_scenarios=[{'id': 'one', 'title': 'One', 'status': 'draft', 'linked_task_ids': []}]))
-            db.add(Spec(id='other', board_id='foreign' if case == 'foreign_board' else 'board',
+            db.add(_native_spec(id='other', board_id='foreign' if case == 'foreign_board' else 'board',
                         title='Other', created_by='owner',
                         test_scenarios=[{'id': 'alien', 'title': 'Alien', 'linked_task_ids': []}]))
             await db.commit()
