@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,10 +18,16 @@ from okto_pulse.core.domain.guideline_policy import (
     GuidelineMetricDirection,
     PolicyEntityType,
     PolicySubjectRef,
+    PolicySubjectSnapshot,
 )
 from okto_pulse.core.domain.guideline_semantic_assessment import (
+    SemanticAssessmentState,
     SemanticMetricOutcome,
     SemanticThresholdSource,
+)
+from okto_pulse.core.domain.guideline_semantic_currentness import (
+    SemanticAssessmentCurrentness,
+    assess_native_semantic_assessment_currentness,
 )
 from okto_pulse.core.domain.guideline_semantic_findings_v2 import (
     SemanticAssessmentReceiptProjectionV2,
@@ -726,50 +732,99 @@ class CommunitySqlAlchemySemanticGuidelineAssessmentV2:
         ).scalar_one_or_none()
         if row is None:
             return None
-        # Edition-aware human evidence remains current for the lifecycle
-        # edition; technical digest drift stays available as audit metadata.
-        if live_subject_edition is not None:
-            return await self.get_semantic_assessment_v2(
-                board_id=board_id,
-                receipt_id=row.receipt_id,
-            )
-        if (
-            subject.subject.subject_version != row.subject_version
-            or subject.content_digest != row.subject_content_digest
-        ):
+        receipt = await self.get_semantic_assessment_v2(
+            board_id=board_id, receipt_id=row.receipt_id,
+        )
+        if receipt is None:
             return None
-        bindings, revisions = await self._v1._authority_bundle(
-            board_id=board_id,
+        currentness = await self._native_currentness(receipt, subject)
+        return receipt if currentness.is_current else None
+
+    async def get_semantic_assessment_v2_currentness(
+        self, receipt: SemanticAssessmentReceiptProjectionV2,
+    ) -> SemanticAssessmentCurrentness:
+        subject = await self._v1.resolve_policy_subject_snapshot(
+            board_id=receipt.subject.board_id,
+            entity_type=receipt.subject.entity_type,
+            subject_id=receipt.subject.subject_id,
             lock=False,
         )
-        binding = next(
-            (
-                item
-                for item in bindings
-                if item.binding_id == binding_id
-                and item.binding_revision == row.binding_revision
-                and item.configuration_digest == row.configuration_digest
-                and item.state is GuidelineBindingState.ACTIVE
-            ),
-            None,
+        return await self._native_currentness(receipt, subject)
+
+    async def _native_currentness(
+        self, receipt: SemanticAssessmentReceiptProjectionV2,
+        subject: PolicySubjectSnapshot | None,
+    ) -> SemanticAssessmentCurrentness:
+        binding = revision = None
+        if subject is not None and subject.subject.subject_edition is None:
+            bindings, revisions = await self._v1._authority_bundle(
+                board_id=receipt.subject.board_id, lock=False,
+            )
+            binding = next((item for item in bindings
+                            if item.binding_id == receipt.binding_id), None)
+            revision = next((item for item in revisions
+                             if item.revision_id == receipt.guideline_revision_id), None)
+        return assess_native_semantic_assessment_currentness(
+            receipt, subject=subject, binding=binding, revision=revision,
         )
-        if binding is None:
-            return None
-        revision = next(
-            (
-                item
-                for item in revisions
-                if item.revision_id == row.revision_id
-                and item.revision_digest == row.revision_digest
-            ),
-            None,
-        )
-        if revision is None:
-            return None
-        return await self.get_semantic_assessment_v2(
-            board_id=board_id,
-            receipt_id=row.receipt_id,
-        )
+
+    async def list_semantic_assessment_v2_receipts(
+        self, *, board_id: str,
+        entity_type: PolicyEntityType | None = None,
+        subject_id: str | None = None,
+        subject_edition: int | None = None,
+        guideline_id: str | None = None,
+        binding_id: str | None = None,
+        outcome: SemanticAssessmentState | None = None,
+        after: tuple[datetime, str] | None = None,
+        limit: int = 50,
+    ) -> tuple[tuple[SemanticAssessmentReceiptProjectionV2, ...], tuple[datetime, str] | None]:
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 200:
+            raise ValueError("semantic_assessment_receipt_limit_invalid")
+        row = SemanticGuidelineAssessmentV2Row
+        statement = select(row).where(row.board_id == board_id)
+        for column, value in (
+            (row.subject_type, None if entity_type is None else entity_type.value),
+            (row.subject_id, subject_id), (row.validation_edition, subject_edition),
+            (row.guideline_id, guideline_id), (row.binding_id, binding_id),
+        ):
+            if value is not None:
+                statement = statement.where(column == value)
+        if outcome is not None:
+            if not isinstance(outcome, SemanticAssessmentState):
+                raise ValueError("semantic_assessment_outcome_invalid")
+            metric = SemanticGuidelineMetricResultV2Row
+            failed = select(metric.result_id).where(
+                metric.board_id == row.board_id, metric.receipt_id == row.receipt_id,
+                metric.outcome == SemanticMetricOutcome.FAIL.value,
+            ).exists()
+            statement = statement.where(
+                failed if outcome is SemanticAssessmentState.METRIC_THRESHOLD_FAILED else ~failed
+            )
+        if after is not None:
+            at, receipt_id = after
+            if not isinstance(at, datetime) or at.utcoffset() is None:
+                raise ValueError("semantic_assessment_cursor_time_invalid")
+            at = at.astimezone(timezone.utc)
+            statement = statement.where(or_(
+                row.recorded_at < at,
+                (row.recorded_at == at) & (row.receipt_id < receipt_id),
+            ))
+        rows = tuple((await self._session.execute(
+            statement.order_by(row.recorded_at.desc(), row.receipt_id.desc()).limit(limit + 1)
+        )).scalars().all())
+        page = rows[:limit]
+        receipts = []
+        for item in page:
+            receipt = await self.get_semantic_assessment_v2(
+                board_id=board_id, receipt_id=item.receipt_id,
+            )
+            if receipt is None:
+                raise GuidelinePolicyDigestConflict("semantic_assessment_v2_history_receipt_missing")
+            receipts.append(receipt)
+        next_cursor = (page[-1].recorded_at, page[-1].receipt_id) if len(rows) > limit else None
+        return tuple(receipts), next_cursor
+
 
 
 __all__ = [

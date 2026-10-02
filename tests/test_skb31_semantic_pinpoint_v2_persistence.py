@@ -200,14 +200,86 @@ def test_v2_adapter_satisfies_public_core_persistence_port():
     assert isinstance(adapter, SemanticAssessmentV2ReadPort)
 
 
-def test_v2_read_adapter_signature_matches_public_core_port() -> None:
-    adapter_signature = inspect.signature(
-        CommunitySqlAlchemySemanticGuidelineAssessmentV2.get_current_semantic_assessment_v2
-    )
-    port_signature = inspect.signature(
-        SemanticAssessmentV2ReadPort.get_current_semantic_assessment_v2
-    )
+@pytest.mark.parametrize("method", [
+    "get_semantic_assessment_v2", "list_semantic_assessment_v2_receipts",
+    "get_semantic_assessment_v2_currentness", "get_current_semantic_assessment_v2",
+])
+def test_v2_read_adapter_signature_matches_public_core_port(method) -> None:
+    adapter_signature = inspect.signature(getattr(CommunitySqlAlchemySemanticGuidelineAssessmentV2, method))
+    port_signature = inspect.signature(getattr(SemanticAssessmentV2ReadPort, method))
     assert adapter_signature == port_signature
+
+
+@pytest.mark.asyncio
+async def test_native_history_keyset_filters_board_and_preserves_previous_edition(tmp_path, monkeypatch):
+    from datetime import datetime
+    from okto_pulse.core.domain.guideline_semantic_assessment import SemanticAssessmentState
+    from okto_pulse.community.adapters import sqlalchemy_semantic_guideline_v2 as module
+
+    engine = _engine(tmp_path / "native-semantic-history.db")
+    factory = build_community_session_factory(engine)
+    await initialize_current_schema(engine, current_schema_contract())
+    try:
+        async with factory() as session, session.begin():
+            board_id, subject_id, revision, binding = await _seed_semantic_authority(session)
+            adapter = CommunitySqlAlchemySemanticGuidelineAssessmentV2(session)
+            failed = _request(board_id, subject_id, revision, binding, key="failed")
+            passed = replace(failed, idempotency_key="passed", metric_results=tuple(
+                replace(metric, score=95) for metric in failed.metric_results
+            ))
+
+            recorded_at = _now()
+
+            class FixedClock(datetime):
+                @classmethod
+                def now(cls, tz=None):
+                    return recorded_at
+
+            with monkeypatch.context() as clock:
+                clock.setattr(module, "datetime", FixedClock)
+                first = await adapter.save_semantic_assessment_v2(failed)
+                second = await adapter.save_semantic_assessment_v2(passed)
+                other = _request(*await _seed_semantic_authority(session), key="other-board")
+                outsider = await adapter.save_semantic_assessment_v2(other)
+            assert first.receipt.recorded_at == second.receipt.recorded_at
+            assert (await adapter.get_semantic_assessment_v2_currentness(first.receipt)).is_current
+            assert (await adapter.get_semantic_assessment_v2_currentness(second.receipt)).is_current
+            filters = dict(board_id=board_id, entity_type=PolicyEntityType.IDEATION,
+                           subject_id=subject_id, subject_edition=1,
+                           binding_id=binding.binding_id, guideline_id=revision.guideline_id)
+            page, cursor = await adapter.list_semantic_assessment_v2_receipts(**filters, limit=1)
+            assert cursor is not None
+            following, last = await adapter.list_semantic_assessment_v2_receipts(**filters, limit=1, after=cursor)
+            ids = [item.receipt_id for item in (*page, *following)]
+            assert ids == sorted([first.receipt_id, second.receipt_id], reverse=True)
+            assert last is None and outsider.receipt_id not in ids
+            for state, expected in ((SemanticAssessmentState.PASSED, second.receipt_id),
+                                    (SemanticAssessmentState.METRIC_THRESHOLD_FAILED, first.receipt_id)):
+                selected, end = await adapter.list_semantic_assessment_v2_receipts(**filters, outcome=state)
+                assert [item.receipt_id for item in selected] == [expected]
+                assert end is None
+            assert await adapter.get_semantic_assessment_v2(board_id=board_id, receipt_id=outsider.receipt_id) is None
+            subject = await session.get(Ideation, subject_id)
+            subject.edition = 2
+            await session.flush((subject,))
+            await CommunitySqlAlchemySemanticGuidelineAssessment(session).record_semantic_subject_mutation(
+                board_id=board_id, entity_type=PolicyEntityType.IDEATION,
+                subject_id=subject_id, actor_id="artifact-author",
+                idempotency_key="history-edition-2",
+                request_digest=canonical_sha256({"subject": subject_id, "edition": 2}),
+                changed_at=_now(),
+            )
+            previous = await adapter.get_semantic_assessment_v2_currentness(first.receipt)
+            assert [reason.value for reason in previous.reasons] == ["subject_edition_changed"]
+            historical, _ = await adapter.list_semantic_assessment_v2_receipts(**filters)
+            assert {item.receipt_id for item in historical} == set(ids)
+            assert await adapter.list_semantic_assessment_v2_receipts(**{**filters, "subject_edition": 2}) == ((), None)
+            assert await adapter.get_current_semantic_assessment_v2(
+                board_id=board_id, entity_type="ideation", subject_id=subject_id,
+                binding_id=binding.binding_id, subject_edition=2,
+            ) is None
+    finally:
+        await engine.dispose()
 
 
 def test_subject_projection_adapter_satisfies_public_core_port():
