@@ -1,3 +1,4 @@
+import { loadEffectiveResourceItems } from '@/services/effectiveResources';
 /**
  * RefinementModal - View and manage a refinement, derive specs
  */
@@ -64,9 +65,8 @@ import {
   type KnowledgePropagationChoice,
 } from '@/components/shared/knowledgePropagationChoice';
 import {
-  effectiveKnowledgeCandidate,
+  workspaceKnowledgeCandidate,
   mergeKnowledgePropagationCandidates,
-  physicalKnowledgeCandidate,
   type KnowledgePropagationCandidate,
 } from '@/components/shared/knowledgePropagationCandidates';
 import {
@@ -1239,29 +1239,14 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
     let cancelled = false;
     setDeriveKnowledgeLoading(true);
     setDeriveKnowledgeError(null);
-    const direct = (refinement.knowledge_bases || []).map(
-      physicalKnowledgeCandidate,
-    );
-    api.getEffectiveResources(
-      refinement.board_id,
-      'refinement',
-      refinement.id,
-    ).then((response) => {
+    loadEffectiveResourceItems(api.getEffectiveResources, refinement.board_id,
+      'refinement', refinement.id, 'knowledge_base').then((items) => {
       if (cancelled) return;
-      const effective = (response.resources.knowledge_base || [])
-        .map(effectiveKnowledgeCandidate)
-        .filter((item): item is KnowledgePropagationCandidate => item !== null);
-      setDeriveKnowledgeItems(
-        mergeKnowledgePropagationCandidates(direct, effective),
-      );
+      setDeriveKnowledgeItems(mergeKnowledgePropagationCandidates(items.map(workspaceKnowledgeCandidate)));
     }).catch((error: unknown) => {
       if (cancelled) return;
-      setDeriveKnowledgeItems(direct);
-      setDeriveKnowledgeError(
-        error instanceof Error
-          ? error.message
-          : 'Failed to load effective Knowledge resources',
-      );
+      setDeriveKnowledgeItems([]);
+      setDeriveKnowledgeError(error instanceof Error ? error.message : 'Failed to load effective Knowledge resources');
     }).finally(() => {
       if (!cancelled) setDeriveKnowledgeLoading(false);
     });

@@ -1402,7 +1402,7 @@ function KnowledgeTab({
         entityType="spec"
         entityId={specId}
         refreshKey={refreshGeneration}
-        loadFallbackDetail={(id) => api.getSpecKnowledge(specId, id)}
+
         onDelete={handleDelete}
       />
 

@@ -14,7 +14,6 @@ import toast from 'react-hot-toast';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
 import { useDashboardApi } from '@/services/api';
 import type {
-  EffectiveResourceItem,
   EffectiveResourcesResponse,
   KnowledgeWorkspaceItem,
   ResourceGateEntityType,
@@ -25,8 +24,6 @@ interface KnowledgeWorkspaceProps {
   entityType: ResourceGateEntityType;
   entityId: string;
   refreshKey?: string | number;
-  fallbackItems?: unknown[];
-  loadFallbackDetail?: (resourceId: string) => Promise<unknown>;
   onDelete?: (resourceId: string) => Promise<void | boolean>;
   canDelete?: (item: KnowledgeWorkspaceItem) => boolean;
   className?: string;
@@ -38,7 +35,6 @@ const EMPTY_COUNTS = {
   workspace_item_count: 0,
   unique_root_version_count: 0,
 };
-const EMPTY_FALLBACK_ITEMS: unknown[] = [];
 
 function asText(value: unknown): string | null {
   if (typeof value === 'string') return value;
@@ -57,75 +53,9 @@ function asText(value: unknown): string | null {
   }
 }
 
-function legacyItem(item: EffectiveResourceItem, index: number): KnowledgeWorkspaceItem {
-  const resource = item.resource && typeof item.resource === 'object'
-    ? item.resource as Record<string, unknown>
-    : item as Record<string, unknown>;
-  const resourceId = String(item.resource_id || item.id || resource.id || `legacy-${index}`);
-  const rootId = String(
-    item.ref?.root_resource_id
-      || item.root_id
-      || item.root_source_kb_id
-      || item.source_kb_id
-      || resource.root_id
-      || resource.root_source_kb_id
-      || resource.source_kb_id
-      || resourceId,
-  );
-  const revision = item.resource_version
-    ?? item.ref?.source_revision
-    ?? resource.resource_version
-    ?? resource.source_revision
-    ?? null;
-  const version = revision === null || revision === undefined || revision === ''
-    ? null
-    : String(revision);
-  const canonicalId = String(
-    item.canonical_unique_resource_id || `knowledge_base:${rootId}`,
-  );
-  const source = String(item.source || resource.source || '');
-  const copiedFromSpec = source.startsWith('copied_from_spec:');
-  const hasInlineBody = Boolean(
-    item.resource
-    || typeof resource.content === 'string'
-    || typeof resource.html_content === 'string'
-    || typeof resource.global_description === 'string',
-  );
-  return {
-    resource_type: 'knowledge_base',
-    canonical_unique_resource_id: canonicalId,
-    versioned_projection_id: `${canonicalId}@${version || 'legacy'}`,
-    root_id: rootId,
-    resource_version: version,
-    representative_resource_id: resourceId,
-    title: String(resource.title || item.title || 'Knowledge resource'),
-    attachment_kind: item.attachment_kind || null,
-    inherited: item.inherited,
-    grandfathered: version === null,
-    stale: Boolean(item.ref?.knowledge_assignment_stale),
-    superseded: Boolean(item.superseded),
-    provenance: {
-      source_entity_type: item.source_entity_type
-        ?? item.provenance?.source_entity_type
-        ?? (copiedFromSpec ? 'spec' : null),
-      source_entity_id: item.source_entity_id ?? item.provenance?.source_entity_id ?? null,
-      source_entity_title: item.source_entity_title ?? item.provenance?.source_entity_title ?? null,
-      origin_class: item.ref?.origin_class ?? null,
-      source_revision: version,
-      source_content_sha256: null,
-    },
-    physical_attachments: [],
-    detail_cursor: '',
-    relevance_links: [],
-    ...(hasInlineBody ? { body: resource } : {}),
-  };
-}
-
 function normalizedItems(response: EffectiveResourcesResponse): KnowledgeWorkspaceItem[] {
-  if (Array.isArray(response.items)) {
-    return response.items.filter((item) => item.resource_type === 'knowledge_base');
-  }
-  return (response.resources?.knowledge_base || []).map(legacyItem);
+  if (!Array.isArray(response.items)) throw new Error('Invalid effective resources response contract.');
+  return response.items.filter((item) => item.resource_type === 'knowledge_base');
 }
 
 function itemTitle(item: KnowledgeWorkspaceItem): string {
@@ -187,16 +117,12 @@ export function KnowledgeWorkspace({
   entityType,
   entityId,
   refreshKey,
-  fallbackItems,
-  loadFallbackDetail,
   onDelete,
   canDelete,
   className = '',
 }: KnowledgeWorkspaceProps) {
   const api = useDashboardApi();
   const apiRef = useRef(api);
-  const fallbackItemsRef = useRef(fallbackItems || EMPTY_FALLBACK_ITEMS);
-  fallbackItemsRef.current = fallbackItems || EMPTY_FALLBACK_ITEMS;
   const contextKey = `${boardId}\u001f${entityType}\u001f${entityId}`;
   const contextKeyRef = useRef(contextKey);
   contextKeyRef.current = contextKey;
@@ -237,20 +163,7 @@ export function KnowledgeWorkspace({
     append: boolean,
     requestedCursor: string | null = null,
   ) => {
-    let pageItems = normalizedItems(response);
-    const resolvedFallbackItems = fallbackItemsRef.current;
-    if (!append && !Array.isArray(response.items) && resolvedFallbackItems.length > 0) {
-      const fallback = resolvedFallbackItems.map((item, index) => legacyItem(
-        item as unknown as EffectiveResourceItem,
-        index,
-      ));
-      const seen = new Set<string>();
-      pageItems = [...fallback, ...pageItems].filter((item) => {
-        if (seen.has(item.versioned_projection_id)) return false;
-        seen.add(item.versioned_projection_id);
-        return true;
-      });
-    }
+    const pageItems = normalizedItems(response);
     setItems((current) => {
       const seen = new Set<string>();
       const combined = append ? [...current, ...pageItems] : pageItems;
@@ -273,10 +186,8 @@ export function KnowledgeWorkspace({
       toast.error('Knowledge Workspace pagination stopped after a repeated cursor.');
     }
     setCounts({
-      unique_effective_count: response.unique_effective_count
-        ?? Number(response.lineage_counts?.unique_effective_count || pageItems.length),
-      raw_attachment_count: response.raw_attachment_count
-        ?? Number(response.lineage_counts?.raw_attachment_count || pageItems.length),
+      unique_effective_count: response.unique_effective_count,
+      raw_attachment_count: response.raw_attachment_count,
       workspace_item_count: response.workspace_item_count
         ?? response.total_count
         ?? pageItems.length,
@@ -404,29 +315,7 @@ export function KnowledgeWorkspace({
       cacheDetail(item.versioned_projection_id, item);
       return item;
     }
-    if (!item.detail_cursor) {
-      if (loadFallbackDetail && item.representative_resource_id) {
-        setDetailLoadingIds((current) => new Set(current).add(item.versioned_projection_id));
-        try {
-          const body = await loadFallbackDetail(item.representative_resource_id);
-          if (!isCurrentRequest()) throw new StaleKnowledgeWorkspaceRequest();
-          const detail = { ...item, body, body_omitted_reason: undefined };
-          cacheDetail(item.versioned_projection_id, detail);
-          return detail;
-        } finally {
-          if (isCurrentRequest()) {
-            setDetailLoadingIds((current) => {
-              const next = new Set(current);
-              next.delete(item.versioned_projection_id);
-              return next;
-            });
-          }
-        }
-      }
-      if (!isCurrentRequest()) throw new StaleKnowledgeWorkspaceRequest();
-      cacheDetail(item.versioned_projection_id, item);
-      return item;
-    }
+    if (!item.detail_cursor) throw new Error('Resource detail identity is missing.');
     setDetailLoadingIds((current) => new Set(current).add(item.versioned_projection_id));
     try {
       const response = await apiRef.current.getEffectiveResources(

@@ -1,3 +1,4 @@
+import { workspaceItem, workspacePage } from '@/testFixtures/effectiveResources';
 import {
   fireEvent,
   render,
@@ -55,13 +56,12 @@ const baseCard = {
   ],
 } as any;
 
-const emptyEffectiveResources = {
-  resources: {
-    architecture: [],
-    mockup: [],
-    knowledge_base: [],
-  },
-};
+const existingItem = workspaceItem('knowledge_base', 'kb_existing', 'Existing KB', {
+  body: { content: 'orig content', mime_type: 'text/markdown' },
+  provenance: { source_entity_type: 'spec', source_entity_id: 's1', source_entity_title: null,
+    origin_class: 'v2', source_revision: '1', source_content_sha256: null },
+});
+const emptyEffectiveResources = workspacePage('b1', 'card', 'c1');
 
 const emptyTechnicalRead = {
   contract_version: 2 as const,
@@ -118,7 +118,9 @@ function renderTab({
 beforeEach(() => {
   document.body.innerHTML = '';
   vi.clearAllMocks();
-  apiMock.getEffectiveResources.mockResolvedValue(emptyEffectiveResources);
+  apiMock.getEffectiveResources.mockImplementation((boardId, entityType, entityId, options) =>
+    Promise.resolve(workspacePage(boardId, entityType, entityId, 'knowledge_base',
+      entityType === 'card' ? [existingItem] : [], options?.profile)));
   apiMock.getCardKnowledgeAssignments.mockResolvedValue(emptyTechnicalRead);
   apiMock.replaceCardKnowledgeAssignments.mockResolvedValue(mutationResponse);
   apiMock.dropCardKnowledgeAssignments.mockResolvedValue({
@@ -144,13 +146,13 @@ describe('CardKnowledgeTab', () => {
       ),
     ).toBeInTheDocument();
     expect(screen.getByText('Existing KB')).toBeInTheDocument();
-    expect(screen.getByText('from spec')).toBeInTheDocument();
+    expect(screen.getByText('from spec: s1')).toBeInTheDocument();
     expect(screen.queryByText(/New KB/i)).not.toBeInTheDocument();
     expect(screen.queryByTestId('kb-edit-kb_existing')).not.toBeInTheDocument();
     expect(screen.queryByTestId('kb-delete-kb_existing')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId('kb-row-kb_existing'));
-    expect(screen.getByText('orig content')).toBeInTheDocument();
+    expect(await screen.findByText('orig content')).toBeInTheDocument();
   });
 
   it('hides governed propagation mutations while a Rejected card is frozen', async () => {
@@ -192,6 +194,8 @@ describe('CardKnowledgeTab', () => {
   });
 
   it('renders an honest empty state after both governed reads finish', async () => {
+    apiMock.getEffectiveResources.mockImplementation((boardId, entityType, entityId, options) =>
+      Promise.resolve(workspacePage(boardId, entityType, entityId, 'knowledge_base', [], options?.profile)));
     renderTab({
       card: { ...baseCard, knowledge_bases: [] },
     });
@@ -206,50 +210,15 @@ describe('CardKnowledgeTab', () => {
   });
 
   it('renders inherited effective Knowledge and deduplicates a copied snapshot', async () => {
-    apiMock.getEffectiveResources.mockResolvedValue({
-      resources: {
-        architecture: [],
-        mockup: [],
-        knowledge_base: [
-          {
-            id: 'sk_1',
-            title: 'Existing KB',
-            resource_type: 'knowledge_base',
-            attachment_kind: 'inherited_reference',
-            inherited: true,
-            read_only: true,
-            hydrated: true,
-            source_entity_type: 'spec',
-            source_entity_id: 's1',
-            source_entity_title: 'Parent spec',
-            resource: {
-              id: 'sk_1',
-              title: 'Existing KB',
-              content: 'parent content',
-              mime_type: 'text/markdown',
-            },
-          },
-          {
-            id: 'kb_parent',
-            title: 'Parent KB',
-            resource_type: 'knowledge_base',
-            attachment_kind: 'inherited_reference',
-            inherited: true,
-            read_only: true,
-            hydrated: true,
-            source_entity_type: 'spec',
-            source_entity_id: 's1',
-            source_entity_title: 'Parent spec',
-            resource: {
-              id: 'kb_parent',
-              title: 'Parent KB',
-              content: 'parent content',
-              mime_type: 'text/markdown',
-            },
-          },
-        ],
-      },
-    });
+    apiMock.getEffectiveResources.mockImplementation((boardId, entityType, entityId, options) =>
+      Promise.resolve(workspacePage(boardId, entityType, entityId, 'knowledge_base', [
+        existingItem,
+        workspaceItem('knowledge_base', 'kb_parent', 'Parent KB', {
+          inherited: true, attachment_kind: 'inherited_reference',
+          provenance: { source_entity_type: 'spec', source_entity_id: 's1', source_entity_title: 'Parent spec',
+            origin_class: 'v2', source_revision: '1', source_content_sha256: null },
+        }),
+      ], options?.profile)));
 
     renderTab();
 
@@ -325,6 +294,8 @@ describe('CardKnowledgeTab', () => {
       ) => {
         if (entityType !== 'spec') return Promise.resolve(emptyEffectiveResources);
         return Promise.resolve({
+          contract_version: 2,
+          resource_type: 'knowledge_base',
           board_id: 'b1',
           entity_type: 'spec',
           entity_id: 's1',
@@ -376,7 +347,7 @@ describe('CardKnowledgeTab', () => {
         'b1',
         'spec',
         's1',
-        { profile: 'summary', limit: 25 },
+        { profile: 'summary', resource_type: 'knowledge_base', limit: 25 },
       );
     });
     const selector = await screen.findByTestId('card-knowledge-propagation');
@@ -441,6 +412,8 @@ describe('CardKnowledgeTab', () => {
       ) => {
         if (entityType !== 'spec') return Promise.resolve(emptyEffectiveResources);
         return Promise.resolve({
+          contract_version: 2,
+          resource_type: 'knowledge_base',
           board_id: 'b1',
           entity_type: 'spec',
           entity_id: 's1',
@@ -466,13 +439,13 @@ describe('CardKnowledgeTab', () => {
       'b1',
       'spec',
       's1',
-      { profile: 'summary', limit: 25 },
+      { profile: 'summary', resource_type: 'knowledge_base', limit: 25 },
     );
     expect(apiMock.getEffectiveResources).toHaveBeenCalledWith(
       'b1',
       'spec',
       's1',
-      { profile: 'summary', limit: 25, cursor: 'source-page-2' },
+      { profile: 'summary', resource_type: 'knowledge_base', limit: 25, cursor: 'source-page-2' },
     );
   });
 

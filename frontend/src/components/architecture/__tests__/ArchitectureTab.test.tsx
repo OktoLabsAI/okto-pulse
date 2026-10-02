@@ -1,3 +1,4 @@
+import { workspaceItem, workspacePage } from '@/testFixtures/effectiveResources';
 import { useState } from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -96,9 +97,8 @@ describe('ArchitectureTab', () => {
       suggested_fixes: [],
       summary: {},
     });
-    apiMock.getEffectiveResources.mockResolvedValue({
-      resources: { architecture: [], mockup: [], knowledge_base: [] },
-    });
+    apiMock.getEffectiveResources.mockImplementation((boardId, entityType, entityId, options) =>
+    Promise.resolve(workspacePage(boardId, entityType, entityId, options.resource_type, [], options.profile)));
   });
 
   it('loads architecture once when parent passes an inline onChanged callback', async () => {
@@ -171,27 +171,13 @@ describe('ArchitectureTab', () => {
       global_description: 'Inherited parent architecture.',
     };
     apiMock.listArchitectureDesigns.mockResolvedValue([]);
-    apiMock.getEffectiveResources.mockResolvedValue({
-      resources: {
-        mockup: [],
-        knowledge_base: [],
-        architecture: [
-          {
-            id: 'arch-parent-1',
-            title: 'Parent Architecture',
-            resource_type: 'architecture',
-            attachment_kind: 'inherited_reference',
-            inherited: true,
-            read_only: true,
-            hydrated: true,
-            source_entity_type: 'ideation',
-            source_entity_id: 'idea-1',
-            source_entity_title: 'Source idea',
-            resource: inheritedDesign,
-          },
-        ],
-      },
-    });
+    apiMock.getEffectiveResources.mockImplementation((boardId, entityType, entityId, options) =>
+      Promise.resolve(workspacePage(boardId, entityType, entityId, options.resource_type,
+        options.resource_type === 'architecture' ? [workspaceItem('architecture', 'arch-parent-1', 'Parent Architecture', {
+          inherited: true, attachment_kind: 'inherited_reference', body: inheritedDesign,
+          provenance: { source_entity_type: 'ideation', source_entity_id: 'idea-1',
+            source_entity_title: 'Source idea', origin_class: 'v2', source_revision: '1', source_content_sha256: null },
+        })] : [], options.profile)));
 
     render(
       <ArchitectureTab

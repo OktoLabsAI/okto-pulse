@@ -100,7 +100,7 @@ function page(
     workspace_item_count: 1,
     unique_root_version_count: 1,
     response_bytes: 900,
-    resources: { architecture: [], mockup: [], knowledge_base: [] },
+    resource_type: 'knowledge_base',
     ...overrides,
   };
 }
@@ -203,43 +203,14 @@ describe('KnowledgeWorkspace', () => {
     );
   });
 
-  it('normalizes the explicit legacy envelope during rolling upgrades', async () => {
+  it('rejects the removed resources-map contract without displaying its content', async () => {
     apiMock.getEffectiveResources.mockResolvedValue({
-      board_id: 'board-1',
-      entity_type: 'spec',
-      entity_id: 'spec-1',
-      profile: 'legacy',
-      resources: {
-        architecture: [],
-        mockup: [],
-        knowledge_base: [
-          {
-            id: 'legacy-kb',
-            title: 'Legacy reference',
-            resource_type: 'knowledge_base',
-            attachment_kind: 'direct',
-            inherited: false,
-            read_only: false,
-            hydrated: true,
-            resource: { id: 'legacy-kb', title: 'Legacy reference', content: 'Legacy body' },
-          },
-        ],
-      },
+      board_id: 'board-1', entity_type: 'card', entity_id: 'card-1',
+      resources: { knowledge_base: [{ id: 'old', title: 'Legacy reference' }] },
     });
-
-    render(
-      <KnowledgeWorkspace
-        boardId="board-1"
-        entityType="spec"
-        entityId="spec-1"
-      />,
-    );
-
-    expect(await screen.findByText('Legacy reference')).toBeInTheDocument();
-    expect(screen.getByText('grandfathered')).toBeInTheDocument();
-    fireEvent.click(screen.getByText('Legacy reference'));
-    expect(await screen.findByText('Legacy body')).toBeInTheDocument();
-    await waitFor(() => expect(apiMock.getEffectiveResources).toHaveBeenCalledTimes(1));
+    render(<KnowledgeWorkspace boardId="board-1" entityType="card" entityId="card-1" />);
+    expect(await screen.findByText('Invalid effective resources response contract.')).toBeInTheDocument();
+    expect(screen.queryByText('Legacy reference')).not.toBeInTheDocument();
   });
 
   it('rejects detail that does not match the requested projection', async () => {

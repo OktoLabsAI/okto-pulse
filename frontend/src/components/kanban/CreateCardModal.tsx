@@ -1,3 +1,4 @@
+import { loadEffectiveResourceItems } from '@/services/effectiveResources';
 /**
  * CreateCardModal - Modal for creating new cards (normal or bug)
  */
@@ -23,9 +24,8 @@ import {
   KnowledgePropagationSelector,
 } from '@/components/shared/KnowledgePropagationSelector';
 import {
-  effectiveKnowledgeCandidate,
+  workspaceKnowledgeCandidate,
   mergeKnowledgePropagationCandidates,
-  physicalKnowledgeCandidate,
   type KnowledgePropagationCandidate,
 } from '@/components/shared/knowledgePropagationCandidates';
 import {
@@ -156,31 +156,11 @@ export function CreateCardModal({ boardId, initialStatus, onClose }: CreateCardM
     }
 
     setKnowledgeLoading(true);
-    Promise.allSettled([
-      api.getSpec(selectedSpecId),
-      api.getEffectiveResources(boardId, 'spec', selectedSpecId),
-    ]).then(([specResult, effectiveResult]) => {
-      if (cancelled) return;
-      const direct =
-        specResult.status === 'fulfilled'
-          ? (specResult.value.knowledge_bases || []).map(physicalKnowledgeCandidate)
-          : [];
-      const effective =
-        effectiveResult.status === 'fulfilled'
-          ? (effectiveResult.value.resources.knowledge_base || [])
-            .map(effectiveKnowledgeCandidate)
-            .filter((item): item is KnowledgePropagationCandidate => item !== null)
-          : [];
-      setSpecKnowledge(
-        mergeKnowledgePropagationCandidates(direct, effective),
-      );
-      if (effectiveResult.status === 'rejected') {
-        setKnowledgeError(
-          effectiveResult.reason instanceof Error
-            ? effectiveResult.reason.message
-            : 'Failed to load effective Knowledge resources',
-        );
-      }
+    loadEffectiveResourceItems(api.getEffectiveResources, boardId, 'spec', selectedSpecId, 'knowledge_base')
+      .then((items) => {
+        if (!cancelled) setSpecKnowledge(mergeKnowledgePropagationCandidates(items.map(workspaceKnowledgeCandidate)));
+      }).catch((error: unknown) => {
+        if (!cancelled) setKnowledgeError(error instanceof Error ? error.message : 'Failed to load effective Knowledge resources');
     }).finally(() => {
       if (!cancelled) setKnowledgeLoading(false);
     });

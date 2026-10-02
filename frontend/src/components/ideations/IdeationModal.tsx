@@ -357,7 +357,7 @@ function KnowledgeTab({
         entityType="ideation"
         entityId={ideationId}
         refreshKey={refreshGeneration}
-        loadFallbackDetail={(id) => api.getIdeationKnowledge(ideationId, id)}
+
         onDelete={handleDelete}
       />
       {adding ? (

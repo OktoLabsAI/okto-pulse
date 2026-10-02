@@ -1,3 +1,4 @@
+import { loadEffectiveResourceItems } from '@/services/effectiveResources';
 /**
  * MockupsTab — Renders screen mockups as HTML iframes with Tailwind CDN.
  * Supports viewing existing mockups and creating new ones via HTML editor.
@@ -6,7 +7,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Monitor, Smartphone, MessageSquare, Plus, X, Eye, Code } from 'lucide-react';
 import { useDashboardApi } from '@/services/api';
-import type { EffectiveResourceItem, ResourceGateEntityType, ScreenMockup } from '@/types';
+import type { KnowledgeWorkspaceItem, ResourceGateEntityType, ScreenMockup } from '@/types';
 
 function sanitizeHtml(html: string): string {
   // Strip <script> tags and on* event handlers
@@ -44,11 +45,11 @@ type EffectiveScreenMockup = ScreenMockup & {
   source_entity_title?: string | null;
 };
 
-function effectiveMockupToScreen(item: EffectiveResourceItem): EffectiveScreenMockup | null {
-  const resource = item.resource && typeof item.resource === 'object'
-    ? item.resource as Partial<ScreenMockup>
-    : item as Partial<ScreenMockup>;
-  const id = String(item.id || resource.id || '');
+function effectiveMockupToScreen(item: KnowledgeWorkspaceItem): EffectiveScreenMockup | null {
+  const resource = item.body && typeof item.body === 'object'
+    ? item.body as Partial<ScreenMockup>
+    : {} as Partial<ScreenMockup>;
+  const id = String(item.representative_resource_id || resource.id || '');
   if (!id || !resource.html_content) return null;
   return {
     id,
@@ -64,10 +65,10 @@ function effectiveMockupToScreen(item: EffectiveResourceItem): EffectiveScreenMo
     design_system_ref: resource.design_system_ref ?? null,
     design_system_evidence: resource.design_system_evidence ?? null,
     inherited: item.inherited,
-    read_only: item.read_only,
-    source_entity_type: item.source_entity_type ?? item.provenance?.source_entity_type ?? null,
-    source_entity_id: item.source_entity_id ?? item.provenance?.source_entity_id ?? null,
-    source_entity_title: item.source_entity_title ?? item.provenance?.source_entity_title ?? null,
+    read_only: item.inherited,
+    source_entity_type: item.provenance.source_entity_type ?? null,
+    source_entity_id: item.provenance.source_entity_id ?? null,
+    source_entity_title: item.provenance.source_entity_title ?? null,
   };
 }
 
@@ -84,11 +85,11 @@ export function MockupsTab({ screenMockups, expanded = false, onUpdate, boardId,
     () => [...(screenMockups || [])].sort((a, b) => a.order - b.order),
     [screenMockups],
   );
-  const [effectiveMockups, setEffectiveMockups] = useState<EffectiveResourceItem[]>([]);
+  const [effectiveMockups, setEffectiveMockups] = useState<KnowledgeWorkspaceItem[]>([]);
   const screens = useMemo<EffectiveScreenMockup[]>(() => {
     const directIds = new Set(directScreens.map((item) => item.id));
     const inherited = effectiveMockups
-      .filter((item) => item.inherited && !directIds.has(String(item.id || '')))
+      .filter((item) => item.inherited && !directIds.has(String(item.representative_resource_id || '')))
       .map(effectiveMockupToScreen)
       .filter((item): item is EffectiveScreenMockup => Boolean(item))
       .sort((a, b) => a.order - b.order || a.title.localeCompare(b.title));
@@ -123,9 +124,9 @@ export function MockupsTab({ screenMockups, expanded = false, onUpdate, boardId,
       return;
     }
     let cancelled = false;
-    apiRef.current.getEffectiveResources(boardId, entityType, entityId)
+    loadEffectiveResourceItems(apiRef.current.getEffectiveResources, boardId, entityType, entityId, 'mockup', 'full')
       .then((response) => {
-        if (!cancelled) setEffectiveMockups(response.resources.mockup || []);
+        if (!cancelled) setEffectiveMockups(response);
       })
       .catch(() => {
         if (!cancelled) setEffectiveMockups([]);

@@ -1,3 +1,4 @@
+import { workspaceItem, workspacePage } from '@/testFixtures/effectiveResources';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CreateCardModal } from '../CreateCardModal';
@@ -99,60 +100,17 @@ const specWithKnowledge = {
   ],
 };
 
-const effectiveSpecKnowledge = {
-  board_id: 'board-1',
-  entity_type: 'spec',
-  entity_id: 'spec-1',
-  resources: {
-    architecture_design: [],
-    screen_mockup: [],
-    knowledge_base: [
-      {
-        id: 'effective-direct-row',
-        resource_type: 'knowledge_base',
-        resource_id: 'effective-direct-resource',
-        attachment_kind: 'direct',
-        inherited: false,
-        read_only: false,
-        hydrated: true,
-        ref: {
-          root_resource_id: 'root-kb-1',
-          knowledge_assignment_stale: false,
-          origin_class: 'v2',
-        },
-        resource: {
-          id: 'effective-direct-resource',
-          title: 'Stable root knowledge',
-          description: 'Technical reference',
-        },
-      },
-      {
-        id: 'effective-inherited-row',
-        resource_type: 'knowledge_base',
-        resource_id: 'effective-inherited-resource',
-        attachment_kind: 'inherited_reference',
-        inherited: true,
-        read_only: true,
-        hydrated: true,
-        ref: {
-          root_resource_id: 'root-inherited-kb',
-          knowledge_assignment_stale: true,
-          origin_class: 'v2',
-        },
-        provenance: {
-          source_entity_type: 'refinement',
-          source_entity_id: 'refinement-parent',
-          source_entity_title: 'Parent refinement',
-        },
-        resource: {
-          id: 'effective-inherited-resource',
-          title: 'Inherited stale knowledge',
-          description: 'Inherited technical reference',
-        },
-      },
-    ],
-  },
-};
+const effectiveSpecKnowledge = workspacePage('board-1', 'spec', 'spec-1', 'knowledge_base', [
+  workspaceItem('knowledge_base', 'root-kb-1', 'Stable root knowledge', {
+    representative_resource_id: 'effective-direct-resource',
+  }),
+  workspaceItem('knowledge_base', 'root-inherited-kb', 'Inherited stale knowledge', {
+    representative_resource_id: 'effective-inherited-resource', inherited: true, stale: true,
+    attachment_kind: 'inherited_reference',
+    provenance: { source_entity_type: 'refinement', source_entity_id: 'refinement-parent',
+      source_entity_title: 'Parent refinement', origin_class: 'v2', source_revision: '1', source_content_sha256: null },
+  }),
+]);
 
 const createdCard = {
   id: 'card-1',
@@ -336,6 +294,7 @@ describe('CreateCardModal selective Knowledge integration', () => {
         'board-1',
         'spec',
         'spec-1',
+        { profile: 'summary', resource_type: 'knowledge_base', limit: 25 },
       ),
     );
     expect(

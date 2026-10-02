@@ -268,7 +268,7 @@ export interface EffectiveResourceItem extends ResourceGateRef {
   resource?: Record<string, unknown> | ArchitectureDesign | ScreenMockup | null;
 }
 
-export type KnowledgeWorkspaceProfile = 'summary' | 'detail' | 'full' | 'legacy';
+export type KnowledgeWorkspaceProfile = 'summary' | 'detail' | 'full';
 
 export interface KnowledgeWorkspacePhysicalAttachment {
   resource_id: string | null;
@@ -315,35 +315,31 @@ export interface KnowledgeWorkspaceItem {
 }
 
 export interface EffectiveResourcesOptions {
+  resource_type?: ResourceGateResourceType;
   profile?: KnowledgeWorkspaceProfile;
   cursor?: string | null;
   limit?: number;
 }
 
 export interface EffectiveResourcesResponse {
-  contract_version?: number;
+  contract_version: 2;
   board_id: string;
   entity_type: ResourceGateEntityType;
   entity_id: string;
-  profile?: KnowledgeWorkspaceProfile;
-  items?: KnowledgeWorkspaceItem[];
-  count?: number;
-  total_count?: number;
-  next_cursor?: string | null;
-  truncated?: boolean;
-  unique_effective_count?: number;
-  raw_attachment_count?: number;
-  workspace_item_count?: number;
-  unique_root_version_count?: number;
-  response_bytes?: number;
-  /**
-   * Populated by the explicit `legacy` profile. Kept mandatory in the
-   * normalized client result so rolling upgrades do not break older callers.
-   */
-  resources: Record<ResourceGateResourceType, EffectiveResourceItem[]>;
-  lineage_counts?: Record<string, unknown>;
-  resource_lineage?: Record<string, unknown>;
+  resource_type: ResourceGateResourceType;
+  profile: KnowledgeWorkspaceProfile;
+  items: KnowledgeWorkspaceItem[];
+  count: number;
+  total_count: number;
+  next_cursor: string | null;
+  truncated: boolean;
+  unique_effective_count: number;
+  raw_attachment_count: number;
+  workspace_item_count: number;
+  unique_root_version_count: number;
+  response_bytes: number;
 }
+
 
 export interface MarkResourceNotApplicableRequest {
   resource_type: ResourceGateResourceType;

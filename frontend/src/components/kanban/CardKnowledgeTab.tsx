@@ -1,3 +1,4 @@
+import { loadEffectiveResourceItems } from '@/services/effectiveResources';
 /**
  * CardKnowledgeTab - read-only Knowledge Base snapshots for a card/task.
  */
@@ -13,10 +14,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { useDashboardApi } from '@/services/api';
 import type {
   Card,
-  EffectiveResourceItem,
   KnowledgeAssignmentTechnicalProjection,
   KnowledgeTechnicalReadResponse,
-  KnowledgeWorkspaceItem,
 } from '@/types';
 import { AuthenticatedFetchError } from '@/lib/authFetch';
 import { KnowledgeWorkspace } from '@/components/resources/KnowledgeWorkspace';
@@ -24,7 +23,7 @@ import {
   KnowledgePropagationSelector,
 } from '@/components/shared/KnowledgePropagationSelector';
 import {
-  effectiveKnowledgeCandidate,
+  workspaceKnowledgeCandidate,
   mergeKnowledgePropagationCandidates,
   physicalKnowledgeCandidate,
   type KnowledgePropagationCandidate,
@@ -63,16 +62,6 @@ function assignmentTitle(
     || assignment.root_knowledge_id;
 }
 
-function workspaceKnowledgeCandidate(
-  item: KnowledgeWorkspaceItem,
-): KnowledgePropagationCandidate {
-  return {
-    id: item.root_id,
-    title: item.title || item.root_id,
-    stale: item.stale,
-    origin_class: item.provenance.origin_class,
-  };
-}
 
 function mutationErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
@@ -180,37 +169,9 @@ export function CardKnowledgeTab({
       ),
       Promise.resolve().then(async () => {
         if (!card.spec_id) return [] as KnowledgePropagationCandidate[];
-        const collected: KnowledgePropagationCandidate[] = [];
-        const consumedCursors = new Set<string>();
-        let cursor: string | null = null;
-        do {
-          const response = await apiRef.current.getEffectiveResources(
-            card.board_id,
-            'spec',
-            card.spec_id,
-            {
-              profile: 'summary',
-              limit: 25,
-              ...(cursor ? { cursor } : {}),
-            },
-          );
-          const pageCandidates = Array.isArray(response.items)
-            ? response.items
-              .filter((item) => item.resource_type === 'knowledge_base')
-              .map(workspaceKnowledgeCandidate)
-            : (response.resources?.knowledge_base || [])
-              .map((item: EffectiveResourceItem) => effectiveKnowledgeCandidate(item))
-              .filter((item): item is KnowledgePropagationCandidate => item !== null);
-          collected.push(...pageCandidates);
-          cursor = response.next_cursor || null;
-          if (cursor) {
-            if (consumedCursors.has(cursor)) {
-              throw new Error('Source spec Knowledge inventory returned a repeated cursor.');
-            }
-            consumedCursors.add(cursor);
-          }
-        } while (cursor);
-        return mergeKnowledgePropagationCandidates(collected);
+        const items = await loadEffectiveResourceItems(apiRef.current.getEffectiveResources,
+          card.board_id, 'spec', card.spec_id, 'knowledge_base');
+        return mergeKnowledgePropagationCandidates(items.map(workspaceKnowledgeCandidate));
       }),
     ]).then(([technicalResult, sourceResult]) => {
       if (cancelled) return;
@@ -446,7 +407,7 @@ export function CardKnowledgeTab({
         entityType="card"
         entityId={card.id}
         refreshKey={reloadGeneration}
-        fallbackItems={card.knowledge_bases || []}
+
       />
 
       {!loading && technicalRead && !readOnly && (

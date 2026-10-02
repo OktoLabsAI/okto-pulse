@@ -14,12 +14,12 @@ describe('Knowledge Workspace API projections', () => {
     fetchJson.mockReset();
   });
 
-  it('uses explicit legacy mode for existing hydrated-map callers', async () => {
+  it('defaults to current summary without synthesizing resources', async () => {
     fetchJson.mockResolvedValue({
       board_id: 'board-1',
       entity_type: 'spec',
       entity_id: 'spec-1',
-      resources: { architecture: [], mockup: [], knowledge_base: [] },
+      contract_version: 2, profile: 'summary', resource_type: 'knowledge_base', items: [],
     });
     const { result } = renderHook(() => useDashboardApi());
 
@@ -32,13 +32,14 @@ describe('Knowledge Workspace API projections', () => {
     const url = new URL(fetchJson.mock.calls[0][0], 'http://local');
     expect(url.pathname).toBe('/resource-gate/spec/spec-1/effective-resources');
     expect(url.searchParams.get('board_id')).toBe('board-1');
-    expect(url.searchParams.get('profile')).toBe('legacy');
-    expect(response.profile).toBe('legacy');
+    expect(url.searchParams.get('profile')).toBe('summary');
+    expect(response.profile).toBe('summary');
   });
 
-  it('forwards bounded profile, opaque cursor and limit and normalizes resources', async () => {
+  it('forwards bounded profile, opaque cursor and limit without normalizing old resources', async () => {
     fetchJson.mockResolvedValue({
       contract_version: 2,
+      resource_type: 'knowledge_base',
       board_id: 'board-1',
       entity_type: 'card',
       entity_id: 'card-1',
@@ -67,17 +68,15 @@ describe('Knowledge Workspace API projections', () => {
     expect(Object.fromEntries(url.searchParams)).toEqual({
       board_id: 'board-1',
       profile: 'summary',
+      resource_type: 'knowledge_base',
       cursor: 'opaque-next',
       limit: '25',
     });
-    expect(response.resources).toEqual({
-      architecture: [],
-      mockup: [],
-      knowledge_base: [],
-    });
+    expect(response.items).toEqual([]);
+    expect(response).not.toHaveProperty('resources');
   });
 
-  it('detects a legacy response when an older server ignores a bounded profile', async () => {
+  it('refuses an old hydrated response without translating it', async () => {
     const legacyResources = {
       architecture: [],
       mockup: [],
@@ -97,15 +96,8 @@ describe('Knowledge Workspace API projections', () => {
     });
     const { result } = renderHook(() => useDashboardApi());
 
-    const response = await result.current.getEffectiveResources(
-      'board-1',
-      'card',
-      'card-1',
-      { profile: 'summary', limit: 25 },
-    );
-
-    expect(response.profile).toBe('legacy');
-    expect(response.resources).toBe(legacyResources);
-    expect(response.items).toBeUndefined();
+    await expect(result.current.getEffectiveResources(
+      'board-1', 'card', 'card-1', { profile: 'summary', limit: 25 },
+    )).rejects.toThrow('Invalid effective resources response contract.');
   });
 });

@@ -1,3 +1,4 @@
+import { loadEffectiveResourceItems } from '@/services/effectiveResources';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   AlertTriangle,
@@ -44,7 +45,7 @@ import type {
   ArchitectureParentType,
   ArchitectureWarningRecord,
   CreateArchitectureDesignRequest,
-  EffectiveResourceItem,
+  KnowledgeWorkspaceItem,
   ResourceGateEntityType,
   ScreenMockup,
 } from '@/types';
@@ -588,18 +589,18 @@ function makeBlankInterface(): ArchitectureInterface {
   };
 }
 
-function effectiveArchitectureToSummary(item: EffectiveResourceItem): EffectiveArchitectureDesignSummary | null {
-  const resource = item.resource && typeof item.resource === 'object'
-    ? item.resource as Partial<ArchitectureDesign>
-    : item as Partial<ArchitectureDesign>;
-  const id = String(item.id || resource.id || '');
+function effectiveArchitectureToSummary(item: KnowledgeWorkspaceItem): EffectiveArchitectureDesignSummary | null {
+  const resource = item.body && typeof item.body === 'object'
+    ? item.body as Partial<ArchitectureDesign>
+    : {} as Partial<ArchitectureDesign>;
+  const id = String(item.representative_resource_id || resource.id || '');
   if (!id) return null;
   const diagrams = Array.isArray(resource.diagrams) ? resource.diagrams : [];
   return {
     id,
     board_id: String(resource.board_id || ''),
-    parent_type: (resource.parent_type || item.source_entity_type || 'ideation') as ArchitectureParentType,
-    parent_id: String(resource.parent_id || item.source_entity_id || ''),
+    parent_type: (resource.parent_type || item.provenance.source_entity_type || 'ideation') as ArchitectureParentType,
+    parent_id: String(resource.parent_id || item.provenance.source_entity_id || ''),
     title: String(resource.title || item.title || 'Inherited architecture'),
     version: Number(resource.version || 1),
     source_ref: resource.source_ref ?? null,
@@ -615,19 +616,19 @@ function effectiveArchitectureToSummary(item: EffectiveResourceItem): EffectiveA
     created_at: String(resource.created_at || ''),
     updated_at: String(resource.updated_at || ''),
     inherited: item.inherited,
-    read_only: item.read_only,
-    source_entity_type: item.source_entity_type ?? item.provenance?.source_entity_type ?? null,
-    source_entity_id: item.source_entity_id ?? item.provenance?.source_entity_id ?? null,
-    source_entity_title: item.source_entity_title ?? item.provenance?.source_entity_title ?? null,
+    read_only: item.inherited,
+    source_entity_type: item.provenance.source_entity_type ?? null,
+    source_entity_id: item.provenance.source_entity_id ?? null,
+    source_entity_title: item.provenance.source_entity_title ?? null,
     effective_payload: resource.global_description !== undefined ? resource as ArchitectureDesign : undefined,
   };
 }
 
-function effectiveMockupToScreen(item: EffectiveResourceItem): ScreenMockup | null {
-  const resource = item.resource && typeof item.resource === 'object'
-    ? item.resource as Partial<ScreenMockup>
-    : item as Partial<ScreenMockup>;
-  const id = String(item.id || resource.id || '');
+function effectiveMockupToScreen(item: KnowledgeWorkspaceItem): ScreenMockup | null {
+  const resource = item.body && typeof item.body === 'object'
+    ? item.body as Partial<ScreenMockup>
+    : {} as Partial<ScreenMockup>;
+  const id = String(item.representative_resource_id || resource.id || '');
   if (!id || !resource.html_content) return null;
   return {
     id,
@@ -667,8 +668,8 @@ export function ArchitectureTab({
   const apiRef = useRef(api);
   const onChangedRef = useRef(onChanged);
   const [directSummaries, setDirectSummaries] = useState<ArchitectureDesignSummary[]>([]);
-  const [effectiveArchitecture, setEffectiveArchitecture] = useState<EffectiveResourceItem[]>([]);
-  const [effectiveMockups, setEffectiveMockups] = useState<EffectiveResourceItem[]>([]);
+  const [effectiveArchitecture, setEffectiveArchitecture] = useState<KnowledgeWorkspaceItem[]>([]);
+  const [effectiveMockups, setEffectiveMockups] = useState<KnowledgeWorkspaceItem[]>([]);
   const [selectedId, setSelectedId] = useState('');
   const [design, setDesign] = useState<ArchitectureDesign | null>(null);
   const [selectedDiagramId, setSelectedDiagramId] = useState('');
@@ -698,7 +699,7 @@ export function ArchitectureTab({
   const summaries = useMemo<EffectiveArchitectureDesignSummary[]>(() => {
     const directIds = new Set(directSummaries.map((item) => item.id));
     const inherited = effectiveArchitecture
-      .filter((item) => item.inherited && !directIds.has(String(item.id || '')))
+      .filter((item) => item.inherited && !directIds.has(String(item.representative_resource_id || '')))
       .map(effectiveArchitectureToSummary)
       .filter((item): item is EffectiveArchitectureDesignSummary => Boolean(item));
     return [...directSummaries, ...inherited];
@@ -707,7 +708,7 @@ export function ArchitectureTab({
     const direct = screenMockups || [];
     const directIds = new Set(direct.map((item) => item.id));
     const inherited = effectiveMockups
-      .filter((item) => item.inherited && !directIds.has(String(item.id || '')))
+      .filter((item) => item.inherited && !directIds.has(String(item.representative_resource_id || '')))
       .map(effectiveMockupToScreen)
       .filter((item): item is ScreenMockup => Boolean(item));
     return [...direct, ...inherited];
@@ -799,13 +800,14 @@ export function ArchitectureTab({
       return;
     }
     try {
-      const response = await apiRef.current.getEffectiveResources(
-        resolvedBoardId,
-        resolvedEntityType,
-        resolvedEntityId,
-      );
-      setEffectiveArchitecture(response.resources.architecture || []);
-      setEffectiveMockups(response.resources.mockup || []);
+      const [architecture, mockups] = await Promise.all([
+        loadEffectiveResourceItems(apiRef.current.getEffectiveResources, resolvedBoardId,
+          resolvedEntityType, resolvedEntityId, 'architecture', 'full'),
+        loadEffectiveResourceItems(apiRef.current.getEffectiveResources, resolvedBoardId,
+          resolvedEntityType, resolvedEntityId, 'mockup', 'full'),
+      ]);
+      setEffectiveArchitecture(architecture);
+      setEffectiveMockups(mockups);
     } catch {
       setEffectiveArchitecture([]);
       setEffectiveMockups([]);

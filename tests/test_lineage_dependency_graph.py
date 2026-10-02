@@ -31,6 +31,8 @@ from okto_pulse.community.adapters.sqlalchemy_traceability_read_model import (
     build_lineage_graph,
 )
 from okto_pulse.community.api import traceability as traceability_api
+from okto_pulse.core.domain.realm import LOCAL_REALM_ID
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
 from okto_pulse.core.domain.enums import (
     CardStatus,
     CardType,
@@ -66,6 +68,10 @@ def _spec(
     ideation_id: str | None = None,
 ) -> Spec:
     return Spec(
+        architecture_adoption=ArchitectureAdoptionScope(
+            board_id=board_id, spec_id=spec_id, adopted_in_edition=2,
+            actor_id="owner", inherited_resource_ids=(),
+        ).model_dump(mode="json"),
         id=spec_id,
         board_id=board_id,
         ideation_id=ideation_id,
@@ -220,8 +226,8 @@ async def test_spec_dependency_view_is_transitive_ranked_and_two_query_bounded(
     async with factory() as session, session.begin():
         session.add_all(
             (
-                Board(id=BOARD_ID, name="Dependency", owner_id="owner"),
-                Board(id=OTHER_BOARD_ID, name="Other", owner_id="owner"),
+                Board(realm_id=LOCAL_REALM_ID, id=BOARD_ID, name="Dependency", owner_id="owner"),
+                Board(realm_id=LOCAL_REALM_ID, id=OTHER_BOARD_ID, name="Other", owner_id="owner"),
                 *(_spec(spec_id) for spec_id in ("a", "b", "c", "d", "isolated")),
                 _spec("outside-a", board_id=OTHER_BOARD_ID),
                 _spec("outside-b", board_id=OTHER_BOARD_ID),
@@ -336,8 +342,8 @@ async def test_card_dependency_view_preserves_true_card_types_and_board_scope(
     async with factory() as session, session.begin():
         session.add_all(
             (
-                Board(id=BOARD_ID, name="Dependency", owner_id="owner"),
-                Board(id=OTHER_BOARD_ID, name="Other", owner_id="owner"),
+                Board(realm_id=LOCAL_REALM_ID, id=BOARD_ID, name="Dependency", owner_id="owner"),
+                Board(realm_id=LOCAL_REALM_ID, id=OTHER_BOARD_ID, name="Other", owner_id="owner"),
                 _card("task-a", CardType.NORMAL),
                 _card("test-b", CardType.TEST),
                 _card("bug-c", CardType.BUG, origin_task_id="task-a"),
@@ -400,7 +406,7 @@ async def test_dependency_view_fails_closed_when_board_edge_bound_is_exceeded(
     async with factory() as session, session.begin():
         session.add_all(
             (
-                Board(id=BOARD_ID, name="Dependency", owner_id="owner"),
+                Board(realm_id=LOCAL_REALM_ID, id=BOARD_ID, name="Dependency", owner_id="owner"),
                 _card("a", CardType.NORMAL),
                 _card("b", CardType.NORMAL),
                 _card("c", CardType.NORMAL),
@@ -440,7 +446,7 @@ async def test_dependency_view_ignores_unrelated_edges_above_the_closure_limit(
     async with factory() as session, session.begin():
         session.add_all(
             (
-                Board(id=BOARD_ID, name="Dependency", owner_id="owner"),
+                Board(realm_id=LOCAL_REALM_ID, id=BOARD_ID, name="Dependency", owner_id="owner"),
                 _card("selected", CardType.NORMAL),
                 _card("unrelated-a", CardType.NORMAL),
                 _card("unrelated-b", CardType.NORMAL),
@@ -487,7 +493,7 @@ async def test_dependency_view_rejects_a_cycle_without_recursive_query_looping(
     async with factory() as session, session.begin():
         session.add_all(
             (
-                Board(id=BOARD_ID, name="Dependency", owner_id="owner"),
+                Board(realm_id=LOCAL_REALM_ID, id=BOARD_ID, name="Dependency", owner_id="owner"),
                 *(
                     _card(card_id, CardType.NORMAL)
                     for card_id in ("a", "b", "c")
@@ -522,7 +528,7 @@ async def test_dependency_view_diamond_uses_longest_path_ranks_for_direct_edge(
     async with factory() as session, session.begin():
         session.add_all(
             (
-                Board(id=BOARD_ID, name="Dependency", owner_id="owner"),
+                Board(realm_id=LOCAL_REALM_ID, id=BOARD_ID, name="Dependency", owner_id="owner"),
                 *(
                     _card(card_id, CardType.NORMAL)
                     for card_id in ("a", "b", "c", "d")
@@ -566,7 +572,7 @@ async def test_dependency_view_returns_not_found_for_an_absent_entity(
 ) -> None:
     engine, factory = await _database(tmp_path / "missing-dependency-entity.db")
     async with factory() as session, session.begin():
-        session.add(Board(id=BOARD_ID, name="Dependency", owner_id="owner"))
+        session.add(Board(realm_id=LOCAL_REALM_ID, id=BOARD_ID, name="Dependency", owner_id="owner"))
 
     async with factory() as session:
         with pytest.raises(TraceabilityReadError) as raised:
@@ -592,8 +598,8 @@ async def test_dependency_view_excludes_edges_with_an_endpoint_outside_the_board
     async with factory() as session, session.begin():
         session.add_all(
             (
-                Board(id=BOARD_ID, name="Dependency", owner_id="owner"),
-                Board(id=OTHER_BOARD_ID, name="Other", owner_id="owner"),
+                Board(realm_id=LOCAL_REALM_ID, id=BOARD_ID, name="Dependency", owner_id="owner"),
+                Board(realm_id=LOCAL_REALM_ID, id=OTHER_BOARD_ID, name="Other", owner_id="owner"),
                 _card("selected", CardType.NORMAL),
                 _card("outside", CardType.NORMAL, board_id=OTHER_BOARD_ID),
                 CardDependency(
@@ -635,7 +641,7 @@ async def test_dependency_view_fails_closed_for_an_unavailable_closure_endpoint(
     async with factory() as session, session.begin():
         session.add_all(
             (
-                Board(id=BOARD_ID, name="Dependency", owner_id="owner"),
+                Board(realm_id=LOCAL_REALM_ID, id=BOARD_ID, name="Dependency", owner_id="owner"),
                 _card("selected", CardType.NORMAL),
             )
         )
@@ -680,7 +686,7 @@ async def test_dependency_view_fails_closed_when_node_limit_is_exceeded(
     async with factory() as session, session.begin():
         session.add_all(
             (
-                Board(id=BOARD_ID, name="Dependency", owner_id="owner"),
+                Board(realm_id=LOCAL_REALM_ID, id=BOARD_ID, name="Dependency", owner_id="owner"),
                 *(
                     _card(card_id, CardType.NORMAL)
                     for card_id in ("a", "b", "c")
@@ -719,8 +725,8 @@ async def test_lineage_scope_batches_every_lineage_seed_and_external_closure(
     async with factory() as session, session.begin():
         session.add_all(
             (
-                Board(id=BOARD_ID, name="Dependency", owner_id="owner"),
-                Board(id=OTHER_BOARD_ID, name="Other", owner_id="owner"),
+                Board(realm_id=LOCAL_REALM_ID, id=BOARD_ID, name="Dependency", owner_id="owner"),
+                Board(realm_id=LOCAL_REALM_ID, id=OTHER_BOARD_ID, name="Other", owner_id="owner"),
                 Ideation(
                     id="idea",
                     board_id=BOARD_ID,
@@ -871,7 +877,7 @@ async def test_lineage_scope_rejects_a_cycle_in_any_seeded_family(
     async with factory() as session, session.begin():
         session.add_all(
             (
-                Board(id=BOARD_ID, name="Dependency", owner_id="owner"),
+                Board(realm_id=LOCAL_REALM_ID, id=BOARD_ID, name="Dependency", owner_id="owner"),
                 Ideation(
                     id="idea",
                     board_id=BOARD_ID,
@@ -922,7 +928,7 @@ async def test_lineage_scope_applies_edge_limit_across_spec_and_card_families(
     async with factory() as session, session.begin():
         session.add_all(
             (
-                Board(id=BOARD_ID, name="Dependency", owner_id="owner"),
+                Board(realm_id=LOCAL_REALM_ID, id=BOARD_ID, name="Dependency", owner_id="owner"),
                 Ideation(
                     id="idea",
                     board_id=BOARD_ID,
@@ -984,7 +990,7 @@ async def test_lineage_scope_applies_node_limit_to_seeds_and_external_nodes(
     async with factory() as session, session.begin():
         session.add_all(
             (
-                Board(id=BOARD_ID, name="Dependency", owner_id="owner"),
+                Board(realm_id=LOCAL_REALM_ID, id=BOARD_ID, name="Dependency", owner_id="owner"),
                 Ideation(
                     id="idea",
                     board_id=BOARD_ID,

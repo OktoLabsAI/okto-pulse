@@ -1,4 +1,4 @@
-import type { EffectiveResourceItem } from '@/types';
+import type { KnowledgeWorkspaceItem } from '@/types';
 
 export interface KnowledgePropagationCandidate {
   id: string;
@@ -15,10 +15,6 @@ interface PhysicalKnowledgeCandidate {
   root_source_kb_id?: string | null;
 }
 
-function optionalString(value: unknown): string | null {
-  return typeof value === 'string' && value.trim() ? value : null;
-}
-
 export function physicalKnowledgeCandidate(
   item: PhysicalKnowledgeCandidate,
 ): KnowledgePropagationCandidate {
@@ -31,32 +27,17 @@ export function physicalKnowledgeCandidate(
   };
 }
 
-export function effectiveKnowledgeCandidate(
-  item: EffectiveResourceItem,
-): KnowledgePropagationCandidate | null {
-  const resource =
-    item.resource && typeof item.resource === 'object'
-      ? item.resource as Record<string, unknown>
-      : {};
-  const id =
-    optionalString(item.ref?.root_resource_id)
-    ?? optionalString(resource.root_source_kb_id)
-    ?? optionalString(item.resource_id)
-    ?? optionalString(resource.id)
-    ?? optionalString(item.id);
-  if (!id) return null;
-
+export function workspaceKnowledgeCandidate(
+  item: KnowledgeWorkspaceItem,
+): KnowledgePropagationCandidate {
   return {
-    id,
-    title:
-      optionalString(resource.title)
-      ?? optionalString(item.title)
-      ?? 'Knowledge resource',
-    description: optionalString(resource.description),
-    stale: Boolean(item.ref?.knowledge_assignment_stale),
-    origin_class: optionalString(item.ref?.origin_class),
+    id: item.root_id,
+    title: item.title || item.root_id,
+    stale: item.stale,
+    origin_class: item.provenance.origin_class,
   };
 }
+
 
 export function mergeKnowledgePropagationCandidates(
   ...groups: KnowledgePropagationCandidate[][]

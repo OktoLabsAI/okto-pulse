@@ -786,38 +786,21 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       entityId: string,
       options: EffectiveResourcesOptions = {},
     ): Promise<EffectiveResourcesResponse> {
-      // Existing feature surfaces still consume the historical hydrated map.
-      // Request it explicitly during rolling upgrades; the shared Knowledge
-      // Workspace opts into the bounded v2 projections below.
-      const profile = options.profile || 'legacy';
-      const p = new URLSearchParams({ board_id: boardId, profile });
+      const profile = options.profile || 'summary';
+      const resourceType = options.resource_type || 'knowledge_base';
+      const p = new URLSearchParams({ board_id: boardId, profile, resource_type: resourceType });
       if (options.cursor) p.set('cursor', options.cursor);
       if (options.limit !== undefined) p.set('limit', String(options.limit));
-      const response = await apiClient.fetchJson<Partial<EffectiveResourcesResponse>>(
+      const response = await apiClient.fetchJson<EffectiveResourcesResponse>(
         `/resource-gate/${entityType}/${entityId}/effective-resources?${p.toString()}`
       );
-      const hasBoundedItems = Array.isArray(response.items);
-      const hasLegacyResources = Boolean(
-        response.resources
-        && typeof response.resources === 'object',
-      );
-      // An older server ignores the bounded profile parameters and returns the
-      // historical hydrated map without a profile discriminator. Preserve that
-      // truth instead of labelling the eager response as summary/detail.
-      const responseProfile = response.profile
-        || (hasLegacyResources && !hasBoundedItems ? 'legacy' : profile);
-      return {
-        ...response,
-        board_id: response.board_id || boardId,
-        entity_type: response.entity_type || entityType,
-        entity_id: response.entity_id || entityId,
-        profile: responseProfile,
-        resources: response.resources || {
-          architecture: [],
-          mockup: [],
-          knowledge_base: [],
-        },
-      };
+      if (response.contract_version !== 2 || !Array.isArray(response.items)
+        || response.profile !== profile || response.resource_type !== resourceType
+        || response.board_id !== boardId || response.entity_type !== entityType
+        || response.entity_id !== entityId) {
+        throw new Error('Invalid effective resources response contract.');
+      }
+      return response;
     },
 
     async markResourceNotApplicable(
