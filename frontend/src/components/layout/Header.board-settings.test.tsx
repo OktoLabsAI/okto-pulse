@@ -144,7 +144,6 @@ const baseSettings: BoardSettings = {
   min_completeness: 80,
   max_drift: 50,
   require_spec_validation: true,
-  min_spec_completeness: 80,
   min_spec_assertiveness: 80,
   max_spec_ambiguity: 30,
   require_spec_resource_task_coverage: true,

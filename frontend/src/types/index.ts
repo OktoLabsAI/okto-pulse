@@ -3224,7 +3224,6 @@ export interface BoardSettings {
   min_spec_clarity?: number;
   min_spec_decidability?: number;
   /** Legacy setting retained for reading older board snapshots. */
-  min_spec_completeness?: number;
   min_spec_assertiveness?: number;
   max_spec_ambiguity?: number;
   // Max ambiguity gate for ideation completion (spec 2485780b) — opt-in, default off.
@@ -3299,25 +3298,19 @@ export interface SpecValidation {
   reviewer_id: string;
   reviewer_name?: string | null;
   /** Canonical human validation fields. */
-  score?: number | null;
-  summary?: string | null;
-  confidence?: number | null;
-  confidence_justification?: string | null;
-  clarity?: number | null;
-  clarity_justification?: string | null;
-  decidability?: number | null;
-  decidability_justification?: string | null;
+  confidence: number;
+  confidence_justification: string;
+  clarity: number;
+  clarity_justification: string;
+  decidability: number;
+  decidability_justification: string;
   pinpoints?: SpecValidationPinpoint[] | null;
-  /** Legacy dimension fields remain readable in immutable history. */
-  completeness?: number | null;
-  completeness_justification?: string | null;
-  assertiveness?: number | null;
-  assertiveness_justification?: string | null;
-  ambiguity?: number | null;
-  ambiguity_justification?: string | null;
-  general_justification?: string | null;
+  assertiveness: number;
+  assertiveness_justification: string;
+  ambiguity: number;
+  ambiguity_justification: string;
   recommendation?: 'approve' | 'reject' | null;
-  outcome?: 'success' | 'failed' | null;
+  outcome: 'success' | 'failed';
   threshold_violations?: string[] | null;
   resolved_thresholds?: {
     min_spec_confidence?: number;
@@ -3325,9 +3318,7 @@ export interface SpecValidation {
     min_spec_assertiveness?: number;
     min_spec_decidability?: number;
     max_spec_ambiguity?: number;
-    /** Legacy threshold retained for old immutable records. */
-    min_spec_completeness?: number;
-  } | null;
+    } | null;
   created_at: string;
   spec_status?: string | null;
   active?: boolean | null;

@@ -203,18 +203,8 @@ function ValidationRecord({
   anchorTexts,
 }: ValidationRecordProps) {
   const detailsId = useId();
-  const isSuccess = validation.outcome !== 'failed';
+  const isSuccess = validation.outcome === 'success';
   const thresholds = validation.resolved_thresholds;
-  const formalResult = typeof validation.score === 'number'
-    && Boolean(validation.summary?.trim());
-  const canonicalDimensions = typeof validation.confidence === 'number'
-    && typeof validation.clarity === 'number'
-    && typeof validation.assertiveness === 'number'
-    && typeof validation.decidability === 'number'
-    && typeof validation.ambiguity === 'number';
-  const legacyDimensions = typeof validation.completeness === 'number'
-    && typeof validation.assertiveness === 'number'
-    && typeof validation.ambiguity === 'number';
   const editionLabel = `Edition ${validation.edition}`;
   const historyLabel = current
     ? null
@@ -253,26 +243,11 @@ function ValidationRecord({
             {validation.reviewer_name || validation.reviewer_id}
           </p>
         </div>
-        {canonicalDimensions ? (
-          <span className="text-xs font-semibold text-violet-700 dark:text-violet-300">
-            Five-metric assessment
-          </span>
-        ) : formalResult ? (
-          <span className="text-xs font-semibold text-violet-700 dark:text-violet-300">
-            Score {validation.score}/100
-          </span>
-        ) : validation.recommendation ? (
-          <span className={`text-xs font-semibold ${
-            validation.recommendation === 'approve'
-              ? 'text-emerald-700 dark:text-emerald-300'
-              : 'text-red-700 dark:text-red-300'
-          }`}>
-            {validation.recommendation === 'approve' ? 'Approved' : 'Rejected'}
-          </span>
-        ) : null}
+        <span className="text-xs font-semibold text-violet-700 dark:text-violet-300">
+          Five-metric assessment
+        </span>
       </div>
 
-      {canonicalDimensions ? (
         <div className="my-4 grid grid-cols-2 gap-5 sm:grid-cols-3 lg:grid-cols-5">
           <ScoreCell
             dimension="confidence"
@@ -310,40 +285,6 @@ function ValidationRecord({
             direction="max"
           />
         </div>
-      ) : formalResult ? (
-        <div className="my-4 flex justify-center">
-          <ScoreCell
-            dimension="overall"
-            label="Validation score"
-            value={validation.score!}
-            direction="min"
-          />
-        </div>
-      ) : legacyDimensions ? (
-        <div className="my-4 grid grid-cols-1 gap-5 sm:grid-cols-3">
-          <ScoreCell
-            dimension="completeness"
-            label="Completeness"
-            value={validation.completeness!}
-            threshold={thresholds?.min_spec_completeness}
-            direction="min"
-          />
-          <ScoreCell
-            dimension="assertiveness"
-            label="Assertiveness"
-            value={validation.assertiveness!}
-            threshold={thresholds?.min_spec_assertiveness}
-            direction="min"
-          />
-          <ScoreCell
-            dimension="ambiguity"
-            label="Ambiguity"
-            value={validation.ambiguity!}
-            threshold={thresholds?.max_spec_ambiguity}
-            direction="max"
-          />
-        </div>
-      ) : null}
 
       {(validation.threshold_violations?.length ?? 0) > 0 && (
         <div className="mb-3 rounded-lg border border-red-200 bg-red-50 p-2.5 dark:border-red-800 dark:bg-red-950/25">
@@ -358,12 +299,7 @@ function ValidationRecord({
         </div>
       )}
 
-      {!canonicalDimensions && (formalResult || validation.general_justification) && (
-        <p className="border-l-2 border-surface-300 pl-3 text-xs italic text-surface-700 dark:border-surface-600 dark:text-surface-300">
-          {formalResult ? validation.summary : validation.general_justification}
-        </p>
-      )}
-      {(canonicalDimensions || legacyDimensions) && !current && (
+      {!current && (
         <>
           <button
             type="button"
@@ -384,30 +320,15 @@ function ValidationRecord({
               id={detailsId}
               className="mt-3 space-y-2 text-xs text-surface-600 dark:text-surface-300"
             >
-              {canonicalDimensions ? (
-                <>
-                  <div><dt className="font-semibold">Confidence</dt><dd>{validation.confidence_justification}</dd></div>
-                  <div><dt className="font-semibold">Clarity</dt><dd>{validation.clarity_justification}</dd></div>
-                  <div><dt className="font-semibold">Assertiveness</dt><dd>{validation.assertiveness_justification}</dd></div>
-                  <div><dt className="font-semibold">Decidability</dt><dd>{validation.decidability_justification}</dd></div>
-                  <div><dt className="font-semibold">Ambiguity</dt><dd>{validation.ambiguity_justification}</dd></div>
-                </>
-              ) : (
-                <>
-                  <div><dt className="font-semibold">Completeness</dt><dd>{validation.completeness_justification}</dd></div>
-                  <div><dt className="font-semibold">Assertiveness</dt><dd>{validation.assertiveness_justification}</dd></div>
-                  <div><dt className="font-semibold">Ambiguity</dt><dd>{validation.ambiguity_justification}</dd></div>
-                </>
-              )}
+              <MetricJustificationEntries validation={validation} />
             </dl>
           )}
         </>
       )}
-      {(canonicalDimensions || legacyDimensions) && current && (
-        <MetricJustifications
-          validation={validation}
-          canonicalDimensions={canonicalDimensions}
-        />
+      {current && (
+        <dl className="mt-3 space-y-2 text-xs text-surface-600 dark:text-surface-300">
+          <MetricJustificationEntries validation={validation} />
+        </dl>
       )}
 
       {(validation.pinpoints?.length ?? 0) > 0 && (
@@ -457,31 +378,15 @@ function ValidationRecord({
   );
 }
 
-function MetricJustifications({
-  validation,
-  canonicalDimensions,
-}: {
-  validation: SpecValidation;
-  canonicalDimensions: boolean;
-}) {
+function MetricJustificationEntries({ validation }: { validation: SpecValidation }) {
   return (
-    <dl className="mt-3 space-y-2 text-xs text-surface-600 dark:text-surface-300">
-      {canonicalDimensions ? (
-        <>
-          <div><dt className="font-semibold">Confidence</dt><dd>{validation.confidence_justification}</dd></div>
-          <div><dt className="font-semibold">Clarity</dt><dd>{validation.clarity_justification}</dd></div>
-          <div><dt className="font-semibold">Assertiveness</dt><dd>{validation.assertiveness_justification}</dd></div>
-          <div><dt className="font-semibold">Decidability</dt><dd>{validation.decidability_justification}</dd></div>
-          <div><dt className="font-semibold">Ambiguity</dt><dd>{validation.ambiguity_justification}</dd></div>
-        </>
-      ) : (
-        <>
-          <div><dt className="font-semibold">Completeness</dt><dd>{validation.completeness_justification}</dd></div>
-          <div><dt className="font-semibold">Assertiveness</dt><dd>{validation.assertiveness_justification}</dd></div>
-          <div><dt className="font-semibold">Ambiguity</dt><dd>{validation.ambiguity_justification}</dd></div>
-        </>
-      )}
-    </dl>
+    <>
+      <div><dt className="font-semibold">Confidence</dt><dd>{validation.confidence_justification}</dd></div>
+      <div><dt className="font-semibold">Clarity</dt><dd>{validation.clarity_justification}</dd></div>
+      <div><dt className="font-semibold">Assertiveness</dt><dd>{validation.assertiveness_justification}</dd></div>
+      <div><dt className="font-semibold">Decidability</dt><dd>{validation.decidability_justification}</dd></div>
+      <div><dt className="font-semibold">Ambiguity</dt><dd>{validation.ambiguity_justification}</dd></div>
+    </>
   );
 }
 
@@ -508,10 +413,8 @@ function resolvePinpointAnchorText(
 
 interface ScoreCellProps {
   dimension:
-    | 'overall'
     | 'confidence'
     | 'clarity'
-    | 'completeness'
     | 'assertiveness'
     | 'decidability'
     | 'ambiguity';

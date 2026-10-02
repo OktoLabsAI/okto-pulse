@@ -7,6 +7,8 @@ import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+from spec_validation_fixtures import native_validation
+
 import pytest
 from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
 from okto_pulse.core.domain.execution_contract import new_execution_contract
@@ -1338,30 +1340,32 @@ async def test_cycle_keeps_history_findings_and_audit_lazy(cycle_rig) -> None:
         spec.current_validation_id = "validation-current"
         spec.validations = [
             {
+                **native_validation("validation-previous", 1),
                 "id": "validation-previous",
                 "receipt_id": "validation-previous",
                 "edition": 1,
                 "validation_edition": 1,
                 "subject_version": 1,
                 "head_revision": 1,
-                "score": 72,
-                "summary": "Previous human assessment.",
+                "confidence": 72,
+                "confidence_justification": "Previous human assessment.",
                 "outcome": "success",
                 "digests": current_digest,
-                "findings": [{"large": "technical history" * 100}],
+                "clarity_justification": "technical history" * 100,
             },
             {
+                **native_validation("validation-current", 2),
                 "id": "validation-current",
                 "receipt_id": "validation-current",
                 "edition": 2,
                 "validation_edition": 2,
                 "subject_version": 3,
                 "head_revision": 2,
-                "score": 91,
-                "summary": "Current human assessment.",
+                "confidence": 91,
+                "confidence_justification": "Current human assessment.",
                 "outcome": "success",
                 "digests": current_digest,
-                "findings": [{"large": "technical current" * 100}],
+                "clarity_justification": "technical current" * 100,
             },
         ]
         await session.commit()
@@ -1386,6 +1390,8 @@ async def test_cycle_keeps_history_findings_and_audit_lazy(cycle_rig) -> None:
     assert payload["previous_results"] == []
     assert "digests" not in encoded
     assert "findings" not in encoded
+    assert "technical current" not in encoded
+    assert "technical history" not in encoded
     assert all("quality_findings" not in statement.lower() for statement in statements)
 
     audit = await reader.get_result_technical_audit(
@@ -1911,15 +1917,16 @@ async def _seed_authorization_results(cycle_rig, spec_id: str) -> None:
         spec.current_validation_id = f"{spec_id}-validation"
         spec.validations = [
             {
+                **native_validation(f"{spec_id}-validation", 2),
                 "id": f"{spec_id}-validation",
                 "receipt_id": f"{spec_id}-validation",
                 "edition": 2,
                 "validation_edition": 2,
                 "subject_version": 4,
                 "head_revision": 1,
-                "score": 91,
+                "confidence": 91,
                 "outcome": "success",
-                "general_justification": "Restricted validation justification.",
+                "confidence_justification": "Restricted validation justification.",
                 "digests": digests,
             }
         ]
@@ -2137,9 +2144,8 @@ async def test_single_spec_cycle_projects_only_the_authorized_leaf(
     }
     if primary_visible:
         assert primary_keys <= payload.keys()
-        assert payload["current_result"]["summary"]["general_justification"] == (
-            "Restricted validation justification."
-        )
+        assert payload["current_result"]["summary"]["confidence"] == 91
+        assert "general_justification" not in payload["current_result"]["summary"]
     else:
         assert primary_keys.isdisjoint(payload)
         assert "Restricted validation justification." not in json.dumps(payload)

@@ -341,6 +341,16 @@ def _canonical_submit_data(
     ambiguity: int = 10,
     recommendation: str = "approve",
 ) -> dict:
+    from okto_pulse.core.domain.spec_validation import SpecValidationPinpoint
+    from okto_pulse.core.domain.guideline_semantic_v2 import AnchorSnapshot, SemanticAnchorAvailability
+    # The service receives snapshots sealed by its public use case. Admission
+    # of anchors is covered by transport/use-case suites; this is fixture input.
+    pinpoint = SpecValidationPinpoint.from_dict({
+        "metric": "decidability", "anchor_type": "field",
+        "anchor_ref": "technical_requirements.tr_availability",
+        "detail": "State the required scaling bounds.",
+    }).seal(AnchorSnapshot(label="Availability", excerpt="Required scaling bounds",
+        source_version="1", availability_at_seal=SemanticAnchorAvailability.AVAILABLE)).to_dict()
     return {
         "confidence": confidence,
         "confidence_justification": "The evaluator inspected the complete Spec.",
@@ -353,14 +363,7 @@ def _canonical_submit_data(
         "ambiguity": ambiguity,
         "ambiguity_justification": "Defined terms have one interpretation in context.",
         "recommendation": recommendation,
-        "pinpoints": [
-            {
-                "metric": "decidability",
-                "anchor_type": "field",
-                "anchor_ref": "technical_requirements.tr_availability",
-                "detail": "State the required scaling bounds.",
-            }
-        ],
+        "pinpoints": [pinpoint],
     }
 
 
@@ -414,14 +417,7 @@ class TestCanonicalFiveMetricGate:
         assert result["assertiveness"] == 90
         assert result["decidability"] == 90
         assert result["ambiguity"] == 10
-        assert result["pinpoints"] == [
-            {
-                "metric": "decidability",
-                "anchor_type": "field",
-                "anchor_ref": "technical_requirements.tr_availability",
-                "detail": "State the required scaling bounds.",
-            }
-        ]
+        assert result["pinpoints"] == _canonical_submit_data()["pinpoints"]
         assert result["resolved_thresholds"] == {
             "min_spec_confidence": 70,
             "min_spec_clarity": 80,
@@ -431,6 +427,8 @@ class TestCanonicalFiveMetricGate:
         }
         assert "min_spec_completeness" not in result["resolved_thresholds"]
         async with db_factory() as reader:
+            projected = await SpecService(reader).list_spec_validations(SPEC_ID)
+            assert projected["current_validation"]["id"] == result["id"]
             stored = await reader.get(Spec, SPEC_ID)
             assert stored.status == SpecStatus.VALIDATED
             assert stored.current_validation_id == result["id"]

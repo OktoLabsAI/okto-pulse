@@ -50,6 +50,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
 from okto_pulse.community.adapters.sqlalchemy_quality_assessment import (
     _quality_actor_permissions,
 )
+from okto_pulse.core.models.schemas import SpecValidationResponse
 from okto_pulse.core.domain.spec_validation import require_spec_validation_edition
 from okto_pulse.core.domain.quality_assessment import (
     AssessmentKind,
@@ -1471,6 +1472,7 @@ def _current_quality_result(
 
 
 def _spec_result(record: Mapping[str, Any]) -> ValidationCycleResultSummary:
+    SpecValidationResponse.model_validate(record)
     return ValidationCycleResultSummary(
         result_id=str(record["id"]),
         result_type=ValidationCycleResultType.SPEC_VALIDATION,
@@ -1479,14 +1481,13 @@ def _spec_result(record: Mapping[str, Any]) -> ValidationCycleResultSummary:
         summary={
             key: record.get(key)
             for key in (
-                "score",
-                "summary",
-                "completeness",
+                "confidence",
+                "clarity",
+                "decidability",
                 "assertiveness",
                 "ambiguity",
                 "recommendation",
                 "outcome",
-                "general_justification",
                 "created_at",
             )
             if record.get(key) is not None
@@ -1499,6 +1500,7 @@ def _current_spec_validation_record(subject: object) -> Mapping[str, Any] | None
 
     for record in (getattr(subject, "validations", None) or ()):
         require_spec_validation_edition(record)
+        SpecValidationResponse.model_validate(record)
     pointer_id = getattr(subject, "current_validation_id", None)
     if not isinstance(pointer_id, str) or not pointer_id:
         return None
@@ -2629,6 +2631,7 @@ class CommunitySqlAlchemyValidationCycleReader:
                     ):
                         raise ValidationCycleResultNotFound()
                     edition = require_spec_validation_edition(record)
+                    SpecValidationResponse.model_validate(record)
                     details = ValidationTechnicalAuditDetails(
                         receipt_id=result_id,
                         subject_version=int(record["subject_version"]),

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from spec_validation_fixtures import native_validation
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -207,6 +209,7 @@ def test_history_preserves_native_previous_edition(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     current = {
+        **native_validation("val_current", 2),
         "id": "val_current",
         "validation_id": "val_current",
         "validation_edition": 2,
@@ -233,7 +236,7 @@ def test_history_preserves_native_previous_edition(
         label="Availability", excerpt="Original requirement", source_version="7",
         availability_at_seal=SemanticAnchorAvailability.AVAILABLE,
     )).to_dict() for item in current["pinpoints"]]
-    previous = {**current, "id": "val_previous", "validation_id": "val_previous",
+    previous = {**current, "id": "val_previous", "validation_id": "val_previous", "receipt_id": "val_previous",
                 "validation_edition": 1, "edition": 1, "is_current": False,
                 "active": False, "lifecycle_state": "previous"}
 
