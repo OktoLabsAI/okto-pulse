@@ -407,6 +407,7 @@ def install_community_sqlite_pragmas(engine: AsyncEngine) -> None:
         inspect_current_schema,
         require_current_database_file,
     )
+    from .sqlite_delivery_contract import install_delivery_contract_function
 
     contract = current_schema_contract()
     require_current_database_file(str(engine.url), contract)
@@ -417,6 +418,7 @@ def install_community_sqlite_pragmas(engine: AsyncEngine) -> None:
         try:
             # No persistent PRAGMA may precede admission of the current format.
             inspect_current_schema(cursor, contract)
+            install_delivery_contract_function(dbapi_conn)
             cursor.execute("PRAGMA journal_mode=WAL")
             cursor.execute("PRAGMA busy_timeout=30000")
             cursor.execute("PRAGMA synchronous=NORMAL")

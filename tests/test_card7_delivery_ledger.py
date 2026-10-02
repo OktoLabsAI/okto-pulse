@@ -997,6 +997,10 @@ async def test_circuit_ignores_governed_terminal_only_after_logical_delivery(
             )
             .values(state=DeliveryState.DELIVERED.value, delivered_at=NOW)
         )
+        delivered_snapshot = await delivery_store.adapter.read_circuit_snapshot(
+            session, board_id=OTHER_BOARD_ID,
+        )
+        assert delivered_snapshot.degraded is False
         await session.execute(
             update(GlobalUpdateOutbox)
             .where(GlobalUpdateOutbox.event_id == terminal.attempt_event_key)
@@ -1007,11 +1011,12 @@ async def test_circuit_ignores_governed_terminal_only_after_logical_delivery(
                 }
             )
         )
-        delivered_snapshot = await delivery_store.adapter.read_circuit_snapshot(
+        corrupted_snapshot = await delivery_store.adapter.read_circuit_snapshot(
             session,
             board_id=OTHER_BOARD_ID,
         )
-        assert delivered_snapshot.degraded is False
+        assert corrupted_snapshot.degraded is True
+        assert corrupted_snapshot.reason == "global_outbox_terminal_backlog"
         await session.rollback()
 
 
@@ -1037,7 +1042,7 @@ async def test_circuit_ignores_governed_terminal_only_after_logical_delivery(
     ids=lambda value: value if isinstance(value, str) else None,
 )
 @pytest.mark.asyncio
-async def test_delivered_historical_terminal_closes_via_each_identity_fallback(
+async def test_incomplete_terminal_identity_cannot_borrow_delivered_ledger(
     delivery_store,
     fallback,
     payload_factory,
@@ -1065,8 +1070,54 @@ async def test_delivered_historical_terminal_closes_via_each_identity_fallback(
             session,
             board_id=OTHER_BOARD_ID,
         )
-        assert snapshot.degraded is False
-        assert snapshot.reason == "global_outbox_terminal_backlog_absent"
+        assert snapshot.degraded is True
+        assert snapshot.reason == "global_outbox_terminal_backlog"
+
+
+@pytest.mark.parametrize("outbox_attempt,ledger_attempt,degraded", [(0, 2, False), (2, 0, True)])
+@pytest.mark.asyncio
+async def test_native_attempt_history_is_bounded_by_delivered_owner(
+    delivery_store, outbox_attempt, ledger_attempt, degraded,
+):
+    async with delivery_store.sessions() as session:
+        session.add_all([
+            _ledger(_envelope(45, attempt=ledger_attempt), state=DeliveryState.DELIVERED),
+            _outbox(_envelope(45, attempt=outbox_attempt), retry_count=-1),
+        ])
+        await session.commit()
+    await delivery_store.engine.dispose()
+    async with delivery_store.sessions() as session:
+        snapshot = await delivery_store.adapter.read_circuit_snapshot(session, board_id=BOARD_ID)
+        assert snapshot.degraded is degraded
+        assert snapshot.reason == (
+            "global_outbox_terminal_backlog" if degraded
+            else "global_outbox_terminal_backlog_absent"
+        )
+
+
+@pytest.mark.parametrize("mutation", ["session", "event_type", "extra_payload", "delete_event", "payload_board"])
+@pytest.mark.asyncio
+async def test_complete_but_divergent_terminal_cannot_borrow_delivered_identity(delivery_store, mutation):
+    envelope = _envelope(46)
+    row = _outbox(envelope, retry_count=-1)
+    if mutation == "session":
+        row.session_id = "forged-session"
+        row.payload = {**row.payload, "session_id": row.session_id}
+    elif mutation == "event_type":
+        row.event_type = "unrelated.event"
+    elif mutation == "extra_payload":
+        row.payload = {**row.payload, "old_identity": "ignored-before"}
+    elif mutation == "delete_event":
+        row.payload = {**row.payload, "delete_event_id": "different-delete"}
+    else:
+        row.payload = {**row.payload, "board_id": OTHER_BOARD_ID}
+    async with delivery_store.sessions() as session:
+        session.add_all([_ledger(envelope, state=DeliveryState.DELIVERED), row])
+        await session.commit()
+    async with delivery_store.sessions() as session:
+        snapshot = await delivery_store.adapter.read_circuit_snapshot(session, board_id=BOARD_ID)
+        assert snapshot.degraded is True
+        assert snapshot.reason == "global_outbox_terminal_backlog"
 
 
 @pytest.mark.asyncio
@@ -1104,7 +1155,7 @@ async def test_ambiguous_delivered_and_debt_candidates_keep_circuit_open(
 
 
 @pytest.mark.asyncio
-async def test_historical_circuit_probe_never_full_scans_delivery_ledger(
+async def test_native_circuit_probe_uses_exact_indexed_identity(
     delivery_store,
 ):
     delivered = _envelope(43)
@@ -1170,7 +1221,7 @@ async def test_historical_circuit_probe_never_full_scans_delivery_ledger(
         "SEARCH GLOBAL_DISCOVERY_DELIVERY_LEDGER" in detail
         for detail in details
     ), details
-    assert any("MULTI-INDEX OR" in detail for detail in details), details
+    assert not any("MULTI-INDEX OR" in detail for detail in details), details
 
 
 @pytest.mark.parametrize("kind", ["legacy", "orphan", "malformed"])
