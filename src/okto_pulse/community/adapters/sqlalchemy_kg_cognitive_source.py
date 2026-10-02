@@ -1,6 +1,6 @@
 """Community SQLAlchemy adapter for the cognitive durable-source ledger.
 
-``kg_cognitive_sources`` is the immutable revision-zero compatibility table.
+``kg_cognitive_sources`` stores each native source's immutable birth (revision zero).
 Later full snapshots are appended to ``kg_cognitive_source_revisions``.  The
 adapter keeps the relational write outside the Grafx writer scope and uses
 one short transaction for the complete batch.
@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 import json
-import hashlib
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -185,8 +184,8 @@ def _enumeration_values(
     if revision is not None:
         fingerprint = str(revision.record_fingerprint)
         if not fingerprint:
-            # The generic selector permits an absent digest on a raw base row.
-            # A persisted revision never has that compatibility exemption.
+            # Birth rows are hashed from their content; appended revisions must
+            # additionally match their persisted fingerprint.
             raise CognitiveSourceConflict(
                 "cognitive_source_fingerprint_mismatch",
                 board_id=str(base.board_id),
@@ -344,8 +343,7 @@ class CommunitySqlAlchemyCognitiveSourceStore:
         fingerprints = tuple(_record_fingerprint(record) for record in records)
         semantic_keys = tuple(dict.fromkeys(_record_key(record) for record in records))
 
-        # Fail before touching the compatibility base when startup has not
-        # yet installed the additive revision ledger.
+        # Require the complete current ledger before staging any birth row.
         await session.execute(select(KGCognitiveSourceRevision.id).limit(1))
 
         bases = await _load_base_rows(session, semantic_keys, for_update=True)
@@ -510,10 +508,6 @@ class CommunitySqlAlchemyCognitiveSourceStore:
             dialect = str(context.get_bind().dialect.name)
             if dialect == 'sqlite':
                 await context.execute(update(KGCognitiveSource).where(false()).values(id=KGCognitiveSource.id))
-            elif dialect == 'postgresql':
-                identity = json.dumps(['learning-capture', board_id, author_id, capture_id], separators=(',', ':'))
-                lock_key = int.from_bytes(hashlib.sha256(identity.encode()).digest()[:8], 'big', signed=True)
-                await context.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': lock_key})
             else:
                 raise CognitiveSourceError('learning_capture_identity_reservation_unsupported', board_id=board_id)
 
@@ -693,12 +687,12 @@ class CommunitySqlAlchemyCognitiveSourceStore:
         except SQLAlchemyError as exc:
             if _is_missing_revision_ledger(exc):
                 raise CognitiveSourceError(
-                    "cognitive_source_schema_upgrade_required",
+                    "cognitive_source_storage_incompatible",
                     board_id=first.board_id,
                     node_id=first.node_id,
                     remediation=(
-                        "Run the Community relational schema lifecycle before "
-                        "accepting cognitive writes."
+                        "Select storage created by the current Community schema; "
+                        "incompatible storage is not converted."
                     ),
                 ) from exc
             logger.error(
@@ -798,12 +792,12 @@ class CommunitySqlAlchemyCognitiveSourceStore:
         except SQLAlchemyError as exc:
             if _is_missing_revision_ledger(exc):
                 raise CognitiveSourceError(
-                    "cognitive_source_schema_upgrade_required",
+                    "cognitive_source_storage_incompatible",
                     board_id=first.board_id,
                     node_id=first.node_id,
                     remediation=(
-                        "Run the Community relational schema lifecycle before "
-                        "accepting cognitive writes."
+                        "Select storage created by the current Community schema; "
+                        "incompatible storage is not converted."
                     ),
                 ) from exc
             logger.error(
@@ -824,24 +818,6 @@ class CommunitySqlAlchemyCognitiveSourceStore:
                     "was compensated and the complete append can be retried."
                 ),
             ) from exc
-
-    async def _enumerate_base_only(
-        self,
-        board_id: str,
-    ) -> tuple[CognitiveSourceRecord, ...]:
-        async with self._session_factory() as session:
-            rows = (
-                await session.execute(
-                    select(KGCognitiveSource)
-                    .where(KGCognitiveSource.board_id == board_id)
-                    .order_by(
-                        KGCognitiveSource.committed_at.asc(),
-                        KGCognitiveSource.node_id.asc(),
-                        KGCognitiveSource.generation.asc(),
-                    )
-                )
-            ).scalars().all()
-            return tuple(_base_record(row) for row in rows)
 
     async def enumerate(self, board_id: str) -> tuple[CognitiveSourceRecord, ...]:
         return await self._enumerate(board_id, latest_only=False)
@@ -869,8 +845,7 @@ class CommunitySqlAlchemyCognitiveSourceStore:
                     )
                 ).scalars().all()
                 if not bases:
-                    # Still touch the ledger so a pre-migration database has
-                    # the same explicit read-compatibility path.
+                    # An empty Board still requires the complete current ledger.
                     await session.execute(
                         select(KGCognitiveSourceRevision.id).limit(1)
                     )
@@ -910,15 +885,6 @@ class CommunitySqlAlchemyCognitiveSourceStore:
         except CognitiveSourceError:
             raise
         except SQLAlchemyError as exc:
-            if _is_missing_revision_ledger(exc):
-                try:
-                    records = await self._enumerate_base_only(board_id)
-                    return (
-                        latest_cognitive_source_records(records)
-                        if latest_only else records
-                    )
-                except SQLAlchemyError as fallback_exc:
-                    exc = fallback_exc
             logger.error(
                 "kg.cognitive_source.enumerate_failed board_id=%s error=%s",
                 board_id,

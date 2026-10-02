@@ -13,16 +13,17 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
-    async_sessionmaker,
     create_async_engine,
 )
 
 import okto_pulse.community.adapters.sqlalchemy_research_decision_ledger as rdl_adapter_module
-from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
-    CommunitySemanticSession,
+from okto_pulse.community.adapters.current_relational_schema import (
+    current_schema_contract, initialize_current_schema,
+)
+from okto_pulse.community.adapters.sqlalchemy_database import (
+    build_community_session_factory, install_community_sqlite_pragmas,
 )
 from okto_pulse.community.adapters.sqlalchemy_models import (
-    Base,
     Board,
     DomainEventHandlerExecution,
     DomainEventRow,
@@ -46,6 +47,8 @@ from okto_pulse.community.adapters.sqlalchemy_consolidation import (
 from okto_pulse.core.application.domain_event_delivery import (
     event_from_stored,
 )
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+from okto_pulse.core.domain.execution_contract import new_execution_contract
 from okto_pulse.core.domain.enums import (
     IdeationStatus,
     RefinementStatus,
@@ -156,30 +159,19 @@ def _append_bundle(
 async def _schema_engine(path: Path) -> AsyncEngine:
     engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
 
-    @event.listens_for(engine.sync_engine, "connect")
-    def _enable_foreign_keys(dbapi_connection, _record) -> None:
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.close()
-
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    install_community_sqlite_pragmas(engine)
+    await initialize_current_schema(engine, current_schema_contract())
     return engine
 
 
 @pytest_asyncio.fixture(loop_scope="function")
 async def rig(tmp_path: Path):
     engine = await _schema_engine(tmp_path / "rdl.db")
-    factory = async_sessionmaker(
-        engine,
-        class_=AsyncSession,
-        sync_session_class=CommunitySemanticSession,
-        expire_on_commit=False,
-    )
+    factory = build_community_session_factory(engine)
     async with factory() as session:
         session.add_all(
             [
-                Board(id=BOARD_ID, name="RDL", owner_id="owner"),
+                Board(id=BOARD_ID, realm_id="local", name="RDL", owner_id="owner"),
                 Ideation(
                     id=IDEATION_ID,
                     board_id=BOARD_ID,
@@ -808,6 +800,11 @@ async def test_snapshot_and_spec_derivation_are_version_bound_references_only(
             ideation_id=IDEATION_ID,
             refinement_id=REFINEMENT_ID,
             title="Derived RDL spec",
+            architecture_adoption=ArchitectureAdoptionScope(
+                board_id=BOARD_ID, spec_id="spec-rdl", adopted_in_edition=1,
+                actor_id="owner", inherited_resource_ids=()).model_dump(mode="json"),
+            execution_contract=new_execution_contract(board_id=BOARD_ID,
+                spec_id="spec-rdl", edition=1, actor_id="owner", origin="new_spec"),
             decisions=sentinel_decisions,
             status=SpecStatus.DRAFT,
             version=1,

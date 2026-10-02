@@ -10,13 +10,16 @@ from dataclasses import replace
 
 import pytest
 from sqlalchemy import event, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from okto_pulse.community.adapters.sqlalchemy_base import Base
+from okto_pulse.community.adapters.current_relational_schema import current_schema_contract, initialize_current_schema
+from okto_pulse.community.adapters.sqlalchemy_database import build_community_session_factory, install_community_sqlite_pragmas
 from okto_pulse.community.adapters.sqlalchemy_kg_cognitive_source import (
     CommunitySqlAlchemyCognitiveSourceStore,
 )
 from okto_pulse.community.adapters.sqlalchemy_models import (
+    Board,
     KGCognitiveSource,
     KGCognitiveSourceRevision,
 )
@@ -67,9 +70,12 @@ def _new_pending_base(node_id: str) -> KGCognitiveSource:
 @pytest.fixture
 async def store(tmp_path):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'cogsrc.db'}")
-    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    install_community_sqlite_pragmas(engine)
+    await initialize_current_schema(engine, current_schema_contract())
+    factory = build_community_session_factory(engine)
+    async with factory() as session:
+        session.add(Board(id=BOARD, realm_id="local", name="Cognitive source", owner_id="author-a"))
+        await session.commit()
     try:
         yield CommunitySqlAlchemyCognitiveSourceStore(factory), factory
     finally:
@@ -100,6 +106,16 @@ async def test_semantic_capture_survives_sql_roundtrip(store):
     stored, = await adapter.enumerate(BOARD)
     assert stored.payload == payload and stored.record_fingerprint == record.record_fingerprint
     assert (await adapter.enumerate(BOARD))[0].record_fingerprint == stored.record_fingerprint
+    async with factory() as session:
+        reserved = await adapter.reserve_capture_identity_in_context(
+            session, board_id=BOARD, author_id="author-a", capture_id="capture-sql",
+        )
+        assert reserved == stored
+        assert await adapter.reserve_capture_identity_in_context(
+            session, board_id=BOARD, author_id="author-b", capture_id="capture-sql",
+        ) is None
+        await session.rollback()
+    assert (await adapter.enumerate(BOARD))[0] == stored
 
 
 async def test_conditional_append_compares_current_head_and_preserves_caller_transaction(store):
@@ -731,7 +747,7 @@ async def test_enumerate_orders_deterministically(store):
 @pytest.mark.parametrize("method", ["enumerate", "enumerate_latest_verified"])
 @pytest.mark.parametrize("corrupt_revision", [1, 2])
 async def test_enumerate_returns_full_revision_history_and_validates_fingerprint(
-    store, corrupt_revision, method,
+    store, corrupt_revision, method, monkeypatch,
 ):
     adapter, factory = store
     await adapter.append(_record("learning_history", title="zero"))
@@ -758,7 +774,18 @@ async def test_enumerate_returns_full_revision_history_and_validates_fingerprint
             )
         ).scalar_one()
         row.record_fingerprint = "0" * 64
-        await session.commit()
+        with pytest.raises(IntegrityError, match="kg_cognitive_source_immutable"):
+            await session.flush()
+        await session.rollback()
+    assert await adapter.enumerate(BOARD) == tuple(history)
+    # Exercise the reader's independent integrity check without weakening DDL.
+    from okto_pulse.community.adapters import sqlalchemy_kg_cognitive_source as module
+    original = module._load_revision_rows
+    async def corrupt(*args, **kwargs):
+        rows = await original(*args, **kwargs)
+        next(row for row in rows if row.source_revision == corrupt_revision).record_fingerprint = "0" * 64
+        return rows
+    monkeypatch.setattr(module, "_load_revision_rows", corrupt)
     with pytest.raises(CognitiveSourceConflict) as excinfo:
         await getattr(adapter, method)(BOARD)
     assert excinfo.value.failure_reason == "cognitive_source_fingerprint_mismatch"
@@ -808,7 +835,15 @@ async def test_enumeration_hashes_each_revision_once_without_trusting_storage(
             KGCognitiveSourceRevision.source_revision == 1,
         ))).scalar_one()
         row.payload = {**row.payload, "title": "tampered"}
-        await session.commit()
+        with pytest.raises(IntegrityError, match="kg_cognitive_source_immutable"):
+            await session.flush()
+        await session.rollback()
+    original = adapter_module._load_revision_rows
+    async def corrupt(*args, **kwargs):
+        rows = await original(*args, **kwargs)
+        rows[0].payload = {**rows[0].payload, "title": "tampered"}
+        return rows
+    monkeypatch.setattr(adapter_module, "_load_revision_rows", corrupt)
     with pytest.raises(CognitiveSourceConflict) as excinfo:
         await adapter.enumerate(BOARD)
     assert excinfo.value.failure_reason == "cognitive_source_fingerprint_mismatch"
@@ -862,15 +897,19 @@ async def test_latest_verified_audits_history_once_and_constructs_only_heads(sto
     assert Counter(calls) == {"zero": 2, "one": 2, "two": 2}
 
 
-async def test_latest_verified_preserves_legacy_base_only_read(store):
+@pytest.mark.parametrize("method", ["enumerate", "enumerate_latest_verified"])
+async def test_missing_revision_storage_never_returns_partial_history(store, method):
+    from okto_pulse.community.adapters.current_relational_schema import StorageFormatError
     adapter, factory = store
-    await adapter.append(_record("legacy"))
+    await adapter.append(_record("native-base"))
     async with factory() as session:
         await session.execute(text("DROP TABLE kg_cognitive_source_revisions"))
         await session.commit()
-    assert await adapter.enumerate_latest_verified(BOARD) == latest_cognitive_source_records(
-        await adapter.enumerate(BOARD)
-    )
+    with pytest.raises(CognitiveSourceError, match="cognitive_source_enumerate_failed"):
+        await getattr(adapter, method)(BOARD)
+    await factory.kw["bind"].dispose()
+    with pytest.raises(StorageFormatError):
+        await getattr(adapter, method)(BOARD)
 
 
 @pytest.mark.parametrize("fingerprint", ["", None, "0" * 64])
@@ -989,7 +1028,7 @@ async def test_store_failure_raises_structured_error(tmp_path):
         await adapter.append(_record("learning_broken"))
     assert (
         excinfo.value.failure_reason
-        == "cognitive_source_schema_upgrade_required"
+        == "cognitive_source_storage_incompatible"
     )
     assert excinfo.value.node_id == "learning_broken"
     with pytest.raises(CognitiveSourceError) as excinfo_batch:
@@ -998,7 +1037,7 @@ async def test_store_failure_raises_structured_error(tmp_path):
         )
     assert (
         excinfo_batch.value.failure_reason
-        == "cognitive_source_schema_upgrade_required"
+        == "cognitive_source_storage_incompatible"
     )
     with pytest.raises(CognitiveSourceError) as excinfo2:
         await adapter.enumerate(BOARD)
