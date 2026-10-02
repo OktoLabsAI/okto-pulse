@@ -92,6 +92,9 @@ async def test_fresh_schema_restart_preserves_data_and_identity(tmp_path, contra
     "DROP TRIGGER trg_guideline_impact_v2_guideline_impact_adoptions_insert",
     "DROP TRIGGER trg_guideline_impact_v2_guideline_impact_unlinks_insert",
     "DROP TRIGGER trg_guideline_impact_v2_guideline_retirement_impacts_insert",
+    "ALTER TABLE quality_assessment_lifecycle_transitions ADD COLUMN legacy_edition INTEGER",
+    "DROP TRIGGER trg_quality_assessment_lifecycle_transitions_before_edition_positive",
+    "DROP TRIGGER trg_quality_assessment_lifecycle_transitions_after_edition_positive",
 ])
 async def test_incompatible_schema_is_refused_without_wal_or_content_changes(tmp_path, contract, mutation):
     path = tmp_path / "incompatible.db"
