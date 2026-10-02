@@ -22,6 +22,8 @@ import uuid
 
 import httpx
 import pytest
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+from okto_pulse.core.domain.execution_contract import new_execution_contract
 from fastapi import FastAPI
 from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import (
@@ -139,6 +141,14 @@ async def _seed(session: AsyncSession, *, questions: int) -> dict[str, object]:
     await session.flush()
     session.add(
         Spec(
+            architecture_adoption=ArchitectureAdoptionScope(
+                board_id=board_id, spec_id=spec_id, adopted_in_edition=1,
+                actor_id="seed", inherited_resource_ids=(),
+            ).model_dump(mode="json"),
+            execution_contract=new_execution_contract(
+                board_id=board_id, spec_id=spec_id, edition=1,
+                actor_id="seed", origin="new_spec",
+            ),
             id=spec_id,
             board_id=board_id,
             ideation_id=ideation_id,

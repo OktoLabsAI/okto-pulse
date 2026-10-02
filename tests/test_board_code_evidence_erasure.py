@@ -126,7 +126,6 @@ async def test_classified_superseding_evidence_erasure(tmp_path, rollback):
                         subject_version=revision,
                         content_digest="a" * 64,
                         last_semantic_editor_id="owner-1",
-                        editor_source="authoritative",
                         event_type="semantic_mutation",
                         head_revision=revision,
                         changed_at=now,

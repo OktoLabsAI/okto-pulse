@@ -36,7 +36,6 @@ from okto_pulse.core.domain.guideline_policy import (
     PolicySubjectSnapshot,
 )
 from okto_pulse.core.domain.guideline_semantic_assessment import (
-    LEGACY_UNKNOWN_SEMANTIC_EDITOR_ID,
     SemanticAssessmentAssessor,
     SemanticAssessmentPinpoint,
     SemanticAssessmentState,
@@ -2089,13 +2088,14 @@ class CommunitySqlAlchemySemanticGuidelineAssessment:
         head = (
             await self._session.execute(head_statement)
         ).scalar_one_or_none()
-        last_editor = LEGACY_UNKNOWN_SEMANTIC_EDITOR_ID
         if (
-            head is not None
-            and head.subject_version == subject_version
-            and head.content_digest == content_digest
+            head is None
+            or head.subject_version != subject_version
+            or head.content_digest != content_digest
         ):
-            last_editor = head.last_semantic_editor_id
+            raise GuidelinePolicySubjectConflict(
+                "semantic_subject_authority_missing_or_stale"
+            )
         return PolicySubjectSnapshot(
             subject=PolicySubjectRef(
                 board_id=board_id,
@@ -2105,7 +2105,7 @@ class CommunitySqlAlchemySemanticGuidelineAssessment:
                 subject_edition=raw.subject_edition,
             ),
             content_digest=content_digest,
-            last_semantic_editor_id=last_editor,
+            last_semantic_editor_id=head.last_semantic_editor_id,
             captured_at=datetime.now(timezone.utc),
         )
 
@@ -2192,9 +2192,8 @@ class CommunitySqlAlchemySemanticGuidelineAssessment:
         """Record the authoritative editor after an entity semantic mutation.
 
         Entity application services call this in the same transaction as the
-        semantic edit.  Historical subjects without such an event deliberately
-        resolve to ``legacy_unknown`` and therefore cannot satisfy blocking
-        reviewer separation.
+        semantic edit. Reads require a matching version and content digest
+        in the authoritative event head; missing or stale authority is refused.
         """
 
         request_digest = _require_sha256(
@@ -2287,7 +2286,6 @@ class CommunitySqlAlchemySemanticGuidelineAssessment:
                 subject_version=subject_version,
                 content_digest=content_digest,
                 last_semantic_editor_id=actor_id,
-                editor_source="authoritative",
                 head_revision=head_revision,
                 last_event_id=event_id,
                 updated_at=changed_at,
@@ -2297,7 +2295,6 @@ class CommunitySqlAlchemySemanticGuidelineAssessment:
             head.subject_version = subject_version
             head.content_digest = content_digest
             head.last_semantic_editor_id = actor_id
-            head.editor_source = "authoritative"
             head.head_revision = head_revision
             head.last_event_id = event_id
             head.updated_at = changed_at
@@ -2310,7 +2307,6 @@ class CommunitySqlAlchemySemanticGuidelineAssessment:
                 subject_version=subject_version,
                 content_digest=content_digest,
                 last_semantic_editor_id=actor_id,
-                editor_source="authoritative",
                 event_type="semantic_mutation",
                 head_revision=head_revision,
                 changed_at=changed_at,

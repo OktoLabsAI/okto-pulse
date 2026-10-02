@@ -19,9 +19,6 @@ from sqlalchemy.orm import Session, object_session
 
 from okto_pulse.core.application.use_cases.base import ActorContext
 from okto_pulse.core.domain.guideline_policy import PolicyEntityType
-from okto_pulse.core.domain.guideline_semantic_assessment import (
-    LEGACY_UNKNOWN_SEMANTIC_EDITOR_ID,
-)
 from okto_pulse.core.domain.quality_canonicalization import canonical_sha256
 from okto_pulse.core.services.code_traceability_gate import is_evidence_citation_only_change
 
@@ -170,8 +167,6 @@ def bind_semantic_subject_actor(
     )
     if actor is not None and not actor_id:
         raise ValueError("semantic_subject_bridge_actor_id_required")
-    if actor_id == LEGACY_UNKNOWN_SEMANTIC_EDITOR_ID:
-        raise ValueError("semantic_subject_bridge_actor_id_reserved")
     sync_session = session.sync_session
     if sync_session.info.get(_SEMANTIC_BRIDGE_ENABLED_KEY):
         current_actor_id = sync_session.info.get(_SEMANTIC_ACTOR_ID_KEY)

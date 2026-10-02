@@ -8,6 +8,8 @@ import uuid
 
 import httpx
 import pytest
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+from okto_pulse.core.domain.execution_contract import new_execution_contract
 from fastapi import Depends, FastAPI
 from sqlalchemy import event, func, select
 from sqlalchemy.ext.asyncio import (
@@ -127,6 +129,44 @@ async def _database(path):
     )
 
 
+@pytest.mark.asyncio
+async def test_subject_snapshot_refuses_missing_or_stale_authority_without_writes(tmp_path):
+    from okto_pulse.core.ports.guideline_policy import GuidelinePolicySubjectConflict
+
+    engine, factory = await _database(tmp_path / "authority.db")
+    try:
+        async with factory() as session:
+            session.add(Board(id="board", realm_id="local", name="Authority", owner_id="owner"))
+            await session.flush()
+            subject = Ideation(id="subject", board_id="board", title="Original",
+                               status="draft", version=1, created_by="author")
+            session.add(subject)
+            await session.flush()
+            adapter = CommunitySqlAlchemySemanticGuidelineAssessment(session)
+            scope = dict(board_id="board", entity_type=PolicyEntityType.IDEATION,
+                         subject_id="subject")
+            with pytest.raises(GuidelinePolicySubjectConflict, match="semantic_subject_authority_missing_or_stale"):
+                await adapter.resolve_policy_subject_snapshot(**scope)
+            assert (await session.scalar(select(func.count()).select_from(SemanticSubjectVersionEventRow))) == 0
+
+            await adapter.record_semantic_subject_mutation(
+                **scope, actor_id="author", idempotency_key="created", request_digest="a" * 64,
+                changed_at=_now(),
+            )
+            snapshot = await adapter.resolve_policy_subject_snapshot(**scope)
+            assert snapshot.last_semantic_editor_id == "author"
+            assert snapshot.subject.subject_version == 1
+
+            subject.title = "Unattributed change"
+            subject.version = 2
+            await session.flush()
+            with pytest.raises(GuidelinePolicySubjectConflict, match="semantic_subject_authority_missing_or_stale"):
+                await adapter.resolve_policy_subject_snapshot(**scope)
+            assert (await session.scalar(select(func.count()).select_from(SemanticSubjectVersionEventRow))) == 1
+    finally:
+        await engine.dispose()
+
+
 async def _seed_subjects(session: AsyncSession) -> _Seed:
     seed = _Seed(
         board_id=_id(),
@@ -173,6 +213,14 @@ async def _seed_subjects(session: AsyncSession) -> _Seed:
     await session.flush()
     session.add(
         Spec(
+            architecture_adoption=ArchitectureAdoptionScope(
+                board_id=seed.board_id, spec_id=seed.spec_id, adopted_in_edition=1,
+                actor_id="seed", inherited_resource_ids=(),
+            ).model_dump(mode="json"),
+            execution_contract=new_execution_contract(
+                board_id=seed.board_id, spec_id=seed.spec_id, edition=1,
+                actor_id="seed", origin="new_spec",
+            ),
             id=seed.spec_id,
             board_id=seed.board_id,
             ideation_id=seed.ideation_id,

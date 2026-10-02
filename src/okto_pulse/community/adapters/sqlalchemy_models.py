@@ -5252,18 +5252,11 @@ class SemanticSubjectVersionEventRow(Base):
             name="ck_sem_subject_event_versions",
         ),
         CheckConstraint(
-            "editor_source IN ('authoritative', 'legacy_unknown')",
-            name="ck_sem_subject_event_editor_source",
-        ),
-        CheckConstraint(
-            "(editor_source = 'legacy_unknown' "
-            "AND last_semantic_editor_id = 'legacy_unknown') "
-            "OR (editor_source = 'authoritative' "
-            "AND last_semantic_editor_id <> 'legacy_unknown')",
+            "length(trim(last_semantic_editor_id)) > 0",
             name="ck_sem_subject_event_editor",
         ),
         CheckConstraint(
-            "event_type IN ('semantic_mutation', 'legacy_bootstrap')",
+            "event_type = 'semantic_mutation'",
             name="ck_sem_subject_event_kind",
         ),
         CheckConstraint(
@@ -5297,7 +5290,6 @@ class SemanticSubjectVersionEventRow(Base):
         String(255),
         nullable=False,
     )
-    editor_source: Mapped[str] = mapped_column(String(24), nullable=False)
     event_type: Mapped[str] = mapped_column(String(32), nullable=False)
     head_revision: Mapped[int] = mapped_column(Integer, nullable=False)
     changed_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
@@ -5346,14 +5338,7 @@ class SemanticSubjectVersionRow(Base):
             name="ck_sem_subject_head_versions",
         ),
         CheckConstraint(
-            "editor_source IN ('authoritative', 'legacy_unknown')",
-            name="ck_sem_subject_head_editor_source",
-        ),
-        CheckConstraint(
-            "(editor_source = 'legacy_unknown' "
-            "AND last_semantic_editor_id = 'legacy_unknown') "
-            "OR (editor_source = 'authoritative' "
-            "AND last_semantic_editor_id <> 'legacy_unknown')",
+            "length(trim(last_semantic_editor_id)) > 0",
             name="ck_sem_subject_head_editor",
         ),
         CheckConstraint(
@@ -5375,7 +5360,6 @@ class SemanticSubjectVersionRow(Base):
         String(255),
         nullable=False,
     )
-    editor_source: Mapped[str] = mapped_column(String(24), nullable=False)
     head_revision: Mapped[int] = mapped_column(Integer, nullable=False)
     last_event_id: Mapped[str] = mapped_column(String(64), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
@@ -5542,8 +5526,7 @@ class SemanticGuidelineAssessmentReceiptRow(Base):
         ),
         CheckConstraint(
             "(enforcement = 'advisory') OR "
-            "(last_semantic_editor_id <> 'legacy_unknown' "
-            "AND assessor_independent)",
+            "assessor_independent",
             name="ck_sg_assessment_separation",
         ),
         CheckConstraint(
