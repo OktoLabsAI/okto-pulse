@@ -151,7 +151,7 @@ async def test_curated_projection_is_preserved_on_replay(graph_runtime):
 
 
 @pytest.mark.parametrize('projection', ['working', 'superseded', 'ambiguous', 'absent'])
-async def test_materializer_resolves_only_one_active_canonical_bug(graph_runtime, projection):
+async def test_materializer_preserves_unique_active_bug_identity(graph_runtime, projection):
     runtime, capture, selection, persister = graph_runtime
     _, _, store, _ = runtime
     before = await store.enumerate(BOARD)
@@ -163,15 +163,26 @@ async def test_materializer_resolves_only_one_active_canonical_bug(graph_runtime
             {'id': '000-old-bug', 'title': 'Historical projection', 'ref': 'bug:bug-context',
                 'layer': 'working' if projection == 'working' else 'canonical',
                 'successor': 'canonical-bug' if projection == 'superseded' else None})
-    if projection == 'ambiguous':
+    bugs_before = graph_rows('MATCH (b:Bug) RETURN b.id, b.graph_layer, b.superseded_by ORDER BY b.id')
+    if projection == 'working':
+        from okto_pulse.core.kg.primitives import KGPrimitiveError
+        from okto_pulse.core.ports.bug_cognitive_context import resolve_canonical_bug_node_read_port
+        # The canonical read has one result, but provenance must still refuse
+        # two active identities for the same source under the writer fence.
+        resolver = resolve_canonical_bug_node_read_port()
+        assert resolver.resolve_current(board_id=BOARD, bug_id='bug-context') == 'canonical-bug'
+        with pytest.raises(KGPrimitiveError, match='canonical_bug_identity_ambiguous'):
+            await persister.persist_authored_learning(BOARD, 'bug-context', selection, raise_failures=True)
+    elif projection == 'ambiguous':
         with pytest.raises(ValueError, match='canonical_bug_identity_ambiguous'):
             await persister.persist_authored_learning(BOARD, 'bug-context', selection)
     else:
-        assert await persister.persist_authored_learning(BOARD, 'bug-context', selection) == (
+        assert await persister.persist_authored_learning(BOARD, 'bug-context', selection, raise_failures=True) == (
             projection != 'absent')
-    if projection in ('ambiguous', 'absent'):
+    if projection in ('working', 'ambiguous', 'absent'):
         assert await store.enumerate(BOARD) == before
         assert graph_rows('MATCH (n:Learning) RETURN n.id') == []
+        assert graph_rows('MATCH (b:Bug) RETURN b.id, b.graph_layer, b.superseded_by ORDER BY b.id') == bugs_before
     else:
         assert graph_rows('MATCH (n:Learning)-[:validates]->(b:Bug) RETURN n.id, b.id') == [
             [capture.node_id, 'canonical-bug']]

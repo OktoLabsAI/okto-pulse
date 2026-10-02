@@ -15,7 +15,6 @@ from okto_pulse.community.adapters.sqlalchemy_database import (
 )
 from okto_pulse.community.adapters.sqlalchemy_models import (
     AmendmentHotfixRevision,
-    Base,
     Board,
     Card,
     Comment,
@@ -239,7 +238,7 @@ async def test_semantic_snapshot_does_not_certify_incomplete_relational_source(t
             card = await session.get(Card, 'bug-context')
             if damage == 'spec':
                 parent = await session.get(Spec, card.spec_id)
-                session.add(Board(id='foreign-board', name='Foreign', owner_id='other'))
+                session.add(Board(id='foreign-board', name='Foreign', owner_id='other', realm_id='local'))
                 await session.flush()
                 parent.board_id = 'foreign-board'
             elif damage == 'test':
@@ -280,13 +279,15 @@ async def test_semantic_snapshot_never_loads_foreign_or_missing_bug(tmp_path, bo
 
 
 async def _runtime(path: Path):  # noqa: ANN202
+    from okto_pulse.community.adapters.current_relational_schema import current_schema_contract, initialize_current_schema
     engine = build_community_engine(f"sqlite+aiosqlite:///{path}")
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    await initialize_current_schema(engine, current_schema_contract())
     return engine, build_community_session_factory(engine)
 
 
 async def _seed_full_context(session_factory) -> None:  # noqa: ANN001
+    from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+    from okto_pulse.core.domain.execution_contract import new_execution_contract
     from okto_pulse.core.services.test_scenario_lifecycle import (
         compute_execution_attestation_sha256,
         compute_test_scenario_semantic_sha256,
@@ -348,11 +349,16 @@ async def _seed_full_context(session_factory) -> None:  # noqa: ANN001
         },
     }
     async with session_factory() as session:
-        session.add(Board(id="board-bug-context", name="Context", owner_id="owner"))
+        session.add(Board(id="board-bug-context", realm_id="local", name="Context", owner_id="owner"))
         session.add(
             Spec(
                 id="spec-bug-context",
                 board_id="board-bug-context",
+                architecture_adoption=ArchitectureAdoptionScope(board_id="board-bug-context",
+                    spec_id="spec-bug-context", adopted_in_edition=1, actor_id="agent",
+                    inherited_resource_ids=()).model_dump(mode="json"),
+                execution_contract=new_execution_contract(board_id="board-bug-context",
+                    spec_id="spec-bug-context", edition=1, actor_id="agent", origin="new_spec"),
                 title="Correct About version",
                 acceptance_criteria=acceptance_criteria,
                 test_scenarios=[scenario],
