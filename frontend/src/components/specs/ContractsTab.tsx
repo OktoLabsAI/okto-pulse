@@ -25,12 +25,9 @@ const METHOD_COLORS: Record<string, string> = {
   PUT: 'bg-amber-500 text-white',
   DELETE: 'bg-red-500 text-white',
   PATCH: 'bg-cyan-500 text-white',
-  TOOL: 'bg-violet-500 text-white',
-  COMPONENT: 'bg-teal-500 text-white',
-  EVENT: 'bg-pink-500 text-white',
 };
 
-const ALL_METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'TOOL', 'COMPONENT', 'EVENT'];
+const ALL_METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'CONNECT', 'OPTIONS', 'TRACE', 'PATCH'];
 
 function tryParseJSON(str: string): Record<string, unknown> | null {
   if (!str.trim()) return null;
@@ -100,6 +97,7 @@ export function ContractsTab({
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   // Form state
+  const [formType, setFormType] = useState<ApiContract['contract_type']>('http');
   const [formMethod, setFormMethod] = useState('GET');
   const [formPath, setFormPath] = useState('');
   const [formDescription, setFormDescription] = useState('');
@@ -111,9 +109,7 @@ export function ContractsTab({
   const [formNotes, setFormNotes] = useState('');
 
   const contracts = (spec.api_contracts || []).filter((contract) => (contract.status || 'active') === 'active');
-  const frs = (spec.functional_requirements || []).map((fr: any) =>
-    typeof fr === 'string' ? fr : String(fr?.text || fr?.title || '')
-  );
+  const frs = spec.functional_requirements || [];
   const brs = spec.business_rules || [];
 
   // Coverage: contracts with at least one linked task
@@ -127,6 +123,7 @@ export function ContractsTab({
   }, [contracts]);
 
   const resetForm = () => {
+    setFormType('http');
     setFormMethod('GET');
     setFormPath('');
     setFormDescription('');
@@ -139,31 +136,34 @@ export function ContractsTab({
   };
 
   const buildContract = (id: string): ApiContract => ({
+    ...spec.api_contracts?.find((contract) => contract.id === id),
     id,
-    method: formMethod,
-    path: formPath.trim(),
+    contract_type: formType,
+    method: formType === 'http' ? formMethod : null,
+    path: formPath.trim() || null,
     description: formDescription.trim(),
     request_body: tryParseJSON(formRequestBody),
     response_success: tryParseJSON(formResponseSuccess),
     response_errors: tryParseJSONArray(formResponseErrors),
     linked_requirements: formLinkedFRs.length > 0 ? formLinkedFRs : null,
     linked_rules: formLinkedBRs.length > 0 ? formLinkedBRs : null,
-    linked_task_ids: null,
+    linked_task_ids: spec.api_contracts?.find((contract) => contract.id === id)?.linked_task_ids ?? null,
     notes: formNotes.trim() || null,
   });
 
   const handleAdd = () => {
-    if (!formPath.trim() || !formDescription.trim()) return;
+    if (!isFormValid) return;
     const id = `ac_${Date.now()}`;
-    onUpdate([...contracts, buildContract(id)]);
+    onUpdate([...(spec.api_contracts || []), buildContract(id)]);
     setAdding(false);
     resetForm();
   };
 
   const handleEdit = (contract: ApiContract) => {
     setEditingId(contract.id);
-    setFormMethod(contract.method);
-    setFormPath(contract.path);
+    setFormType(contract.contract_type);
+    setFormMethod(contract.method || 'GET');
+    setFormPath(contract.path || '');
     setFormDescription(contract.description);
     setFormRequestBody(contract.request_body ? JSON.stringify(contract.request_body, null, 2) : '');
     setFormResponseSuccess(contract.response_success ? JSON.stringify(contract.response_success, null, 2) : '');
@@ -174,15 +174,15 @@ export function ContractsTab({
   };
 
   const handleSaveEdit = () => {
-    if (!editingId || !formPath.trim() || !formDescription.trim()) return;
-    onUpdate(contracts.map((c) => c.id === editingId ? buildContract(editingId) : c));
+    if (!editingId || !isFormValid) return;
+    onUpdate((spec.api_contracts || []).map((c) => c.id === editingId ? buildContract(editingId) : c));
     setEditingId(null);
     resetForm();
   };
 
   const handleRemove = (id: string) => {
     if (!confirm('Remove this API contract?')) return;
-    onUpdate(contracts.filter((c) => c.id !== id));
+    onUpdate((spec.api_contracts || []).filter((c) => c.id !== id));
   };
 
   const toggleFR = (fr: string) => {
@@ -197,18 +197,26 @@ export function ContractsTab({
     );
   };
 
-  const isFormValid = formPath.trim() && formDescription.trim();
+  const isFormValid = (formType !== 'http' || (ALL_METHODS.includes(formMethod) && !!formPath.trim())) && !!formDescription.trim();
 
   const renderForm = (onSubmit: () => void, submitLabel: string, onCancel: () => void) => (
     <div className="border border-cyan-200 dark:border-cyan-700 rounded-lg p-3 space-y-2 bg-cyan-50/50 dark:bg-cyan-900/10">
       <div className="flex gap-2">
-        <select
+        <select aria-label="Contract type" value={formType}
+          onChange={(event) => setFormType(event.target.value as ApiContract['contract_type'])}
+          className="px-2 py-2 border rounded-lg text-sm dark:bg-gray-700">
+          <option value="http">HTTP</option>
+          <option value="in_process">In-process</option>
+          <option value="grpc">gRPC</option>
+          <option value="event">Event</option>
+        </select>
+        {formType === 'http' && <select aria-label="HTTP method"
           value={formMethod}
           onChange={(e) => setFormMethod(e.target.value)}
           className="px-2 py-2 border border-gray-300 rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600 font-mono font-bold"
         >
           {ALL_METHODS.map((m) => <option key={m} value={m}>{m}</option>)}
-        </select>
+        </select>}
         <input
           type="text"
           value={formPath}
@@ -269,11 +277,11 @@ export function ContractsTab({
           <span className="text-[10px] text-gray-500 dark:text-gray-400 block mb-1">Link to functional requirements:</span>
           <div className="flex flex-wrap gap-1">
             {frs.map((fr, i) => {
-              const key = String(i);
+              const key = fr.id;
               const isLinked = formLinkedFRs.includes(key);
               return (
                 <button
-                  key={i}
+                  key={key}
                   onClick={() => toggleFR(key)}
                   className={`text-[10px] px-1.5 py-0.5 rounded transition-colors ${
                     isLinked
@@ -281,7 +289,7 @@ export function ContractsTab({
                       : 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400 hover:bg-gray-200'
                   }`}
                 >
-                  FR{i}: {fr.length > 40 ? fr.slice(0, 37) + '...' : fr}
+                  FR{i + 1}: {fr.text.length > 40 ? fr.text.slice(0, 37) + '...' : fr.text}
                 </button>
               );
             })}
@@ -349,7 +357,7 @@ export function ContractsTab({
             {contracts.map((contract) => {
               const taskCount = contract.linked_task_ids?.length ?? 0;
               const linked = taskCount > 0;
-              const methodColor = METHOD_COLORS[contract.method] || 'bg-gray-500 text-white';
+              const methodColor = METHOD_COLORS[contract.method || ''] || 'bg-gray-500 text-white';
               return (
                 <div key={contract.id} className="flex items-center gap-2 text-xs">
                   {linked ? (
@@ -358,7 +366,7 @@ export function ContractsTab({
                     <XCircle className="w-3.5 h-3.5 text-gray-300 dark:text-gray-600 shrink-0" />
                   )}
                   <span className={`text-[9px] px-1 py-0.5 rounded font-mono font-bold shrink-0 ${methodColor}`}>
-                    {contract.method}
+                    {contract.contract_type === 'http' ? contract.method : contract.contract_type}
                   </span>
                   <span className={`flex-1 font-mono truncate ${linked ? 'text-gray-700 dark:text-gray-300' : 'text-gray-400 dark:text-gray-500'}`}>
                     {contract.path}
@@ -403,7 +411,7 @@ export function ContractsTab({
       {contracts.map((contract) => {
         const isExpanded = expandedId === contract.id;
         const isEditing = editingId === contract.id;
-        const methodColor = METHOD_COLORS[contract.method] || 'bg-gray-500 text-white';
+        const methodColor = METHOD_COLORS[contract.method || ''] || 'bg-gray-500 text-white';
 
         if (isEditing) {
           return (
@@ -420,7 +428,7 @@ export function ContractsTab({
               onClick={() => setExpandedId(isExpanded ? null : contract.id)}
             >
               <span className={`text-[10px] px-1.5 py-0.5 rounded font-mono font-bold shrink-0 ${methodColor}`}>
-                {contract.method}
+                {contract.contract_type === 'http' ? contract.method : contract.contract_type}
               </span>
               <span className="text-sm font-mono text-gray-700 dark:text-gray-300 truncate flex-1">
                 {contract.path}
@@ -500,11 +508,10 @@ export function ContractsTab({
                   <div className="flex flex-wrap gap-1">
                     <span className="text-[10px] text-gray-400 mr-1">Linked FRs:</span>
                     {contract.linked_requirements.map((idx, i) => {
-                      const frIdx = parseInt(idx, 10);
-                      const frText = frs[frIdx];
+                      const frText = frs.find((fr) => fr.id === idx)?.text;
                       return (
                         <span key={i} className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 dark:bg-indigo-900/20 dark:text-indigo-300">
-                          FR{idx}{frText ? `: ${frText.length > 30 ? frText.slice(0, 27) + '...' : frText}` : ''}
+                          {idx}{frText ? `: ${frText.length > 30 ? frText.slice(0, 27) + '...' : frText}` : ''}
                         </span>
                       );
                     })}

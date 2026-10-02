@@ -1220,8 +1220,9 @@ export interface Decision {
 // API Contract
 export interface ApiContract {
   id: string;
-  method: string;
-  path: string;
+  contract_type: 'http' | 'in_process' | 'grpc' | 'event';
+  method: string | null;
+  path: string | null;
   description: string;
   request_body: Record<string, unknown> | null;
   response_success: Record<string, unknown> | null;
