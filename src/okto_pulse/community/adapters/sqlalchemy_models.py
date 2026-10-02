@@ -5068,18 +5068,6 @@ class SemanticGuidelineRevisionRow(Base):
             "contract_version = 'guideline-revision-digest/v2'",
             name="ck_sg_revision_contract",
         ),
-        CheckConstraint(
-            "authority_state IN "
-            "('native', 'legacy_context_only', 'legacy_incompatible')",
-            name="ck_sg_revision_authority_state",
-        ),
-        CheckConstraint(
-            "(authority_state = 'native' AND legacy_rules_digest IS NULL) "
-            "OR (authority_state <> 'native' "
-            "AND legacy_rules_digest IS NOT NULL "
-            "AND length(legacy_rules_digest) = 64)",
-            name="ck_sg_revision_legacy_digest",
-        ),
         Index(
             "ix_sg_revision_guideline_created",
             "guideline_id",
@@ -5104,16 +5092,11 @@ class SemanticGuidelineRevisionRow(Base):
         server_default=text("'[]'"),
     )
     revision_digest: Mapped[str] = mapped_column(String(64), nullable=False)
-    # Digest of the historical GuidelineRevisionRow snapshot used as the
-    # migration source fence.  It is never reused as semantic authority.
+    # Digest ties the immutable revision snapshot to its semantic metrics.
+    # It is distinct from the semantic revision digest.
     source_revision_digest: Mapped[str] = mapped_column(
         String(64),
         nullable=False,
-    )
-    authority_state: Mapped[str] = mapped_column(String(32), nullable=False)
-    legacy_rules_digest: Mapped[str | None] = mapped_column(
-        String(64),
-        nullable=True,
     )
     created_by: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
@@ -6729,55 +6712,6 @@ class SemanticGuidelineSkipRow(Base):
     skip_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
     request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
-
-
-class SemanticGuidelineLegacyMigrationRow(Base):
-    """Append-only audit of the non-semantic policy/v1 retirement migration."""
-
-    __tablename__ = "semantic_guideline_legacy_migrations"
-    __table_args__ = (
-        UniqueConstraint(
-            "source_type",
-            "source_id",
-            name="uq_sg_legacy_migration_source",
-        ),
-        CheckConstraint(
-            "source_type IN ('revision', 'binding', 'receipt', 'waiver')",
-            name="ck_sg_legacy_migration_source_type",
-        ),
-        CheckConstraint(
-            "migration_state IN "
-            "('context_only', 'legacy_incompatible', 'inert_binding', "
-            "'stale_receipt', 'ineffective_waiver')",
-            name="ck_sg_legacy_migration_state",
-        ),
-        CheckConstraint(
-            "length(source_digest) = 64",
-            name="ck_sg_legacy_migration_digest",
-        ),
-        Index(
-            "ix_sg_legacy_migration_board",
-            "board_id",
-            "source_type",
-            "migrated_at",
-            "migration_id",
-        ),
-    )
-
-    migration_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    source_type: Mapped[str] = mapped_column(String(24), nullable=False)
-    source_id: Mapped[str] = mapped_column(String(255), nullable=False)
-    board_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    guideline_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    migration_state: Mapped[str] = mapped_column(String(32), nullable=False)
-    source_digest: Mapped[str] = mapped_column(String(64), nullable=False)
-    details: Mapped[dict] = mapped_column(
-        JSON,
-        nullable=False,
-        default=dict,
-        server_default=text("'{}'"),
-    )
-    migrated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 
 class CardRejectedLifecycleMigrationRow(Base):

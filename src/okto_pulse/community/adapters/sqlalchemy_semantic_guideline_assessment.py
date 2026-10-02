@@ -1446,14 +1446,8 @@ class CommunitySqlAlchemySemanticGuidelineAssessment:
         semantic: SemanticGuidelineRevisionRow,
     ) -> GuidelineRevision:
         if (
-            semantic.authority_state
-            not in {"native", "legacy_context_only"}
-            or not isinstance(semantic.metrics, list)
+            not isinstance(semantic.metrics, list)
             or not isinstance(legacy.tags, list)
-            or (
-                semantic.authority_state == "legacy_context_only"
-                and semantic.metrics
-            )
         ):
             raise GuidelinePolicyDigestConflict(
                 "semantic_guideline_revision_not_executable"
@@ -2605,8 +2599,6 @@ class CommunitySqlAlchemySemanticGuidelineAssessment:
             binding is None
             or legacy_binding is None
             or revision is None
-            or revision.authority_state
-            not in {"native", "legacy_context_only"}
             or legacy_binding.state != "active"
             or binding.board_id != receipt.subject.board_id
             or binding.guideline_id != receipt.guideline_id
@@ -3852,8 +3844,6 @@ class CommunitySqlAlchemySemanticGuidelineAssessment:
                         == scope.guideline_revision_id,
                         SemanticGuidelineRevisionRow.revision_digest
                         == scope.guideline_revision_digest,
-                        SemanticGuidelineRevisionRow.authority_state
-                        != "legacy_incompatible",
                     )
                     .with_for_update()
                 )

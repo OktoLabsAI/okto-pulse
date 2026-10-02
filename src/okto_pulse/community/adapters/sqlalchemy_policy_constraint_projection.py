@@ -889,10 +889,6 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
                 )
         for semantic, legacy in revision_pairs:
             active = semantic.revision_id in active_revision_ids
-            if semantic.authority_state == "legacy_incompatible" and active:
-                raise PolicyConstraintProjectionConflict(
-                    "semantic_guideline_legacy_revision_active"
-                )
             successor = revision_successor.get(semantic.revision_id)
             desired.append(
                 _desired_semantic_node(
@@ -904,8 +900,6 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
                     reason=(
                         None
                         if active
-                        else "semantic_guideline_revision_legacy_incompatible"
-                        if semantic.authority_state == "legacy_incompatible"
                         else "semantic_guideline_revision_superseded"
                         if successor
                         else "semantic_guideline_revision_unbound"
@@ -919,14 +913,11 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
                         "revision_number": legacy.revision_number,
                         "semantic_version": legacy.semantic_version,
                         "revision_digest": semantic.revision_digest,
-                        "authority_state": semantic.authority_state,
                     },
                     created_at=semantic.created_at,
                     projected_at=projected_at,
                 )
             )
-            if semantic.authority_state == "legacy_incompatible":
-                continue
             if not isinstance(semantic.metrics, list):
                 raise PolicyConstraintProjectionConflict(
                     "semantic_guideline_metrics_invalid"

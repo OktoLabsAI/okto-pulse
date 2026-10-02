@@ -61,8 +61,8 @@ async def test_materialized_domain_events_erased_under_permit(tmp_path):
     async with get_session_factory()() as session:
         session.add_all(
             [
-                Board(id=BOARD_ID, name="Erase", owner_id="owner"),
-                Board(id=OTHER_BOARD_ID, name="Keep", owner_id="owner"),
+                Board(realm_id="local", id=BOARD_ID, name="Erase", owner_id="owner"),
+                Board(realm_id="local", id=OTHER_BOARD_ID, name="Keep", owner_id="owner"),
             ]
         )
         await session.flush()
@@ -129,7 +129,7 @@ async def test_purge_acquires_policy_board_mutex_before_erasure_permit(
     register_community_relational_schema_lifecycle()
     await database_module.init_db()
     async with get_session_factory()() as session:
-        session.add(Board(id=BOARD_ID, name="erase", owner_id="owner"))
+        session.add(Board(realm_id="local", id=BOARD_ID, name="erase", owner_id="owner"))
         await session.commit()
 
     calls: list[str] = []
@@ -177,17 +177,15 @@ async def test_purge_authorizes_only_target_board_and_proves_zero_residuals(
         await session.execute(text("PRAGMA defer_foreign_keys=ON"))
         session.add_all(
             [
-                Board(id=BOARD_ID, name="erase", owner_id="owner"),
-                Board(id=OTHER_BOARD_ID, name="keep", owner_id="owner"),
+                Board(realm_id="local", id=BOARD_ID, name="erase", owner_id="owner"),
+                Board(realm_id="local", id=OTHER_BOARD_ID, name="keep", owner_id="owner"),
                 KnowledgePropagationScopeRecord(
                     id="scope-erase",
                     board_id=BOARD_ID,
                     target_type="card",
                     target_id="card-erase",
                     scope_revision=2,
-                    v2_active=True,
                     selection_state="explicit_ids",
-                    v2_activated_at=now,
                 ),
                 KnowledgePropagationScopeRecord(
                     id="scope-keep",
@@ -195,8 +193,7 @@ async def test_purge_authorizes_only_target_board_and_proves_zero_residuals(
                     target_type="card",
                     target_id="card-keep",
                     scope_revision=0,
-                    v2_active=False,
-                    selection_state=None,
+                    selection_state="omitted",
                 ),
                 KnowledgeAssignmentRecord(
                     assignment_id="assignment-new",
@@ -649,7 +646,7 @@ async def test_board_erasure_job_survives_source_commit_and_is_removed_on_comple
     now = datetime.now(timezone.utc)
 
     async with get_session_factory()() as session:
-        session.add(Board(id=BOARD_ID, name="erase", owner_id="owner"))
+        session.add(Board(realm_id="local", id=BOARD_ID, name="erase", owner_id="owner"))
         await session.commit()
 
     # Rollback proves the continuation is atomic with the source mutation.

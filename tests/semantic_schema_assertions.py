@@ -16,7 +16,6 @@ def exact_semantic_schema(connection):
         models.SemanticGuidelineWaiverRow,
         models.SemanticGuidelineWaiverEventRow,
         models.SemanticGuidelineSkipRow,
-        models.SemanticGuidelineLegacyMigrationRow,
         models.GuidelineBoardBindingRow,
     )
     for model in tables:

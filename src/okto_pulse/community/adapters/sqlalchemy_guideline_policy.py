@@ -641,13 +641,7 @@ def _revision_from_rows(
         semantic.revision_id != row.revision_id
         or semantic.guideline_id != row.guideline_id
         or semantic.source_revision_digest != row.content_digest
-        or semantic.authority_state
-        not in {"native", "legacy_context_only"}
         or not isinstance(semantic.metrics, list)
-        or (
-            semantic.authority_state == "legacy_context_only"
-            and semantic.metrics
-        )
     ):
         raise GuidelinePolicyRevisionConflict(
             "guideline_semantic_revision_authority_invalid"
@@ -927,8 +921,6 @@ def _semantic_revision_row(
         metrics=[metric.digest_payload() for metric in revision.metrics],
         revision_digest=revision.revision_digest,
         source_revision_digest=revision.revision_digest,
-        authority_state="native",
-        legacy_rules_digest=None,
         created_by=revision.created_by,
         created_at=revision.created_at,
     )

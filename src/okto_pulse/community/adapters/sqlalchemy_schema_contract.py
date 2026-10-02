@@ -189,7 +189,6 @@ COMMUNITY_SCHEMA_EXTENSION_TABLES = frozenset(
         "semantic_guideline_waivers",
         "semantic_guideline_waiver_events",
         "semantic_guideline_skips",
-        "semantic_guideline_legacy_migrations",
         "semantic_guideline_assessments_v2",
         "semantic_guideline_findings_v2",
         "semantic_guideline_metric_results_v2",

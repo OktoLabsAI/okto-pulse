@@ -494,7 +494,7 @@ def _policy_union_statement(
             value(GuidelineBoardBindingRow.state, "text_b"),
             value(GuidelineBoardBindingRow.enforcement, "text_c"),
             value(SemanticGuidelineBindingConfigurationRow.enforcement, "text_d"),
-            value(SemanticGuidelineRevisionRow.authority_state, "text_e"),
+            empty("text_e"),
             value(SemanticGuidelineRevisionRow.metrics, "json_a"),
             value(
                 SemanticGuidelineBindingConfigurationRow.metric_threshold_overrides,
@@ -880,9 +880,8 @@ async def _load_policy_snapshot_data(
             state = _policy_text(row["text_b"])
             legacy_enforcement = _policy_text(row["text_c"])
             enforcement = _policy_text(row["text_d"])
-            authority_state = _policy_text(row["text_e"])
             minimum_confidence = _policy_int(row["int_a"])
-            metrics, context_only = _policy_metric_details(row["json_a"], row["json_b"])
+            metrics, _ = _policy_metric_details(row["json_a"], row["json_b"])
             if (
                 title is None
                 or state not in {"active", "unlinked"}
@@ -891,7 +890,6 @@ async def _load_policy_snapshot_data(
                 or minimum_confidence is None
                 or not 0 <= minimum_confidence <= 100
                 or metrics is None
-                or (authority_state != "native" and not context_only)
             ):
                 inconsistent_authorities.add(authority_key)
                 continue

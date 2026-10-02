@@ -165,8 +165,6 @@ def _semantic_revision_row(
         metrics=[_metric().digest_payload()],
         revision_digest=revision.content_digest,
         source_revision_digest=revision.content_digest,
-        authority_state="native",
-        legacy_rules_digest=None,
         created_by=revision.created_by,
         created_at=revision.created_at,
     )

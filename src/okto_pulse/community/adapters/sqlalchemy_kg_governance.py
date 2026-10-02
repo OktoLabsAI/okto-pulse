@@ -70,7 +70,6 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     SemanticGuidelineFindingV2Row,
     SemanticGuidelineBindingConfigurationRow,
     SemanticGuidelineFindingRow,
-    SemanticGuidelineLegacyMigrationRow,
     SemanticGuidelineMetricResultRow,
     SemanticGuidelineRevisionRow,
     SemanticGuidelineSkipRow,
@@ -430,11 +429,6 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 predicate=SemanticSubjectVersionEventRow.board_id == board_id,
             )
             await context.execute(
-                delete(SemanticGuidelineLegacyMigrationRow).where(
-                    SemanticGuidelineLegacyMigrationRow.board_id == board_id
-                )
-            )
-            await context.execute(
                 delete(SemanticGuidelineBindingConfigurationRow).where(
                     SemanticGuidelineBindingConfigurationRow.board_id == board_id
                 )
@@ -648,7 +642,6 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 SemanticGuidelineAssessmentReceiptRow,
                 SemanticGuidelineBindingConfigurationRow,
                 SemanticGuidelineFindingRow,
-                SemanticGuidelineLegacyMigrationRow,
                 SemanticGuidelineMetricResultRow,
                 SemanticGuidelineSkipRow,
                 SemanticGuidelineWaiverEventRow,
@@ -702,7 +695,6 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 SemanticGuidelineAssessmentReceiptRow,
                 SemanticGuidelineBindingConfigurationRow,
                 SemanticGuidelineFindingRow,
-                SemanticGuidelineLegacyMigrationRow,
                 SemanticGuidelineMetricResultRow,
                 SemanticGuidelineSkipRow,
                 SemanticGuidelineWaiverEventRow,

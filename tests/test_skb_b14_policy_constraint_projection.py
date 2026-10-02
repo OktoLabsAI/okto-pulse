@@ -697,6 +697,7 @@ async def test_semantic_projection_outbox_is_atomic_and_causation_idempotent(
     async with factory() as session, session.begin():
         session.add(
             Board(
+                realm_id="local",
                 id=BOARD_ID,
                 name="Semantic KG",
                 owner_id="owner-1",

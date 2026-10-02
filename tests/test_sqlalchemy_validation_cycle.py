@@ -8,6 +8,8 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+from okto_pulse.core.domain.execution_contract import new_execution_contract
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -100,6 +102,14 @@ def _permit_only(monkeypatch, *permissions: str) -> None:
 
 def _spec(index: int) -> Spec:
     return Spec(
+        architecture_adoption=ArchitectureAdoptionScope(
+            board_id=BOARD_ID, spec_id=f"spec-cycle-{index:02d}", adopted_in_edition=1,
+            actor_id="owner", inherited_resource_ids=(),
+        ).model_dump(mode="json"),
+        execution_contract=new_execution_contract(
+            board_id=BOARD_ID, spec_id=f"spec-cycle-{index:02d}", edition=1,
+            actor_id="owner", origin="new_spec",
+        ),
         id=f"spec-cycle-{index:02d}",
         board_id=BOARD_ID,
         title=f"Validation cycle {index}",
@@ -241,7 +251,7 @@ async def cycle_rig(tmp_path, monkeypatch):
         expire_on_commit=False,
     )
     async with factory() as session:
-        session.add(Board(id=BOARD_ID, name="Cycle", owner_id="owner"))
+        session.add(Board(realm_id="local", id=BOARD_ID, name="Cycle", owner_id="owner"))
         session.add_all(_spec(index) for index in range(50))
         await session.commit()
 
@@ -389,8 +399,6 @@ def _semantic_authority_rows(
             metrics=metrics,
             revision_digest=revision_digest,
             source_revision_digest=source_digest,
-            authority_state="native",
-            legacy_rules_digest=None,
             created_by="owner",
             created_at=NOW,
         ),
