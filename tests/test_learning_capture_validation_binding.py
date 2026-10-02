@@ -37,7 +37,7 @@ def reviewer(denied=None):
         actor_name='Reviewer', permissions=flags)
 
 
-async def prepare(runtime, *, legacy=False, learning_policy=None):
+async def prepare(runtime, *, missing_report=False, learning_policy=None):
     factory, assembler, _, request = runtime
     register_report_adapters()
     async with factory() as session:
@@ -45,7 +45,7 @@ async def prepare(runtime, *, legacy=False, learning_policy=None):
         bug.status = 'validation'
         bug.validations = []
         bug.conclusions = [{'text': 'The executor supplied the correction report.',
-            'source': 'legacy' if legacy else 'move_to_validation', 'author_id': 'executor'}]
+            'source': 'move_to_validation', 'author_id': 'executor'}] if not missing_report else []
         spec = await session.get(Spec, bug.spec_id)
         spec.status = 'in_progress'
         board = await session.get(Board, BOARD)
@@ -123,11 +123,11 @@ async def test_selected_capture_does_not_bypass_other_completion_rejection(runti
         assert bug.status.value == 'rejected' and not bug.learning_closeout_bindings
 
 
-@pytest.mark.parametrize('legacy', [False, True])
-async def test_stale_or_legacy_fallback_refusal_leaves_no_partial_review_after_outer_commit(runtime, legacy):
+@pytest.mark.parametrize('missing_report', [False, True])
+async def test_stale_capture_or_missing_report_refusal_leaves_no_partial_review_after_outer_commit(runtime, missing_report):
     factory, _, _, _ = runtime
-    request, data = await prepare(runtime, legacy=legacy)
-    if not legacy:
+    request, data = await prepare(runtime, missing_report=missing_report)
+    if not missing_report:
         data['learning_capture']['fingerprint'] = 'f' * 64
     async with factory() as session:
         before = await event_snapshot(session)
@@ -231,3 +231,22 @@ async def test_transports_preserve_capture_selection_and_authority(runtime, monk
         bug = await session.get(Card, request.bug_id)
         assert bool(bug.learning_closeout_bindings) is not denied
         assert bug.status.value == ('validation' if denied else 'done')
+
+
+async def test_review_never_fabricates_executor_conclusion_or_conclusion_event(runtime):
+    # Independent gates are deliberately admitted here to isolate the writer.
+    # This is not proof that an incomplete handoff passes production governance.
+    factory, _, _, _ = runtime
+    request, data = await prepare(runtime, missing_report=True)
+    data.pop('learning_capture')
+    async with factory() as session:
+        before = await event_snapshot(session)
+        await SubmitTaskValidationUseCase().execute(SubmitTaskValidationCommand(request.bug_id, data),
+            actor=reviewer(), uow=validation_uow(session))
+        bug = await session.get(Card, request.bug_id)
+        assert bug.conclusions == []
+        assert len(bug.validations) == 1
+        added = [row for row in await event_snapshot(session) if row not in before]
+        assert all('conclusion' not in row.event_type for row in added)
+    async with factory() as session:
+        assert (await session.get(Card, request.bug_id)).conclusions == []
