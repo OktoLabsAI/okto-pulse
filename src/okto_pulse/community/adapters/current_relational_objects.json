@@ -2086,5 +2086,17 @@
     "name": "trg_semantic_pinpoint_v2_semantic_guideline_metric_results_v2_u",
     "table": "semantic_guideline_metric_results_v2",
     "sql": "CREATE TRIGGER \"trg_semantic_pinpoint_v2_semantic_guideline_metric_results_v2_u\"\nBEFORE UPDATE ON \"semantic_guideline_metric_results_v2\"\nBEGIN\n    SELECT RAISE(ABORT, 'semantic_metric_result_v2_immutable');\nEND"
+  },
+  {
+    "kind": "trigger",
+    "name": "trg_guideline_import_binding_candidate_update",
+    "table": "guideline_import_binding_candidates",
+    "sql": "CREATE TRIGGER \"trg_guideline_import_binding_candidate_update\"\nBEFORE UPDATE ON \"guideline_import_binding_candidates\"\nBEGIN\n    SELECT RAISE(ABORT, 'guideline_import_binding_candidate_immutable');\nEND"
+  },
+  {
+    "kind": "trigger",
+    "name": "trg_guideline_import_binding_candidate_delete",
+    "table": "guideline_import_binding_candidates",
+    "sql": "CREATE TRIGGER \"trg_guideline_import_binding_candidate_delete\"\nBEFORE DELETE ON \"guideline_import_binding_candidates\"\nWHEN NOT EXISTS (\n    SELECT 1 FROM \"kg_board_erasure_permits\" AS permit\n    WHERE permit.\"board_id\" = OLD.\"target_board_id\"\n)\nBEGIN\n    SELECT RAISE(ABORT, 'guideline_import_binding_candidate_immutable');\nEND"
   }
 ]

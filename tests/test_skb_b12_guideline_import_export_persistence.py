@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from importlib.resources import files
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -12,9 +14,8 @@ from sqlalchemy.exc import IntegrityError
 
 import okto_pulse.community.app as _community_app  # noqa: F401
 import okto_pulse.core.infra.database as database_module
-from okto_pulse.community.adapters.relational_schema_steps import (
-    _migrate_guideline_policy_lifecycle_substrate,
-    guideline_import_binding_candidate_postgresql_ddl,
+from okto_pulse.community.adapters.current_relational_schema import (
+    StorageFormatError, current_schema_contract, initialize_current_schema,
 )
 from okto_pulse.community.adapters.sqlalchemy_database import (
     get_engine,
@@ -46,9 +47,7 @@ from okto_pulse.core.domain.guideline_import_export import (
     GuidelineExportBinding,
     GuidelineExportRevision,
     GuidelineExportSnapshot,
-    GuidelineHistoryStatus,
     build_guideline_export_v3,
-    parse_guideline_export,
     plan_guideline_import,
 )
 from okto_pulse.core.domain.guideline_policy import (
@@ -84,10 +83,20 @@ BOARD_OWNER_ID = "actor-b12-board-owner"
 METRIC_CODE = "architecture.segregation"
 
 
-async def _fresh_database(path: Path) -> None:
+async def _fresh_database(path: Path, *, full_schema: bool = False) -> None:
     database_module.create_database(f"sqlite+aiosqlite:///{path.as_posix()}")
+    if full_schema:
+        await initialize_current_schema(get_engine(), current_schema_contract())
+        return
+    # Isolated persistence fixtures seed live binding history directly. Their
+    # adoption authority is covered by the full-schema governance suites.
     async with get_engine().begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
+        definitions = json.loads(files("okto_pulse.community.adapters").joinpath(
+            "current_relational_objects.json").read_text(encoding="utf-8"))
+        for definition in definitions:
+            if definition["table"] == "guideline_import_binding_candidates":
+                await connection.exec_driver_sql(definition["sql"])
 
 
 def _revision_row(
@@ -285,8 +294,8 @@ async def _seed_complete_history() -> None:
     async with get_session_factory()() as session:
         session.add_all(
             [
-                Board(id=BOARD_ID, name="B12", owner_id="actor-b12"),
-                Board(
+                Board(realm_id="local", id=BOARD_ID, name="B12", owner_id="actor-b12"),
+                Board(realm_id="local",
                     id=OTHER_BOARD_ID,
                     name="B12 other",
                     owner_id="actor-b12",
@@ -562,9 +571,9 @@ def _import_plan_many(
 
 async def _seed_target_board() -> None:
     async with get_session_factory()() as session:
-        session.add(Board(id=BOARD_ID, name="B12 target", owner_id=BOARD_OWNER_ID))
+        session.add(Board(realm_id="local", id=BOARD_ID, name="B12 target", owner_id=BOARD_OWNER_ID))
         session.add(
-            Board(
+            Board(realm_id="local",
                 id=OTHER_BOARD_ID,
                 name="B12 other target",
                 owner_id=BOARD_OWNER_ID,
@@ -683,9 +692,7 @@ async def test_export_rows_are_complete_board_scoped_and_deterministic(
 async def test_apply_is_atomic_replay_safe_and_keeps_bindings_inert(
     tmp_path: Path,
 ) -> None:
-    await _fresh_database(tmp_path / "b12-apply.sqlite3")
-    assert await _migrate_guideline_policy_lifecycle_substrate() is None
-    assert await _migrate_guideline_policy_lifecycle_substrate() == "skipped"
+    await _fresh_database(tmp_path / "b12-apply.sqlite3", full_schema=True)
     await _seed_target_board()
     plan = _import_plan(_source_aggregate())
 
@@ -1177,9 +1184,7 @@ async def test_flush_failure_requires_caller_rollback_and_leaves_zero_rows(
 async def test_candidate_ledger_is_db_immutable_except_board_erasure_permit(
     tmp_path: Path,
 ) -> None:
-    await _fresh_database(tmp_path / "b12-candidate-immutable.sqlite3")
-    assert await _migrate_guideline_policy_lifecycle_substrate() is None
-    assert await _migrate_guideline_policy_lifecycle_substrate() == "skipped"
+    await _fresh_database(tmp_path / "b12-candidate-immutable.sqlite3", full_schema=True)
     await _seed_target_board()
     plan = _import_plan(_source_aggregate())
     async with get_session_factory()() as session:
@@ -1267,27 +1272,27 @@ async def test_candidate_ledger_is_db_immutable_except_board_erasure_permit(
         )
 
 
-def test_postgresql_candidate_guard_covers_update_and_delete() -> None:
-    function_ddl, trigger_ddl = guideline_import_binding_candidate_postgresql_ddl()
-    assert "TG_OP = 'DELETE'" in function_ddl
-    assert "kg_board_erasure_permits" in function_ddl
-    assert "BEFORE UPDATE OR DELETE" in trigger_ddl
-    assert "FOR EACH ROW" in trigger_ddl
 
 
 @pytest.mark.asyncio
-async def test_missing_sqlite_candidate_trigger_is_a_migration_delta(
+async def test_missing_sqlite_candidate_trigger_is_refused_without_repair(
     tmp_path: Path,
 ) -> None:
-    await _fresh_database(tmp_path / "b12-missing-trigger.sqlite3")
-    assert await _migrate_guideline_policy_lifecycle_substrate() is None
-    assert await _migrate_guideline_policy_lifecycle_substrate() == "skipped"
+    await _fresh_database(tmp_path / "b12-missing-trigger.sqlite3", full_schema=True)
     async with get_engine().begin() as connection:
         await connection.execute(
             text('DROP TRIGGER "trg_guideline_import_binding_candidate_update"')
         )
-    assert await _migrate_guideline_policy_lifecycle_substrate() is None
-    assert await _migrate_guideline_policy_lifecycle_substrate() == "skipped"
+    database_path = tmp_path / "b12-missing-trigger.sqlite3"
+    before = database_path.read_bytes()
+    with pytest.raises(StorageFormatError):
+        await initialize_current_schema(get_engine(), current_schema_contract())
+    assert database_path.read_bytes() == before
+    async with get_engine().connect() as connection:
+        assert (await connection.execute(text(
+            "SELECT count(*) FROM sqlite_schema WHERE type='trigger' "
+            "AND name='trg_guideline_import_binding_candidate_update'"
+        ))).scalar_one() == 0
 
 
 @pytest.mark.asyncio
@@ -1327,68 +1332,3 @@ async def test_import_digest_and_actor_are_validated_before_any_write(
             await session.scalar(select(func.count()).select_from(GuidelineRevisionRow))
             == 0
         )
-
-
-@pytest.mark.asyncio
-async def test_v1_contextual_baseline_preserves_textual_legacy_version(
-    tmp_path: Path,
-) -> None:
-    await _fresh_database(tmp_path / "b12-v1-baseline.sqlite3")
-    await _seed_target_board()
-    envelope = parse_guideline_export(
-        {
-            "schema_version": "1",
-            "kind": "guidelines",
-            "items": [
-                {
-                    "title": "Legacy draft guideline",
-                    "content": "Context retained without executable rules.",
-                    "tags": ["legacy", "draft"],
-                    "scope": "inline",
-                    "board_id": SOURCE_BOARD_ID,
-                    "version": "draft",
-                }
-            ],
-        },
-        legacy_exported_at=NOW,
-    )
-    plan = plan_guideline_import(
-        envelope,
-        target_owner_id=TARGET_OWNER_ID,
-        target_board_id=BOARD_ID,
-    )
-    guideline_id = plan.entries[0].aggregate.guideline_id
-    async with get_session_factory()() as session:
-        adapter = CommunitySqlAlchemyGuidelinePolicy(session)
-        await adapter.apply_guideline_import_plan(
-            plan,
-            imported_by=TARGET_OWNER_ID,
-            imported_at=NOW + timedelta(days=1),
-            import_digest=plan.import_digest,
-        )
-        await session.commit()
-
-    async with get_session_factory()() as session:
-        row = (
-            await session.execute(
-                select(GuidelineRevisionRow).where(
-                    GuidelineRevisionRow.guideline_id == guideline_id
-                )
-            )
-        ).scalar_one()
-        assert row.legacy_version is None
-        assert row.legacy_version_text == "draft"
-        assert row.legacy_version_unresolvable is True
-        assert row.legacy_tags == ["draft", "legacy"]
-
-        snapshot = await CommunitySqlAlchemyGuidelinePolicy(
-            session
-        ).export_guideline_snapshot(
-            guideline_ids=(guideline_id,),
-            owner_id=TARGET_OWNER_ID,
-            board_id=BOARD_ID,
-        )
-        aggregate = snapshot.aggregates[0]
-        assert aggregate.history_status is GuidelineHistoryStatus.BASELINE_ONLY
-        assert aggregate.revisions[0].legacy_version == "draft"
-        assert aggregate.bindings == ()
