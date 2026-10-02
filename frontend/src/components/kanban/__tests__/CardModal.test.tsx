@@ -1,3 +1,4 @@
+import { taskValidationFixture } from '@/test/taskValidationFixture';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CardModal, TestEvidenceTab } from '../CardModal';
@@ -770,6 +771,7 @@ describe('CardModal', () => {
       id: 'rejected-1',
       status: 'rejected',
       validations: [{
+        ...taskValidationFixture({ outcome: 'failed', recommendation: 'reject', validation_outcome: 'failed', completion_outcome: 'rejected', card_status: 'rejected' }),
         id: 'failed-validation-1',
         confidence: 62,
         estimated_completeness: 91,
@@ -862,6 +864,7 @@ describe('CardModal', () => {
 
   it('shows every governed completion gate that caused the current rejection', async () => {
     const gateValidation = {
+      ...taskValidationFixture(),
       id: 'successful-assessment-1',
       confidence: 96,
       estimated_completeness: 94,
@@ -1538,6 +1541,7 @@ describe('CardModal', () => {
       .mockResolvedValueOnce(validationCard)
       .mockRejectedValue(new Error('refresh unavailable'));
     apiMock.submitTaskValidation.mockResolvedValue({
+      ...taskValidationFixture(),
       id: 'validation-entry-1',
       confidence: 91,
       estimated_completeness: 89,
@@ -1952,6 +1956,7 @@ describe('CardModal', () => {
       id: 'validation-history-1',
       status: 'done',
       validations: [{
+        ...taskValidationFixture(),
         id: 'validation-entry-1',
         confidence: 92,
         estimated_completeness: 88,

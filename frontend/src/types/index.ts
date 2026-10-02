@@ -2399,14 +2399,12 @@ export interface Card {
 
 export type TaskValidationRecommendation = 'approve' | 'reject';
 export type TaskValidationOutcome = 'success' | 'failed';
-export type TaskValidationVerdict = 'pass' | 'fail';
 
 /**
  * Payload accepted by POST /cards/{card_id}/validate.
  *
  * The API deliberately keeps the `estimated_*` names for the reviewer scores.
- * Do not send the clean read aliases (`completeness`, `drift`, `verdict`,
- * `summary`) here: those are response/history compatibility fields.
+ * Requests and history share the canonical reviewer and score names.
  */
 export interface LearningCaptureSelection {
   learning_id: string;
@@ -2492,43 +2490,42 @@ export interface TaskValidationReviewerSeparation {
 /** Current Task Validation history contract. */
 export interface ValidationEntry {
   id: string;
-  card_id?: string;
-  board_id?: string;
+  card_id: string;
+  board_id: string;
 
-  reviewer_id?: string | null;
-  reviewer_name?: string | null;
+  reviewer_id: string;
+  reviewer_name: string;
 
   confidence: number;
-  confidence_justification?: string | null;
+  confidence_justification: string;
 
-  estimated_completeness?: number;
-  completeness_justification?: string | null;
+  estimated_completeness: number;
+  completeness_justification: string;
 
-  estimated_drift?: number;
-  drift_justification?: string | null;
+  estimated_drift: number;
+  drift_justification: string;
 
-  general_justification?: string | null;
+  general_justification: string;
 
-  recommendation?: TaskValidationRecommendation;
-  outcome?: TaskValidationOutcome;
-  threshold_violations?: string[];
-  resolved_thresholds?: TaskValidationResolvedThresholds | null;
-  reviewer_separation?: TaskValidationReviewerSeparation | null;
-  expected_subject_version?: number;
-  idempotency_key?: string;
-  validation_outcome?: TaskValidationOutcome;
-  completion_outcome?: 'completed' | 'rejected';
-  completion_gate_failures?: Array<{
+  recommendation: TaskValidationRecommendation;
+  outcome: TaskValidationOutcome;
+  threshold_violations: string[];
+  resolved_thresholds: TaskValidationResolvedThresholds;
+  reviewer_separation: TaskValidationReviewerSeparation;
+  expected_subject_version: number;
+  validation_outcome: TaskValidationOutcome;
+  completion_outcome: 'completed' | 'rejected';
+  completion_gate_failures: Array<{
     code: string;
     summary: string;
     reason_codes?: string[];
   }>;
   rejection_cause?: CardRejectionCause | null;
-  subject_version?: number;
+  subject_version: number;
   replayed?: boolean;
 
   created_at: string;
-  card_status?: CardStatus | null;
+  card_status: 'done' | 'rejected';
 }
 
 /** Semantic alias for callers that expose the submit endpoint response. */

@@ -1,3 +1,4 @@
+import { taskValidationFixture } from '@/test/taskValidationFixture';
 import { renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -33,7 +34,8 @@ describe('task validation REST client', () => {
       recommendation: 'approve',
     };
     const response: ValidationEntry = {
-      id: 'val-1',
+      ...taskValidationFixture(),
+        id: 'val-1',
       card_id: 'card-1',
       board_id: 'board-1',
       reviewer_id: 'reviewer-1',
@@ -93,14 +95,15 @@ describe('task validation REST client', () => {
     expect(validation).toEqual(response);
   });
 
-  it('keeps legacy-only validation aliases representable', () => {
+  it('keeps native historical review fields representable', () => {
     const historyEntry: ValidationEntry = {
-      id: 'legacy-val-1',
+      ...taskValidationFixture(),
+        id: 'history-val-1',
       reviewer_id: 'reviewer',
       confidence: 75,
       estimated_completeness: 82,
       estimated_drift: 20,
-      general_justification: 'Historical entry created before clean aliases were dual-written.',
+      general_justification: 'Historical entry created under the current validation contract.',
       recommendation: 'approve',
       outcome: 'success',
       threshold_violations: [],
