@@ -11797,7 +11797,7 @@ class ImplementationTargetResolutionRow(Base):
 
 
 class DeliveryEvidenceRecordRow(Base):
-    """Append-only delivery bindings/waivers/revocations, not graph projections."""
+    """Append-only human-authorized Spec waivers and their revocations."""
 
     __tablename__ = "delivery_evidence_records"
     __table_args__ = (
@@ -11810,7 +11810,7 @@ class DeliveryEvidenceRecordRow(Base):
         ),
         CheckConstraint("edition >= 1", name="ck_delivery_evidence_edition"),
         CheckConstraint(
-            "kind IN ('implementation', 'test', 'waiver', 'revoke')",
+            "kind IN ('waiver', 'revoke')",
             name="ck_delivery_evidence_kind",
         ),
         Index("ix_delivery_evidence_scope", "board_id", "spec_id", "edition"),
@@ -11855,11 +11855,8 @@ BEGIN SELECT RAISE(ABORT, 'delivery_audit_immutable'); END""",
 class CardDeliveryEvidenceRecordRow(Base):
     """Append-only card-scoped delivery bindings/revocations.
 
-    Sibling of delivery_evidence_records under the per-task re-anchoring: the
-    task owns its bindings (board, card, spec, spec_edition) with its own CAS
-    fence (card policy_version) and actor-scoped idempotency. ``migrated_from``
-    carries provenance for rows copied from the 0.3.3 spec ledger by the
-    one-shot migration; the legacy table is never edited (copy-not-move).
+    The task owns its bindings (board, card, spec, spec_edition), CAS fence
+    (card policy_version), and actor-scoped idempotency.
     """
 
     __tablename__ = "card_delivery_evidence_records"
@@ -11903,15 +11900,10 @@ class CardDeliveryEvidenceRecordRow(Base):
     idempotency_key: Mapped[str] = mapped_column(String(512), nullable=False)
     payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
-    # Provenance of migrated rows: {spec_id, edition, record_id} in the legacy
-    # spec ledger. NULL for rows recorded natively on the card ledger.
-    migrated_from: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 
-# Append-only guards equivalent to the legacy delivery_audit_immutable pair:
-# rows are immutable while board/card exist, and inserts must resolve to a
-# real card in the same board. Migrations copy; they never move or edit.
+# Rows are immutable while board/card exist; inserts require the same Board.
 CARD_DELIVERY_GUARDS = {
     "scope": """BEFORE INSERT ON card_delivery_evidence_records
 WHEN NOT EXISTS (SELECT 1 FROM cards WHERE id=NEW.card_id AND board_id=NEW.board_id)

@@ -251,6 +251,39 @@ async def record(store, data, human=False):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["implementation", "test"])
+async def test_spec_ledger_rejects_proof_rows_at_storage_boundary(ledger, kind):
+    session, _, _ = ledger
+    with pytest.raises(IntegrityError, match="ck_delivery_evidence_kind"):
+        async with session.begin_nested():
+            session.add(DeliveryEvidenceRecordRow(
+                id="invalid-spec-proof", board_id=BOARD_ID, spec_id=SPEC_ID, edition=1,
+                kind=kind, actor_id="owner", actor_kind="human", idempotency_key="invalid-proof",
+                payload_sha256="a" * 64, payload={}, created_at=datetime.now(timezone.utc),
+            ))
+            await session.flush()
+    assert not (await session.scalars(select(DeliveryEvidenceRecordRow))).all()
+    assert not (await session.scalars(select(CardDeliveryEvidenceRecordRow))).all()
+
+
+@pytest.mark.asyncio
+async def test_test_record_without_outcome_cannot_borrow_live_scenario_result(ledger):
+    from okto_pulse.core.domain.delivery_evidence import DeliveryScope
+
+    session, store, _ = ledger
+    implementation = await record(store, command())
+    saved = await record(store, command("test", implementation_ids=[implementation["id"]]))
+    row = await session.get(CardDeliveryEvidenceRecordRow, saved["id"])
+    payload = {key: value for key, value in row.payload.items() if key != "test_result"}
+    candidate = CardDeliveryEvidenceRecordRow(id=row.id, actor_id=row.actor_id, payload=payload)
+    spec = await session.get(Spec, SPEC_ID)
+    fact = await store._test(candidate, DeliveryScope(BOARD_ID, SPEC_ID, 1), (), spec)
+    assert fact is not None and not fact.current_verified_run
+    assert row.payload["test_result"] == "passed"
+    assert (await store.projection(BOARD_ID, SPEC_ID))["allowed"]
+
+
+@pytest.mark.asyncio
 async def test_full_delivery_roundtrip_signed_test_replay_and_read_only_projection(
     ledger,
 ):

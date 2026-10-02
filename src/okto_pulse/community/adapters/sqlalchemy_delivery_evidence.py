@@ -317,9 +317,8 @@ class CommunityDeliveryEvidenceStore:
         if len(matches) != 1:
             return None
         scenario = matches[0]
-        # New records retain the authenticated outcome even when the live
-        # scenario later changes. Legacy records keep their historical reader.
-        recorded_result = payload.get("test_result", scenario.get("status"))
+        # The authenticated outcome belongs to the recorded execution.
+        recorded_result = payload.get("test_result")
         evidence = scenario.get("evidence") or {}
         verifier = resolve_test_evidence_write_verifier()
         valid = (
@@ -359,14 +358,7 @@ class CommunityDeliveryEvidenceStore:
                 evidence=evidence,
             ).verified
         if valid and payload.get("implementation_ids"):
-            # Card-ledger test records reference card-ledger implementation ids
-            # (CardRecord rows); legacy spec records reference the legacy table.
-            binding_model = CardRecord if isinstance(record, CardRecord) else Record
-            binding_scope_fields = (
-                ("board_id", "spec_id", "spec_edition")
-                if binding_model is CardRecord
-                else ("board_id", "spec_id", "edition")
-            )
+            binding_scope_fields = ("board_id", "spec_id", "spec_edition")
             try:
                 executed_at = datetime.fromisoformat(
                     (evidence["verification_report"]["observed_at"]
@@ -377,7 +369,7 @@ class CommunityDeliveryEvidenceStore:
                 )
                 for implementation_id in payload["implementation_ids"]:
                     binding_record = await self.session.get(
-                        binding_model, implementation_id
+                        CardRecord, implementation_id
                     )
                     if (
                         binding_record is None
@@ -433,9 +425,7 @@ class CommunityDeliveryEvidenceStore:
     async def projection(self, board_id, spec_id):
         spec = await self._spec(board_id, spec_id)
         scope = DeliveryScope(board_id, spec_id, int(spec.edition))
-        # Spec-scoped READ returns the card-ledger rollup (FR-4): the spec
-        # projection is a derivation, not a recording surface. The response
-        # keeps the legacy shape and adds the per_card block (RDL-3).
+        # Spec-scoped READ derives the rollup from the native Card ledgers.
         snapshot, per_card = await self.load_rollup_snapshot(board_id, spec_id)
         evaluation = evaluate_delivery_coverage(snapshot)
         records = await self._records(scope)
@@ -458,7 +448,7 @@ class CommunityDeliveryEvidenceStore:
             )
         ).all()
         for execution in executions:
-            candidate = Record(
+            candidate = CardRecord(
                 id=execution.id,
                 actor_id=execution.submitted_by,
                 payload={
@@ -505,12 +495,13 @@ class CommunityDeliveryEvidenceStore:
             for scenario in spec.test_scenarios or []:
                 if scenario.get("id") not in (card.test_scenario_ids or []):
                     continue
-                candidate = Record(
+                candidate = CardRecord(
                     id=card.id + ":" + scenario["id"],
                     actor_id="projection",
                     payload={
                         "card_id": card.id,
                         "scenario_id": scenario["id"],
+                        "test_result": scenario.get("status"),
                         "test_receipt": (scenario.get("evidence") or {}).get(
                             "execution_receipt"
                         ),
@@ -638,8 +629,7 @@ class CommunityDeliveryEvidenceStore:
             payload=payload,
             created_at=datetime.now(timezone.utc),
         )
-        # Proof admission exists only in record_card. The legacy table remains
-        # readable and revocable; no historical bindings are rewritten here.
+        # Spec-level records contain only human waivers and revocations.
         self.session.add(record)
         await self.session.flush()
         return {"id": record.id, "replayed": False}
@@ -1258,7 +1248,7 @@ class CommunityDeliveryEvidenceStore:
 
     # ------------------------------------------------------------------
     # Spec rollup (FR-4): the spec projection derives from the card ledgers.
-    # Waivers stay on the legacy spec ledger as the human-only, rollup-level
+    # Waivers stay on the Spec ledger as the human-only, rollup-level
     # exception surface (BR-3); implementation/test proof is aggregated from
     # every linked card's snapshot.
     # ------------------------------------------------------------------
@@ -1344,7 +1334,7 @@ class CommunityDeliveryEvidenceStore:
         }
 
     async def _rollup_waivers(self, scope):
-        """Active human-authorized waivers from the legacy spec ledger."""
+        """Active human-authorized waivers from the Spec ledger."""
         records = await self._records(scope)
         revoked = {
             r.payload.get("record_id")

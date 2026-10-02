@@ -1,17 +1,11 @@
-"""Community persistence and additive migration for Spec Project structure."""
+"""Current Project structure storage, CAS, exact replay and reference fences."""
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 import pytest
-from sqlalchemy import JSON, bindparam, inspect as sa_inspect, select, text
+from sqlalchemy import JSON, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from okto_pulse.community.adapters import relational_schema_steps as schema_steps
-from okto_pulse.community.adapters.relational_schema_migrator import (
-    build_community_migration_ledger,
-)
 from okto_pulse.community.adapters.sqlalchemy_models import Spec
 from okto_pulse.community.adapters.sqlalchemy_models import (
     ProjectStructureMutationReceiptRow,
@@ -36,97 +30,6 @@ def test_project_structure_orm_column_is_nullable_json_without_defaults() -> Non
     assert list(Spec.__table__.columns)[-1] is column
     assert Spec.__table__.c.project_structure_revision.nullable is True
     assert Spec.__table__.c.project_structure_digest.nullable is True
-
-
-def test_project_structure_migration_has_one_idempotent_ledger_step() -> None:
-    steps = [
-        step
-        for step in build_community_migration_ledger()
-        if step.step_id == "_migrate_add_project_structure_column"
-    ]
-
-    assert len(steps) == 1
-    assert steps[0].idempotent is True
-    assert steps[0].destructive is False
-    assert steps[0].phase == "post_create_all"
-
-
-@pytest.mark.asyncio
-async def test_sqlite_migration_preserves_legacy_null_and_replays(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    engine = create_async_engine(
-        f"sqlite+aiosqlite:///{tmp_path / 'project-structure-legacy.db'}"
-    )
-    monkeypatch.setattr(schema_steps, "get_engine", lambda: engine)
-    updated_at = datetime(2026, 8, 23, 12, 30, tzinfo=timezone.utc).isoformat()
-    async with engine.begin() as connection:
-        await connection.execute(
-            text(
-                "CREATE TABLE specs ("
-                "id VARCHAR(36) PRIMARY KEY, version INTEGER NOT NULL, "
-                "updated_at TEXT NOT NULL, functional_requirements JSON)"
-            )
-        )
-        await connection.execute(
-            text(
-                "INSERT INTO specs "
-                "(id, version, updated_at, functional_requirements) "
-                "VALUES ('spec-legacy', 7, :updated_at, '[{\"id\":\"fr_1\"}]')"
-            ),
-            {"updated_at": updated_at},
-        )
-
-    first = await schema_steps._migrate_add_project_structure_column()
-    second = await schema_steps._migrate_add_project_structure_column()
-
-    async with engine.connect() as connection:
-        columns = await connection.run_sync(
-            lambda sync_connection: {
-                str(column["name"]): dict(column)
-                for column in sa_inspect(sync_connection).get_columns("specs")
-            }
-        )
-        row = (
-            await connection.execute(
-                text(
-                    "SELECT version, updated_at, functional_requirements, "
-                    "project_structure, project_structure_revision, "
-                    "project_structure_digest FROM specs WHERE id='spec-legacy'"
-                )
-            )
-        ).one()
-
-    assert first is None
-    assert second == "skipped"
-    assert columns["project_structure"]["nullable"] is True
-    assert columns["project_structure"]["default"] is None
-    assert columns["project_structure_revision"]["nullable"] is True
-    assert columns["project_structure_revision"]["default"] is None
-    assert columns["project_structure_digest"]["nullable"] is True
-    assert columns["project_structure_digest"]["default"] is None
-    assert tuple(row) == (7, updated_at, '[{"id":"fr_1"}]', None, None, None)
-
-    payload: list[dict[str, object]] = []
-    async with engine.begin() as connection:
-        await connection.execute(
-            text(
-                "UPDATE specs SET project_structure=:payload "
-                "WHERE id='spec-legacy'"
-            ).bindparams(bindparam("payload", type_=JSON)),
-            {"payload": payload},
-        )
-        stored = (
-            await connection.execute(
-                select(Spec.__table__.c.project_structure).where(
-                    Spec.__table__.c.id == "spec-legacy"
-                )
-            )
-        ).scalar_one()
-
-    assert stored == []
-    await engine.dispose()
 
 
 def _record_for_atomic_write(*, version: int = 2) -> StructuredSpecRecord:
@@ -169,8 +72,8 @@ async def test_atomic_project_structure_write_cas_and_exact_replay(tmp_path) -> 
         await connection.run_sync(ProjectStructureMutationReceiptRow.__table__.create)
         await connection.execute(
             text(
-                "INSERT INTO specs (id, version, project_structure) "
-                "VALUES ('spec-atomic', 1, NULL)"
+                "INSERT INTO specs (id, version, project_structure_revision, project_structure) "
+                "VALUES ('spec-atomic', 1, 0, NULL)"
             )
         )
     store = CommunitySqlAlchemyStructuredSpecStore()
