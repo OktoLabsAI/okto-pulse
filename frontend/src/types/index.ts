@@ -3720,8 +3720,7 @@ export interface ConclusionEntry {
   completeness_justification: string;
   drift: number;
   drift_justification: string;
-  source?: 'move_to_validation' | 'move_to_done' | 'task_validation' | string;
-  validation_id?: string;
+  source: 'move_to_validation' | 'move_to_done';
   impact_evidence?: ImpactEvidence | null;
 }
 

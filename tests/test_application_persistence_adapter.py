@@ -87,7 +87,9 @@ async def test_card_gate_projection_keeps_history_bodies_inside_sqlite(tmp_path)
                         {
                             "author_id": "reviewer-1",
                             "private_body": "C" * 20_000,
-                        }
+                        },
+                        {"author_agent_id": "old-author", "author": "old-author",
+                         "actor_id": "old-author", "created_by": "old-author"},
                     ],
                 },
             ),
@@ -141,6 +143,15 @@ async def test_card_gate_projection_keeps_history_bodies_inside_sqlite(tmp_path)
                     limit=1,
                 ),
             )
+            old_authored = await adapter.list(
+                session,
+                ApplicationQuery(
+                    entity="card",
+                    filters=(ApplicationFilter("id", "eq", card_id),
+                             ApplicationFilter("conclusion_actor_id", "eq", "old-author")),
+                    select_fields=("id",),
+                ),
+            )
     finally:
         event.remove(engine.sync_engine, "before_cursor_execute", capture)
         await engine.dispose()
@@ -156,6 +167,7 @@ async def test_card_gate_projection_keeps_history_bodies_inside_sqlite(tmp_path)
     assert "validation-5" in projected[0].recent_validation_5
     assert "validation-4" not in repr(projected[0].values)
     assert [row.id for row in authored] == [card_id]
+    assert not old_authored
     sql = "\n".join(statements).lower()
     assert "cards.validations as validations" not in sql
     assert "cards.conclusions as conclusions" not in sql

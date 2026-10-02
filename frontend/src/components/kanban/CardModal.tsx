@@ -2887,11 +2887,6 @@ export function ExecutionReportsPanel({ card }: { card: Card }) {
               <p className="text-xs font-semibold text-gray-700 dark:text-gray-200">
                 Execution report #{reports.length - index}
               </p>
-              {report.source === 'task_validation' && (
-                <p className="mt-0.5 text-[10px] text-amber-700 dark:text-amber-300">
-                  Legacy report generated during task validation
-                </p>
-              )}
             </div>
             <span className="text-[10px] text-gray-400">
               {shortId(report.author_id)} ·{' '}

@@ -2210,7 +2210,6 @@ export function exportCard(card: Card, spec?: Spec | null): string {
       if (c.completeness != null) e += `**Completeness:** ${c.completeness}%${c.completeness_justification ? ` — ${c.completeness_justification}` : ''}\n\n`;
       if (c.drift != null) e += `**Drift:** ${c.drift}%${c.drift_justification ? ` — ${c.drift_justification}` : ''}\n\n`;
       if (c.source) e += `**Source:** ${c.source}\n\n`;
-      if (c.validation_id) e += `**Validation ID:** ${c.validation_id}\n\n`;
       return e;
     }).join('');
     body += `## Conclusions\n\n${entries}`;

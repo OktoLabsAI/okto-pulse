@@ -195,13 +195,7 @@ def _predicate(model: Any, item: ApplicationFilter):
         entries = func.json_each(
             func.coalesce(models.Card.conclusions, "[]")
         ).table_valued("key", "value", joins_implicitly=True)
-        actor_id = func.coalesce(
-            func.json_extract(entries.c.value, "$.author_id"),
-            func.json_extract(entries.c.value, "$.actor_id"),
-            func.json_extract(entries.c.value, "$.author_agent_id"),
-            func.json_extract(entries.c.value, "$.author"),
-            func.json_extract(entries.c.value, "$.created_by"),
-        )
+        actor_id = func.json_extract(entries.c.value, "$.author_id")
         return (
             select(1)
             .select_from(entries)
