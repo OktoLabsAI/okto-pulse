@@ -546,13 +546,10 @@ export function KnowledgeWorkspace({
               </button>
               <div className="flex flex-wrap items-center justify-end gap-1">
                 <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[9px] text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-200">
-                  {item.resource_version || 'legacy'}
+                  {item.resource_version || 'Revision unavailable'}
                 </span>
                 {item.inherited && (
                   <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[9px] text-slate-600 dark:bg-slate-800 dark:text-slate-200">inherited</span>
-                )}
-                {item.grandfathered && (
-                  <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[9px] text-amber-800 dark:bg-amber-950/50 dark:text-amber-200">grandfathered</span>
                 )}
                 {item.stale && (
                   <span className="rounded bg-orange-100 px-1.5 py-0.5 text-[9px] text-orange-800 dark:bg-orange-950/50 dark:text-orange-200">stale</span>

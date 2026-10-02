@@ -472,7 +472,6 @@ describe('RefinementModal Knowledge tab markdown rendering', () => {
       title: 'API Notes',
       attachment_kind: 'direct',
       inherited: false,
-      grandfathered: false,
       stale: false,
       superseded: false,
       provenance: {

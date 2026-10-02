@@ -11,7 +11,7 @@ export function workspaceItem(
     resource_type: kind, root_id: id, representative_resource_id: id, title,
     canonical_unique_resource_id: `${kind}:${id}`,
     versioned_projection_id: `${kind}:${id}@1`, resource_version: '1',
-    attachment_kind: 'direct', inherited: false, grandfathered: false,
+    attachment_kind: 'direct', inherited: false,
     stale: false, superseded: false, physical_attachments: [], relevance_links: [],
     detail_cursor: `detail-${id}`, provenance: {
       source_entity_type: null, source_entity_id: null, source_entity_title: null,

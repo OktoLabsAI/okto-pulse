@@ -292,7 +292,6 @@ export interface KnowledgeWorkspaceItem {
   title: string | null;
   attachment_kind: string | null;
   inherited: boolean;
-  grandfathered: boolean;
   stale: boolean;
   superseded: boolean;
   provenance: {

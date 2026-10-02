@@ -35,7 +35,6 @@ function workspaceItem(overrides: Partial<KnowledgeWorkspaceItem> = {}): Knowled
     title: 'Runbook',
     attachment_kind: 'inherited_reference',
     inherited: true,
-    grandfathered: false,
     stale: true,
     superseded: false,
     provenance: {
@@ -122,13 +121,12 @@ describe('KnowledgeWorkspace', () => {
     const first = workspaceItem();
     const second = workspaceItem({
       canonical_unique_resource_id: 'knowledge_base:root-2',
-      versioned_projection_id: 'knowledge_base:root-2@legacy',
+      versioned_projection_id: 'knowledge_base:root-2',
       root_id: 'root-2',
       resource_version: null,
       representative_resource_id: 'kb-2',
       title: 'Historical notes',
       inherited: false,
-      grandfathered: true,
       stale: false,
       detail_cursor: 'opaque-detail-2',
     });
@@ -194,7 +192,8 @@ describe('KnowledgeWorkspace', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
     expect(await screen.findByText('Historical notes')).toBeInTheDocument();
-    expect(screen.getByText('grandfathered')).toBeInTheDocument();
+    expect(screen.getByText('Revision unavailable')).toBeInTheDocument();
+    expect(screen.queryByText('grandfathered')).not.toBeInTheDocument();
     expect(apiMock.getEffectiveResources).toHaveBeenCalledWith(
       'board-1',
       'card',

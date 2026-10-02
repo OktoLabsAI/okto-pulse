@@ -310,7 +310,6 @@ describe('CardKnowledgeTab', () => {
             title: 'Inherited source reference',
             attachment_kind: 'inherited_reference',
             inherited: true,
-            grandfathered: false,
             stale: true,
             superseded: false,
             provenance: {
@@ -387,7 +386,6 @@ describe('CardKnowledgeTab', () => {
       representative_resource_id: `${rootId}-physical`,
       title,
       inherited: false,
-      grandfathered: false,
       stale: false,
       superseded: false,
       provenance: {
