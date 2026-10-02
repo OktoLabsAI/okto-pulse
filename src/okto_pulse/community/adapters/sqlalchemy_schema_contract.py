@@ -190,7 +190,6 @@ COMMUNITY_SCHEMA_EXTENSION_TABLES = frozenset(
         "semantic_guideline_metric_results_v2",
         "semantic_guideline_validation_scopes",
         "quality_assessment_heads",
-        "quality_assessment_lifecycle_stale_transitions",
         "quality_assessment_lifecycle_transitions",
         "quality_assessment_outbox",
         "quality_assessment_receipts",

@@ -34,7 +34,7 @@ describe('quality assessment REST client', () => {
       offset: 25,
       limit: 25,
       assessmentKind: 'ambiguity',
-      state: 'stale',
+      state: 'previous',
       signal: controller.signal,
     });
     await result.current.listQualityFindings('refinement', 'ref-1', {
@@ -56,7 +56,7 @@ describe('quality assessment REST client', () => {
 
     expect(mockApiClient.fetchJson).toHaveBeenNthCalledWith(
       1,
-      '/ideations/idea%2F1/quality-assessments?offset=25&limit=25&assessment_kind=ambiguity&state=stale',
+      '/ideations/idea%2F1/quality-assessments?offset=25&limit=25&assessment_kind=ambiguity&state=previous',
       { signal: controller.signal },
     );
     expect(mockApiClient.fetchJson).toHaveBeenNthCalledWith(

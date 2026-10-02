@@ -1651,18 +1651,6 @@
   },
   {
     "kind": "trigger",
-    "name": "trg_quality_c7_quality_assessment_lifecycle_stale_transitions_immutable_delete",
-    "table": "quality_assessment_lifecycle_stale_transitions",
-    "sql": "CREATE TRIGGER \"trg_quality_c7_quality_assessment_lifecycle_stale_transitions_immutable_delete\"\nBEFORE DELETE ON \"quality_assessment_lifecycle_stale_transitions\"\nWHEN NOT (EXISTS (SELECT 1 FROM \"kg_board_erasure_permits\" AS board_permit WHERE board_permit.board_id = OLD.board_id) OR EXISTS (SELECT 1 FROM \"quality_assessment_subject_erasure_permits\" AS subject_permit WHERE subject_permit.board_id = OLD.board_id AND subject_permit.subject_type = OLD.subject_type AND subject_permit.subject_id = OLD.subject_id))\nBEGIN\n    SELECT RAISE(ABORT, 'quality_c7_row_immutable');\nEND"
-  },
-  {
-    "kind": "trigger",
-    "name": "trg_quality_c7_quality_assessment_lifecycle_stale_transitions_immutable_update",
-    "table": "quality_assessment_lifecycle_stale_transitions",
-    "sql": "CREATE TRIGGER \"trg_quality_c7_quality_assessment_lifecycle_stale_transitions_immutable_update\"\nBEFORE UPDATE ON \"quality_assessment_lifecycle_stale_transitions\"\nBEGIN\n    SELECT RAISE(ABORT, 'quality_c7_row_immutable');\nEND"
-  },
-  {
-    "kind": "trigger",
     "name": "trg_quality_c7_quality_assessment_lifecycle_transitions_immutable_delete",
     "table": "quality_assessment_lifecycle_transitions",
     "sql": "CREATE TRIGGER \"trg_quality_c7_quality_assessment_lifecycle_transitions_immutable_delete\"\nBEFORE DELETE ON \"quality_assessment_lifecycle_transitions\"\nWHEN NOT (EXISTS (SELECT 1 FROM \"kg_board_erasure_permits\" AS board_permit WHERE board_permit.board_id = OLD.board_id) OR EXISTS (SELECT 1 FROM \"quality_assessment_subject_erasure_permits\" AS subject_permit WHERE subject_permit.board_id = OLD.board_id AND subject_permit.subject_type = OLD.subject_type AND subject_permit.subject_id = OLD.subject_id))\nBEGIN\n    SELECT RAISE(ABORT, 'quality_c7_row_immutable');\nEND"

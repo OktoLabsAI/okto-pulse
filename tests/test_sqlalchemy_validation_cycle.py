@@ -352,7 +352,7 @@ async def test_restore_reconciles_only_native_current_edition_and_keeps_history(
         assert audit.head_rebuilds_json[0]["selected_state"] == (
             "current" if receipt_edition == 2 else None
         )
-        assert audit.head_rebuilds_json[0]["stale_transition_key"] is None
+        assert "stale_transition_key" not in audit.head_rebuilds_json[0]
         # A retry uses the same transition and does not recreate a cleared head.
         await CommunitySqlAlchemyQualityAssessmentLifecycle(session).apply_lifecycle_plan(plan)
         await session.commit()

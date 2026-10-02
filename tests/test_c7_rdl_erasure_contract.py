@@ -63,7 +63,6 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     DomainEventRow,
     Ideation,
     QualityAssessmentHeadRow,
-    QualityAssessmentLifecycleStaleTransitionRow,
     QualityAssessmentLifecycleTransitionRow,
     QualityAssessmentOutboxRow,
     QualityAssessmentReceiptRow,
@@ -1170,16 +1169,4 @@ async def test_archive_restore_reconciles_quality_lifecycle_in_same_uow(
             )
             == 2
         )
-        assert (
-            await session.scalar(
-                select(func.count())
-                .select_from(
-                    QualityAssessmentLifecycleStaleTransitionRow
-                )
-                .where(
-                    QualityAssessmentLifecycleStaleTransitionRow.board_id
-                    == subject["board_id"]
-                )
-            )
-            == 0
-        )
+        assert "quality_assessment_lifecycle_stale_transitions" not in Base.metadata.tables

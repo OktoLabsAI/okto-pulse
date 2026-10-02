@@ -500,20 +500,8 @@ export type QualityAssessmentKind =
 export type QualityCurrentness = 'current' | 'stale';
 /** Human lifecycle projection; does not expose technical staleness semantics. */
 export type QualityLifecycleState = 'current' | 'previous';
-export type QualityAssessmentStaleReason =
-  | 'content_changed'
-  | 'clarification_changed'
-  | 'ruleset_changed'
-  | 'taxonomy_changed'
-  | 'policy_changed'
-  | 'subject_version_changed';
-export type QualityAssessmentReceiptState =
-  | 'current'
-  | 'previous'
-  | 'history_only'
-  // Legacy technical values remain parseable outside lifecycle-edition mode.
-  | 'stale'
-  | 'superseded';
+export type QualityAssessmentStaleReason = 'subject_edition_changed';
+export type QualityAssessmentReceiptState = 'current' | 'previous';
 export type QualityFindingSeverity =
   | 'info'
   | 'low'

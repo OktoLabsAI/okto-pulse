@@ -1971,7 +1971,7 @@ export function QualityPanel({
 
       <CollapsibleEvidenceSection
         title="Receipt history"
-        description="History is append-only; superseded and stale receipts remain traceable."
+        description="History is append-only; previous receipts remain traceable."
         expanded={historyExpanded}
         onToggle={() => setHistoryExpanded((value) => !value)}
         testId="quality-history"
@@ -1989,8 +1989,7 @@ export function QualityPanel({
             >
               <option value="">All</option>
               <option value="current">Current</option>
-              <option value="stale">Stale</option>
-              <option value="superseded">Superseded</option>
+              <option value="previous">Previous</option>
             </select>
           </label>
         </div>

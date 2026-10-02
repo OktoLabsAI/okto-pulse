@@ -10467,47 +10467,6 @@ class QualityAssessmentLifecycleTransitionRow(Base):
     applied_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 
-class QualityAssessmentLifecycleStaleTransitionRow(Base):
-    """At-most-once evidence that a restored/reopened head became stale."""
-
-    __tablename__ = "quality_assessment_lifecycle_stale_transitions"
-    __table_args__ = (
-        CheckConstraint(
-            "assessment_kind IN ('ambiguity', 'spec_validation', 'requirement_lint')",
-            name="ck_quality_lifecycle_stale_kind",
-        ),
-        Index(
-            "ix_quality_lifecycle_stale_subject",
-            "board_id",
-            "subject_type",
-            "subject_id",
-        ),
-    )
-
-    stale_transition_key: Mapped[str] = mapped_column(
-        String(64),
-        primary_key=True,
-    )
-    transition_digest: Mapped[str] = mapped_column(
-        String(64),
-        ForeignKey(
-            "quality_assessment_lifecycle_transitions.transition_digest",
-            ondelete="CASCADE",
-        ),
-        nullable=False,
-    )
-    board_id: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("boards.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    subject_type: Mapped[str] = mapped_column(String(24), nullable=False)
-    subject_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    assessment_kind: Mapped[str] = mapped_column(String(32), nullable=False)
-    receipt_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
-
-
 # SK-B3.1: actionable semantic pinpoint contract v2.  These tables are
 # deliberately parallel to the established semantic-guideline ledger above:
 # an old row is never upgraded in-place or reinterpreted as a v2 row.

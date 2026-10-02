@@ -247,7 +247,7 @@ describe('QualityPanel', () => {
       <QualityGatePreviewCard
         assessment={currentAssessment({
           currentness: 'previous',
-          stale_reasons: ['subject_version_changed'],
+          stale_reasons: ['subject_edition_changed'],
           gate_preview: {
             applicable: true,
             enabled: true,
@@ -319,6 +319,14 @@ describe('QualityPanel', () => {
       'true',
     );
     const historyPaginator = screen.getByTestId('quality-history-paginator');
+    const historyContent = screen.getByTestId('quality-history-content');
+    const stateFilter = within(historyContent).getByLabelText('State');
+    expect(within(stateFilter).getAllByRole('option').map((item) => item.textContent))
+      .toEqual(['All', 'Current', 'Previous']);
+    fireEvent.change(stateFilter, { target: { value: 'previous' } });
+    await waitFor(() => expect(apiMock.listQualityAssessments).toHaveBeenCalledWith(
+      'ideation', 'ideation-1', expect.objectContaining({ state: 'previous' }),
+    ));
     fireEvent.change(within(historyPaginator).getByLabelText('Items per page'), {
       target: { value: '50' },
     });
@@ -711,7 +719,7 @@ describe('QualityPanel', () => {
       caseName: 'stale',
       assessment: currentAssessment({
         currentness: 'previous',
-        stale_reasons: ['subject_version_changed'],
+        stale_reasons: ['subject_edition_changed'],
         gate_preview: {
           applicable: true,
           enabled: true,

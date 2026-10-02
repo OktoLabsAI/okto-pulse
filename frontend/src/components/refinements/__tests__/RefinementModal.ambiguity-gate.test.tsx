@@ -241,7 +241,7 @@ function currentAssessment(
     receipt: qualityReceipt(),
     head_revision: 4,
     currentness: stale ? 'previous' : 'current',
-    stale_reasons: stale ? ['content_changed'] : [],
+    stale_reasons: stale ? ['subject_edition_changed'] : [],
     gate_preview: {
       applicable: true,
       enabled: true,

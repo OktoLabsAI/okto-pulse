@@ -66,6 +66,10 @@ async def test_fresh_schema_restart_preserves_data_and_identity(tmp_path, contra
             assert (await connection.exec_driver_sql("SELECT name FROM boards WHERE id='current'")).scalar() == "Preserve"
             assert (await connection.exec_driver_sql("PRAGMA application_id")).scalar() == APPLICATION_ID
             assert (await connection.exec_driver_sql("PRAGMA user_version")).scalar() == SCHEMA_VERSION
+            assert (await connection.exec_driver_sql(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' "
+                "AND name='quality_assessment_lifecycle_stale_transitions'"
+            )).scalar() == 0
     finally:
         await engine.dispose()
 
@@ -85,6 +89,7 @@ async def test_fresh_schema_restart_preserves_data_and_identity(tmp_path, contra
     "CREATE TABLE semantic_guideline_legacy_migrations (migration_id TEXT PRIMARY KEY)",
     "CREATE TABLE card_rejected_lifecycle_migrations (migration_id TEXT PRIMARY KEY)",
     "CREATE TABLE spec_validation_pointer_repairs (migration_id TEXT PRIMARY KEY)",
+    "CREATE TABLE quality_assessment_lifecycle_stale_transitions (stale_transition_key TEXT PRIMARY KEY)",
     "CREATE TABLE kg_cognitive_source_fingerprint_epoch_permits (revision_id TEXT PRIMARY KEY)",
     "CREATE TABLE kg_cognitive_source_fingerprint_epoch_receipts (epoch TEXT PRIMARY KEY)",
     "CREATE TABLE sprints (id TEXT PRIMARY KEY)",

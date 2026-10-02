@@ -22,7 +22,6 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     IdeationHistory,
     IdeationQAItem,
     QualityAssessmentHeadRow,
-    QualityAssessmentLifecycleStaleTransitionRow,
     QualityAssessmentLifecycleTransitionRow,
     QualityAssessmentOutboxRow,
     QualityAssessmentReceiptRow,
@@ -174,7 +173,6 @@ class CommunitySqlAlchemyQualityAssessmentLifecycle:
                         subject_edition=row.subject_edition,
                     ),
                     assessment_kind=AssessmentKind(row.assessment_kind),
-                    input_digest=row.input_digest,
                     created_at=_aware(row.created_at),
                 )
                 for row in receipt_rows
@@ -259,19 +257,6 @@ class CommunitySqlAlchemyQualityAssessmentLifecycle:
                     head.receipt_id = rebuild.selected_receipt_id
                     head.revision = rebuild.resulting_revision
                     head.updated_at = transition.occurred_at
-                if rebuild.stale_transition_required:
-                    self._session.add(
-                        QualityAssessmentLifecycleStaleTransitionRow(
-                            stale_transition_key=rebuild.stale_transition_key,
-                            transition_digest=transition.transition_digest,
-                            board_id=subject.board_id,
-                            subject_type=subject.subject_type.value,
-                            subject_id=subject.subject_id,
-                            assessment_kind=rebuild.assessment_kind.value,
-                            receipt_id=str(rebuild.previous_receipt_id),
-                            created_at=transition.occurred_at,
-                        )
-                    )
 
         # A successful Spec reopen starts a new human validation edition.
         # Remove only the mutable current association in the same UoW; the
@@ -370,7 +355,6 @@ class CommunitySqlAlchemyQualityAssessmentLifecycle:
                         else None
                     ),
                     "resulting_revision": item.resulting_revision,
-                    "stale_transition_key": item.stale_transition_key,
                 }
                 for item in plan.head_rebuilds
             ],
@@ -972,18 +956,6 @@ class CommunitySqlAlchemyQualityAssessmentLifecycle:
                 await self._session.flush()
         elif (
             resource
-            is AssessmentPurgeResource.QUALITY_LIFECYCLE_STALE_TRANSITIONS
-        ):
-            await self._session.execute(
-                delete(QualityAssessmentLifecycleStaleTransitionRow).where(
-                    *self._scope_filter(
-                        QualityAssessmentLifecycleStaleTransitionRow,
-                        plan,
-                    )
-                )
-            )
-        elif (
-            resource
             is AssessmentPurgeResource.QUALITY_LIFECYCLE_TRANSITIONS
         ):
             await self._session.execute(
@@ -1044,9 +1016,6 @@ class CommunitySqlAlchemyQualityAssessmentLifecycle:
         direct_models = {
             AssessmentPurgeResource.QUALITY_HEADS: QualityAssessmentHeadRow,
             AssessmentPurgeResource.QUALITY_FINDINGS: QualityFindingRow,
-            AssessmentPurgeResource.QUALITY_LIFECYCLE_STALE_TRANSITIONS: (
-                QualityAssessmentLifecycleStaleTransitionRow
-            ),
             AssessmentPurgeResource.QUALITY_LIFECYCLE_TRANSITIONS: (
                 QualityAssessmentLifecycleTransitionRow
             ),
