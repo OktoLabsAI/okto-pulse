@@ -69,8 +69,8 @@ export interface CardDeliveryEvidenceInput {
   implementation_ids?: string[];
   record_id?: string;
   progress?: {
-    contract_version: 'delivery-progress/v1' | 'delivery-progress/v2';
-    material_change?: 'none' | 'targets' | 'source' | 'unknown';
+    contract_version: 'delivery-progress/v2';
+    material_change: 'none' | 'targets' | 'source' | 'unknown';
     target_ids?: string[];
     source_state: { workspace_state: 'unknown' | 'dirty' | 'clean'; recoverability: 'unknown' | 'external_workspace' | 'declared_commit'; source_ref?: string | null; declared_revision?: string | null };
     remaining: string;
@@ -181,7 +181,7 @@ export interface DeliveryPerCard {
     total: number; truncated: boolean; recovery_verified: false;
     target_options?: Array<{ id: string; source_ref: string; label: string }>;
     targets_truncated?: boolean;
-    items: Array<{ id: string; actor_id: string; created_at: string; revoked?: boolean; summary: string; remaining: string; text_truncated: boolean; source_state: { workspace_state: string; recoverability: string }; target_ids: string[]; material_change?: string; change_declaration_origin?: string }>;
+    items: Array<{ id: string; actor_id: string; created_at: string; revoked?: boolean; summary: string; remaining: string; text_truncated: boolean; source_state: { workspace_state: string; recoverability: string }; target_ids: string[]; material_change: string;  }>;
   };
 }
 // Rollup projection extension (0.3.4): the spec read returns the aggregated

@@ -199,6 +199,7 @@ def command(*, batch=True, second=False, **changes):
                 kind="progress",
                 justification="Unknown target",
                 progress=dict(
+                    material_change="targets",
                     source_state={
                         "workspace_state": "unknown",
                         "recoverability": "unknown",

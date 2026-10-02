@@ -56,7 +56,6 @@ export function CardProgressPanel({ boardId, specId, edition, card, canWrite, on
       {item.revoked && <p>Revoked by an authorized reviewer; retained as history.</p>}
       <p className="text-xs">{item.actor_id} · {item.created_at} · {item.source_state.workspace_state} · {item.source_state.recoverability}</p>
       {item.material_change && item.material_change !== 'none' && <p>Code change: {item.material_change}. Earlier observations of the affected work require renewed evidence.</p>}
-      {item.change_declaration_origin === 'delivery-progress/v1' && item.material_change !== 'none' && <p>Legacy checkpoint: the change scope is inferred conservatively from its declared workspace and Targets.</p>}
       {item.text_truncated && <p>This record is shortened in the summary.</p>}
     </article>)}
     {card.progress?.truncated && <p>Showing recent records from {card.progress.total} saved checkpoints. This is an incomplete history.</p>}

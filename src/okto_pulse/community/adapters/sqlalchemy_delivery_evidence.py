@@ -46,7 +46,7 @@ from okto_pulse.core.domain.verification_report import parse_verification_report
 from okto_pulse.core.domain.effective_delivery_coverage import (
     EffectiveDeliveryContext, ScopedTestFact, read_scoped_implementation, implementation_scope_current,
 )
-from okto_pulse.core.domain.delivery_progress import DeliveryProgress, progress_blocks_execution, progress_change_scope, require_delivery_progress_mutable
+from okto_pulse.core.domain.delivery_progress import DeliveryProgress, progress_blocks_execution, require_delivery_progress_mutable
 from okto_pulse.core.domain.delivery_selection import current_delivery_selection, seal_delivery_selection, current_delivery_report, report_reuses_impact, submitted_report_receipt
 from okto_pulse.core.domain.delivery_impact import DeliveryImpactClaim, compose_delivery_impact, DeliveryImpactObservation, progress_affects_impact_source, require_impact_observation, reusable_impact_block
 from okto_pulse.core.models.delivery_selection import DeliveryImpactBasis, DeliverySelectionManifest, DeliverySelectionInput
@@ -286,7 +286,7 @@ class CommunityDeliveryEvidenceStore:
             *filters, CardRecord.kind == "progress", CardRecord.id.not_in(revoked),
         ).order_by(CardRecord.created_at, CardRecord.id))).all()
         return [(record, declaration) for record in records
-                if progress_change_scope(declaration := DeliveryProgress.model_validate(record.payload["progress"])) != "none"]
+                if (declaration := DeliveryProgress.model_validate(record.payload["progress"])).material_change != "none"]
 
     async def _test(self, record, scope, bindings, spec):
         payload = record.payload
@@ -1297,8 +1297,7 @@ class CommunityDeliveryEvidenceStore:
                     "remaining": record.payload["progress"]["remaining"][:1000],
                     "text_truncated": len(record.payload["justification"]) > 1000 or len(record.payload["progress"]["remaining"]) > 1000,
                     "source_state": record.payload["progress"]["source_state"],
-                    "material_change": progress_change_scope(DeliveryProgress.model_validate(record.payload["progress"])),
-                    "change_declaration_origin": record.payload["progress"].get("contract_version", "delivery-progress/v1"),
+                    "material_change": DeliveryProgress.model_validate(record.payload["progress"]).material_change,
                     "target_ids": record.payload["progress"]["target_ids"][:10],
                     "targets_truncated": len(record.payload["progress"]["target_ids"]) > 10,
                 }

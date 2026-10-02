@@ -8,7 +8,7 @@ from sqlalchemy import and_, func, or_, select
 
 from okto_pulse.community.adapters.sqlalchemy_models import CardDeliveryEvidenceRecordRow as Record
 from okto_pulse.core.domain.delivery_evidence import CardDeliveryScope
-from okto_pulse.core.domain.delivery_progress import DeliveryProgress, progress_change_scope
+from okto_pulse.core.domain.delivery_progress import DeliveryProgress
 
 
 def progress_item(record, revoked, *, detail=False):
@@ -22,8 +22,7 @@ def progress_item(record, revoked, *, detail=False):
         "remaining": remaining if detail else remaining[:1000],
         "text_truncated": not detail and (len(summary) > 1000 or len(remaining) > 1000),
         "source_state": progress.source_state.model_dump(),
-        "material_change": progress_change_scope(progress),
-        "change_declaration_origin": progress.contract_version,
+        "material_change": progress.material_change,
         "target_ids": progress.target_ids if detail else progress.target_ids[:10],
         "targets_truncated": not detail and len(progress.target_ids) > 10,
     }

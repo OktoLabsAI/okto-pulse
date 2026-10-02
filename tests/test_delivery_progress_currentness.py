@@ -28,7 +28,7 @@ def checkpoint(**changes):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("composed", [("target", "target-two")], indirect=True)
-@pytest.mark.parametrize("mode", ["targets", "none", "unknown", "legacy_dirty"])
+@pytest.mark.parametrize("mode", ["targets", "none", "unknown"])
 async def test_progress_recomputes_exact_sets_candidates_and_pre_done_gate(composed, mode, monkeypatch):
     session, uow, use_case, actor = composed
     store = uow.services.delivery_evidence
@@ -36,10 +36,7 @@ async def test_progress_recomputes_exact_sets_candidates_and_pre_done_gate(compo
     saved = await use_case.execute(composite_batch(), actor=actor, uow=uow)
     complete_id = saved["entries"][2]["id"]
     data = checkpoint().model_dump()
-    data["progress"]["material_change"] = mode if mode != "legacy_dirty" else None
-    if mode == "legacy_dirty":
-        data["progress"]["contract_version"] = "delivery-progress/v1"
-        data["progress"].pop("material_change")
+    data["progress"]["material_change"] = mode
     if mode == "unknown":
         data["progress"]["target_ids"] = []
     changed = await use_case.execute(CardDeliveryEvidenceCommand.model_validate(data), actor=actor, uow=uow)
@@ -47,7 +44,7 @@ async def test_progress_recomputes_exact_sets_candidates_and_pre_done_gate(compo
     snapshot = await store.load_card_snapshot(CardDeliveryScope("b", "c", "s", 1))
     fact = next(item for item in snapshot.implementations if item.id == complete_id)
     assert [implementation_binding_ready(fact, row.binding) for row in snapshot.obligations] == {
-        "targets": [False, True], "none": [True, True], "unknown": [False, False], "legacy_dirty": [False, True],
+        "targets": [False, True], "none": [True, True], "unknown": [False, False],
     }[mode]
     assert (changed["id"] in fact.blocking_progress_ids) == (mode != "none")
     projection = await store.projection("b", "s")

@@ -58,13 +58,12 @@ it('can explicitly record a context note without declaring the external dirty wo
   expect(api.recordCardDeliveryEvidence.mock.calls[0][3].entries[0].progress).toMatchObject({ material_change: 'none', target_ids: [] });
 });
 
-it('shows material change and legacy uncertainty after reload', () => {
+it('shows the declared material change after reload', () => {
   render(<CardProgressPanel {...props()} card={{ ...card, progress: { total: 1, truncated: false, recovery_verified: false, items: [{
     id: 'old', actor_id: 'author', created_at: 'today', summary: 'Changed code', remaining: 'Observe again', text_truncated: false,
-    source_state: { workspace_state: 'dirty', recoverability: 'unknown' }, target_ids: ['t1'], material_change: 'targets', change_declaration_origin: 'delivery-progress/v1',
+    source_state: { workspace_state: 'dirty', recoverability: 'unknown' }, target_ids: ['t1'], material_change: 'targets',
   }] } }} />);
   expect(screen.getByText(/Earlier observations of the affected work/)).toBeInTheDocument();
-  expect(screen.getByText(/Legacy checkpoint/)).toBeInTheDocument();
 });
 
 it('reuses the idempotency key after an uncertain failure', async () => {
@@ -113,7 +112,7 @@ it('uses zero as a real empty-ledger revision', async () => {
 });
 
 it('shows several saved facts and an explicit history limit after reload', async () => {
-  const entries = ['First change', 'Second change'].map((summary, i) => ({ id: String(i), actor_id: 'original-author', created_at: 'today', summary, remaining: 'Next work', text_truncated: false, source_state: { workspace_state: 'dirty', recoverability: 'external_workspace' }, target_ids: [] }));
+  const entries = ['First change', 'Second change'].map((summary, i) => ({ id: String(i), actor_id: 'original-author', created_at: 'today', summary, remaining: 'Next work', text_truncated: false, material_change: 'unknown', source_state: { workspace_state: 'dirty', recoverability: 'external_workspace' }, target_ids: [] }));
   api.getBoard.mockResolvedValue({ settings: {} });
   api.getDeliveryEvidence.mockResolvedValue({ edition: 2, candidates: [], implementations: [], rejected_record_ids: [], rows: [], per_card: [{ ...card, progress: { total: 25, truncated: true, recovery_verified: false, items: entries } }] });
   render(<CardDeliveryDoDPanel boardId="board" card={{ id: 'card', card_type: 'normal', spec_id: 'spec' }} canProgress />);

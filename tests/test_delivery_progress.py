@@ -79,6 +79,7 @@ def command(**changes):
             "idempotency_key": "key",
             "justification": "Changed parser in dirty workspace",
             "progress": {
+                "material_change": "unknown",
                 "source_state": {
                     "workspace_state": "dirty",
                     "recoverability": "external_workspace",
@@ -114,6 +115,31 @@ async def test_dirty_progress_durable_replay_no_credit_or_version_change(db):
     assert progress["items"][0]["actor_id"] == "agent"
     assert progress["recovery_verified"] is False
     assert projection["allowed"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", ["old_version", "missing_declaration"])
+async def test_incompatible_checkpoint_is_refused_without_rewriting_history(db, invalid):
+    from copy import deepcopy
+    from pydantic import ValidationError
+    _, session, store = db
+    saved = await record(store, command())
+    row = await session.get(Record, saved["id"])
+    payload = deepcopy(row.payload)
+    if invalid == "old_version":
+        payload["progress"]["contract_version"] = "delivery-progress/v1"
+    else:
+        payload["progress"].pop("material_change")
+    # Seed an incompatible record separately: native audit rows are immutable.
+    # The reader must reject it without converting either row.
+    values = {column.name: getattr(row, column.name) for column in Record.__table__.columns}
+    values.update(id="incompatible-checkpoint", idempotency_key="incompatible", payload=payload)
+    session.add(Record(**values))
+    await session.commit()
+    with pytest.raises(ValidationError):
+        await store._progress_summary(CardDeliveryScope("b", "c", "s", 1))
+    await session.rollback()
+    assert (await session.get(Record, "incompatible-checkpoint")).payload == payload
 
 
 @pytest.mark.asyncio
