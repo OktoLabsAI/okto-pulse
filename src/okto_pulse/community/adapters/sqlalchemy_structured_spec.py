@@ -70,7 +70,7 @@ def _record(row: Any) -> StructuredSpecRecord:
         description=row.description,
         context=row.context,
         project_structure_revision=int(
-            getattr(row, "project_structure_revision", None) or 0
+            row.project_structure_revision
         ),
         project_structure_digest=getattr(row, "project_structure_digest", None),
         **values,

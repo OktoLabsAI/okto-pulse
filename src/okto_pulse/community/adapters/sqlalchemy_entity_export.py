@@ -1737,7 +1737,7 @@ class CommunitySqlAlchemyEntityExportReader:
         if definition.key == "project_structure":
             nodes = _json_value(getattr(base_row, "project_structure", None))
             revision = int(
-                getattr(base_row, "project_structure_revision", None) or 0
+                base_row.project_structure_revision
             )
             exported = project_structure_export_payload(
                 nodes,
