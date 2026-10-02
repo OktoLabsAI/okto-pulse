@@ -101,9 +101,7 @@ export function ObservabilityRequirementsTab({
 
   const requirements = (spec.observability_requirements || []).filter((item) => item.status === 'active');
   const activeRequirements = requirements.filter((item) => item.status === 'active');
-  const frs = (spec.functional_requirements || []).map((fr: any) =>
-    typeof fr === 'string' ? fr : String(fr?.text || fr?.title || '')
-  );
+  const frs = spec.functional_requirements || [];
   const integrationRequirements = spec.integration_requirements || [];
 
   const coverage = useMemo(() => {
@@ -230,11 +228,11 @@ export function ObservabilityRequirementsTab({
           <span className="text-[10px] text-gray-500 dark:text-gray-400 block mb-1">Link to functional requirements:</span>
           <div className="flex flex-wrap gap-1">
             {frs.map((fr, index) => {
-              const key = String(index);
+              const key = fr.id;
               const linked = formLinkedFRs.includes(key);
               return (
                 <button key={key} onClick={() => toggleFR(key)} className={`text-[10px] px-1.5 py-0.5 rounded transition-colors ${linked ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 ring-1 ring-emerald-400' : 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400 hover:bg-gray-200'}`}>
-                  FR{index}: {fr.length > 42 ? fr.slice(0, 39) + '...' : fr}
+                  FR{index}: {fr.text.length > 42 ? fr.text.slice(0, 39) + '...' : fr.text}
                 </button>
               );
             })}

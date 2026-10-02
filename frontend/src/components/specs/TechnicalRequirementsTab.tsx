@@ -23,14 +23,6 @@ interface TechnicalRequirementsTabProps {
   onFocusHandled?: () => void;
 }
 
-/** Normalize a TR entry (string or object) to a TechnicalRequirement object. */
-function normalizeTR(tr: string | TechnicalRequirement, fallbackIndex: number): TechnicalRequirement {
-  if (typeof tr === 'string') {
-    return { id: `tr_legacy_${fallbackIndex}`, text: tr, linked_task_ids: null };
-  }
-  return tr;
-}
-
 export function TechnicalRequirementsTab({
   spec,
   onUpdate,
@@ -53,9 +45,12 @@ export function TechnicalRequirementsTab({
   const [linkingTrId, setLinkingTrId] = useState<string | null>(null);
 
   const rawTRs = spec.technical_requirements || [];
-  const trs: TechnicalRequirement[] = rawTRs
-    .map((tr, i) => normalizeTR(tr as any, i))
-    .filter((tr) => (tr.status || 'active') === 'active');
+  if (rawTRs.some((tr) => !tr || typeof tr !== 'object'
+    || typeof tr.id !== 'string' || !tr.id.trim()
+    || typeof tr.text !== 'string' || !tr.text.trim())) {
+    throw new Error('Incompatible technical requirement: id and text are required');
+  }
+  const trs = rawTRs.filter((tr) => (tr.status || 'active') === 'active');
 
   // Coverage: TRs with at least one linked task
   const coverage = useMemo(() => {
@@ -72,12 +67,12 @@ export function TechnicalRequirementsTab({
     if (!text) return;
     const id = `tr_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const newTR: TechnicalRequirement = { id, text, linked_task_ids: null };
-    onUpdate([...trs, newTR]);
+    onUpdate([...rawTRs, newTR]);
     setDraft('');
   };
 
   const handleRemove = (id: string) => {
-    onUpdate(trs.filter(tr => tr.id !== id));
+    onUpdate(rawTRs.filter(tr => tr.id !== id));
   };
 
   const startEdit = (tr: TechnicalRequirement) => {
@@ -106,7 +101,7 @@ export function TechnicalRequirementsTab({
 
   const saveEdit = () => {
     if (!editingTrId || !editDraft.trim()) return;
-    onUpdate(trs.map((tr) => tr.id === editingTrId ? { ...tr, text: editDraft.trim() } : tr));
+    onUpdate(rawTRs.map((tr) => tr.id === editingTrId ? { ...tr, text: editDraft.trim() } : tr));
     cancelEdit();
   };
 

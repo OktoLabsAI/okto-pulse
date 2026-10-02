@@ -68,9 +68,7 @@ export function DecisionsTab({
   const [formNotes, setFormNotes] = useState('');
 
   const decisions = spec.decisions || [];
-  const frs = (spec.functional_requirements || []).map((fr: any) =>
-    typeof fr === 'string' ? fr : String(fr?.text || fr?.title || '')
-  );
+  const frs = spec.functional_requirements || [];
   // Canonical source_ref shape per board_source_store.py + cognitive_badge_resolver.py
   // is `decision:<spec_id>:<decision_id>` — keep the UI in lockstep so badges
   // resolve against real rebuild/marker entries (KG-03A.6 val_ff050455).
@@ -255,7 +253,7 @@ export function DecisionsTab({
           </span>
           <div className="flex flex-wrap gap-1">
             {frs.map((fr, i) => {
-              const key = String(i);
+              const key = fr.id;
               const isLinked = formLinkedFRs.includes(key);
               return (
                 <button
@@ -267,7 +265,7 @@ export function DecisionsTab({
                       : 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400 hover:bg-gray-200'
                   }`}
                 >
-                  FR{i}: {fr.length > 50 ? fr.slice(0, 47) + '...' : fr}
+                  FR{i}: {fr.text.length > 50 ? fr.text.slice(0, 47) + '...' : fr.text}
                 </button>
               );
             })}
@@ -468,14 +466,13 @@ export function DecisionsTab({
                   <div className="flex flex-wrap gap-1">
                     <span className="text-[10px] text-gray-400 mr-1">Linked FRs:</span>
                     {d.linked_requirements.map((idx, i) => {
-                      const n = parseInt(idx, 10);
-                      const txt = !isNaN(n) ? frs[n] : undefined;
+                      const txt = frs.find((fr) => fr.id === idx)?.text;
                       return (
                         <span
                           key={i}
                           className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 dark:bg-indigo-900/20 dark:text-indigo-300"
                         >
-                          FR{idx}{txt ? `: ${txt.length > 40 ? txt.slice(0, 37) + '...' : txt}` : ''}
+                          {idx}{txt ? `: ${txt.length > 40 ? txt.slice(0, 37) + '...' : txt}` : ''}
                         </span>
                       );
                     })}

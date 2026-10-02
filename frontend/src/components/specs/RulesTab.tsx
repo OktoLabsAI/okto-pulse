@@ -29,10 +29,10 @@ export function RulesTab({ spec, onUpdate, onSpecUpdate, canCreate = true, canEd
   const [formLinkedFRs, setFormLinkedFRs] = useState<string[]>([]);
 
   const rules = (spec.business_rules || []).filter((rule) => (rule.status || 'active') === 'active');
-  const frOptions = (spec.functional_requirements || []).map((fr: any, index: number) => ({
-    key: typeof fr === 'object' && fr?.id ? String(fr.id) : String(index),
+  const frOptions = (spec.functional_requirements || []).map((fr, index) => ({
+    key: fr.id,
     index,
-    text: typeof fr === 'string' ? fr : String(fr?.text || fr?.title || ''),
+    text: fr.text,
   }));
   const frs = frOptions.map((fr) => fr.text);
 
@@ -176,34 +176,13 @@ export function RulesTab({ spec, onUpdate, onSpecUpdate, canCreate = true, canEd
     </div>
   );
 
-  // Compute FR coverage — linked_requirements can be stable ids, indices ("0") or full FR text
+  // Coverage uses current identities; text and positions are presentation only.
   const frCoverage = useMemo(() => {
-    const coveredIndices = new Set<number>();
-    for (const br of rules) {
-      for (const ref of (br.linked_requirements || [])) {
-        const refStr = String(ref);
-        const byId = frOptions.find((fr) => fr.key === refStr);
-        if (byId) {
-          coveredIndices.add(byId.index);
-          continue;
-        }
-        // Try as numeric index first
-        const asNum = parseInt(refStr, 10);
-        if (!isNaN(asNum) && asNum >= 0 && asNum < frs.length) {
-          coveredIndices.add(asNum);
-        } else {
-          // Try matching by FR text content
-          const idx = frs.findIndex((fr) => refStr.includes(fr) || fr.includes(refStr));
-          if (idx >= 0) coveredIndices.add(idx);
-        }
-      }
-    }
-    return frs.map((fr, i) => ({
-      index: i,
-      text: fr,
-      covered: coveredIndices.has(i),
+    const coveredIds = new Set(rules.flatMap((rule) => rule.linked_requirements || []));
+    return frOptions.map((fr) => ({
+      index: fr.index, text: fr.text, covered: coveredIds.has(fr.key),
     }));
-  }, [rules, frOptions, frs]);
+  }, [rules, frOptions]);
 
   const coveredCount = frCoverage.filter(f => f.covered).length;
 
@@ -348,13 +327,12 @@ export function RulesTab({ spec, onUpdate, onSpecUpdate, canCreate = true, canEd
                   <div className="flex flex-wrap gap-1">
                     <span className="text-[10px] text-gray-400 mr-1">Linked FRs:</span>
                     {rule.linked_requirements.map((idx, i) => {
-                      const ref = String(idx);
+                      const ref = idx;
                       const byId = frOptions.find((fr) => fr.key === ref);
-                      const frIdx = byId ? byId.index : parseInt(ref, 10);
-                      const frText = byId ? byId.text : frs[frIdx];
+                      const frText = byId?.text;
                       return (
                         <span key={i} className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 dark:bg-indigo-900/20 dark:text-indigo-300">
-                          FR{Number.isFinite(frIdx) ? frIdx : ref}{frText ? `: ${frText.length > 40 ? frText.slice(0, 37) + '...' : frText}` : ''}
+                          {ref}{frText ? `: ${frText.length > 40 ? frText.slice(0, 37) + '...' : frText}` : ''}
                         </span>
                       );
                     })}

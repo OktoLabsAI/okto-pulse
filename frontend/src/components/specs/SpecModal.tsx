@@ -3068,11 +3068,7 @@ export function SpecModal({
               focusCreateToken={detailsStructuredEditor?.tab === 'trs' && detailsStructuredEditor.mode === 'add' ? detailsStructuredEditor.token : null}
               onFocusHandled={clearDetailsStructuredEditor}
               onUpdate={async (trs) => {
-                const currentTRs = (spec.technical_requirements || []).map((tr, index) =>
-                  typeof tr === 'string'
-                    ? { id: `tr_legacy_${index}`, text: tr, linked_task_ids: null }
-                    : tr
-                ).filter((tr) => (tr.status || 'active') === 'active') as TechnicalRequirement[];
+                const currentTRs = spec.technical_requirements || [];
                 await syncStructuredCollection('technical_requirements', currentTRs, trs);
               }}
               specCards={spec.cards || []}
