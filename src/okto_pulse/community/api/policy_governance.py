@@ -722,29 +722,8 @@ class SemanticEvidenceRefRequest(_ClosedModel):
     content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
-class SemanticPinpointRequest(_ClosedModel):
-    anchor_type: Literal[
-        "whole_artifact",
-        "field",
-        "structured_child",
-        "qa",
-    ]
-    anchor_ref: str | None = None
-    excerpt_hash: str | None = Field(
-        default=None,
-        pattern=r"^[0-9a-f]{64}$",
-    )
 
 
-class SemanticMetricAssessmentRequest(_ClosedModel):
-    metric_id: str = Field(
-        min_length=1,
-        max_length=POLICY_METRIC_ID_MAX_LENGTH,
-    )
-    score: int = Field(ge=0, le=100)
-    rationale: str = Field(min_length=1)
-    evidence_refs: list[SemanticEvidenceRefRequest] = Field(min_length=1)
-    pinpoints: list[SemanticPinpointRequest] = Field(min_length=1)
 
 
 class SemanticAnchorV2Request(_ClosedModel):
@@ -840,58 +819,8 @@ class RecordSemanticGuidelineAssessmentV2Request(_ClosedModel):
         return self
 
 
-class SemanticAssessmentAssessorRequest(_ClosedModel):
-    agent_id: str = Field(
-        min_length=1,
-        max_length=POLICY_ACTOR_ID_MAX_LENGTH,
-    )
-    model_id: str | None = Field(min_length=1)
 
 
-class RecordSemanticGuidelineAssessmentRequest(_ClosedModel):
-    subject_type: PolicyEntityType
-    subject_id: str = Field(
-        min_length=1,
-        max_length=POLICY_SUBJECT_ID_MAX_LENGTH,
-    )
-    expected_subject_version: int = Field(
-        ge=1,
-        le=POLICY_SQL_INTEGER_MAX,
-    )
-    expected_subject_edition: int | None = Field(
-        default=None,
-        ge=1,
-        le=POLICY_SQL_INTEGER_MAX,
-    )
-    binding_id: str = Field(
-        min_length=1,
-        max_length=GUIDELINE_BINDING_ID_MAX_LENGTH,
-    )
-    expected_binding_revision: int = Field(
-        ge=1,
-        le=POLICY_SQL_INTEGER_MAX,
-    )
-    guideline_revision_id: str = Field(
-        min_length=1,
-        max_length=GUIDELINE_REVISION_ID_MAX_LENGTH,
-    )
-    idempotency_key: str = Field(
-        min_length=1,
-        max_length=POLICY_IDEMPOTENCY_KEY_MAX_LENGTH,
-    )
-    confidence: int = Field(ge=0, le=100)
-    assessor: SemanticAssessmentAssessorRequest
-    metric_results: list[SemanticMetricAssessmentRequest] = Field(min_length=1)
-
-    @model_validator(mode="after")
-    def require_edition_fence(
-        self,
-    ) -> "RecordSemanticGuidelineAssessmentRequest":
-        _require_policy_subject_edition(
-            subject_type=self.subject_type,
-            expected_subject_edition=self.expected_subject_edition,
-        )
-        return self
 
 
 class RequestSemanticWaiverRequest(_ClosedModel):
@@ -1236,24 +1165,8 @@ class SemanticAssessmentResponse(_ClosedModel):
     ]
 
 
-class RecordedSemanticMetricResultResponse(_ClosedModel):
-    metric_result_id: str
-    metric_id: str
-    metric_code: str
-    score: int = Field(ge=0, le=100)
-    direction: GuidelineMetricDirection
-    default_threshold: int = Field(ge=0, le=100)
-    effective_threshold: int = Field(ge=0, le=100)
-    threshold_source: SemanticThresholdSource
-    outcome: SemanticMetricOutcome
 
 
-class RecordedSemanticAssessmentResponse(_ClosedModel):
-    receipt_id: str
-    state: SemanticAssessmentOutcome
-    confidence_admissible: bool
-    metric_results: list[RecordedSemanticMetricResultResponse]
-    replayed: bool
 
 
 class SemanticAnchorSnapshotV2Response(_ClosedModel):
@@ -1465,11 +1378,6 @@ _SEMANTIC_OPERATION_TYPES: dict[str, tuple[str, str, str]] = {
         "SealSemanticGuidelineAssessmentV2Command",
         "SealSemanticGuidelineAssessmentV2UseCase",
     ),
-    "record_semantic_assessment": (
-        "okto_pulse.core.application.use_cases.policy_governance",
-        "RecordSemanticGuidelineAssessmentCommand",
-        "RecordSemanticGuidelineAssessmentUseCase",
-    ),
     "list_semantic_assessments": (
         "okto_pulse.core.application.use_cases.semantic_guideline_governance",
         "ListSemanticGuidelineAssessmentsCommand",
@@ -1646,53 +1554,6 @@ def _adapt_semantic_values(
             adapted["outcome"] = outcome_type(outcome_value)
         return {"query": query_type(**adapted)}
 
-    if operation == "record_semantic_assessment":
-        assessment = import_module(
-            "okto_pulse.core.domain.guideline_semantic_assessment"
-        )
-        quality = import_module("okto_pulse.core.domain.quality_assessment")
-        metric_results = tuple(
-            assessment.SemanticMetricAssessment(
-                metric_id=item["metric_id"],
-                score=item["score"],
-                rationale=item["rationale"],
-                evidence_refs=tuple(
-                    _semantic_evidence(evidence) for evidence in item["evidence_refs"]
-                ),
-                pinpoints=tuple(
-                    quality.UnboundFindingAnchor(
-                        anchor_type=quality.FindingAnchorType(pinpoint["anchor_type"]),
-                        anchor_ref=pinpoint.get("anchor_ref"),
-                        excerpt_hash=pinpoint.get("excerpt_hash"),
-                    )
-                    for pinpoint in item["pinpoints"]
-                ),
-            )
-            for item in adapted.pop("metric_results")
-        )
-        subject = policy.PolicySubjectRef(
-            board_id=adapted["board_id"],
-            entity_type=adapted.pop("entity_type"),
-            subject_id=adapted.pop("subject_id"),
-            subject_version=adapted.pop("expected_subject_version"),
-            subject_edition=adapted.pop("expected_subject_edition", None),
-        )
-        assessor_payload = adapted.pop("assessor")
-        submission = assessment.SemanticGuidelineAssessmentSubmission(
-            subject=subject,
-            binding_id=adapted.pop("binding_id"),
-            expected_binding_revision=adapted.pop("expected_binding_revision"),
-            guideline_revision_id=adapted.pop("guideline_revision_id"),
-            idempotency_key=adapted.pop("idempotency_key"),
-            confidence=adapted.pop("confidence"),
-            assessor=assessment.SemanticAssessmentAssessor(
-                agent_id=assessor_payload["agent_id"],
-                model_id=assessor_payload.get("model_id"),
-            ),
-            metric_results=metric_results,
-        )
-        adapted["submission"] = submission
-        return adapted
 
     if operation == "record_semantic_assessment_v2":
         assessment = import_module(
@@ -2049,29 +1910,6 @@ def _project_core_result(
             projected["limit"] = page.limit
         return projected
 
-    if operation == "record_semantic_assessment":
-        assessment = result.assessment
-        receipt = assessment.receipt
-        return {
-            "receipt_id": receipt.receipt_id,
-            "state": receipt.state,
-            "confidence_admissible": receipt.confidence_admissible,
-            "metric_results": [
-                {
-                    "metric_result_id": metric.metric_result_id,
-                    "metric_id": metric.metric_id,
-                    "metric_code": metric.metric_code,
-                    "score": metric.score,
-                    "direction": metric.direction,
-                    "default_threshold": metric.default_threshold,
-                    "effective_threshold": metric.effective_threshold,
-                    "threshold_source": metric.threshold_source,
-                    "outcome": metric.outcome,
-                }
-                for metric in receipt.metric_results
-            ],
-            "replayed": assessment.replayed,
-        }
 
     if operation in {
         "request_semantic_waiver",
@@ -2140,7 +1978,6 @@ async def _execute(
     uow: PulseUnitOfWork,
 ) -> object:
     semantic_contract_version = {
-        "record_semantic_assessment": "v1",
         "record_semantic_assessment_v2": "v2",
     }.get(operation)
     try:
@@ -2523,26 +2360,6 @@ async def adopt_guideline_revision(
     )
 
 
-@router.post(
-    "/boards/{board_id}/semantic-guideline-assessments",
-    status_code=status.HTTP_201_CREATED,
-    response_model=RecordedSemanticAssessmentResponse,
-)
-async def record_semantic_guideline_assessment(
-    board_id: BoardId,
-    data: RecordSemanticGuidelineAssessmentRequest,
-    principal: Principal = Depends(require_principal),
-    facade: PolicyGovernanceFacade = Depends(get_policy_governance_facade),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-):
-    return await _execute(
-        facade,
-        "record_semantic_assessment",
-        {"board_id": board_id, **data.model_dump(mode="python")},
-        principal=principal,
-        board_id=board_id,
-        uow=uow,
-    )
 
 
 @router.post(

@@ -59,7 +59,6 @@ from okto_pulse.core.domain.quality_assessment import (
     UnboundFindingAnchor,
 )
 from okto_pulse.core.domain.quality_canonicalization import canonical_sha256
-from okto_pulse.core.infra.config import configure_settings, get_settings
 from okto_pulse.core.ports.guideline_policy import (
     GuidelinePolicyEditionConflict,
     GuidelinePolicyIdempotencyConflict,
@@ -221,54 +220,17 @@ def test_subject_projection_adapter_satisfies_public_core_port():
 
 
 @pytest.mark.asyncio
-async def test_v2_capability_resolver_enforces_readers_first_and_runtime_probes(
+async def test_native_writer_is_active_on_fresh_schema_and_requires_runtime_probes(
     tmp_path,
 ):
     engine = _engine(tmp_path / "semantic-pinpoint-v2-capabilities.db")
     factory = build_community_session_factory(engine)
-    original_settings = get_settings()
     await initialize_current_schema(engine, current_schema_contract())
 
     try:
         async with factory() as session:
             adapter = CommunitySemanticAssessmentV2Capabilities(session)
 
-            configure_settings(
-                original_settings.model_copy(
-                    update={
-                        "semantic_assessment_v2_readers_ready": False,
-                        "semantic_assessment_v2_writer_enabled": False,
-                    }
-                )
-            )
-            disabled = await adapter.semantic_assessment_v2_capabilities()
-            assert disabled.storage_ready is True
-            assert disabled.triggers_ready is True
-            assert disabled.writer_active is False
-            assert disabled.reason_code == "unsupported_contract_version"
-            assert disabled.state == "disabled"
-
-            configure_settings(
-                original_settings.model_copy(
-                    update={
-                        "semantic_assessment_v2_readers_ready": False,
-                        "semantic_assessment_v2_writer_enabled": True,
-                    }
-                )
-            )
-            readers_missing = await adapter.semantic_assessment_v2_capabilities()
-            assert readers_missing.writer_active is False
-            assert readers_missing.reason_code == "v2_writer_not_ready"
-            assert readers_missing.state == "readers_not_ready"
-
-            configure_settings(
-                original_settings.model_copy(
-                    update={
-                        "semantic_assessment_v2_readers_ready": True,
-                        "semantic_assessment_v2_writer_enabled": True,
-                    }
-                )
-            )
             ready = await adapter.semantic_assessment_v2_capabilities()
             assert ready.writer_active is True
             assert ready.reason_code is None
@@ -286,7 +248,6 @@ async def test_v2_capability_resolver_enforces_readers_first_and_runtime_probes(
             assert incomplete.reason_code == "v2_writer_not_ready"
             assert incomplete.state == "triggers_not_ready"
     finally:
-        configure_settings(original_settings)
         await engine.dispose()
 
 

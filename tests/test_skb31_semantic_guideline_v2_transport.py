@@ -224,7 +224,7 @@ def test_v2_rest_route_dispatches_the_explicit_contract() -> None:
     }
 
 
-def test_v2_rest_disabled_writer_is_exact_and_records_no_success() -> None:
+def test_v2_rest_missing_storage_is_exact_and_records_no_success() -> None:
     reset_governance_metric_samples()
 
     class Facade:
@@ -232,11 +232,10 @@ def test_v2_rest_disabled_writer_is_exact_and_records_no_success() -> None:
             raise SemanticAssessmentV2WriterUnavailable(
                 SemanticAssessmentV2CapabilitySnapshot(
                     readers_ready=True,
-                    storage_ready=True,
+                    storage_ready=False,
                     triggers_ready=True,
                     rest_transport_ready=True,
                     mcp_transport_ready=True,
-                    writer_requested=False,
                 )
             )
 
@@ -262,14 +261,14 @@ def test_v2_rest_disabled_writer_is_exact_and_records_no_success() -> None:
     )
 
     assert response.status_code == 503
-    assert response.json()["detail"]["code"] == "unsupported_contract_version"
+    assert response.json()["detail"]["code"] == "v2_writer_not_ready"
     samples = get_governance_metric_samples()
     assert len(samples) == 1
     assert samples[0]["labels"] == {
-        "capability_state": "disabled",
+        "capability_state": "storage_not_ready",
         "contract_version": "v2",
         "outcome": "error",
-        "reason_code": "unsupported_contract_version",
+        "reason_code": "v2_writer_not_ready",
         "surface": "rest",
     }
 

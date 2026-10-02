@@ -23,7 +23,7 @@ from okto_pulse.community.api.policy_governance import (
     GuidelineExportMetricV3,
     GuidelineMetricRequest,
     PreviewGuidelineImpactRequest,
-    RecordSemanticGuidelineAssessmentRequest,
+    RecordSemanticGuidelineAssessmentV2Request,
     SemanticAssessmentPageResponse,
     SemanticFindingPageResponse,
     SemanticSkipPageResponse,
@@ -89,6 +89,17 @@ def _openapi() -> dict:
     return app.openapi()
 
 
+def test_removed_semantic_writer_is_absent_and_does_not_dispatch() -> None:
+    schema = _openapi()
+    assert "post" not in schema["paths"]["/boards/{board_id}/semantic-guideline-assessments"]
+    assert "RecordSemanticGuidelineAssessmentRequest" not in schema["components"]["schemas"]
+    facade = _Facade()
+    client, _ = _client(facade)
+    response = client.post(f"/api/v1/boards/{_BOARD_ID}/semantic-guideline-assessments", json={})
+    assert response.status_code == 405
+    assert facade.calls == []
+
+
 def _operation_parameter_names(
     schema: dict,
     path: str,
@@ -115,12 +126,11 @@ def _valid_record_payload() -> dict:
         "guideline_revision_id": "revision-skb3",
         "idempotency_key": "assessment-skb3",
         "confidence": 91,
-        "assessor": {
-            "agent_id": "agent-skb3",
-            "model_id": None,
-        },
+        "contract_version": "v2",
+        "model_id": None,
         "metric_results": [
             {
+                "contract_version": "v2",
                 "metric_id": "metric-skb3",
                 "score": 87,
                 "rationale": "The evidence supports the score.",
@@ -134,9 +144,12 @@ def _valid_record_payload() -> dict:
                 ],
                 "pinpoints": [
                     {
-                        "anchor_type": "field",
-                        "anchor_ref": "description",
-                        "excerpt_hash": "b" * 64,
+                        "contract_version": "v2",
+                        "pinpoint_key": "boundary",
+                        "kind": "evidence",
+                        "title": "Explicit boundary",
+                        "detail": "The description defines the boundary.",
+                        "anchor": {"anchor_type": "field", "anchor_ref": "description"},
                     }
                 ],
             }
@@ -417,7 +430,7 @@ def test_semantic_mutation_bodies_are_exact_recursively_closed() -> None:
             "binding_id",
             "reason",
         },
-        "RecordSemanticGuidelineAssessmentRequest": {
+        "RecordSemanticGuidelineAssessmentV2Request": {
             "subject_type",
             "subject_id",
             "expected_subject_version",
@@ -427,12 +440,9 @@ def test_semantic_mutation_bodies_are_exact_recursively_closed() -> None:
             "guideline_revision_id",
             "idempotency_key",
             "confidence",
-            "assessor",
-            "metric_results",
-        },
-        "SemanticAssessmentAssessorRequest": {
-            "agent_id",
+            "contract_version",
             "model_id",
+            "metric_results",
         },
         "RequestSemanticWaiverRequest": {
             "metric_result_id",
@@ -467,7 +477,7 @@ def test_semantic_mutation_bodies_are_exact_recursively_closed() -> None:
             "source_version",
             "content_hash",
         },
-        "SemanticPinpointRequest": {
+        "SemanticAnchorV2Request": {
             "anchor_type",
             "anchor_ref",
             "excerpt_hash",
@@ -483,14 +493,6 @@ def test_semantic_mutation_bodies_are_exact_recursively_closed() -> None:
             "required"
         ]
     ) == expected_properties["CreateSemanticPolicySkipRequest"]
-    assert {
-        "agent_id",
-        "model_id",
-    } == set(
-        _request_schema(schema, "SemanticAssessmentAssessorRequest")[
-            "required"
-        ]
-    )
     assert "expires_at" in _request_schema(
         schema,
         "RequestSemanticWaiverRequest",
@@ -498,7 +500,7 @@ def test_semantic_mutation_bodies_are_exact_recursively_closed() -> None:
 
 
 @pytest.mark.parametrize("subject_type", ("ideation", "refinement", "spec"))
-def test_v1_rest_contract_requires_edition_for_lifecycle_subjects(
+def test_native_rest_contract_requires_edition_for_lifecycle_subjects(
     subject_type: str,
 ) -> None:
     payload = _valid_record_payload()
@@ -506,57 +508,43 @@ def test_v1_rest_contract_requires_edition_for_lifecycle_subjects(
     payload.pop("expected_subject_edition")
 
     with pytest.raises(ValidationError, match="expected_subject_edition_required"):
-        RecordSemanticGuidelineAssessmentRequest.model_validate(payload)
+        RecordSemanticGuidelineAssessmentV2Request.model_validate(payload)
 
 
-@pytest.mark.parametrize("subject_type", ("sprint", "card", "test_scenario"))
-def test_v1_rest_contract_preserves_non_edition_subject_compatibility(
+@pytest.mark.parametrize("subject_type", ("card", "test_scenario"))
+def test_native_rest_contract_supports_card_and_scenario_subjects(
     subject_type: str,
 ) -> None:
     payload = _valid_record_payload()
     payload["subject_type"] = subject_type
     payload.pop("expected_subject_edition")
 
-    request = RecordSemanticGuidelineAssessmentRequest.model_validate(payload)
+    request = RecordSemanticGuidelineAssessmentV2Request.model_validate(payload)
 
     assert request.expected_subject_edition is None
 
 
-def test_v1_rest_adapter_carries_edition_into_core_submission() -> None:
-    request = RecordSemanticGuidelineAssessmentRequest.model_validate(
+def test_native_rest_adapter_carries_edition_into_core_submission() -> None:
+    request = RecordSemanticGuidelineAssessmentV2Request.model_validate(
         _valid_record_payload()
     )
 
     adapted = _adapt_semantic_values(
-        "record_semantic_assessment",
+        "record_semantic_assessment_v2",
         {"board_id": _BOARD_ID, **request.model_dump(mode="python")},
         codec=None,
         actor=SimpleNamespace(actor_id="agent-skb3"),
     )
 
-    assert adapted["submission"].subject.subject_edition == 1
+    assert adapted["draft"].subject.subject_edition == 1
 
 
 def test_semantic_mutation_response_allowlists_are_flat_and_closed() -> None:
     schema = _openapi()
     expected = {
-        "RecordedSemanticAssessmentResponse": {
-            "receipt_id",
-            "state",
-            "confidence_admissible",
-            "metric_results",
-            "replayed",
-        },
-        "RecordedSemanticMetricResultResponse": {
-            "metric_result_id",
-            "metric_id",
-            "metric_code",
-            "score",
-            "direction",
-            "default_threshold",
-            "effective_threshold",
-            "threshold_source",
-            "outcome",
+        "RecordedSemanticAssessmentV2Response": {
+            "contract_version", "receipt_id", "request_digest", "receipt_digest",
+            "currentness", "validation_edition", "lifecycle_state", "metrics",
         },
         "RequestedSemanticWaiverResponse": {
             "waiver_id",
@@ -611,59 +599,13 @@ def test_semantic_mutation_response_allowlists_are_flat_and_closed() -> None:
         assert response_schema["additionalProperties"] is False
         assert set(response_schema["properties"]) == properties
         assert set(response_schema["required"]) == properties
-        assert not forbidden_wrapper_fields.intersection(properties)
+        # Native sealing returns its two canonical digests; waiver/skip responses
+        # still expose only their established bounded acknowledgement.
+        forbidden = forbidden_wrapper_fields - {"request_digest", "receipt_digest"} if response_name == "RecordedSemanticAssessmentV2Response" else forbidden_wrapper_fields
+        assert not forbidden.intersection(properties)
 
 
 def test_semantic_runtime_projection_drops_wrappers_and_sensitive_fields() -> None:
-    metric = SimpleNamespace(
-        metric_result_id="metric-result-skb3",
-        metric_id="metric-skb3",
-        metric_code="segregation",
-        score=87,
-        direction="minimum",
-        default_threshold=75,
-        effective_threshold=80,
-        threshold_source="override",
-        outcome="pass",
-        rationale="must not leak",
-        metric_definition_digest="d" * 64,
-    )
-    receipt = SimpleNamespace(
-        receipt_id="receipt-skb3",
-        state="passed",
-        confidence_admissible=True,
-        metric_results=(metric,),
-        receipt_digest="e" * 64,
-    )
-    assessment = SimpleNamespace(
-        receipt=receipt,
-        replayed=False,
-        request_digest="f" * 64,
-    )
-    projected_assessment = _project_core_result(
-        SimpleNamespace(assessment=assessment),
-        codec=None,
-        operation="record_semantic_assessment",
-    )
-    assert set(projected_assessment) == {
-        "receipt_id",
-        "state",
-        "confidence_admissible",
-        "metric_results",
-        "replayed",
-    }
-    assert set(projected_assessment["metric_results"][0]) == {
-        "metric_result_id",
-        "metric_id",
-        "metric_code",
-        "score",
-        "direction",
-        "default_threshold",
-        "effective_threshold",
-        "threshold_source",
-        "outcome",
-    }
-
     waiver = SimpleNamespace(
         waiver_id="waiver-skb3",
         waiver_revision=2,
@@ -839,20 +781,20 @@ def test_semantic_pages_reject_top_level_item_projection_mismatch(
     ("mutate", "path"),
     [
         (
-            lambda body: body["assessor"].update({"unexpected": True}),
-            f"/api/v1/boards/{_BOARD_ID}/semantic-guideline-assessments",
+            lambda body: body.update({"assessor": {"agent_id": "forged"}}),
+            f"/api/v1/boards/{_BOARD_ID}/semantic-guideline-assessments/v2",
         ),
         (
             lambda body: body["metric_results"][0]["evidence_refs"][
                 0
             ].update({"unexpected": True}),
-            f"/api/v1/boards/{_BOARD_ID}/semantic-guideline-assessments",
+            f"/api/v1/boards/{_BOARD_ID}/semantic-guideline-assessments/v2",
         ),
         (
             lambda body: body["metric_results"][0]["pinpoints"][0].update(
                 {"unexpected": True}
             ),
-            f"/api/v1/boards/{_BOARD_ID}/semantic-guideline-assessments",
+            f"/api/v1/boards/{_BOARD_ID}/semantic-guideline-assessments/v2",
         ),
     ],
 )
@@ -885,7 +827,7 @@ def test_record_assessment_rejects_server_owned_fields(
     )
 
     response = client.post(
-        f"/api/v1/boards/{_BOARD_ID}/semantic-guideline-assessments",
+        f"/api/v1/boards/{_BOARD_ID}/semantic-guideline-assessments/v2",
         json=payload,
     )
 
@@ -894,48 +836,15 @@ def test_record_assessment_rejects_server_owned_fields(
 
 
 def test_nullable_required_fields_distinguish_missing_from_null() -> None:
-    rejecting_facade = _Facade()
-    client, _ = _client(rejecting_facade)
-    record = _valid_record_payload()
-    del record["assessor"]["model_id"]
+    facade = _Facade(error=EntityNotFoundError("semantic_guideline_binding", "binding-skb3"))
+    client, _ = _client(facade)
     waiver = _valid_waiver_payload()
     del waiver["expires_at"]
-
-    missing_model = client.post(
-        f"/api/v1/boards/{_BOARD_ID}/semantic-guideline-assessments",
-        json=record,
-    )
-    missing_expiry = client.post(
-        f"/api/v1/boards/{_BOARD_ID}/policy-waivers",
-        json=waiver,
-    )
-
-    assert missing_model.status_code == 400
-    assert missing_expiry.status_code == 400
-    assert rejecting_facade.calls == []
-
-    record["assessor"]["model_id"] = None
+    assert client.post(f"/api/v1/boards/{_BOARD_ID}/policy-waivers", json=waiver).status_code == 400
+    assert facade.calls == []
     waiver["expires_at"] = None
-    accepting_facade = _Facade(
-        error=EntityNotFoundError("semantic_guideline_binding", "binding-skb3")
-    )
-    accepting_client, _ = _client(accepting_facade)
-    null_model = accepting_client.post(
-        f"/api/v1/boards/{_BOARD_ID}/semantic-guideline-assessments",
-        json=record,
-    )
-    null_expiry = accepting_client.post(
-        f"/api/v1/boards/{_BOARD_ID}/policy-waivers",
-        json=waiver,
-    )
-    assert null_model.status_code == 404
-    assert null_expiry.status_code == 404
-    assert [
-        call[0] for call in accepting_facade.calls
-    ] == [
-        "record_semantic_assessment",
-        "request_semantic_waiver",
-    ]
+    assert client.post(f"/api/v1/boards/{_BOARD_ID}/policy-waivers", json=waiver).status_code == 404
+    assert [call[0] for call in facade.calls] == ["request_semantic_waiver"]
 
 
 def test_semantic_list_filters_dispatch_without_alias_drift() -> None:
