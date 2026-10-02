@@ -149,8 +149,6 @@ from okto_pulse.core.application.use_cases.base import ActorContext
 from okto_pulse.core.application.use_cases.policy_governance import (
     ASSESSMENTS_READ,
     ASSESSMENTS_RECORD,
-    RecordSemanticGuidelineAssessmentCommand,
-    RecordSemanticGuidelineAssessmentUseCase,
 )
 from okto_pulse.core.application.use_cases.semantic_guideline_governance import (
     ListSemanticGuidelineAssessmentsCommand,
@@ -1246,7 +1244,7 @@ async def test_v1_persistence_records_and_fences_validation_edition(
 
 
 @pytest.mark.asyncio
-async def test_record_assessment_uses_authoritative_unlinked_binding_heads(
+async def test_native_assessment_uses_active_authority_with_unlinked_heads(
     tmp_path,
     semantic_relational_application_adapter,
 ):
@@ -1300,7 +1298,7 @@ async def test_record_assessment_uses_authoritative_unlinked_binding_heads(
             item.binding_id for item in active_bindings
         }
         (
-            policy_set_digest,
+            _policy_set_digest,
             authoritative_head_digest,
         ) = await semantic.semantic_current_fences(board_id=board_id)
         assert authoritative_head_digest != semantic_binding_head_digest_v1(
@@ -1308,65 +1306,50 @@ async def test_record_assessment_uses_authoritative_unlinked_binding_heads(
         )
 
         metric = revision.metrics[0]
-        result = await RecordSemanticGuidelineAssessmentUseCase(
-            clock=_now,
-        ).execute(
-            RecordSemanticGuidelineAssessmentCommand(
-                board_id=board_id,
-                receipt_id="receipt-unlinked-head-fence",
-                submission=SemanticGuidelineAssessmentSubmission(
+        from okto_pulse.core.application.use_cases.semantic_guideline_v2 import (
+            SealSemanticGuidelineAssessmentV2Command, SealSemanticGuidelineAssessmentV2UseCase,
+        )
+        from okto_pulse.core.domain.guideline_semantic_v2 import (
+            SemanticAssessmentDraftV2, SemanticMetricAssessmentDraftV2,
+            SemanticPinpointDraftV2, SemanticPinpointKind,
+        )
+        from okto_pulse.community.adapters.sqlalchemy_models import SemanticGuidelineAssessmentV2Row
+        result = await SealSemanticGuidelineAssessmentV2UseCase().execute(
+            SealSemanticGuidelineAssessmentV2Command(
+                board_id=board_id, actor_id=actor.actor_id,
+                draft=SemanticAssessmentDraftV2(
                     subject=subject.subject,
                     binding_id=active_binding.binding_id,
-                    expected_binding_revision=(active_binding.binding_revision),
+                    expected_binding_revision=active_binding.binding_revision,
                     guideline_revision_id=revision.revision_id,
                     idempotency_key="assessment-unlinked-head-fence",
                     confidence=92,
-                    assessor=SemanticAssessmentAssessor(
-                        agent_id="board-owner",
-                        model_id="test-model",
-                    ),
-                    metric_results=(
-                        SemanticMetricAssessment(
-                            metric_id=metric.metric_id,
-                            score=80,
-                            rationale=(
-                                "The ideation provides independently "
-                                "verifiable semantic evidence."
-                            ),
-                            evidence_refs=(
-                                EvidenceRef(
-                                    source_type="ideation",
-                                    source_id=ideation_id,
-                                    source_version=(subject.subject.subject_version),
-                                    content_hash=subject.content_digest,
-                                ),
-                            ),
-                            pinpoints=(
-                                UnboundFindingAnchor(
-                                    anchor_type=FindingAnchorType.FIELD,
-                                    anchor_ref="description",
-                                    excerpt_hash=canonical_sha256(
-                                        {"field": "description"}
-                                    ),
-                                ),
-                            ),
-                        ),
-                    ),
+                    assessor=SemanticAssessmentAssessor(agent_id=actor.actor_id, model_id="test-model"),
+                    metric_results=(SemanticMetricAssessmentDraftV2(
+                        metric_id=metric.metric_id, score=80,
+                        rationale="The ideation provides independently verifiable evidence.",
+                        evidence_refs=(EvidenceRef(source_type="ideation", source_id=ideation_id,
+                            source_version=subject.subject.subject_version, content_hash=subject.content_digest),),
+                        pinpoints=(SemanticPinpointDraftV2(
+                            pinpoint_key="boundary", kind=SemanticPinpointKind.EVIDENCE,
+                            title="Explicit boundary", detail="The ideation states the responsibility.",
+                            severity=None, remediation=None,
+                            anchor=UnboundFindingAnchor(anchor_type=FindingAnchorType.WHOLE_ARTIFACT),
+                        ),),
+                    ),),
                 ),
             ),
-            actor=actor,
-            uow=CommunityUnitOfWork(session, actor=actor),
+            actor=actor, uow=CommunityUnitOfWork(session, actor=actor),
         )
 
-        receipt = result.assessment.receipt
-        assert receipt.policy_set_digest == policy_set_digest
-        assert receipt.binding_head_digest == authoritative_head_digest
-        stored = await session.get(
-            SemanticGuidelineAssessmentReceiptRow,
-            receipt.receipt_id,
-        )
+        receipt = result.persistence.receipt
+        assert receipt.binding_id == active_binding.binding_id
+        assert receipt.binding_revision == active_binding.binding_revision
+        assert receipt.binding_configuration_digest == active_binding.configuration_digest
+        assert receipt.guideline_revision_digest == revision.revision_digest
+        stored = await session.get(SemanticGuidelineAssessmentV2Row, receipt.receipt_id)
         assert stored is not None
-        assert stored.sealed is True
+        assert stored.contract_version == "semantic-guideline-assessment/v2"
 
     await engine.dispose()
 

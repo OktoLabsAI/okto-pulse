@@ -377,6 +377,29 @@ async def test_v2_round_trip_findings_idempotency_and_immutability(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_native_receipt_identity_and_replay_are_board_scoped(tmp_path):
+    engine = _engine(tmp_path / "native-semantic-board-scope.db")
+    factory = build_community_session_factory(engine)
+    await initialize_current_schema(engine, current_schema_contract())
+    try:
+        async with factory() as session, session.begin():
+            adapter = CommunitySqlAlchemySemanticGuidelineAssessmentV2(session)
+            requests = [_request(*await _seed_semantic_authority(session), key="same-client-key")
+                        for _ in range(2)]
+            first = await adapter.save_semantic_assessment_v2(requests[0])
+            second = await adapter.save_semantic_assessment_v2(requests[1])
+            assert first.receipt_id != second.receipt_id
+            assert await adapter.save_semantic_assessment_v2(requests[0]) == first
+            assert await adapter.save_semantic_assessment_v2(requests[1]) == second
+            assert await adapter.get_semantic_assessment_v2(
+                board_id=requests[0].subject.board_id, receipt_id=second.receipt_id,
+            ) is None
+            assert len((await session.execute(select(SemanticGuidelineAssessmentV2Row))).scalars().all()) == 2
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_board_erasure_removes_v2_findings_before_releasing_permit(tmp_path):
     from sqlalchemy import delete, func
     from sqlalchemy.exc import IntegrityError
