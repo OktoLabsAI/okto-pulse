@@ -181,7 +181,7 @@ async def test_invalid_execution_does_not_degrade_to_progress(db):
         "client_ref": "proof",
         "kind": "implementation",
         "execution_id": "missing",
-        "obligation_refs": ["card:c"],
+        "bindings": [dict(obligation_ref="ac:ac", contribution="complete")],
         "justification": "Not admitted",
     }
     with pytest.raises(DeliveryBatchEntryError, match="accepted_committed"):

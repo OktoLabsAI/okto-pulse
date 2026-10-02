@@ -25,7 +25,7 @@ def batch(*, invalid=False):
     reuse = dict(
         client_ref="reuse",
         kind="implementation",
-        obligation_refs=["card:c"],
+        bindings=[dict(obligation_ref="ac:ac", contribution="complete")],
         justification="Same accepted execution also addresses this binding",
         execution_client_ref="proof",
     )
@@ -69,7 +69,7 @@ async def test_local_execution_reuses_origin_and_progress_links_persist_as_ids(
     ]
     saved_reuse = next(row for row in rows if row.id == reuse["id"])
     assert saved_reuse.payload["execution_id"] == proof["execution_id"]
-    assert "execution_client_ref" not in saved_reuse.payload
+    assert saved_reuse.payload["execution_client_ref"] is None
     await (
         session.close()
     )  # Replay reads persisted identities, not retained ORM objects.
@@ -160,7 +160,7 @@ async def test_alias_chain_resolves_one_execution_and_requires_execution_permiss
         dict(
             client_ref="third",
             kind="implementation",
-            obligation_refs=["card:c"],
+            bindings=[dict(obligation_ref="ac:ac", contribution="complete")],
             justification="Refer to admitted execution",
             execution_client_ref="reuse",
         )

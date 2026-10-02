@@ -242,7 +242,7 @@ async def test_inline_real_origin_commits_once_and_replay_has_same_ids(composed,
     assert row.submitted_by == "agent-1" and row.justification == "Implemented parser"
     binding = await session.get(CardDeliveryEvidenceRecordRow, saved["id"])
     assert binding.payload["execution_id"] == row.id
-    assert "execution_submission" not in binding.payload
+    assert binding.payload["execution_submission"] is None
     second = await use_case.execute(command(batch=batch), actor=actor, uow=uow)
     assert second == {**first, "replayed": True}
     assert await counts(session) == [1, 1, 1, 1]
