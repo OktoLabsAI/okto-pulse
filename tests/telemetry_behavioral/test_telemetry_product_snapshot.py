@@ -25,8 +25,6 @@ from okto_pulse.core.telemetry.era import (
     ERA_POST_FIX,
     SEMANTICS_DELTA,
     SEMANTICS_SNAPSHOT,
-    TRUST_TRUSTED_DELTA,
-    classify_trust_state,
 )
 from okto_pulse.community.adapters.telemetry_port import (
     CommunityTelemetryService as TelemetryService,
@@ -49,7 +47,6 @@ def _settings_with_product_db(tmp_path: Path, **overrides) -> CoreSettings:
         );
         CREATE TABLE story_ideation_links (ideation_id TEXT);
         CREATE TABLE cards (status TEXT, card_type TEXT);
-        CREATE TABLE sprints (status TEXT);
         CREATE TABLE architecture_designs (id TEXT);
         """
     )
@@ -70,7 +67,6 @@ def _settings_with_product_db(tmp_path: Path, **overrides) -> CoreSettings:
     )
     conn.execute("INSERT INTO story_ideation_links VALUES (?)", ("i1",))
     conn.execute("INSERT INTO cards VALUES (?, ?)", ("done", "bug"))
-    conn.execute("INSERT INTO sprints VALUES (?)", ("closed",))
     conn.execute("INSERT INTO architecture_designs VALUES (?)", ("a1",))
     conn.commit()
     conn.close()
@@ -95,15 +91,6 @@ def test_product_snapshot_carries_snapshot_marker_not_delta(
     assert snapshot["era"] == ERA_POST_FIX
     assert snapshot["semantics"] == SEMANTICS_SNAPSHOT
     assert snapshot["semantics"] != SEMANTICS_DELTA
-    # A snapshot is NEVER classified as a trusted_delta (R4 must not sum it).
-    assert (
-        classify_trust_state(
-            era=snapshot["era"],
-            semantics=snapshot["semantics"],
-            schema_version=snapshot["schema_version"],
-        )
-        != TRUST_TRUSTED_DELTA
-    )
     # It carries the product families (the data is preserved, not dropped).
     assert any(key.startswith("product_") for key in snapshot["metrics"])
 

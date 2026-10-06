@@ -12,14 +12,12 @@ from typing import Any
 from sqlalchemy import and_, asc, func, or_, select
 
 from okto_pulse.core.ports.kg_events import (
-    HISTORICAL_PROGRESS_SETTINGS_KEY,
     KGEventsPoll,
     KGOutboxEvent,
     get_kg_events_reader_port,
     register_kg_events_reader_port,
 )
 from okto_pulse.community.adapters.sqlalchemy_repositories import (
-    Board,
     ConsolidationQueue,
     GlobalUpdateOutbox,
 )
@@ -199,11 +197,8 @@ class CommunityKGEventsReader:
         board_id: str,
         include_code_traceability: bool,
     ) -> dict[str, int]:
-        # This snapshot drives the user-facing "consolidation in progress"
-        # indicator.  Maintenance coordinators (stale_sweep/stale_reconcile)
-        # share the durable queue but are neither artifact consolidation nor
-        # blockers for starting historical consolidation.  Counting them here
-        # made a deferred daily sweep look like a permanently stuck backfill.
+        # Progress counts artifact consolidation work only. Maintenance
+        # coordinators share the queue but do not contribute to this indicator.
         predicates = [
             ConsolidationQueue.board_id == board_id,
             ConsolidationQueue.work_kind == "consolidate",
@@ -216,45 +211,17 @@ class CommunityKGEventsReader:
             )
         rows = (
             await session.execute(
-                select(ConsolidationQueue.status, ConsolidationQueue.source, func.count())
+                select(ConsolidationQueue.status, func.count())
                 .where(*predicates)
-                .group_by(ConsolidationQueue.status, ConsolidationQueue.source)
+                .group_by(ConsolidationQueue.status)
             )
         ).all()
         snapshot = {"pending": 0, "claimed": 0, "done": 0, "failed": 0, "paused": 0}
-        historical = {"pending": 0, "claimed": 0, "done": 0, "failed": 0, "paused": 0}
-        for status, source, count in rows:
+        for status, count in rows:
             if status in snapshot:
                 snapshot[status] += int(count)
-                if source == "historical_backfill":
-                    historical[status] += int(count)
-
-        live_total = sum(snapshot.values())
-        historical_active = (
-            historical["pending"] + historical["claimed"] + historical["paused"]
-        )
-        historical_total = 0
-        if historical_active > 0:
-            board = await session.get(Board, board_id)
-            if board is not None and isinstance(board.settings, Mapping):
-                state = board.settings.get(HISTORICAL_PROGRESS_SETTINGS_KEY)
-                if isinstance(state, Mapping):
-                    try:
-                        historical_total = int(state.get("total") or 0)
-                    except (TypeError, ValueError):
-                        historical_total = 0
-
-        non_historical_total = live_total - sum(historical.values())
-        if historical_active > 0 and historical_total > 0:
-            snapshot["total"] = max(live_total, historical_total + non_historical_total)
-            snapshot["processed"] = max(
-                0,
-                snapshot["total"]
-                - (snapshot["pending"] + snapshot["claimed"] + snapshot["paused"]),
-            )
-        else:
-            snapshot["total"] = live_total
-            snapshot["processed"] = snapshot["done"]
+        snapshot["total"] = sum(snapshot.values())
+        snapshot["processed"] = snapshot["done"]
         return snapshot
 
 

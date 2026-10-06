@@ -125,7 +125,8 @@ async def test_community_reader_pages_equal_timestamps_by_event_id() -> None:
 
 
 @pytest.mark.asyncio
-async def test_queue_snapshot_excludes_maintenance_coordinators() -> None:
+@pytest.mark.parametrize("work_status", ["pending", "claimed", "done", "failed", "paused"])
+async def test_queue_snapshot_excludes_maintenance_coordinators(work_status: str) -> None:
     engine = create_async_engine("sqlite+aiosqlite://", future=True)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     try:
@@ -139,8 +140,8 @@ async def test_queue_snapshot_excludes_maintenance_coordinators() -> None:
                         board_id="board-progress",
                         artifact_type="spec",
                         artifact_id="spec-1",
-                        source="historical_backfill",
-                        status="pending",
+                        source="event:spec.updated",
+                        status=work_status,
                         work_kind="consolidate",
                         generation=0,
                         payload={},
@@ -178,13 +179,13 @@ async def test_queue_snapshot_excludes_maintenance_coordinators() -> None:
         )
 
         assert result.progress == {
-            "pending": 1,
-            "claimed": 0,
-            "done": 0,
-            "failed": 0,
-            "paused": 0,
+            "pending": int(work_status == "pending"),
+            "claimed": int(work_status == "claimed"),
+            "done": int(work_status == "done"),
+            "failed": int(work_status == "failed"),
+            "paused": int(work_status == "paused"),
             "total": 1,
-            "processed": 0,
+            "processed": int(work_status == "done"),
         }
     finally:
         await engine.dispose()

@@ -7,14 +7,12 @@ from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import delete, func, select, update
-from sqlalchemy.orm.attributes import flag_modified
 
 from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
     lock_policy_board,
 )
 from okto_pulse.community.adapters.sqlalchemy_models import (
     ActivityLog,
-    Board,
     BoardErasureJob,
     BoardErasurePermit,
     CodeEvidenceDispositionRow,
@@ -73,7 +71,6 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     SpecDependencyOperation,
     TargetOverlapAcknowledgementRow,
 )
-from okto_pulse.core.ports.kg_events import HISTORICAL_PROGRESS_SETTINGS_KEY
 from okto_pulse.core.ports.kg_governance import BoardErasureJobFact
 
 
@@ -586,12 +583,6 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 )
             )
 
-            board = await context.get(Board, board_id)
-            if board is not None and isinstance(board.settings, dict):
-                settings = dict(board.settings)
-                settings.pop(HISTORICAL_PROGRESS_SETTINGS_KEY, None)
-                board.settings = settings
-                flag_modified(board, "settings")
 
             # Verify every explicitly purged direct board identity before the
             # caller is allowed to commit.
