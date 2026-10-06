@@ -176,7 +176,6 @@ async def _require_kg_operation(
     actor: ActorContext,
     *,
     operation: str,
-    legacy_operation: str | None,
     uow: PulseUnitOfWork | None = None,
     board_id: str | None = None,
     require_board_read: bool = False,
@@ -186,7 +185,6 @@ async def _require_kg_operation(
             await AuthorizeOperationUseCase().execute(
                 AuthorizeOperationCommand(
                     "board.read",
-                    legacy_operation="board:read",
                     board_id=board_id,
                 ),
                 actor=actor,
@@ -195,7 +193,6 @@ async def _require_kg_operation(
         await AuthorizeOperationUseCase().execute(
             AuthorizeOperationCommand(
                 operation,
-                legacy_operation=legacy_operation,
                 board_id=board_id,
             ),
             actor=actor,
@@ -556,7 +553,6 @@ async def get_subgraph(
         await _require_kg_operation(
             actor,
             operation="kg.query.related_context",
-            legacy_operation="board:read",
             uow=uow,
             board_id=board_id,
             require_board_read=True,
@@ -1122,7 +1118,6 @@ async def find_similar(
     await _require_kg_operation(
         actor,
         operation="kg.query.similar_decisions",
-        legacy_operation="board:read",
         uow=uow,
         board_id=board_id,
         require_board_read=True,
@@ -1158,7 +1153,6 @@ async def get_supersedence(
     await _require_kg_operation(
         actor,
         operation="kg.query.supersedence_chain",
-        legacy_operation="board:read",
         uow=uow,
         board_id=board_id,
         require_board_read=True,
@@ -1187,7 +1181,6 @@ async def find_contradictions(
     await _require_kg_operation(
         actor,
         operation="kg.query.contradictions",
-        legacy_operation="board:read",
         uow=uow,
         board_id=board_id,
         require_board_read=True,
@@ -1611,7 +1604,6 @@ async def cypher_query(
     await _require_kg_operation(
         actor,
         operation="kg.power.cypher",
-        legacy_operation="board:read",
         uow=uow,
         board_id=board_id,
         require_board_read=True,
@@ -1674,7 +1666,6 @@ async def schema_info(
     await _require_kg_operation(
         actor,
         operation="kg.power.schema_info",
-        legacy_operation="board:read",
         uow=uow,
         board_id=board_id or None,
         require_board_read=True,

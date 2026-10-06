@@ -54,7 +54,6 @@ async def authorize(board_id, actor, uow):
     await kg._require_kg_operation(
         actor,
         operation="kg.query.related_context",
-        legacy_operation="board:read",
         board_id=board_id,
         uow=uow,
         require_board_read=True,
@@ -80,7 +79,6 @@ async def authorize_history(board_id, actor, uow):
     await kg._require_kg_operation(
         actor,
         operation="kg.operations.audit.read",
-        legacy_operation="kg.admin.settings_read",
         board_id=board_id,
         uow=uow,
     )

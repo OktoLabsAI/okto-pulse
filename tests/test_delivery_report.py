@@ -54,7 +54,7 @@ async def setup(db, *, require_impact=False):
         boards=SimpleNamespace(get_board=board),
         agents=SimpleNamespace(agent_has_board_access=AsyncMock(return_value=True)))
     uow = SimpleNamespace(services=services, commit=AsyncMock(side_effect=session.commit), rollback=AsyncMock(side_effect=session.rollback))
-    operation = transition_permission_requirement("card", "in_progress", "validation", legacy_operation="cards:move").operation
+    operation = transition_permission_requirement("card", "in_progress", "validation").operation
     actor = ActorContext(actor_id="owner", actor_kind="agent", source="mcp", board_id="b",
         permissions=["card.conclusion.write", operation])
     return session, uow, actor

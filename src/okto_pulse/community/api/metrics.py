@@ -53,7 +53,6 @@ async def _authorize_metrics(principal: Principal, operation: str) -> None:
         await AuthorizeOperationUseCase().execute(
             AuthorizeOperationCommand(
                 operation,
-                legacy_operation=_METRICS_HISTORICAL_AUTHORITIES[operation],
             ),
             actor=RESTAdapterContract.actor_from_principal(principal),
         )

@@ -1,6 +1,10 @@
 """Canonical report and selected delivery credit under the adopted contract."""
 
 import asyncio
+from datetime import datetime, timezone
+from okto_pulse.community.adapters.sqlalchemy_semantic_guideline_assessment import CommunitySqlAlchemySemanticGuidelineAssessment
+from okto_pulse.core.domain.guideline_policy import PolicyEntityType
+from okto_pulse.core.domain.quality_canonicalization import canonical_sha256
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -39,8 +43,19 @@ async def setup(ledger, tmp_path, monkeypatch, *, adopted=True):
         "delivery_evidence_gate": "blocking", "impact_evidence_mode": "off",
         "require_task_validation": False, "skip_cognitive_consolidation": True,
     }))
+    await seed.flush()
+    await CommunitySqlAlchemySemanticGuidelineAssessment(seed).record_semantic_subject_mutation(
+        board_id=BOARD, entity_type=PolicyEntityType.CARD,
+        subject_id="task", actor_id="owner",
+        idempotency_key="native-delivery-task",
+        request_digest=canonical_sha256({"fixture": "native-delivery-task"}),
+        changed_at=datetime.now(timezone.utc),
+    )
     await seed.commit()
     register_report_adapters()
+    from okto_pulse.community.adapters.sqlalchemy_knowledge_propagation import CommunitySqlAlchemyKnowledgePropagationStore
+    from okto_pulse.core.ports.knowledge_propagation import register_knowledge_propagation_port
+    register_knowledge_propagation_port(CommunitySqlAlchemyKnowledgePropagationStore(async_sessionmaker(seed.bind)))
     register_resource_gate_adapter_factory(CommunitySqlAlchemyResourceGateAdapter)
     configure_community_kg_registry(async_sessionmaker(seed.bind), settings=CommunitySettings(
         data_dir=str(tmp_path / "runtime"), kg_base_dir=str(tmp_path / "kg"),
@@ -48,14 +63,13 @@ async def setup(ledger, tmp_path, monkeypatch, *, adopted=True):
     ))
     session = async_sessionmaker(seed.bind, sync_session_class=CommunitySemanticSession,
         expire_on_commit=False, info={"realm_scope": RealmScope.local()})()
-    store = CommunityDeliveryEvidenceStore(session)
     resources = CommunitySqlAlchemyResourceGateAdapter(session)
     for resource in ("architecture", "mockup"):
         await resources.save_not_applicable(BOARD, "card", "task", resource, "owner",
             justification="Delivery-only fixture", source_channel="test")
     await session.commit()
 
-    operation = transition_permission_requirement("card", "in_progress", "done", legacy_operation="cards:move").operation
+    operation = transition_permission_requirement("card", "in_progress", "done").operation
     actor = ActorContext(actor_id="owner", actor_kind="agent", source="mcp", board_id=BOARD,
         permissions=["card.conclusion.write", "code_traceability.target.execution_submit", operation])
     return session, unit_of_work(session), actor

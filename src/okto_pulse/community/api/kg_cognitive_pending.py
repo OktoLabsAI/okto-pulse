@@ -145,7 +145,6 @@ async def get_cognitive_pending(
         await AuthorizeOperationUseCase().execute(
             AuthorizeOperationCommand(
                 "kg.operations.cognitive.read",
-                legacy_operation="kg.admin.settings_read",
                 board_id=board_id,
             ),
             actor=actor,

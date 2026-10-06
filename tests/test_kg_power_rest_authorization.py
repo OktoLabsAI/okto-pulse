@@ -211,7 +211,7 @@ async def test_board_read_denial_stops_exact_kg_operation_before_service(
     _LEGACY_COMPATIBILITY_CASES,
     ids=[case[0] for case in _LEGACY_COMPATIBILITY_CASES],
 )
-async def test_legacy_board_read_remains_compatible(
+async def test_retired_board_read_is_denied(
     operation: str,
     invoke: Any,
     monkeypatch: pytest.MonkeyPatch,
@@ -248,11 +248,10 @@ async def test_legacy_board_read_remains_compatible(
         else BOARD_ID
     )
 
-    result = await invoke(
-        _actor(["board:read"], board_id=actor_board_id),
-        uow,
-    )
-
+    with pytest.raises(HTTPException) as error:
+        await invoke(_actor(["board:read"], board_id=actor_board_id), uow)
+    assert error.value.status_code == 403
+    result = await invoke(_actor(["board.read", operation], board_id=actor_board_id), uow)
     assert result is not None
 
 

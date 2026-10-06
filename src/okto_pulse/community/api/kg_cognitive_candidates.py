@@ -171,7 +171,6 @@ async def list_candidate_decisions(
         await AuthorizeOperationUseCase().execute(
             AuthorizeOperationCommand(
                 "kg.operations.cognitive.read",
-                legacy_operation="kg.admin.settings_read",
                 board_id=board_id,
             ),
             actor=actor,
