@@ -14,7 +14,7 @@ import {
   REVIEWER_SEPARATION_MODES,
 } from '@/components/board/reviewerSeparationSettings';
 import {
-  normalizeCodeTraceabilitySettings,
+  resolveCodeTraceabilitySettings,
   type CodeTraceabilityEnforcementMode,
 } from '@/components/board/codeTraceabilitySettings';
 import type {
@@ -273,9 +273,13 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
   };
 
   const lintLanguages = settings.lint_languages ?? [];
-  const codeTraceability = normalizeCodeTraceabilitySettings(
+  const codeTraceability = resolveCodeTraceabilitySettings(
     settings.code_traceability,
   );
+
+  if (!codeTraceability) {
+    return <div role="alert">Code Traceability settings are incompatible. Settings cannot be edited.</div>;
+  }
 
   const updateCodeTraceability = (
     patch: Partial<CodeTraceabilitySettings>,

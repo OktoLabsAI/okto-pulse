@@ -599,21 +599,19 @@ describe('Header Board settings resource automation', () => {
     );
   });
 
-  it.each([
-    ['legacy null', null, 'advisory'],
-    ['retired explicit off', codeTraceabilitySettings('off'), 'advisory'],
-    ['stored blocking policy', codeTraceabilitySettings('blocking'), 'blocking'],
-  ] as const)(
-    'projects the %s Code Traceability setting into the board form',
-    (_label, storedSetting, expectedMode) => {
-      boardState.currentBoard = boardWith({ code_traceability: storedSetting });
-      renderOpenHeader();
+  it.each([null, { mode: 'off' }])('refuses incompatible Code Traceability response %j', (policy) => {
+    boardState.currentBoard = boardWith({ code_traceability: policy as unknown as CodeTraceabilitySettings });
+    renderOpenHeader();
+    expect(screen.getByRole('alert')).toHaveTextContent('Code Traceability settings are incompatible');
+    expect(screen.queryByLabelText('Code Traceability enforcement mode')).not.toBeInTheDocument();
+    expect(apiMock.updateBoard).not.toHaveBeenCalled();
+  });
 
-      expect(screen.getByRole('combobox', {
-        name: 'Code Traceability enforcement mode',
-      })).toHaveValue(expectedMode);
-    },
-  );
+  it('preserves stored Blocking policy', () => {
+    boardState.currentBoard = boardWith({ code_traceability: codeTraceabilitySettings('blocking') });
+    renderOpenHeader();
+    expect(screen.getByLabelText('Code Traceability enforcement mode')).toHaveValue('blocking');
+  });
 
   it('persists the Board-wide Code Evidence Matrix coverage skip', async () => {
     renderOpenHeader();

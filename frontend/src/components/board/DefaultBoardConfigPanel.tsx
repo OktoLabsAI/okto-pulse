@@ -14,7 +14,7 @@ import {
   BoardSettingsForm,
   normalizeDesignSystemGateMode,
 } from '@/components/board/BoardSettingsForm';
-import { normalizeCodeTraceabilitySettings } from '@/components/board/codeTraceabilitySettings';
+import { resolveCodeTraceabilitySettings } from '@/components/board/codeTraceabilitySettings';
 import { normalizeReviewerSeparationMode } from '@/components/board/reviewerSeparationSettings';
 import { ChecklistModeSelector } from '@/components/board/ChecklistModeSelector';
 import {
@@ -167,7 +167,7 @@ function toBoardSettings(raw: Record<string, unknown>): BoardSettings {
       ? (raw.auto_derive_spec_resource_types as SpecResourceAutoDeriveType[])
       : [],
     design_system_gate_mode: normalizeDesignSystemGateMode(raw.design_system_gate_mode),
-    code_traceability: normalizeCodeTraceabilitySettings(raw.code_traceability),
+    code_traceability: raw.code_traceability as BoardSettings['code_traceability'],
   };
 }
 
@@ -360,6 +360,9 @@ export function DefaultBoardConfigPanel({
     ...DEFAULT_TEMPLATE_SETTINGS,
     ...(activeTemplate?.settings_payload ?? {}),
   };
+  if (!resolveCodeTraceabilitySettings(mergedSettings.code_traceability)) {
+    return <div role="alert">Code Traceability settings are incompatible. Template cannot be edited.</div>;
+  }
   // The persisted baselines; the editors stage local drafts on top of them.
   const baseSettings = toBoardSettings(mergedSettings);
   let baseGuidelineRefs: DefaultBoardConfigGuidelineRef[] = [];

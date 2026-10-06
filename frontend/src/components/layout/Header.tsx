@@ -14,7 +14,7 @@ import {
   BoardSettingsForm,
   normalizeDesignSystemGateMode,
 } from '@/components/board/BoardSettingsForm';
-import { normalizeCodeTraceabilitySettings } from '@/components/board/codeTraceabilitySettings';
+import { DEFAULT_CODE_TRACEABILITY_SETTINGS } from '@/components/board/codeTraceabilitySettings';
 import { normalizeRefinementAmbiguityThreshold } from '@/components/board/refinementAmbiguitySettings';
 import {
   HelpPanel,
@@ -255,9 +255,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
         design_system_gate_mode: normalizeDesignSystemGateMode(currentBoard.settings.design_system_gate_mode),
         lint_languages: currentBoard.settings.lint_languages ?? [],
         impact_evidence_mode: currentBoard.settings.impact_evidence_mode ?? 'off',
-        code_traceability: normalizeCodeTraceabilitySettings(
-          currentBoard.settings.code_traceability,
-        ),
+        code_traceability: currentBoard.settings.code_traceability,
       }
     : {
         max_scenarios_per_card: 3,
@@ -295,7 +293,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
         design_system_gate_mode: 'off',
         lint_languages: [],
         impact_evidence_mode: 'off',
-        code_traceability: normalizeCodeTraceabilitySettings(null),
+        code_traceability: { ...DEFAULT_CODE_TRACEABILITY_SETTINGS },
       };
 
   const updateSettings = async (patch: Partial<BoardSettings>) => {

@@ -322,30 +322,15 @@ describe('BoardSettingsForm — agent-mediated Code Traceability', () => {
     });
   });
 
-  it('projects the retired Off value as Advisory', () => {
-    render(
-      <BoardSettingsForm
-        settings={{
-          ...baseSettings,
-          code_traceability: {
-            mode: 'off',
-            evidence_attestation: 'preferred',
-            target_resolution: 'advisory',
-            accepted_attestor_policy: 'granular_permission',
-            minimum_trust: 'single_attestation',
-            preflight_freshness_seconds: 1800,
-            overlap_policy: 'warn',
-            observed_state_policy: 'allow_dirty_attestation',
-            receipt_content: 'safe_excerpt',
-          },
-        }}
-        onChange={vi.fn()}
-      />,
-    );
-
-    expect(
-      screen.getByLabelText('Code Traceability enforcement mode'),
-    ).toHaveValue('advisory');
+  it.each([null, { mode: 'off' }])('refuses incompatible policy %j without a write', (policy) => {
+    const onChange = vi.fn();
+    render(<BoardSettingsForm
+      settings={{ ...baseSettings, code_traceability: policy } as unknown as BoardSettings}
+      onChange={onChange}
+    />);
+    expect(screen.getByRole('alert')).toHaveTextContent('Code Traceability settings are incompatible');
+    expect(screen.queryByLabelText('Code Traceability enforcement mode')).not.toBeInTheDocument();
+    expect(onChange).not.toHaveBeenCalled();
   });
 
   it('explains the current-coverage requirement in Blocking mode', () => {

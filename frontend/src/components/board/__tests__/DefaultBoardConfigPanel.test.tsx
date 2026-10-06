@@ -688,41 +688,17 @@ describe('DefaultBoardConfigPanel', () => {
       .not.toHaveProperty('qa_require_role_separation');
   });
 
-  it('converges a retired Off template policy to Advisory when saving any draft', async () => {
+  it.each([null, { mode: 'off' }])('refuses incompatible template policy %j without saving', async (policy) => {
     apiMock.getActiveDefaultBoardConfig.mockResolvedValueOnce({
       scope: 'global',
       active: tmpl({
-        id: 'legacy-template',
-        version: 1,
-        settings_payload: {
-          require_task_validation: true,
-          code_traceability: {
-            mode: 'off',
-            minimum_trust: 'corroborated',
-          },
-        },
+        settings_payload: { require_task_validation: true, code_traceability: policy },
       }),
     });
-
     render(<DefaultBoardConfigPanel boardId="b1" />);
-
-    expect(
-      await screen.findByLabelText('Code Traceability enforcement mode'),
-    ).toHaveValue('advisory');
-    fireEvent.click(screen.getByRole('switch', { name: 'Require task validation' }));
-    fireEvent.click(screen.getByTestId('dbc-save-template'));
-
-    await waitFor(() => expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalledTimes(1));
-    expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalledWith(
-      expect.objectContaining({
-        settings_payload: expect.objectContaining({
-          code_traceability: expect.objectContaining({
-            mode: 'advisory',
-            minimum_trust: 'corroborated',
-          }),
-        }),
-      }),
-    );
+    expect(await screen.findByRole('alert')).toHaveTextContent('Code Traceability settings are incompatible');
+    expect(screen.queryByTestId('dbc-save-template')).not.toBeInTheDocument();
+    expect(apiMock.createDefaultBoardConfigVersion).not.toHaveBeenCalled();
   });
 
   it('versions the independent reviewer policy in Global Default', async () => {

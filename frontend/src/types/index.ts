@@ -2669,7 +2669,7 @@ export type SpecResourceAutoDeriveType = 'knowledge_base' | 'architecture' | 'mo
 export type ReviewerSeparationMode = 'off' | 'warn' | 'enforce';
 
 export interface CodeTraceabilitySettings {
-  mode: 'off' | 'advisory' | 'blocking';
+  mode: 'advisory' | 'blocking';
   evidence_attestation: 'none' | 'preferred' | 'required';
   target_resolution: 'advisory' | 'required' | 'required_current_receipt';
   accepted_attestor_policy:
@@ -3241,7 +3241,7 @@ export interface BoardSettings {
   // the agent receives only neutral signals (numbers, comparators and units).
   lint_languages?: LintLanguageCode[];
   /** Source-blind policy for observations submitted by authenticated agents. */
-  code_traceability?: CodeTraceabilitySettings | null;
+  code_traceability?: CodeTraceabilitySettings;
   /** Board-scoped analytics policy. Missing legacy values resolve to backend defaults. */
   analytics?: {
     version: 1;
