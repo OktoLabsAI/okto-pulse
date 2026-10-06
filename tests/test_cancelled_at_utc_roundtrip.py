@@ -5,15 +5,14 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import Column, Integer, MetaData, Table, create_engine, insert, select
 
 from okto_pulse.community.adapters.sqlalchemy_models import Card, Ideation, Refinement, Spec, UTCDateTime
-from legacy_sprint_schema import Sprint
 
 
 def test_all_cancellable_entities_use_timezone_preserving_type():
-    for model in (Ideation, Refinement, Spec, Sprint, Card):
+    for model in (Ideation, Refinement, Spec, Card):
         assert isinstance(model.__table__.c.cancelled_at.type, UTCDateTime)
 
 
-def test_utc_datetime_roundtrip_normalizes_aware_and_legacy_naive_values():
+def test_utc_datetime_roundtrip_normalizes_aware_and_sqlite_naive_values():
     metadata = MetaData()
     timestamps = Table(
         "timestamps",
@@ -32,14 +31,14 @@ def test_utc_datetime_roundtrip_normalizes_aware_and_legacy_naive_values():
         30,
         tzinfo=timezone(timedelta(hours=-3)),
     )
-    legacy_naive = datetime(2026, 7, 25, 14, 0)
+    sqlite_naive = datetime(2026, 7, 25, 14, 0)
 
     with engine.begin() as connection:
         connection.execute(
             insert(timestamps),
             [
                 {"id": 1, "cancelled_at": local},
-                {"id": 2, "cancelled_at": legacy_naive},
+                {"id": 2, "cancelled_at": sqlite_naive},
             ],
         )
         rows = connection.execute(
@@ -54,4 +53,4 @@ def test_utc_datetime_roundtrip_normalizes_aware_and_legacy_naive_values():
         30,
         tzinfo=timezone.utc,
     )
-    assert rows[1]["cancelled_at"] == legacy_naive.replace(tzinfo=timezone.utc)
+    assert rows[1]["cancelled_at"] == sqlite_naive.replace(tzinfo=timezone.utc)
