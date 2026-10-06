@@ -86,15 +86,18 @@ async def seed_community_defaults(
     board_name = "My Board"
     await db.execute(
         sa_text(
-            "INSERT INTO boards (id, name, description, owner_id, realm_id) "
-            "VALUES (:id, :name, :description, :owner_id, :realm_id)"
-        ),
+            "INSERT INTO boards (id, name, description, owner_id, realm_id, settings) "
+            "VALUES (:id, :name, :description, :owner_id, :realm_id, :settings)"
+        ).bindparams(bindparam("settings", type_=sa_JSON)),
         {
             "id": board_id,
             "name": board_name,
             "description": "Default board for the community edition",
             "owner_id": "local-user",
             "realm_id": LOCAL_REALM_ID,
+            # Keep the native bootstrap policy explicit. Authored Boards use
+            # their own template/default policy; no stored Board is converted.
+            "settings": {"reviewer_separation_mode": "off"},
         },
     )
 
@@ -288,15 +291,18 @@ async def _seed_demo_board(db: AsyncSession) -> str | None:
 
     await db.execute(
         sa_text(
-            "INSERT INTO boards (id, name, description, owner_id, realm_id) "
-            "VALUES (:id, :name, :description, :owner_id, :realm_id)"
-        ),
+            "INSERT INTO boards (id, name, description, owner_id, realm_id, settings) "
+            "VALUES (:id, :name, :description, :owner_id, :realm_id, :settings)"
+        ).bindparams(bindparam("settings", type_=sa_JSON)),
         {
             "id": demo_board_id,
             "name": DEMO_BOARD_NAME,
             "description": DEMO_BOARD_DESCRIPTION,
             "owner_id": "local-user",
             "realm_id": LOCAL_REALM_ID,
+            # Keep the native bootstrap policy explicit. Authored Boards use
+            # their own template/default policy; no stored Board is converted.
+            "settings": {"reviewer_separation_mode": "off"},
         },
     )
     provenance = DirectSpecDeliveryContextProvenance(

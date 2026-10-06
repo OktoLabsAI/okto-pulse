@@ -365,7 +365,7 @@ async def test_first_boot_demo_seed_persists_valid_status_and_card_kinds(
             boards = (
                 await db.execute(
                     sa_text(
-                        "SELECT name, realm_id FROM boards "
+                        "SELECT name, realm_id, settings FROM boards "
                         "WHERE realm_id = :realm_id ORDER BY name"
                     ),
                     {"realm_id": LOCAL_REALM_ID},
@@ -382,6 +382,8 @@ async def test_first_boot_demo_seed_persists_valid_status_and_card_kinds(
 
         assert result is not None
         assert len(committed_graphs) == 1
+        for row in boards:
+            assert json.loads(row["settings"]) == {"reviewer_separation_mode": "off"}
         assert [
             (row["name"], row["realm_id"]) for row in boards
         ] == [
