@@ -254,7 +254,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
         auto_derive_spec_resource_types: currentBoard.settings.auto_derive_spec_resource_types ?? [],
         design_system_gate_mode: normalizeDesignSystemGateMode(currentBoard.settings.design_system_gate_mode),
         lint_languages: currentBoard.settings.lint_languages ?? [],
-        impact_evidence_mode: currentBoard.settings.impact_evidence_mode ?? 'off',
+        impact_evidence_mode: currentBoard.settings.impact_evidence_mode,
         code_traceability: currentBoard.settings.code_traceability,
       }
     : {

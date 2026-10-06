@@ -259,17 +259,15 @@ describe('BoardSettingsForm — execution report evidence mode', () => {
     expect(onChange).toHaveBeenLastCalledWith({ impact_evidence_mode: 'off' });
   });
 
-  it('an unknown persisted value reads as off instead of breaking the screen', () => {
-    render(
-      <BoardSettingsForm
-        settings={{ ...baseSettings, impact_evidence_mode: 'banana' as never }}
-        onChange={vi.fn()}
-      />,
-    );
-    expect(screen.getByTestId('impact-evidence-mode-off')).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
+  it.each(['banana', null])('refuses invalid Impact Evidence policy %j without editing', (mode) => {
+    const onChange = vi.fn();
+    render(<BoardSettingsForm
+      settings={{ ...baseSettings, impact_evidence_mode: mode as never }}
+      onChange={onChange}
+    />);
+    expect(screen.getByRole('alert')).toHaveTextContent('Impact Evidence policy is incompatible');
+    expect(screen.queryByTestId('impact-evidence-mode-off')).not.toBeInTheDocument();
+    expect(onChange).not.toHaveBeenCalled();
   });
 });
 

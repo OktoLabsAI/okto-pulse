@@ -840,4 +840,26 @@ describe('DefaultBoardConfigPanel', () => {
       }),
     }));
   });
+  it.each(['banana', null])('refuses invalid template Impact Evidence %j', async (mode) => {
+    apiMock.getActiveDefaultBoardConfig.mockResolvedValueOnce({
+      scope: 'global', active: tmpl({ settings_payload: { impact_evidence_mode: mode } }),
+    });
+    render(<DefaultBoardConfigPanel boardId="b1" />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('Impact Evidence policy is incompatible');
+    expect(screen.queryByTestId('dbc-save-template')).not.toBeInTheDocument();
+    expect(apiMock.createDefaultBoardConfigVersion).not.toHaveBeenCalled();
+  });
+
+  it('projects and preserves required Impact Evidence when saving another setting', async () => {
+    apiMock.getActiveDefaultBoardConfig.mockResolvedValueOnce({
+      scope: 'global', active: tmpl({ settings_payload: { impact_evidence_mode: 'require' } }),
+    });
+    render(<DefaultBoardConfigPanel boardId="b1" />);
+    expect(await screen.findByTestId('impact-evidence-mode-require')).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(screen.getByRole('switch', { name: 'Require task validation' }));
+    fireEvent.click(screen.getByTestId('dbc-save-template'));
+    await waitFor(() => expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalledTimes(1));
+    expect(apiMock.createDefaultBoardConfigVersion.mock.calls[0][0].settings_payload.impact_evidence_mode).toBe('require');
+  });
+
 });

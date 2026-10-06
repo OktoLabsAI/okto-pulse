@@ -190,12 +190,11 @@ const LINT_LANGUAGE_OPTIONS: Array<{
 export const IMPACT_EVIDENCE_MODES = ['off', 'advisory', 'require'] as const;
 export type ImpactEvidenceMode = (typeof IMPACT_EVIDENCE_MODES)[number];
 
-function normalizeImpactEvidenceMode(value: unknown): ImpactEvidenceMode {
-  // Mirrors the backend resolver: anything unknown reads as 'off' instead of
-  // failing the screen (invalid_value_fail_compat).
+export function resolveImpactEvidenceMode(value: unknown): ImpactEvidenceMode | null {
+  if (value === undefined) return 'off';
   return IMPACT_EVIDENCE_MODES.includes(value as ImpactEvidenceMode)
     ? (value as ImpactEvidenceMode)
-    : 'off';
+    : null;
 }
 
 export const DESIGN_SYSTEM_GATE_MODES = ['off', 'advisory', 'blocking'] as const;
@@ -283,6 +282,10 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
 
   if (!normalizeReviewerSeparationMode(settings.reviewer_separation_mode)) {
     return <div role="alert">Reviewer separation policy is incompatible. Settings cannot be edited.</div>;
+  }
+
+  if (!resolveImpactEvidenceMode(settings.impact_evidence_mode)) {
+    return <div role="alert">Impact Evidence policy is incompatible. Settings cannot be edited.</div>;
   }
 
   const updateCodeTraceability = (
@@ -1083,11 +1086,11 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
           description="Blocking mode rejects a gated move whose conclusion has no populated evidence section."
         >
           <SettingsToggle
-            checked={normalizeImpactEvidenceMode(settings.impact_evidence_mode) === 'require'}
+            checked={resolveImpactEvidenceMode(settings.impact_evidence_mode) === 'require'}
             onChange={() =>
               onChange({
                 impact_evidence_mode:
-                  normalizeImpactEvidenceMode(settings.impact_evidence_mode) === 'require'
+                  resolveImpactEvidenceMode(settings.impact_evidence_mode) === 'require'
                     ? 'off'
                     : 'require',
               })
@@ -1103,7 +1106,7 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
           data-testid="impact-evidence-mode"
         >
           {IMPACT_EVIDENCE_MODES.map((mode) => {
-            const checked = normalizeImpactEvidenceMode(settings.impact_evidence_mode) === mode;
+            const checked = resolveImpactEvidenceMode(settings.impact_evidence_mode) === mode;
             const labels: Record<ImpactEvidenceMode, string> = {
               off: 'Off',
               advisory: 'Advisory',

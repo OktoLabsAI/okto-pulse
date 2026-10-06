@@ -12,7 +12,7 @@ import { AlertTriangle, CheckCircle2, GitCompare, HelpCircle, ListChecks, Palett
 
 import {
   BoardSettingsForm,
-  normalizeDesignSystemGateMode,
+  normalizeDesignSystemGateMode, resolveImpactEvidenceMode,
 } from '@/components/board/BoardSettingsForm';
 import { resolveCodeTraceabilitySettings } from '@/components/board/codeTraceabilitySettings';
 import { normalizeReviewerSeparationMode } from '@/components/board/reviewerSeparationSettings';
@@ -168,6 +168,7 @@ function toBoardSettings(raw: Record<string, unknown>): BoardSettings {
       : [],
     design_system_gate_mode: normalizeDesignSystemGateMode(raw.design_system_gate_mode),
     code_traceability: raw.code_traceability as BoardSettings['code_traceability'],
+    impact_evidence_mode: raw.impact_evidence_mode as BoardSettings['impact_evidence_mode'],
   };
 }
 
@@ -365,6 +366,9 @@ export function DefaultBoardConfigPanel({
   }
   if (!normalizeReviewerSeparationMode(mergedSettings.reviewer_separation_mode)) {
     return <div role="alert">Reviewer separation policy is incompatible. Template cannot be edited.</div>;
+  }
+  if (!resolveImpactEvidenceMode(mergedSettings.impact_evidence_mode)) {
+    return <div role="alert">Impact Evidence policy is incompatible. Template cannot be edited.</div>;
   }
   // The persisted baselines; the editors stage local drafts on top of them.
   const baseSettings = toBoardSettings(mergedSettings);
