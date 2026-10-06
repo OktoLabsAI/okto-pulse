@@ -2,8 +2,8 @@
 
 This gate protects the local-first bootstrap/export surfaces that may briefly
 hold a plaintext MCP API key. The key may be exposed only as a reveal-once value
-on first boot/init or as explicitly governed legacy plaintext during `.mcp.json`
-export. Non-recoverable markers/hashes must not become recoverable secrets.
+on first boot/init, including export of that value to `.mcp.json`.
+Non-recoverable markers/hashes must not become recoverable secrets.
 """
 
 from __future__ import annotations
@@ -38,14 +38,9 @@ _ALLOWLIST: dict[tuple[str, str, str], str] = {
     ): "init formats the freshly seeded reveal-once key for stdout",
     (
         "okto_pulse/community/cli.py",
-        "_exportable_credential_from_legacy_agent",
-        "persisted_agent_api_key_read",
-    ): "single governed legacy plaintext classifier before export",
-    (
-        "okto_pulse/community/cli.py",
         "_generate_mcp_json",
         "credential_interpolation",
-    ): ".mcp.json export receives only classified exportable credentials",
+    ): ".mcp.json export receives only freshly revealed credentials",
     (
         "okto_pulse/community/main.py",
         "create_community_app.combined_lifespan._on_primary_committed",

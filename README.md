@@ -292,7 +292,7 @@ contract each adapter module implements.
 | `okto-pulse metrics disable` | Turn metrics off. |
 | `okto-pulse metrics export [--output PATH]` | Export local metrics as JSONL. |
 | `okto-pulse metrics purge-local --yes` | Delete local metrics files after explicit confirmation. |
-| `okto-pulse api-key [--handoff-file PATH]` | Atomically consume a reveal-once bootstrap API-key handoff. |
+| `okto-pulse api-key --handoff-file PATH` | Atomically consume a reveal-once bootstrap API-key handoff. |
 
 The former `reset`, `verify-pipeline` and `kg` command group are no longer accepted,
 including their help/options. The CLI returns the standard unknown-command
@@ -314,11 +314,10 @@ docker run -d --name okto-pulse \
   ghcr.io/oktolabsai/okto-pulse:latest
 ```
 
-Then open `http://localhost:8100` and retrieve the bootstrap API key:
-
-```bash
-docker exec okto-pulse okto-pulse api-key
-```
+Then open `http://localhost:8100`. The first startup prints the newly created
+bootstrap API key once. Persisted keys cannot be recovered; regenerate a key
+through the UI/API if needed. Automation can use `init --bootstrap-key-handoff`
+and consume that explicit file with `api-key --handoff-file`.
 
 ### Compose
 

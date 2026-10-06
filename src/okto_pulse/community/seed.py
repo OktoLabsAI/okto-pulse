@@ -107,10 +107,10 @@ async def seed_community_defaults(
         sa_text(
             "INSERT INTO agents "
             "(id, name, description, objective, api_key, api_key_hash, "
-            " is_active, permissions, created_by) "
+            " is_active, created_by) "
             "VALUES "
             "(:id, :name, :description, :objective, :api_key, :api_key_hash, "
-            " :is_active, :permissions, :created_by)"
+            " :is_active, :created_by)"
         ),
         {
             "id": agent_id,
@@ -120,7 +120,6 @@ async def seed_community_defaults(
             "api_key": credential_marker(api_key_hash),
             "api_key_hash": api_key_hash,
             "is_active": True,
-            "permissions": None,
             "created_by": "local-user",
         },
     )

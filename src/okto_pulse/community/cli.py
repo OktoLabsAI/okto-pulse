@@ -20,7 +20,6 @@ import sys
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import Literal
 from uuid import uuid4
 
 from okto_pulse.community.metrics_limits import DEFAULT_WINDOW_DAYS, validate_window_days
@@ -33,14 +32,11 @@ _BANNER_PATH = Path(__file__).parent / "banner.txt"
 _BOOTSTRAP_KEY_HEX_LENGTH = 48
 _BOOTSTRAP_HANDOFF_MAX_BYTES = 128
 
-_CredentialSource = Literal["governed_legacy_plaintext", "reveal_once"]
-
 
 @dataclass(frozen=True)
 class _ExportableAgentCredential:
     name: str
     plaintext: str
-    source: _CredentialSource
 
 
 def _is_bootstrap_credential(value: str) -> bool:
@@ -260,37 +256,12 @@ def _consume_bootstrap_key_handoff(source: str | Path) -> str:
     return credential
 
 
-def _is_recoverable_agent_key(value: str | None) -> bool:
-    return _stored_agent_credential_source(value) == "governed_legacy_plaintext"
-
-
-def _stored_agent_credential_source(value: str | None) -> _CredentialSource | None:
-    if value and value.startswith("dash_"):
-        return "governed_legacy_plaintext"
-    return None
-
-
-def _exportable_credential_from_legacy_agent(
-    agent,
-) -> _ExportableAgentCredential | None:
-    plaintext = _field(agent, "api_key")
-    if _stored_agent_credential_source(plaintext) != "governed_legacy_plaintext":
-        return None
-    return _ExportableAgentCredential(
-        name=_field(agent, "name"),
-        plaintext=plaintext,
-        source="governed_legacy_plaintext",
-    )
-
-
 def _exportable_credential_from_reveal_once(
     name: str, plaintext: str
 ) -> _ExportableAgentCredential | None:
     if not plaintext.startswith("dash_"):
         return None
-    return _ExportableAgentCredential(
-        name=name, plaintext=plaintext, source="reveal_once"
-    )
+    return _ExportableAgentCredential(name=name, plaintext=plaintext)
 
 
 def _field(record, name: str, default=None):
@@ -786,12 +757,8 @@ def cmd_init(args):
                     on_primary_committed=_on_primary_committed,
                 )
                 if result:
-                    board, agent, api_key = result
-                    # Compatibility with a test double or older external seed
-                    # implementation that returns the legacy tuple without
-                    # invoking the new sink.
                     if not primary_commit_delivered:
-                        _on_primary_committed(board, agent, api_key)
+                        raise RuntimeError("seed_primary_credential_not_delivered")
                 else:
                     print("\n  Already initialized (seed exists).")
                     # Fetch the default board for KG bootstrap
@@ -870,7 +837,7 @@ def _generate_mcp_json(
     agent_names: list[str] | None,
     revealed_agents: list[tuple[str, str]] | None = None,
 ):
-    """Generate .mcp.json with specified agents (or all if agent_names is empty)."""
+    """Export only credentials revealed by the current initialization call."""
     import asyncio
     from sqlalchemy import text as sa_text
     from okto_pulse.community.adapters.sqlalchemy_database import (
@@ -892,7 +859,7 @@ def _generate_mcp_json(
     _configure_community_relational_runtime(settings, echo=False)
     # R01C REPLAN-IMP4: Community owns the schema lifecycle here too — register
     # the orchestrator so this command's init_db delegates to the edition
-    # migrator+bootstrapper (idempotent; same lifecycle as serve/init).
+    # initializer and seeds (same lifecycle as serve/init).
     from okto_pulse.community.adapters.relational_schema_lifecycle import (
         register_community_relational_schema_lifecycle,
     )
@@ -902,19 +869,10 @@ def _generate_mcp_json(
     async def _fetch_agents():
         await init_db()
         async with get_session_factory()() as db:
-            # Fetch all active agents with API keys
-            result = await db.execute(
-                sa_text(
-                    "SELECT name, api_key FROM agents "
-                    "WHERE api_key IS NOT NULL ORDER BY name"
-                )
-            )
+            # Names support selection diagnostics; persisted secrets are never read.
+            result = await db.execute(sa_text("SELECT name FROM agents ORDER BY name"))
             all_agents = _result_records(result)
             exportable_by_name: dict[str, _ExportableAgentCredential] = {}
-            for agent in all_agents:
-                credential = _exportable_credential_from_legacy_agent(agent)
-                if credential is not None:
-                    exportable_by_name[credential.name] = credential
             for name, key in revealed_agents or []:
                 credential = _exportable_credential_from_reveal_once(name, key)
                 if credential is not None:
@@ -1304,13 +1262,11 @@ def cmd_api_key(args):
     --bootstrap-key-handoff``. The handoff is atomically claimed and deleted
     whether it is valid or invalid. This handoff branch never reads the agent
     table: persisted credentials are hashes/markers and are intentionally
-    non-recoverable. Without ``--handoff-file``, the governed legacy database
-    fallback remains available only for installations that still contain a
-    plaintext key.
+    non-recoverable. An explicit ``--handoff-file`` is required.
 
     Exit codes:
       0 — key printed
-      1 — handoff missing/invalid, DB unavailable, or persisted key is hashed
+      1 — handoff missing or invalid
 
     Output format: a single line containing the key on stdout. Banner
     goes to stderr so this is safe to pipe.
@@ -1328,44 +1284,12 @@ def cmd_api_key(args):
         print(credential)
         return
 
-    import sqlite3
-    from okto_pulse.community.config import CommunitySettings
-
-    settings = CommunitySettings()
-    db_path = Path(settings.data_dir) / "data" / "pulse.db"
-    if not db_path.exists():
-        print(
-            f"Database not found at {db_path}. Run 'okto-pulse init' first.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    conn = sqlite3.connect(str(db_path))
-    try:
-        row = conn.execute(
-            "SELECT api_key FROM agents WHERE api_key IS NOT NULL "
-            "ORDER BY created_at ASC LIMIT 1"
-        ).fetchone()
-    except sqlite3.OperationalError as exc:
-        print(
-            f"Database not initialised: {exc}. Run 'okto-pulse init' first.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    finally:
-        conn.close()
-
-    if row is None or not row[0]:
-        print("No bootstrap API key found in database.", file=sys.stderr)
-        sys.exit(1)
-    if not _is_recoverable_agent_key(row[0]):
-        print(
-            "Bootstrap API key is reveal-once and is not recoverable from the database.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    print(row[0])
+    print(
+        "An explicit --handoff-file is required; persisted API keys are reveal-once "
+        "and are not recoverable from the database.",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
 
 
 def main():
@@ -1555,9 +1479,9 @@ def main():
     sub_apikey.add_argument(
         "--handoff-file",
         metavar="ABSOLUTE_PATH",
+        required=True,
         help="Private file created by 'init --bootstrap-key-handoff'; "
-        "it is deleted after this read. Without this option, only governed "
-        "legacy plaintext database keys remain exportable.",
+        "it is deleted after this read.",
     )
     sub_apikey.set_defaults(func=cmd_api_key)
 

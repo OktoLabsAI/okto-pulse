@@ -386,7 +386,7 @@ def test_init_real_engine_closes_wals_and_reopens_every_graph_strictly_offline(
 
 
 # ---------------------------------------------------------------------------
-# AF14 TS6 - deferred Community migration contract
+# Native reveal-once credential export contract
 # ---------------------------------------------------------------------------
 
 
@@ -412,6 +412,7 @@ class _FakeSession:
         return False
 
     async def execute(self, _query):
+        assert "api_key" not in str(_query).lower()
         return _FakeScalarResult(self._rows)
 
 
@@ -447,7 +448,7 @@ def _patch_mcp_export_runtime(monkeypatch, rows):
     )
 
 
-def test_af14_ts6_mcp_export_skips_deferred_markers_but_exports_revealed_and_legacy(
+def test_mcp_export_uses_only_freshly_revealed_credentials(
     tmp_path, monkeypatch, capsys
 ):
     from okto_pulse.community.cli import _generate_mcp_json
@@ -469,9 +470,11 @@ def test_af14_ts6_mcp_export_skips_deferred_markers_but_exports_revealed_and_leg
     config = json.loads((tmp_path / ".mcp.json").read_text(encoding="utf-8"))
     urls = {name: server["url"] for name, server in config["mcpServers"].items()}
 
-    assert "reveal-once only: Deferred Agent" in output
+    assert "reveal-once only: Deferred Agent, Legacy Agent" in output
     assert "deferred-agent" not in urls
-    assert urls["legacy-agent"].endswith("?api_key=dash_legacy_plaintext")
+    assert "legacy-agent" not in urls
+    assert "dash_legacy_plaintext" not in json.dumps(config)
+    assert "sha256:deadbeef" not in json.dumps(config)
     assert urls["new-agent"].endswith("?api_key=dash_revealed_once")
 
 
@@ -524,10 +527,10 @@ def test_af14_ts6_api_key_cli_never_recovers_reveal_once_marker(
     captured = capsys.readouterr()
     assert exc_info.value.code == 1
     assert captured.out == ""
-    assert "reveal-once and is not recoverable" in captured.err
+    assert "--handoff-file is required" in captured.err
 
 
-def test_af14_ts6_api_key_cli_preserves_governed_legacy_plaintext(
+def test_api_key_cli_refuses_database_plaintext_without_handoff(
     tmp_path, monkeypatch, capsys
 ):
     import okto_pulse.community.config as community_config
@@ -550,11 +553,21 @@ def test_af14_ts6_api_key_cli_preserves_governed_legacy_plaintext(
     Settings = type("Settings", (), {"data_dir": str(data_dir)})
     monkeypatch.setattr(community_config, "CommunitySettings", Settings)
 
-    cmd_api_key(SimpleNamespace(handoff_file=None))
+    before = (db_dir / "pulse.db").read_bytes()
+
+    def forbidden_connect(*args, **kwargs):
+        raise AssertionError("api-key must not read persisted credentials")
+
+    monkeypatch.setattr(sqlite3, "connect", forbidden_connect)
+    with pytest.raises(SystemExit) as exc_info:
+        cmd_api_key(SimpleNamespace(handoff_file=None))
+    assert exc_info.value.code == 1
+    assert (db_dir / "pulse.db").read_bytes() == before
 
     captured = capsys.readouterr()
-    assert captured.out == "dash_governed_legacy\n"
-    assert captured.err == ""
+    assert captured.out == ""
+    assert "--handoff-file is required" in captured.err
+    assert "dash_governed_legacy" not in captured.err
 
 
 # ---------------------------------------------------------------------------
