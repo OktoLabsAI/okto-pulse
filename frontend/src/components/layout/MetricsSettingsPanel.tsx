@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Info, RotateCcw, X } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 import {
   CURRENT_METRICS_SCHEMA_VERSION,
   getMetricsSummary,
-  markMetricsMigrationNoticeSeen,
   updateMetricsMode,
   type MetricsMode,
   type MetricsSummary,
@@ -72,15 +71,10 @@ export function MetricsSettingsPanel({
   );
   const canReadSummary = policyReady && permissions.has('metrics.local.summary.read');
   const canEditSettings = policyReady && permissions.has('metrics.settings.edit');
-  const canMarkMigrationNotice = (
-    policyReady
-    && permissions.has('metrics.settings.migration_notice_seen')
-  );
   const [data, setData] = useState<MetricsSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [draftMode, setDraftMode] = useState<MetricsMode>('disabled');
-  const shownMigrationNotices = useRef<Set<string>>(new Set());
 
   const refresh = useCallback(async () => {
     if (!canReadSummary) {
@@ -103,22 +97,6 @@ export function MetricsSettingsPanel({
   useEffect(() => {
     void refresh();
   }, [refresh]);
-
-  useEffect(() => {
-    const notice = data?.migration_notice;
-    if (
-      !canMarkMigrationNotice
-      || !notice?.pending
-      || notice.type !== 'local_only_to_disabled'
-    ) return;
-    if (shownMigrationNotices.current.has(notice.type)) return;
-    shownMigrationNotices.current.add(notice.type);
-    toast('Metrics were turned off');
-    markMetricsMigrationNoticeSeen(notice.type).catch((err: any) => {
-      shownMigrationNotices.current.delete(notice.type);
-      toast.error(err?.message ?? 'Failed to confirm metrics notice');
-    });
-  }, [canMarkMigrationNotice, data?.migration_notice]);
 
   const saveSettings = async (nextMode: MetricsMode) => {
     if (!data || saving || !canEditSettings) return;

@@ -1,25 +1,12 @@
 export type MetricsMode = 'disabled' | 'anonymous_beacon';
-export type LegacyMetricsMode = MetricsMode | 'local_only';
 export type MetricsUiMode = 'off' | 'on';
 
 export const CURRENT_METRICS_SCHEMA_VERSION = '1.1.0';
-
-export interface MetricsMigrationNotice {
-  type: 'local_only_to_disabled';
-  reason: string;
-  from_mode: 'local_only';
-  to_mode: 'disabled';
-  pending: boolean;
-  seen_at: string | null;
-  message: string;
-}
 
 export interface MetricsSummary {
   mode: MetricsMode;
   ui_mode: MetricsUiMode;
   enabled: boolean;
-  normalized_from: 'local_only' | null;
-  migration_notice: MetricsMigrationNotice | null;
   source: string;
   metrics_dir: string;
   retention_days: number;
@@ -72,8 +59,6 @@ export async function updateMetricsMode(
   mode: MetricsMode;
   ui_mode: MetricsUiMode;
   enabled: boolean;
-  normalized_from: 'local_only' | null;
-  migration_notice: MetricsMigrationNotice | null;
   changed_at: string;
   schema_version: string | null;
   acknowledged_items: string[];
@@ -89,17 +74,6 @@ export async function updateMetricsMode(
       schema_version: mode === 'anonymous_beacon' ? CURRENT_METRICS_SCHEMA_VERSION : undefined,
       acknowledged_items: acknowledgedItems,
     }),
-  });
-  return jsonOrThrow(resp);
-}
-
-export async function markMetricsMigrationNoticeSeen(
-  noticeKey: MetricsMigrationNotice['type'],
-): Promise<{ notice_key: string; pending: boolean; seen_at: string | null; idempotent: boolean }> {
-  const resp = await fetch(`${BASE}/metrics/settings/migration-notice/seen`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ notice_key: noticeKey }),
   });
   return jsonOrThrow(resp);
 }

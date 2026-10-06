@@ -12,8 +12,6 @@ from okto_pulse.core.infra.config import CoreSettings
 from okto_pulse.core.ports.telemetry import TelemetryStateCarrier
 from okto_pulse.core.telemetry.schema import CURRENT_SCHEMA_VERSION
 from okto_pulse.core.telemetry.settings import (
-    LOCAL_ONLY_MIGRATION_NOTICE,
-    mark_migration_notice_seen,
     record_consent,
 )
 from okto_pulse.core.telemetry.telemetry_state_registry import (
@@ -61,7 +59,6 @@ def test_community_registration_wires_core_settings_without_truncating_state(
     original = {
         "mode": "disabled",
         "history": [{"mode": "disabled", "changed_at": f"t{i}"} for i in range(49)],
-        "migration_notices": {LOCAL_ONLY_MIGRATION_NOTICE: {"seen": False}},
         "install_token": "SECRET-TOKEN",
         "install_token_expires_at": "2026-07-01T00:00:00Z",
         "watermark": {"cursor": "w1"},
@@ -82,12 +79,10 @@ def test_community_registration_wires_core_settings_without_truncating_state(
         schema_version=CURRENT_SCHEMA_VERSION,
         acknowledged_items=["privacy", "schema"],
     )
-    mark_migration_notice_seen(settings, notice_key=LOCAL_ONLY_MIGRATION_NOTICE)
     reloaded = tstate.load_state(metrics_dir)
 
     assert reloaded["mode"] == "anonymous_beacon"
     assert len(reloaded["history"]) == 50
-    assert reloaded["migration_notices"][LOCAL_ONLY_MIGRATION_NOTICE]["seen"] is True
     for key in (
         "install_token",
         "install_token_expires_at",
@@ -166,13 +161,9 @@ def test_resolve_telemetry_config_can_use_injected_community_snapshot(
     cfg = resolve_telemetry_config(
         settings,
         state_snapshot={
-            "mode": "local_only",
-            "migration_notices": {LOCAL_ONLY_MIGRATION_NOTICE: {"seen": False}},
+            "mode": "disabled",
         },
     )
 
     assert cfg.source == "persisted_consent"
     assert cfg.mode == "disabled"
-    assert cfg.normalized_from == "local_only"
-    assert cfg.migration_notice is not None
-    assert cfg.migration_notice["pending"] is True

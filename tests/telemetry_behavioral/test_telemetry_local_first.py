@@ -83,15 +83,11 @@ def test_metrics_routes_fail_closed_before_touching_telemetry_service(
             "/api/v1/metrics/settings",
             json={"mode": "disabled", "source": "settings_ui"},
         ),
-        client.post(
-            "/api/v1/metrics/settings/migration-notice/seen",
-            json={"notice_key": "legacy"},
-        ),
         client.post("/api/v1/metrics/local/export"),
         client.delete("/api/v1/metrics/local"),
     )
 
-    assert [response.status_code for response in responses] == [403] * 7
+    assert [response.status_code for response in responses] == [403] * 6
 
 
 def _assert_no_payload_labels(record) -> None:
@@ -117,111 +113,16 @@ def test_fresh_install_resolves_off_without_network(tmp_path: Path) -> None:
 
     assert cfg.mode == "disabled"
     assert cfg.ui_mode == "off"
-    assert cfg.normalized_from is None
-    assert cfg.migration_notice is None
+    assert not hasattr(cfg, "normalized_from")
+    assert not hasattr(cfg, "migration_notice")
     assert cfg.source == "default"
     assert cfg.metrics_dir == (tmp_path / "metrics").resolve()
     assert cfg.beacon_url == COMMUNITY_DEFAULT_METRICS_BEACON_URL
     assert cfg.schema_version == CURRENT_SCHEMA_VERSION
 
 
-def test_legacy_local_only_state_normalizes_to_disabled_with_bounded_notice(
-    tmp_path: Path,
-    caplog,
-) -> None:
-    settings = _settings(tmp_path)
-    metrics_dir = tmp_path / "metrics"
-    metrics_dir.mkdir(parents=True)
-    (metrics_dir / "state.json").write_text(
-        json.dumps(
-            {
-                "mode": "local_only",
-                "source": "settings_ui",
-                "policy_version": "2026-05-11",
-                "schema_version": CURRENT_SCHEMA_VERSION,
-                "acknowledged_items": ["schema", "privacy_policy"],
-            }
-        ),
-        encoding="utf-8",
-    )
-    caplog.set_level("INFO", logger="okto_pulse.telemetry.settings")
-    caplog.set_level("INFO", logger="okto_pulse.telemetry.service")
-
-    cfg = resolve_telemetry_config(settings)
-    summary = TelemetryService(settings).summary()
-
-    expected_notice = {
-        "type": "local_only_to_disabled",
-        "reason": "legacy_local_only_disabled",
-        "from_mode": "local_only",
-        "to_mode": "disabled",
-        "pending": True,
-        "seen_at": None,
-        "message": "Previous Local metrics mode was migrated to Off.",
-    }
-    assert cfg.mode == "disabled"
-    assert cfg.ui_mode == "off"
-    assert cfg.normalized_from == "local_only"
-    assert cfg.migration_notice == expected_notice
-    assert summary["mode"] == "disabled"
-    assert summary["ui_mode"] == "off"
-    assert summary["enabled"] is False
-    assert summary["normalized_from"] == "local_only"
-    assert summary["migration_notice"] == expected_notice
-    assert summary["consent"]["acknowledged_items"] == ["schema", "privacy_policy"]
-    assert "local_only" not in json.dumps({"mode": summary["mode"]})
-    assert any(
-        record.__dict__.get("metric_name") == "metrics_mode_normalized_total"
-        and record.__dict__.get("source") == "persisted_consent"
-        and record.__dict__.get("from_mode") == "local_only"
-        and record.__dict__.get("to_mode") == "disabled"
-        and record.__dict__.get("outcome") == "normalized"
-        for record in caplog.records
-    )
-    pending_notice_records = [
-        record
-        for record in caplog.records
-        if record.__dict__.get("metric_name") == "metrics_migration_notice_total"
-    ]
-    assert len(pending_notice_records) == 1
-    assert (
-        pending_notice_records[0].__dict__.get("notice_key") == "local_only_to_disabled"
-    )
-    assert pending_notice_records[0].__dict__.get("outcome") == "pending_returned"
-    _assert_no_payload_labels(pending_notice_records[0])
 
 
-def test_seen_legacy_local_only_notice_is_not_pending(tmp_path: Path) -> None:
-    settings = _settings(tmp_path)
-    metrics_dir = tmp_path / "metrics"
-    metrics_dir.mkdir(parents=True)
-    (metrics_dir / "state.json").write_text(
-        json.dumps(
-            {
-                "mode": "local_only",
-                "migration_notices": {
-                    "local_only_to_disabled": {
-                        "seen": True,
-                        "seen_at": "2026-05-28T12:00:00Z",
-                    }
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    cfg = resolve_telemetry_config(settings)
-
-    assert cfg.mode == "disabled"
-    assert cfg.migration_notice == {
-        "type": "local_only_to_disabled",
-        "reason": "legacy_local_only_disabled",
-        "from_mode": "local_only",
-        "to_mode": "disabled",
-        "pending": False,
-        "seen_at": "2026-05-28T12:00:00Z",
-        "message": "Previous Local metrics mode was migrated to Off.",
-    }
 
 
 def test_disabled_mode_does_not_write_events(tmp_path: Path, caplog) -> None:
@@ -248,49 +149,6 @@ def test_disabled_mode_does_not_write_events(tmp_path: Path, caplog) -> None:
     assert "command" not in skip_records[0].__dict__
 
 
-def test_legacy_local_only_state_does_not_capture_events_after_normalization(
-    tmp_path: Path,
-    caplog,
-) -> None:
-    settings = _settings(tmp_path)
-    metrics_dir = tmp_path / "metrics"
-    metrics_dir.mkdir(parents=True)
-    (metrics_dir / "state.json").write_text(
-        json.dumps(
-            {
-                "mode": "local_only",
-                "source": "settings_ui",
-                "policy_version": "2026-05-11",
-                "schema_version": CURRENT_SCHEMA_VERSION,
-            }
-        ),
-        encoding="utf-8",
-    )
-    caplog.set_level("INFO", logger="okto_pulse.telemetry.settings")
-    caplog.set_level("INFO", logger="okto_pulse.telemetry.service")
-
-    result = TelemetryService(settings).record_event(
-        "cli", {"command": "serve", "exit_code": 0}
-    )
-
-    assert result == {
-        "written": False,
-        "mode": "disabled",
-        "rejected_fields_count": 0,
-        "schema_version": CURRENT_SCHEMA_VERSION,
-    }
-    assert not list(metrics_dir.glob("events/*.jsonl"))
-    assert any(
-        record.__dict__.get("metric_name") == "metrics_mode_normalized_total"
-        and record.__dict__.get("source") == "persisted_consent"
-        for record in caplog.records
-    )
-    assert any(
-        record.__dict__.get("metric_name") == "metrics_runtime_skip_total"
-        and record.__dict__.get("component") == "record_event"
-        and record.__dict__.get("reason") == "disabled"
-        for record in caplog.records
-    )
 
 
 def test_allowlist_drops_sensitive_payload_before_store(tmp_path: Path) -> None:
@@ -582,21 +440,11 @@ def test_metrics_settings_api_rejects_settings_ui_local_only_without_state_chang
         json={"mode": "local_only", "source": "settings_ui"},
     )
 
-    assert response.status_code == 400
-    assert response.json() == {"detail": "invalid_legacy_mode_for_ui"}
+    assert response.status_code == 422
     state = json.loads((metrics_dir / "state.json").read_text(encoding="utf-8"))
     assert state == original_state
-    setting_records = [
-        record
-        for record in caplog.records
-        if record.__dict__.get("metric_name") == "metrics_settings_update_total"
-    ]
-    assert len(setting_records) == 1
-    assert setting_records[0].__dict__.get("source") == "settings_ui"
-    assert setting_records[0].__dict__.get("target_mode") == "local_only"
-    assert setting_records[0].__dict__.get("outcome") == "rejected"
-    assert setting_records[0].__dict__.get("reason") == "invalid_legacy_mode_for_ui"
-    _assert_no_payload_labels(setting_records[0])
+    assert not any(record.__dict__.get("metric_name") == "metrics_settings_update_total"
+                   for record in caplog.records)
 
 
 def test_metrics_settings_api_anonymous_beacon_ack_required_then_saved(
@@ -670,66 +518,16 @@ def test_metrics_settings_api_anonymous_beacon_ack_required_then_saved(
         _assert_no_payload_labels(record)
 
 
-def test_migration_notice_seen_endpoint_is_idempotent_and_preserves_state(
-    tmp_path: Path,
-    monkeypatch,
-    caplog,
-) -> None:
-    metrics_dir = tmp_path / "metrics"
-    metrics_dir.mkdir(parents=True)
-    original_state = {
-        "mode": "local_only",
-        "source": "settings_ui",
-        "policy_version": "2026-05-11",
-        "schema_version": CURRENT_SCHEMA_VERSION,
-        "acknowledged_items": ["schema", "privacy_policy"],
-    }
-    (metrics_dir / "state.json").write_text(
-        json.dumps(original_state), encoding="utf-8"
-    )
+def test_removed_notice_endpoint_does_not_touch_existing_state(tmp_path, monkeypatch):
+    folder = tmp_path / "metrics"
+    folder.mkdir()
+    path = folder / "state.json"
+    path.write_text('{"mode":"local_only"}')
+    before = path.read_bytes()
     client = _metrics_client(tmp_path, monkeypatch)
-    caplog.set_level("INFO", logger="okto_pulse.telemetry.service")
-
-    first = client.post(
-        "/api/v1/metrics/settings/migration-notice/seen",
-        json={"notice_key": "local_only_to_disabled"},
-    )
-    second = client.post(
-        "/api/v1/metrics/settings/migration-notice/seen",
-        json={"notice_key": "local_only_to_disabled"},
-    )
-
-    assert first.status_code == 200
-    assert second.status_code == 200
-    first_body = first.json()
-    second_body = second.json()
-    assert first_body["notice_key"] == "local_only_to_disabled"
-    assert first_body["pending"] is False
-    assert first_body["idempotent"] is False
-    assert second_body == {**first_body, "idempotent": True}
-    state = json.loads((metrics_dir / "state.json").read_text(encoding="utf-8"))
-    assert state["mode"] == "local_only"
-    assert state["acknowledged_items"] == ["schema", "privacy_policy"]
-    assert state["migration_notices"]["local_only_to_disabled"] == {
-        "seen": True,
-        "seen_at": first_body["seen_at"],
-    }
-    assert not (metrics_dir / "events").exists()
-    notice_records = [
-        record
-        for record in caplog.records
-        if record.__dict__.get("metric_name") == "metrics_migration_notice_total"
-    ]
-    assert [record.__dict__.get("outcome") for record in notice_records] == [
-        "seen_acknowledged",
-        "seen_idempotent",
-    ]
-    assert all(
-        record.__dict__.get("notice_key") == "local_only_to_disabled"
-        for record in notice_records
-    )
-    for record in notice_records:
-        _assert_no_payload_labels(record)
+    assert client.post("/api/v1/metrics/settings/migration-notice/seen",
+                       json={"notice_key": "local_only_to_disabled"}).status_code == 404
+    assert path.read_bytes() == before
 
 
 def test_local_events_endpoint_rejects_invalid_event_without_leaking_payload(
@@ -1249,27 +1047,6 @@ def test_stale_persisted_beacon_consent_falls_back_to_disabled(tmp_path: Path) -
     assert summary["beacon_status"]["schema_status"] == "stale_consent"
 
 
-def test_metrics_settings_normalizes_legacy_local_only_and_preserves_acknowledged_items(
-    tmp_path: Path,
-) -> None:
-    settings = _settings(tmp_path)
-    service = TelemetryService(settings)
-
-    result = service.update_settings(
-        mode="local_only",
-        source="cli",
-        acknowledged_items=["schema", "privacy_policy", "schema"],
-    )
-
-    assert result["mode"] == "disabled"
-    assert result["ui_mode"] == "off"
-    assert result["normalized_from"] == "local_only"
-    assert result["acknowledged_items"] == ["schema", "privacy_policy"]
-    assert service.summary()["mode"] == "disabled"
-    assert service.summary()["consent"]["acknowledged_items"] == [
-        "schema",
-        "privacy_policy",
-    ]
 
 
 def test_hourly_batch_excludes_product_aggregates_from_delta_batch(

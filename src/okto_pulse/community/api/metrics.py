@@ -40,7 +40,6 @@ _METRICS_HISTORICAL_AUTHORITIES: dict[str, str] = {
     "metrics.publish_health.read": "board.read",
     "metrics.local.events.create": "board.analytics_read",
     "metrics.settings.edit": "board.analytics_read",
-    "metrics.settings.migration_notice_seen": "board.analytics_read",
     "metrics.local.export": "board.analytics_read",
     "metrics.local.purge": "board.analytics_read",
 }
@@ -61,7 +60,7 @@ async def _authorize_metrics(principal: Principal, operation: str) -> None:
 
 
 class MetricsSettingsPayload(BaseModel):
-    mode: Literal["disabled", "local_only", "anonymous_beacon"]
+    mode: Literal["disabled", "anonymous_beacon"]
     source: Literal["settings_ui"] = "settings_ui"
     retention_days: int | None = Field(default=None, ge=1, le=400)
     beacon_url: str | None = None
@@ -75,8 +74,6 @@ class LocalMetricsEventPayload(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
-class MigrationNoticeSeenPayload(BaseModel):
-    notice_key: str = Field(min_length=1, max_length=64)
 
 
 def _log_settings_update(
@@ -202,14 +199,6 @@ async def post_metrics_settings(
         "no_pii",
         "local_control",
     }
-    if payload.source == "settings_ui" and payload.mode == "local_only":
-        _log_settings_update(
-            source=payload.source,
-            target_mode=payload.mode,
-            outcome="rejected",
-            reason="invalid_legacy_mode_for_ui",
-        )
-        raise HTTPException(status_code=400, detail="invalid_legacy_mode_for_ui")
     if payload.mode == "anonymous_beacon":
         if not payload.policy_version or not payload.schema_version:
             _log_settings_update(
@@ -256,21 +245,6 @@ async def post_metrics_settings(
     return result
 
 
-@router.post("/metrics/settings/migration-notice/seen")
-async def mark_metrics_migration_notice_seen(
-    payload: MigrationNoticeSeenPayload,
-    principal: Principal = Depends(require_principal),
-):
-    await _authorize_metrics(
-        principal,
-        "metrics.settings.migration_notice_seen",
-    )
-    try:
-        return get_telemetry_port(get_settings()).mark_migration_notice_seen(
-            notice_key=payload.notice_key
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/metrics/local/export")
@@ -292,6 +266,5 @@ async def purge_local_metrics(
 __all__ = [
     "LocalMetricsEventPayload",
     "MetricsSettingsPayload",
-    "MigrationNoticeSeenPayload",
     "router",
 ]

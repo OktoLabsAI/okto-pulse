@@ -13,7 +13,6 @@ warnings.filterwarnings(
 import argparse
 import asyncio
 import json
-import logging
 import os
 import socket
 import stat
@@ -31,7 +30,6 @@ DEFAULT_API_PORT = 8100
 DEFAULT_MCP_PORT = 8101
 
 _BANNER_PATH = Path(__file__).parent / "banner.txt"
-_METRICS_CLI_LOGGER = logging.getLogger("okto_pulse.community.metrics.cli")
 _BOOTSTRAP_KEY_HEX_LENGTH = 48
 _BOOTSTRAP_HANDOFF_MAX_BYTES = 128
 
@@ -1275,21 +1273,8 @@ def cmd_metrics(args):
         print(json.dumps(result, indent=2, sort_keys=True))
         return
 
-    if command in {"local-only", "disable"}:
-        if command == "local-only":
-            _METRICS_CLI_LOGGER.info(
-                "metrics.cli.legacy_local_only",
-                extra={
-                    "metric_name": "metrics_cli_legacy_local_only_total",
-                    "outcome": "mapped_to_disabled",
-                },
-            )
+    if command == "disable":
         result = service.update_settings(mode="disabled", source="cli")
-        if command == "local-only":
-            result["legacy_alias"] = "local-only"
-            result["message"] = (
-                "The legacy local-only command is deprecated; metrics are now Off."
-            )
         print(json.dumps(result, indent=2, sort_keys=True))
         return
 
@@ -1385,12 +1370,6 @@ def cmd_api_key(args):
 
 def main():
     raw_argv = list(sys.argv[1:])
-    metrics_legacy_local_only = (
-        len(raw_argv) >= 2 and raw_argv[0] == "metrics" and raw_argv[1] == "local-only"
-    )
-    if metrics_legacy_local_only:
-        raw_argv = ["metrics", "disable", *raw_argv[2:]]
-
     parser = argparse.ArgumentParser(
         prog="okto-pulse",
         description="Okto Pulse Community — local-first kanban board with MCP support for AI agents",
@@ -1583,8 +1562,6 @@ def main():
     sub_apikey.set_defaults(func=cmd_api_key)
 
     args = parser.parse_args(raw_argv)
-    if metrics_legacy_local_only:
-        args.metrics_command = "local-only"
     if not args.command:
         _print_banner()
         parser.print_help()

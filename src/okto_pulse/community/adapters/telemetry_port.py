@@ -133,8 +133,6 @@ class CommunityTelemetryService:
     def update_settings(self, **kwargs: Any) -> dict[str, Any]:
         return self._policy.update_settings(**kwargs)
 
-    def mark_migration_notice_seen(self, *, notice_key: str) -> dict[str, Any]:
-        return self._policy.mark_migration_notice_seen(notice_key=notice_key)
 
     def export_events(self, destination_ref: str | None = None) -> dict[str, Any]:
         return self._policy.export_events(destination_ref)

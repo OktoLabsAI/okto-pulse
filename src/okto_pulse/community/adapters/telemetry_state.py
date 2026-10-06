@@ -24,7 +24,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from okto_pulse.core.ports.telemetry import TelemetryStateCarrier
+from okto_pulse.core.ports.telemetry import TelemetryStateCarrier, validate_telemetry_state
 from okto_pulse.core.telemetry import failure_state as fs
 from okto_pulse.core.telemetry import watermark as wm
 
@@ -37,12 +37,15 @@ def load_state(metrics_dir: Path) -> dict[str, Any]:
     path = state_path(metrics_dir)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except FileNotFoundError:
         return {}
-    return data if isinstance(data, dict) else {}
+    validate_telemetry_state(data)
+    return data
 
 
 def save_state(metrics_dir: Path, state: dict[str, Any]) -> None:
+    validate_telemetry_state(state)
+    load_state(metrics_dir)  # Refuse incompatible existing state before any write.
     metrics_dir.mkdir(parents=True, exist_ok=True)
     tmp = state_path(metrics_dir).with_suffix(".tmp")
     tmp.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
