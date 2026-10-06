@@ -147,7 +147,7 @@ export interface KGHealth {
   current_kg_generation_id?: string | null;
   classification_reason?: string | null;
   health_issues?: KGHealthIssue[];
-  decay_scheduler_diagnostics?: DecaySchedulerDiagnostics;
+  decay_scheduler_diagnostics: DecaySchedulerDiagnostics;
   storage_footprint_proxy?: StorageFootprintProxy;
   kg_layer_counts?: KGLayerCounts;
   canonical_debt?: CanonicalDebtSummary;

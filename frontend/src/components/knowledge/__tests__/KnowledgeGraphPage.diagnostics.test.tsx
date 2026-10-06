@@ -121,6 +121,20 @@ const health: KGHealth = {
   last_tick_error: 'tick handler failed',
   nodes_recomputed_in_last_tick: 0,
   tick_in_progress: false,
+  decay_scheduler_diagnostics: {
+    status: 'failed',
+    severity: 'warning',
+    last_success_at: null,
+    last_failure_at: '2026-10-06T12:00:00Z',
+    last_error: 'tick handler failed',
+    next_scheduled_at: null,
+    stale_tolerance_seconds: 86400,
+    recommended_action: 'inspect_scheduler',
+    operational_debt: true,
+    graph_recovery_required: false,
+    reason: 'latest_tick_failed',
+    source: 'kg_tick_runs',
+  },
 };
 
 const metadata: GraphMetadata = {

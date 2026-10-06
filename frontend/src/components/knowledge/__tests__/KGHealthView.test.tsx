@@ -423,47 +423,21 @@ describe('TS4 — unmount cancela polling e aborta requests pendentes', () => {
   });
 });
 
-describe('TS5 — scheduler diagnostics and legacy tick fallback', () => {
-  it('null → "Tick has never run"', async () => {
+describe('TS5 — current scheduler diagnostics', () => {
+  it.each([null, 6, 30])('does not infer status from a previous tick (%s hours)', async (hours) => {
     mockBoard('b1');
-    mockApi(() => Promise.resolve({
+    const incompatible = {
       ...baseHealth,
       decay_scheduler_diagnostics: undefined,
-      last_decay_tick_at: null,
-    }));
+      last_decay_tick_at: hours === null
+        ? null
+        : new Date(Date.now() - hours * 60 * 60 * 1000).toISOString(),
+    } as unknown as KGHealth;
+    mockApi(() => Promise.resolve(incompatible));
 
     render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
-    await waitFor(() => expect(screen.getByText('Tick has never run')).toBeInTheDocument());
-  });
-
-  it('age > 24h → "Stale tick: Xh ago" amber', async () => {
-    mockBoard('b1');
-    const thirtyHoursAgo = new Date(Date.now() - 30 * 60 * 60 * 1000).toISOString();
-    mockApi(() => Promise.resolve({
-      ...baseHealth,
-      decay_scheduler_diagnostics: undefined,
-      last_decay_tick_at: thirtyHoursAgo,
-    }));
-
-    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
-    await waitFor(() => {
-      expect(screen.getByText(/Stale tick: 30h ago/)).toBeInTheDocument();
-    });
-  });
-
-  it('age ≤ 24h → "Last tick: Xh ago" neutral', async () => {
-    mockBoard('b1');
-    const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
-    mockApi(() => Promise.resolve({
-      ...baseHealth,
-      decay_scheduler_diagnostics: undefined,
-      last_decay_tick_at: sixHoursAgo,
-    }));
-
-    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
-    await waitFor(() => {
-      expect(screen.getByText(/Last tick: 6h ago/)).toBeInTheDocument();
-    });
+    await waitFor(() => expect(screen.getByText('Scheduler diagnostics unavailable')).toBeInTheDocument());
+    expect(screen.queryByText(/Tick has never run|Stale tick:|Last tick:/)).toBeNull();
   });
 
   it('uses backend diagnostics instead of the local 24h heuristic when present', async () => {

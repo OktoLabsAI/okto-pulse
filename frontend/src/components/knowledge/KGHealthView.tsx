@@ -9,8 +9,7 @@
  * board change (BR8). Refresh button fires an immediate fetch without
  * touching the polling cadence (BR10).
  *
- * Scheduler badge — driven by backend decay_scheduler_diagnostics when
- * available; legacy last_decay_tick_at fallback remains for older payloads.
+ * Scheduler badge uses the backend diagnostics; missing diagnostics stay unknown.
  * Schema banner — red full-width when schema_version
  * !== EXPECTED_SCHEMA_VERSION (BR2). Skeleton appears only on the very
  * first fetch (BR11). Errors preserve previous data and let polling
@@ -54,7 +53,6 @@ interface KGHealthViewProps {
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 30000;
-const LEGACY_STALE_TICK_THRESHOLD_MS = 24 * 60 * 60 * 1000;
 
 export function KGHealthView({
   pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
@@ -151,9 +149,8 @@ export function KGHealthView({
   const tickInfo = useMemo(
     () => computeTickInfo(
       data?.decay_scheduler_diagnostics ?? null,
-      data?.last_decay_tick_at ?? null,
     ),
-    [data?.decay_scheduler_diagnostics, data?.last_decay_tick_at],
+    [data?.decay_scheduler_diagnostics],
   );
 
   const schemaMismatch = data
@@ -285,12 +282,10 @@ interface TickInfo {
   reason: string | null;
   nextScheduledAt: string | null;
   staleToleranceSeconds: number | null;
-  source: 'backend' | 'legacy';
 }
 
 function computeTickInfo(
   diagnostics: DecaySchedulerDiagnostics | null,
-  lastDecayTickAt: string | null,
 ): TickInfo {
   if (diagnostics) {
     const lastSuccessAge = ageHoursFromIso(diagnostics.last_success_at);
@@ -304,45 +299,16 @@ function computeTickInfo(
       reason: diagnostics.reason,
       nextScheduledAt: diagnostics.next_scheduled_at,
       staleToleranceSeconds: diagnostics.stale_tolerance_seconds,
-      source: 'backend',
-    };
-  }
-  if (!lastDecayTickAt) {
-    return {
-      status: 'never',
-      ageHours: null,
-      label: 'Tick has never run',
-      ariaLabel: 'Tick has never run',
-      reason: 'legacy_no_tick',
-      nextScheduledAt: null,
-      staleToleranceSeconds: null,
-      source: 'legacy',
-    };
-  }
-  const tickDate = new Date(lastDecayTickAt);
-  const ageMs = Date.now() - tickDate.getTime();
-  const ageHours = Math.floor(ageMs / (60 * 60 * 1000));
-  if (ageMs > LEGACY_STALE_TICK_THRESHOLD_MS) {
-    return {
-      status: 'stale',
-      ageHours,
-      label: `Stale tick: ${ageHours}h ago`,
-      ariaLabel: `Stale tick: ${ageHours} hours ago`,
-      reason: 'legacy_stale_threshold',
-      nextScheduledAt: null,
-      staleToleranceSeconds: 24 * 60 * 60,
-      source: 'legacy',
     };
   }
   return {
-    status: 'fresh',
-    ageHours,
-    label: `Last tick: ${ageHours}h ago`,
-    ariaLabel: `Last tick: ${ageHours} hours ago`,
-    reason: 'legacy_recent_tick',
+    status: 'unknown',
+    ageHours: null,
+    label: 'Scheduler diagnostics unavailable',
+    ariaLabel: 'Scheduler diagnostics unavailable',
+    reason: 'scheduler_diagnostics_missing',
     nextScheduledAt: null,
-    staleToleranceSeconds: 24 * 60 * 60,
-    source: 'legacy',
+    staleToleranceSeconds: null,
   };
 }
 
