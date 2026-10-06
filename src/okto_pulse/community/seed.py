@@ -97,7 +97,7 @@ async def seed_community_defaults(
             "realm_id": LOCAL_REALM_ID,
             # Keep the native bootstrap policy explicit. Authored Boards use
             # their own template/default policy; no stored Board is converted.
-            "settings": {"reviewer_separation_mode": "off"},
+            "settings": {"reviewer_separation_mode": "off", "skip_task_requirement_link_gate_global": True},
         },
     )
 
@@ -302,7 +302,7 @@ async def _seed_demo_board(db: AsyncSession) -> str | None:
             "realm_id": LOCAL_REALM_ID,
             # Keep the native bootstrap policy explicit. Authored Boards use
             # their own template/default policy; no stored Board is converted.
-            "settings": {"reviewer_separation_mode": "off"},
+            "settings": {"reviewer_separation_mode": "off", "skip_task_requirement_link_gate_global": True},
         },
     )
     provenance = DirectSpecDeliveryContextProvenance(

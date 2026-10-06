@@ -145,7 +145,7 @@ function toBoardSettings(raw: Record<string, unknown>): BoardSettings {
     skip_cognitive_consolidation: bool('skip_cognitive_consolidation', false),
     allow_agent_self_answering: bool('allow_agent_self_answering', false),
     require_full_context_for_critical_actions: bool('require_full_context_for_critical_actions', true),
-    reviewer_separation_mode: normalizeReviewerSeparationMode(raw.reviewer_separation_mode),
+    reviewer_separation_mode: raw.reviewer_separation_mode as BoardSettings['reviewer_separation_mode'],
     skip_test_evidence_global: bool('skip_test_evidence_global', false),
     require_task_validation: bool('require_task_validation', true),
     min_confidence: num('min_confidence', 70),
@@ -362,6 +362,9 @@ export function DefaultBoardConfigPanel({
   };
   if (!resolveCodeTraceabilitySettings(mergedSettings.code_traceability)) {
     return <div role="alert">Code Traceability settings are incompatible. Template cannot be edited.</div>;
+  }
+  if (!normalizeReviewerSeparationMode(mergedSettings.reviewer_separation_mode)) {
+    return <div role="alert">Reviewer separation policy is incompatible. Template cannot be edited.</div>;
   }
   // The persisted baselines; the editors stage local drafts on top of them.
   const baseSettings = toBoardSettings(mergedSettings);

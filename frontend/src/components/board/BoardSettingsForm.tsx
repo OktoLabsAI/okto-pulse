@@ -281,6 +281,10 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
     return <div role="alert">Code Traceability settings are incompatible. Settings cannot be edited.</div>;
   }
 
+  if (!normalizeReviewerSeparationMode(settings.reviewer_separation_mode)) {
+    return <div role="alert">Reviewer separation policy is incompatible. Settings cannot be edited.</div>;
+  }
+
   const updateCodeTraceability = (
     patch: Partial<CodeTraceabilitySettings>,
   ) => {

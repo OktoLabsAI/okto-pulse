@@ -383,7 +383,7 @@ async def test_first_boot_demo_seed_persists_valid_status_and_card_kinds(
         assert result is not None
         assert len(committed_graphs) == 1
         for row in boards:
-            assert json.loads(row["settings"]) == {"reviewer_separation_mode": "off"}
+            assert json.loads(row["settings"]) == {"reviewer_separation_mode": "off", "skip_task_requirement_link_gate_global": True}
         assert [
             (row["name"], row["realm_id"]) for row in boards
         ] == [

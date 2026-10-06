@@ -108,14 +108,14 @@ describe('BoardSettingsForm — independent reviewer policy', () => {
     expect(onChange).toHaveBeenCalledWith({ reviewer_separation_mode: 'warn' });
   });
 
-  it('projects an absent or unknown legacy value as off', () => {
+  it('uses the creation default and refuses an unknown policy', () => {
     const { rerender } = render(
       <BoardSettingsForm
         settings={{ ...baseSettings, reviewer_separation_mode: undefined }}
         onChange={vi.fn()}
       />,
     );
-    expect(screen.getByTestId('reviewer-separation-mode-off')).toHaveAttribute(
+    expect(screen.getByTestId('reviewer-separation-mode-enforce')).toHaveAttribute(
       'aria-pressed',
       'true',
     );
@@ -126,10 +126,9 @@ describe('BoardSettingsForm — independent reviewer policy', () => {
         onChange={vi.fn()}
       />,
     );
-    expect(screen.getByTestId('reviewer-separation-mode-off')).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
+    expect(screen.getByRole('alert')).toHaveTextContent('Reviewer separation policy is incompatible');
+    expect(screen.queryByTestId('reviewer-separation-mode-off')).not.toBeInTheDocument();
+
   });
 });
 
