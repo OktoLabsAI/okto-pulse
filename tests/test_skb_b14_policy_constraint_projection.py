@@ -776,6 +776,14 @@ def test_semantic_context_envelope_is_strict_and_reserves_authority_fields():
     assert context["authority_digest"] == "a" * 64
     assert node.attrs["source_content_hash"] is None
 
+    # The exact same payload without the native envelope is an incompatible
+    # persisted format, not an alternative reader contract.
+    with pytest.raises(
+        PolicyConstraintProjectionConflict,
+        match="semantic_guideline_graph_context_invalid",
+    ):
+        _decode_semantic_context(node.attrs["context"][len("json:") :])
+
     with pytest.raises(
         PolicyConstraintProjectionConflict,
         match="semantic_guideline_graph_context_invalid",
@@ -783,9 +791,9 @@ def test_semantic_context_envelope_is_strict_and_reserves_authority_fields():
         _decode_semantic_context("{contract: semantic-guideline-kg/v1, kind: revision}")
 
     for invalid_json in (
-        '{"contract":"semantic-guideline-kg/v1",'
+        'json:{"contract":"semantic-guideline-kg/v1",'
         '"contract":"semantic-guideline-kg/v1","kind":"revision"}',
-        '{"contract":"semantic-guideline-kg/v1","kind":"revision","score":NaN}',
+        'json:{"contract":"semantic-guideline-kg/v1","kind":"revision","score":NaN}',
     ):
         with pytest.raises(
             PolicyConstraintProjectionConflict,

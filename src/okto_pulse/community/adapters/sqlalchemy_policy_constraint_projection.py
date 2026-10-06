@@ -258,14 +258,7 @@ def _semantic_context(
     *,
     authority_digest: str,
 ) -> str:
-    """Encode semantic authority without Ladybug/Kuzu STRUCT coercion.
-
-    A bound string whose first byte is ``{`` is inferred by the Python driver
-    as a STRUCT before it reaches a STRING property. Its round-trip value is a
-    pseudo-map (``{contract: ..., kind: ...}``) that is not JSON. The stable
-    text envelope prevents that coercion while keeping the payload strict and
-    independently decodable.
-    """
+    """Encode semantic authority in the current explicit JSON envelope."""
 
     try:
         canonical_json = json.dumps(
@@ -290,22 +283,13 @@ def _semantic_context(
 
 
 def _decode_semantic_context(value: object) -> dict[str, Any]:
-    """Decode the current envelope and valid pre-envelope JSON providers.
+    """Decode only the current envelope; prior graph formats are rejected."""
 
-    Raw JSON is a narrow compatibility path for graph providers that persisted
-    the original v1 string byte-for-byte. Ladybug's lossy pseudo-map is not
-    parsed: it cannot prove quoted values or nested payload boundaries.
-    """
-
-    if not isinstance(value, str) or not value:
+    if not isinstance(value, str) or not value.startswith(_SEMANTIC_CONTEXT_PREFIX):
         raise PolicyConstraintProjectionConflict(
             "semantic_guideline_graph_context_invalid"
         )
-    serialized = (
-        value[len(_SEMANTIC_CONTEXT_PREFIX) :]
-        if value.startswith(_SEMANTIC_CONTEXT_PREFIX)
-        else value
-    )
+    serialized = value[len(_SEMANTIC_CONTEXT_PREFIX) :]
     try:
         context = json.loads(
             serialized,
@@ -1228,7 +1212,7 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
 
         ``desired`` is a detached immutable projection assembled through the
         async relational session.  From this boundary onward every operation
-        is Community-owned synchronous Ladybug/Kuzu work.  Running the whole
+        is Community-owned synchronous graph work. Running the whole
         graph scope -- resolver, open, statements, verification and close --
         on one worker thread prevents a projection drain from starving the
         API/UI event loop while preserving the single-writer lease.

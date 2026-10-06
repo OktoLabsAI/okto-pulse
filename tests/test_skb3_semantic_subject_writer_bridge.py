@@ -55,13 +55,14 @@ from okto_pulse.core.domain.guideline_policy import (
     GuidelineRevision,
     PolicyEntityType,
 )
+from okto_pulse.community.adapters.sqlalchemy_semantic_guideline_v2 import CommunitySqlAlchemySemanticGuidelineAssessmentV2
+from okto_pulse.core.domain.guideline_semantic_v2 import (
+    SemanticAssessmentRequestV2, SemanticMetricAssessmentV2,
+    SemanticPinpointV2, SemanticPinpointKind, AnchorSnapshot,
+    SemanticAnchorAvailability,
+)
 from okto_pulse.core.domain.guideline_semantic_assessment import (
     SemanticAssessmentAssessor,
-    SemanticAssessmentState,
-    SemanticGuidelineAssessmentContext,
-    SemanticGuidelineAssessmentSubmission,
-    SemanticMetricAssessment,
-    record_semantic_guideline_assessment,
 )
 from okto_pulse.core.domain.enums import RefinementStatus
 from okto_pulse.core.domain.quality_assessment import (
@@ -374,17 +375,7 @@ async def _assert_blocking_assessment_can_be_saved(
     )
     assert snapshot is not None
     assert snapshot.last_semantic_editor_id == expected_editor
-    policy_set_digest, binding_head_digest = await adapter.semantic_current_fences(
-        board_id=seed.board_id
-    )
-    context = SemanticGuidelineAssessmentContext(
-        subject_snapshot=snapshot,
-        binding=binding,
-        revision=revision,
-        policy_set_digest=policy_set_digest,
-        binding_head_digest=binding_head_digest,
-    )
-    submission = SemanticGuidelineAssessmentSubmission(
+    submission = SemanticAssessmentRequestV2(
         subject=snapshot.subject,
         binding_id=binding.binding_id,
         expected_binding_revision=binding.binding_revision,
@@ -396,7 +387,7 @@ async def _assert_blocking_assessment_can_be_saved(
             model_id="test-model",
         ),
         metric_results=(
-            SemanticMetricAssessment(
+            SemanticMetricAssessmentV2(
                 metric_id=revision.metrics[0].metric_id,
                 score=90,
                 rationale="The authored evidence demonstrates segregation.",
@@ -409,24 +400,28 @@ async def _assert_blocking_assessment_can_be_saved(
                     ),
                 ),
                 pinpoints=(
-                    UnboundFindingAnchor(
-                        anchor_type=FindingAnchorType.WHOLE_ARTIFACT,
+                    SemanticPinpointV2(
+                        pinpoint_key="authored-boundary",
+                        kind=SemanticPinpointKind.EVIDENCE,
+                        title="Authored boundary",
+                        detail="The authored subject provides the assessment evidence.",
+                        severity=None,
+                        remediation=None,
+                        anchor=UnboundFindingAnchor(anchor_type=FindingAnchorType.WHOLE_ARTIFACT),
+                        anchor_snapshot=AnchorSnapshot(
+                            label="Subject",
+                            excerpt=None,
+                            source_version=f"{entity_type.value}:{snapshot.subject.subject_version}",
+                            availability_at_seal=SemanticAnchorAvailability.AVAILABLE,
+                        ),
                     ),
                 ),
             ),
         ),
     )
-    result = record_semantic_guideline_assessment(
-        submission,
-        context,
-        receipt_id=_id(),
-        recorded_at=_now(),
-    )
-    saved = await adapter.save_semantic_assessment_result(
-        result=result,
-        request_digest=result.request_digest,
-    )
-    assert saved.receipt.state is SemanticAssessmentState.PASSED
+    saved = await CommunitySqlAlchemySemanticGuidelineAssessmentV2(session).save_semantic_assessment_v2(submission)
+    assert all(result.outcome.value == "pass" for result in saved.receipt.metric_results)
+
 
 
 @pytest.mark.asyncio

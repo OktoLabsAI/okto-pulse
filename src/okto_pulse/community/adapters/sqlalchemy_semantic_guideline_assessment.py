@@ -35,14 +35,13 @@ from okto_pulse.core.domain.guideline_policy import (
     PolicySubjectSnapshot,
 )
 from okto_pulse.core.domain.guideline_semantic_assessment import (
-    SemanticGuidelineAssessmentContext,
     semantic_binding_head_digest_v1,
     semantic_policy_set_digest_v1,
 )
 from okto_pulse.core.domain.guideline_semantic_currentness import (
     SemanticAssessmentCurrentnessReason,
-    SemanticAssessmentCurrentSnapshot,
-    semantic_assessment_current_snapshot_from_context,
+    NativeSemanticAssessmentCurrentSnapshot,
+    native_semantic_assessment_snapshot,
 )
 from okto_pulse.core.domain.guideline_semantic_exceptions import (
     SemanticExceptionActorKind,
@@ -3163,7 +3162,7 @@ class CommunitySqlAlchemySemanticGuidelineAssessment:
         subject_id: str,
         binding_id: str,
         lock: bool = False,
-    ) -> SemanticAssessmentCurrentSnapshot | None:
+    ) -> NativeSemanticAssessmentCurrentSnapshot | None:
         """Resolve the live fence for exactly one subject×binding pair."""
 
         if entity_type is PolicyEntityType.SPRINT:
@@ -3209,17 +3208,9 @@ class CommunitySqlAlchemySemanticGuidelineAssessment:
             raise GuidelinePolicyDigestConflict(
                 "semantic_guideline_bound_revision_missing"
             )
-        context = SemanticGuidelineAssessmentContext(
-            subject_snapshot=subject,
-            binding=binding,
-            revision=revision,
-            policy_set_digest=semantic_policy_set_digest_v1(
-                bindings,
-                revisions,
-            ),
-            binding_head_digest=semantic_binding_head_digest_v1(bindings),
+        return native_semantic_assessment_snapshot(
+            subject=subject, binding=binding, revision=revision,
         )
-        return semantic_assessment_current_snapshot_from_context(context)
 
     async def resolve_transition_snapshot(
         self,
@@ -3274,7 +3265,6 @@ class CommunitySqlAlchemySemanticGuidelineAssessment:
             subject_edition=subject.subject.subject_edition,
             lock=True,
         )
-        from okto_pulse.core.domain.guideline_semantic_currentness import native_semantic_assessment_snapshot
         from okto_pulse.core.domain.guideline_semantic_findings_v2 import project_semantic_metric_findings_v2
         from okto_pulse.community.adapters.sqlalchemy_semantic_guideline_v2 import CommunitySqlAlchemySemanticGuidelineAssessmentV2
         from okto_pulse.community.adapters.sqlalchemy_models import SemanticGuidelineAssessmentV2Row
