@@ -516,9 +516,6 @@ async def get_kg_health_readiness_endpoint(
     request: Request,
     board_id: str = Query(..., description="Board ID (uuid)"),
     profile: str = Query("summary", description="summary | full"),
-    artifact_ref: str | None = Query(
-        None, description="Deprecated compatibility input; technical signals remain Board-scoped"
-    ),
     user_id: str = Depends(require_user),
     db: PulseUnitOfWork = Depends(get_unit_of_work),
 ) -> dict:
@@ -535,6 +532,9 @@ async def get_kg_health_readiness_endpoint(
     profile only ADDS the prose ``health_issues`` + ``root_cause``. Read-only."""
     from okto_pulse.core.services.kg_health_readiness_service import InvalidProfileError
 
+    if set(request.query_params) - {"board_id", "profile"}:
+        raise HTTPException(status_code=422, detail="unsupported_query_parameter")
+
     try:
         actor = _board_actor(user_id, board_id)
         result = await GetKgHealthReadinessUseCase().execute(
@@ -542,7 +542,6 @@ async def get_kg_health_readiness_endpoint(
                 board_id,
                 profile=profile,
                 surface="rest",
-                artifact_ref=artifact_ref,
                 scheduler_control=scheduler_control_from_request(request),
             ),
             actor=actor,

@@ -162,7 +162,7 @@ FOREIGN_BOARD = SimpleNamespace(id="board-b", owner_id="user-b")
 OWN_BOARD = SimpleNamespace(id="board-b", owner_id="user-a")
 
 
-@pytest.mark.parametrize("profile", ["summary", "full", "legacy"])
+@pytest.mark.parametrize("profile", ["summary", "full"])
 def test_health_readiness_transports_unknown_debt_without_numeric_coercion(monkeypatch, profile):
     from okto_pulse.core.application.use_cases.kg_health import (
         GetKgHealthReadinessResult, GetKgHealthReadinessUseCase,
@@ -418,3 +418,18 @@ def test_direct_cognitive_readers_require_exact_permission_before_store(
     assert detail["error"] == "permission_denied"
     assert detail["required_permission"] == "kg.operations.cognitive.read"
     assert uow.events == ["board:board-b"]
+
+
+@pytest.mark.parametrize("extra", ["artifact_ref", "unsupported"])
+def test_readiness_rejects_unknown_query_before_board_access(extra):
+    uow = _Uow(board=OWN_BOARD)
+    with _client(uow) as client:
+        response = client.get(
+            "/api/v1/kg/health-readiness",
+            params={"board_id": "board-b", extra: "spec:old"},
+        )
+        parameters = client.app.openapi()["paths"]["/api/v1/kg/health-readiness"]["get"]["parameters"]
+    assert "artifact_ref" not in {p["name"] for p in parameters}
+    assert response.status_code == 422
+    assert response.json() == {"detail": "unsupported_query_parameter"}
+    assert uow.events == []
