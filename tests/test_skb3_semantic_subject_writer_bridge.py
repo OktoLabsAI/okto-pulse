@@ -914,7 +914,7 @@ async def test_real_mcp_update_handler_propagates_actor_to_subject_head(
             agent_id="mcp-handler-writer",
             agent_name="Writer",
             board_id=seed.board_id,
-            permissions=[server.Permissions.SPECS_UPDATE],
+            permissions=["ideation.entity.edit_fields"],
             realm_id="local",
         )
 
