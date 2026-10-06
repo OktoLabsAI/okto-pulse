@@ -113,7 +113,7 @@ from okto_pulse.core.application.knowledge_propagation_projection import (
     project_derive_spec_response,
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
-from okto_pulse.core.domain.guideline_policy_transition import (
+from okto_pulse.core.domain.guideline_semantic_transition import (
     PolicyTransitionRejected,
 )
 from okto_pulse.core.domain.human_validation_cycle import (

@@ -26,7 +26,7 @@ from okto_pulse.core.application.use_cases.base import actor_context_from_princi
 from okto_pulse.core.domain.realm import LOCAL_REALM_ID
 from okto_pulse.core.ports.authentication import Principal
 from okto_pulse.core.application.errors import AmbiguityGateError
-from okto_pulse.core.domain.guideline_policy_transition import (
+from okto_pulse.core.domain.guideline_semantic_transition import (
     PolicyTransitionRejected,
 )
 from okto_pulse.core.inbound.policy_transition_error import (

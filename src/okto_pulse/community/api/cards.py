@@ -85,7 +85,7 @@ from okto_pulse.core.application.use_cases.knowledge_propagation import (
     ReplaceCardKnowledgeAssignmentsUseCase,
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
-from okto_pulse.core.domain.guideline_policy_transition import (
+from okto_pulse.core.domain.guideline_semantic_transition import (
     PolicyTransitionRejected,
 )
 from okto_pulse.core.repositories import PulseUnitOfWork

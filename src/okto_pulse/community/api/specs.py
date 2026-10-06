@@ -77,7 +77,7 @@ from okto_pulse.core.inbound.architecture_classification import (
 from okto_pulse.core.ports.knowledge_propagation import (
     KnowledgePropagationPortError,
 )
-from okto_pulse.core.domain.guideline_policy_transition import (
+from okto_pulse.core.domain.guideline_semantic_transition import (
     PolicyTransitionRejected,
 )
 from okto_pulse.core.domain.code_traceability import CodeTraceabilityContractError

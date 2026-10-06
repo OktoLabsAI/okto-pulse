@@ -13,7 +13,7 @@ from okto_pulse.core.domain.guideline_policy import (
     PolicyCurrentness,
     PolicyEntityType,
 )
-from okto_pulse.core.domain.guideline_policy_transition import (
+from okto_pulse.core.domain.guideline_semantic_transition import (
     PolicyTransitionDecision,
     PolicyTransitionDiagnosticCode,
     PolicyTransitionReasonCode,

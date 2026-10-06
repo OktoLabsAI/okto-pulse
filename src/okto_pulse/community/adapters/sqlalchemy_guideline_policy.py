@@ -106,7 +106,7 @@ from okto_pulse.core.ports.guideline_policy import (
     require_writable_guideline_revision,
     require_writable_guideline_import_entry,
 )
-from okto_pulse.core.domain.guideline_policy_transition import (
+from okto_pulse.core.domain.guideline_semantic_transition import (
     PolicyTransitionSnapshot,
 )
 from okto_pulse.core.domain.quality_canonicalization import canonical_sha256
