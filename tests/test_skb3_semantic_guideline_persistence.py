@@ -723,6 +723,8 @@ async def _seed_semantic_authority(
     *,
     metric_count: int = 2,
     entity_type: PolicyEntityType = PolicyEntityType.IDEATION,
+    metric_directions: tuple[GuidelineMetricDirection, ...] | None = None,
+    non_applicable_metric: bool = False,
 ) -> tuple[
     str,
     str,
@@ -742,8 +744,8 @@ async def _seed_semantic_authority(
             title=f"Metric {index}",
             description=f"Semantic dimension {index}.",
             evaluation_rubric="Score the authored artifact from 0 to 100.",
-            target_entity_types=(entity_type,),
-            direction=GuidelineMetricDirection.MINIMUM,
+            target_entity_types=(PolicyEntityType.REFINEMENT,) if non_applicable_metric and index == metric_count - 1 else (entity_type,),
+            direction=metric_directions[index] if metric_directions else GuidelineMetricDirection.MINIMUM,
             default_threshold=70,
         )
         for index in range(metric_count)

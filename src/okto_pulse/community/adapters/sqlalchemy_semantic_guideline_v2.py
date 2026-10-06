@@ -22,6 +22,7 @@ from okto_pulse.core.domain.guideline_policy import (
 )
 from okto_pulse.core.domain.guideline_semantic_assessment import (
     validate_semantic_assessment_admissibility,
+    validate_semantic_assessment_authority,
     SemanticAssessmentState,
     SemanticMetricOutcome,
     SemanticThresholdSource,
@@ -433,6 +434,9 @@ class CommunitySqlAlchemySemanticGuidelineAssessmentV2:
         if revision is None:
             raise GuidelinePolicyDigestConflict("semantic_assessment_authority_stale")
 
+        validate_semantic_assessment_authority(
+            subject_snapshot=snapshot, binding=binding, revision=revision,
+        )
         validate_semantic_assessment_admissibility(
             assessor=request.assessor, confidence=request.confidence,
             binding=binding, subject_snapshot=snapshot,
