@@ -145,11 +145,8 @@ _SECTION_LABELS = {
     "quality_findings": "Findings",
     "quality_proposed_questions": "Suggested clarifications",
     "checklist_item_results": "Checklist items",
-    "semantic_guideline_assessment_receipts": "Guideline assessments",
     "semantic_guideline_assessments_v2": "Guideline assessments",
-    "semantic_guideline_metric_results": "Metric results",
     "semantic_guideline_metric_results_v2": "Metric results",
-    "semantic_guideline_findings": "Findings",
     "semantic_guideline_findings_v2": "Findings",
 }
 _GROUP_SINGULAR = {
@@ -170,11 +167,8 @@ _GROUP_SINGULAR = {
     "cards": "Card",
     "sprints": "Sprint",
     "dependencies": "Dependency",
-    "semantic_guideline_assessment_receipts": "Policy assessment",
     "semantic_guideline_assessments_v2": "Policy assessment",
-    "semantic_guideline_metric_results": "Policy metric",
     "semantic_guideline_metric_results_v2": "Policy metric",
-    "semantic_guideline_findings": "Policy finding",
     "semantic_guideline_findings_v2": "Policy finding",
     "quality_assessment_receipts": "Requirement lint assessment",
     "quality_findings": "Requirement lint finding",

@@ -64,13 +64,10 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     PolicyComplianceReceiptRow,
     PolicyWaiverEventRow,
     PolicyWaiverRow,
-    SemanticGuidelineAssessmentReceiptRow,
     SemanticGuidelineAssessmentV2Row,
     SemanticGuidelineMetricResultV2Row,
     SemanticGuidelineFindingV2Row,
     SemanticGuidelineBindingConfigurationRow,
-    SemanticGuidelineFindingRow,
-    SemanticGuidelineMetricResultRow,
     SemanticGuidelineRevisionRow,
     SemanticGuidelineSkipRow,
     SemanticGuidelineWaiverEventRow,
@@ -378,22 +375,18 @@ class CommunitySqlAlchemyKGGovernanceStore:
 
             # SK-B3 semantic governance is independently append-only and must
             # participate in the same permit-scoped physical erasure. Delete
-            # lifecycle heads before exact receipt/binding authorities; their
-            # deferred/cascading lineage removes the corresponding events.
-            for model in (
-                SemanticGuidelineFindingV2Row,
-                SemanticGuidelineMetricResultV2Row,
-                SemanticGuidelineAssessmentV2Row,
-            ):
-                await context.execute(delete(model).where(model.board_id == board_id))
+            # events from newest to oldest before heads and evidence. The head
+            # pointer is deferred; predecessor RESTRICT checks are immediate.
+            await _delete_restrict_history(
+                context,
+                model=SemanticGuidelineWaiverEventRow,
+                identity=SemanticGuidelineWaiverEventRow.event_id,
+                reference=SemanticGuidelineWaiverEventRow.predecessor_event_id,
+                predicate=SemanticGuidelineWaiverEventRow.board_id == board_id,
+            )
             await context.execute(
                 delete(SemanticGuidelineWaiverRow).where(
                     SemanticGuidelineWaiverRow.board_id == board_id
-                )
-            )
-            await context.execute(
-                delete(SemanticGuidelineWaiverEventRow).where(
-                    SemanticGuidelineWaiverEventRow.board_id == board_id
                 )
             )
             await context.execute(
@@ -401,21 +394,12 @@ class CommunitySqlAlchemyKGGovernanceStore:
                     SemanticGuidelineSkipRow.board_id == board_id
                 )
             )
-            await context.execute(
-                delete(SemanticGuidelineFindingRow).where(
-                    SemanticGuidelineFindingRow.board_id == board_id
-                )
-            )
-            await context.execute(
-                delete(SemanticGuidelineMetricResultRow).where(
-                    SemanticGuidelineMetricResultRow.board_id == board_id
-                )
-            )
-            await context.execute(
-                delete(SemanticGuidelineAssessmentReceiptRow).where(
-                    SemanticGuidelineAssessmentReceiptRow.board_id == board_id
-                )
-            )
+            for model in (
+                SemanticGuidelineFindingV2Row,
+                SemanticGuidelineMetricResultV2Row,
+                SemanticGuidelineAssessmentV2Row,
+            ):
+                await context.execute(delete(model).where(model.board_id == board_id))
             await context.execute(
                 delete(SemanticSubjectVersionRow).where(
                     SemanticSubjectVersionRow.board_id == board_id
@@ -639,10 +623,7 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 # after their reference rows disappear. Purge under permit,
                 # before Board DELETE cascades run without that permit.
                 DomainEventRow,
-                SemanticGuidelineAssessmentReceiptRow,
                 SemanticGuidelineBindingConfigurationRow,
-                SemanticGuidelineFindingRow,
-                SemanticGuidelineMetricResultRow,
                 SemanticGuidelineSkipRow,
                 SemanticGuidelineWaiverEventRow,
                 SemanticGuidelineWaiverRow,
@@ -692,10 +673,10 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 DesignSystemGateAudit,
                 ActivityLog,
                 DomainEventRow,
-                SemanticGuidelineAssessmentReceiptRow,
+                SemanticGuidelineAssessmentV2Row,
+                SemanticGuidelineMetricResultV2Row,
+                SemanticGuidelineFindingV2Row,
                 SemanticGuidelineBindingConfigurationRow,
-                SemanticGuidelineFindingRow,
-                SemanticGuidelineMetricResultRow,
                 SemanticGuidelineSkipRow,
                 SemanticGuidelineWaiverEventRow,
                 SemanticGuidelineWaiverRow,

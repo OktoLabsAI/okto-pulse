@@ -87,13 +87,6 @@ const EVIDENCE_FIELDS = [
   'content_hash',
 ] as const;
 
-const PINPOINT_FIELDS = [
-  'anchor_type',
-  'anchor_ref',
-  'excerpt_hash',
-  'input_digest',
-] as const;
-
 const FINDING_DETAIL_FIELDS = [
   'projection',
   'finding_id',
@@ -433,30 +426,6 @@ function uniqueBy<T>(
   return values;
 }
 
-function parsePinpoint(value: unknown): SemanticPinpoint {
-  if (!isRecord(value)) {
-    throw new Error('Semantic guideline pinpoint is invalid.');
-  }
-  exactFields(value, PINPOINT_FIELDS, 'pinpoint');
-  if (
-    value.anchor_type !== 'whole_artifact'
-    && value.anchor_type !== 'field'
-    && value.anchor_type !== 'structured_child'
-    && value.anchor_type !== 'qa'
-  ) {
-    throw new Error('Semantic guideline pinpoint anchor type is invalid.');
-  }
-  return {
-    anchor_type: value.anchor_type,
-    anchor_ref: nullableText(value.anchor_ref, 'pinpoint anchor reference'),
-    excerpt_hash: nullableSha256(
-      value.excerpt_hash,
-      'pinpoint excerpt hash',
-    ),
-    input_digest: sha256(value.input_digest, 'pinpoint input digest'),
-  };
-}
-
 function parseMetricResult(value: unknown): SemanticMetricResultDetail {
   if (!isRecord(value)) {
     throw new Error('Semantic guideline metric result is invalid.');
@@ -661,11 +630,15 @@ export function parseSemanticFindingDetail(
   }
   matchesSubject(value, expected);
   const resolvedCurrentness = currentness(value);
-  const placement = lifecyclePlacement(
-    value,
-    resolvedCurrentness.currentness,
-    'finding',
-  );
+  const validationEdition = value.validation_edition === null
+    ? null : positiveInteger(value.validation_edition, 'finding validation edition');
+  const lifecycleState = resolvedCurrentness.currentness === 'current' ? 'current' : 'previous';
+  if (value.lifecycle_state !== lifecycleState) {
+    throw new Error('Semantic guideline finding lifecycle state is inconsistent.');
+  }
+  if (expected.validationEdition !== undefined && expected.validationEdition !== validationEdition) {
+    throw new Error('Semantic guideline finding does not match the active validation edition.');
+  }
   if (!Array.isArray(value.evidence_refs) || value.evidence_refs.length === 0) {
     throw new Error('Semantic guideline finding evidence is missing.');
   }
@@ -680,8 +653,8 @@ export function parseSemanticFindingDetail(
     entity_type: expected.entityType,
     subject_id: expected.subjectId,
     subject_version: value.subject_version as number,
-    validation_edition: placement.validationEdition,
-    lifecycle_state: placement.lifecycleState,
+    validation_edition: validationEdition,
+    lifecycle_state: lifecycleState,
     guideline_id: requiredText(value.guideline_id, 'finding guideline'),
     guideline_revision_id: requiredText(
       value.guideline_revision_id,
@@ -709,9 +682,8 @@ export function parseSemanticFindingDetail(
       'finding evidence references',
     ),
     pinpoints: uniqueBy(
-      value.pinpoints.map(parsePinpoint),
-      (item) =>
-        `${item.anchor_type}:${item.anchor_ref ?? ''}:${item.excerpt_hash ?? ''}:${item.input_digest}`,
+      value.pinpoints.map((item) => parseV2Pinpoint(item, 'fail')),
+      (item) => item.pinpoint_key,
       'finding pinpoints',
     ),
   };
@@ -748,11 +720,15 @@ export function parseSemanticWaiverDetail(
     throw new Error('Semantic guideline waiver lifecycle is invalid.');
   }
   const resolvedCurrentness = currentness(value);
-  const placement = lifecyclePlacement(
-    value,
-    resolvedCurrentness.currentness,
-    'waiver',
-  );
+  const validationEdition = value.validation_edition === null
+    ? null : positiveInteger(value.validation_edition, 'waiver validation edition');
+  const lifecycleState = resolvedCurrentness.currentness === 'current' ? 'current' : 'previous';
+  if (value.lifecycle_state !== lifecycleState) {
+    throw new Error('Semantic guideline waiver lifecycle state is inconsistent.');
+  }
+  if (expected.validationEdition !== undefined && expected.validationEdition !== validationEdition) {
+    throw new Error('Semantic guideline waiver does not match the active validation edition.');
+  }
   if (!Array.isArray(value.evidence_refs) || value.evidence_refs.length === 0) {
     throw new Error('Semantic guideline waiver evidence is missing.');
   }
@@ -802,8 +778,8 @@ export function parseSemanticWaiverDetail(
     entity_type: expected.entityType,
     subject_id: expected.subjectId,
     subject_version: value.subject_version as number,
-    validation_edition: placement.validationEdition,
-    lifecycle_state: placement.lifecycleState,
+    validation_edition: validationEdition,
+    lifecycle_state: lifecycleState,
     finding_id: requiredText(value.finding_id, 'waiver finding identity'),
     receipt_id: requiredText(value.receipt_id, 'waiver receipt identity'),
     guideline_id: requiredText(value.guideline_id, 'waiver guideline identity'),

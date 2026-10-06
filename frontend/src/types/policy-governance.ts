@@ -271,7 +271,7 @@ interface SemanticFindingBase {
   subject_id: string;
   subject_version: number;
   validation_edition: number | null;
-  lifecycle_state: 'current' | 'previous' | 'history_only';
+  lifecycle_state: 'current' | 'previous';
   guideline_id: string;
   guideline_revision_id: string;
   binding_id: string;
@@ -292,7 +292,7 @@ export interface SemanticFindingDetail extends SemanticFindingBase {
   binding_revision: number;
   rationale: string;
   evidence_refs: SemanticEvidenceRef[];
-  pinpoints: SemanticPinpoint[];
+  pinpoints: SemanticPinpointV2[];
 }
 
 export interface SemanticFindingFull
@@ -339,7 +339,7 @@ interface SemanticWaiverBase {
   subject_id: string;
   subject_version: number;
   validation_edition: number | null;
-  lifecycle_state: 'current' | 'previous' | 'history_only';
+  lifecycle_state: 'current' | 'previous';
   finding_id: string;
   receipt_id: string;
   guideline_id: string;

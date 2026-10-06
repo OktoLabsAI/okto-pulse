@@ -34,7 +34,7 @@ function waiver(
     subject_id: 'spec-1',
     subject_version: 7,
     validation_edition: null,
-    lifecycle_state: 'history_only',
+    lifecycle_state: 'current',
     finding_id: 'finding-1',
     receipt_id: 'receipt-1',
     guideline_id: 'guideline-1',

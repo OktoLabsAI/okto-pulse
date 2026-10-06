@@ -711,10 +711,12 @@ function Findings({
               <ul className="space-y-1 text-surface-600 dark:text-surface-300">
                 {finding.pinpoints.map((pinpoint) => (
                   <li
-                    key={`${pinpoint.anchor_type}:${pinpoint.anchor_ref ?? ''}:${pinpoint.input_digest}`}
+                    key={pinpoint.pinpoint_key}
                   >
-                    {pinpoint.anchor_type}
-                    {pinpoint.anchor_ref ? ` · ${pinpoint.anchor_ref}` : ''}
+                    <strong>{pinpoint.title}</strong>
+                    <span> · {pinpoint.anchor_snapshot.label}</span>
+                    <p>{pinpoint.detail}</p>
+                    {pinpoint.remediation && <p>{pinpoint.remediation}</p>}
                   </li>
                 ))}
               </ul>

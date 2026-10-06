@@ -36,9 +36,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     QualityAssessmentReceiptRow,
     Refinement,
     SemanticGuidelineAssessmentV2Row,
-    SemanticGuidelineAssessmentReceiptRow,
     SemanticGuidelineBindingConfigurationRow,
-    SemanticGuidelineMetricResultRow,
     SemanticGuidelineMetricResultV2Row,
     SemanticGuidelineRevisionRow,
     SemanticGuidelineSkipRow,
@@ -192,7 +190,6 @@ class _PolicyAuthority:
 
 @dataclass(frozen=True, slots=True)
 class _PolicyReceiptEvidence:
-    contract: str
     recorded_at: datetime
     stable_id: str
     outcome: str
@@ -428,7 +425,7 @@ def _policy_union_statement(
     subject_ids: tuple[str, ...],
     binding_ids: tuple[str, ...],
 ):
-    """Build one cross-dialect SELECT for authority, v1/v2 evidence and skips."""
+    """Build one cross-dialect SELECT for authority, native evidence and skips."""
 
     def value(column: object, name: str):
         return cast(column, String).label(name)
@@ -558,71 +555,6 @@ def _policy_union_statement(
             ),
         )
         .where(authority_filter)
-    )
-
-    evidence_filter_v1 = (
-        SemanticGuidelineAssessmentReceiptRow.board_id.in_(board_ids)
-        & SemanticGuidelineAssessmentReceiptRow.subject_id.in_(subject_ids)
-        & SemanticGuidelineAssessmentReceiptRow.binding_id.in_(binding_ids)
-        if board_ids and subject_ids and binding_ids
-        else false()
-    )
-    v1 = (
-        select(
-            literal("v1").label("kind"),
-            value(SemanticGuidelineAssessmentReceiptRow.board_id, "board_id"),
-            value(SemanticGuidelineAssessmentReceiptRow.subject_id, "subject_id"),
-            value(SemanticGuidelineAssessmentReceiptRow.binding_id, "binding_id"),
-            value(
-                SemanticGuidelineAssessmentReceiptRow.binding_revision,
-                "binding_revision",
-            ),
-            value(
-                SemanticGuidelineAssessmentReceiptRow.guideline_id,
-                "guideline_id",
-            ),
-            value(SemanticGuidelineAssessmentReceiptRow.revision_id, "revision_id"),
-            value(
-                SemanticGuidelineAssessmentReceiptRow.revision_digest,
-                "revision_digest",
-            ),
-            value(
-                SemanticGuidelineAssessmentReceiptRow.configuration_digest,
-                "configuration_digest",
-            ),
-            value(SemanticGuidelineAssessmentReceiptRow.state, "text_a"),
-            value(SemanticGuidelineMetricResultRow.metric_id, "text_b"),
-            value(SemanticGuidelineMetricResultRow.outcome, "text_c"),
-            value(SemanticGuidelineMetricResultRow.metric_code, "text_d"),
-            empty("text_e"),
-            empty("json_a"),
-            empty("json_b"),
-            value(
-                SemanticGuidelineAssessmentReceiptRow.metric_result_count,
-                "int_a",
-            ),
-            value(
-                SemanticGuidelineAssessmentReceiptRow.failed_metric_count,
-                "int_b",
-            ),
-            value(
-                SemanticGuidelineAssessmentReceiptRow.validation_edition,
-                "int_c",
-            ),
-            value(SemanticGuidelineAssessmentReceiptRow.assessed_at, "time_a"),
-            value(SemanticGuidelineAssessmentReceiptRow.receipt_id, "id_a"),
-        )
-        .select_from(SemanticGuidelineAssessmentReceiptRow)
-        .outerjoin(
-            SemanticGuidelineMetricResultRow,
-            SemanticGuidelineMetricResultRow.receipt_id
-            == SemanticGuidelineAssessmentReceiptRow.receipt_id,
-        )
-        .where(
-            SemanticGuidelineAssessmentReceiptRow.subject_type == "spec",
-            SemanticGuidelineAssessmentReceiptRow.sealed.is_(True),
-            evidence_filter_v1,
-        )
     )
 
     evidence_filter_v2 = (
@@ -778,7 +710,7 @@ def _policy_union_statement(
         QualityAssessmentLifecycleTransitionRow.after_edition.is_not(None),
         scope_required_filter,
     )
-    statement = union_all(authority, v1, v2, skips, waivers, scope_required)
+    statement = union_all(authority, v2, skips, waivers, scope_required)
     # Defensive proof that future edits keep the UNION column contract aligned.
     if tuple(statement.selected_columns.keys()) != names:  # pragma: no cover
         raise RuntimeError("policy_validation_cycle_union_shape_invalid")
@@ -810,10 +742,6 @@ async def _load_policy_snapshot_data(
     receipt_rows: dict[
         tuple[str, str, int, str, str, str, str, str, int],
         list[_PolicyReceiptEvidence],
-    ] = {}
-    v1_groups: dict[
-        tuple[tuple[str, str, int, str, str, str, str, str, int], str],
-        dict[str, object],
     ] = {}
     v2_groups: dict[
         tuple[tuple[str, str, int, str, str, str, str, str, int], str],
@@ -919,62 +847,7 @@ async def _load_policy_snapshot_data(
         if stable_id is None:
             inconsistent_evidence.add(evidence_key)
             continue
-        if kind == "v1":
-            recorded_at = _policy_time(row["time_a"])
-            state = _policy_text(row["text_a"])
-            metric_count = _policy_int(row["int_a"])
-            failed_count = _policy_int(row["int_b"])
-            if (
-                recorded_at is None
-                or state not in {"passed", "metric_threshold_failed"}
-                or metric_count is None
-                or failed_count is None
-                or metric_count < 0
-                or failed_count < 0
-                or failed_count > metric_count
-                or (state == "passed" and failed_count != 0)
-                or (state == "metric_threshold_failed" and failed_count == 0)
-            ):
-                inconsistent_evidence.add(evidence_key)
-                continue
-            group = v1_groups.setdefault(
-                (evidence_key, stable_id),
-                {
-                    "recorded_at": recorded_at,
-                    "state": state,
-                    "metric_count": metric_count,
-                    "failed_count": failed_count,
-                    "metrics": {},
-                },
-            )
-            if any(
-                group[field_name] != expected
-                for field_name, expected in (
-                    ("recorded_at", recorded_at),
-                    ("state", state),
-                    ("metric_count", metric_count),
-                    ("failed_count", failed_count),
-                )
-            ):
-                inconsistent_evidence.add(evidence_key)
-                continue
-            metric_id = _policy_text(row["text_b"])
-            outcome = _policy_text(row["text_c"])
-            if metric_id is None and metric_count == 0:
-                continue
-            if metric_id is None or outcome not in {"pass", "fail"}:
-                inconsistent_evidence.add(evidence_key)
-                continue
-            metric_results = group["metrics"]
-            if not isinstance(metric_results, dict):  # pragma: no cover
-                inconsistent_evidence.add(evidence_key)
-                continue
-            previous = metric_results.get(metric_id)
-            if previous is not None and previous != outcome:
-                inconsistent_evidence.add(evidence_key)
-                continue
-            metric_results[metric_id] = outcome
-        elif kind == "v2":
+        if kind == "v2":
             recorded_at = _policy_time(row["time_a"])
             if recorded_at is None:
                 inconsistent_evidence.add(evidence_key)
@@ -1035,49 +908,6 @@ async def _load_policy_snapshot_data(
                 (evidence_key, receipt_id, metric_id), set()
             ).add(stable_id)
 
-    for (evidence_key, stable_id), group in v1_groups.items():
-        metric_results = group["metrics"]
-        recorded_at = group["recorded_at"]
-        metric_count = group["metric_count"]
-        failed_count = group["failed_count"]
-        state = group["state"]
-        if (
-            evidence_key in inconsistent_evidence
-            or not isinstance(metric_results, dict)
-            or not isinstance(recorded_at, datetime)
-            or not isinstance(metric_count, int)
-            or not isinstance(failed_count, int)
-            or not isinstance(state, str)
-        ):
-            continue
-        normalized = tuple(
-            sorted(
-                (str(metric_id), str(outcome))
-                for metric_id, outcome in metric_results.items()
-            )
-        )
-        observed_failed = sum(
-            1 for _metric_id, outcome in normalized if outcome == "fail"
-        )
-        if (
-            len(normalized) != metric_count
-            or observed_failed != failed_count
-            or (state == "passed") != (observed_failed == 0)
-        ):
-            inconsistent_evidence.add(evidence_key)
-            continue
-        receipt_rows.setdefault(evidence_key, []).append(
-            _PolicyReceiptEvidence(
-                contract="v1",
-                recorded_at=recorded_at,
-                stable_id=stable_id,
-                outcome="failed" if observed_failed else "passed",
-                metric_count=metric_count,
-                failed_metric_count=failed_count,
-                metric_results=normalized,
-            )
-        )
-
     for (evidence_key, stable_id), group in v2_groups.items():
         metric_results = group["metrics"]
         recorded_at = group["recorded_at"]
@@ -1096,7 +926,6 @@ async def _load_policy_snapshot_data(
         failed_count = sum(1 for _metric_id, outcome in normalized if outcome == "fail")
         receipt_rows.setdefault(evidence_key, []).append(
             _PolicyReceiptEvidence(
-                contract="v2",
                 recorded_at=recorded_at,
                 stable_id=stable_id,
                 outcome="failed" if failed_count else "passed",
@@ -1246,7 +1075,6 @@ def _policy_check(
                         metric_id
                         for metric_id, outcome in latest.metric_results
                         if outcome == "fail"
-                        and latest.contract == "v1"
                         and (
                             item.evidence_key,
                             latest.stable_id,

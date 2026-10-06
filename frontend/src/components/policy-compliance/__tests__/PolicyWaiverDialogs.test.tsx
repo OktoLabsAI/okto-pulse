@@ -67,7 +67,7 @@ function finding(): SemanticFindingDetail {
     subject_id: 'spec-1',
     subject_version: 7,
     validation_edition: null,
-    lifecycle_state: 'history_only',
+    lifecycle_state: 'current',
     guideline_id: 'guideline-1',
     guideline_revision_id: 'revision-1',
     binding_id: 'binding-1',
@@ -86,10 +86,11 @@ function finding(): SemanticFindingDetail {
       content_hash: digest('a'),
     }],
     pinpoints: [{
-      anchor_type: 'field',
-      anchor_ref: 'architecture',
-      excerpt_hash: digest('b'),
-      input_digest: digest('c'),
+      contract_version: 'v2', pinpoint_key: 'boundary', kind: 'issue',
+      title: 'Separate infrastructure', detail: 'Persistence crosses the domain boundary.',
+      severity: 'high', remediation: 'Use the public port.', blocking: true,
+      anchor: { anchor_type: 'field', anchor_ref: 'architecture', excerpt_hash: digest('b') },
+      anchor_snapshot: { label: 'Architecture', excerpt: null, source_version: '7', availability_at_seal: 'available' },
     }],
   };
 }
@@ -105,7 +106,7 @@ function waiver(
     subject_id: 'spec-1',
     subject_version: 7,
     validation_edition: null,
-    lifecycle_state: 'history_only',
+    lifecycle_state: 'current',
     finding_id: 'finding-1',
     receipt_id: 'receipt-1',
     guideline_id: 'guideline-1',

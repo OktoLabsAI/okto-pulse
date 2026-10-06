@@ -28,15 +28,6 @@ function evidence() {
   };
 }
 
-function pinpoint() {
-  return {
-    anchor_type: 'field',
-    anchor_ref: 'architecture',
-    excerpt_hash: digest,
-    input_digest: digest,
-  };
-}
-
 function assessment(overrides: Record<string, unknown> = {}) {
   return {
     projection: 'detail',
@@ -93,7 +84,7 @@ function finding(overrides: Record<string, unknown> = {}) {
     subject_id: 'spec-1',
     subject_version: 7,
     validation_edition: null,
-    lifecycle_state: 'history_only',
+    lifecycle_state: 'current',
     guideline_id: 'guideline-1',
     guideline_revision_id: 'revision-1',
     binding_id: 'binding-1',
@@ -106,10 +97,33 @@ function finding(overrides: Record<string, unknown> = {}) {
     binding_revision: 2,
     rationale: 'Boundary evidence is incomplete.',
     evidence_refs: [evidence()],
-    pinpoints: [pinpoint()],
+    pinpoints: [{
+      ...assessment().metric_results[0].pinpoints[0],
+      kind: 'issue', severity: 'high', remediation: 'Separate the concerns.', blocking: true,
+    }],
     ...overrides,
   };
 }
+
+describe('native finding contract', () => {
+  it('preserves actionable evidence and rejects predecessor pinpoints', () => {
+    const parsed = parseSemanticFindingDetail(finding(), expected);
+    expect(parsed.pinpoints[0]).toMatchObject({
+      contract_version: 'v2', kind: 'issue', remediation: 'Separate the concerns.', blocking: true,
+    });
+    expect(() => parseSemanticFindingDetail(finding({ pinpoints: [{
+      anchor_type: 'field', anchor_ref: 'architecture', excerpt_hash: digest, input_digest: digest,
+    }] }), expected)).toThrow();
+    expect(() => parseSemanticFindingDetail(finding({ lifecycle_state: 'history_only' }), expected)).toThrow();
+  });
+
+  it('keeps previous native editions readable and rejects a different active edition', () => {
+    const previous = finding({ validation_edition: 2, lifecycle_state: 'previous',
+      currentness: 'stale', currentness_reasons: ['subject_edition_changed'] });
+    expect(parseSemanticFindingDetail(previous, expected).lifecycle_state).toBe('previous');
+    expect(() => parseSemanticFindingDetail(previous, { ...expected, validationEdition: 3 })).toThrow();
+  });
+});
 
 function waiver(overrides: Record<string, unknown> = {}) {
   return {
@@ -120,7 +134,7 @@ function waiver(overrides: Record<string, unknown> = {}) {
     subject_id: 'spec-1',
     subject_version: 7,
     validation_edition: null,
-    lifecycle_state: 'history_only',
+    lifecycle_state: 'current',
     finding_id: 'finding-1',
     receipt_id: 'receipt-1',
     guideline_id: 'guideline-1',

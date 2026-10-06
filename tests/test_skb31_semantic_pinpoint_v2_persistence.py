@@ -66,6 +66,7 @@ from okto_pulse.core.ports.guideline_policy import (
 from okto_pulse.core.ports.semantic_subject_projection import (
     SemanticAssessmentV2PersistencePort,
     SemanticAssessmentV2ReadPort,
+    SemanticFindingV2ReadPort,
     SemanticSubjectProjectionError,
     SemanticSubjectProjectionFailure,
     SemanticSubjectProjectionPort,
@@ -198,6 +199,62 @@ def test_v2_adapter_satisfies_public_core_persistence_port():
     )
     assert isinstance(adapter, SemanticAssessmentV2PersistencePort)
     assert isinstance(adapter, SemanticAssessmentV2ReadPort)
+    assert isinstance(adapter, SemanticFindingV2ReadPort)
+
+
+@pytest.mark.parametrize("method", ["get_semantic_metric_result_v2", "get_semantic_finding_v2", "list_semantic_findings_v2"])
+def test_native_finding_read_signature_matches_public_port(method):
+    assert inspect.signature(getattr(CommunitySqlAlchemySemanticGuidelineAssessmentV2, method)) == inspect.signature(
+        getattr(SemanticFindingV2ReadPort, method)
+    )
+
+
+@pytest.mark.asyncio
+async def test_native_finding_read_preserves_sealed_identity_and_board_scope(tmp_path):
+    from okto_pulse.core.domain.guideline_semantic_findings_v2 import project_semantic_metric_findings_v2
+    from okto_pulse.core.ports.guideline_policy import GuidelinePolicyDigestConflict
+
+    engine = _engine(tmp_path / "native-finding-read.db")
+    factory = build_community_session_factory(engine)
+    await initialize_current_schema(engine, current_schema_contract())
+    try:
+        async with factory() as session, session.begin():
+            authority = await _seed_semantic_authority(session)
+            adapter = CommunitySqlAlchemySemanticGuidelineAssessmentV2(session)
+            sealed = await adapter.save_semantic_assessment_v2(_request(*authority))
+            finding = project_semantic_metric_findings_v2(sealed.receipt)[0]
+            assert await adapter.get_semantic_finding_v2(board_id=authority[0], finding_id=finding.finding_id) == finding
+            metric = await adapter.get_semantic_metric_result_v2(
+                board_id=authority[0], metric_result_id=finding.metric_result_id,
+            )
+            assert metric in sealed.receipt.metric_results
+            assert await adapter.get_semantic_finding_v2(board_id="other", finding_id=finding.finding_id) is None
+            assert await adapter.get_semantic_metric_result_v2(board_id="other", metric_result_id=finding.metric_result_id) is None
+            second = await adapter.save_semantic_assessment_v2(_request(*authority, key="second"))
+            second_finding = project_semantic_metric_findings_v2(second.receipt)[0]
+            page, cursor = await adapter.list_semantic_findings_v2(board_id=authority[0], limit=1)
+            assert cursor is not None
+            tail, end = await adapter.list_semantic_findings_v2(board_id=authority[0], limit=1, after=cursor)
+            assert end is None
+            assert {item.finding_id for item in (*page, *tail)} == {finding.finding_id, second_finding.finding_id}
+            filtered, end = await adapter.list_semantic_findings_v2(
+                board_id=authority[0], entity_type=finding.subject.entity_type,
+                subject_id=finding.subject.subject_id, subject_edition=1,
+                receipt_id=sealed.receipt_id, guideline_id=finding.guideline_id,
+                binding_id=finding.binding_id, metric_id=finding.metric_id,
+            )
+            assert filtered == (finding,) and end is None
+            assert await adapter.list_semantic_findings_v2(board_id="other") == ((), None)
+            assert await adapter.list_semantic_findings_v2(board_id=authority[0], subject_edition=2) == ((), None)
+            row = await session.get(SemanticGuidelineFindingV2Row, finding.finding_id)
+            # Corrupt only the identity-map projection, bypassing neither SQL guards nor commits.
+            with session.no_autoflush:
+                row.finding_digest = "0" * 64
+                with pytest.raises(GuidelinePolicyDigestConflict, match="semantic_finding_v2_receipt_mismatch"):
+                    await adapter.get_semantic_finding_v2(board_id=authority[0], finding_id=finding.finding_id)
+                row.finding_digest = finding.finding_digest
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.parametrize("method", [

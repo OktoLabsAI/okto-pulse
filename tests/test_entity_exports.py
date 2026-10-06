@@ -1129,7 +1129,7 @@ def test_human_projection_removes_validation_storage_noise() -> None:
     }
 
     policy = _human_row_payload(
-        "semantic_guideline_assessment_receipts",
+        "semantic_guideline_assessments_v2",
         {
             "receipt_id": "receipt-secret",
             "subject_type": "spec",
@@ -1146,11 +1146,7 @@ def test_human_projection_removes_validation_storage_noise() -> None:
             "state": "passed",
         },
     )
-    assert policy == {
-        "minimum_confidence": 80,
-        "confidence": 97,
-        "state": "passed",
-    }
+    assert policy == {"confidence": 97}
 
     lint_finding = _human_row_payload(
         "quality_findings",
@@ -1210,7 +1206,7 @@ def test_metric_codes_are_humanized_instead_of_exposing_storage_punctuation() ->
     raw = _bundle(title="Metric report").to_dict()
     raw["sections"][0]["payload"] = {
         "records": {
-            "semantic_guideline_metric_results": [
+            "semantic_guideline_metric_results_v2": [
                 {
                     "metric_code": "architecture.failClosedSeams",
                     "score": 97,
@@ -1355,7 +1351,7 @@ def test_html_report_omits_validation_storage_noise() -> None:
         "records": {
             "requirement_lint_validation_snapshots": [{"id": "snapshot-secret"}],
             "semantic_guideline_validation_scopes": [{"id": "scope-secret"}],
-            "semantic_guideline_assessment_receipts": [
+            "semantic_guideline_assessments_v2": [
                 {
                     "confidence": 97,
                     "minimum_confidence": 80,
@@ -1439,7 +1435,7 @@ def test_policy_pinpoint_uses_human_target_from_same_sealed_bundle() -> None:
             "schema_version": "entity-export-section/v1",
             "payload": {
                 "records": {
-                    "semantic_guideline_metric_results": [
+                    "semantic_guideline_metric_results_v2": [
                         {
                             "metric_code": "spec.verifiability",
                             "outcome": "pass",

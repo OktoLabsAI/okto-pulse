@@ -13,9 +13,10 @@ from okto_pulse.core.application.use_cases.policy_governance import ASSESSMENTS_
 from okto_pulse.core.application.use_cases.semantic_guideline_governance import (
     ListSemanticGuidelineAssessmentsUseCase, ListSemanticGuidelineAssessmentsCommand,
     GetSemanticGuidelineAssessmentUseCase, GetSemanticGuidelineAssessmentCommand,
+    ListSemanticGuidelineFindingsUseCase, ListSemanticGuidelineFindingsCommand,
 )
 from okto_pulse.core.domain.guideline_semantic_projection import SemanticGuidelineProjection
-from okto_pulse.core.ports.guideline_policy import SemanticAssessmentListQuery, GuidelinePolicyInvalidCursor
+from okto_pulse.core.ports.guideline_policy import SemanticAssessmentListQuery, SemanticFindingListQuery, GuidelinePolicyInvalidCursor
 from test_skb31_semantic_pinpoint_v2_persistence import _engine, _request, _seed_semantic_authority
 
 
@@ -81,5 +82,29 @@ async def test_native_public_history_keysets_exceed_200_without_leakage(tmp_path
             assert full.receipt_digest == sealed.receipt_digest
             assert full.request_digest == sealed.request_digest
             assert full.metric_results[0].pinpoints[0].anchor_snapshot == sealed.metric_results[0].pinpoints[0].anchor_snapshot
+            finding_pages = {}
+            for profile in (SemanticGuidelineProjection.SUMMARY, SemanticGuidelineProjection.DETAIL):
+                cursor = None
+                findings = []
+                while True:
+                    result = await ListSemanticGuidelineFindingsUseCase().execute(
+                        ListSemanticGuidelineFindingsCommand(SemanticFindingListQuery(
+                            board_id=board_id, limit=73, cursor=cursor, projection=profile)),
+                        actor=actor, uow=uow,
+                    )
+                    findings.extend(result.page.items)
+                    cursor = result.page.next_cursor
+                    if cursor is None:
+                        assert not result.page.has_more
+                        break
+                    with pytest.raises(GuidelinePolicyInvalidCursor):
+                        SemanticFindingListQuery(board_id=other[0], cursor=cursor, projection=profile)
+                assert len(findings) == len({item.finding_id for item in findings}) == 205
+                assert {item.receipt_id for item in findings} == expected
+                finding_pages[profile] = findings
+            assert [item.finding_id for item in finding_pages[SemanticGuidelineProjection.SUMMARY]] == [
+                item.finding_id for item in finding_pages[SemanticGuidelineProjection.DETAIL]]
+            assert all(not hasattr(item, "pinpoints") for item in finding_pages[SemanticGuidelineProjection.SUMMARY])
+            assert all(item.pinpoints[0].contract_version == "v2" for item in finding_pages[SemanticGuidelineProjection.DETAIL])
     finally:
         await engine.dispose()

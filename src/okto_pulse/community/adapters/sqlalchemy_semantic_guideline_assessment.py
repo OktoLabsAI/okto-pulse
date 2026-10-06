@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 import re
 from typing import Any
 
-from sqlalchemy import false, func, or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -30,21 +30,12 @@ from okto_pulse.core.domain.guideline_policy import (
     GuidelineMetric,
     GuidelineMetricDirection,
     GuidelineRevision,
-    PolicyCurrentness,
     PolicyEntityType,
     PolicySubjectRef,
     PolicySubjectSnapshot,
 )
 from okto_pulse.core.domain.guideline_semantic_assessment import (
-    SemanticAssessmentAssessor,
-    SemanticAssessmentPinpoint,
-    SemanticAssessmentState,
     SemanticGuidelineAssessmentContext,
-    SemanticGuidelineAssessmentReceipt,
-    SemanticGuidelineAssessmentResult,
-    SemanticMetricOutcome,
-    SemanticMetricResult,
-    SemanticThresholdSource,
     semantic_binding_head_digest_v1,
     semantic_policy_set_digest_v1,
 )
@@ -71,11 +62,6 @@ from okto_pulse.core.domain.guideline_semantic_exceptions import (
     SemanticPolicySkipScope,
     SemanticPolicySkipStatus,
 )
-from okto_pulse.core.domain.guideline_semantic_findings import (
-    SemanticMetricFinding,
-    project_semantic_metric_findings,
-    semantic_metric_result_digest_v1,
-)
 from okto_pulse.core.domain.guideline_semantic_snapshot import (
     SemanticPolicySubjectSnapshotError,
     semantic_policy_subject_content_digest_v1,
@@ -86,7 +72,6 @@ from okto_pulse.core.domain.guideline_semantic_transition import (
 )
 from okto_pulse.core.domain.quality_assessment import (
     EvidenceRef,
-    FindingAnchorType,
 )
 from okto_pulse.core.domain.quality_canonicalization import (
     canonical_sha256,
@@ -112,10 +97,7 @@ from .sqlalchemy_models import (
     Refinement,
     RefinementKnowledgeBase,
     RefinementQAItem,
-    SemanticGuidelineAssessmentReceiptRow,
     SemanticGuidelineBindingConfigurationRow,
-    SemanticGuidelineFindingRow,
-    SemanticGuidelineMetricResultRow,
     SemanticGuidelineRevisionRow,
     SemanticGuidelineSkipRow,
     SemanticGuidelineValidationScopeRow,
@@ -192,49 +174,8 @@ def _evidence_from_payload(value: object) -> EvidenceRef:
         ) from exc
 
 
-def _pinpoint_payload(value: SemanticAssessmentPinpoint) -> dict[str, object]:
-    return {
-        "subject": {
-            "board_id": value.subject.board_id,
-            "subject_type": value.subject.entity_type.value,
-            "subject_id": value.subject.subject_id,
-            "subject_version": value.subject.subject_version,
-            "subject_edition": value.subject.subject_edition,
-        },
-        "input_digest": value.input_digest,
-        "anchor_type": value.anchor_type.value,
-        "anchor_ref": value.anchor_ref,
-        "excerpt_hash": value.excerpt_hash,
-    }
 
 
-def _pinpoint_from_payload(value: object) -> SemanticAssessmentPinpoint:
-    if not isinstance(value, dict):
-        raise GuidelinePolicyDigestConflict(
-            "semantic_assessment_pinpoint_snapshot_invalid"
-        )
-    try:
-        raw_subject = value["subject"]
-        if not isinstance(raw_subject, dict):
-            raise TypeError
-        subject = PolicySubjectRef(
-            board_id=raw_subject["board_id"],
-            entity_type=PolicyEntityType(raw_subject["subject_type"]),
-            subject_id=raw_subject["subject_id"],
-            subject_version=raw_subject["subject_version"],
-            subject_edition=raw_subject.get("subject_edition"),
-        )
-        return SemanticAssessmentPinpoint(
-            subject=subject,
-            input_digest=value["input_digest"],
-            anchor_type=FindingAnchorType(value["anchor_type"]),
-            anchor_ref=value.get("anchor_ref"),
-            excerpt_hash=value.get("excerpt_hash"),
-        )
-    except (KeyError, TypeError, ValueError) as exc:
-        raise GuidelinePolicyDigestConflict(
-            "semantic_assessment_pinpoint_snapshot_invalid"
-        ) from exc
 
 def _semantic_subject_payload(
     *,
@@ -458,96 +399,8 @@ def _semantic_digest(
         ) from exc
 
 
-def _metric_from_row(
-    row: SemanticGuidelineMetricResultRow,
-    *,
-    subject_edition: int | None = None,
-) -> SemanticMetricResult:
-    try:
-        subject = PolicySubjectRef(
-            board_id=row.board_id,
-            entity_type=PolicyEntityType(row.subject_type),
-            subject_id=row.subject_id,
-            subject_version=row.subject_version,
-            subject_edition=subject_edition,
-        )
-        result = SemanticMetricResult(
-            metric_result_id=row.result_id,
-            receipt_id=row.receipt_id,
-            subject=subject,
-            binding_id=row.binding_id,
-            guideline_id=row.guideline_id,
-            revision_id=row.revision_id,
-            metric_id=row.metric_id,
-            metric_code=row.metric_code,
-            metric_definition_digest=row.metric_definition_digest,
-            score=row.score,
-            direction=GuidelineMetricDirection(row.direction),
-            default_threshold=row.default_threshold,
-            effective_threshold=row.effective_threshold,
-            threshold_source=SemanticThresholdSource(row.threshold_source),
-            outcome=SemanticMetricOutcome(row.outcome),
-            rationale=row.rationale,
-            evidence_refs=tuple(
-                _evidence_from_payload(item) for item in row.evidence_refs
-            ),
-            pinpoints=tuple(
-                _pinpoint_from_payload(item) for item in row.pinpoints
-            ),
-        )
-    except (TypeError, ValueError) as exc:
-        raise GuidelinePolicyDigestConflict(
-            "semantic_assessment_metric_result_snapshot_invalid"
-        ) from exc
-    if semantic_metric_result_digest_v1(result) != row.result_digest:
-        raise GuidelinePolicyDigestConflict(
-            "semantic_assessment_metric_result_digest_mismatch"
-        )
-    return result
 
 
-def _finding_from_row(
-    row: SemanticGuidelineFindingRow,
-    *,
-    subject_edition: int | None = None,
-) -> SemanticMetricFinding:
-    try:
-        return SemanticMetricFinding(
-            finding_id=row.finding_id,
-            metric_result_id=row.metric_result_id,
-            metric_result_digest=row.metric_result_digest,
-            receipt_id=row.receipt_id,
-            receipt_digest=row.receipt_digest,
-            subject=PolicySubjectRef(
-                board_id=row.board_id,
-                entity_type=PolicyEntityType(row.subject_type),
-                subject_id=row.subject_id,
-                subject_version=row.subject_version,
-                subject_edition=subject_edition,
-            ),
-            subject_content_digest=row.subject_content_digest,
-            guideline_id=row.guideline_id,
-            guideline_revision_id=row.revision_id,
-            guideline_revision_digest=row.revision_digest,
-            binding_id=row.binding_id,
-            binding_revision=row.binding_revision,
-            binding_configuration_digest=row.configuration_digest,
-            metric_id=row.metric_id,
-            metric_code=row.metric_code,
-            rationale=row.rationale,
-            evidence_refs=tuple(
-                _evidence_from_payload(item) for item in row.evidence_refs
-            ),
-            pinpoints=tuple(
-                _pinpoint_from_payload(item) for item in row.pinpoints
-            ),
-            created_at=_utc(row.created_at),
-            finding_digest=row.finding_digest,
-        )
-    except (TypeError, ValueError) as exc:
-        raise GuidelinePolicyDigestConflict(
-            "semantic_assessment_finding_snapshot_invalid"
-        ) from exc
 
 
 def _waiver_from_row(row: SemanticGuidelineWaiverRow) -> SemanticMetricWaiver:
@@ -1078,89 +931,6 @@ def _new_skip_row(
     )
 
 
-def _receipt_from_rows(
-    row: SemanticGuidelineAssessmentReceiptRow,
-    metric_rows: tuple[SemanticGuidelineMetricResultRow, ...],
-) -> SemanticGuidelineAssessmentReceipt:
-    if not row.sealed:
-        raise GuidelinePolicyDigestConflict(
-            "semantic_assessment_receipt_unsealed"
-        )
-    if row.recorded_currentness != PolicyCurrentness.CURRENT.value:
-        raise GuidelinePolicyDigestConflict(
-            "semantic_assessment_receipt_recorded_currentness_invalid"
-        )
-    by_metric_id = {item.metric_id: item for item in metric_rows}
-    if len(by_metric_id) != len(metric_rows):
-        raise GuidelinePolicyDigestConflict(
-            "semantic_assessment_metric_result_duplicate"
-        )
-    if any(
-        item.revision_digest != row.revision_digest
-        or item.subject_content_digest != row.subject_content_digest
-        or item.receipt_digest != row.receipt_digest
-        for item in metric_rows
-    ):
-        raise GuidelinePolicyDigestConflict(
-            "semantic_assessment_metric_result_fence_mismatch"
-        )
-    # Receipt digests preserve authorial metric order.  The revision snapshot
-    # is consulted by the adapter before this helper and rows arrive ordered by
-    # that immutable metric sequence.
-    metric_results = tuple(
-        _metric_from_row(item, subject_edition=row.validation_edition)
-        for item in metric_rows
-    )
-    try:
-        receipt = SemanticGuidelineAssessmentReceipt(
-            receipt_id=row.receipt_id,
-            subject=PolicySubjectRef(
-                board_id=row.board_id,
-                entity_type=PolicyEntityType(row.subject_type),
-                subject_id=row.subject_id,
-                subject_version=row.subject_version,
-                subject_edition=row.validation_edition,
-            ),
-            subject_content_digest=row.subject_content_digest,
-            last_semantic_editor_id=row.last_semantic_editor_id,
-            binding_id=row.binding_id,
-            binding_revision=row.binding_revision,
-            guideline_id=row.guideline_id,
-            guideline_revision_id=row.revision_id,
-            guideline_revision_digest=row.revision_digest,
-            binding_configuration_digest=row.configuration_digest,
-            policy_set_digest=row.policy_set_digest,
-            binding_head_digest=row.binding_head_digest,
-            input_digest=row.input_digest,
-            request_digest=row.request_digest,
-            idempotency_key=row.idempotency_key,
-            enforcement=GuidelineEnforcement(row.enforcement),
-            assessor=SemanticAssessmentAssessor(
-                agent_id=row.assessor_agent_id,
-                model_id=row.assessor_model_id,
-            ),
-            assessor_independent=row.assessor_independent,
-            confidence=row.confidence,
-            minimum_confidence=row.minimum_confidence,
-            confidence_admissible=row.confidence_admissible,
-            state=SemanticAssessmentState(row.state),
-            currentness=PolicyCurrentness.CURRENT,
-            metric_results=metric_results,
-            recorded_at=_utc(row.assessed_at),
-            receipt_digest=row.receipt_digest,
-        )
-    except (TypeError, ValueError) as exc:
-        raise GuidelinePolicyDigestConflict(
-            "semantic_assessment_receipt_snapshot_invalid"
-        ) from exc
-    if (
-        receipt.metric_count != row.metric_result_count
-        or receipt.failed_metric_count != row.failed_metric_count
-    ):
-        raise GuidelinePolicyDigestConflict(
-            "semantic_assessment_receipt_count_mismatch"
-        )
-    return receipt
 
 
 class CommunitySqlAlchemySemanticGuidelineAssessment:
@@ -2337,789 +2107,15 @@ class CommunitySqlAlchemySemanticGuidelineAssessment:
             captured_at=changed_at,
         )
 
-    async def _metric_rows(
-        self,
-        row: SemanticGuidelineAssessmentReceiptRow,
-    ) -> tuple[SemanticGuidelineMetricResultRow, ...]:
-        revision = (
-            await self._session.execute(
-                select(SemanticGuidelineRevisionRow).where(
-                    SemanticGuidelineRevisionRow.guideline_id
-                    == row.guideline_id,
-                    SemanticGuidelineRevisionRow.revision_id
-                    == row.revision_id,
-                    SemanticGuidelineRevisionRow.revision_digest
-                    == row.revision_digest,
-                )
-            )
-        ).scalar_one_or_none()
-        if revision is None or not isinstance(revision.metrics, list):
-            raise GuidelinePolicyDigestConflict(
-                "semantic_assessment_revision_snapshot_missing"
-            )
-        metric_order = {
-            str(metric.get("metric_id")): index
-            for index, metric in enumerate(revision.metrics)
-            if isinstance(metric, dict)
-        }
-        rows = tuple(
-            (
-                await self._session.execute(
-                    select(SemanticGuidelineMetricResultRow).where(
-                        SemanticGuidelineMetricResultRow.receipt_id
-                        == row.receipt_id
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        try:
-            return tuple(
-                sorted(rows, key=lambda item: metric_order[item.metric_id])
-            )
-        except KeyError as exc:
-            raise GuidelinePolicyDigestConflict(
-                "semantic_assessment_metric_result_unknown"
-            ) from exc
 
-    async def _validate_finding_rows(
-        self,
-        receipt: SemanticGuidelineAssessmentReceipt,
-    ) -> None:
-        rows = tuple(
-            (
-                await self._session.execute(
-                    select(SemanticGuidelineFindingRow).where(
-                        SemanticGuidelineFindingRow.receipt_id
-                        == receipt.receipt_id
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        expected = {
-            finding.metric_result_id: finding
-            for finding in project_semantic_metric_findings(receipt)
-        }
-        if len(rows) != len(expected):
-            raise GuidelinePolicyDigestConflict(
-                "semantic_assessment_finding_count_mismatch"
-            )
-        seen_results: set[str] = set()
-        for row in rows:
-            finding = expected.get(row.metric_result_id)
-            if finding is None or row.metric_result_id in seen_results:
-                raise GuidelinePolicyDigestConflict(
-                    "semantic_assessment_finding_result_invalid"
-                )
-            seen_results.add(row.metric_result_id)
-            if (
-                _finding_from_row(
-                    row,
-                    subject_edition=receipt.subject.subject_edition,
-                )
-                != finding
-            ):
-                raise GuidelinePolicyDigestConflict(
-                    "semantic_assessment_finding_snapshot_invalid"
-                )
 
-    async def _result_from_row(
-        self,
-        row: SemanticGuidelineAssessmentReceiptRow,
-        *,
-        replayed: bool,
-    ) -> SemanticGuidelineAssessmentResult:
-        receipt = _receipt_from_rows(
-            row,
-            await self._metric_rows(row),
-        )
-        await self._validate_finding_rows(receipt)
-        return SemanticGuidelineAssessmentResult(
-            input_digest=receipt.input_digest,
-            request_digest=receipt.request_digest,
-            receipt=receipt,
-            replayed=replayed,
-        )
 
-    async def get_semantic_assessment_result_by_idempotency(
-        self,
-        *,
-        board_id: str,
-        binding_id: str,
-        idempotency_key: str,
-    ) -> SemanticGuidelineAssessmentResult | None:
-        row = (
-            await self._session.execute(
-                select(SemanticGuidelineAssessmentReceiptRow).where(
-                    SemanticGuidelineAssessmentReceiptRow.board_id == board_id,
-                    SemanticGuidelineAssessmentReceiptRow.binding_id
-                    == binding_id,
-                    SemanticGuidelineAssessmentReceiptRow.idempotency_key
-                    == idempotency_key,
-                    SemanticGuidelineAssessmentReceiptRow.sealed.is_(True),
-                )
-            )
-        ).scalar_one_or_none()
-        return (
-            None
-            if row is None
-            else await self._result_from_row(row, replayed=True)
-        )
 
-    async def save_semantic_assessment_result(
-        self,
-        *,
-        result: SemanticGuidelineAssessmentResult,
-        request_digest: str,
-    ) -> SemanticGuidelineAssessmentResult:
-        if not isinstance(result, SemanticGuidelineAssessmentResult):
-            raise GuidelinePolicyDigestConflict(
-                "semantic_assessment_result_invalid"
-            )
-        request_digest = _require_sha256(
-            request_digest,
-            "semantic_assessment_request_digest_invalid",
-        )
-        receipt = result.receipt
-        if (
-            request_digest != result.request_digest
-            or request_digest != receipt.request_digest
-        ):
-            raise GuidelinePolicyDigestConflict(
-                "semantic_assessment_request_digest_mismatch"
-            )
-        replay_row = (
-            await self._session.execute(
-                select(SemanticGuidelineAssessmentReceiptRow).where(
-                    SemanticGuidelineAssessmentReceiptRow.board_id
-                    == receipt.subject.board_id,
-                    SemanticGuidelineAssessmentReceiptRow.idempotency_key
-                    == receipt.idempotency_key,
-                )
-            )
-        ).scalar_one_or_none()
-        if replay_row is not None:
-            if (
-                replay_row.request_digest != request_digest
-                or replay_row.input_digest != result.input_digest
-                or replay_row.binding_id != receipt.binding_id
-            ):
-                raise GuidelinePolicyIdempotencyConflict(
-                    "semantic_assessment_idempotency_conflict"
-                )
-            return await self._result_from_row(replay_row, replayed=True)
 
-        current_subject = await self.resolve_policy_subject_snapshot(
-            board_id=receipt.subject.board_id,
-            entity_type=receipt.subject.entity_type,
-            subject_id=receipt.subject.subject_id,
-            lock=True,
-        )
-        if (
-            current_subject is not None
-            and current_subject.subject.subject_edition
-            != receipt.subject.subject_edition
-        ):
-            raise GuidelinePolicyEditionConflict(
-                "guideline_policy_edition_conflict"
-            )
-        if (
-            current_subject is None
-            or current_subject.subject != receipt.subject
-            or current_subject.content_digest
-            != receipt.subject_content_digest
-            or current_subject.last_semantic_editor_id
-            != receipt.last_semantic_editor_id
-        ):
-            raise GuidelinePolicySubjectConflict(
-                "semantic_assessment_subject_stale"
-            )
-        policy_set_digest, binding_head_digest = (
-            await self.semantic_current_fences(
-                board_id=receipt.subject.board_id,
-                entity_type=receipt.subject.entity_type,
-                subject_id=receipt.subject.subject_id,
-                subject_edition=receipt.subject.subject_edition,
-                lock=True,
-            )
-        )
-        if (
-            policy_set_digest != receipt.policy_set_digest
-            or binding_head_digest != receipt.binding_head_digest
-        ):
-            raise GuidelinePolicyDigestConflict(
-                "semantic_assessment_policy_set_stale"
-            )
 
-        binding = (
-            await self._session.execute(
-                select(SemanticGuidelineBindingConfigurationRow)
-                .where(
-                    SemanticGuidelineBindingConfigurationRow.binding_id
-                    == receipt.binding_id,
-                    SemanticGuidelineBindingConfigurationRow.binding_revision
-                    == receipt.binding_revision,
-                )
-                .with_for_update()
-            )
-        ).scalar_one_or_none()
-        legacy_binding = (
-            await self._session.execute(
-                select(GuidelineBoardBindingRow)
-                .where(
-                    GuidelineBoardBindingRow.binding_id == receipt.binding_id,
-                    GuidelineBoardBindingRow.binding_revision
-                    == receipt.binding_revision,
-                )
-                .with_for_update()
-            )
-        ).scalar_one_or_none()
-        revision = (
-            await self._session.execute(
-                select(SemanticGuidelineRevisionRow)
-                .where(
-                    SemanticGuidelineRevisionRow.guideline_id
-                    == receipt.guideline_id,
-                    SemanticGuidelineRevisionRow.revision_id
-                    == receipt.guideline_revision_id,
-                    SemanticGuidelineRevisionRow.revision_digest
-                    == receipt.guideline_revision_digest,
-                )
-                .with_for_update()
-            )
-        ).scalar_one_or_none()
-        if (
-            binding is None
-            or legacy_binding is None
-            or revision is None
-            or legacy_binding.state != "active"
-            or binding.board_id != receipt.subject.board_id
-            or binding.guideline_id != receipt.guideline_id
-            or binding.revision_id != receipt.guideline_revision_id
-            or binding.revision_digest
-            != receipt.guideline_revision_digest
-            or binding.configuration_digest
-            != receipt.binding_configuration_digest
-            or binding.enforcement != receipt.enforcement.value
-            or binding.minimum_confidence != receipt.minimum_confidence
-        ):
-            raise GuidelinePolicyDigestConflict(
-                "semantic_assessment_authority_stale"
-            )
 
-        newest_binding_revision = (
-            await self._session.execute(
-                select(GuidelineBoardBindingRow.binding_revision)
-                .where(
-                    GuidelineBoardBindingRow.binding_id == receipt.binding_id
-                )
-                .order_by(GuidelineBoardBindingRow.binding_revision.desc())
-                .limit(1)
-            )
-        ).scalar_one()
-        if newest_binding_revision != receipt.binding_revision:
-            raise GuidelinePolicyDigestConflict(
-                "semantic_assessment_binding_stale"
-            )
 
-        # The optimistic lookup above is intentionally repeated after the
-        # board, subject, binding, and revision authorities are locked. This
-        # closes the concurrent same-key race before attempting the append.
-        replay_row = (
-            await self._session.execute(
-                select(SemanticGuidelineAssessmentReceiptRow)
-                .where(
-                    SemanticGuidelineAssessmentReceiptRow.board_id
-                    == receipt.subject.board_id,
-                    SemanticGuidelineAssessmentReceiptRow.idempotency_key
-                    == receipt.idempotency_key,
-                )
-                .with_for_update()
-            )
-        ).scalar_one_or_none()
-        if replay_row is not None:
-            if (
-                replay_row.request_digest != request_digest
-                or replay_row.input_digest != result.input_digest
-                or replay_row.binding_id != receipt.binding_id
-            ):
-                raise GuidelinePolicyIdempotencyConflict(
-                    "semantic_assessment_idempotency_conflict"
-                )
-            return await self._result_from_row(replay_row, replayed=True)
 
-        receipt_row = SemanticGuidelineAssessmentReceiptRow(
-            receipt_id=receipt.receipt_id,
-            board_id=receipt.subject.board_id,
-            subject_type=receipt.subject.entity_type.value,
-            subject_id=receipt.subject.subject_id,
-            subject_version=receipt.subject.subject_version,
-            validation_edition=receipt.subject.subject_edition,
-            subject_content_digest=receipt.subject_content_digest,
-            last_semantic_editor_id=receipt.last_semantic_editor_id,
-            guideline_id=receipt.guideline_id,
-            revision_id=receipt.guideline_revision_id,
-            revision_digest=receipt.guideline_revision_digest,
-            binding_id=receipt.binding_id,
-            binding_revision=receipt.binding_revision,
-            configuration_digest=receipt.binding_configuration_digest,
-            policy_set_digest=receipt.policy_set_digest,
-            binding_head_digest=receipt.binding_head_digest,
-            enforcement=receipt.enforcement.value,
-            minimum_confidence=receipt.minimum_confidence,
-            confidence=receipt.confidence,
-            confidence_admissible=receipt.confidence_admissible,
-            assessor_agent_id=receipt.assessor.agent_id,
-            assessor_model_id=receipt.assessor.model_id,
-            assessor_independent=receipt.assessor_independent,
-            state=receipt.state.value,
-            recorded_currentness=receipt.currentness.value,
-            input_digest=receipt.input_digest,
-            receipt_digest=receipt.receipt_digest,
-            metric_result_count=receipt.metric_count,
-            failed_metric_count=receipt.failed_metric_count,
-            idempotency_key=receipt.idempotency_key,
-            request_digest=request_digest,
-            assessed_at=receipt.recorded_at,
-            sealed=False,
-        )
-        self._session.add(receipt_row)
-        try:
-            await self._session.flush((receipt_row,))
-            metric_rows = []
-            for metric in receipt.metric_results:
-                metric_rows.append(
-                    SemanticGuidelineMetricResultRow(
-                        result_id=metric.metric_result_id,
-                        receipt_id=metric.receipt_id,
-                        board_id=metric.subject.board_id,
-                        subject_type=metric.subject.entity_type.value,
-                        subject_id=metric.subject.subject_id,
-                        subject_version=metric.subject.subject_version,
-                        subject_content_digest=(
-                            receipt.subject_content_digest
-                        ),
-                        receipt_digest=receipt.receipt_digest,
-                        guideline_id=metric.guideline_id,
-                        revision_id=metric.revision_id,
-                        revision_digest=(
-                            receipt.guideline_revision_digest
-                        ),
-                        binding_id=metric.binding_id,
-                        binding_revision=receipt.binding_revision,
-                        configuration_digest=(
-                            receipt.binding_configuration_digest
-                        ),
-                        metric_id=metric.metric_id,
-                        metric_code=metric.metric_code,
-                        metric_definition_digest=(
-                            metric.metric_definition_digest
-                        ),
-                        direction=metric.direction.value,
-                        default_threshold=metric.default_threshold,
-                        effective_threshold=metric.effective_threshold,
-                        threshold_source=metric.threshold_source.value,
-                        score=metric.score,
-                        outcome=metric.outcome.value,
-                        rationale=metric.rationale,
-                        evidence_refs=[
-                            _evidence_payload(item)
-                            for item in metric.evidence_refs
-                        ],
-                        pinpoints=[
-                            _pinpoint_payload(item)
-                            for item in metric.pinpoints
-                        ],
-                        result_digest=semantic_metric_result_digest_v1(metric),
-                        created_at=receipt.recorded_at,
-                    )
-                )
-            self._session.add_all(metric_rows)
-            await self._session.flush(tuple(metric_rows))
-            finding_rows = []
-            for finding in project_semantic_metric_findings(receipt):
-                finding_rows.append(
-                    SemanticGuidelineFindingRow(
-                        finding_id=finding.finding_id,
-                        metric_result_id=finding.metric_result_id,
-                        receipt_id=finding.receipt_id,
-                        board_id=finding.subject.board_id,
-                        subject_type=finding.subject.entity_type.value,
-                        subject_id=finding.subject.subject_id,
-                        subject_version=finding.subject.subject_version,
-                        subject_content_digest=finding.subject_content_digest,
-                        receipt_digest=finding.receipt_digest,
-                        guideline_id=finding.guideline_id,
-                        revision_id=finding.guideline_revision_id,
-                        revision_digest=finding.guideline_revision_digest,
-                        binding_id=finding.binding_id,
-                        binding_revision=finding.binding_revision,
-                        configuration_digest=(
-                            finding.binding_configuration_digest
-                        ),
-                        metric_id=finding.metric_id,
-                        metric_code=finding.metric_code,
-                        metric_result_digest=finding.metric_result_digest,
-                        rationale=finding.rationale,
-                        evidence_refs=[
-                            _evidence_payload(item)
-                            for item in finding.evidence_refs
-                        ],
-                        pinpoints=[
-                            _pinpoint_payload(item)
-                            for item in finding.pinpoints
-                        ],
-                        finding_digest=finding.finding_digest,
-                        created_at=finding.created_at,
-                    )
-                )
-            self._session.add_all(finding_rows)
-            if finding_rows:
-                await self._session.flush(tuple(finding_rows))
-            receipt_row.sealed = True
-            await self._session.flush((receipt_row,))
-        except IntegrityError as exc:
-            raise GuidelinePolicyDigestConflict(
-                "semantic_assessment_persistence_conflict"
-            ) from exc
-        await stage_semantic_guideline_projection_events(
-            self._session,
-            board_id=receipt.subject.board_id,
-            actor_id=receipt.assessor.agent_id,
-            actor_type="agent",
-            occurred_at=receipt.recorded_at,
-            causation_id=receipt.receipt_id,
-            facts=(
-                SemanticGuidelineProjectionFact(
-                    entity_kind="assessment_receipt",
-                    entity_id=receipt.receipt_id,
-                    entity_digest=receipt.receipt_digest,
-                ),
-                *(
-                    SemanticGuidelineProjectionFact(
-                        entity_kind="metric_result",
-                        entity_id=metric.metric_result_id,
-                        entity_digest=semantic_metric_result_digest_v1(
-                            metric
-                        ),
-                    )
-                    for metric in receipt.metric_results
-                ),
-            ),
-        )
-        return result
-
-    async def get_semantic_assessment_receipt(
-        self,
-        *,
-        board_id: str,
-        receipt_id: str,
-    ) -> SemanticGuidelineAssessmentReceipt | None:
-        row = (
-            await self._session.execute(
-                select(SemanticGuidelineAssessmentReceiptRow).where(
-                    SemanticGuidelineAssessmentReceiptRow.board_id == board_id,
-                    SemanticGuidelineAssessmentReceiptRow.receipt_id
-                    == receipt_id,
-                    SemanticGuidelineAssessmentReceiptRow.sealed.is_(True),
-                )
-            )
-        ).scalar_one_or_none()
-        return (
-            None
-            if row is None
-            else (await self._result_from_row(row, replayed=False)).receipt
-        )
-
-    async def get_semantic_metric_result(
-        self,
-        *,
-        board_id: str,
-        metric_result_id: str,
-    ) -> SemanticMetricResult | None:
-        """Return one exact result only when its aggregate receipt is sealed."""
-
-        resolved = (
-            await self._session.execute(
-                select(
-                    SemanticGuidelineMetricResultRow,
-                    SemanticGuidelineAssessmentReceiptRow.validation_edition,
-                )
-                .join(
-                    SemanticGuidelineAssessmentReceiptRow,
-                    SemanticGuidelineAssessmentReceiptRow.receipt_id
-                    == SemanticGuidelineMetricResultRow.receipt_id,
-                )
-                .where(
-                    SemanticGuidelineMetricResultRow.board_id == board_id,
-                    SemanticGuidelineMetricResultRow.result_id
-                    == metric_result_id,
-                    SemanticGuidelineAssessmentReceiptRow.board_id
-                    == board_id,
-                    SemanticGuidelineAssessmentReceiptRow.sealed.is_(True),
-                )
-            )
-        ).one_or_none()
-        if resolved is None:
-            return None
-        row, subject_edition = resolved
-        return _metric_from_row(row, subject_edition=subject_edition)
-
-    async def get_semantic_guideline_finding(
-        self,
-        *,
-        board_id: str,
-        finding_id: str,
-    ) -> SemanticMetricFinding | None:
-        """Return one immutable pinpoint finding by its board-scoped identity."""
-
-        resolved = (
-            await self._session.execute(
-                select(
-                    SemanticGuidelineFindingRow,
-                    SemanticGuidelineAssessmentReceiptRow.validation_edition,
-                )
-                .join(
-                    SemanticGuidelineAssessmentReceiptRow,
-                    SemanticGuidelineAssessmentReceiptRow.receipt_id
-                    == SemanticGuidelineFindingRow.receipt_id,
-                )
-                .where(
-                    SemanticGuidelineFindingRow.board_id == board_id,
-                    SemanticGuidelineFindingRow.finding_id == finding_id,
-                    SemanticGuidelineAssessmentReceiptRow.board_id
-                    == board_id,
-                    SemanticGuidelineAssessmentReceiptRow.sealed.is_(True),
-                )
-            )
-        ).one_or_none()
-        if resolved is None:
-            return None
-        row, subject_edition = resolved
-        return _finding_from_row(row, subject_edition=subject_edition)
-
-    async def list_semantic_assessment_receipts(
-        self,
-        *,
-        board_id: str,
-        entity_type: PolicyEntityType | None = None,
-        subject_id: str | None = None,
-        subject_edition: int | None = None,
-        guideline_id: str | None = None,
-        binding_id: str | None = None,
-        outcome: SemanticAssessmentState | None = None,
-        after: tuple[datetime, str] | None = None,
-        limit: int = 50,
-    ) -> tuple[
-        tuple[SemanticGuidelineAssessmentReceipt, ...],
-        tuple[datetime, str] | None,
-    ]:
-        """List sealed receipts using a stable assessed-at/id keyset."""
-
-        if (
-            not isinstance(limit, int)
-            or isinstance(limit, bool)
-            or limit < 1
-            or limit > 200
-        ):
-            raise ValueError("semantic_assessment_receipt_limit_invalid")
-        statement = select(SemanticGuidelineAssessmentReceiptRow).where(
-            SemanticGuidelineAssessmentReceiptRow.board_id == board_id,
-            SemanticGuidelineAssessmentReceiptRow.sealed.is_(True),
-        )
-        if entity_type is not None:
-            statement = statement.where(
-                SemanticGuidelineAssessmentReceiptRow.subject_type
-                == entity_type.value
-            )
-        if subject_id is not None:
-            statement = statement.where(
-                SemanticGuidelineAssessmentReceiptRow.subject_id == subject_id
-            )
-        if subject_edition is not None:
-            statement = statement.where(
-                SemanticGuidelineAssessmentReceiptRow.validation_edition
-                == subject_edition
-            )
-        if guideline_id is not None:
-            statement = statement.where(
-                SemanticGuidelineAssessmentReceiptRow.guideline_id
-                == guideline_id
-            )
-        if binding_id is not None:
-            statement = statement.where(
-                SemanticGuidelineAssessmentReceiptRow.binding_id == binding_id
-            )
-        if outcome is not None:
-            statement = statement.where(
-                SemanticGuidelineAssessmentReceiptRow.state == outcome.value
-            )
-        if after is not None:
-            after_time, after_id = after
-            after_time = _utc(after_time)
-            statement = statement.where(
-                or_(
-                    SemanticGuidelineAssessmentReceiptRow.assessed_at
-                    < after_time,
-                    (
-                        SemanticGuidelineAssessmentReceiptRow.assessed_at
-                        == after_time
-                    )
-                    & (
-                        SemanticGuidelineAssessmentReceiptRow.receipt_id
-                        < after_id
-                    ),
-                )
-            )
-        rows = tuple(
-            (
-                await self._session.execute(
-                    statement.order_by(
-                        SemanticGuidelineAssessmentReceiptRow.assessed_at.desc(),
-                        SemanticGuidelineAssessmentReceiptRow.receipt_id.desc(),
-                    ).limit(limit + 1)
-                )
-            )
-            .scalars()
-            .all()
-        )
-        page = rows[:limit]
-        receipt_items: list[SemanticGuidelineAssessmentReceipt] = []
-        for row in page:
-            receipt_items.append(
-                (
-                    await self._result_from_row(
-                        row,
-                        replayed=False,
-                    )
-                ).receipt
-            )
-        receipts = tuple(receipt_items)
-        next_cursor = (
-            None
-            if len(rows) <= limit
-            else (_utc(page[-1].assessed_at), page[-1].receipt_id)
-        )
-        return receipts, next_cursor
-
-    async def list_semantic_guideline_findings(
-        self,
-        *,
-        board_id: str,
-        entity_type: PolicyEntityType | None = None,
-        subject_id: str | None = None,
-        subject_edition: int | None = None,
-        receipt_id: str | None = None,
-        guideline_id: str | None = None,
-        binding_id: str | None = None,
-        metric_id: str | None = None,
-        outcome: SemanticMetricOutcome | None = None,
-        after: tuple[datetime, str] | None = None,
-        limit: int = 50,
-    ) -> tuple[
-        tuple[SemanticMetricFinding, ...],
-        tuple[datetime, str] | None,
-    ]:
-        """Read the append-only finding queue with a stable keyset cursor."""
-
-        if (
-            not isinstance(limit, int)
-            or isinstance(limit, bool)
-            or limit < 1
-            or limit > 200
-        ):
-            raise ValueError("semantic_guideline_finding_limit_invalid")
-        statement = (
-            select(
-                SemanticGuidelineFindingRow,
-                SemanticGuidelineAssessmentReceiptRow.validation_edition,
-            )
-            .join(
-                SemanticGuidelineAssessmentReceiptRow,
-                SemanticGuidelineAssessmentReceiptRow.receipt_id
-                == SemanticGuidelineFindingRow.receipt_id,
-            )
-            .where(
-                SemanticGuidelineFindingRow.board_id == board_id,
-                SemanticGuidelineAssessmentReceiptRow.board_id == board_id,
-                SemanticGuidelineAssessmentReceiptRow.sealed.is_(True),
-            )
-        )
-        if entity_type is not None:
-            statement = statement.where(
-                SemanticGuidelineFindingRow.subject_type
-                == entity_type.value
-            )
-        if subject_id is not None:
-            statement = statement.where(
-                SemanticGuidelineFindingRow.subject_id == subject_id
-            )
-        if subject_edition is not None:
-            statement = statement.where(
-                SemanticGuidelineAssessmentReceiptRow.validation_edition
-                == subject_edition
-            )
-        if receipt_id is not None:
-            statement = statement.where(
-                SemanticGuidelineFindingRow.receipt_id == receipt_id
-            )
-        if guideline_id is not None:
-            statement = statement.where(
-                SemanticGuidelineFindingRow.guideline_id == guideline_id
-            )
-        if binding_id is not None:
-            statement = statement.where(
-                SemanticGuidelineFindingRow.binding_id == binding_id
-            )
-        if metric_id is not None:
-            statement = statement.where(
-                SemanticGuidelineFindingRow.metric_id == metric_id
-            )
-        # Findings are the immutable fail-only subset projected from metric
-        # results. A caller asking for passing findings therefore receives the
-        # closed empty set rather than an invented positive finding.
-        if outcome is SemanticMetricOutcome.PASS:
-            statement = statement.where(false())
-        if after is not None:
-            after_time, after_id = after
-            after_time = _utc(after_time)
-            statement = statement.where(
-                or_(
-                    SemanticGuidelineFindingRow.created_at < after_time,
-                    (
-                        SemanticGuidelineFindingRow.created_at == after_time
-                    )
-                    & (
-                        SemanticGuidelineFindingRow.finding_id < after_id
-                    ),
-                )
-            )
-        rows = tuple(
-            (
-                await self._session.execute(
-                    statement.order_by(
-                        SemanticGuidelineFindingRow.created_at.desc(),
-                        SemanticGuidelineFindingRow.finding_id.desc(),
-                    ).limit(limit + 1)
-                )
-            ).all()
-        )
-        page = rows[:limit]
-        next_cursor = (
-            None
-            if len(rows) <= limit
-            else (_utc(page[-1][0].created_at), page[-1][0].finding_id)
-        )
-        return (
-            tuple(
-                _finding_from_row(row, subject_edition=subject_edition)
-                for row, subject_edition in page
-            ),
-            next_cursor,
-        )
 
     async def _waiver_mutation_for_rows(
         self,
@@ -3451,104 +2447,26 @@ class CommunitySqlAlchemySemanticGuidelineAssessment:
         anchor = waiver.anchor
         require_writable_policy_subject_type(anchor.subject.entity_type)
         if event.event_type is SemanticMetricWaiverEventType.REQUEST:
-            finding_row = (
-                await self._session.execute(
-                    select(SemanticGuidelineFindingRow)
-                    .where(
-                        SemanticGuidelineFindingRow.finding_id
-                        == anchor.finding_id,
-                        SemanticGuidelineFindingRow.metric_result_id
-                        == anchor.metric_result_id,
-                        SemanticGuidelineFindingRow.receipt_id
-                        == anchor.receipt_id,
-                        SemanticGuidelineFindingRow.receipt_digest
-                        == anchor.receipt_digest,
-                        SemanticGuidelineFindingRow.board_id == board_id,
-                        SemanticGuidelineFindingRow.subject_type
-                        == anchor.subject.entity_type.value,
-                        SemanticGuidelineFindingRow.subject_id
-                        == anchor.subject.subject_id,
-                        SemanticGuidelineFindingRow.subject_version
-                        == anchor.subject.subject_version,
-                        SemanticGuidelineFindingRow.subject_content_digest
-                        == anchor.subject_content_digest,
-                        SemanticGuidelineFindingRow.guideline_id
-                        == anchor.guideline_id,
-                        SemanticGuidelineFindingRow.revision_id
-                        == anchor.guideline_revision_id,
-                        SemanticGuidelineFindingRow.revision_digest
-                        == anchor.guideline_revision_digest,
-                        SemanticGuidelineFindingRow.binding_id
-                        == anchor.binding_id,
-                        SemanticGuidelineFindingRow.binding_revision
-                        == anchor.binding_revision,
-                        SemanticGuidelineFindingRow.configuration_digest
-                        == anchor.binding_configuration_digest,
-                        SemanticGuidelineFindingRow.metric_id
-                        == anchor.metric_id,
-                        SemanticGuidelineFindingRow.metric_result_digest
-                        == anchor.metric_result_digest,
-                        SemanticGuidelineFindingRow.finding_digest
-                        == anchor.finding_digest,
-                    )
-                    .with_for_update()
-                )
-            ).scalar_one_or_none()
-            assessor_identity = (
-                await self._session.execute(
-                    select(
-                        SemanticGuidelineAssessmentReceiptRow.assessor_agent_id,
-                        SemanticGuidelineAssessmentReceiptRow.validation_edition,
-                    )
-                    .where(
-                        SemanticGuidelineAssessmentReceiptRow.receipt_id
-                        == anchor.receipt_id,
-                        SemanticGuidelineAssessmentReceiptRow.board_id
-                        == board_id,
-                        SemanticGuidelineAssessmentReceiptRow.receipt_digest
-                        == anchor.receipt_digest,
-                        SemanticGuidelineAssessmentReceiptRow.sealed.is_(
-                            True
-                        ),
-                    )
-                    .with_for_update()
-                )
-            ).one_or_none()
-            current_subject = await self.resolve_policy_subject_snapshot(
-                board_id=board_id,
-                entity_type=anchor.subject.entity_type,
-                subject_id=anchor.subject.subject_id,
-                lock=True,
-            )
+            from .sqlalchemy_semantic_guideline_v2 import CommunitySqlAlchemySemanticGuidelineAssessmentV2
+
+            native = CommunitySqlAlchemySemanticGuidelineAssessmentV2(self._session)
+            finding = await native.get_semantic_finding_v2(board_id=board_id, finding_id=anchor.finding_id)
+            receipt = await native.get_semantic_assessment_v2(board_id=board_id, receipt_id=anchor.receipt_id)
             if (
-                current_subject is not None
-                and current_subject.subject.subject_edition
-                != anchor.subject.subject_edition
-            ) or (
-                assessor_identity is not None
-                and assessor_identity[1] != anchor.subject.subject_edition
-            ):
-                raise GuidelinePolicyEditionConflict(
-                    "guideline_policy_edition_conflict"
-                )
-            assessor_id = (
-                None if assessor_identity is None else assessor_identity[0]
-            )
-            if (
-                finding_row is None
-                or assessor_id is None
+                finding is None or receipt is None
                 or SemanticMetricWaiverAnchor.from_finding(
-                    _finding_from_row(
-                        finding_row,
-                        subject_edition=anchor.subject.subject_edition,
-                    ),
-                    assessment_assessor_id=assessor_id,
-                )
-                != anchor
+                    finding, assessment_assessor_id=receipt.assessment_assessor_id,
+                ) != anchor
             ):
-                raise GuidelinePolicyDigestConflict(
-                    "semantic_waiver_anchor_stale"
-                )
+                raise GuidelinePolicyDigestConflict("semantic_waiver_anchor_stale")
+            current_subject = await self.resolve_policy_subject_snapshot(
+                board_id=board_id, entity_type=anchor.subject.entity_type,
+                subject_id=anchor.subject.subject_id, lock=True,
+            )
+            if current_subject is not None and current_subject.subject.subject_edition != anchor.subject.subject_edition:
+                raise GuidelinePolicyEditionConflict("guideline_policy_edition_conflict")
+            if not (await native.get_semantic_assessment_v2_currentness(receipt, lock=True)).is_current:
+                raise GuidelinePolicyDigestConflict("semantic_waiver_anchor_stale")
             if waiver.waiver_revision != 1:
                 raise GuidelinePolicyDigestConflict(
                     "semantic_waiver_initial_revision_invalid"
@@ -4236,106 +3154,6 @@ class CommunitySqlAlchemySemanticGuidelineAssessment:
         ).scalar_one_or_none()
         return None if row is None else _skip_mutation_from_row(row)
 
-    async def get_current_semantic_assessment_receipt(
-        self,
-        *,
-        board_id: str,
-        entity_type: PolicyEntityType,
-        subject_id: str,
-        binding_id: str,
-        subject_edition: int | None = None,
-    ) -> SemanticGuidelineAssessmentReceipt | None:
-        current = await self.resolve_semantic_assessment_current_snapshot(
-            board_id=board_id,
-            entity_type=entity_type,
-            subject_id=subject_id,
-            binding_id=binding_id,
-        )
-        if current is None:
-            return None
-        live_edition = current.subject.subject_edition
-        if subject_edition is not None and subject_edition != live_edition:
-            return None
-
-        # Human validation evidence is current for the exact lifecycle edition.
-        # Content/configuration digests remain immutable audit facts, but a
-        # technical drift inside the same edition does not invalidate the
-        # human result.  Legacy subjects without editions retain the old exact
-        # technical-fence behavior below.
-        if live_edition is not None:
-            row = (
-                await self._session.execute(
-                    select(SemanticGuidelineAssessmentReceiptRow)
-                    .where(
-                        SemanticGuidelineAssessmentReceiptRow.board_id
-                        == board_id,
-                        SemanticGuidelineAssessmentReceiptRow.subject_type
-                        == entity_type.value,
-                        SemanticGuidelineAssessmentReceiptRow.subject_id
-                        == subject_id,
-                        SemanticGuidelineAssessmentReceiptRow.binding_id
-                        == binding_id,
-                        SemanticGuidelineAssessmentReceiptRow.validation_edition
-                        == live_edition,
-                        SemanticGuidelineAssessmentReceiptRow.sealed.is_(True),
-                    )
-                    .order_by(
-                        SemanticGuidelineAssessmentReceiptRow.assessed_at.desc(),
-                        SemanticGuidelineAssessmentReceiptRow.receipt_id.desc(),
-                    )
-                    .limit(1)
-                )
-            ).scalar_one_or_none()
-            return (
-                None
-                if row is None
-                else (await self._result_from_row(row, replayed=False)).receipt
-            )
-        row = (
-            await self._session.execute(
-                select(SemanticGuidelineAssessmentReceiptRow)
-                .where(
-                    SemanticGuidelineAssessmentReceiptRow.board_id == board_id,
-                    SemanticGuidelineAssessmentReceiptRow.subject_type
-                    == entity_type.value,
-                    SemanticGuidelineAssessmentReceiptRow.subject_id
-                    == subject_id,
-                    SemanticGuidelineAssessmentReceiptRow.subject_version
-                    == current.subject.subject_version,
-                    SemanticGuidelineAssessmentReceiptRow.subject_content_digest
-                    == current.subject_content_digest,
-                    SemanticGuidelineAssessmentReceiptRow.guideline_id
-                    == current.guideline_id,
-                    SemanticGuidelineAssessmentReceiptRow.revision_id
-                    == current.guideline_revision_id,
-                    SemanticGuidelineAssessmentReceiptRow.revision_digest
-                    == current.guideline_revision_digest,
-                    SemanticGuidelineAssessmentReceiptRow.binding_id
-                    == current.binding_id,
-                    SemanticGuidelineAssessmentReceiptRow.binding_revision
-                    == current.binding_revision,
-                    SemanticGuidelineAssessmentReceiptRow.configuration_digest
-                    == current.binding_configuration_digest,
-                    SemanticGuidelineAssessmentReceiptRow.policy_set_digest
-                    == current.policy_set_digest,
-                    SemanticGuidelineAssessmentReceiptRow.binding_head_digest
-                    == current.binding_head_digest,
-                    SemanticGuidelineAssessmentReceiptRow.input_digest
-                    == current.input_digest,
-                    SemanticGuidelineAssessmentReceiptRow.sealed.is_(True),
-                )
-                .order_by(
-                    SemanticGuidelineAssessmentReceiptRow.assessed_at.desc(),
-                    SemanticGuidelineAssessmentReceiptRow.receipt_id.desc(),
-                )
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-        return (
-            None
-            if row is None
-            else (await self._result_from_row(row, replayed=False)).receipt
-        )
 
     async def resolve_semantic_assessment_current_snapshot(
         self,
@@ -4456,11 +3274,11 @@ class CommunitySqlAlchemySemanticGuidelineAssessment:
             subject_edition=subject.subject.subject_edition,
             lock=True,
         )
-        policy_set_digest = semantic_policy_set_digest_v1(
-            bindings,
-            revisions,
-        )
-        binding_head_digest = semantic_binding_head_digest_v1(bindings)
+        from okto_pulse.core.domain.guideline_semantic_currentness import native_semantic_assessment_snapshot
+        from okto_pulse.core.domain.guideline_semantic_findings_v2 import project_semantic_metric_findings_v2
+        from okto_pulse.community.adapters.sqlalchemy_semantic_guideline_v2 import CommunitySqlAlchemySemanticGuidelineAssessmentV2
+        from okto_pulse.community.adapters.sqlalchemy_models import SemanticGuidelineAssessmentV2Row
+        native_reader = CommunitySqlAlchemySemanticGuidelineAssessmentV2(self._session)
         revision_by_identity = {
             (revision.guideline_id, revision.revision_id): revision
             for revision in revisions
@@ -4476,35 +3294,27 @@ class CommunitySqlAlchemySemanticGuidelineAssessment:
                 raise GuidelinePolicyDigestConflict(
                     "semantic_guideline_bound_revision_missing"
                 )
-            context = SemanticGuidelineAssessmentContext(
-                subject_snapshot=subject,
-                binding=binding,
-                revision=revision,
-                policy_set_digest=policy_set_digest,
-                binding_head_digest=binding_head_digest,
-            )
-            current = semantic_assessment_current_snapshot_from_context(
-                context
+            current = native_semantic_assessment_snapshot(
+                subject=subject, binding=binding, revision=revision,
             )
             receipt_row = (
                 await self._session.execute(
-                    select(SemanticGuidelineAssessmentReceiptRow)
+                    select(SemanticGuidelineAssessmentV2Row)
                     .where(
-                        SemanticGuidelineAssessmentReceiptRow.board_id
+                        SemanticGuidelineAssessmentV2Row.board_id
                         == board_id,
-                        SemanticGuidelineAssessmentReceiptRow.subject_type
+                        SemanticGuidelineAssessmentV2Row.subject_type
                         == entity_type.value,
-                        SemanticGuidelineAssessmentReceiptRow.subject_id
+                        SemanticGuidelineAssessmentV2Row.subject_id
                         == subject_id,
-                        SemanticGuidelineAssessmentReceiptRow.binding_id
+                        SemanticGuidelineAssessmentV2Row.binding_id
                         == binding.binding_id,
-                        SemanticGuidelineAssessmentReceiptRow.validation_edition
+                        SemanticGuidelineAssessmentV2Row.validation_edition
                         == subject.subject.subject_edition,
-                        SemanticGuidelineAssessmentReceiptRow.sealed.is_(True),
                     )
                     .order_by(
-                        SemanticGuidelineAssessmentReceiptRow.assessed_at.desc(),
-                        SemanticGuidelineAssessmentReceiptRow.receipt_id.desc(),
+                        SemanticGuidelineAssessmentV2Row.recorded_at.desc(),
+                        SemanticGuidelineAssessmentV2Row.receipt_id.desc(),
                     )
                     .limit(1)
                     .with_for_update()
@@ -4514,16 +3324,15 @@ class CommunitySqlAlchemySemanticGuidelineAssessment:
                 None
                 if receipt_row is None
                 else (
-                    await self._result_from_row(
-                        receipt_row,
-                        replayed=False,
+                    await native_reader.get_semantic_assessment_v2(
+                        board_id=board_id, receipt_id=receipt_row.receipt_id,
                     )
-                ).receipt
+                )
             )
             findings = (
                 ()
                 if receipt is None
-                else project_semantic_metric_findings(receipt)
+                else project_semantic_metric_findings_v2(receipt)
             )
             waiver_rows = ()
             if receipt is not None:
@@ -4568,7 +3377,7 @@ class CommunitySqlAlchemySemanticGuidelineAssessment:
                     binding_id=binding.binding_id,
                     guideline_id=binding.guideline_id,
                     enforcement=binding.enforcement,
-                    applicable_metric_count=len(context.applicable_metrics),
+                    applicable_metric_count=sum(entity_type in metric.target_entity_types for metric in revision.metrics),
                     current_snapshot=current,
                     receipt=receipt,
                     findings=findings,

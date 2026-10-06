@@ -171,29 +171,6 @@ _HUMAN_POLICY_FIELDS: dict[str, tuple[str, ...]] = {
         "message",
         "created_at",
     ),
-    "semantic_guideline_assessment_receipts": (
-        "minimum_confidence",
-        "confidence",
-        "state",
-        "recorded_currentness",
-        "assessed_at",
-    ),
-    "semantic_guideline_metric_results": (
-        "metric_code",
-        "direction",
-        "effective_threshold",
-        "score",
-        "outcome",
-        "rationale",
-        "pinpoints",
-        "created_at",
-    ),
-    "semantic_guideline_findings": (
-        "metric_code",
-        "rationale",
-        "pinpoints",
-        "created_at",
-    ),
     "semantic_guideline_skips": (
         "status",
         "reason",
@@ -291,7 +268,7 @@ def _policy_sections() -> tuple[_SectionDefinition, ...]:
                     "receipt_id",
                     context_key="receipt_ids",
                 ),
-                _q("semantic_guideline_assessment_receipts", "subject"),
+                _q("semantic_guideline_assessments_v2", "subject"),
                 _q(
                     "guideline_revisions",
                     "context",
@@ -300,21 +277,8 @@ def _policy_sections() -> tuple[_SectionDefinition, ...]:
                     projected_columns=("revision_id", "title"),
                     emit=False,
                 ),
-                _q("semantic_guideline_assessments_v2", "subject"),
-                _q(
-                    "semantic_guideline_metric_results",
-                    "context",
-                    "receipt_id",
-                    context_key="receipt_ids",
-                ),
                 _q(
                     "semantic_guideline_metric_results_v2",
-                    "context",
-                    "receipt_id",
-                    context_key="receipt_ids",
-                ),
-                _q(
-                    "semantic_guideline_findings",
                     "context",
                     "receipt_id",
                     context_key="receipt_ids",
@@ -1449,7 +1413,6 @@ def _record_context(
         "quality_assessment_receipts": ("id", "receipt_ids"),
         "checklist_receipts": ("id", "receipt_ids"),
         "policy_compliance_receipts": ("receipt_id", "receipt_ids"),
-        "semantic_guideline_assessment_receipts": ("receipt_id", "receipt_ids"),
         "semantic_guideline_assessments_v2": ("receipt_id", "receipt_ids"),
         "code_investigation_receipts": ("id", "receipt_ids"),
         "policy_waivers": ("waiver_id", "waiver_ids"),
@@ -1462,7 +1425,7 @@ def _record_context(
     if item is not None and row.get(item[0]) is not None:
         context.setdefault(item[1], set()).add(str(row[item[0]]))
     if (
-        table_name == "semantic_guideline_assessment_receipts"
+        table_name == "semantic_guideline_assessments_v2"
         and row.get("revision_id") is not None
     ):
         context.setdefault("guideline_revision_ids", set()).add(str(row["revision_id"]))
@@ -1932,7 +1895,7 @@ class CommunitySqlAlchemyEntityExportReader:
                         and item.get("title") not in (None, "")
                     }
                 )
-                assessments = records.get("semantic_guideline_assessment_receipts", [])
+                assessments = records.get("semantic_guideline_assessments_v2", [])
                 for assessment, revision_id in zip(
                     assessments,
                     guideline_assessment_revision_ids,
@@ -1948,7 +1911,7 @@ class CommunitySqlAlchemyEntityExportReader:
                     if (projected := _human_row_payload(query.table_name, item))
                     not in (None, "", [], {})
                 ]
-            if query.table_name == "semantic_guideline_assessment_receipts":
+            if query.table_name == "semantic_guideline_assessments_v2":
                 guideline_assessment_revision_ids = [
                     str(item["revision_id"])
                     if item.get("revision_id") not in (None, "")

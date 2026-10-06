@@ -29,10 +29,8 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     QualityAssessmentLifecycleTransitionRow,
     QualityAssessmentReceiptRow,
     Refinement,
-    SemanticGuidelineAssessmentReceiptRow,
     SemanticGuidelineAssessmentV2Row,
     SemanticGuidelineBindingConfigurationRow,
-    SemanticGuidelineMetricResultRow,
     SemanticGuidelineMetricResultV2Row,
     SemanticGuidelineRevisionRow,
     SemanticGuidelineSkipRow,
@@ -533,105 +531,17 @@ def _scope_item(suffix: str, *, enforcement: str) -> dict[str, object]:
     }
 
 
-def _v1_policy_receipt(
-    suffix: str,
-    *,
-    state: str,
-    assessed_at: datetime,
-    metric_count: int = 1,
-    failed_count: int | None = None,
-) -> SemanticGuidelineAssessmentReceiptRow:
-    failed = (
-        (0 if state == "passed" else metric_count)
-        if failed_count is None
-        else failed_count
-    )
-    digest = "a" * 64
-    return SemanticGuidelineAssessmentReceiptRow(
-        receipt_id=f"receipt-v1-{suffix}",
-        board_id=BOARD_ID,
-        subject_type="spec",
-        subject_id="spec-cycle-00",
-        subject_version=1,
-        validation_edition=1,
-        subject_content_digest=digest,
-        last_semantic_editor_id="author",
-        guideline_id=f"guideline-{suffix}",
-        revision_id=f"revision-{suffix}",
-        revision_digest=suffix[-1] * 64,
-        binding_id=f"binding-{suffix}",
-        binding_revision=1,
-        configuration_digest=("f" if suffix[-1] != "f" else "e") * 64,
-        policy_set_digest=digest,
-        binding_head_digest=digest,
-        enforcement="blocking" if suffix == "blocking" else "advisory",
-        minimum_confidence=80,
-        confidence=90,
-        confidence_admissible=True,
-        assessor_agent_id="assessor",
-        assessor_model_id=None,
-        assessor_independent=True,
-        state=state,
-        recorded_currentness="current",
-        input_digest=digest,
-        receipt_digest=digest,
-        metric_result_count=metric_count,
-        failed_metric_count=failed,
-        idempotency_key=f"v1-{suffix}",
-        request_digest=digest,
-        assessed_at=assessed_at,
-        sealed=True,
-    )
-
-
-def _v1_policy_result(
-    suffix: str,
-    *,
-    outcome: str,
-    metric_suffix: str | None = None,
-) -> SemanticGuidelineMetricResultRow:
-    digest = "a" * 64
-    resolved_metric_suffix = metric_suffix or suffix
-    return SemanticGuidelineMetricResultRow(
-        result_id=f"result-v1-{suffix}-{resolved_metric_suffix}",
-        receipt_id=f"receipt-v1-{suffix}",
-        board_id=BOARD_ID,
-        subject_type="spec",
-        subject_id="spec-cycle-00",
-        subject_version=1,
-        subject_content_digest=digest,
-        receipt_digest=digest,
-        guideline_id=f"guideline-{suffix}",
-        revision_id=f"revision-{suffix}",
-        revision_digest=suffix[-1] * 64,
-        binding_id=f"binding-{suffix}",
-        binding_revision=1,
-        configuration_digest=("f" if suffix[-1] != "f" else "e") * 64,
-        metric_id=f"metric-{resolved_metric_suffix}",
-        metric_code=f"policy.{resolved_metric_suffix}",
-        metric_definition_digest="d" * 64,
-        direction="minimum",
-        default_threshold=70,
-        effective_threshold=70,
-        threshold_source="default",
-        score=80 if outcome == "pass" else 60,
-        outcome=outcome,
-        rationale="Deterministic v1 metric result.",
-        evidence_refs=[],
-        pinpoints=[],
-        result_digest="e" * 64,
-        created_at=NOW,
-    )
-
-
 def _v2_policy_rows(
     suffix: str,
     *,
     outcome: str,
     recorded_at: datetime,
+    metric_suffix: str | None = None,
+    identity: str = "current",
 ) -> tuple[object, object]:
     digest = "b" * 64
-    receipt_id = f"receipt-v2-{suffix}"
+    metric_suffix = metric_suffix or suffix
+    receipt_id = f"receipt-v2-{suffix}-{identity}"
     receipt = SemanticGuidelineAssessmentV2Row(
         receipt_id=receipt_id,
         contract_version="semantic-guideline-assessment/v2",
@@ -649,21 +559,21 @@ def _v2_policy_rows(
         configuration_digest=("f" if suffix[-1] != "f" else "e") * 64,
         confidence=90,
         assessor_agent_id="assessor",
-        idempotency_key=f"v2-{suffix}",
+        idempotency_key=f"v2-{suffix}-{identity}",
         request_digest=digest,
         receipt_digest=digest,
         payload={},
         recorded_at=recorded_at,
     )
     result = SemanticGuidelineMetricResultV2Row(
-        result_id=f"result-v2-{suffix}",
+        result_id=f"result-v2-{suffix}-{metric_suffix}-{identity}",
         contract_version="semantic-metric-result/v2",
         receipt_id=receipt_id,
         board_id=BOARD_ID,
         subject_type="spec",
         subject_id="spec-cycle-00",
-        metric_id=f"metric-{suffix}",
-        metric_code=f"policy.{suffix}",
+        metric_id=f"metric-{metric_suffix}",
+        metric_code=f"policy.{metric_suffix}",
         outcome=outcome,
         result_digest=digest,
         payload={},
@@ -724,7 +634,7 @@ def _metric_waiver(
     expires_at: datetime | None = None,
 ) -> SemanticGuidelineWaiverRow:
     digest = "6" * 64
-    resolved_receipt_id = receipt_id or f"receipt-v1-{binding_suffix}"
+    resolved_receipt_id = receipt_id or f"receipt-v2-{binding_suffix}-current"
     reviewed = status != "requested"
     revoked = status == "revoked"
     expired = status == "expired"
@@ -738,7 +648,7 @@ def _metric_waiver(
         waiver_id=f"waiver-{binding_suffix}-{metric_suffix}-{status}",
         board_id=BOARD_ID,
         metric_result_id=(
-            f"result-v1-{binding_suffix}-{metric_suffix}"
+            f"result-v2-{binding_suffix}-{metric_suffix}-current"
             if receipt_id is None
             else f"result-stale-{binding_suffix}-{metric_suffix}"
         ),
@@ -748,8 +658,8 @@ def _metric_waiver(
         subject_id="spec-cycle-00",
         subject_version=1,
         validation_edition=validation_edition,
-        subject_content_digest="a" * 64,
-        receipt_digest="a" * 64,
+        subject_content_digest="b" * 64,
+        receipt_digest="b" * 64,
         guideline_id=f"guideline-{binding_suffix}",
         revision_id=f"revision-{binding_suffix}",
         revision_digest=binding_suffix[-1] * 64,
@@ -758,7 +668,7 @@ def _metric_waiver(
         configuration_digest=("f" if binding_suffix[-1] != "f" else "e") * 64,
         metric_id=f"metric-{metric_suffix}",
         metric_code=f"policy.{metric_suffix}",
-        metric_result_digest="e" * 64,
+        metric_result_digest="b" * 64,
         finding_digest=digest,
         scope_digest=digest,
         justification="An independently approved bounded exception.",
@@ -926,27 +836,17 @@ async def test_policy_summary_is_snapshot_bound_deduplicated_and_human(
                 captured_at=NOW,
             )
         )
-        # Both contracts exist for two bindings. Only the deterministic latest
+        # Two native assessments exist for each binding. Only the latest
         # receipt contributes to each denominator item.
         session.add_all(
             (
-                _v1_policy_receipt(
-                    "blocking",
-                    state="metric_threshold_failed",
-                    assessed_at=NOW,
-                ),
-                _v1_policy_result("blocking", outcome="fail"),
+                *_v2_policy_rows("blocking", outcome="fail", recorded_at=NOW, identity="previous"),
                 *_v2_policy_rows(
                     "blocking",
                     outcome="pass",
                     recorded_at=NOW.replace(minute=1),
                 ),
-                _v1_policy_receipt(
-                    "advisory",
-                    state="passed",
-                    assessed_at=NOW,
-                ),
-                _v1_policy_result("advisory", outcome="pass"),
+                *_v2_policy_rows("advisory", outcome="pass", recorded_at=NOW, identity="previous"),
                 *_v2_policy_rows(
                     "advisory",
                     outcome="fail",
@@ -1190,20 +1090,10 @@ async def test_policy_summary_applies_exact_current_metric_waivers(
             )
         )
         session.add(
-            _v1_policy_receipt(
-                binding_suffix,
-                state="metric_threshold_failed",
-                assessed_at=NOW,
-                metric_count=2,
-                failed_count=2,
-            )
+            _v2_policy_rows(binding_suffix, outcome="fail", recorded_at=NOW)[0]
         )
         session.add_all(
-            _v1_policy_result(
-                binding_suffix,
-                metric_suffix=metric_suffix,
-                outcome="fail",
-            )
+            _v2_policy_rows(binding_suffix, metric_suffix=metric_suffix, outcome="fail", recorded_at=NOW)[1]
             for metric_suffix in metric_suffixes
         )
         session.add_all(
@@ -1255,7 +1145,7 @@ async def test_policy_summary_applies_exact_current_metric_waivers(
 @pytest.mark.parametrize(
     ("case", "waiver_kwargs"),
     (
-        ("stale-receipt", {"receipt_id": "receipt-v1-stale-old"}),
+        ("stale-receipt", {"receipt_id": "receipt-v2-stale-old"}),
         ("wrong-edition", {"validation_edition": 2}),
         ("revoked", {"status": "revoked"}),
         ("expired", {"status": "expired"}),
@@ -1293,18 +1183,10 @@ async def test_policy_summary_ignores_non_current_metric_waivers(
             )
         )
         session.add(
-            _v1_policy_receipt(
-                binding_suffix,
-                state="metric_threshold_failed",
-                assessed_at=NOW,
-            )
+            _v2_policy_rows(binding_suffix, outcome="fail", recorded_at=NOW)[0]
         )
         session.add(
-            _v1_policy_result(
-                binding_suffix,
-                metric_suffix=metric_suffix,
-                outcome="fail",
-            )
+            _v2_policy_rows(binding_suffix, metric_suffix=metric_suffix, outcome="fail", recorded_at=NOW)[1]
         )
         session.add(
             _metric_waiver(
