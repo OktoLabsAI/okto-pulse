@@ -194,7 +194,7 @@ function assessment({
 }
 
 function currentV2Assessment(
-  entityType: 'ideation' | 'refinement' | 'spec' | 'card' | 'sprint',
+  entityType: 'ideation' | 'refinement' | 'spec' | 'card',
   subjectId: string,
 ) {
   return {
@@ -322,7 +322,7 @@ function adoptedGuideline() {
 }
 
 function guidelineRevisionFor(
-  entityType: 'ideation' | 'refinement' | 'spec' | 'card' | 'sprint',
+  entityType: 'ideation' | 'refinement' | 'spec' | 'card',
 ) {
   return {
     revision: {
@@ -1478,7 +1478,6 @@ describe('guideline compliance summary', () => {
     'refinement',
     'spec',
     'card',
-    'sprint',
   ] as const)(
     'projects the same read-only v2 confidence and actionable pinpoint in the %s surface',
     async (entityType) => {

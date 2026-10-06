@@ -142,7 +142,6 @@ const ENTITY_TYPES = new Set([
   'ideation',
   'refinement',
   'spec',
-  'sprint',
   'card',
   'test_scenario',
 ]);

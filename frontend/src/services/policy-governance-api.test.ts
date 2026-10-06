@@ -545,7 +545,6 @@ describe('closed policy UI state', () => {
     ideation: 'Ideation',
     refinement: 'Refinement',
     spec: 'Spec',
-    sprint: 'Sprint',
     card: 'Card',
     test_scenario: 'Test scenario',
   } satisfies Record<PolicyEntityType, string>;

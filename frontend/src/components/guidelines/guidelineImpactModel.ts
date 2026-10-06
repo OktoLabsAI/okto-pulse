@@ -21,7 +21,6 @@ const ENTITY_TYPES = new Set<PolicyEntityType>([
   'ideation',
   'refinement',
   'spec',
-  'sprint',
   'card',
   'test_scenario',
 ]);

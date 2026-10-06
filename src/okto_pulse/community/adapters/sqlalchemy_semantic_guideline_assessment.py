@@ -1696,10 +1696,6 @@ class CommunitySqlAlchemySemanticGuidelineAssessment:
             raise GuidelinePolicySubjectConflict(
                 "semantic_assessment_subject_type_invalid"
             )
-        # Sprint remains a valid historical receipt type, never a live subject.
-        # Stored replay is handled before this lookup by the mutation writers.
-        if entity_type is PolicyEntityType.SPRINT:
-            return None
         if lock:
             await lock_policy_board(self._session, board_id=board_id)
 
@@ -1887,8 +1883,6 @@ class CommunitySqlAlchemySemanticGuidelineAssessment:
     ) -> str | None:
         """Read the lifecycle fence without adding status to semantic content."""
 
-        if entity_type is PolicyEntityType.SPRINT:
-            return None
         if entity_type is PolicyEntityType.TEST_SCENARIO:
             statement = (
                 select(Spec)
@@ -3165,8 +3159,6 @@ class CommunitySqlAlchemySemanticGuidelineAssessment:
     ) -> NativeSemanticAssessmentCurrentSnapshot | None:
         """Resolve the live fence for exactly one subject×binding pair."""
 
-        if entity_type is PolicyEntityType.SPRINT:
-            return None
         if lock:
             await lock_policy_board(self._session, board_id=board_id)
         subject = await self.resolve_policy_subject_snapshot(
@@ -3228,8 +3220,6 @@ class CommunitySqlAlchemySemanticGuidelineAssessment:
         mix evidence from different transaction fences.
         """
 
-        if entity_type is PolicyEntityType.SPRINT:
-            raise GuidelinePolicySubjectConflict("semantic_assessment_subject_type_retired")
         await lock_policy_board(self._session, board_id=board_id)
         expected_status = str(expected_from_status).strip().lower()
         subject = await self.resolve_policy_subject_snapshot(

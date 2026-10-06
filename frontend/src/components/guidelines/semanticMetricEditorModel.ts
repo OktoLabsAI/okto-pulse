@@ -5,7 +5,7 @@ import type {
   PolicyEntityType,
 } from '@/types/policy-governance';
 
-import { createGuidelineClientId } from './guidelineEditorShared';
+import { GUIDELINE_ENTITY_TYPES, createGuidelineClientId } from './guidelineEditorShared';
 
 export const SEMANTIC_SCORE_MIN = 0;
 export const SEMANTIC_SCORE_MAX = 100;
@@ -144,8 +144,8 @@ export function validateSemanticMetricDraft(
   if (draft.targetEntityTypes.length === 0) {
     return 'Select at least one entity type for this metric.';
   }
-  if (draft.targetEntityTypes.includes('sprint')) {
-    return 'Sprint is a historical target. Remove it explicitly before creating a new revision.';
+  if (draft.targetEntityTypes.some((target) => !GUIDELINE_ENTITY_TYPES.includes(target))) {
+    return 'Metric entity type is unsupported.';
   }
   if (new Set(draft.targetEntityTypes).size !== draft.targetEntityTypes.length) {
     return 'Metric entity types must be unique.';

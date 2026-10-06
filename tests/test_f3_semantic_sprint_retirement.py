@@ -120,11 +120,11 @@ async def test_explicit_sprint_mutation_queue_is_rejected(tmp_path, actor_bound)
                 )
             original = dict(session.sync_session.info)
             with pytest.raises(
-                ValueError, match="semantic_subject_bridge_entity_type_retired"
+                TypeError, match="semantic_subject_bridge_entity_type_invalid"
             ):
                 queue_semantic_subject_mutation(
                     session,
-                    entity_type=PolicyEntityType.SPRINT,
+                    entity_type="sprint",
                     board_id="board",
                     subject_id="unsupported",
                 )

@@ -197,13 +197,23 @@ describe('GuidelineRevisionEditor semantic authoring', () => {
     expect(screen.queryByRole('button', { name: 'Add Sprint metric target' })).not.toBeInTheDocument();
   });
 
-  it('requires explicit removal of a historical target and preserves the loaded revision', async () => {
-    const historical = revision([{ ...metric, target_entity_types: ['spec', 'sprint'] }]);
-    const original = JSON.stringify(historical);
-    renderEditor(historical);
-    const remove = await screen.findByRole('button', { name: 'Remove historical Sprint target' });
+  it('refuses an unsupported wire target without offering conversion or writing', async () => {
+    const invalid = { ...metric, target_entity_types: ['sprint'] } as unknown as GuidelineMetric;
+    renderEditor(revision([invalid]));
+    await screen.findByText('Metric entity type is unsupported.');
     fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'New title' } });
     expect(screen.getByTestId('create-guideline-revision')).toBeDisabled();
+    expect(screen.queryByRole('button', { name: /historical Sprint/ })).not.toBeInTheDocument();
+    expect(policyApiMock.createGuidelineRevision).not.toHaveBeenCalled();
+  });
+
+  it('removes a native target with explicit version bump and preserves the loaded revision', async () => {
+    const historical = revision([{ ...metric, target_entity_types: ['spec', 'card'] }]);
+    const original = JSON.stringify(historical);
+    renderEditor(historical);
+    const remove = await screen.findByRole('button', { name: 'Remove Card metric target' });
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'New title' } });
+    expect(screen.getByTestId('create-guideline-revision')).toBeEnabled();
     expect(policyApiMock.createGuidelineRevision).not.toHaveBeenCalled();
     fireEvent.click(remove);
     fireEvent.change(screen.getByLabelText('Version bump'), { target: { value: 'major' } });
@@ -214,10 +224,10 @@ describe('GuidelineRevisionEditor semantic authoring', () => {
     expect(JSON.stringify(historical)).toBe(original);
   });
 
-  it('does not grant metric authoring authority to remove a historical target', async () => {
+  it('does not grant metric authoring authority to remove a native target', async () => {
     grant('guidelines.revisions.read', 'guidelines.revisions.create');
-    renderEditor(revision([{ ...metric, target_entity_types: ['sprint'] }]));
-    expect(await screen.findByRole('button', { name: 'Remove historical Sprint target' })).toBeDisabled();
+    renderEditor(revision([{ ...metric, target_entity_types: ['card'] }]));
+    expect(await screen.findByRole('button', { name: 'Remove Card metric target' })).toBeDisabled();
     expect(screen.getByTestId('create-guideline-revision')).toBeDisabled();
     expect(policyApiMock.createGuidelineRevision).not.toHaveBeenCalled();
   });

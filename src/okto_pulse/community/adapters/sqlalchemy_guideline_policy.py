@@ -103,8 +103,6 @@ from okto_pulse.core.ports.guideline_policy import (
     GuidelineImpactListQuery,
     GuidelineRevisionListQuery,
     PolicyTransitionSnapshotResolver,
-    require_writable_guideline_revision,
-    require_writable_guideline_import_entry,
 )
 from okto_pulse.core.domain.guideline_semantic_transition import (
     PolicyTransitionSnapshot,
@@ -2005,8 +2003,6 @@ class CommunitySqlAlchemyGuidelinePolicy:
         entries = tuple(
             sorted(plan.entries, key=lambda item: item.aggregate.guideline_id)
         )
-        for entry in entries:
-            require_writable_guideline_import_entry(entry)
         target_board_ids = {
             candidate.target_board_id
             for entry in entries
@@ -3269,8 +3265,6 @@ class CommunitySqlAlchemyGuidelinePolicy:
                 await self._hydrate_revision_row(replay),
                 _published_head_from_revision_row(replay),
             )
-
-        require_writable_guideline_revision(initial_revision)
         self._session.add(
             LegacyGuidelineRow(
                 id=guideline.guideline_id,
@@ -3406,8 +3400,6 @@ class CommunitySqlAlchemyGuidelinePolicy:
         ).scalar_one_or_none()
         if retirement is not None:
             raise GuidelinePolicyRevisionConflict("guideline_is_terminal")
-
-        require_writable_guideline_revision(revision)
         # The exact-revision FK is DEFERRABLE: fence first, then append the row.
         # A stale writer therefore creates no orphan immutable revision.
         result = await self._session.execute(

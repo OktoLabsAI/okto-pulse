@@ -357,8 +357,6 @@ def queue_semantic_subject_mutation(
         raise TypeError("semantic_subject_bridge_session_invalid")
     if not isinstance(entity_type, PolicyEntityType):
         raise TypeError("semantic_subject_bridge_entity_type_invalid")
-    if entity_type is PolicyEntityType.SPRINT:
-        raise ValueError("semantic_subject_bridge_entity_type_retired")
     sync_session = session.sync_session
     if not sync_session.info.get(_SEMANTIC_BRIDGE_ENABLED_KEY):
         return

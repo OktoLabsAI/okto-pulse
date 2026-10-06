@@ -76,6 +76,15 @@ async def test_fresh_schema_restart_preserves_data_and_identity(tmp_path, contra
             assert retired_tables.isdisjoint(actual_tables)
             assert {"semantic_guideline_assessments_v2", "semantic_guideline_findings_v2",
                     "semantic_guideline_waivers", "semantic_guideline_waiver_events"} <= actual_tables
+            for table in (
+                "semantic_subject_versions", "semantic_subject_version_events",
+                "semantic_guideline_waivers", "semantic_guideline_skips",
+            ):
+                target_ddl = (await connection.exec_driver_sql(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
+                )).scalar_one()
+                assert "'sprint'" not in target_ddl
+                assert "'test_scenario'" in target_ddl
             assert (await connection.exec_driver_sql(
                 "SELECT count(*) FROM sqlite_master WHERE type='table' "
                 "AND name='quality_assessment_lifecycle_stale_transitions'"

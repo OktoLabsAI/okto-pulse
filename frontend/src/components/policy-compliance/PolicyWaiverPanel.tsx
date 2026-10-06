@@ -64,7 +64,6 @@ const ENTITY_TYPE_OPTIONS: PolicyEntityType[] = [
   'ideation',
   'refinement',
   'spec',
-  'sprint',
   'card',
   'test_scenario',
 ];
@@ -340,7 +339,6 @@ function availableActions({
   canRevoke: boolean;
   canRevalidate: boolean;
 }): PolicyWaiverAction[] {
-  if (waiver.entity_type === 'sprint') return [];
   switch (waiver.status) {
     case 'requested':
       return canReview ? ['approve', 'reject'] : [];
@@ -432,11 +430,6 @@ function WaiverRow({
             >
               {waiver.currentness}
             </span>
-            {waiver.entity_type === 'sprint' && (
-              <span className="text-xs text-surface-500 dark:text-surface-400">
-                Historical · read only
-              </span>
-            )}
           </div>
           <p className="mt-1 text-xs text-surface-500 dark:text-surface-400">
             {formatPolicyToken(waiver.entity_type)} · {waiver.subject_id} · v

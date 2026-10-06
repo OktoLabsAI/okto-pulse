@@ -4555,7 +4555,7 @@ class SemanticSubjectVersionEventRow(Base):
         ),
         CheckConstraint(
             "subject_type IN "
-            "('ideation', 'refinement', 'spec', 'card', 'sprint', "
+            "('ideation', 'refinement', 'spec', 'card', "
             "'test_scenario')",
             name="ck_sem_subject_event_type",
         ),
@@ -4641,7 +4641,7 @@ class SemanticSubjectVersionRow(Base):
         ),
         CheckConstraint(
             "subject_type IN "
-            "('ideation', 'refinement', 'spec', 'card', 'sprint', "
+            "('ideation', 'refinement', 'spec', 'card', "
             "'test_scenario')",
             name="ck_sem_subject_head_type",
         ),
@@ -4786,7 +4786,7 @@ class SemanticGuidelineWaiverRow(Base):
         ),
         CheckConstraint(
             "subject_type IN "
-            "('ideation', 'refinement', 'spec', 'card', 'sprint', "
+            "('ideation', 'refinement', 'spec', 'card', "
             "'test_scenario')",
             name="ck_sg_waiver_subject_type",
         ),
@@ -5303,7 +5303,7 @@ class SemanticGuidelineSkipRow(Base):
         ),
         CheckConstraint(
             "subject_type IN "
-            "('ideation', 'refinement', 'spec', 'card', 'sprint', "
+            "('ideation', 'refinement', 'spec', 'card', "
             "'test_scenario')",
             name="ck_sg_skip_subject_type",
         ),

@@ -9,7 +9,6 @@ import {
   Archive,
   ArrowDown,
   ArrowUp,
-  CalendarDays,
   Check,
   CircleGauge,
   FileText,
@@ -101,7 +100,6 @@ const POLICY_TARGET_LABELS: Readonly<Record<PolicyEntityType, string>> = {
   ideation: 'Ideation',
   refinement: 'Refinement',
   spec: 'Spec',
-  sprint: 'Sprint',
   card: 'Card',
   test_scenario: 'Test scenario',
 };
@@ -116,7 +114,6 @@ function PolicyTargetIcon({
   if (target === 'ideation') return <Lightbulb size={size} />;
   if (target === 'refinement') return <Search size={size} />;
   if (target === 'spec') return <FileText size={size} />;
-  if (target === 'sprint') return <CalendarDays size={size} />;
   if (target === 'test_scenario') return <FlaskConical size={size} />;
   return <SquareKanban size={size} />;
 }
@@ -324,22 +321,6 @@ function SemanticMetricCard({
             );
           })}
         </div>
-        {metric.targetEntityTypes.includes('sprint') && (
-          <div className="mt-2 rounded-lg border border-amber-300 p-3 text-xs">
-            <p>Sprint is preserved in this historical revision. A new revision requires explicit removal of this target.</p>
-            <button
-              type="button"
-              disabled={disabled}
-              onClick={() => onChange({
-                ...metric,
-                targetEntityTypes: metric.targetEntityTypes.filter((target) => target !== 'sprint'),
-              })}
-              className="mt-2 underline disabled:opacity-40"
-            >
-              Remove historical Sprint target
-            </button>
-          </div>
-        )}
       </fieldset>
 
       <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_260px]">
