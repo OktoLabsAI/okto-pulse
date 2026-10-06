@@ -53,7 +53,7 @@ def _rejection() -> PolicyTransitionRejected:
         receipt_id="receipt-1",
         currentness=PolicyCurrentness.STALE,
         currentness_reasons=(
-            SemanticAssessmentCurrentnessReason.POLICY_SET_CHANGED,
+            SemanticAssessmentCurrentnessReason.BINDING_CONFIGURATION_CHANGED,
         ),
         inadmissibility_cause=None,
         failed_metric_count=0,

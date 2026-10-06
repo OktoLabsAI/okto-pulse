@@ -108,9 +108,6 @@ const CURRENTNESS_REASON_ORDER = [
   'guideline_revision_digest_changed',
   'binding_revision_changed',
   'binding_configuration_changed',
-  'policy_set_changed',
-  'binding_head_changed',
-  'input_digest_changed',
 ] as const satisfies readonly SemanticAssessmentCurrentnessReason[];
 
 const INADMISSIBILITY_CAUSES =

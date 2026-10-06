@@ -137,6 +137,14 @@ function page(
 }
 
 describe('semantic metric waiver validation', () => {
+  it.each(['policy_set_changed', 'binding_head_changed', 'input_digest_changed'])(
+    'rejects predecessor currentness reason %s in native waivers', (reason) => {
+      const stale = waiver({ currentness: 'stale', lifecycle_state: 'previous', currentness_reasons: ['subject_version_changed'] });
+      const scope = { boardId: 'board-1', evaluatedAt: '2026-07-30T12:00:00Z', waiverId: 'waiver-1', metricResultId: 'metric-result-1' };
+      expect(parseSemanticWaiverHeadResponse({ waiver: stale }, scope).currentness).toBe('stale');
+      expect(() => parseSemanticWaiverHeadResponse({ waiver: { ...stale, currentness_reasons: [reason] } }, scope)).toThrow();
+    },
+  );
   it('parses structured evidence and rejects incomplete or duplicate refs', () => {
     expect(parseSemanticEvidenceDrafts([{
       sourceType: 'spec',

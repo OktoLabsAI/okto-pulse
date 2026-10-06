@@ -106,6 +106,15 @@ function finding(overrides: Record<string, unknown> = {}) {
 }
 
 describe('native finding contract', () => {
+  it.each(['policy_set_changed', 'binding_head_changed', 'input_digest_changed'])(
+    'rejects predecessor currentness reason %s in native history', (reason) => {
+      const stale = { currentness: 'stale', lifecycle_state: 'previous', currentness_reasons: ['subject_version_changed'] };
+      expect(parseSemanticAssessmentDetail(assessment(stale), expected).currentness).toBe('stale');
+      expect(parseSemanticFindingDetail(finding(stale), expected).currentness).toBe('stale');
+      expect(() => parseSemanticAssessmentDetail(assessment({ ...stale, currentness_reasons: [reason] }), expected)).toThrow();
+      expect(() => parseSemanticFindingDetail(finding({ ...stale, currentness_reasons: [reason] }), expected)).toThrow();
+    },
+  );
   it('preserves actionable evidence and rejects predecessor pinpoints', () => {
     const parsed = parseSemanticFindingDetail(finding(), expected);
     expect(parsed.pinpoints[0]).toMatchObject({

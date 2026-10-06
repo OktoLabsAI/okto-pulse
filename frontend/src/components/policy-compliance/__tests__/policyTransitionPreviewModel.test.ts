@@ -104,6 +104,20 @@ function governed(
 }
 
 describe('policyTransitionPreviewModel', () => {
+  it.each(['policy_set_changed', 'binding_head_changed', 'input_digest_changed'])(
+    'rejects predecessor currentness reason %s in native transition decisions', (reason) => {
+      const stale = decision({ state: 'policy_compliance_receipt_stale', allowed: false,
+        reason_codes: ['policy_compliance_receipt_stale'], currentness: 'stale',
+        currentness_reasons: ['subject_version_changed'], diagnostic_codes: ['policy_compliance_receipt_stale'],
+        binding_decisions: [binding({ allowed: false, currentness: 'stale',
+          currentness_reasons: ['subject_version_changed'], diagnostic_codes: ['policy_compliance_receipt_stale'] })],
+      });
+      expect(parsePolicyComplianceTransitionDecision(stale).currentness).toBe('stale');
+      expect(() => parsePolicyComplianceTransitionDecision({ ...stale, currentness_reasons: [reason],
+        binding_decisions: stale.binding_decisions.map(item => ({ ...item, currentness_reasons: [reason] })),
+      })).toThrow(/currentness reasons/i);
+    },
+  );
   it('projects semantic metric authority and recovery rows separately', () => {
     const projection = projectPolicyTransitions([
       governed(),

@@ -36,9 +36,6 @@ const CURRENTNESS_REASONS =
     'guideline_revision_digest_changed',
     'binding_revision_changed',
     'binding_configuration_changed',
-    'policy_set_changed',
-    'binding_head_changed',
-    'input_digest_changed',
   ]);
 
 const ASSESSMENT_DETAIL_FIELDS = [

@@ -3,12 +3,13 @@
 from datetime import timedelta
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, event
 from sqlalchemy.exc import IntegrityError
 
 from okto_pulse.community.adapters.current_relational_schema import initialize_current_schema, current_schema_contract
 from okto_pulse.community.adapters.sqlalchemy_database import build_community_session_factory
-from okto_pulse.community.adapters.sqlalchemy_models import SemanticGuidelineWaiverRow
+from okto_pulse.community.adapters.sqlalchemy_models import SemanticGuidelineWaiverRow, SemanticGuidelineWaiverEventRow
+from okto_pulse.core.ports.guideline_policy import GuidelinePolicyDigestConflict
 from okto_pulse.community.adapters.sqlalchemy_semantic_guideline_assessment import CommunitySqlAlchemySemanticGuidelineAssessment
 from okto_pulse.community.adapters.sqlalchemy_semantic_guideline_v2 import CommunitySqlAlchemySemanticGuidelineAssessmentV2
 from okto_pulse.core.domain.guideline_semantic_findings_v2 import project_semantic_metric_findings_v2
@@ -77,6 +78,25 @@ async def test_native_waiver_persists_exact_anchor_replays_and_rejects_sql_drift
                 scheduled_expiry_observed=False, evidence_refs=finding.evidence_refs,
                 idempotency_key="revalidate-native",
             )
+            for retired_reason in ("policy_set_changed", "binding_head_changed", "input_digest_changed"):
+                # Inject an incompatible payload into BOTH matching rows at the
+                # SQL boundary: the enum guard must reject it, not head drift.
+                def inject_reason(sync_session, _context, _instances):
+                    for pending in (*sync_session.new, *sync_session.dirty):
+                        if isinstance(pending, SemanticGuidelineWaiverRow) and pending.last_event_id == "native-revalidate":
+                            pending.last_revalidation_currentness_reasons = [retired_reason]
+                        if isinstance(pending, SemanticGuidelineWaiverEventRow) and pending.event_id == "native-revalidate":
+                            pending.currentness_reasons = [retired_reason]
+
+                event.listen(session.sync_session, "before_flush", inject_reason)
+                try:
+                    with pytest.raises(GuidelinePolicyDigestConflict, match="semantic_waiver_persistence_conflict") as error:
+                        async with session.begin_nested():
+                            await storage.save_semantic_metric_waiver_mutation(mutation=revalidated)
+                    assert "semantic_guideline_waiver_event_append_invalid" in str(error.value.__cause__)
+                finally:
+                    event.remove(session.sync_session, "before_flush", inject_reason)
+                assert await storage.get_semantic_waiver(board_id=authority[0], waiver_id="native-waiver") == approved.waiver
             assert await storage.save_semantic_metric_waiver_mutation(mutation=revalidated) == revalidated
         async with factory() as session:
             restored = await CommunitySqlAlchemySemanticGuidelineAssessment(session).get_semantic_waiver(
