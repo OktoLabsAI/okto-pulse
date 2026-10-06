@@ -1310,9 +1310,8 @@ class CommunitySqlAlchemySemanticGuidelineAssessment:
     ]:
         """Rebuild the exact semantic binding heads from relational authority.
 
-        Legacy bindings without a semantic configuration are deliberately
-        ignored: migration classifies them as inert and never synthesizes an
-        executable configuration.
+        Every binding head requires its native semantic configuration. Missing
+        authority is invalid; it cannot turn a configured policy into no policy.
         """
 
         statement = (
@@ -1350,7 +1349,9 @@ class CommunitySqlAlchemySemanticGuidelineAssessment:
                 await self._session.execute(semantic_statement)
             ).scalar_one_or_none()
             if semantic_binding is None:
-                continue
+                raise GuidelinePolicyDigestConflict(
+                    "semantic_guideline_binding_configuration_missing"
+                )
             binding = self._binding_from_rows(
                 legacy_binding,
                 semantic_binding,
@@ -2900,8 +2901,7 @@ class CommunitySqlAlchemySemanticGuidelineAssessment:
                 == subject_edition,
             )
         else:
-            # Legacy/non-lifecycle subjects retain the exact technical-fence
-            # contract.
+            # Uneditioned Card/scenario subjects use the exact technical fence.
             scope_filters += (
                 SemanticGuidelineSkipRow.subject_version == subject_version,
                 SemanticGuidelineSkipRow.validation_edition.is_(None),
