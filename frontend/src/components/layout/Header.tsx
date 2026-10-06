@@ -255,6 +255,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
         design_system_gate_mode: normalizeDesignSystemGateMode(currentBoard.settings.design_system_gate_mode),
         lint_languages: currentBoard.settings.lint_languages ?? [],
         impact_evidence_mode: currentBoard.settings.impact_evidence_mode,
+        delivery_evidence_gate: currentBoard.settings.delivery_evidence_gate,
         code_traceability: currentBoard.settings.code_traceability,
       }
     : {
@@ -293,6 +294,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
         design_system_gate_mode: 'off',
         lint_languages: [],
         impact_evidence_mode: 'off',
+        delivery_evidence_gate: 'blocking',
         code_traceability: { ...DEFAULT_CODE_TRACEABILITY_SETTINGS },
       };
 

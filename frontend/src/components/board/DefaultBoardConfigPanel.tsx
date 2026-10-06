@@ -1,3 +1,4 @@
+import { resolveDeliveryGateMode } from './deliveryGateSettings';
 // Administrative panel for the default board-configuration template
 // (spec 9df814bc / card 7da43521 / FR8). Opened from Menu > Board > Global Default.
 //
@@ -168,6 +169,7 @@ function toBoardSettings(raw: Record<string, unknown>): BoardSettings {
       : [],
     design_system_gate_mode: normalizeDesignSystemGateMode(raw.design_system_gate_mode),
     code_traceability: raw.code_traceability as BoardSettings['code_traceability'],
+    delivery_evidence_gate: raw.delivery_evidence_gate as BoardSettings['delivery_evidence_gate'],
     impact_evidence_mode: raw.impact_evidence_mode as BoardSettings['impact_evidence_mode'],
   };
 }
@@ -366,6 +368,9 @@ export function DefaultBoardConfigPanel({
   }
   if (!normalizeReviewerSeparationMode(mergedSettings.reviewer_separation_mode)) {
     return <div role="alert">Reviewer separation policy is incompatible. Template cannot be edited.</div>;
+  }
+  if (!resolveDeliveryGateMode(mergedSettings.delivery_evidence_gate)) {
+    return <div role="alert">Delivery Evidence policy is incompatible. Template cannot be edited.</div>;
   }
   if (!resolveImpactEvidenceMode(mergedSettings.impact_evidence_mode)) {
     return <div role="alert">Impact Evidence policy is incompatible. Template cannot be edited.</div>;

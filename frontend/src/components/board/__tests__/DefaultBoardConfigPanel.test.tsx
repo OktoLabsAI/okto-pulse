@@ -862,4 +862,26 @@ describe('DefaultBoardConfigPanel', () => {
     expect(apiMock.createDefaultBoardConfigVersion.mock.calls[0][0].settings_payload.impact_evidence_mode).toBe('require');
   });
 
+  it.each([null, 'off'])('refuses invalid template Delivery Evidence %j', async (mode) => {
+    apiMock.getActiveDefaultBoardConfig.mockResolvedValueOnce({
+      scope: 'global', active: tmpl({ settings_payload: { delivery_evidence_gate: mode } }),
+    });
+    render(<DefaultBoardConfigPanel boardId="b1" />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('Delivery Evidence policy is incompatible');
+    expect(screen.queryByTestId('dbc-save-template')).not.toBeInTheDocument();
+    expect(apiMock.createDefaultBoardConfigVersion).not.toHaveBeenCalled();
+  });
+
+  it('projects and preserves advisory Delivery Evidence when saving another setting', async () => {
+    apiMock.getActiveDefaultBoardConfig.mockResolvedValueOnce({
+      scope: 'global', active: tmpl({ settings_payload: { delivery_evidence_gate: 'advisory' } }),
+    });
+    render(<DefaultBoardConfigPanel boardId="b1" />);
+    expect(await screen.findByTestId('delivery-evidence-gate-mode-advisory')).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(screen.getByRole('switch', { name: 'Require task validation' }));
+    fireEvent.click(screen.getByTestId('dbc-save-template'));
+    await waitFor(() => expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalledTimes(1));
+    expect(apiMock.createDefaultBoardConfigVersion.mock.calls[0][0].settings_payload.delivery_evidence_gate).toBe('advisory');
+  });
+
 });

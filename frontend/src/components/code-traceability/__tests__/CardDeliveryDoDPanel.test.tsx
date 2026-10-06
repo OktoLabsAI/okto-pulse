@@ -278,3 +278,22 @@ it.each([['passed', false], ['failed', false], ['passed', true], ['failed', true
   expect(sent).not.toHaveProperty('test_result');
   if (staged) expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
 });
+
+it.each([null, 'off'])('does not invent a gate mode for incompatible policy %j', async (mode) => {
+  api.getBoard.mockResolvedValue({ settings: { delivery_evidence_gate: mode } });
+  render(<CardDeliveryDoDPanel boardId="b" card={CARD} />);
+  expect(await screen.findByText(/Unknown/)).toBeInTheDocument();
+  await waitFor(() => expect(api.getDeliveryEvidence).toHaveBeenCalled());
+  expect(screen.queryByText(/Gate: Blocking/)).not.toBeInTheDocument();
+});
+
+it('clears the previous gate mode when a different Board cannot be read', async () => {
+  api.getBoard.mockResolvedValueOnce({ settings: { delivery_evidence_gate: 'advisory' } });
+  const view = render(<CardDeliveryDoDPanel boardId="b" card={CARD} />);
+  expect(await screen.findByText(/Advisory/)).toBeInTheDocument();
+  api.getBoard.mockRejectedValueOnce(new Error('Board unavailable'));
+  view.rerender(<CardDeliveryDoDPanel boardId="other" card={CARD} />);
+  await waitFor(() => expect(api.getBoard).toHaveBeenLastCalledWith('other'));
+  expect(await screen.findByText(/Unknown/)).toBeInTheDocument();
+  expect(screen.queryByText(/Advisory/)).not.toBeInTheDocument();
+});

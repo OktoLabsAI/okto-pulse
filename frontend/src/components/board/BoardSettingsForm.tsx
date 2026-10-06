@@ -1,3 +1,4 @@
+import { resolveDeliveryGateMode } from './deliveryGateSettings';
 // Shared board-settings form. This is the single source of truth for the
 // validation-gate / coverage / governance layout so the Board Config screen
 // (Menu > Board, board-level mutation) and the Global Default template editor
@@ -284,6 +285,9 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
     return <div role="alert">Reviewer separation policy is incompatible. Settings cannot be edited.</div>;
   }
 
+  if (!resolveDeliveryGateMode(settings.delivery_evidence_gate)) {
+    return <div role="alert">Delivery Evidence policy is incompatible. Settings cannot be edited.</div>;
+  }
   if (!resolveImpactEvidenceMode(settings.impact_evidence_mode)) {
     return <div role="alert">Impact Evidence policy is incompatible. Settings cannot be edited.</div>;
   }
@@ -1159,7 +1163,7 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
         >
           {(['advisory', 'blocking'] as const).map((mode) => {
             const checked =
-              (settings.delivery_evidence_gate ?? 'blocking') === mode;
+              resolveDeliveryGateMode(settings.delivery_evidence_gate) === mode;
             const titles: Record<'advisory' | 'blocking', string> = {
               advisory:
                 'The coverage verdict is shown on the card and the Spec rollup without blocking completion.',

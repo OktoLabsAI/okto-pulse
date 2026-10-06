@@ -1,3 +1,4 @@
+import { resolveDeliveryGateMode } from '@/components/board/deliveryGateSettings';
 import { useEffect, useRef, useState } from 'react';
 import { useDashboardApi } from '@/services/api';
 import { ObligationRefText } from './obligationPresentation';
@@ -28,11 +29,11 @@ const field = 'w-full rounded border border-gray-300 bg-white p-2 text-sm dark:b
 // HERE against this card's accepted execution receipts. Test cards record
 // authenticated passing runs verifying implementations on other cards.
 // Waivers stay spec-level and human-only (BR-3): the button routes an
-// authorized human to the legacy rollup surface.
+// authorized human to the Spec rollup surface.
 export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest = false, canWaiver = false, canProgress = false, onChanged, onStage }: Props) {
   const api = useDashboardApi();
   const [data, setData] = useState<DeliveryEvidenceProjection | null>(null);
-  const [gateMode, setGateMode] = useState<'advisory' | 'blocking'>('blocking');
+  const [gateMode, setGateMode] = useState<'advisory' | 'blocking' | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [reload, setReload] = useState(0);
@@ -49,13 +50,13 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
 
   useEffect(() => {
     const controller = new AbortController();
-    setData(null); setError(''); setRefs([]); setContributions({}); setComposeProofs(false); setExecutionSets({}); setChoice(''); setTestedIds([]);
+    setData(null); setGateMode(null); setError(''); setRefs([]); setContributions({}); setComposeProofs(false); setExecutionSets({}); setChoice(''); setTestedIds([]);
     api.getDeliveryEvidence(boardId, card.spec_id, controller.signal).then(value => {
       if (!controller.signal.aborted) setData(value);
     }).catch(err => { if (!controller.signal.aborted) setError(err instanceof Error ? err.message : 'Delivery proof could not be loaded.'); });
     api.getBoard(boardId).then(board => {
-      if (!controller.signal.aborted) setGateMode(board.settings?.delivery_evidence_gate ?? 'blocking');
-    }).catch(() => {});
+      if (!controller.signal.aborted) setGateMode(resolveDeliveryGateMode(board.settings?.delivery_evidence_gate));
+    }).catch(() => { if (!controller.signal.aborted) setGateMode(null); });
     return () => controller.abort();
   }, [api, boardId, card.id, card.spec_id, reload]);
 
@@ -154,7 +155,7 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
         <div className="mb-3 flex items-center justify-between gap-3">
           <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200">Delivery Evidence (Definition of Done)</h3>
           <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wide ${unproven.length ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300' : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'}`} data-testid="dod-gate-pill">
-            {gateMode === 'advisory' ? 'Advisory' : 'Blocking'} · {unproven.length} of {obligations.length || selectableRefs.length} unproven
+            {gateMode === null ? 'Unknown' : gateMode === 'advisory' ? 'Advisory' : 'Blocking'} · {unproven.length} of {obligations.length || selectableRefs.length} unproven
           </span>
         </div>
         {obligations.length === 0 && !isTest && (

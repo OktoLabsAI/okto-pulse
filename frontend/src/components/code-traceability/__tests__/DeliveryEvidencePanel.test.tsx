@@ -178,11 +178,11 @@ it('reflects the advisory gate mode from board settings', async () => {
   expect(screen.getByTestId('delivery-gate-mode').textContent).toContain('Gate: Advisory (Board)');
 });
 
-it('falls back to the blocking gate label when board settings fail to load', async () => {
+it('reports an unknown gate when board settings fail to load', async () => {
   api.getBoard.mockRejectedValue(new Error('unavailable'));
   render(<DeliveryEvidencePanel boardId="b" specId="s" />);
   await screen.findByTestId('delivery-gate-mode');
-  expect(screen.getByTestId('delivery-gate-mode').textContent).toContain('Gate: Blocking (Board)');
+  expect(screen.getByTestId('delivery-gate-mode').textContent).toContain('Gate: Unknown (Board)');
 });
 
 it('surfaces load errors without faking a verdict', async () => {
@@ -200,4 +200,23 @@ it('refreshes the rollup on demand without any write call', async () => {
   await waitFor(() => expect(api.getDeliveryEvidence).toHaveBeenCalledTimes(2));
   expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
   expect(api.recordDeliveryEvidence).not.toHaveBeenCalled();
+});
+
+it.each([null, 'off'])('does not invent a gate mode for incompatible policy %j', async (mode) => {
+  api.getBoard.mockResolvedValue({ settings: { delivery_evidence_gate: mode } });
+  render(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  expect(await screen.findByText(/Unknown/)).toBeInTheDocument();
+  await waitFor(() => expect(api.getDeliveryEvidence).toHaveBeenCalled());
+  expect(screen.queryByText(/Gate: Blocking/)).not.toBeInTheDocument();
+});
+
+it('clears the previous gate mode when a different Board cannot be read', async () => {
+  api.getBoard.mockResolvedValueOnce({ settings: { delivery_evidence_gate: 'advisory' } });
+  const view = render(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  expect(await screen.findByText(/Advisory/)).toBeInTheDocument();
+  api.getBoard.mockRejectedValueOnce(new Error('Board unavailable'));
+  view.rerender(<DeliveryEvidencePanel boardId="other" specId="s" />);
+  await waitFor(() => expect(api.getBoard).toHaveBeenLastCalledWith('other'));
+  expect(await screen.findByText(/Unknown/)).toBeInTheDocument();
+  expect(screen.queryByText(/Advisory/)).not.toBeInTheDocument();
 });

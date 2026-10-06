@@ -1,3 +1,4 @@
+import { resolveDeliveryGateMode } from '@/components/board/deliveryGateSettings';
 import { useEffect, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { useDashboardApi } from '@/services/api';
@@ -24,13 +25,13 @@ export function DeliveryEvidencePanel({ boardId, specId, skipDeliveryEvidence = 
 
   useEffect(() => {
     const controller = new AbortController();
-    setData(null); setError('');
+    setData(null); setGateMode(null); setError('');
     api.getDeliveryEvidence(boardId, specId, controller.signal).then(value => {
       if (!controller.signal.aborted) setData(value);
     }).catch(err => { if (!controller.signal.aborted) setError(err instanceof Error ? err.message : 'Delivery proof could not be loaded.'); });
     api.getBoard(boardId).then(board => {
-      if (!controller.signal.aborted) setGateMode(board.settings?.delivery_evidence_gate ?? 'blocking');
-    }).catch(() => { if (!controller.signal.aborted) setGateMode('blocking'); });
+      if (!controller.signal.aborted) setGateMode(resolveDeliveryGateMode(board.settings?.delivery_evidence_gate));
+    }).catch(() => { if (!controller.signal.aborted) setGateMode(null); });
     return () => controller.abort();
   }, [api, boardId, specId, reload]);
 
@@ -54,7 +55,7 @@ export function DeliveryEvidencePanel({ boardId, specId, skipDeliveryEvidence = 
       </div>
       <div className="flex shrink-0 items-center gap-2">
         <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] uppercase tracking-wide text-gray-600 dark:bg-gray-800 dark:text-gray-300" data-testid="delivery-gate-mode">
-          Gate: {gateMode === 'advisory' ? 'Advisory' : 'Blocking'} (Board)
+          Gate: {gateMode === null ? 'Unknown' : gateMode === 'advisory' ? 'Advisory' : 'Blocking'} (Board)
         </span>
         <button type="button" onClick={() => setReload(v => v + 1)} aria-label="Refresh delivery rollup"
           className="rounded border border-gray-200 p-1.5 text-gray-500 transition-colors hover:bg-gray-100 dark:border-gray-800 dark:text-gray-400 dark:hover:bg-gray-800">

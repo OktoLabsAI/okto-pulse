@@ -357,4 +357,15 @@ describe('BoardSettingsForm — agent-mediated Code Traceability', () => {
       'Missing requirements selected by the Code Evidence, Technical Anchor and attestation sub-policies become blockers',
     );
   });
+  it.each([null, 'off'])('refuses incompatible Delivery Evidence %j without a write', (mode) => {
+    const onChange = vi.fn();
+    render(<BoardSettingsForm
+      settings={{ ...baseSettings, delivery_evidence_gate: mode } as unknown as BoardSettings}
+      onChange={onChange}
+    />);
+    expect(screen.getByRole('alert')).toHaveTextContent('Delivery Evidence policy is incompatible');
+    expect(screen.queryByTestId('delivery-evidence-gate-mode-blocking')).not.toBeInTheDocument();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
 });
