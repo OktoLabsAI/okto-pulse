@@ -514,7 +514,7 @@ export function DefaultBoardConfigPanel({
   );
   const guidelineDefaultCount = activeTemplate?.guideline_default_refs.length ?? 0;
   const dsGate = ds?.gate_mode ?? (mergedSettings.design_system_gate_mode as string | undefined) ?? 'off';
-  const isLegacy = diff?.snapshot_state === 'legacy_no_snapshot';
+  const hasNoTemplateSnapshot = diff?.snapshot_state === 'no_template_snapshot';
   const hasOverrides = (diff?.fields.length ?? 0) > 0;
   const canDeactivateActiveTemplate = canDeactivateDefaultConfig
     && (
@@ -877,9 +877,9 @@ export function DefaultBoardConfigPanel({
               <p data-testid="dbc-diff-unavailable" className="text-xs text-gray-500 dark:text-gray-400">
                 Board diff requires <code>default_board_config.diff_read</code>.
               </p>
-            ) : isLegacy ? (
-              <div data-testid="dbc-legacy" className="rounded border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-800 dark:bg-gray-800/50 dark:text-gray-300">
-                Legacy board - no applied template snapshot.
+            ) : hasNoTemplateSnapshot ? (
+              <div data-testid="dbc-no-template-snapshot" className="rounded border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-800 dark:bg-gray-800/50 dark:text-gray-300">
+                No template snapshot was applied when this board was created.
               </div>
             ) : diff ? (
               <div data-testid="dbc-diff" className="space-y-3">

@@ -211,7 +211,7 @@ describe('Header Board settings resource automation', () => {
     apiMock.getBoardDefaultConfigDiff.mockReset();
     apiMock.getBoardDefaultConfigDiff.mockResolvedValue({
       board_id: 'board-1',
-      snapshot_state: 'legacy_no_snapshot',
+      snapshot_state: 'no_template_snapshot',
       applied_template_id: null,
       applied_template_version: null,
       active_template_id: null,

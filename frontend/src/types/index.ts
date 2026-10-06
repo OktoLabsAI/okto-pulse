@@ -3911,7 +3911,7 @@ export interface DefaultBoardConfigDiffField {
 
 export interface DefaultBoardConfigDiff {
   board_id: string;
-  snapshot_state: 'applied' | 'legacy_no_snapshot';
+  snapshot_state: 'applied' | 'no_template_snapshot';
   applied_template_id: string | null;
   applied_template_version: number | null;
   active_template_id: string | null;

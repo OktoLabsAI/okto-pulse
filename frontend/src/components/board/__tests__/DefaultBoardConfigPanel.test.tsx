@@ -452,14 +452,14 @@ describe('DefaultBoardConfigPanel', () => {
     expect(screen.queryByTestId('dbc-versions-pagination')).not.toBeInTheDocument();
   });
 
-  it('shows legacy/no-snapshot state when the board has no applied snapshot', async () => {
+  it('shows the native no-template state when the board has no applied snapshot', async () => {
     apiMock.getBoardDefaultConfigDiff.mockResolvedValue({
-      board_id: 'b1', snapshot_state: 'legacy_no_snapshot',
+      board_id: 'b1', snapshot_state: 'no_template_snapshot',
       applied_template_id: null, applied_template_version: null,
       active_template_id: null, active_template_version: null, is_outdated: false, fields: [],
     });
     render(<DefaultBoardConfigPanel boardId="b1" />);
-    expect(await screen.findByTestId('dbc-legacy')).toBeInTheDocument();
+    expect(await screen.findByTestId('dbc-no-template-snapshot')).toBeInTheDocument();
   });
 
   it('shows no-active-template state gracefully', async () => {

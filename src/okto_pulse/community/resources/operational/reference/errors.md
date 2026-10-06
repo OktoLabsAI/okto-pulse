@@ -77,7 +77,7 @@ append-only.
 | `task_validation_idempotency_conflict` | One idempotency key was reused with a different validation payload | Preserve the original key only for an exact retry; otherwise use a new key. |
 | `reviewer_separation_required` | `reviewer_separation_mode="enforce"` and the task validator is also the card creator, current assignee, or executor-report author | This is an `action_required` outcome, not a transient retry. Follow remediation `request_independent_task_validator`: have a different authorized principal read `okto_pulse_get_task_context(..., profile="full", context_scope="gate")` and submit the validation. The blocked attempt persists neither a validation nor a status change. |
 
-If a persisted legacy board has no `reviewer_separation_mode` field, this error is intentionally not raised: the policy decision is `mode="off"`, `source="legacy_absent_compat"`. The accepted validation still records its conflicts and source for auditability.
+An absent `reviewer_separation_mode` uses `mode="enforce"`, `source="board_default"`. Explicit `off` and `warn` remain supported; an invalid value is refused without conversion. Validation records its conflicts and policy source for auditability.
 
 ## Card Creation
 

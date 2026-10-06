@@ -588,7 +588,7 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
             })}
           </div>
           <p className="mt-2 text-[10px] leading-4 text-gray-400 dark:text-gray-500">
-            Enforce is the safe default for new boards. Legacy boards without a stored value remain Off until explicitly changed.
+            Enforce is the default. Off and Warn apply only when explicitly configured.
           </p>
         </div>
 
