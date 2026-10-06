@@ -42,7 +42,7 @@ async def test_executor_cannot_drop_or_qualification_or_reopen_without_authority
     set_permission_flag(flags, 'spec.move.in_progress_to_draft', False)
     db.add(Agent(id='executor', name='Executor', created_by='author', api_key='fixture-executor',
         api_key_hash=AgentService.hash_api_key('fixture-executor'), is_active=True,
-        preset_id='executor-preset', permissions=[], permission_flags=flags))
+        preset_id='executor-preset', permission_flags=flags))
     db.add(AgentBoard(id='executor-board', agent_id='executor', board_id='board', granted_by='author'))
     await db.commit()
     factory = async_sessionmaker(db.bind, sync_session_class=CommunitySemanticSession,

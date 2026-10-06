@@ -786,20 +786,20 @@ class CommunitySqlAlchemyApplicationPersistence:
     ) -> Any:
         """Load policy facts within the existing compact relational query budget."""
         row = (await context.execute(select(
-            models.Agent.permission_flags, models.Agent.permissions, models.Agent.preset_id,
+            models.Agent.permission_flags, models.Agent.preset_id,
             models.AgentBoard.permission_overrides,
         ).outerjoin(models.AgentBoard, and_(models.AgentBoard.agent_id == models.Agent.id,
             models.AgentBoard.board_id == board_id))
         .where(models.Agent.created_by == user_id).limit(1))).first()
         if row is None:
             return resolve_effective_permissions(None, None, None)
-        flags, legacy, preset_id, overrides = row
+        flags, preset_id, overrides = row
         presets = ()
         if preset_id:
             rows = (await context.execute(select(models.PermissionPreset.id,
                 models.PermissionPreset.base_preset_id, models.PermissionPreset.flags).order_by(models.PermissionPreset.id))).all()
             presets = tuple(PermissionPresetLineageNode(item.id, item.flags, item.base_preset_id) for item in rows)
-        return resolve_agent_permission_facts(agent_flags=flags, legacy_permissions=legacy,
+        return resolve_agent_permission_facts(agent_flags=flags,
             preset_id=preset_id, presets=presets, board_overrides=overrides)
 
     async def list(

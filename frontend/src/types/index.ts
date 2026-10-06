@@ -2625,7 +2625,6 @@ export interface Agent {
   description: string | null;
   objective: string | null;
   is_active: boolean;
-  permissions: string[] | null;
   permission_flags: PermissionFlags | null;
   preset_id: string | null;
   created_by: string;
@@ -4019,7 +4018,6 @@ export interface CreateAgentRequest {
   name: string;
   description?: string;
   objective?: string;
-  permissions?: string[];
   preset_id?: string;
   permission_flags?: PermissionFlags;
 }
@@ -4029,7 +4027,6 @@ export interface UpdateAgentRequest {
   description?: string;
   objective?: string;
   is_active?: boolean;
-  permissions?: string[];
   preset_id?: string | null;
   permission_flags?: Record<string, unknown> | null;
 }

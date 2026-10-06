@@ -38,7 +38,20 @@ async def test_public_create_rejects_foreign_scenarios_without_partial_writes(tm
     store = CommunitySqlAlchemyKnowledgePropagationStore(sessions)
     register_knowledge_propagation_port(store)
     register_knowledge_mutation_audit_sink(store)
+    from okto_pulse.community.adapters.sqlalchemy_models import PermissionPreset
+    from okto_pulse.core.ports.permission_policy import registered_permission_flags, set_permission_flag
+
     permissions = ['card.entity.create_test'] if case != 'denied' else ['board.read']
+    flags = registered_permission_flags()
+    def deny(tree):
+        for key, value in tree.items():
+            if isinstance(value, dict):
+                deny(value)
+            else:
+                tree[key] = False
+    deny(flags)
+    for operation in permissions:
+        set_permission_flag(flags, operation, True)
     principal = Principal('owner', realm_id='local', actor_kind='agent', claims={'permissions': permissions})
     context = SimpleNamespace(agent_id='owner', agent_name='Author', board_id='board', realm_id='local', permissions=permissions)
     try:
@@ -46,8 +59,9 @@ async def test_public_create_rejects_foreign_scenarios_without_partial_writes(tm
         async with sessions() as db:
             db.add_all([Board(id='board', realm_id='local', name='Board', owner_id='owner'),
                         Board(id='foreign', realm_id='local', name='Other', owner_id='other')])
+            db.add(PermissionPreset(id='native-author', name='Author', owner_id='owner', flags=flags))
             db.add(Agent(id='owner', name='Author', api_key='fixture', api_key_hash=AgentService.hash_api_key('fixture'),
-                         created_by='owner', permissions=permissions))
+                         created_by='owner', preset_id='native-author', permission_flags={}))
             db.add(AgentBoard(id='grant', board_id='board', agent_id='owner', granted_by='owner'))
             db.add(_native_spec(id='spec', board_id='board', title='Spec', created_by='owner', status='approved',
                         test_scenarios=[{'id': 'one', 'title': 'One', 'status': 'draft', 'linked_task_ids': []}]))

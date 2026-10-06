@@ -58,7 +58,6 @@ function agent(id: string, name: string): Agent {
     description: null,
     objective: null,
     is_active: true,
-    permissions: null,
     permission_flags: null,
     preset_id: null,
     created_by: 'owner-1',
@@ -106,7 +105,7 @@ describe('AgentsModal reveal-once credentials', () => {
     vi.unstubAllGlobals();
   });
 
-  it('keeps listed agents secret-free and reveals only newly created keys', async () => {
+  it('uses the native Agent contract and reveals only newly created keys', async () => {
     apiMock.listMyAgents.mockResolvedValue([agent('agent-1', 'Existing Agent')]);
     apiMock.createAgent.mockResolvedValue({
       agent: agent('agent-2', 'New Agent'),
@@ -142,6 +141,7 @@ describe('AgentsModal reveal-once credentials', () => {
     fireEvent.click(screen.getByText('Existing Agent'));
     expect(screen.getByText('Hidden. Regenerate to reveal a new key.')).toBeInTheDocument();
     expect(screen.queryByText('dash_new_secret')).not.toBeInTheDocument();
+    expect(apiMock.createAgent.mock.calls[0][0]).not.toHaveProperty('permissions');
     expect(apiMock.createAgent).toHaveBeenCalledWith({
       name: 'New Agent',
       description: undefined,

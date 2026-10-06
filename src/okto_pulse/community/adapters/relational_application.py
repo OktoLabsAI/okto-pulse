@@ -132,7 +132,6 @@ class CommunityPermissionPresetGateway:
             ))).scalar_one_or_none()
         permission_set = resolve_agent_permission_facts(
             agent_flags=agent.permission_flags if agent is not None else None,
-            legacy_permissions=agent.permissions if agent is not None else None,
             preset_id=agent.preset_id if agent is not None else None,
             presets=_lineage_nodes(preset_rows),
             board_overrides=binding.permission_overrides if binding is not None else None,
@@ -383,13 +382,16 @@ class CommunityAgentAuthenticationGateway:
         agent = result.scalar_one_or_none()
         if agent is None:
             return None
+        context = await self.resolve_agent_permission_context(agent.id)
+        if context is None:
+            return None
         return AgentAuthSession(
             agent_id=agent.id,
             agent_name=agent.name,
             is_active=True,
             description=agent.description,
             objective=agent.objective,
-            permissions=agent.permissions,
+            permissions=context.permissions,
             created_at=agent.created_at,
             last_used_at=agent.last_used_at,
             metadata={
@@ -439,7 +441,7 @@ class CommunityAgentAuthenticationGateway:
                 select(PermissionPreset).order_by(PermissionPreset.id)
             )).scalars().all())
         permissions = resolve_agent_permission_facts(
-            agent_flags=agent.permission_flags, legacy_permissions=agent.permissions,
+            agent_flags=agent.permission_flags,
             preset_id=agent.preset_id, presets=_lineage_nodes(preset_rows),
             board_overrides=agent_board.permission_overrides if agent_board is not None else None,
             policy=self._permission_policy,

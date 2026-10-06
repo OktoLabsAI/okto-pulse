@@ -93,12 +93,28 @@ async def test_executor_and_reviewer_handoff_preserves_report_and_grant_boundari
                 set_permission_flag(flags, 'card.validation.submit', True)
             seed.add(Agent(id=identity, name=identity, created_by='owner',
                 api_key='fixture-' + identity, api_key_hash=AgentService.hash_api_key('fixture-' + identity),
-                is_active=True, permissions=[], preset_id='handoff-root', permission_flags=flags))
+                is_active=True, preset_id='handoff-root', permission_flags=flags))
             seed.add(AgentBoard(id='grant-' + identity, agent_id=identity,
                 board_id=adopted.BOARD, granted_by='owner'))
+        from datetime import datetime, timezone
+        from okto_pulse.community.adapters.sqlalchemy_semantic_guideline_assessment import CommunitySqlAlchemySemanticGuidelineAssessment
+        from okto_pulse.core.domain.guideline_policy import PolicyEntityType
+        from okto_pulse.core.domain.quality_canonicalization import canonical_sha256
+
+        await seed.flush()
+        await CommunitySqlAlchemySemanticGuidelineAssessment(seed).record_semantic_subject_mutation(
+            board_id=adopted.BOARD, entity_type=PolicyEntityType.CARD,
+            subject_id="task", actor_id="executor",
+            idempotency_key="native-handoff-task",
+            request_digest=canonical_sha256({"fixture": "native-handoff-task"}),
+            changed_at=datetime.now(timezone.utc),
+        )
         await seed.commit()
         await seed.close()
         register_unit_of_work_factory(CommunityUnitOfWorkFactory(factory))
+        from okto_pulse.community.adapters.sqlalchemy_knowledge_propagation import CommunitySqlAlchemyKnowledgePropagationStore
+        from okto_pulse.core.ports.knowledge_propagation import register_knowledge_propagation_port
+        register_knowledge_propagation_port(CommunitySqlAlchemyKnowledgePropagationStore(factory))
         server.register_mcp_authenticator(make_community_mcp_authenticator(session_factory=factory))
         server._permission_cache.clear()
         identity = 'reviewer'

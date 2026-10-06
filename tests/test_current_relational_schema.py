@@ -111,6 +111,7 @@ async def test_fresh_schema_restart_preserves_data_and_identity(tmp_path, contra
     "PRAGMA user_version=399",
     "PRAGMA application_id=0",
     "ALTER TABLE cards ADD COLUMN sprint_id TEXT",
+    "ALTER TABLE agents ADD COLUMN permissions JSON",
     "ALTER TABLE checklist_receipts ADD COLUMN manual_checklist_ref TEXT",
     "ALTER TABLE cards ADD COLUMN knowledge_bases JSON",
     "ALTER TABLE card_delivery_evidence_records ADD COLUMN migrated_from JSON",

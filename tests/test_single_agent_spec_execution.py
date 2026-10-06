@@ -87,6 +87,16 @@ async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(
 ):
     db = adopted_context
     await complete_start_fixture(db, tmp_path)
+    from okto_pulse.community.adapters.sqlalchemy_checklist import CommunitySqlAlchemyChecklist
+    from okto_pulse.core.domain.checklist import ChecklistMode
+    from okto_pulse.core.services.checklist import ChecklistService
+
+    checklist = CommunitySqlAlchemyChecklist(db)
+    checklist_service = ChecklistService()
+    binding = checklist_service.prepare_binding(
+        board_id="board", mode=ChecklistMode.OFF, current_binding=None,
+    )
+    await checklist_service.apply_binding(binding, previous_binding=None, persistence=checklist)
     register_report_adapters()
     register_structured_spec_store(CommunitySqlAlchemyStructuredSpecStore())
     factory = async_sessionmaker(db.bind, sync_session_class=CommunitySemanticSession,
@@ -122,8 +132,25 @@ async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(
     db.add(PermissionPreset(id='solo-preset', name=root['name'], flags=root['flags'], is_builtin=True))
     db.add(Agent(id='solo', name='Solo agent', created_by='author', api_key='fixture-solo',
         api_key_hash=AgentService.hash_api_key('fixture-solo'), is_active=True,
-        preset_id='solo-preset', permissions=[], permission_flags={}))
+        preset_id='solo-preset', permission_flags={}))
     db.add(AgentBoard(id='solo-board', agent_id='solo', board_id='board', granted_by='author'))
+    from datetime import datetime, timezone
+    from okto_pulse.community.adapters.sqlalchemy_semantic_guideline_assessment import CommunitySqlAlchemySemanticGuidelineAssessment
+    from okto_pulse.core.domain.guideline_policy import PolicyEntityType
+    from okto_pulse.core.domain.quality_canonicalization import canonical_sha256
+
+    await db.flush()
+    for entity_type, identity in (
+        (PolicyEntityType.CARD, "task"),
+        (PolicyEntityType.CARD, "test"),
+        (PolicyEntityType.TEST_SCENARIO, "scenario"),
+    ):
+        await CommunitySqlAlchemySemanticGuidelineAssessment(db).record_semantic_subject_mutation(
+            board_id="board", entity_type=entity_type, subject_id=identity,
+            actor_id="solo", idempotency_key="native-solo-" + identity,
+            request_digest=canonical_sha256({"fixture": "native-solo", "card": identity}),
+            changed_at=datetime.now(timezone.utc),
+        )
     await db.commit()
     await db.close()
     register_unit_of_work_factory(CommunityUnitOfWorkFactory(factory))
