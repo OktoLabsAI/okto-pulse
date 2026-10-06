@@ -29,9 +29,9 @@ from okto_pulse.community.adapters.sqlalchemy_database import (
 from okto_pulse.community.adapters.sqlalchemy_default_board_configuration import (
     CommunitySqlAlchemyDefaultBoardConfigurationStore,
 )
+from okto_pulse.core.domain.guideline_lifecycle import guideline_revision_content_digest_v2
 from okto_pulse.community.adapters.sqlalchemy_guideline_policy import (
     CommunitySqlAlchemyGuidelinePolicy,
-    guideline_revision_content_digest,
 )
 from okto_pulse.community.adapters.sqlalchemy_models import (
     Board,
@@ -87,7 +87,7 @@ def _revision(
         semantic_version=f"1.0.{number - 1}",
         title=title,
         content=content,
-        revision_digest=guideline_revision_content_digest(
+        revision_digest=guideline_revision_content_digest_v2(
             title=title,
             content=content,
             semantic_version=f"1.0.{number - 1}",

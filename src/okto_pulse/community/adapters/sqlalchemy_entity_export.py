@@ -157,20 +157,6 @@ _QA_TABLES = frozenset(
 _CHECKLIST_ITEM_BY_ID = {item.item_id: item for item in SPECIFY_CHECKLIST_ITEMS_V1}
 
 _HUMAN_POLICY_FIELDS: dict[str, tuple[str, ...]] = {
-    "policy_compliance_receipts": (
-        "outcome",
-        "state",
-        "recorded_currentness",
-        "reason_codes",
-        "evaluated_at",
-    ),
-    "policy_compliance_findings": (
-        "outcome",
-        "enforcement",
-        "severity_rank",
-        "message",
-        "created_at",
-    ),
     "semantic_guideline_skips": (
         "status",
         "reason",
@@ -261,13 +247,6 @@ def _policy_sections() -> tuple[_SectionDefinition, ...]:
             "policy_compliance",
             "guidelines.assessments.read",
             queries=(
-                _q("policy_compliance_receipts", "subject"),
-                _q(
-                    "policy_compliance_findings",
-                    "context",
-                    "receipt_id",
-                    context_key="receipt_ids",
-                ),
                 _q("semantic_guideline_assessments_v2", "subject"),
                 _q(
                     "guideline_revisions",
@@ -296,13 +275,6 @@ def _policy_sections() -> tuple[_SectionDefinition, ...]:
             "policy_waivers",
             "guidelines.waiver.read",
             queries=(
-                _q("policy_waivers", "subject"),
-                _q(
-                    "policy_waiver_events",
-                    "context",
-                    "waiver_id",
-                    context_key="waiver_ids",
-                ),
                 _q("semantic_guideline_waivers", "subject"),
                 _q(
                     "semantic_guideline_waiver_events",
@@ -1412,10 +1384,8 @@ def _record_context(
     primary_context = {
         "quality_assessment_receipts": ("id", "receipt_ids"),
         "checklist_receipts": ("id", "receipt_ids"),
-        "policy_compliance_receipts": ("receipt_id", "receipt_ids"),
         "semantic_guideline_assessments_v2": ("receipt_id", "receipt_ids"),
         "code_investigation_receipts": ("id", "receipt_ids"),
-        "policy_waivers": ("waiver_id", "waiver_ids"),
         "semantic_guideline_waivers": ("waiver_id", "waiver_ids"),
         "implementation_targets": ("id", "target_ids"),
         "implementation_target_spec_links": ("target_id", "target_ids"),

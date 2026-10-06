@@ -81,7 +81,6 @@ from okto_pulse.core.domain.guideline_import_export import (
 from okto_pulse.core.domain.guideline_lifecycle import (
     GUIDELINE_REVISION_DIGEST_CONTRACT_VERSION,
     GuidelineLifecycleError,
-    guideline_revision_content_digest_v2,
     validate_binding_transition,
 )
 from okto_pulse.core.ports.guideline_policy import (
@@ -598,23 +597,6 @@ def _guideline_binding_merge_digest(
     return canonical_sha256(payload)
 
 
-def guideline_revision_content_digest(
-    *,
-    title: str,
-    content: str,
-    metrics: tuple[GuidelineMetric, ...] | list[GuidelineMetric] = (),
-    tags: tuple[str, ...] | list[str] = (),
-    semantic_version: str = "1.0.0",
-) -> str:
-    """Community seam over the canonical semantic revision digest."""
-
-    return guideline_revision_content_digest_v2(
-        semantic_version=semantic_version,
-        title=title,
-        content=content,
-        metrics=metrics,
-        tags=tags,
-    )
 
 
 def _guideline_from_row(row: LegacyGuidelineRow) -> Guideline:
@@ -5224,5 +5206,4 @@ class CommunitySqlAlchemyGuidelinePolicy:
 __all__ = [
     "CommunitySqlAlchemyGuidelinePolicy",
     "GUIDELINE_REVISION_DIGEST_CONTRACT",
-    "guideline_revision_content_digest",
 ]

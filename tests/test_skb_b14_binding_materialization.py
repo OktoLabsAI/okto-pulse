@@ -13,9 +13,9 @@ from test_skb_b08_guideline_impact_persistence import _fresh_database
 from okto_pulse.community.adapters.sqlalchemy_database import (
     get_session_factory,
 )
+from okto_pulse.core.domain.guideline_lifecycle import guideline_revision_content_digest_v2
 from okto_pulse.community.adapters.sqlalchemy_guideline_policy import (
     CommunitySqlAlchemyGuidelinePolicy,
-    guideline_revision_content_digest,
 )
 from okto_pulse.community.adapters.sqlalchemy_models import (
     Board,
@@ -62,7 +62,7 @@ def _revision(
         semantic_version=f"{number}.0.0",
         title=title,
         content=content,
-        revision_digest=guideline_revision_content_digest(
+        revision_digest=guideline_revision_content_digest_v2(
             title=title,
             content=content,
             tags=(),

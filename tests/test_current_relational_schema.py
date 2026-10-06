@@ -66,6 +66,16 @@ async def test_fresh_schema_restart_preserves_data_and_identity(tmp_path, contra
             assert (await connection.exec_driver_sql("SELECT name FROM boards WHERE id='current'")).scalar() == "Preserve"
             assert (await connection.exec_driver_sql("PRAGMA application_id")).scalar() == APPLICATION_ID
             assert (await connection.exec_driver_sql("PRAGMA user_version")).scalar() == SCHEMA_VERSION
+            retired_tables = {
+                "policy_compliance_receipts", "policy_compliance_adopted_revisions",
+                "policy_compliance_findings", "policy_waivers", "policy_waiver_events",
+            }
+            actual_tables = set((await connection.exec_driver_sql(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )).scalars())
+            assert retired_tables.isdisjoint(actual_tables)
+            assert {"semantic_guideline_assessments_v2", "semantic_guideline_findings_v2",
+                    "semantic_guideline_waivers", "semantic_guideline_waiver_events"} <= actual_tables
             assert (await connection.exec_driver_sql(
                 "SELECT count(*) FROM sqlite_master WHERE type='table' "
                 "AND name='quality_assessment_lifecycle_stale_transitions'"
@@ -107,6 +117,11 @@ async def test_fresh_schema_restart_preserves_data_and_identity(tmp_path, contra
     "CREATE TABLE kg_cognitive_source_fingerprint_epoch_permits (revision_id TEXT PRIMARY KEY)",
     "CREATE TABLE kg_cognitive_source_fingerprint_epoch_receipts (epoch TEXT PRIMARY KEY)",
     "CREATE TABLE sprints (id TEXT PRIMARY KEY)",
+    "CREATE TABLE policy_compliance_receipts (receipt_id TEXT PRIMARY KEY)",
+    "CREATE TABLE policy_compliance_adopted_revisions (receipt_id TEXT PRIMARY KEY)",
+    "CREATE TABLE policy_compliance_findings (finding_id TEXT PRIMARY KEY)",
+    "CREATE TABLE policy_waivers (waiver_id TEXT PRIMARY KEY)",
+    "CREATE TABLE policy_waiver_events (event_id TEXT PRIMARY KEY)",
     "DROP INDEX ix_boards_realm_id",
     "DROP TRIGGER trg_global_discovery_source_revision_singleton_delete_guard",
     "DROP TRIGGER trg_guideline_impact_v2_binding_insert",

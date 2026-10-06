@@ -32,8 +32,6 @@ from .sqlalchemy_models import (
     Ideation,
     IdeationKnowledgeBase,
     IdeationQAItem,
-    PolicyWaiverEventRow,
-    PolicyWaiverRow,
     QAItem,
     Refinement,
     RefinementKnowledgeBase,
@@ -111,8 +109,6 @@ _PROTECTED_SEMANTIC_MODELS: tuple[type, ...] = (
     IdeationKnowledgeBase,
     RefinementKnowledgeBase,
     SpecKnowledgeBase,
-    PolicyWaiverRow,
-    PolicyWaiverEventRow,
 )
 
 
@@ -685,8 +681,6 @@ def _before_flush(
         Refinement,
         Spec,
         Card,
-        PolicyWaiverRow,
-        PolicyWaiverEventRow,
     )
     board_ids = {
         str(instance.board_id)

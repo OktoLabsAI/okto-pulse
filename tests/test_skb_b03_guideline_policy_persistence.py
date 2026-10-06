@@ -21,9 +21,9 @@ from okto_pulse.community.adapters.sqlalchemy_database import (
     get_session_factory,
 )
 from okto_pulse.core.ports.relational_runtime import configure_database_runtime
+from okto_pulse.core.domain.guideline_lifecycle import guideline_revision_content_digest_v2
 from okto_pulse.community.adapters.sqlalchemy_guideline_policy import (
     CommunitySqlAlchemyGuidelinePolicy,
-    guideline_revision_content_digest,
 )
 from okto_pulse.community.adapters.sqlalchemy_kg_governance import (
     CommunitySqlAlchemyKGGovernanceStore,
@@ -293,7 +293,8 @@ async def test_b03_binding_insert_guards_lineage_sequence_and_scope(
                 enforcement="advisory",
                 source_kind="native",
                 idempotency_key=key,
-                request_digest=guideline_revision_content_digest(
+                request_digest=guideline_revision_content_digest_v2(
+                    semantic_version="1.0.0",
                     title=key,
                     content=key,
                 ),
@@ -414,7 +415,7 @@ def _revision(
         semantic_version=f"{number}.0.0",
         title=title,
         content=content,
-        revision_digest=guideline_revision_content_digest(
+        revision_digest=guideline_revision_content_digest_v2(
             semantic_version=f"{number}.0.0",
             title=title,
             content=content,
@@ -704,7 +705,7 @@ async def test_b03_adapter_returns_materialized_replay_and_never_commits(
                     semantic_version="3.1.0",
                     title="Stale title 3",
                     content="Stale content 3",
-                    revision_digest=guideline_revision_content_digest(
+                    revision_digest=guideline_revision_content_digest_v2(
                         semantic_version="3.1.0",
                         title="Stale title 3",
                         content="Stale content 3",

@@ -1093,6 +1093,14 @@ def test_human_projection_removes_validation_storage_noise() -> None:
     assert "requirement_lint_validation_snapshots" not in requirement_tables
     assert "semantic_guideline_validation_scopes" not in policy_tables
     assert "policy_compliance_adopted_revisions" not in policy_tables
+    assert policy_tables == {
+        "semantic_guideline_assessments_v2", "guideline_revisions",
+        "semantic_guideline_metric_results_v2", "semantic_guideline_findings_v2",
+        "semantic_guideline_skips",
+    }
+    assert {query.table_name for query in spec_definitions["policy_waivers"].queries} == {
+        "semantic_guideline_waivers", "semantic_guideline_waiver_events",
+    }
     revision_query = next(
         query
         for query in spec_definitions["policy_compliance"].queries

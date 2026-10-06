@@ -59,11 +59,6 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     KnowledgeSnapshotRecord,
     KnowledgeTombstoneRecord,
     KuzuNodeRef,
-    PolicyComplianceAdoptedRevisionRow,
-    PolicyComplianceFindingRow,
-    PolicyComplianceReceiptRow,
-    PolicyWaiverEventRow,
-    PolicyWaiverRow,
     SemanticGuidelineAssessmentV2Row,
     SemanticGuidelineMetricResultV2Row,
     SemanticGuidelineFindingV2Row,
@@ -418,63 +413,6 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 )
             )
 
-            # SK-B policy history is append-only during ordinary lifecycle
-            # operations.  Right-to-erasure is the sole physical-delete path:
-            # remove receipt children before their exact binding/revision pins,
-            # then remove bindings and inline revision clusters while the
-            # scoped permit is still visible to the immutable guards.
-            receipt_ids = tuple(
-                str(value)
-                for value in (
-                    await context.execute(
-                        select(PolicyComplianceReceiptRow.receipt_id).where(
-                            PolicyComplianceReceiptRow.board_id == board_id
-                        )
-                    )
-                ).scalars()
-            )
-            waiver_event_ids = tuple(
-                str(value)
-                for value in (
-                    await context.execute(
-                        select(PolicyWaiverEventRow.event_id)
-                        .where(PolicyWaiverEventRow.board_id == board_id)
-                        .order_by(
-                            PolicyWaiverEventRow.waiver_id.asc(),
-                            PolicyWaiverEventRow.waiver_revision.desc(),
-                        )
-                    )
-                ).scalars()
-            )
-            for event_id in waiver_event_ids:
-                result = await context.execute(
-                    delete(PolicyWaiverEventRow).where(
-                        PolicyWaiverEventRow.event_id == event_id
-                    )
-                )
-                if int(result.rowcount or 0) != 1:
-                    raise BoardRelationalErasureError(
-                        "board_erasure_waiver_event_delete_mismatch:" + event_id
-                    )
-            await context.execute(
-                delete(PolicyWaiverRow).where(PolicyWaiverRow.board_id == board_id)
-            )
-            await context.execute(
-                delete(PolicyComplianceFindingRow).where(
-                    PolicyComplianceFindingRow.board_id == board_id
-                )
-            )
-            if receipt_ids:
-                await context.execute(
-                    delete(PolicyComplianceAdoptedRevisionRow).where(
-                        PolicyComplianceAdoptedRevisionRow.receipt_id.in_(receipt_ids)
-                    )
-                )
-            await context.execute(
-                delete(PolicyComplianceReceiptRow).where(
-                    PolicyComplianceReceiptRow.board_id == board_id
-                )
-            )
             # B08 has deferred binding -> operation proofs and reciprocal
             # operation -> binding lineage. Remove both ledgers inside this
             # permit-scoped transaction before bindings, then receipt evidence.
@@ -738,26 +676,6 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 GuidelineImpactReceiptRow,
                 GuidelineImpactReceiptRow.board_id == board_id,
             )
-            residuals[PolicyComplianceReceiptRow.__tablename__] = await _count_where(
-                context,
-                PolicyComplianceReceiptRow,
-                PolicyComplianceReceiptRow.board_id == board_id,
-            )
-            residuals[PolicyWaiverRow.__tablename__] = await _count_where(
-                context,
-                PolicyWaiverRow,
-                PolicyWaiverRow.board_id == board_id,
-            )
-            residuals[PolicyWaiverEventRow.__tablename__] = await _count_where(
-                context,
-                PolicyWaiverEventRow,
-                PolicyWaiverEventRow.board_id == board_id,
-            )
-            residuals[PolicyComplianceFindingRow.__tablename__] = await _count_where(
-                context,
-                PolicyComplianceFindingRow,
-                PolicyComplianceFindingRow.board_id == board_id,
-            )
             for model in (
                 ImplementationTargetSpecLinkRow,
                 ImplementationTargetEvidenceLinkRow,
@@ -769,15 +687,6 @@ class CommunitySqlAlchemyKGGovernanceStore:
                         model,
                         model.target_id.in_(code_traceability_target_ids),
                     )
-            residuals[PolicyComplianceAdoptedRevisionRow.__tablename__] = 0
-            if receipt_ids:
-                residuals[
-                    PolicyComplianceAdoptedRevisionRow.__tablename__
-                ] = await _count_where(
-                    context,
-                    PolicyComplianceAdoptedRevisionRow,
-                    PolicyComplianceAdoptedRevisionRow.receipt_id.in_(receipt_ids),
-                )
             if inline_guideline_ids:
                 residuals[GuidelineHeadRow.__tablename__] = await _count_where(
                     context,
