@@ -26,7 +26,6 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     Spec,
 )
 from okto_pulse.core.domain.guideline_compliance import (
-    PolicyEntityType,
     PolicyImpactPageCursor,
     PolicyProjection,
 )
@@ -45,6 +44,7 @@ from okto_pulse.core.domain.guideline_policy import (
     GuidelineMetricDirection,
     GuidelineRevision,
     GuidelineScope,
+    PolicyEntityType,
     PolicySubjectRef,
 )
 from okto_pulse.core.ports.guideline_policy import (
