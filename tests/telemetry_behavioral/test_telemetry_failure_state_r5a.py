@@ -1,7 +1,7 @@
 """R5A-D — failure-state instrumentation extension + structured transition logs.
 
 Proves a publish failure persists the actionable failure-state WITHOUT any secret
-(ts_1ec2207f), a legacy state.json migrates the failure-state with safe defaults
+(ts_1ec2207f), incompatible state without failure-state is refused
 (ts_35cbf75d), the new TOKEN_EXPIRED reason code is covered (no unhandled
 exception), and install_id_redacted is a redacted (non-raw) token. fr_10aaf74e /
 fr_cb9aa0f0 / tr_000d7562 / br_7a6224e3 / br_14606103.
@@ -10,6 +10,8 @@ fr_cb9aa0f0 / tr_000d7562 / br_7a6224e3 / br_14606103.
 from __future__ import annotations
 
 import json
+
+import pytest
 from pathlib import Path
 
 from okto_pulse.community.adapters.telemetry_sender import (
@@ -179,21 +181,14 @@ def test_token_expired_is_recoverable_not_unhandled(
     assert "install_token" not in _state(settings)
 
 
-# --- ts_35cbf75d: legacy state migrates failure-state with safe defaults -------
+# --- A previous publish requires its native failure-state block -----------
 
 
-def test_legacy_state_migrates_failure_state_with_safe_defaults() -> None:
-    legacy = {
-        "mode": "anonymous_beacon",
-        "last_send_at": "2026-06-10T00:00:00Z",
-    }  # no failure_state block
-    state = fs.read_failure_state(legacy)
-    assert state.status == fs.STATUS_UNKNOWN
-    assert state.last_success_at == "2026-06-10T00:00:00Z"  # seeded from legacy field
-    assert state.publish_enabled is True  # derived from the beacon mode
-    assert state.consent_state == fs.CONSENT_GRANTED
-    assert state.install_id_redacted is None  # safe default for the R5A extension
-    assert state.retry_count == 0 and state.reason_code is None
+def test_previous_send_without_failure_state_is_refused() -> None:
+    state = {"mode": "anonymous_beacon", "last_send_at": "2026-06-10T00:00:00Z"}
+    with pytest.raises(ValueError, match="telemetry_failure_state_required"):
+        fs.read_failure_state(state)
+    assert "failure_state" not in state
 
 
 def test_failure_state_transition_log_explains_last_send_without_secret(
@@ -230,9 +225,9 @@ def test_failure_state_transition_log_explains_last_send_without_secret(
     assert set(logged) <= set(fs.PUBLIC_FAILURE_STATE_FIELDS)
 
 
-def test_legacy_disabled_mode_migrates_blocked_consent_and_no_secret() -> None:
-    legacy = {"mode": "disabled"}
-    state = fs.read_failure_state(legacy)
+def test_initial_disabled_mode_has_blocked_consent_and_no_secret() -> None:
+    initial = {"mode": "disabled"}
+    state = fs.read_failure_state(initial)
     assert state.consent_state == fs.CONSENT_BLOCKED and state.publish_enabled is False
     # the public projection is allowlisted and never carries a secret field.
     public = state.to_public_dict()

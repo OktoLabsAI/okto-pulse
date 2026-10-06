@@ -34,7 +34,8 @@ def test_community_state_carrier_satisfies_full_dict_contract(tmp_path: Path) ->
         {
             "mode": "anonymous_beacon",
             "install_token": "SECRET-TOKEN",
-            "watermark": {"cursor": "w1"},
+            "watermark": "2026-06-01T10:01:00Z",
+            "watermark_event_id": "evt-1",
             "failure_state": {"status": "degraded"},
             "unknown_block": {"kept": True},
         },
@@ -43,7 +44,8 @@ def test_community_state_carrier_satisfies_full_dict_contract(tmp_path: Path) ->
     assert carrier.load_state(metrics_dir) == {
         "mode": "anonymous_beacon",
         "install_token": "SECRET-TOKEN",
-        "watermark": {"cursor": "w1"},
+        "watermark": "2026-06-01T10:01:00Z",
+        "watermark_event_id": "evt-1",
         "failure_state": {"status": "degraded"},
         "unknown_block": {"kept": True},
     }
@@ -61,7 +63,8 @@ def test_community_registration_wires_core_settings_without_truncating_state(
         "history": [{"mode": "disabled", "changed_at": f"t{i}"} for i in range(49)],
         "install_token": "SECRET-TOKEN",
         "install_token_expires_at": "2026-07-01T00:00:00Z",
-        "watermark": {"cursor": "w1"},
+        "watermark": "2026-06-01T10:01:00Z",
+        "watermark_event_id": "evt-1",
         "failure_state": {"status": "degraded", "retry_count": 2},
         "last_handshake_at": "2026-06-01T10:00:00Z",
         "last_send_at": "2026-06-01T10:01:00Z",
@@ -130,6 +133,8 @@ def test_summary_uses_full_carrier_snapshot_but_redacts_secret_keys(
             "install_token": "SECRET-TOKEN",
             "token_hash": "SECRET-HASH",
             "install_token_expires_at": "2026-07-01T00:00:00Z",
+            "watermark": None,
+            "watermark_event_id": None,
             "failure_state": {"status": "healthy", "publish_enabled": True},
             "last_handshake_at": "2026-06-01T10:00:00Z",
             "last_send_at": "2026-06-01T10:01:00Z",
@@ -152,6 +157,7 @@ def test_summary_uses_full_carrier_snapshot_but_redacts_secret_keys(
         "circuit_open_until": "2026-06-01T10:15:00Z",
         "schema_status": "current",
     }
+
 
 
 def test_resolve_telemetry_config_can_use_injected_community_snapshot(

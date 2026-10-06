@@ -780,6 +780,9 @@ def test_usage_sender_posts_compact_json_body_to_stay_below_waf_body_threshold(
     state = json.loads(state_path.read_text(encoding="utf-8"))
     state["install_token"] = "token"
     state["next_batch_seq"] = 7
+    state["failure_state"] = {"status": "ok"}
+    state["watermark"] = None
+    state["watermark_event_id"] = None
     state_path.write_text(json.dumps(state), encoding="utf-8")
     service.record_event(
         "http", {"route_template": "/api/v1/specs/{spec_id}", "duration_ms": 42}
@@ -834,6 +837,9 @@ def test_usage_sender_treats_cloudfront_waf_403_as_retryable_transport_failure(
     state = json.loads(state_path.read_text(encoding="utf-8"))
     state["install_token"] = "token"
     state["next_batch_seq"] = 8
+    state["failure_state"] = {"status": "ok"}
+    state["watermark"] = None
+    state["watermark_event_id"] = None
     state_path.write_text(json.dumps(state), encoding="utf-8")
     service.record_event("cli", {"command": "serve"})
 
