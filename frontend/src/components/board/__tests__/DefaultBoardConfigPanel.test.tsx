@@ -684,6 +684,8 @@ describe('DefaultBoardConfigPanel', () => {
         design_system_gate_mode: 'advisory',
       }),
     }));
+    expect(apiMock.createDefaultBoardConfigVersion.mock.calls[0][0].settings_payload)
+      .not.toHaveProperty('qa_require_role_separation');
   });
 
   it('converges a retired Off template policy to Advisory when saving any draft', async () => {

@@ -3191,7 +3191,6 @@ export interface BoardSettings {
   kg_query_timeout_ms?: number;
   allow_agent_self_answering?: boolean;
   require_full_context_for_critical_actions?: boolean;
-  qa_require_role_separation?: boolean;
   /**
    * Independent-review policy for task validation and sprint evaluation.
    * Missing legacy values resolve to `off`; newly created boards/templates

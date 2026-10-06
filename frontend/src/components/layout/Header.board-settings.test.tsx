@@ -526,6 +526,7 @@ describe('Header Board settings resource automation', () => {
         }),
       }),
     );
+    expect(apiMock.updateBoard.mock.calls[0][1].settings).not.toHaveProperty('qa_require_role_separation');
   });
 
   it('persists full-context critical action enforcement without blocking an empty board warning', async () => {
