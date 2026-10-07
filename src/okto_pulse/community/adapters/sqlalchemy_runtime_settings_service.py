@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import logging
 import json
-import os
-import warnings
 from typing import Any
 
 from sqlalchemy import select
@@ -60,16 +58,8 @@ DECAY_TICK_KEYS: tuple[str, ...] = (
     "kg_decay_tick_max_age_days",
 )
 
-# Allowlisted legacy configuration read at startup; no public writer.
+# Allowlisted deployment configuration read at startup; no public writer.
 RUNTIME_KEYS: tuple[str, ...] = GRAPH_DB_KEYS + EVENT_QUEUE_KEYS + DECAY_TICK_KEYS
-
-# Legacy env var name → canonical settings key. Read once at boot in
-# apply_persisted_settings_to_core_settings; emits DeprecationWarning if used.
-# Removal scheduled for v0.5.0.
-_LEGACY_ENV_ALIASES: tuple[tuple[str, str], ...] = (
-    ("KG_MAX_QUEUE_DEPTH", "kg_queue_alert_threshold"),
-)
-
 
 def _validate_runtime_setting_value(key: str, value: Any) -> Any:
     """Validate persisted deployment values before startup hydration."""
@@ -129,56 +119,6 @@ async def _load_persisted_rows(db: AsyncSession) -> dict[str, Any]:
         return {}
 
 
-def _resolve_legacy_env_aliases() -> dict[str, int]:
-    """Resolve deprecated env vars into canonical settings keys.
-
-    Spec bdcda842 (TR12): KG_MAX_QUEUE_DEPTH was the admission-gate threshold
-    in v0.2.0; it is now an alerting-only threshold renamed to
-    kg_queue_alert_threshold. We honour the legacy env var until v0.5.0 and
-    emit a DeprecationWarning + structured log when it fires.
-
-    Only applies when the legacy env var is set AND the new env var is NOT
-    set (so an explicit new-style override always wins).
-    """
-    resolved: dict[str, int] = {}
-    for legacy_env, canonical_key in _LEGACY_ENV_ALIASES:
-        raw = os.environ.get(legacy_env)
-        if not raw:
-            continue
-        canonical_env = canonical_key.upper()
-        if os.environ.get(canonical_env):
-            continue
-        try:
-            resolved[canonical_key] = int(raw)
-        except ValueError:
-            logger.warning(
-                "settings.legacy_env_invalid name=%s value=%r",
-                legacy_env,
-                raw,
-            )
-            continue
-        msg = (
-            f"Env var {legacy_env} is deprecated and will be removed in "
-            f"v0.5.0; use {canonical_env} instead. Mapped value={raw} into "
-            f"{canonical_key}."
-        )
-        warnings.warn(msg, DeprecationWarning, stacklevel=2)
-        logger.warning(
-            "settings.legacy_env_used legacy=%s canonical=%s value=%d",
-            legacy_env,
-            canonical_key,
-            resolved[canonical_key],
-            extra={
-                "event": "settings.legacy_env_used",
-                "legacy_env": legacy_env,
-                "canonical_key": canonical_key,
-                "value": resolved[canonical_key],
-                "version_removed": "0.5.0",
-            },
-        )
-    return resolved
-
-
 async def apply_persisted_settings_to_core_settings() -> dict[str, Any]:
     """Read the ``app_settings`` table and override :class:`CoreSettings`.
 
@@ -190,20 +130,12 @@ async def apply_persisted_settings_to_core_settings() -> dict[str, Any]:
     async with factory() as db:
         persisted = await _load_persisted_rows(db)
 
-    # Resolve legacy env aliases (e.g. KG_MAX_QUEUE_DEPTH → kg_queue_alert_threshold).
-    legacy = _resolve_legacy_env_aliases()
-
-    # Build the merged view (persisted overrides defaults; legacy env applies
-    # only when the canonical key wasn't persisted nor set via canonical env;
-    # env is handled by connection_pool at read-time, not here — CoreSettings
-    # shouldn't know about env-var overrides).
+    # Persisted native deployment values override the configured defaults.
     base = get_settings()
     merged: dict[str, Any] = base.model_dump()
     for key in RUNTIME_KEYS:
         if key in persisted:
             merged[key] = persisted[key]
-        elif key in legacy:
-            merged[key] = legacy[key]
 
     new_settings = type(base)(**merged)
     configure_settings(new_settings)

@@ -440,7 +440,7 @@ def ensure_current_grafx_global_schema(
     manifest: GrafxGlobalSchemaManifest = PULSE_GRAFX_GLOBAL_SCHEMA,
     revalidate_fence: MutationFence | None = None,
 ) -> GrafxGlobalBootstrapResult:
-    """Create missing Global objects, then activate the exact digest source index.
+    """Create an empty Global catalog, then activate the exact digest source index.
 
     The physical index has its own fenced transaction after durable schema
     creation. Existing databases receive it even when their schema is complete.
@@ -448,6 +448,16 @@ def ensure_current_grafx_global_schema(
 
     try:
         preflight = _preflight(database, manifest)
+        catalog = database.catalog.catalog
+        if not preflight.complete and (catalog.tables() or catalog.spaces()):
+            # Native logical schema creation commits atomically. A nonempty
+            # partial catalog is not an interrupted native index installation.
+            raise _failure(
+                "incomplete_existing_schema",
+                operation=_BOOTSTRAP_OPERATION,
+                spaces=tuple(space.name for space in preflight.missing_spaces),
+                tables=tuple(table.name for table in preflight.missing_tables),
+            )
         validate_grafx_global_digest_source_index(database)
         if preflight.complete:
             changed = ensure_grafx_global_digest_source_index(
