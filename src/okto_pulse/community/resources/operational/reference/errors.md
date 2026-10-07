@@ -34,7 +34,6 @@ is created.
 
 | Error code | Cause | Fix |
 |---|---|---|
-| `conflicting_propagation_parameters` | `okto_pulse_derive_spec_from_refinement` received legacy `kb_ids` together with the v2 `knowledge_propagation` envelope | Choose one contract. Omit the envelope to keep v1, or remove `kb_ids` and send the complete v2 envelope. |
 | `knowledge_propagation_creation_expected_revision_invalid` | A spec/card creation envelope used `expected_revision` other than omitted/`0` | Omit it or pass `0`. Creation has no prior mutable scope. |
 | `knowledge_propagation_revision_conflict` | Replace/drop/refresh used a stale `expected_revision`; `details.current_revision` reports the current value | Call `okto_pulse_get_card_knowledge_propagation`, reconsider the desired mutation against the returned state, then submit the new intent with that revision and a new idempotency key. Do not blindly overwrite. |
 | `knowledge_propagation_idempotency_conflict` | The same idempotency key was reused with a different actor, parent, operation, selection, linkage, or semantic create payload | Generate a new key for the new intent. Reuse the old key only for an exact retry. |

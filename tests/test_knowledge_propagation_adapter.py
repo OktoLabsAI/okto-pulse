@@ -6,6 +6,8 @@ from datetime import datetime, timedelta, timezone
 import json
 
 import pytest
+
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -13,7 +15,8 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from okto_pulse.community.adapters.sqlalchemy_base import Base
+from okto_pulse.community.adapters.current_relational_schema import current_schema_contract, initialize_current_schema
+from okto_pulse.core.domain.realm import RealmScope
 from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
     CommunitySemanticSession,
 )
@@ -93,9 +96,9 @@ async def propagation_store(tmp_path):
         class_=AsyncSession,
         sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
+        info={"realm_scope": RealmScope.local()},
     )
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    await initialize_current_schema(engine, current_schema_contract())
     try:
         async with sessions() as session:
             session.add(
@@ -103,10 +106,11 @@ async def propagation_store(tmp_path):
                     id=BOARD_ID,
                     name="Selective propagation",
                     owner_id="owner",
+                    realm_id="local",
                 )
             )
             session.add(
-                Spec(
+                Spec(architecture_adoption=ArchitectureAdoptionScope(board_id=BOARD_ID, spec_id=SPEC_ID, adopted_in_edition=1, actor_id=ACTOR_ID, inherited_resource_ids=()).model_dump(mode="json"),
                     id=SPEC_ID,
                     board_id=BOARD_ID,
                     title="Target spec",
@@ -453,7 +457,7 @@ async def test_stage_mutation_revalidates_polymorphic_target_with_uow_autoflush(
     )
     async with sessions() as session:
         session.add(
-            Spec(
+            Spec(architecture_adoption=ArchitectureAdoptionScope(board_id=BOARD_ID, spec_id=new_target.target_id, adopted_in_edition=1, actor_id=ACTOR_ID, inherited_resource_ids=()).model_dump(mode="json"),
                 id=new_target.target_id,
                 board_id=BOARD_ID,
                 title="Target staged in caller UoW",
@@ -475,7 +479,7 @@ async def test_stage_mutation_revalidates_polymorphic_target_with_uow_autoflush(
     deleted_target = _target(target_id="spec-target-deleted")
     async with sessions() as session:
         session.add(
-            Spec(
+            Spec(architecture_adoption=ArchitectureAdoptionScope(board_id=BOARD_ID, spec_id=deleted_target.target_id, adopted_in_edition=1, actor_id=ACTOR_ID, inherited_resource_ids=()).model_dump(mode="json"),
                 id=deleted_target.target_id,
                 board_id=BOARD_ID,
                 title="Target deleted before stage",
@@ -626,14 +630,14 @@ async def test_source_lookup_is_guarded_by_immediate_parent_for_spec_and_card(
                     title="Foreign",
                     created_by=ACTOR_ID,
                 ),
-                Spec(
+                Spec(architecture_adoption=ArchitectureAdoptionScope(board_id=BOARD_ID, spec_id="spec-parented", adopted_in_edition=1, actor_id=ACTOR_ID, inherited_resource_ids=()).model_dump(mode="json"),
                     id="spec-parented",
                     board_id=BOARD_ID,
                     ideation_id="ideation-parent",
                     title="Parented target",
                     created_by=ACTOR_ID,
                 ),
-                Spec(
+                Spec(architecture_adoption=ArchitectureAdoptionScope(board_id=BOARD_ID, spec_id="spec-other", adopted_in_edition=1, actor_id=ACTOR_ID, inherited_resource_ids=()).model_dump(mode="json"),
                     id="spec-other",
                     board_id=BOARD_ID,
                     title="Other source owner",
@@ -1148,7 +1152,7 @@ async def test_current_assignment_tracks_one_linear_root_leaf_and_rejects_branch
 
     async with sessions() as session:
         session.add(
-            Spec(
+            Spec(architecture_adoption=ArchitectureAdoptionScope(board_id=BOARD_ID, spec_id="spec-obsolete-physical-token", adopted_in_edition=1, actor_id=ACTOR_ID, inherited_resource_ids=()).model_dump(mode="json"),
                 id="spec-obsolete-physical-token",
                 board_id=BOARD_ID,
                 ideation_id="ideation-lineage",
@@ -1269,14 +1273,14 @@ async def test_card_selects_only_effective_transitive_spec_v2_knowledge(
                     content="must remain unavailable",
                     created_by=ACTOR_ID,
                 ),
-                Spec(
+                Spec(architecture_adoption=ArchitectureAdoptionScope(board_id=BOARD_ID, spec_id="spec-snapshot-parent", adopted_in_edition=1, actor_id=ACTOR_ID, inherited_resource_ids=()).model_dump(mode="json"),
                     id="spec-snapshot-parent",
                     board_id=BOARD_ID,
                     ideation_id="ideation-transitive",
                     title="Snapshot parent",
                     created_by=ACTOR_ID,
                 ),
-                Spec(
+                Spec(architecture_adoption=ArchitectureAdoptionScope(board_id=BOARD_ID, spec_id="spec-empty-parent", adopted_in_edition=1, actor_id=ACTOR_ID, inherited_resource_ids=()).model_dump(mode="json"),
                     id="spec-empty-parent",
                     board_id=BOARD_ID,
                     ideation_id="ideation-transitive",

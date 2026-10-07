@@ -18,6 +18,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -333,7 +335,7 @@ async def _seed_spec_cards(
             )
         )
         session.add(
-            Spec(
+            Spec(architecture_adoption=ArchitectureAdoptionScope(board_id=BOARD_ID, spec_id=spec_id, adopted_in_edition=1, actor_id=ACTOR_ID, inherited_resource_ids=()).model_dump(mode="json"),
                 id=spec_id,
                 board_id=BOARD_ID,
                 title="Spec B source spec",
@@ -777,7 +779,7 @@ async def test_ts_f9c3c8e0_drop_survives_reconcilers_and_source_delete(
     )
     async with runtime.sessions() as session:
         session.add(
-            Spec(
+            Spec(architecture_adoption=ArchitectureAdoptionScope(board_id=BOARD_ID, spec_id=relink_spec_id, adopted_in_edition=1, actor_id=ACTOR_ID, inherited_resource_ids=()).model_dump(mode="json"),
                 id=relink_spec_id,
                 board_id=BOARD_ID,
                 title="Spec B relink destination",
