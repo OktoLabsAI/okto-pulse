@@ -16,10 +16,21 @@ from okto_pulse.community.adapters.routed_board_graph_facades import CommunityRo
 from okto_pulse.core.kg.interfaces.graph_errors import GraphQueryTimeout, GraphUnavailable
 from okto_pulse.core.ports.bug_clusters import BugClustersQuery, ClusterBugFact, BugClusterGraphFacts, BugClusterAssociation
 from okto_pulse.core.services.bug_clusters import project_bug_clusters
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
 import test_grafx_graph_store as native_store
 
 real_store = native_store.real_store
 NOW = datetime(2026, 10, 1, tzinfo=timezone.utc)
+
+
+def _spec(*, id, board_id, title, created_by):
+    return dict(
+        id=id, board_id=board_id, title=title, created_by=created_by,
+        architecture_adoption=ArchitectureAdoptionScope(
+            board_id=board_id, spec_id=id, adopted_in_edition=1,
+            actor_id=created_by, inherited_resource_ids=(),
+        ).model_dump(mode='json'),
+    )
 
 
 def query(group_by='severity'):
@@ -99,7 +110,7 @@ async def test_global_denominator_not_replaced_by_bounded_inventory(source):
 @pytest.mark.asyncio
 async def test_spec_grouping_follows_origin_card_not_regression_spec(source):
     session, _ = source
-    await session.execute(Spec.__table__.insert(), [dict(id=key, board_id='board', title=key, created_by='actor')
+    await session.execute(Spec.__table__.insert(), [_spec(id=key, board_id='board', title=key, created_by='actor')
         for key in ('origin-spec', 'regression-spec')])
     await seed(session, {'id': 'origin', 'card_type': 'normal', 'spec_id': 'origin-spec'},
         {'id': 'one', 'spec_id': 'regression-spec', 'origin_task_id': 'origin'})
@@ -154,7 +165,7 @@ async def test_invalid_parent_is_not_exposed_as_an_authorized_spec(source):
 @pytest.mark.asyncio
 async def test_shared_graph_endpoint_does_not_grant_access_to_a_foreign_spec(source):
     session, _ = source
-    await session.execute(Spec.__table__.insert(), dict(id='foreign', board_id='other-board',
+    await session.execute(Spec.__table__.insert(), _spec(id='foreign', board_id='other-board',
         title='Confidential title', created_by='another-owner'))
     await seed(session, {'id': 'one'})
     class Reader:
@@ -223,7 +234,7 @@ async def test_sql_and_native_graph_keep_missing_bug_in_denominator(source, real
     session, _ = source
     store, database, _, _ = real_store
     board = native_store.BOARD_ID
-    await session.execute(Spec.__table__.insert(), dict(id='integrated-spec', board_id=board,
+    await session.execute(Spec.__table__.insert(), _spec(id='integrated-spec', board_id=board,
         title='Source Spec', created_by='actor'))
     await seed(session, {'id': 'mixed-origin', 'board_id': board, 'card_type': 'normal', 'spec_id': 'integrated-spec'},
         {'id': 'mixed-one', 'board_id': board, 'origin_task_id': 'mixed-origin'},
@@ -264,7 +275,7 @@ async def test_kg59_distinct_causes_share_only_an_origin_association(source, rea
     session, _ = source
     store, database, _, _ = real_store
     board = native_store.BOARD_ID
-    await session.execute(Spec.__table__.insert(), dict(id='kg59-spec', board_id=board,
+    await session.execute(Spec.__table__.insert(), _spec(id='kg59-spec', board_id=board,
         title='Same affected contract', created_by='actor'))
     await seed(session, {'id': 'kg59-origin', 'board_id': board, 'card_type': 'normal', 'spec_id': 'kg59-spec'})
     diagnoses = {'kg59-one': 'Root cause: expired upstream certificate.',

@@ -38,6 +38,7 @@ from okto_pulse.community.api.columns_pagination import (
     KANBAN_STATUSES,
 )
 from okto_pulse.core.domain.realm import RealmScope
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
 from okto_pulse.core.ports.application_persistence import (
     ApplicationFilter,
     ApplicationQuery,
@@ -124,14 +125,19 @@ async def _seed(engine: AsyncEngine) -> None:
             )
         # Specs for the lookup shape (high mass for realistic planning).
         spec_rows = [
-            f"('sp{i:04d}', 'b1', 'Spec', 'draft', 'u', 1)" for i in range(300)
+            dict(id=f"sp{i:04d}", architecture_adoption=ArchitectureAdoptionScope(
+                board_id="b1", spec_id=f"sp{i:04d}", adopted_in_edition=1,
+                actor_id="u", inherited_resource_ids=(),
+            ).model_dump_json()) for i in range(300)
         ]
         for start in range(0, len(spec_rows), 150):
             await conn.execute(
                 text(
                     "INSERT INTO specs (id, board_id, title, status, created_by, "
-                    "version) VALUES " + ", ".join(spec_rows[start : start + 150])
-                )
+                    "version, architecture_adoption) VALUES "
+                    "(:id, 'b1', 'Spec', 'draft', 'u', 1, :architecture_adoption)"
+                ),
+                spec_rows[start : start + 150],
             )
         await conn.execute(text("ANALYZE"))
 

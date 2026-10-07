@@ -5,9 +5,11 @@ signed Bug evidence, or final scoped supersedence materialization proof.
 """
 import asyncio
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 from sqlalchemy import update
+from sqlalchemy.exc import IntegrityError
 
 from okto_pulse.community.adapters.sqlalchemy_models import KGCognitiveSourceRevision
 from okto_pulse.core.application.learning_supersedence import (
@@ -47,11 +49,12 @@ async def capture_runtime(base_capture_runtime):
 
 @pytest.fixture
 def source_records(monkeypatch):
-    from conftest import CORE_REPO
+    from okto_pulse.core.application.boundary.repository_checkout import resolve_repository_checkout
+    core = resolve_repository_checkout('core', anchor_repo=Path(__file__).resolve().parents[1])
     import importlib.util
     # Explicit filename loading avoids the same-named Community test module.
-    monkeypatch.syspath_prepend(str(CORE_REPO / 'tests'))
-    spec = importlib.util.spec_from_file_location('core_scope_fixture', CORE_REPO / 'tests/test_learning_scope_history.py')
+    monkeypatch.syspath_prepend(str(core.repo_root / 'tests'))
+    spec = importlib.util.spec_from_file_location('core_scope_fixture', core.repo_root / 'tests/test_learning_scope_history.py')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module.records
@@ -174,17 +177,33 @@ async def test_later_literal_cannot_hide_a_historical_replacement_claim(store, s
             await read_learning_scope_replacements(session, adapter, head=lost)
 
 
-async def test_corrupt_unselected_history_is_not_hidden_by_birth_selection(store):
+async def test_corrupt_unselected_history_is_not_hidden_by_birth_selection(store, monkeypatch):
     adapter, factory = store
     await adapter.append(_record('history-corrupt'))
     revision = await adapter.append(_record('history-corrupt', title='later'))
+    original_history = await adapter.enumerate(BOARD)
     async with factory() as session:
-        await session.execute(update(KGCognitiveSourceRevision).where(KGCognitiveSourceRevision.id == revision)
-            .values(payload={'content': 'corrupt'}))
-        await session.commit()
-    async with factory() as session:
-        with pytest.raises(CognitiveSourceConflict, match='fingerprint_mismatch'):
-            await adapter.read_history_in_context(session, board_id=BOARD, node_id='history-corrupt', generation=0)
+        with pytest.raises(IntegrityError, match='kg_cognitive_source_immutable'):
+            await session.execute(update(KGCognitiveSourceRevision).where(KGCognitiveSourceRevision.id == revision)
+                .values(payload={'content': 'corrupt'}))
+        await session.rollback()
+    assert await adapter.enumerate(BOARD) == original_history
+
+    # Inject a corrupt read independently of the current immutable-storage guard.
+    from okto_pulse.community.adapters import sqlalchemy_kg_cognitive_source as module
+    original = module._load_revision_rows
+
+    async def corrupt(*args, **kwargs):
+        rows = await original(*args, **kwargs)
+        next(row for row in rows if row.id == revision).payload = {'content': 'corrupt'}
+        return rows
+
+    with monkeypatch.context() as patch:
+        patch.setattr(module, '_load_revision_rows', corrupt)
+        async with factory() as session:
+            with pytest.raises(CognitiveSourceConflict, match='fingerprint_mismatch'):
+                await adapter.read_history_in_context(session, board_id=BOARD, node_id='history-corrupt', generation=0)
+    assert await adapter.enumerate(BOARD) == original_history
 
 
 @pytest.mark.parametrize('covered,kind', [(True, 'reuse'), (True, 'supersede'), (False, 'reuse')])

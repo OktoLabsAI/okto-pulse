@@ -5,6 +5,7 @@ suite qualifies the governed materializer, not full lifecycle admission.
 """
 
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -23,8 +24,9 @@ independent_gates = _independent_gates
 
 @pytest.fixture
 async def graph_runtime(runtime, independent_gates, monkeypatch, tmp_path):
-    from conftest import CORE_REPO
-    monkeypatch.syspath_prepend(str(CORE_REPO / 'tests'))
+    from okto_pulse.core.application.boundary.repository_checkout import resolve_repository_checkout
+    core = resolve_repository_checkout('core', anchor_repo=Path(__file__).resolve().parents[1])
+    monkeypatch.syspath_prepend(str(core.repo_root / 'tests'))
     monkeypatch.setenv('OKTO_PULSE_DATA_DIR', str(tmp_path))
     monkeypatch.setenv('KG_BASE_DIR', str(tmp_path / 'kg'))
     monkeypatch.setenv('KG_CLEANUP_ENABLED', 'false')
