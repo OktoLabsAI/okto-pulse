@@ -76,10 +76,10 @@ EXPECTED_PULSE_VERSION = tomllib.loads(
 )["project"]["version"]
 assert tomllib.loads((CORE_REPO / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"] == EXPECTED_PULSE_VERSION
 BOARD_CENSUS_SIZE = 1_500
-EXPECTED_TOOL_COUNT = 283
-EXPECTED_CANONICAL_TOOL_COUNT = 283
+EXPECTED_TOOL_COUNT = 282
+EXPECTED_CANONICAL_TOOL_COUNT = 282
 EXPECTED_TOOL_INVENTORY_SHA256 = (
-    "2b21c1a9dd7e9a3c7a9633333b1ac1c1fe664243d451dd1626ae41be7cd8c484"
+    "56f558d610f1e7acc3794d0734ad850e1db6e2a652b83f06d89b5f8fcfb11c32"
 )
 EXPECTED_TOOL_ALIASES = {}
 
@@ -756,8 +756,8 @@ print(json.dumps({"api_key_hash": key_hash, "api_key_marker": credential_marker(
         connection.execute(
             "INSERT INTO agents "
             "(id, name, description, objective, api_key, api_key_hash, "
-            " is_active, permissions, created_by) "
-            "VALUES (?, ?, ?, ?, ?, ?, 1, NULL, ?)",
+            " is_active, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, 1, ?)",
             (
                 peer_actor_id,
                 "Installed E2E Peer Global Admin",
@@ -1072,9 +1072,9 @@ def inspect(binding):
 
 board_tables = inspect(board)
 global_tables = inspect(global_route)
-assert PULSE_GRAFX_SCHEMA_MANIFEST.schema_version == "0.7.0"
+assert PULSE_GRAFX_SCHEMA_MANIFEST.schema_version == "0.8.0"
 assert board_tables == sorted(table.name for table in PULSE_GRAFX_SCHEMA_MANIFEST.tables)
-assert len(board_tables) == 94, board_tables
+assert len(board_tables) == 97, board_tables
 assert {"BoardMeta", "Entity", "Decision"} <= set(board_tables)
 assert {"violates__Bug__Requirement", "violates__Bug__Criterion"} <= set(board_tables)
 assert len(global_tables) == 11, global_tables
@@ -1125,7 +1125,7 @@ print(json.dumps({
     assert report["backends"] == {"board": "grafx", "global": "grafx"}
     assert report["grafx_version"] == EXPECTED_GRAFX_VERSION
     assert report["grafx_direct_url"] == grafx_wheel.as_uri()
-    assert report["board_table_count"] == 94
+    assert report["board_table_count"] == 97
     assert report["global_table_count"] == 11
     assert _sha256(core_wheel) == core_wheel_sha256
     assert _sha256(community_wheel) == community_wheel_sha256
