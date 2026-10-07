@@ -1,6 +1,7 @@
 """Fresh format, restart, and refusal before persistent SQLite effects."""
 
 import sqlite3
+import json
 from contextlib import closing
 from unittest.mock import AsyncMock
 
@@ -20,7 +21,7 @@ from okto_pulse.community.adapters.relational_schema_lifecycle import (
 from okto_pulse.community.adapters.sqlalchemy_database import (
     CommunityDatabaseRuntime, build_community_engine, build_community_session_factory, install_community_sqlite_pragmas,
 )
-from okto_pulse.community.adapters.sqlalchemy_models import Base, Board, DiscoveryIntent
+from okto_pulse.community.adapters.sqlalchemy_models import Base, Board, DiscoveryIntent, PermissionPreset
 
 
 @pytest.fixture(scope="module")
@@ -74,6 +75,16 @@ async def test_fresh_schema_restart_preserves_data_and_identity(tmp_path, contra
                 "SELECT name FROM sqlite_master WHERE type='table'"
             )).scalars())
             assert retired_tables.isdisjoint(actual_tables)
+            assert not any("sprint" in name.lower() for name in actual_tables)
+            for table_name in actual_tables:
+                column_names = (await connection.exec_driver_sql(
+                    "SELECT name FROM pragma_table_info(?)", (table_name,)
+                )).scalars().all()
+                assert not any("sprint" in name.lower() for name in column_names), table_name
+            assert not any("sprint" in mapper.class_.__name__.lower()
+                           for mapper in Base.registry.mappers)
+            assert not any("sprint" in fk.target_fullname.lower()
+                           for table in Base.metadata.tables.values() for fk in table.foreign_keys)
             assert {"semantic_guideline_assessments_v2", "semantic_guideline_findings_v2",
                     "semantic_guideline_waivers", "semantic_guideline_waiver_events"} <= actual_tables
             for table in (
@@ -289,6 +300,10 @@ async def test_current_catalog_seed_is_repeatable_and_preserves_user_choices(tmp
         await initialize_current_schema(engine, contract)
         await current_data_seeds.seed_current_catalogs()
         async with sessions() as session:
+            presets = (await session.scalars(select(PermissionPreset))).all()
+            assert presets
+            preset_snapshot = {row.id: (row.name, row.flags) for row in presets}
+            assert all("sprint" not in json.dumps([row.name, row.flags]).lower() for row in presets)
             rows = list((await session.execute(select(DiscoveryIntent))).scalars())
             ids = {row.name: row.id for row in rows}
             assert ids
@@ -300,6 +315,8 @@ async def test_current_catalog_seed_is_repeatable_and_preserves_user_choices(tmp
             await session.commit()
         await current_data_seeds.seed_current_catalogs()
         async with sessions() as session:
+            presets = (await session.scalars(select(PermissionPreset))).all()
+            assert {row.id: (row.name, row.flags) for row in presets} == preset_snapshot
             rows = list((await session.execute(select(DiscoveryIntent))).scalars())
             assert {row.name: row.id for row in rows if row.is_seed} == ids
             selected = next(row for row in rows if row.id == changed_id)
