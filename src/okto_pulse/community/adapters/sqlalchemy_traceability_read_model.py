@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import heapq
+from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import inspect, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 
@@ -40,7 +42,9 @@ from okto_pulse.core.domain.knowledge_fingerprint import (
     resolve_knowledge_content_sha256,
 )
 from okto_pulse.core.services.reference_resolution import resolve_task_context_references
-from okto_pulse.core.services.traceability import project_code_traceability_report
+from okto_pulse.core.services.traceability import (
+    project_code_traceability_report, resolve_traceability_knowledge,
+)
 
 
 _CODE_TRACEABILITY_REPORT_CONTEXT_LIMIT = 2_000
@@ -62,6 +66,46 @@ class _LegacyTraceabilityReadError(Exception):
         self.code = code
         self.message = message
         self.status_code = status_code
+
+
+@dataclass(frozen=True)
+class _KnowledgeResourceView:
+    """Read-only report view; never assign projected collections to ORM rows."""
+    record: Any
+    knowledge_bases: list[dict[str, Any]]
+    cards: tuple[Any, ...] = ()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.record, name)
+
+
+def _snapshot_report_record(record: Any) -> SimpleNamespace:
+    # Effective-resource readers may refresh the same ORM identity using
+    # different relationship loading options. Capture the already-loaded report
+    # fields first, without attaching projections to managed relationships.
+    values = {
+        field.key: getattr(record, field.key)
+        for field in inspect(record).mapper.column_attrs
+    }
+    values["knowledge_bases"] = tuple(
+        SimpleNamespace(**{
+            field.key: getattr(kb, field.key)
+            for field in inspect(kb).mapper.column_attrs
+        })
+        for kb in (getattr(record, "knowledge_bases", None) or [])
+    )
+    values["architecture_designs"] = tuple(
+        SimpleNamespace(**{
+            key: getattr(design, key)
+            for key in (
+                "id", "title", "parent_type", "ideation_id", "refinement_id",
+                "spec_id", "card_id", "version", "source_design_id",
+                "source_ref", "source_version",
+            )
+        })
+        for design in (record.architecture_designs or [])
+    )
+    return SimpleNamespace(**values)
 
 
 def _enum_value(value: Any) -> Any:
@@ -88,6 +132,7 @@ def _serialize_knowledge_base(kb: Any, *, include_content: bool = False) -> dict
             "source_kb_id",
             "root_source_kb_id",
             "immediate_parent_kb_id",
+            "knowledge_assignment",
         ):
             if kb.get(attr) not in (None, ""):
                 data[attr] = kb[attr]
@@ -417,6 +462,38 @@ async def build_traceability_report(
             filters.append(Spec.refinement_id.in_(refinement_ids))
         spec_query = spec_query.where(or_(*filters))
     specs = list((await db.execute(spec_query)).scalars().all())
+
+    if len(refinements) + len(specs) + sum(len(spec.cards or []) for spec in specs) > _CODE_TRACEABILITY_REPORT_CONTEXT_LIMIT:
+        raise TraceabilityReadError(
+            "code_traceability_report_context_limit_exceeded",
+            "Code Traceability report scope exceeds the bounded context limit.",
+            status_code=409,
+        )
+    report_records = [
+        (_snapshot_report_record(spec), tuple(
+            _snapshot_report_record(card) for card in (spec.cards or [])
+        ))
+        for spec in specs
+    ]
+    ideations = [_snapshot_report_record(item) for item in ideations]
+    refinements = [_snapshot_report_record(item) for item in refinements]
+    # Replace physical-only Knowledge reads with the public native projection.
+    projected_specs = []
+    for spec, cards in report_records:
+        projected_cards = tuple([
+            _KnowledgeResourceView(
+                card, await resolve_traceability_knowledge(
+                    db, board_id, entity_type="card", entity_id=str(card.id),
+                ),
+            )
+            for card in cards
+        ])
+        projected_specs.append(_KnowledgeResourceView(
+            spec, await resolve_traceability_knowledge(
+                db, board_id, entity_type="spec", entity_id=str(spec.id),
+            ), cards=projected_cards,
+        ))
+    specs = projected_specs
 
     # Dependency truth is relational and board-scoped.  Load every active
     # outgoing edge for the selected Specs in one bounded statement, then

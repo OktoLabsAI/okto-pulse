@@ -22,6 +22,12 @@ async def test_report_and_lineage_preserve_work_without_sprint_nodes(tmp_path, i
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'lineage.db'}")
     factory = async_sessionmaker(engine, expire_on_commit=False,
         sync_session_class=CommunitySemanticSession, info={"realm_scope": RealmScope.local()})
+    from okto_pulse.community.adapters.sqlalchemy_knowledge_propagation import CommunitySqlAlchemyKnowledgePropagationStore
+    from okto_pulse.community.adapters.sqlalchemy_resource_gate_service import CommunitySqlAlchemyResourceGateAdapter
+    from okto_pulse.core.ports.knowledge_propagation import register_knowledge_propagation_port
+    from okto_pulse.core.ports.relational_services import register_resource_gate_adapter_factory
+    register_knowledge_propagation_port(CommunitySqlAlchemyKnowledgePropagationStore(factory))
+    register_resource_gate_adapter_factory(CommunitySqlAlchemyResourceGateAdapter)
     statements = []
 
     def capture(_conn, _cursor, statement, _parameters, _context, _executemany):

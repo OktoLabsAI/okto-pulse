@@ -296,6 +296,7 @@ async def _seed_refinement_sources(
                 decisions=refinement.decisions,
                 labels=refinement.labels,
                 delivery_context=refinement.delivery_context,
+                code_evidence_manifest=[],
                 source_context_manifest=source_context.as_dict(),
                 source_context_sha256=source_context.payload_sha256,
                 created_by=ACTOR_ID,
@@ -537,6 +538,21 @@ async def test_ts_9e54d02f_tri_state_v2_end_to_end(
     assert selected["tombstones"] == []
     assert len(selected["ledgers"]) == 1
     assert roots[2] not in {item.root_id for item in selected["assignments"]}
+
+    from okto_pulse.community.adapters.sqlalchemy_traceability_read_model import build_traceability_report
+    async with runtime.sessions() as session:
+        report = await build_traceability_report(session, BOARD_ID, include_artifacts=True)
+        compact = await build_traceability_report(session, BOARD_ID, include_artifacts=False)
+        assert not session.dirty
+    reported = {item["id"]: item for item in report["ideations"][0]["refinements"][0]["specs"]}
+    compact_specs = {item["id"]: item for item in compact["ideations"][0]["refinements"][0]["specs"]}
+    for identity, expected in (
+        (omitted_payload["spec_id"], set()),
+        (explicit_empty.spec_id, set()),
+        (explicit_ids.spec_id, set(roots[:2])),
+    ):
+        assert {kb["id"] for kb in reported[identity]["artifacts"]["knowledge_bases"]} == expected
+        assert set(compact_specs[identity]["artifact_summary"]["artifact_ids"]["knowledge_bases"]) == expected
 
     # BASE T17: independent Specs retain the same completed refinement and its
     # immutable source; the later derivations must not replace the earlier one.
@@ -1019,3 +1035,98 @@ async def test_ts_f9c3c8e0_drop_survives_reconcilers_and_source_delete(
         "drop_delta",
         "relink_reset",
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["reference", "snapshot", "drop"])
+async def test_traceability_reports_native_card_knowledge_selection(
+    spec_b_runtime: _Runtime, monkeypatch: pytest.MonkeyPatch, mode: str,
+) -> None:
+    from okto_pulse.community.adapters.sqlalchemy_traceability_read_model import (
+        build_traceability_report,
+    )
+    from okto_pulse.core.application.effective_knowledge_read import load_effective_card_knowledge
+
+    runtime = spec_b_runtime
+    spec_id, card_id = "report-spec", "report-card"
+    roots = ("report-selected", "report-unselected")
+    await _seed_spec_cards(runtime, spec_id=spec_id, card_ids=(card_id,), roots=roots)
+    _install_real_mcp_runtime(monkeypatch)
+    selected = json.loads(await mcp_server.okto_pulse_replace_card_knowledge_assignments.fn(
+        board_id=BOARD_ID, card_id=card_id,
+        request=KnowledgeAssignmentReplaceRequest(
+            knowledge_ids=[roots[0]], mode="reference" if mode == "drop" else mode,
+            justification="Select one relevant source", idempotency_key="report-select",
+            expected_revision=0,
+        ),
+    ))
+    assert selected["success"] is True
+    if mode == "drop":
+        async with runtime.uow_factory(actor=REST_ACTOR) as uow:
+            await cards_api.drop_card_knowledge_assignments(
+                card_id, KnowledgeAssignmentDropRequest(
+                    knowledge_ids=[roots[0]], justification="Source is no longer relevant",
+                    idempotency_key="report-drop", expected_revision=1,
+                ), user_id=ACTOR_ID, uow=uow,
+            )
+
+    async with runtime.sessions() as session:
+        source = await session.get(SpecKnowledgeBase, roots[0])
+        source.content = "updated source after selection"
+        source.source_version = 2
+        await session.commit()
+
+    async with runtime.uow_factory(actor=REST_ACTOR) as uow:
+        card = await uow.services.cards.get_card(card_id)
+        effective = await load_effective_card_knowledge(uow.services, card)
+    expected_ids = {item["id"] for item in effective}
+    assert len(expected_ids) == (0 if mode == "drop" else 1)
+    async with runtime.sessions() as session:
+        full = await build_traceability_report(
+            session, BOARD_ID, spec_id=spec_id, include_artifacts=True,
+        )
+        compact = await build_traceability_report(
+            session, BOARD_ID, spec_id=spec_id, include_artifacts=False,
+        )
+        assert not session.dirty
+    full_card = full["orphan_specs"][0]["cards"][0]
+    compact_card = compact["orphan_specs"][0]["cards"][0]
+    assert {kb["id"] for kb in full_card["artifacts"]["knowledge_bases"]} == expected_ids
+    assert set(compact_card["artifact_summary"]["artifact_ids"]["knowledge_bases"]) == expected_ids
+    assert compact_card["artifact_summary"]["knowledge_bases_count"] == len(expected_ids)
+    actual = {kb["id"]: kb for kb in full_card["artifacts"]["knowledge_bases"]}
+    for kb in effective:
+        assert actual[kb["id"]]["content_hash"] == kb["content_hash"]
+        assert actual[kb["id"]]["knowledge_assignment"] == kb["knowledge_assignment"]
+        assert "content" not in actual[kb["id"]]
+    if mode == "snapshot":
+        assert effective[0]["content"] != "updated source after selection"
+        assert effective[0]["knowledge_assignment"]["stale"] is True
+    elif mode == "reference":
+        assert effective[0]["content"] == "updated source after selection"
+    # Parent references remain contextual, not a statement of Card selection.
+    assert {kb["id"] for kb in full["orphan_specs"][0]["artifacts"]["knowledge_bases"]} == set(roots)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("include_artifacts", [True, False])
+async def test_traceability_refuses_unavailable_knowledge_without_physical_fallback(
+    spec_b_runtime: _Runtime, include_artifacts: bool,
+) -> None:
+    from okto_pulse.community.adapters.sqlalchemy_traceability_read_model import build_traceability_report
+    from okto_pulse.core.ports.knowledge_propagation import reset_knowledge_propagation_port_for_tests
+    from okto_pulse.core.ports.traceability import TraceabilityReadError
+
+    await _seed_spec_cards(
+        spec_b_runtime, spec_id="unavailable-spec", card_ids=("unavailable-card",),
+        roots=("local-source",),
+    )
+    reset_knowledge_propagation_port_for_tests()
+    async with spec_b_runtime.sessions() as session:
+        with pytest.raises(TraceabilityReadError) as caught:
+            await build_traceability_report(
+                session, BOARD_ID, spec_id="unavailable-spec",
+                include_artifacts=include_artifacts,
+            )
+        assert caught.value.code == "knowledge_propagation_port_not_configured"
+        assert not session.dirty
