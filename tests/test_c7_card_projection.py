@@ -41,9 +41,9 @@ async def test_card_projection_uses_one_atomic_first_pass_and_last_conclusion(
             )
         )
         validations = [
-            {"verdict": "pass", "confidence": 91, "completeness": 82, "drift": 7},
-            {"verdict": "fail", "confidence": 2, "completeness": 1, "drift": 99},
-            {"verdict": "pass", "confidence": 73, "completeness": 96, "drift": 3},
+            {"outcome": "success", "confidence": 91, "estimated_completeness": 82, "estimated_drift": 7},
+            {"outcome": "failed", "confidence": 2, "estimated_completeness": 1, "estimated_drift": 99},
+            {"outcome": "success", "confidence": 73, "estimated_completeness": 96, "estimated_drift": 3},
         ]
         conclusions = [
             {"completeness": 11, "drift": 88},

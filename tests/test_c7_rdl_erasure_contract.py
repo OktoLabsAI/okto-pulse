@@ -489,7 +489,6 @@ async def _seed_subject(
                 source="native",
                 request_digest=DIGEST,
                 idempotency_key=f"checklist-submit-{namespace}",
-                manual_checklist_ref=None,
                 predecessor_receipt_id=None,
                 created_by=f"agent-{namespace}",
                 created_at=NOW,

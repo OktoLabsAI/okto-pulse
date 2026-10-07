@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 
 import pytest
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
 from fastapi import FastAPI, Header
 from fastapi.testclient import TestClient
 from sqlalchemy import event, text
@@ -50,11 +51,16 @@ async def _build_engine(path: Path) -> AsyncEngine:
         await connection.execute(
             text(
                 "INSERT INTO specs "
-                "(id, board_id, title, status, version, created_by, archived) VALUES "
-                "('s1', 'b1', 'S1', 'draft', 1, 'owner', 0), "
-                "('s2', 'b1', 'S2', 'draft', 1, 'owner', 0), "
-                "('s3', 'b1', 'S3', 'draft', 1, 'owner', 0)"
-            )
+                "(id, board_id, title, status, version, created_by, archived, architecture_adoption) VALUES "
+                "(:id, 'b1', :title, 'draft', 1, 'owner', 0, :architecture_adoption)"
+            ),
+            [{
+                "id": spec_id, "title": spec_id.upper(),
+                "architecture_adoption": ArchitectureAdoptionScope(
+                    board_id="b1", spec_id=spec_id, adopted_in_edition=1,
+                    actor_id="owner", inherited_resource_ids=(),
+                ).model_dump_json(),
+            } for spec_id in ("s1", "s2", "s3")]
         )
         rows: list[dict[str, object]] = []
         for index in range(30):
@@ -69,10 +75,10 @@ async def _build_engine(path: Path) -> AsyncEngine:
                 validations = json.dumps(
                     [
                         {
-                            "verdict": "pass",
+                            "outcome": "success",
                             "confidence": 94,
-                            "completeness": 88,
-                            "drift": 4,
+                            "estimated_completeness": 88,
+                            "estimated_drift": 4,
                         }
                     ]
                 )
