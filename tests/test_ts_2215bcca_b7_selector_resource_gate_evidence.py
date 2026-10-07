@@ -20,6 +20,7 @@ CardKnowledgeTab suites.
 from __future__ import annotations
 
 from pathlib import Path
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
 
 import pytest
 from sqlalchemy import select
@@ -185,6 +186,8 @@ async def b7_runtime(tmp_path):
             await session.flush()
             session.add(
                 Spec(
+                    architecture_adoption=ArchitectureAdoptionScope(board_id=BOARD_ID, spec_id=SPEC_ID,
+                        adopted_in_edition=1, actor_id=ACTOR_ID, inherited_resource_ids=()).model_dump(mode="json"),
                     id=SPEC_ID,
                     board_id=BOARD_ID,
                     refinement_id="refinement-ts-2215bcca",

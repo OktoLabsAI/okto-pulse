@@ -236,7 +236,9 @@ async def test_real_start_requires_four_profile_plan_and_valid_inheritance(class
             await db.execute(update(Card).where(Card.id == 'test-or').values(test_scenario_ids=['ts-or']))
             await db.commit()
         await classify_all(client, db, 'after-plan-repair')
-        await db.execute(update(Spec).where(Spec.id == 'spec').values(status='validated', evaluations=fields['evaluations']))
+        current = await db.get(Spec, 'spec', populate_existing=True)
+        await db.execute(update(Spec).where(Spec.id == 'spec').values(status='validated',
+            evaluations=[{**entry, 'spec_edition': current.edition} for entry in fields['evaluations']]))
         await db.commit()
         started = await client.post('/api/v1/specs/spec/move', json={'status': 'in_progress'})
         assert started.status_code == 200, started.text
@@ -351,7 +353,7 @@ async def test_semantic_review_is_distinct_from_structural_readiness(classified_
         frs[0]['text'] = 'Authenticate credentials'
         rules = deepcopy(spec.business_rules)
         rules[0].update(title='Limit failed attempts', rule=correct_text, when='Five incorrect passwords',
-            then='Login is blocked', linked_requirements=['Authenticate credentials'], verification={
+            then='Login is blocked', linked_requirements=['fr'], verification={
                 'mode': 'inherited', 'required_profiles': ['functional'], 'inheritance': [{
                     'source': {'requirement_type': 'functional_requirement', 'requirement_id': 'fr'},
                     'source_digest': requirement_verification_digest('spec', 'functional_requirement', frs[0]),

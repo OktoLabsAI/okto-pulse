@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
 
 import pytest
 from sqlalchemy import func, select
@@ -82,9 +83,11 @@ async def test_ts2_delayed_spec_moved_is_fenced_after_governed_delete(
         # Transaction A happens before the delete: the durable event and its
         # pending handler execution are already committed while the spec exists.
         async with session_factory() as session:
-            session.add(Board(id=BOARD_ID, name="TS2", owner_id="owner-ts2"))
+            session.add(Board(realm_id="local", id=BOARD_ID, name="TS2", owner_id="owner-ts2"))
             session.add(
                 Spec(
+                    architecture_adoption=ArchitectureAdoptionScope(board_id=BOARD_ID, spec_id=SPEC_ID,
+                        adopted_in_edition=1, actor_id="agent-ts2", inherited_resource_ids=()).model_dump(mode="json"),
                     id=SPEC_ID,
                     board_id=BOARD_ID,
                     title="TS2 delayed event",

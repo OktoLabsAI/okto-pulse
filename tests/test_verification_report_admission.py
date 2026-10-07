@@ -41,6 +41,18 @@ async def setup(db, monkeypatch, tmp_path, method):
     app, scenario = await methods.setup(db, monkeypatch, method=method)
     scenario['linked_criteria'] = ['ac-1']
     await db.execute(update(Spec).where(Spec.id == 'spec').values(test_scenarios=[scenario], acceptance_criteria=CRITERIA))
+    # Criteria and links were changed after the base fixture sealed its heads.
+    # Publish this fixture's final native semantic state through the real adapter.
+    from datetime import datetime, timezone
+    from okto_pulse.community.adapters.sqlalchemy_semantic_guideline_assessment import CommunitySqlAlchemySemanticGuidelineAssessment
+    from okto_pulse.core.domain.guideline_policy import PolicyEntityType
+    from okto_pulse.core.domain.quality_canonicalization import canonical_sha256
+    for kind, identity in [(PolicyEntityType.SPEC, 'spec'), (PolicyEntityType.TEST_SCENARIO, 'ts')]:
+        await CommunitySqlAlchemySemanticGuidelineAssessment(db).record_semantic_subject_mutation(
+            board_id='board', entity_type=kind, subject_id=identity, actor_id='author',
+            idempotency_key='native-report-fixture-' + identity,
+            request_digest=canonical_sha256({'scenario': scenario, 'criteria': CRITERIA}),
+            changed_at=datetime.now(timezone.utc))
     await db.commit()
     ledger = CommunityEvidenceLedger(evidence_root=tmp_path / 'evidence')
     register_test_evidence_write_verifier(CommunityTestEvidenceWriteVerifier(ledger=ledger))
@@ -162,7 +174,7 @@ async def test_bulk_ready_report_writes_cannot_bypass_authentication(classified_
         await service.update_spec('spec', 'author', SpecUpdate(test_scenarios=[{**scenario, 'evidence': unsigned}]))
     forged = deepcopy(evidence)
     forged['verification_report']['conclusion'] = 'Unobserved conclusion'
-    with pytest.raises(ValueError, match='evidence_unverified: verification_report_invalid'):
+    with pytest.raises(ValueError, match=r'evidence_unverified: verification_report\.receipt_report_binding_mismatch, evidence_v2\.receipt_evidence_tampered'):
         await service.update_spec('spec', 'author', SpecUpdate(test_scenarios=[{**scenario, 'evidence': forged}]))
     with pytest.raises(ValueError, match='test_scenario_status_requires_scoped_update'):
         await service.create_spec('board', 'author', SpecCreate(title='Cannot copy signed identity',
