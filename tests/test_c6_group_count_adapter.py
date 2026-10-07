@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
@@ -98,9 +99,13 @@ async def _seed(engine: AsyncEngine) -> None:
             text(
                 "INSERT INTO specs "
                 "(id, board_id, ideation_id, refinement_id, title, status, version, "
-                "created_by, archived) VALUES "
-                "('s1', 'b1', 'i1', 'r1', 'Spec', 'draft', 1, 'u', 0)"
-            )
+                "created_by, archived, architecture_adoption) VALUES "
+                "('s1', 'b1', 'i1', 'r1', 'Spec', 'draft', 1, 'u', 0, :architecture_adoption)"
+            ),
+            {"architecture_adoption": ArchitectureAdoptionScope(
+                board_id="b1", spec_id="s1", adopted_in_edition=1,
+                actor_id="u", inherited_resource_ids=(),
+            ).model_dump_json()}
         )
         for table, parent_field, parent_id in (
             ("ideation_qa_items", "ideation_id", "i1"),

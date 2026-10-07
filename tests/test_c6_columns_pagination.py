@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
-import hashlib
 import json
 from pathlib import Path
 
 import pytest
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
 from fastapi import FastAPI, Header
 from fastapi.testclient import TestClient
 from sqlalchemy import event, text
@@ -64,10 +64,16 @@ async def _build_engine(path: Path) -> AsyncEngine:
         await connection.execute(
             text(
                 "INSERT INTO specs "
-                "(id, board_id, title, status, version, created_by, archived) VALUES "
-                "('s1', 'b1', 'Spec 1', 'draft', 1, 'owner', 0), "
-                "('s2', 'b1', 'Spec 2', 'draft', 1, 'owner', 0)"
-            )
+                "(id, board_id, title, status, version, created_by, archived, architecture_adoption) VALUES "
+                "(:id, 'b1', :title, 'draft', 1, 'owner', 0, :architecture_adoption)"
+            ),
+            [{
+                "id": spec_id, "title": f"Spec {index}",
+                "architecture_adoption": ArchitectureAdoptionScope(
+                    board_id="b1", spec_id=spec_id, adopted_in_edition=1,
+                    actor_id="owner", inherited_resource_ids=(),
+                ).model_dump_json(),
+            } for index, spec_id in enumerate(("s1", "s2"), 1)]
         )
 
         rows: list[dict[str, object]] = []
@@ -210,13 +216,13 @@ def columns_client(tmp_path: Path):
             register_application_persistence_port(previous)
 
 
-def test_literal_legacy_branch_has_no_pagination_metadata(
+def test_default_batch_has_native_pagination_metadata(
     columns_client: TestClient,
 ) -> None:
     response = columns_client.get("/api/v1/boards/b1/columns")
     assert response.status_code == 200, response.text
     body = response.json()
-    assert set(body) == {"board_id", "columns"}
+    assert set(body) == {"board_id", "columns", "columns_meta"}
     assert all(len(body["columns"][card_status]) == 4 for card_status in STATUSES)
     assert set(body["columns"]["done"][0]) == {
         "id",
@@ -250,12 +256,11 @@ def test_literal_legacy_branch_has_no_pagination_metadata(
     assert rejected["current_rejection_kind"] == "task_validation"
     assert rejected["current_rejection_code"] == "task_validation_failed"
     assert rejected["current_rejection_summary"] == ("The implementation needs rework.")
-    canonical = json.dumps(
-        body, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ).encode("utf-8")
-    assert hashlib.sha256(canonical).hexdigest() == (
-        "35e657b224be2bad10c858ab283a52b3801bb53bec9720d6c8fd80248f95b752"
-    )
+    explicit = columns_client.get("/api/v1/boards/b1/columns?per_column_limit=25")
+    assert explicit.status_code == 200
+    assert body == explicit.json()
+    assert all(not meta["has_more"] for meta in body["columns_meta"]["columns"].values())
+
 
 
 def test_columns_keep_rejected_status_but_redact_cause_without_validation_read(
@@ -271,16 +276,16 @@ def test_columns_keep_rejected_status_but_redact_cause_without_validation_read(
         claims={"permissions": flags},
     )
     try:
-        legacy = columns_client.get("/api/v1/boards/b1/columns")
+        default_batch = columns_client.get("/api/v1/boards/b1/columns")
         paginated = columns_client.get(
             "/api/v1/boards/b1/columns?per_column_limit=5&column=rejected"
         )
     finally:
         columns_client.app.dependency_overrides[require_principal] = original
 
-    assert legacy.status_code == paginated.status_code == 200
+    assert default_batch.status_code == paginated.status_code == 200
     for item in (
-        legacy.json()["columns"]["rejected"][0],
+        default_batch.json()["columns"]["rejected"][0],
         paginated.json()["items"][0],
     ):
         assert item["status"] == "rejected"
@@ -303,17 +308,17 @@ def test_columns_omit_open_qa_count_without_card_qa_read(
         claims={"permissions": flags},
     )
     try:
-        legacy = columns_client.get("/api/v1/boards/b1/columns")
+        default_batch = columns_client.get("/api/v1/boards/b1/columns")
         paginated = columns_client.get(
             "/api/v1/boards/b1/columns?per_column_limit=5&column=done"
         )
     finally:
         columns_client.app.dependency_overrides[require_principal] = original
 
-    assert legacy.status_code == paginated.status_code == 200
+    assert default_batch.status_code == paginated.status_code == 200
     assert all(
         "open_qa_count" not in item
-        for column in legacy.json()["columns"].values()
+        for column in default_batch.json()["columns"].values()
         for item in column
     )
     assert all("open_qa_count" not in item for item in paginated.json()["items"])
@@ -351,20 +356,22 @@ def test_get_board_redacts_nested_rejection_cause_for_sparse_reader(
     assert rejected["current_rejection_summary"] is None
 
 
-@pytest.mark.parametrize("value", ("1", "True"))
-def test_legacy_branch_preserves_fastapi_boolean_coercion(
+@pytest.mark.parametrize("value", ("1", "True", "wat"))
+def test_default_batch_rejects_non_native_boolean(
     columns_client: TestClient, value: str
 ) -> None:
     response = columns_client.get(f"/api/v1/boards/b1/columns?include_archived={value}")
-    assert response.status_code == 200, response.text
-    assert all(len(items) == 5 for items in response.json()["columns"].values())
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"]["error"] == "include_archived_invalid"
 
 
-def test_legacy_malformed_boolean_preserves_fastapi_422(
-    columns_client: TestClient,
-) -> None:
-    response = columns_client.get("/api/v1/boards/b1/columns?include_archived=wat")
-    assert response.status_code == 422, response.text
+def test_default_window_applies_filters(columns_client: TestClient) -> None:
+    response = columns_client.get("/api/v1/boards/b1/columns?search=Needle&include_archived=true")
+    explicit = columns_client.get(
+        "/api/v1/boards/b1/columns?search=Needle&include_archived=true&per_column_limit=25"
+    )
+    assert response.status_code == explicit.status_code == 200
+    assert response.json() == explicit.json()
 
 
 def test_batch_shape_facets_and_bounded_data_budget(columns_client: TestClient) -> None:
@@ -486,8 +493,7 @@ def test_route_preserves_typed_400_error_envelopes(
     columns_client: TestClient,
 ) -> None:
     cases = (
-        ("search=Needle", "params_require_per_column_limit"),
-        ("offset=1", "params_require_per_column_limit"),
+        ("offset=1", "offset_requires_column"),
         ("per_column_limit=x", "per_column_limit_invalid"),
         ("per_column_limit=101", "per_column_limit_out_of_bounds"),
         ("per_column_limit=25&offset=1", "offset_requires_column"),
@@ -531,4 +537,5 @@ def test_openapi_publishes_single_get_with_columns_oneof(
     assert schema["$ref"].endswith("/ColumnsResponseUnion")
     union = document["components"]["schemas"]["ColumnsResponseUnion"]
     assert "anyOf" not in union
-    assert len(union["oneOf"]) == 3
+    assert len(union["oneOf"]) == 2
+    assert "ColumnsLegacyResponse" not in document["components"]["schemas"]

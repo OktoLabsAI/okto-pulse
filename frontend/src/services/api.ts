@@ -86,7 +86,7 @@ import type {
   CardStatus,
   CardType,
   ColumnPageResponse,
-  ColumnsOptInResponse,
+  ColumnsBatchResponse,
   LookupPage,
   AllowedTransitionEntityType,
   AllowedTransitionsResponse,
@@ -724,15 +724,12 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
 
     async getBoardColumns(
       boardId: string,
-      options: BoardColumnsQuery | boolean = {},
-    ): Promise<ColumnsOptInResponse> {
-      const normalized = typeof options === 'boolean'
-        ? { includeArchived: options }
-        : options;
-      const params = boardColumnsParams(normalized);
-      return apiClient.fetchJson<ColumnsOptInResponse>(
+      options: BoardColumnsQuery = {},
+    ): Promise<ColumnsBatchResponse> {
+      const params = boardColumnsParams(options);
+      return apiClient.fetchJson<ColumnsBatchResponse>(
         `/boards/${boardId}/columns?${params.toString()}`,
-        { signal: normalized.signal },
+        { signal: options.signal },
       );
     },
 

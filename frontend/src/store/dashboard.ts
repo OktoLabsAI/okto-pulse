@@ -11,7 +11,7 @@ import type {
   CardType,
   Agent,
   ColumnPageResponse,
-  ColumnsOptInResponse,
+  ColumnsBatchResponse,
   KanbanColumnMeta,
 } from '@/types';
 import { CARD_STATUSES } from '@/types';
@@ -131,7 +131,7 @@ interface DashboardState {
   setCurrentBoard: (board: Board | null) => void;
   setColumns: (columns: Record<CardStatus, CardSummary[]>) => void;
   beginColumnsGeneration: (projection?: LoadedColumnsProjection) => number;
-  applyColumnsBatch: (generation: number, response: ColumnsOptInResponse) => boolean;
+  applyColumnsBatch: (generation: number, response: ColumnsBatchResponse) => boolean;
   beginColumnPage: (column: CardStatus, offset: number) => ColumnPageToken | null;
   applyColumnPage: (token: ColumnPageToken, response: ColumnPageResponse) => boolean;
   failColumnPage: (token: ColumnPageToken, error: string) => boolean;

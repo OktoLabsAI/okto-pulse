@@ -93,7 +93,6 @@ from okto_pulse.core.application.use_cases.boards_crud import (
 from okto_pulse.core.application.knowledge_propagation_projection import (
     project_card_create_response,
 )
-from okto_pulse.core.domain.enums import CardStatus
 from okto_pulse.core.domain.spec_dependency import SpecDependencyOperationError
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.community.api.auth_deps import require_principal
@@ -434,7 +433,7 @@ async def get_board_columns(
     _per_column_limit: str | None = Query(
         None,
         alias="per_column_limit",
-        description="Opt-in integer window per column (1..100).",
+        description="Integer window per column (1..100); defaults to 25.",
     ),
     _column: str | None = Query(
         None,
@@ -462,13 +461,13 @@ async def get_board_columns(
         False,
         alias="include_archived",
         description=(
-            "Legacy-compatible boolean; opt-in columns accepts strict true|false."
+            "Boolean query toggle: true|false."
         ),
     ),
     principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
-    """Get literal legacy columns or an opt-in bounded columns response."""
+    """Get a bounded column batch or one column continuation."""
 
     parameters = parse_columns_parameters(request)
     actor = RESTAdapterContract.actor_from_principal(
@@ -477,136 +476,9 @@ async def get_board_columns(
     )
     use_case = GetBoardColumnsUseCase()
 
-    if parameters is not None:
-        try:
-            # Authorization happens before the productive bounded data budget.
-            await use_case.preflight(
-                GetBoardColumnsCommand(board_id),
-                actor=actor,
-                uow=uow,
-            )
-        except EntityNotFoundError:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail={"error": "board_not_found"},
-            )
-        except PermissionDeniedError as exc:
-            raise permission_denied_http_error(exc) from exc
-
-        projection_permissions = await resolve_board_projection_permissions(
-            actor=actor,
-            uow=uow,
-            board_id=board_id,
-            permission_leaves=("card.validation.read", "card.qa.read"),
-        )
-
-        session = uow.services.cards.db
-        if parameters.column is not None:
-            async with statement_budget(session, 4) as budget:
-                page = await uow.services.entity_pages.list(
-                    column_page_request(
-                        board_id,
-                        parameters.column,
-                        parameters,
-                        offset=parameters.offset,
-                    )
-                )
-                facet_rows = await uow.services.entity_pages.group_count(
-                    column_type_facet_request(
-                        board_id,
-                        parameters.column,
-                        parameters,
-                    )
-                )
-                if not 1 <= budget.used <= 4:
-                    raise RuntimeError(
-                        "columns_statement_budget_mismatch: "
-                        f"column mode used {budget.used}, cap 4"
-                    )
-
-            card_type_facet = {
-                str(getattr(row.values[0], "value", row.values[0])): row.count
-                for row in facet_rows
-            }
-            meta = page_meta(page, card_type_facet)
-            return {
-                "board_id": board_id,
-                "column": parameters.column,
-                "items": [
-                    _project_card_list_visibility(
-                        card_summary(record),
-                        can_read_validation=projection_permissions[
-                            "card.validation.read"
-                        ],
-                        can_read_qa=projection_permissions["card.qa.read"],
-                    )
-                    for record in page.items
-                ],
-                "meta": meta,
-                "offset": parameters.offset,
-                "limit": parameters.per_column_limit,
-                "next_offset": (
-                    parameters.offset + len(page.items) if meta["has_more"] else None
-                ),
-            }
-
-        async with statement_budget(session, BATCH_COLUMNS_STATEMENT_BUDGET) as budget:
-            columns: dict[str, list[dict]] = {}
-            columns_meta: dict[str, dict] = {}
-            for card_status in KANBAN_STATUSES:
-                page = await uow.services.entity_pages.list(
-                    column_page_request(board_id, card_status, parameters)
-                )
-                columns[card_status] = [
-                    _project_card_list_visibility(
-                        card_summary(record),
-                        can_read_validation=projection_permissions[
-                            "card.validation.read"
-                        ],
-                        can_read_qa=projection_permissions["card.qa.read"],
-                    )
-                    for record in page.items
-                ]
-                columns_meta[card_status] = page_meta(page)
-
-            type_rows = await uow.services.entity_pages.group_count(
-                batch_type_facet_request(board_id, parameters)
-            )
-            assignee_rows = await uow.services.entity_pages.group_count(
-                assignee_facet_request(board_id, parameters)
-            )
-            if not 1 <= budget.used <= BATCH_COLUMNS_STATEMENT_BUDGET:
-                raise RuntimeError(
-                    "columns_statement_budget_mismatch: "
-                    f"batch used {budget.used}, "
-                    f"cap {BATCH_COLUMNS_STATEMENT_BUDGET}"
-                )
-
-        for row in type_rows:
-            card_status = str(getattr(row.values[0], "value", row.values[0]))
-            card_type = str(getattr(row.values[1], "value", row.values[1]))
-            if card_status in columns_meta:
-                columns_meta[card_status]["facets"]["card_type"][card_type] = row.count
-        assignee_facet = sorted(
-            ({"value": row.values[0], "count": row.count} for row in assignee_rows),
-            key=lambda item: (
-                item["value"] is not None,
-                "" if item["value"] is None else str(item["value"]),
-            ),
-        )
-        return {
-            "board_id": board_id,
-            "columns": columns,
-            "columns_meta": {
-                "columns": columns_meta,
-                "facets": {"assignee": assignee_facet},
-            },
-        }
-
-    # Literal legacy path: retain the fully hydrated board and exact wire.
-    include_archived = _include_archived
     try:
-        result = await use_case.execute(
+        # Authorization happens before the productive bounded data budget.
+        await use_case.preflight(
             GetBoardColumnsCommand(board_id),
             actor=actor,
             uow=uow,
@@ -614,72 +486,121 @@ async def get_board_columns(
     except EntityNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Board not found",
+            detail={"error": "board_not_found"},
         )
     except PermissionDeniedError as exc:
         raise permission_denied_http_error(exc) from exc
 
-    board = result.board
     projection_permissions = await resolve_board_projection_permissions(
         actor=actor,
         uow=uow,
         board_id=board_id,
         permission_leaves=("card.validation.read", "card.qa.read"),
     )
-    columns = {card_status.value: [] for card_status in CardStatus}
-    for card in board.cards:
-        if not include_archived and getattr(card, "archived", False):
-            continue
-        columns[card.status.value].append(
-            _project_card_list_visibility(
-                {
-                    "id": card.id,
-                    "board_id": card.board_id,
-                    "spec_id": card.spec_id,
-                    "title": card.title,
-                    "description": card.description,
-                    "status": card.status.value,
-                    "priority": card.priority.value if card.priority else "none",
-                    "position": card.position,
-                    "assignee_id": card.assignee_id,
-                    "created_by": card.created_by,
-                    "created_at": card.created_at.isoformat(),
-                    "updated_at": card.updated_at.isoformat(),
-                    "due_date": card.due_date.isoformat() if card.due_date else None,
-                    "labels": card.labels or [],
-                    "test_scenario_ids": card.test_scenario_ids,
-                    "conclusions": card.conclusions,
-                    "card_type": getattr(card, "card_type", "normal") or "normal",
-                    "origin_task_id": getattr(card, "origin_task_id", None),
-                    "severity": getattr(card, "severity", None),
-                    "linked_test_task_ids": getattr(
-                        card,
-                        "linked_test_task_ids",
-                        None,
-                    ),
-                    "archived": getattr(card, "archived", False),
-                    "current_rejection_kind": getattr(
-                        card, "current_rejection_kind", None
-                    ),
-                    "current_rejection_id": getattr(card, "current_rejection_id", None),
-                    "current_rejection_code": getattr(
-                        card, "current_rejection_code", None
-                    ),
-                    "current_rejection_summary": getattr(
-                        card, "current_rejection_summary", None
-                    ),
-                    "open_qa_count": sum(
-                        1
-                        for question in (card.qa_items or [])
-                        if question.answered_at is None
-                    ),
-                },
-                can_read_validation=projection_permissions["card.validation.read"],
-                can_read_qa=projection_permissions["card.qa.read"],
-            )
-        )
 
-    return {"board_id": board_id, "columns": columns}
+    session = uow.services.cards.db
+    if parameters.column is not None:
+        async with statement_budget(session, 4) as budget:
+            page = await uow.services.entity_pages.list(
+                column_page_request(
+                    board_id,
+                    parameters.column,
+                    parameters,
+                    offset=parameters.offset,
+                )
+            )
+            facet_rows = await uow.services.entity_pages.group_count(
+                column_type_facet_request(
+                    board_id,
+                    parameters.column,
+                    parameters,
+                )
+            )
+            if not 1 <= budget.used <= 4:
+                raise RuntimeError(
+                    "columns_statement_budget_mismatch: "
+                    f"column mode used {budget.used}, cap 4"
+                )
+
+        card_type_facet = {
+            str(getattr(row.values[0], "value", row.values[0])): row.count
+            for row in facet_rows
+        }
+        meta = page_meta(page, card_type_facet)
+        return {
+            "board_id": board_id,
+            "column": parameters.column,
+            "items": [
+                _project_card_list_visibility(
+                    card_summary(record),
+                    can_read_validation=projection_permissions[
+                        "card.validation.read"
+                    ],
+                    can_read_qa=projection_permissions["card.qa.read"],
+                )
+                for record in page.items
+            ],
+            "meta": meta,
+            "offset": parameters.offset,
+            "limit": parameters.per_column_limit,
+            "next_offset": (
+                parameters.offset + len(page.items) if meta["has_more"] else None
+            ),
+        }
+
+    async with statement_budget(session, BATCH_COLUMNS_STATEMENT_BUDGET) as budget:
+        columns: dict[str, list[dict]] = {}
+        columns_meta: dict[str, dict] = {}
+        for card_status in KANBAN_STATUSES:
+            page = await uow.services.entity_pages.list(
+                column_page_request(board_id, card_status, parameters)
+            )
+            columns[card_status] = [
+                _project_card_list_visibility(
+                    card_summary(record),
+                    can_read_validation=projection_permissions[
+                        "card.validation.read"
+                    ],
+                    can_read_qa=projection_permissions["card.qa.read"],
+                )
+                for record in page.items
+            ]
+            columns_meta[card_status] = page_meta(page)
+
+        type_rows = await uow.services.entity_pages.group_count(
+            batch_type_facet_request(board_id, parameters)
+        )
+        assignee_rows = await uow.services.entity_pages.group_count(
+            assignee_facet_request(board_id, parameters)
+        )
+        if not 1 <= budget.used <= BATCH_COLUMNS_STATEMENT_BUDGET:
+            raise RuntimeError(
+                "columns_statement_budget_mismatch: "
+                f"batch used {budget.used}, "
+                f"cap {BATCH_COLUMNS_STATEMENT_BUDGET}"
+            )
+
+    for row in type_rows:
+        card_status = str(getattr(row.values[0], "value", row.values[0]))
+        card_type = str(getattr(row.values[1], "value", row.values[1]))
+        if card_status in columns_meta:
+            columns_meta[card_status]["facets"]["card_type"][card_type] = row.count
+    assignee_facet = sorted(
+        ({"value": row.values[0], "count": row.count} for row in assignee_rows),
+        key=lambda item: (
+            item["value"] is not None,
+            "" if item["value"] is None else str(item["value"]),
+        ),
+    )
+    return {
+        "board_id": board_id,
+        "columns": columns,
+        "columns_meta": {
+            "columns": columns_meta,
+            "facets": {"assignee": assignee_facet},
+        },
+    }
+
 
 
 # ==================== ARCHIVE ====================

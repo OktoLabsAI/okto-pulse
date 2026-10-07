@@ -2567,7 +2567,7 @@ export interface KanbanColumnsMeta {
   };
 }
 
-export interface ColumnsOptInResponse {
+export interface ColumnsBatchResponse {
   board_id: string;
   columns: Record<CardStatus, CardSummary[]>;
   columns_meta: KanbanColumnsMeta;
