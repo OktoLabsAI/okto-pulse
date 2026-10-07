@@ -81,7 +81,7 @@ def relationship_set(graph):
         reader.close()
 
 
-async def materialize(root, *, incremental, card_type=None, final_unlinked=False, final_empty=False, exercise=None):
+async def materialize(root, *, incremental, card_type=None, final_unlinked=False, final_empty=False, exercise=None, seed=None):
     root.mkdir()
     path = root / 'source.sqlite3'
     settings = CommunitySettings(database_url=f'sqlite+aiosqlite:///{path}',
@@ -116,6 +116,8 @@ async def materialize(root, *, incremental, card_type=None, final_unlinked=False
                     title='Observed scenario', status='done', card_type=card_type, created_by='owner',
                     test_scenario_ids=['ts_one'], observed_behavior='Observed', expected_behavior='Expected',
                     steps_to_reproduce='Repeat', conclusions=[{'summary': 'Completed'}]))
+        if seed is not None:
+            await seed(factory)
         if incremental:
             processor = ConsolidationProcessor(relational_scope_factory=factory)
             # Add, replace, remove, restore and replay; an empty active set must
