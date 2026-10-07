@@ -572,3 +572,50 @@ async def test_native_choice_schema_rejects_old_inputs_before_handler(
             raise_on_error=False,
         )
         auth.assert_awaited_once_with("board-1")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool_name", "args", "field", "native"),
+    [
+        ("okto_pulse_add_api_contract", {"spec_id": "spec-1"}, "request_body_json", {}),
+        ("okto_pulse_add_api_contract", {"spec_id": "spec-1"}, "response_errors_json", []),
+        ("okto_pulse_update_spec_entity",
+         {"spec_id": "spec-1", "entity_type": "business_rule", "operation": "update"},
+         "payload_json", {}),
+        ("okto_pulse_validate_architecture_design_payload", {}, "entities", []),
+        ("okto_pulse_import_excalidraw_architecture_diagram",
+         {"design_id": "design-1", "title": "Scene"}, "payload_json", {}),
+        ("okto_pulse_add_ideation_knowledge",
+         {"ideation_id": "idea-1", "title": "Knowledge", "content": "body"},
+         "governance_metadata", {}),
+        ("okto_pulse_list_by_board", {"entity_type": "spec"}, "filters", {}),
+    ],
+)
+async def test_structured_mcp_inputs_refuse_json_strings_before_handler(
+    monkeypatch, tool_name, args, field, native,
+):
+    import json
+    from unittest.mock import AsyncMock
+    from okto_pulse.core.mcp import server as core_server
+
+    auth = AsyncMock(return_value=None)
+    monkeypatch.setattr(core_server, "_get_agent_ctx", auth)
+    catalog = CoreMcpCatalog(name="native-structured-contract", version="0.4.0")
+    catalog.tool()(getattr(core_server, tool_name).fn)
+    frozen = _frozen_projection()
+    host = CommunityMcpHostProvider().materialize_catalog(
+        catalog, resource_catalog=frozen, projection_identity=frozen.identity,
+    )
+    base = {"board_id": "board-1", **args}
+    async with Client(host) as client:
+        for invalid in (json.dumps(native), "", "null", False):
+            result = await client.call_tool(
+                tool_name, {**base, field: invalid}, raise_on_error=False,
+            )
+            assert result.is_error is True
+        auth.assert_not_awaited()
+        await client.call_tool(
+            tool_name, {**base, field: native}, raise_on_error=False,
+        )
+        auth.assert_awaited_once_with("board-1")
