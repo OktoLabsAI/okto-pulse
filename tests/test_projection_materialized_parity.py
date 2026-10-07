@@ -81,7 +81,7 @@ def relationship_set(graph):
         reader.close()
 
 
-async def materialize(root, *, incremental, card_type=None, final_unlinked=False, final_empty=False, exercise=None, seed=None):
+async def materialize(root, *, incremental, card_type=None, final_unlinked=False, final_empty=False, exercise=None, seed=None, native_schema=False):
     root.mkdir()
     path = root / 'source.sqlite3'
     settings = CommunitySettings(database_url=f'sqlite+aiosqlite:///{path}',
@@ -104,6 +104,11 @@ async def materialize(root, *, incremental, card_type=None, final_unlinked=False
     configure_community_kg_registry(factory, settings=settings)
     bundle = require_community_routed_graph_composition()
     try:
+        if native_schema:
+            from okto_pulse.community.adapters.current_relational_schema import (
+                current_schema_contract, initialize_current_schema,
+            )
+            await initialize_current_schema(runtime.engine, current_schema_contract())
         async with runtime.engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
             await connection.execute(insert(Board).values(id='board', name='Board', owner_id='owner', realm_id='local'))
