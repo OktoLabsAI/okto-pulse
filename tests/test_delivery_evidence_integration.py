@@ -824,3 +824,23 @@ async def test_projection_lists_receipts_of_in_progress_cards(ledger):
     view = await store.projection(BOARD_ID, SPEC_ID)
     impl_candidates = [c for c in view["candidates"] if c["kind"] == "implementation"]
     assert any(c["card_id"] == "task" for c in impl_candidates)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("for_update", [False, True])
+async def test_spec_gate_refuses_mismatched_edition_through_public_snapshot_port(ledger, for_update):
+    from okto_pulse.community.adapters.relational_application import CommunityRelationalApplicationAdapter
+    from okto_pulse.core.ports.relational_application import register_relational_application_adapter
+    from okto_pulse.core.services.delivery_evidence import require_spec_delivery
+
+    register_relational_application_adapter(CommunityRelationalApplicationAdapter())
+    session, store, _ = ledger
+    spec = await session.get(Spec, SPEC_ID)
+    edition_before = spec.edition
+    mismatched = SimpleNamespace(board_id=BOARD_ID, id=SPEC_ID, edition=edition_before + 1,
+                                skip_delivery_evidence=False)
+    with pytest.raises(ValueError, match="delivery_edition_conflict"):
+        await require_spec_delivery(session, mismatched, for_update=for_update)
+    await session.refresh(spec)
+    assert spec.edition == edition_before
+    assert (await store.projection(BOARD_ID, SPEC_ID))["allowed"] is False
