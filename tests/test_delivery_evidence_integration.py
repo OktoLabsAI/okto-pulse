@@ -60,10 +60,20 @@ from test_evidence_v2_adapter import (
 
 
 @pytest_asyncio.fixture
-async def ledger(tmp_path):
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'delivery.sqlite'}")
+async def ledger(tmp_path, request):
+    native_bug = getattr(request, "param", None) == "native_bug"
+    if native_bug:
+        from okto_pulse.community.adapters.sqlalchemy_database import build_community_engine, install_community_sqlite_pragmas
+        engine = build_community_engine(f"sqlite+aiosqlite:///{tmp_path / 'delivery.sqlite'}")
+        install_community_sqlite_pragmas(engine)
+    else:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'delivery.sqlite'}")
+    if native_bug:
+        from okto_pulse.community.adapters.current_relational_schema import current_schema_contract, initialize_current_schema
+        await initialize_current_schema(engine, current_schema_contract())
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        if not native_bug:
+            await conn.run_sync(Base.metadata.create_all)
         await conn.exec_driver_sql(
             "INSERT INTO boards (id, name, owner_id, realm_id) VALUES (?, 'Delivery', 'owner', 'local')",
             (BOARD_ID,),
@@ -75,10 +85,17 @@ async def ledger(tmp_path):
              json.dumps(new_execution_contract(board_id=BOARD_ID, spec_id=SPEC_ID, edition=1,
                 actor_id='owner', origin='new_spec'))),
         )
-        for card_id, card_type in (("task", "normal"), ("test", "test")):
+        for card_id, card_type in (("task", "bug" if native_bug else "normal"), ("test", "test")):
             await conn.exec_driver_sql(
                 "INSERT INTO cards (id, board_id, spec_id, title, status, position, created_by, card_type) VALUES (?, ?, ?, ?, 'done', 0, 'owner', ?)",
                 (card_id, BOARD_ID, SPEC_ID, card_id, card_type),
+            )
+        if native_bug:
+            await conn.exec_driver_sql(
+                "UPDATE cards SET linked_test_task_ids=?, expected_behavior=?, observed_behavior=?, action_plan=? WHERE id='task'",
+                (json.dumps(["test"]), "About reports the installed version.",
+                 "About reports a stale version.",
+                 "Use the authoritative release version in the compiled bundle."),
             )
     session = build_community_session_factory(engine)()
     evidence_ledger, _, evidence = await _produce(tmp_path)
@@ -112,8 +129,8 @@ async def ledger(tmp_path):
             ]
         )
     )
-    now = datetime(2026, 7, 14, 14, tzinfo=timezone.utc)
-    request, consumed, receipt, _, workspace = _attestation_bundle(
+    now = datetime.now(timezone.utc) if native_bug else datetime(2026, 7, 14, 14, tzinfo=timezone.utc)
+    open_request, consumed, receipt, head, workspace = _attestation_bundle(
         now, subject_id="task"
     )
     workspace = replace(workspace, declared_revision="a" * 40)
@@ -135,12 +152,20 @@ async def ledger(tmp_path):
         workspace_state=workspace,
         observation_sha256=observation,
     )
-    await session.execute(
-        insert(CodeInvestigationRequestRow).values(**_request_row(request))
-    )
-    await session.execute(
-        insert(CodeInvestigationReceiptRow).values(**_receipt_row(receipt))
-    )
+    if native_bug:
+        from okto_pulse.community.adapters.sqlalchemy_code_traceability import CommunitySqlAlchemyCodeInvestigationStore
+        investigation = CommunitySqlAlchemyCodeInvestigationStore(session)
+        await investigation.create_request(replace(open_request, board_id=BOARD_ID))
+        await investigation.consume_request_append_receipt_and_advance_head(
+            request=request, receipt=receipt, head=replace(head, board_id=BOARD_ID),
+            expected_head_revision=None)
+    else:
+        await session.execute(
+            insert(CodeInvestigationRequestRow).values(**_request_row(request))
+        )
+        await session.execute(
+            insert(CodeInvestigationReceiptRow).values(**_receipt_row(receipt))
+        )
     session.add(
         ImplementationTargetRow(
             id="target",
