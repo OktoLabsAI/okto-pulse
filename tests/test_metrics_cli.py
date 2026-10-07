@@ -16,7 +16,7 @@ def _isolated_metrics_paths(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     for key in ("METRICS_DIR", "KG_BASE_DIR", "DATABASE_URL", "UPLOAD_DIR"):
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setenv("OKTO_PULSE_HOME", str(tmp_path / "pulse-home"))
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "pulse-home"))
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "pulse-data"))
 
 
@@ -40,7 +40,7 @@ def test_community_settings_uses_okto_pulse_home_for_all_local_state(
 ) -> None:
     monkeypatch.delenv("DATA_DIR", raising=False)
     monkeypatch.delenv("KG_BASE_DIR", raising=False)
-    monkeypatch.setenv("OKTO_PULSE_HOME", str(tmp_path / "pulse-home"))
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "pulse-home"))
 
     settings = CommunitySettings()
 

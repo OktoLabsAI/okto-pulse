@@ -309,7 +309,7 @@ def test_real_community_lifespan_publishes_then_resets_control_plane(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("OKTO_PULSE_HOME", str(tmp_path / "pulse-home"))
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "pulse-home"))
     monkeypatch.setenv("KG_EMBEDDING_MODE", "stub")
     monkeypatch.setenv("KG_DAILY_TICK_DISABLED", "1")
 
@@ -338,7 +338,7 @@ def test_real_lifespan_skips_graph_and_database_when_recovery_drain_fails(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    monkeypatch.setenv("OKTO_PULSE_HOME", str(tmp_path / "pulse-home-fail-closed"))
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "pulse-home-fail-closed"))
     monkeypatch.setenv("KG_EMBEDDING_MODE", "stub")
     monkeypatch.setenv("KG_DAILY_TICK_DISABLED", "1")
 

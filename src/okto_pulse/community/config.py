@@ -19,7 +19,7 @@ from okto_pulse.community.adapters.telemetry_effect_config import (
 )
 from okto_pulse.community.adapters.package_version import default_core_version
 
-DataDirOrigin = Literal["explicit", "DATA_DIR", "OKTO_PULSE_HOME", "default"]
+DataDirOrigin = Literal["explicit", "DATA_DIR", "default"]
 GraphBackend = Literal["grafx"]
 GrafxDescriptorRevalidation = Literal["strict", "generation"]
 
@@ -141,18 +141,14 @@ class CommunitySettings(CoreSettings, BaseSettings):
     def __init__(self, **values: object) -> None:
         """Resolve the data-home path and its provenance as one identity.
 
-        The legacy ``OKTO_PULSE_HOME`` environment variable intentionally
-        outranks ``DATA_DIR`` loaded from dotenv. Resolve that cross-source
-        precedence before BaseSettings merges its sources, then pass the path
-        and provenance together as authoritative init values. Empty and
-        whitespace-only candidates are absent, and ``DATA_DIR_ORIGIN`` can
-        never spoof the result.
+        Explicit arguments take precedence over DATA_DIR from the environment
+        and dotenv, followed by the installation default. Empty candidates are
+        absent, and DATA_DIR_ORIGIN cannot spoof the resolved identity.
         """
 
         prepared = dict(values)
         supplied_data_dir = str(prepared.get("data_dir") or "").strip()
         environment_data_dir = (os.environ.get("DATA_DIR") or "").strip()
-        legacy_environment_home = (os.environ.get("OKTO_PULSE_HOME") or "").strip()
 
         env_file = prepared.get("_env_file", self.model_config.get("env_file"))
         env_file_encoding = prepared.get(
@@ -177,9 +173,6 @@ class CommunitySettings(CoreSettings, BaseSettings):
         elif environment_data_dir:
             origin = "DATA_DIR"
             resolved_data_dir = environment_data_dir
-        elif legacy_environment_home:
-            origin = "OKTO_PULSE_HOME"
-            resolved_data_dir = legacy_environment_home
         elif dotenv_data_dir:
             origin = "DATA_DIR"
             resolved_data_dir = dotenv_data_dir
@@ -253,9 +246,7 @@ class CommunitySettings(CoreSettings, BaseSettings):
                 "mcp_admission_max_queued"
             )
         if not self.data_dir:
-            self.data_dir = os.environ.get("OKTO_PULSE_HOME") or str(
-                Path.home() / ".okto-pulse"
-            )
+            self.data_dir = str(Path.home() / ".okto-pulse")
         data_path = Path(self.data_dir).expanduser().resolve()
         self.data_dir = str(data_path)
         # Only override if still unset or at the legacy core default value.

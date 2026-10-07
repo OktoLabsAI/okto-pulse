@@ -386,7 +386,6 @@ def _isolated_runtime_environment(data_dir: Path) -> dict[str, str]:
     return {
         **os.environ,
         "DATA_DIR": str(data_dir),
-        "OKTO_PULSE_HOME": str(data_dir),
         "DATABASE_URL": f"sqlite+aiosqlite:///{(data_dir / 'data' / 'pulse.db').as_posix()}",
         "KG_BASE_DIR": str(data_dir),
         "UPLOAD_DIR": str(data_dir / "uploads"),
@@ -505,7 +504,6 @@ def installed_runtime(
         "KG_GLOBAL_GRAPH_BACKEND": "grafx",
         "KG_GRAPH_BACKEND": "grafx",
         "NO_PROXY": "127.0.0.1,localhost",
-        "OKTO_PULSE_HOME": str(data_dir),
         "OKTO_PULSE_METRICS_BEACON_STARTUP_DELAY_SECONDS": "600",
         "OKTO_PULSE_NO_BANNER": "1",
         "OKTO_PULSE_SHUTDOWN_TIMEOUT_SECONDS": "45",
@@ -848,7 +846,7 @@ print(json.dumps({"api_key_hash": key_hash, "api_key_marker": credential_marker(
 
 
 def test_installed_runtime_paths_override_parent_campaign(tmp_path, monkeypatch):
-    keys = ("DATA_DIR", "OKTO_PULSE_HOME", "DATABASE_URL", "KG_BASE_DIR", "UPLOAD_DIR", "METRICS_DIR")
+    keys = ("DATA_DIR", "DATABASE_URL", "KG_BASE_DIR", "UPLOAD_DIR", "METRICS_DIR")
     for key in keys:
         monkeypatch.setenv(key, "parent-runtime-must-not-be-used")
     data = tmp_path / "isolated"
@@ -998,7 +996,6 @@ def test_installed_grafx_candidate_materializes_board_and_global_routes(
         "KG_GRAFX_PAGE_SIZE": "8192",
         "KG_GRAPH_BACKEND": "grafx",
         "NO_PROXY": "127.0.0.1,localhost",
-        "OKTO_PULSE_HOME": str(data_dir),
         "OKTO_PULSE_NO_BANNER": "1",
         "OKTO_PULSE_SKIP_DEMO_SEED": "1",
         "OKTO_PULSE_TERMS_ACCEPTED": "1",

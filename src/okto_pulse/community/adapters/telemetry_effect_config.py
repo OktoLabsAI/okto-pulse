@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +22,6 @@ class CommunityTelemetryEffectConfigProvider:
             return Path(raw).expanduser().resolve()
         data_dir = (
             (getattr(settings, "data_dir", "") or "").strip()
-            or os.environ.get("OKTO_PULSE_HOME")
             or str(Path.home() / ".okto-pulse")
         )
         return (Path(data_dir).expanduser().resolve() / "metrics").resolve()

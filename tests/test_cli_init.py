@@ -81,7 +81,6 @@ def test_init_subparser_no_args_shows_help(tmp_path):
     """Running `okto-pulse init` with no subcommand prints help and exits 1."""
     env = dict(os.environ)
     env["DATA_DIR"] = str(tmp_path / "data")
-    env["OKTO_PULSE_HOME"] = str(tmp_path / "home")
     env["PYTHONIOENCODING"] = "utf-8"
     result = subprocess.run(
         [
@@ -275,7 +274,6 @@ def test_init_real_engine_closes_wals_and_reopens_every_graph_strictly_offline(
     env.update(
         {
             "DATA_DIR": str(pulse_home),
-            "OKTO_PULSE_HOME": str(pulse_home),
             "DATABASE_URL": f"sqlite+aiosqlite:///{(pulse_home / 'data' / 'pulse.db').as_posix()}",
             "KG_BASE_DIR": str(pulse_home),
             "UPLOAD_DIR": str(pulse_home / "uploads"),

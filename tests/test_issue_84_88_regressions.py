@@ -77,6 +77,10 @@ def test_acceptance_uses_settings_data_home(source, tmp_path, monkeypatch):
         monkeypatch.setenv("DATA_DIR", "  ")
     if source == "dotenv":
         (tmp_path / ".env").write_text("DATA_DIR=./dotenv-home\n", encoding="utf-8")
+    if source in {"legacy", "blank", "default"}:
+        assert Path(CommunitySettings().data_dir) == (
+            tmp_path / "user-home/.okto-pulse"
+        ).resolve()
     expected = Path(CommunitySettings().data_dir) / ".terms-accepted.json"
     acceptance.write_acceptance("cli")
     assert acceptance._state_path() == expected
