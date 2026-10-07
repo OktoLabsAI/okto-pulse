@@ -113,3 +113,14 @@ def test_integral_floats_pass_the_parse_boundary(
         json={"status": "started", "position": position},
     )
     assert response.status_code != 422, response.text
+
+
+@pytest.mark.parametrize("value", [None, "done", "in_progress"])
+def test_card_patch_rejects_status_before_any_effect(client: TestClient, value) -> None:
+    schema = client.get("/openapi.json").json()["components"]["schemas"]
+    assert "status" not in schema["CardUpdate"]["properties"]
+    assert "status" in schema["CardMove"]["required"]
+    response = client.patch("/api/v1/cards/card", json={"status": value})
+    assert response.status_code == 422, response.text
+    assert any(error["type"] == "extra_forbidden" and error["loc"][-1] == "status"
+               for error in response.json()["detail"])

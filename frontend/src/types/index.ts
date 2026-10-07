@@ -3598,7 +3598,6 @@ export interface UpdateCardRequest {
   title?: string;
   description?: string;
   details?: string;
-  status?: CardStatus;
   priority?: CardPriority;
   position?: number;
   assignee_id?: string;
