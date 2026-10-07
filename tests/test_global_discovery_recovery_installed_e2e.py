@@ -76,6 +76,9 @@ EXPECTED_PULSE_VERSION = tomllib.loads(
 )["project"]["version"]
 assert tomllib.loads((CORE_REPO / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"] == EXPECTED_PULSE_VERSION
 BOARD_CENSUS_SIZE = 1_500
+# Observe the full 600s product attempt plus bounded polling/shutdown slack.
+# This does not extend the worker budget or reduce the 1,500-Board census.
+PREPARATION_OBSERVER_TIMEOUT = 660
 EXPECTED_TOOL_COUNT = 282
 EXPECTED_CANONICAL_TOOL_COUNT = 282
 EXPECTED_TOOL_INVENTORY_SHA256 = (
@@ -2130,7 +2133,7 @@ async def test_installed_internal_recovery_and_public_dlq_retirement(
                 peer_client,
                 first["run_id"],
                 {"prepared"},
-                timeout=480,
+                timeout=PREPARATION_OBSERVER_TIMEOUT,
                 poll_interval=1.0,
             )
             assert prepared["counts"]["boards_total"] == BOARD_CENSUS_SIZE
@@ -2181,7 +2184,7 @@ async def test_installed_internal_recovery_and_public_dlq_retirement(
                 client,
                 second["run_id"],
                 {"prepared"},
-                timeout=480,
+                timeout=PREPARATION_OBSERVER_TIMEOUT,
                 poll_interval=1.0,
             )
             wrong_hash = await _internal_payload(
@@ -2268,7 +2271,7 @@ async def test_installed_internal_recovery_and_public_dlq_retirement(
                 client,
                 third["run_id"],
                 {"prepared"},
-                timeout=480,
+                timeout=PREPARATION_OBSERVER_TIMEOUT,
                 poll_interval=1.0,
             )
             # Exact one-shot fence-loss target (S4.0R v3): only the durable
@@ -2813,7 +2816,7 @@ async def _prepare_confirm(
         peer_client,
         admitted["run_id"],
         {"prepared"},
-        timeout=480,
+        timeout=PREPARATION_OBSERVER_TIMEOUT,
         poll_interval=1.0,
     )
     confirmation = await _internal_payload(
