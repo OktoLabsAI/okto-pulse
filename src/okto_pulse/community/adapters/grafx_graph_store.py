@@ -40,6 +40,7 @@ from okto_pulse.community.adapters.grafx_board_vector_search import (
     CommunityGrafxBoardVectorSearch,
 )
 from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
+from okto_pulse.community.adapters.grafx_decision_read_filter import normative_decision_filter_clause
 from okto_pulse.community.adapters.grafx_query_execution import GrafxDeadlineReader
 from okto_pulse.community.adapters.grafx_composed_reads import read_branches, read_frontier
 from okto_pulse.community.adapters.grafx_relationship_layout import (
@@ -825,6 +826,7 @@ class CommunityGrafxGraphStore:
             "AND n.source_confidence >= $min_confidence "
             "AND n.relevance_score >= $min_relevance "
             f"AND {tpl.superseded_filter_clause('n')} "
+            f"AND {normative_decision_filter_clause(wanted_type)} "
             f"AND {tpl.active_read_filter_clause('n')} "
             "RETURN n.id, n.title, n.content, n.created_at, n.source_confidence, "
             "n.relevance_score, n.superseded_by, n.query_hits, n.last_queried_at, "

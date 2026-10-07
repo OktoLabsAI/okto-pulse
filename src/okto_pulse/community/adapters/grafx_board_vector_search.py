@@ -18,6 +18,7 @@ from okto_pulse.core.kg import cypher_templates as tpl
 from okto_pulse.core.kg.schema_contract import VECTOR_INDEX_TYPES
 
 from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
+from okto_pulse.community.adapters.grafx_decision_read_filter import normative_decision_filter_clause
 from okto_pulse.community.adapters.grafx_query_execution import GrafxDeadlineReader
 from okto_pulse.community.adapters.grafx_schema_manifest import (
     EMBEDDING_DIMENSION,
@@ -45,12 +46,13 @@ _PAYLOAD_PROJECTION = (
 )
 
 
-def _candidate_predicate() -> str:
+def _candidate_predicate(node_type: str) -> str:
     """Return the single board-eligibility predicate used by both paths."""
 
     return (
         "n.embedding IS NOT NULL "
         f"AND {tpl.superseded_filter_clause('n')} "
+        f"AND {normative_decision_filter_clause(node_type)} "
         f"AND {tpl.layer_filter_clause('n')} "
         f"AND {tpl.active_read_filter_clause('n')}"
     )
@@ -58,7 +60,7 @@ def _candidate_predicate() -> str:
 
 def _indexed_statement(node_type: str, space: str) -> str:
     return (
-        f"MATCH (n:{node_type}) WHERE {_candidate_predicate()} "
+        f"MATCH (n:{node_type}) WHERE {_candidate_predicate(node_type)} "
         f"AND similarity(n.embedding, $query, space => '{space}') "
         ">= $raw_threshold "
         f"RETURN {_PAYLOAD_PROJECTION}, similarity_score() AS score "
@@ -68,7 +70,7 @@ def _indexed_statement(node_type: str, space: str) -> str:
 
 def _exact_statement(node_type: str) -> str:
     return (
-        f"MATCH (n:{node_type}) WHERE {_candidate_predicate()} "
+        f"MATCH (n:{node_type}) WHERE {_candidate_predicate(node_type)} "
         f"RETURN {_PAYLOAD_PROJECTION}, n.embedding"
     )
 
