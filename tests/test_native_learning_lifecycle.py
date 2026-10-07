@@ -171,6 +171,18 @@ async def test_capture_is_durable_before_actual_review_and_materializes_after_do
         await deliver_capture_events(factory)
         assert await worker.drain_once() == 0
         assert await store.enumerate(BOARD) == history
+        from okto_pulse.core.services.kg_health_service import get_kg_health
+        async with factory() as reader:
+            board = await reader.get(Board, BOARD)
+            assert not board.settings.get("cognitive_llm_config")
+            health = await get_kg_health(BOARD, reader)
+        # This lifecycle fixture has no global-discovery binding or registered
+        # relational source path. Health must report those limits; successful
+        # local Learning projection does not establish whole-runtime health.
+        assert health["probe_reason_codes"]["global_discovery"] == "graph_route_binding_missing"
+        assert health["probe_diagnostics"]["rebuild_source_diagnostics"]["status"] == "unavailable"
+        assert health["health_issues"]
+        assert all("llm" not in json.dumps(issue).lower() for issue in health["health_issues"])
     finally:
         from okto_pulse.core.services.application_kg import drain_kg_health_probes
         drain_kg_health_probes()
