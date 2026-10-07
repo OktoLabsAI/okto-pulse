@@ -751,3 +751,81 @@ Paged by a stable `node_id` cursor: pass `next_cursor` until
 `last_page=true`; the concatenation of pages is the full export. An
 unreadable graph returns `kg_export_failed` and never a partial document.
 The former CLI graph export is removed. REST is absent.
+
+## `okto_pulse_kg_get_learning_capture_context`
+
+Read the current semantic source for a Bug using `board_id` and `bug_id`.
+Returns `contract_version=learning-capture-context/v1`, source digest/version
+and linked scenarios with authenticated receipt availability. Requires all
+source read permissions and access to the Bug's Board/realm. It writes nothing
+and does not approve content or authorize Bug completion.
+
+Example: `{"board_id":"board-1","bug_id":"bug-1"}`. Use the returned
+`source_digest` and `source_policy_version` as the expected basis of creation.
+
+Optional `candidate_query` (1–4096 characters) requests up to three related
+Learnings and additionally requires `kg.query.learning_from_bugs`. This is an
+optional search, not a prerequisite for create. It uses a bounded vector window
+and verifies each offered literal against its cognitive source head. The
+response identifies cosine similarity, graph snapshot, native search regime and
+limitations; it is not exhaustive and does not assess current applicability.
+Scores ≥0.95 suggest considering reuse, 0.85–0.95 suggest review for a possible
+replacement, and 0.60–0.85 indicate related content. No score selects an intent
+or grants approval. Unavailable search remains explicit, never an empty success.
+
+## `okto_pulse_kg_create_learning_capture`
+
+Persist an independently authored Learning capture before Bug completion.
+Arguments: `board_id`, `bug_id`, caller-generated `capture_id`,
+`expected_source_digest`, `expected_source_version`, authored `content`,
+`context`, `applicability`, and `scenario_ids` selected from the source preview.
+Source reads plus `kg.session.begin`, `kg.session.add_node`,
+`kg.session.add_edge`, and `kg.session.commit` are all required. The server
+derives author and timestamp, rereads under serialization, authenticates the
+selected receipts and commits through the shared application use case.
+
+Returns `capture_id`, `learning_id`, `fingerprint` and
+`status=captured_pending_materialization`. This is not execution approval or
+Bug completion. Exact retries use the same ID/content/current basis; changing
+content or using an obsolete basis returns a conflict. Preserve the authored
+text, reread context and review applicability before submitting a new capture.
+No raw graph session, polling or maintenance command is required.
+
+Optional `intent` defaults to creating a new Learning when absent. Explicit
+`{"kind":"create"}` is also accepted. Reuse requires `kind="reuse"`,
+`target_node_id`, `target_generation`, `expected_fingerprint` and an authored
+`reason`; preserve the existing Learning content exactly. A replacement uses
+`kind="supersede"` with the same target fields and an explicit
+`scope="source_bug"`. It covers this Bug only, never all origins of the old
+Learning. No similarity score selects or authorizes either operation.
+
+Target intents additionally require `kg.query.learning_from_bugs`. A stale target
+returns `learning_capture_target_changed` with `current_target` identity,
+revision and fingerprint when available. This is a conflict for the caller to
+review, not an automatic retry against the new head. Other authorization or
+storage failures do not expose that target. The same typed intent is accepted
+inside `learning_submission` on the existing compound report operation; its
+report, capture, binding when applicable and outbox share the caller's UOW.
+
+Example: `{"board_id":"board-1","bug_id":"bug-1","capture_id":"capture-1",
+"expected_source_digest":"<64-character digest from context>",
+"expected_source_version":1,"content":"Keep release metadata authoritative",
+"context":"Frontend packaging","applicability":"Compiled releases",
+"scenario_ids":["scenario-1"]}`.
+## `okto_pulse_kg_list_learning_captures`
+
+Read durable capture history using `board_id`, `bug_id`, optional `cursor`
+and `limit` (default20, range1..50 source identities). Requires the source read
+permissions plus `kg.query.learning_from_bugs`; authorship does not grant reading
+other authors' Learning content. Returns `learning-capture-history/v1`, `items`
+and `next_cursor`. Each item includes Learning identity/generation/revision,
+fingerprint and the authored capture. Older captures remain visible even when
+later revisions contain materialized properties. A page audits the complete
+history of its selected identities; corruption, unavailable history or a budget
+overflow is an error, never an empty/partial success.
+
+Example: `{"board_id":"board-1","bug_id":"bug-1","limit":20}`. Follow
+`next_cursor` until null. Paging is not a frozen snapshot; refresh to observe
+concurrent insertions. Presence in history does not prove current applicability,
+approval or graph materialization. Compare the current source preview and
+review applicability before reusing authored content.

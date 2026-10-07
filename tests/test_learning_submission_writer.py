@@ -66,9 +66,18 @@ async def prepare(runtime, target, *, learning_policy=None):
             board.settings = {**board.settings, 'bug_learning_closeout': learning_policy}
         spec = await session.get(Spec, 'spec-bug-context')
         spec.status = 'in_progress'
+        # This fixture declares a complete native inventory before source fencing.
+        spec.functional_requirements = []
+        spec.technical_requirements = []
+        spec.business_rules = []
+        spec.api_contracts = []
+        spec.integration_requirements = []
+        spec.observability_requirements = []
+        spec.decisions = []
         bug = await session.get(Card, request.bug_id)
         bug.status = 'validation' if target == 'done' else 'in_progress'
         bug.conclusions = []
+        bug.validations = []
         await session.commit()
         source = await assembler.assemble_semantic(session, board_id=BOARD, bug_id=bug.id)
     # Internal intent admission is not yet part of the compound wire contract.

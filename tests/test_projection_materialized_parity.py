@@ -8,6 +8,7 @@ import pytest
 from okto_grafx import connect
 from sqlalchemy import insert, update, select
 
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
 from okto_pulse.core import configure_settings
 from okto_pulse.core.application.processors.consolidation import ConsolidationProcessor
 from okto_pulse.core.ports.coordination import register_coordination_providers
@@ -107,7 +108,9 @@ async def materialize(root, *, incremental, card_type=None, final_unlinked=False
             await connection.run_sync(Base.metadata.create_all)
             await connection.execute(insert(Board).values(id='board', name='Board', owner_id='owner', realm_id='local'))
             await connection.execute(insert(Spec).values(id='spec', board_id='board', title='Spec',
-                status='done', created_by='owner', **source([] if final_empty else ['ac_two'])))
+                status='done', created_by='owner', architecture_adoption=ArchitectureAdoptionScope(
+                    board_id='board', spec_id='spec', adopted_in_edition=1,
+                    actor_id='owner', inherited_resource_ids=()).model_dump(mode='json'), **source([] if final_empty else ['ac_two'])))
             if card_type:
                 await connection.execute(insert(Card).values(id='card', board_id='board', spec_id=None if final_unlinked else 'spec',
                     title='Observed scenario', status='done', card_type=card_type, created_by='owner',
@@ -617,9 +620,13 @@ async def test_known_dependency_removal_is_not_current_while_new_prerequisite_is
 
     async def exercise(factory, graph):
         async with factory() as session:
-            session.add(Spec(id='old', board_id='board', title='Old prerequisite', status='done',
+            session.add(Spec(architecture_adoption=ArchitectureAdoptionScope(board_id='board', spec_id='old',
+                adopted_in_edition=1, actor_id='owner', inherited_resource_ids=()).model_dump(mode='json'),
+                id='old', board_id='board', title='Old prerequisite', status='done',
                 created_by='owner'))
-            session.add(Spec(id='next', board_id='board', title='New prerequisite', status='done',
+            session.add(Spec(architecture_adoption=ArchitectureAdoptionScope(board_id='board', spec_id='next',
+                adopted_in_edition=1, actor_id='owner', inherited_resource_ids=()).model_dump(mode='json'),
+                id='next', board_id='board', title='New prerequisite', status='done',
                 created_by='owner'))
             await session.commit()
         await enqueue(factory, 'old-root', 'old')
@@ -712,7 +719,9 @@ async def test_repeated_spec_contract_content_keeps_each_owner(tmp_path, monkeyp
     async def exercise(factory, graph):
         before = relationship_set(graph)
         async with factory() as session:
-            session.add(Spec(id='second', board_id='board', title='Second Spec', status='done',
+            session.add(Spec(architecture_adoption=ArchitectureAdoptionScope(board_id='board', spec_id='second',
+                adopted_in_edition=1, actor_id='owner', inherited_resource_ids=()).model_dump(mode='json'),
+                id='second', board_id='board', title='Second Spec', status='done',
                 created_by='owner', **source(['ac_two'])))
             session.add(ConsolidationQueue(id='second-spec', board_id='board', artifact_type='spec',
                 artifact_id='second', source='state_transition'))
