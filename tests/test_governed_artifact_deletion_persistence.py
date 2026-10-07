@@ -19,9 +19,6 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     ConsolidationDeadLetter,
     ConsolidationQueue,
 )
-from okto_pulse.community.adapters.sqlalchemy_schema_contract import (
-    COMMUNITY_SCHEMA_EXTENSION_TABLES,
-)
 from okto_pulse.core.ports.reconcile_intent import ReconcileIntentCreate
 from okto_pulse.core.ports.tombstone import DeletionTombstoneAdvance
 
@@ -34,7 +31,7 @@ async def _database(tmp_path):
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     async with factory() as session:
-        session.add(Board(id="board-1", name="Board", owner_id="agent"))
+        session.add(Board(id="board-1", realm_id="local", name="Board", owner_id="agent"))
         await session.commit()
     return engine, factory
 
@@ -366,7 +363,7 @@ async def test_governed_deletion_conflicts_fail_closed(tmp_path):
 
 
 def test_deletion_tombstone_participates_in_schema_and_revision_manifests():
-    assert "artifact_deletion_tombstones" in COMMUNITY_SCHEMA_EXTENSION_TABLES
+    assert "artifact_deletion_tombstones" in Base.metadata.tables
     assert "artifact_deletion_tombstones" in (
         GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES
     )

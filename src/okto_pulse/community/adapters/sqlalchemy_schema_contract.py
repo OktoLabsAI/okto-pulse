@@ -100,136 +100,15 @@ def schema_contract_sha256(
     return hashlib.sha256(payload).hexdigest()
 
 
-# Frozen from the last Core-owned SQLAlchemy metadata before F01 extraction.
-LEGACY_CORE_SCHEMA_SHA256 = (
-    "e86da78734745e3f1f2fab55a4eaefc5a60d8b6b97053d5d0914cf43609f4d74"
-)
-
-# Current inherited schema after the governed tenant-scope/Knowledge Base
-# migrations, the SK-B internal policy-version fences, lifecycle-edition
-# columns on human-reviewed artifacts, and the exact rebuild compensation
-# journal used by terminal recovery reconciliation. This also includes the
-# fail-closed per-Spec Code Evidence Matrix coverage skip and the nullable
-# delivery/source-context overlay on Refinement snapshots and Specs, plus the
-# per-Spec Delivery Evidence skip added by the card-delivery release.
-# v0.4 adds the nullable Card migrated_validation_policy and the Spec
-# architecture_adoption/execution_contract JSON columns. Removing exactly those
-# three additions reproduces the preceding 8b43b7a2... contract. F3 then retires
-# all four Sprint tables and cards.sprint_id (including its FK/index), and
-# records permission_migration_review on agents, agent_boards and permission_presets.
-# The inherited population is now 61 tables. The new retirement checkpoint is
-# a Community extension, not part of the pre-extraction inherited population.
-# Keep the pre-extraction hash above immutable so migration provenance remains
-# independently verifiable.
-CURRENT_COMMUNITY_INHERITED_SCHEMA_SHA256 = (
-    "e6ae97ce00d0a176bb2159fa1c3541c69b0e9df8ca3e41b3992c97d319353469"
-)
-
-# Additive Community-owned tables introduced after the F01 extraction. They
-# are intentionally excluded when proving that the surviving inherited Core
-# schema matches the governed Community contract.
-COMMUNITY_SCHEMA_EXTENSION_TABLES = frozenset(
-    {
-        "card_delivery_evidence_records",
-        "architecture_candidate_decisions",
-        "architecture_classification_receipts",
-        "artifact_deletion_tombstones",
-        "global_discovery_delivery_ledger",
-        "global_discovery_delivery_redrive_control",
-        "global_discovery_delivery_watchdog_control",
-        "kg_takedown_state_events",
-        "kg_cognitive_sources",
-        "kg_cognitive_source_revisions",
-        "kg_board_erasure_jobs",
-        "kg_board_erasure_permits",
-        "kg_curation_proposals",
-        "kg_equivalence_ledger",
-        "kg_node_subtypes",
-        "global_discovery_recovery_attempts",
-        "global_discovery_recovery_slots",
-        "global_discovery_recovery_dispatches",
-        "global_discovery_recovery_transitions",
-        "global_discovery_source_revision",
-        "checklist_binding_heads",
-        "checklist_bindings",
-        "checklist_execution_heads",
-        "checklist_executions",
-        "checklist_item_results",
-        "checklist_receipts",
-        "checklist_template_versions",
-        "checklist_validation_binding_snapshots",
-        "guideline_revisions",
-        "guideline_heads",
-        "guideline_revision_noop_replays",
-        "guideline_board_bindings",
-        "guideline_import_binding_candidates",
-        "guideline_impact_receipts",
-        "guideline_impact_items",
-        "guideline_impact_adoptions",
-        "guideline_impact_unlinks",
-        "guideline_retirement_impacts",
-        "guideline_retirements",
-        "permission_introduction_audit",
-        "semantic_guideline_revisions",
-        "semantic_guideline_binding_configurations",
-        "semantic_subject_version_events",
-        "semantic_subject_versions",
-        "semantic_guideline_waivers",
-        "semantic_guideline_waiver_events",
-        "semantic_guideline_skips",
-        "semantic_guideline_assessments_v2",
-        "semantic_guideline_findings_v2",
-        "semantic_guideline_metric_results_v2",
-        "semantic_guideline_validation_scopes",
-        "quality_assessment_heads",
-        "quality_assessment_lifecycle_transitions",
-        "quality_assessment_outbox",
-        "quality_assessment_receipts",
-        "quality_assessment_subject_erasure_permits",
-        "quality_finding_qa_links",
-        "quality_findings",
-        "quality_proposed_questions",
-        "requirement_lint_validation_snapshots",
-        "research_decision_derivations",
-        "research_decision_entries",
-        "research_decision_heads",
-        "research_decision_history",
-        "research_decision_idempotency",
-        "research_decision_outbox",
-        "research_decision_snapshots",
-        "spec_dependency_board_locks",
-        "spec_dependencies",
-        "spec_dependency_operations",
-        "knowledge_propagation_scopes",
-        "knowledge_propagation_assignments",
-        "knowledge_propagation_snapshots",
-        "knowledge_propagation_tombstones",
-        "knowledge_mutation_ledger",
-        "knowledge_mutation_attempts",
-        "code_investigation_requests",
-        "code_investigation_receipts",
-        "code_investigation_receipt_revocations",
-        "code_investigation_heads",
-        "code_evidence",
-        "code_evidence_classification_events",
-        "code_evidence_classification_heads",
-        "code_evidence_spec_links",
-        "code_evidence_dispositions",
-        "implementation_targets",
-        "implementation_target_spec_links",
-        "implementation_target_evidence_links",
-        "implementation_target_resolutions",
-        "implementation_target_execution_records",
-        "target_overlap_acknowledgements",
-        "code_traceability_waivers",
-    }
+# One complete Community-owned schema for fresh v0.4.0 installations.
+# Pin every table, column, constraint and index; no inherited/extension split.
+CURRENT_COMMUNITY_SCHEMA_SHA256 = (
+    "6dcbf913aea0ae223ab0f884f8df4fb7d1a84b304e5d7364f6b85973f658c27e"
 )
 
 
 __all__ = [
-    "COMMUNITY_SCHEMA_EXTENSION_TABLES",
-    "CURRENT_COMMUNITY_INHERITED_SCHEMA_SHA256",
-    "LEGACY_CORE_SCHEMA_SHA256",
+    "CURRENT_COMMUNITY_SCHEMA_SHA256",
     "schema_contract_sha256",
     "schema_manifest",
 ]

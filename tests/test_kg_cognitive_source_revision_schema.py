@@ -5,6 +5,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from okto_pulse.community.adapters.sqlalchemy_base import Base
 from sqlalchemy import CheckConstraint, UniqueConstraint
 from sqlalchemy.ext.asyncio import create_async_engine
 from okto_pulse.community.adapters.board_source_reader import read_realm_cognitive_source_snapshot
@@ -13,7 +14,6 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES,
     GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION, KGCognitiveSourceRevision,
 )
-from okto_pulse.community.adapters.sqlalchemy_schema_contract import COMMUNITY_SCHEMA_EXTENSION_TABLES
 from okto_pulse.core.ports.kg_cognitive_source import canonical_cognitive_source_fingerprint
 from okto_pulse.core.kg.rebuild_sources import cognitive_durable_digest_from_rows
 
@@ -97,7 +97,7 @@ def test_native_revision_model_has_exact_owned_contract() -> None:
             "source_revision",
         )
     }
-    assert table.name in COMMUNITY_SCHEMA_EXTENSION_TABLES
+    assert table.name in Base.metadata.tables
     assert table.name in GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES
     assert GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION == (
         "gdsr-trigger-manifest-v9"

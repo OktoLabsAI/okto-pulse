@@ -1,4 +1,4 @@
-"""F01: Community owns ORM, runtime construction and schema compatibility."""
+"""F01: Community owns ORM, runtime construction and the current schema contract."""
 
 from __future__ import annotations
 
@@ -25,9 +25,7 @@ from okto_pulse.community.adapters.sqlalchemy_repositories import (
     spec_to_row,
 )
 from okto_pulse.community.adapters.sqlalchemy_schema_contract import (
-    COMMUNITY_SCHEMA_EXTENSION_TABLES,
-    CURRENT_COMMUNITY_INHERITED_SCHEMA_SHA256,
-    LEGACY_CORE_SCHEMA_SHA256,
+    CURRENT_COMMUNITY_SCHEMA_SHA256,
     schema_contract_sha256,
 )
 
@@ -43,29 +41,15 @@ def test_community_source_has_zero_private_core_reach_ins() -> None:
     assert report["private_reach_in_baseline"] == 0
 
 
-def test_community_metadata_matches_governed_inherited_schema_contract() -> None:
+def test_community_metadata_matches_complete_current_schema_contract() -> None:
     table_names = set(Base.metadata.tables)
-    legacy_table_names = table_names - COMMUNITY_SCHEMA_EXTENSION_TABLES
-
-    assert table_names & COMMUNITY_SCHEMA_EXTENSION_TABLES == (
-        COMMUNITY_SCHEMA_EXTENSION_TABLES
-    )
-    # F3 retired four inherited Sprint tables. Its new migration checkpoint
-    # belongs to Community extensions, never to the inherited population.
+    assert len(table_names) == 151
     assert not table_names & {
         "sprints", "sprint_history", "sprint_qa_items", "sprint_activation_baselines",
+        "retirement_data_checkpoints", "code_evidence_classification_heads",
+        "code_evidence_classification_events",
     }
-    assert "retirement_data_checkpoints" in COMMUNITY_SCHEMA_EXTENSION_TABLES
-    assert len(legacy_table_names) == 61
-    assert len(table_names) == 61 + len(COMMUNITY_SCHEMA_EXTENSION_TABLES)
-    assert (
-        schema_contract_sha256(
-            Base.metadata,
-            table_names=legacy_table_names,
-        )
-        == CURRENT_COMMUNITY_INHERITED_SCHEMA_SHA256
-    )
-    assert CURRENT_COMMUNITY_INHERITED_SCHEMA_SHA256 != LEGACY_CORE_SCHEMA_SHA256
+    assert schema_contract_sha256(Base.metadata) == CURRENT_COMMUNITY_SCHEMA_SHA256
 
 
 def test_schema_contract_hash_preserves_compound_index_expression_order() -> None:

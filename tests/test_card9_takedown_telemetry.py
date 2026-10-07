@@ -27,9 +27,6 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     ConsolidationQueue,
     KGTakedownStateEvent,
 )
-from okto_pulse.community.adapters.sqlalchemy_schema_contract import (
-    COMMUNITY_SCHEMA_EXTENSION_TABLES,
-)
 from okto_pulse.community.adapters.sqlalchemy_takedown_telemetry import (
     CommunitySqlAlchemyTakedownTelemetry,
     stage_takedown_transition,
@@ -513,7 +510,7 @@ async def test_transfer_redrives_and_outcomes_preserve_complete_timeline(
 
 @pytest.mark.asyncio
 async def test_schema_contract_and_query_not_found(telemetry_store):
-    assert "kg_takedown_state_events" in COMMUNITY_SCHEMA_EXTENSION_TABLES
+    assert "kg_takedown_state_events" in Base.metadata.tables
     async with telemetry_store.sessions() as session:
         assert (
             await telemetry_store.telemetry.query_takedown_telemetry(
