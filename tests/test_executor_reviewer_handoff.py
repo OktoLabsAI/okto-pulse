@@ -38,7 +38,7 @@ def grants(*, review):
             'conclusion': {'write': not review},
             'validation': {'read': True, 'submit': review},
             'interact_in': {state: True for state in ('in_progress', 'validation', 'done', 'rejected')},
-            'move': {'in_progress_to_validation': not review},
+            'move': {'in_progress_to_validation': not review, 'rejected_to_in_progress': not review},
         },
         'code_traceability': {'evidence': {'read': True}, 'target': {'execution_submit': not review}},
     }
@@ -209,5 +209,53 @@ async def test_executor_and_reviewer_handoff_preserves_report_and_grant_boundari
             assert resumed['implementation_proofs']['items'][0]['record_id'] == record_id
             assert not resumed['recovery']['receipt_ownership_transferred']
         assert await snapshot(factory) == completed
+
+        if recommendation == 'reject':
+            # T10: only the executor's explicit rework grant permits the handoff.
+            rework = {'board_id': adopted.BOARD, 'card_id': 'task', 'status': 'in_progress'}
+            identity = 'reviewer'
+            async with Client(host) as reviewer_client:
+                denied = await reviewer_client.call_tool('okto_pulse_move_card', rework, raise_on_error=False)
+                assert denied.is_error and 'card.move.rejected_to_in_progress' in str(denied)
+            assert await snapshot(factory) == completed
+            identity = 'executor'
+            async with Client(host) as executor_client:
+                payload(await executor_client.call_tool('okto_pulse_move_card', rework, raise_on_error=False))
+                working = await snapshot(factory)
+                assert working['status'] == 'in_progress'
+                assert working['validations'] == completed['validations']
+                assert working['rejections'] == completed['rejections']
+                async with factory() as observer:
+                    assert (await observer.get(Card, 'task')).current_rejection_id is None
+                payload(await executor_client.call_tool('okto_pulse_move_card', {
+                    'board_id': adopted.BOARD, 'card_id': 'task', 'status': 'validation',
+                    'conclusion': 'Rework report explicitly addresses the prior review',
+                    'completeness': 100, 'completeness_justification': 'Selected implementation is complete',
+                    'drift': 0, 'drift_justification': 'Scope remains unchanged',
+                    'delivery_selection': {
+                        'expected_card_version': working['version'],
+                        'expected_spec_edition': command.batch.expected_spec_edition,
+                        'expected_delivery_revision': accepted['delivery_revision'],
+                        'record_ids': [record_id],
+                    },
+                }, raise_on_error=False))
+            next_review = await snapshot(factory)
+            assert next_review['status'] == 'validation'
+            assert next_review['records'] == completed['records']
+            assert next_review['conclusions'][:len(completed['conclusions'])] == completed['conclusions']
+            identity = 'reviewer'
+            async with Client(host) as reviewer_client:
+                payload(await reviewer_client.call_tool('okto_pulse_submit_task_validation', {
+                    **validation, 'recommendation': 'approve', 'idempotency_key': 'review-after-rework',
+                    'expected_subject_version': next_review['version'],
+                }, raise_on_error=False))
+            final = await snapshot(factory)
+            assert final['status'] == 'done'
+            assert len(final['validations']) == 2
+            assert final['validations'][0] == completed['validations'][0]
+            assert final['validations'][1]['reviewer_id'] == 'reviewer'
+            assert final['validations'][1]['recommendation'] == 'approve'
+            assert final['rejections'] == completed['rejections']
+            assert final['records'] == completed['records']
     finally:
         await seed.close()
