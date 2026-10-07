@@ -336,7 +336,7 @@ describe('ArchitectureTab', () => {
     expect(screen.queryByTitle('Focus diagram element')).not.toBeInTheDocument();
   });
 
-  it('keeps legacy string warning rendering for older backend responses', () => {
+  it('renders current authoring warnings separately from structured critic findings', () => {
     render(
       <ArchitectureValidationPanel
         loading={false}

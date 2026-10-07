@@ -2486,6 +2486,7 @@ export function CardModal({
                         <PolicyCompliancePanel
                           boardId={card.board_id}
                           entityType="card"
+                          presentationMode="subject-version"
                           subjectId={card.id}
                           transitionPreview={policyTransitionAuthority.preview}
                           refreshKey={policyAuthorityRefreshKey}

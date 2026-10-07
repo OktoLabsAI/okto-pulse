@@ -255,6 +255,7 @@ export function TestScenarioPolicyCompliance({
           <PolicyCompliancePanel
             boardId={boardId}
             entityType="test_scenario"
+            presentationMode="subject-version"
             subjectId={scenario.id}
             transitionPreview={authority.preview}
             evaluationEnabled={!specArchived}

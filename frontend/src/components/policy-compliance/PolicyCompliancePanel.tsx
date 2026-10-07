@@ -91,7 +91,7 @@ export interface PolicyCompliancePanelProps {
   /** Human validation edition used only by the opt-in Spec lifecycle view. */
   subjectEdition?: number;
   /** Preserve the established technical UI unless a Spec explicitly opts in. */
-  presentationMode?: 'legacy' | 'lifecycle-edition';
+  presentationMode?: 'subject-version' | 'lifecycle-edition';
   /** Suppresses the repeated title inside the unified Spec workspace. */
   embedded?: boolean;
   /**
@@ -1230,7 +1230,7 @@ export function PolicyCompliancePanel({
   subjectId,
   subjectVersion,
   subjectEdition,
-  presentationMode = 'legacy',
+  presentationMode = 'subject-version',
   embedded = false,
   transitionPreview,
   lifecycleSnapshot,

@@ -1755,7 +1755,7 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
                   refinementId={refinement.id}
                   refinementStatus={refinement.status}
                   refinementArchived={refinement.archived}
-                  legacyDecisions={refinement.decisions}
+                  decisionNotes={refinement.decisions}
                   onRefinementVersionChanged={(version) => {
                     setRefinement((current) => current ? { ...current, version } : current);
                     onChanged();

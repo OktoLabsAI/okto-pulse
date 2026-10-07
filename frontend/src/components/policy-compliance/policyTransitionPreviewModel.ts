@@ -31,7 +31,7 @@ export type PolicyTransitionPreviewLoadState =
     };
 
 export type PolicyTransitionPresentationMode =
-  | 'legacy'
+  | 'subject-version'
   | 'lifecycle-edition';
 
 export interface GovernedPolicyTransition {
@@ -1353,7 +1353,7 @@ export function readPolicyTransitionRejection(
 
 export function policyTransitionRejectionMessage(
   rejection: PolicyTransitionRejection,
-  presentationMode: PolicyTransitionPresentationMode = 'legacy',
+  presentationMode: PolicyTransitionPresentationMode = 'subject-version',
 ): string {
   const blocking = rejection.decision.blocking_metric_count ?? 0;
   if (presentationMode === 'lifecycle-edition') {
