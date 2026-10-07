@@ -333,11 +333,13 @@ async def test_spec_without_links_characterizes_rebuild_guard_conflict(tmp_path,
         return result
 
     monkeypatch.setattr(KGNodeConnectivityGuard, 'validate', capture_guard)
-    incremental = await materialize(tmp_path / 'incremental-empty', incremental=True, final_empty=True)
+    incremental = await materialize(tmp_path / 'incremental-empty', incremental=True,
+                                    final_empty=True, native_schema=True)
     assert not rejected
     assert not [edge for edge in incremental if edge[3] in OWNED_RULES]
     with pytest.raises(AssertionError):
-        await materialize(tmp_path / 'rebuilt-empty', incremental=False, final_empty=True)
+        await materialize(tmp_path / 'rebuilt-empty', incremental=False,
+                          final_empty=True, native_schema=True)
     assert len(rejected) == 1
     violations = rejected[0]['violations']
     assert len(violations) == 1
