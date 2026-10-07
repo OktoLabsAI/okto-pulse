@@ -1161,7 +1161,7 @@ def test_source_revision_fingerprint_detects_insert_update_delete_and_aba(
     try:
         baseline = provider.read_fence()
         connection.execute(
-            "INSERT INTO boards (id, name, owner_id) VALUES (?, ?, ?)",
+            "INSERT INTO boards (id, name, owner_id, realm_id) VALUES (?, ?, ?, 'local')",
             ("board-fence", "Fence", "agent-fence"),
         )
         connection.commit()
@@ -1227,16 +1227,14 @@ def test_source_revision_installs_the_exact_closed_trigger_manifest(
 
     assert set(expected) == {str(row["name"]) for row in rows}
     assert len(expected) == len(GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES) * 3 + 2
-    # F3 removed the Sprint source and its three revision triggers.
+    # Only native v0.4.0 sources participate in the revision fence.
     assert "sprints" not in GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES
-    assert len(GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES) == 39
-    assert len(expected) == 119
+    assert len(GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES) == 37
+    assert len(expected) == 113
     assert {
         "ideation_qa_items",
         "quality_assessment_receipts",
         "quality_assessment_heads",
-        "code_evidence_classification_events",
-        "code_evidence_classification_heads",
         "refinement_qa_items",
         "research_decision_entries",
         "research_decision_heads",
@@ -1302,7 +1300,7 @@ def test_dropped_trigger_refuses_fingerprint_and_restart_without_repair(
     try:
         connection.execute(f'DROP TRIGGER "{trigger_name}"')
         connection.execute(
-            "INSERT INTO boards (id, name, owner_id) VALUES (?, ?, ?)",
+            "INSERT INTO boards (id, name, owner_id, realm_id) VALUES (?, ?, ?, 'local')",
             ("board-unfenced", "Unfenced", "agent-fence"),
         )
         connection.commit()

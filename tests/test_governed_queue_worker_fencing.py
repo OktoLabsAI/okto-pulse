@@ -37,7 +37,7 @@ async def test_worker_fence_blocks_investigation_on_an_unrelated_board(queue_sto
     """Reproduce E2E contention with the real fence, without a slow graph run."""
     factory, adapter = queue_store
     async with factory() as seed:
-        seed.add(Board(id="unrelated-board", name="Other", owner_id="tester"))
+        seed.add(Board(realm_id="local", id="unrelated-board", name="Other", owner_id="tester"))
         seed.add(_queue_row(row_id="writer-probe", work_kind="consolidate",
                             generation=0, delete_event_id=None, claim_token="token"))
         await seed.commit()
@@ -83,7 +83,7 @@ async def queue_store(tmp_path):
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     async with factory() as session:
-        session.add(Board(id=BOARD_ID, name="Card 4", owner_id="tester"))
+        session.add(Board(realm_id="local", id=BOARD_ID, name="Card 4", owner_id="tester"))
         await session.commit()
     try:
         yield factory, CommunitySqlAlchemyConsolidationPersistence()
@@ -125,6 +125,7 @@ def _queue_row(
         claimed_by_session_id="worker-card4" if status == "claimed" else None,
         claim_token=claim_token,
         claimed_at=datetime.now(timezone.utc) if status == "claimed" else None,
+        claim_timeout_at=datetime.now(timezone.utc) + timedelta(minutes=5) if status == "claimed" else None,
     )
 
 
@@ -487,7 +488,7 @@ async def test_recovery_processor_claims_only_exact_rebuild_membership(
         )
 
     async with factory() as session:
-        session.add(Board(id=other_board, name="Other", owner_id="tester"))
+        session.add(Board(realm_id="local", id=other_board, name="Other", owner_id="tester"))
         session.add_all(
             [
                 pending_row("exact-rebuild-row"),
@@ -564,7 +565,7 @@ async def test_recovery_processor_exactly_repends_claim_left_by_killed_process(
     target_source = "rebuild:manifest-killed"
     unrelated_board = f"{BOARD_ID}-unrelated"
     async with factory() as session:
-        session.add(Board(id=unrelated_board, name="Unrelated", owner_id="tester"))
+        session.add(Board(realm_id="local", id=unrelated_board, name="Unrelated", owner_id="tester"))
         session.add_all(
             [
                 ConsolidationQueue(
@@ -1803,31 +1804,49 @@ async def test_exact_retry_claim_crash_recovers_marker_then_acks_attempt_two(
 
 
 @pytest.mark.asyncio
-async def test_tokenless_migrated_claim_is_recovered_immediately(queue_store):
-    """A pre-migration claim cannot remain stuck until its legacy timeout."""
-
+@pytest.mark.parametrize("damage", ("missing_token", "empty_token", "missing_expiry"))
+async def test_incompatible_claim_is_refused_without_recovery_writes(queue_store, damage):
     factory, adapter = queue_store
+    now = datetime.now(timezone.utc)
     async with factory() as session:
-        session.add(
-            _queue_row(
-                row_id="tokenless-migrated-claim",
-                work_kind="consolidate",
-                generation=0,
-                delete_event_id=None,
-                claim_token=None,
-                status="claimed",
-            )
-        )
+        invalid = _queue_row(row_id="incompatible-claim", work_kind="consolidate",
+            generation=0, delete_event_id=None, claim_token="current-token")
+        if damage == "missing_token":
+            invalid.claim_token = None
+        elif damage == "empty_token":
+            invalid.claim_token = ""
+        else:
+            invalid.claim_timeout_at = None
+        expired = _queue_row(row_id="native-expired", work_kind="consolidate",
+            generation=0, delete_event_id=None, claim_token="expired-token", artifact_id="expired-artifact")
+        expired.claim_timeout_at = now - timedelta(seconds=1)
+        session.add_all([invalid, expired])
         await session.commit()
+        before = (invalid.status, invalid.claim_token, invalid.claim_timeout_at,
+                  expired.status, expired.claim_token, expired.claim_timeout_at)
+        with pytest.raises(ValueError, match="consolidation_claim_format_incompatible"):
+            await adapter.list_stale_claims(session, now=now)
+        assert (invalid.status, invalid.claim_token, invalid.claim_timeout_at,
+                expired.status, expired.claim_token, expired.claim_timeout_at) == before
+        assert not session.dirty and not session.deleted
 
-        now = datetime.now(timezone.utc)
-        stale = await adapter.list_stale_claims(
-            session,
-            now=now,
-            legacy_cutoff=now - timedelta(hours=1),
-        )
 
-    assert [entry.id for entry in stale] == ["tokenless-migrated-claim"]
+@pytest.mark.asyncio
+async def test_native_expiry_selects_only_expired_claims_without_mutation(queue_store):
+    factory, adapter = queue_store
+    now = datetime.now(timezone.utc)
+    async with factory() as session:
+        rows = []
+        for identity, seconds in (("expired", -1), ("boundary", 0), ("live", 60)):
+            row = _queue_row(row_id=identity, work_kind="consolidate",
+                generation=0, delete_event_id=None, claim_token=identity + "-token", artifact_id=identity + "-artifact")
+            row.claim_timeout_at = now + timedelta(seconds=seconds)
+            rows.append(row)
+        session.add_all(rows)
+        await session.commit()
+        assert [row.id for row in await adapter.list_stale_claims(session, now=now)] == ["expired"]
+        assert all(row.status == "claimed" for row in rows)
+        assert not session.dirty and not session.deleted
 
 
 @pytest.mark.asyncio
