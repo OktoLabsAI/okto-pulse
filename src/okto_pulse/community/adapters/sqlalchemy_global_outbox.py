@@ -17,7 +17,6 @@ from okto_pulse.community.adapters.code_traceability_kg_sql import (
 from okto_pulse.core.ports.global_outbox import (
     GLOBAL_OUTBOX_DEAD_LETTER_SENTINEL,
     GLOBAL_OUTBOX_MAX_RETRIES,
-    GLOBAL_OUTBOX_RETIRED_SENTINEL,
     GlobalOutboxDeadLetterCursor,
     GlobalOutboxEventRecord,
     GlobalOutboxMutationConflict,
@@ -32,7 +31,7 @@ def _record(row: Any) -> GlobalOutboxEventRecord:
         board_id=str(row.board_id),
         session_id=str(row.session_id) if row.session_id else None,
         payload=copy.deepcopy(row.payload or {}),
-        retry_count=int(row.retry_count),
+        retry_count=row.retry_count,
         last_error=row.last_error,
         processed_at=row.processed_at,
         created_at=row.created_at,
@@ -191,8 +190,7 @@ class CommunitySqlAlchemyGlobalOutboxStore:
 
         try:
             for event in events:
-                if event.retry_count == GLOBAL_OUTBOX_RETIRED_SENTINEL:
-                    raise GlobalOutboxMutationConflict("global_outbox_retirement_requires_migration")
+                event.validate_retry_count()
                 result = await context.execute(
                     update(GlobalUpdateOutbox)
                     .where(
@@ -259,18 +257,16 @@ class CommunitySqlAlchemyGlobalOutboxStore:
     ) -> None:
         try:
             for event in events:
-                if event.retry_count == GLOBAL_OUTBOX_RETIRED_SENTINEL:
-                    raise GlobalOutboxMutationConflict("global_outbox_retirement_requires_migration")
-                # SQL guard also protects against a claim held before the
-                # migration. An ORM identity-map read is not a current fence.
+                event.validate_retry_count()
+                # Refuse externally corrupted state even after a prior read.
                 result = await context.execute(update(GlobalUpdateOutbox).where(
                     GlobalUpdateOutbox.id == event.id,
-                    GlobalUpdateOutbox.retry_count != GLOBAL_OUTBOX_RETIRED_SENTINEL,
+                    GlobalUpdateOutbox.retry_count >= GLOBAL_OUTBOX_DEAD_LETTER_SENTINEL,
                 ).values(retry_count=event.retry_count, last_error=event.last_error,
                     processed_at=event.processed_at).execution_options(synchronize_session="fetch"))
                 if result.rowcount != 1 and await context.scalar(select(GlobalUpdateOutbox.id).where(
                     GlobalUpdateOutbox.id == event.id,
-                    GlobalUpdateOutbox.retry_count == GLOBAL_OUTBOX_RETIRED_SENTINEL,
+                    GlobalUpdateOutbox.retry_count < GLOBAL_OUTBOX_DEAD_LETTER_SENTINEL,
                 )) is not None:
                     raise GlobalOutboxMutationConflict("global_outbox_save_selection_changed")
             await context.flush()
