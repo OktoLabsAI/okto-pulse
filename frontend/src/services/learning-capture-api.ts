@@ -83,7 +83,7 @@ function parseIntent(value: unknown, format: unknown, learning: string, generati
   if (!['reuse', 'supersede'].includes(String(value.kind)) || !text(value.target_node_id)
     || !integer(value.target_generation) || !digest(value.expected_fingerprint) || !text(value.reason, 16384)
     || ((value.target_node_id === learning && value.target_generation === generation) !== (value.kind === 'reuse'))
-    || (scoped && (value.kind !== 'supersede' || value.scope !== 'source_bug'))) invalid();
+    || (value.kind === 'supersede' ? value.scope !== 'source_bug' : scoped)) invalid();
   return { kind: value.kind as 'reuse' | 'supersede', target_node_id: value.target_node_id,
     target_generation: value.target_generation, expected_fingerprint: value.expected_fingerprint,
     reason: value.reason, ...(scoped ? { scope: 'source_bug' as const } : {}) };

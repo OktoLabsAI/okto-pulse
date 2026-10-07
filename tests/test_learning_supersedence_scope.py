@@ -16,7 +16,7 @@ independent_gates = _independent_gates
 pytestmark = pytest.mark.asyncio
 
 
-async def test_scoped_capture_preserves_v1_history_and_does_not_mutate_target(runtime):
+async def test_scoped_capture_preserves_native_history_and_does_not_mutate_target(runtime):
     factory, _, store, request = runtime
     await target(runtime)
     previous, = await store.enumerate(BOARD)
@@ -28,7 +28,7 @@ async def test_scoped_capture_preserves_v1_history_and_does_not_mutate_target(ru
     assert (await submit(factory, draft)).record_fingerprint == capture.record_fingerprint
     history = await store.enumerate(BOARD)
     assert len(history) == 2 and previous in history
-    with pytest.raises(ValueError, match='idempotency_conflict'):
+    with pytest.raises(ValueError, match='learning_capture_intent_invalid'):
         await submit(factory, replace(draft, intent=replace(draft.intent, scope=None)))
     assert await store.enumerate(BOARD) == history
 

@@ -49,7 +49,7 @@ describe('LearningCapturePanel', () => {
         reason: 'This correction needs it', ...(kind === 'supersede' ? { scope: 'source_bug' } : {}) } });
   });
 
-  it.each(['recorded', 'unverified', 'legacy', 'reuse'])('presents %s relationships without inferring current approval', async state => {
+  it.each(['recorded', 'unverified', 'reuse'])('presents %s relationships without inferring current approval', async state => {
     const intent = { kind: state === 'reuse' ? 'reuse' : 'supersede', target_node_id: 'previous-learning',
       target_generation: 0, expected_fingerprint: 'c'.repeat(64), reason: '<script>replacement reason</script>',
       ...(state === 'recorded' || state === 'unverified' ? { scope: 'source_bug' } : {}) };
@@ -63,7 +63,7 @@ describe('LearningCapturePanel', () => {
     expect(screen.getByText('This history does not verify current applicability or graph availability.')).toBeInTheDocument();
     const messages = { recorded: 'Historical replacement recorded for this Bug only.',
       unverified: 'Replacement requested for this Bug only; historical linkage is not verified.',
-      legacy: 'Legacy replacement request; its scope is unspecified.', reuse: 'Explicit reuse of an existing Learning.' };
+      reuse: 'Explicit reuse of an existing Learning.' };
     expect(screen.getByText(messages[state as keyof typeof messages])).toBeInTheDocument();
     expect(mocks.api.create).not.toHaveBeenCalled();
   });

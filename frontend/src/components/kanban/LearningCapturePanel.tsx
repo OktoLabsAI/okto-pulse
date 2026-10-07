@@ -24,8 +24,7 @@ function RecordedRelationship({ item }: { item: CaptureHistoryItem }) {
   const intent = item.capture.intent;
   if (!intent || intent.kind === 'create') return null;
   const description = intent.kind === 'reuse' ? 'Explicit reuse of an existing Learning.'
-    : intent.scope !== 'source_bug' ? 'Legacy replacement request; its scope is unspecified.'
-      : item.lineage?.state === 'recorded' ? 'Historical replacement recorded for this Bug only.'
+    : item.lineage?.state === 'recorded' ? 'Historical replacement recorded for this Bug only.'
         : 'Replacement requested for this Bug only; historical linkage is not verified.';
   return <details className="text-sm">
     <summary className="cursor-pointer">Recorded relationship</summary>

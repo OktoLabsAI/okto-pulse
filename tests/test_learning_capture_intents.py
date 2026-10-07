@@ -35,7 +35,8 @@ async def target(runtime, identity='target'):
 
 def intent(record, kind='reuse'):
     return LearningCaptureIntent(kind, record.node_id, record.generation,
-        record.record_fingerprint, 'Explicit applicability to this corrected Bug')
+        record.record_fingerprint, 'Explicit applicability to this corrected Bug',
+        'source_bug' if kind == 'supersede' else None)
 
 
 async def submit(factory, request, *, rollback=False):

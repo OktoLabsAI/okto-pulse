@@ -102,10 +102,12 @@ it.each(['not_recorded', 'history_limit', 'history_capability_unavailable', 'tar
   expect(parseCaptureHistory({ ...raw, items: [row] }, 'board', 'bug').items[0].lineage).toEqual({ state: 'unverified', limitation });
 });
 
-it('keeps explicit null scope unscoped and accepts reuse only for the selected identity', () => {
+it('refuses unscoped replacement and accepts reuse only for the selected identity', () => {
   const { scope: _scope, ...intent } = scopedHistory().items[0].capture.intent;
   const unscoped = { ...item, capture: { ...item.capture, intent: { ...intent, scope: null } } };
-  expect(parseCaptureHistory({ ...history, items: [unscoped] }, 'board', 'bug').items[0].capture.intent).not.toHaveProperty('scope');
+  const before = structuredClone(unscoped);
+  expect(() => parseCaptureHistory({ ...history, items: [unscoped] }, 'board', 'bug')).toThrow();
+  expect(unscoped).toEqual(before);
   const reuse = { ...item, capture: { ...item.capture, intent: { ...intent, scope: null, kind: 'reuse', target_node_id: item.learning_id } } };
   expect(parseCaptureHistory({ ...history, items: [reuse] }, 'board', 'bug').items[0].capture.intent.kind).toBe('reuse');
   reuse.capture.intent.target_node_id = 'foreign';
