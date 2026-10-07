@@ -127,7 +127,7 @@ async def test_relational_census_is_exact_and_board_scoped(tmp_path: Path) -> No
                         title="source",
                         created_by="owner",
                     ),
-                    Spec(architecture_adoption=ArchitectureAdoptionScope(board_id=board_id, spec_id="spec-census", adopted_in_edition=1, actor_id="owner", inherited_resource_ids=()).model_dump(mode="json"), 
+                    Spec(architecture_adoption=ArchitectureAdoptionScope(board_id=board_id, spec_id="spec-census", adopted_in_edition=1, actor_id="owner", inherited_resource_ids=()).model_dump(mode="json"),
                         id="spec-census",
                         board_id=board_id,
                         title="spec source",
