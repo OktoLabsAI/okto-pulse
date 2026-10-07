@@ -21,7 +21,7 @@ async def test_real_dependency_chain_beyond_three_hops_and_declared_ancestry(tmp
     engine, factory = await _database(tmp_path / 'lineage-query.db')
     try:
         async with factory() as session, session.begin():
-            session.add(Board(id=BOARD_ID,name='Board',owner_id='owner'))
+            session.add(Board(realm_id="local", id=BOARD_ID,name='Board',owner_id='owner'))
             session.add(Ideation(id='idea',board_id=BOARD_ID,title='Original idea',created_by='owner'))
             session.add(Refinement(id='refine',board_id=BOARD_ID,ideation_id='idea',title='Refined scope',created_by='owner'))
             specs = [_spec(str(index)) for index in range(6)]
@@ -67,8 +67,8 @@ async def test_partial_amendment_preserves_original_and_redacts_foreign_scope(tm
         async with factory() as session, session.begin():
             original = _spec('original')
             original.status = SpecStatus.DONE
-            session.add_all([Board(id=BOARD_ID,name='Board',owner_id='owner'),
-                Board(id=OTHER_BOARD_ID,name='Other',owner_id='owner'), original, _spec('revision')])
+            session.add_all([Board(realm_id="local", id=BOARD_ID,name='Board',owner_id='owner'),
+                Board(realm_id="local", id=OTHER_BOARD_ID,name='Other',owner_id='owner'), original, _spec('revision')])
             await session.flush()
             session.add_all([_card('bug',CardType.BUG,spec_id='original'),
                 _card('affected',CardType.NORMAL,spec_id='original'),

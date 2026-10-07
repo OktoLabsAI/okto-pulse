@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+
 import asyncio
 import threading
 import time
@@ -117,15 +119,15 @@ async def test_relational_census_is_exact_and_board_scoped(tmp_path: Path) -> No
         async with factory() as session:
             session.add_all(
                 [
-                    Board(id=board_id, name="Census", owner_id="owner"),
-                    Board(id=other_board_id, name="Other", owner_id="owner"),
+                    Board(realm_id="local", id=board_id, name="Census", owner_id="owner"),
+                    Board(realm_id="local", id=other_board_id, name="Other", owner_id="owner"),
                     Card(
                         id="card-census",
                         board_id=board_id,
                         title="source",
                         created_by="owner",
                     ),
-                    Spec(
+                    Spec(architecture_adoption=ArchitectureAdoptionScope(board_id=board_id, spec_id="spec-census", adopted_in_edition=1, actor_id="owner", inherited_resource_ids=()).model_dump(mode="json"), 
                         id="spec-census",
                         board_id=board_id,
                         title="spec source",
@@ -449,7 +451,7 @@ async def test_normal_commit_advances_generation_before_ack_and_rolls_back_on_fa
     repository = CommunityAuditRepository(factory)
     try:
         async with factory() as session:
-            session.add(Board(id=board_id, name="Generation", owner_id="owner"))
+            session.add(Board(realm_id="local", id=board_id, name="Generation", owner_id="owner"))
             await session.commit()
 
         assert await generation_store.current(board_id) == (
@@ -547,7 +549,7 @@ async def test_borrowed_audit_transaction_reuses_locked_writer_and_obeys_owner_c
     )
     try:
         async with factory() as session:
-            session.add(Board(id=board_id, name="Before", owner_id="owner"))
+            session.add(Board(realm_id="local", id=board_id, name="Before", owner_id="owner"))
             await session.commit()
 
         # This unrelated worker mutation acquires SQLite's writer lock. Before
@@ -674,7 +676,7 @@ async def test_self_owned_audit_maps_real_sqlite_contention_to_stable_port_error
     repository = CommunityAuditRepository(factory)
     try:
         async with factory() as session:
-            session.add(Board(id=board_id, name="Before", owner_id="owner"))
+            session.add(Board(realm_id="local", id=board_id, name="Before", owner_id="owner"))
             await session.commit()
 
         async with factory() as lock_owner:

@@ -4,6 +4,7 @@ import json
 import time
 
 import pytest
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
 from sqlalchemy import event
 
 from okto_pulse.community.adapters import materialization_health as module
@@ -26,11 +27,11 @@ async def test_census_refuses_volume_before_decision_classification(tmp_path, mo
     monkeypatch.setattr(module, "_CENSUS_MAX_SPEC_BYTES", 10000 if kind == "rows" else 256, raising=False)
     try:
         async with factory() as session:
-            session.add(Board(id="board", name="Board", owner_id="owner"))
+            session.add(Board(realm_id="local", id="board", name="Board", owner_id="owner"))
             for i in range(3 if kind == "rows" else 2 if kind == "aggregate_bytes" else 1):
                 title = {"rows": "small", "bytes": "x" * 512,
                          "unicode_bytes": "界" * 100, "aggregate_bytes": "x" * 100}[kind]
-                session.add(Spec(id=f"spec-{i}", board_id="board", title=title,
+                session.add(Spec(architecture_adoption=ArchitectureAdoptionScope(board_id="board", spec_id=f"spec-{i}", adopted_in_edition=1, actor_id="owner", inherited_resource_ids=()).model_dump(mode="json"), id=f"spec-{i}", board_id="board", title=title,
                                  created_by="owner", decisions=[{"id": "decision", "title": "Active"}]))
             await session.commit()
         decoded.clear()
@@ -62,12 +63,12 @@ async def test_census_exact_under_budget_ignores_foreign_board_volume(tmp_path, 
     monkeypatch.setattr(module, "_CENSUS_MAX_SPEC_BYTES", 512, raising=False)
     try:
         async with factory() as session:
-            session.add_all([Board(id=b, name=b, owner_id="owner") for b in ("board", "foreign", "empty")])
-            session.add(Spec(id="spec", board_id="board", title="Normal", created_by="owner",
+            session.add_all([Board(realm_id="local", id=b, name=b, owner_id="owner") for b in ("board", "foreign", "empty")])
+            session.add(Spec(architecture_adoption=ArchitectureAdoptionScope(board_id="board", spec_id="spec", adopted_in_edition=1, actor_id="owner", inherited_resource_ids=()).model_dump(mode="json"), id="spec", board_id="board", title="Normal", created_by="owner",
                              decisions=[{"id": "active", "title": "Active"},
                                         {"id": "old", "title": "Old", "status": "superseded"}]))
-            session.add(Spec(id="spec-two", board_id="board", title="Second", created_by="owner"))
-            session.add(Spec(id="foreign-spec", board_id="foreign", title="x" * 10000, created_by="owner"))
+            session.add(Spec(architecture_adoption=ArchitectureAdoptionScope(board_id="board", spec_id="spec-two", adopted_in_edition=1, actor_id="owner", inherited_resource_ids=()).model_dump(mode="json"), id="spec-two", board_id="board", title="Second", created_by="owner"))
+            session.add(Spec(architecture_adoption=ArchitectureAdoptionScope(board_id="foreign", spec_id="foreign-spec", adopted_in_edition=1, actor_id="owner", inherited_resource_ids=()).model_dump(mode="json"), id="foreign-spec", board_id="foreign", title="x" * 10000, created_by="owner"))
             await session.commit()
         for board, count in (("board", 3), ("empty", 0)):
             result = await module.CommunitySqlAlchemyMaterializationCensus(factory).snapshot(
