@@ -39,7 +39,10 @@ relates_to, and Learning->Bug for validates.
 
 Args:
     session_id: Session from begin_consolidation
-    candidate: Dict with candidate_id, edge_type, from/to, confidence
+    candidate: Strict object with candidate_id, edge_type, from_candidate_id,
+               to_candidate_id and optional confidence. Writer metadata
+               (layer, rule_id, created_by, fallback_reason) is not accepted;
+               unknown fields return invalid_candidate without being ignored.
 
 Returns:
     JSON with accepted=true and edge_count_in_session
