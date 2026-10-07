@@ -206,9 +206,25 @@ async def materialize(root, *, incremental, card_type=None, final_unlinked=False
                         # traceability fixtures; never infer membership from Card presence.
                         async with factory() as session:
                             queued_sources = (await session.execute(select(ConsolidationQueue.id))).all()
-                        for _ in queued_sources:
+                        # A dependent owner may run before its prerequisite.
+                        # Drive the ordinary retry policy without rewriting
+                        # readiness timestamps or reordering the queue.
+                        import asyncio
+                        deadline = asyncio.get_running_loop().time() + 180
+                        acked = 0
+                        while True:
+                            async with factory() as session:
+                                pending = (await session.execute(select(
+                                    ConsolidationQueue.artifact_type, ConsolidationQueue.artifact_id,
+                                    ConsolidationQueue.status, ConsolidationQueue.last_error))).all()
+                            if not pending:
+                                break
+                            assert asyncio.get_running_loop().time() < deadline, pending
                             outcome = await reserved.process_next()
-                            assert outcome.acked_count == 1, outcome
+                            acked += outcome.acked_count
+                            if not outcome.acked_count:
+                                await asyncio.sleep(0.1)
+                        assert acked == len(queued_sources)
                         async with factory() as session:
                             assert not (await session.execute(select(ConsolidationQueue.id))).all()
         graph = bundle.grafx_pool.get(physical, page_size=8192)

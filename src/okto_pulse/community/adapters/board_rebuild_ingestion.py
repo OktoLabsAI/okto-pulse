@@ -366,6 +366,46 @@ def _evidence_topological_positions(
     return {evidence_id: index for index, evidence_id in enumerate(ordered)}
 
 
+def _card_topological_positions(
+    conn: sqlite3.Connection, *, board_id: str, card_ids: set[str],
+) -> dict[str, int]:
+    """Prepare prerequisites before dependents for the strict recovery queue."""
+    if not card_ids:
+        return {}
+    available = {str(row[0]) for row in conn.execute(
+        "SELECT id FROM cards WHERE board_id=?", (board_id,))}
+    if not card_ids.issubset(available):
+        raise RuntimeError("rebuild_card_source_missing")
+    dependencies = {identity: set() for identity in card_ids}
+    dependents = {identity: set() for identity in card_ids}
+    rows = conn.execute(
+        "SELECT dependency.card_id, dependency.depends_on_id "
+        "FROM card_dependencies AS dependency "
+        "JOIN cards AS dependent ON dependent.id=dependency.card_id "
+        "WHERE dependent.board_id=?", (board_id,),
+    ).fetchall()
+    for dependent, prerequisite in rows:
+        if dependent not in card_ids:
+            continue
+        if prerequisite not in card_ids:
+            raise RuntimeError("rebuild_card_dependency_prerequisite_missing")
+        dependencies[dependent].add(prerequisite)
+        dependents[prerequisite].add(dependent)
+    ready = [identity for identity, parents in dependencies.items() if not parents]
+    heapq.heapify(ready)
+    ordered = []
+    while ready:
+        current = heapq.heappop(ready)
+        ordered.append(current)
+        for dependent in sorted(dependents[current]):
+            dependencies[dependent].discard(current)
+            if not dependencies[dependent]:
+                heapq.heappush(ready, dependent)
+    if len(ordered) != len(card_ids):
+        raise RuntimeError("rebuild_card_dependency_cycle")
+    return {identity: index for index, identity in enumerate(ordered)}
+
+
 def _ordered_rebuild_sources(
     conn: sqlite3.Connection,
     *,
@@ -392,6 +432,10 @@ def _ordered_rebuild_sources(
         board_id=board_id,
         evidence_ids=evidence_ids,
     )
+    card_positions = _card_topological_positions(conn, board_id=board_id,
+        card_ids={str(row["id"]) for row in sources
+                  if queue_artifact_type(str(row.get("artifact_type", ""))) == "card"
+                  and row.get("id")})
 
     def _key(row: Mapping[str, Any]) -> tuple[int, int, str, str]:
         dependency_rank, artifact_type, artifact_id = rebuild_source_order_key(row)
@@ -400,6 +444,8 @@ def _ordered_rebuild_sources(
             within_type = spec_positions.get(artifact_id, 0)
         elif source_type == "code_evidence":
             within_type = evidence_positions.get(artifact_id, 0)
+        elif artifact_type == "card":
+            within_type = card_positions[artifact_id]
         else:
             within_type = 0
         return dependency_rank, within_type, artifact_type, artifact_id
