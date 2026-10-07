@@ -324,3 +324,30 @@ async def test_current_catalog_seed_is_repeatable_and_preserves_user_choices(tmp
             assert next(row for row in rows if row.name == "custom").tool_binding == "custom.tool"
     finally:
         await engine.dispose()
+
+@pytest.mark.asyncio
+async def test_orphan_in_current_schema_is_refused_without_writes_or_repair(tmp_path, contract):
+    path = tmp_path / "orphan-current.db"
+    url = f"sqlite+aiosqlite:///{path}"
+    engine = create_async_engine(url)
+    try:
+        await initialize_current_schema(engine, contract)
+    finally:
+        await engine.dispose()
+    # Emulate an externally damaged native database, without changing its format.
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute("PRAGMA foreign_keys=OFF")
+        connection.execute("INSERT INTO card_dependencies(id, card_id, depends_on_id) VALUES ('orphan', 'missing-card', 'missing-prerequisite')")
+        connection.commit()
+        assert connection.execute("PRAGMA foreign_key_check").fetchone() is not None
+    before = snapshot(path)
+    with pytest.raises(StorageFormatError, match="foreign_key_integrity"):
+        require_current_database_file(url, contract)
+    assert snapshot(path) == before
+    engine = create_async_engine(url)
+    try:
+        with pytest.raises(StorageFormatError, match="foreign_key_integrity"):
+            await initialize_current_schema(engine, contract)
+    finally:
+        await engine.dispose()
+    assert snapshot(path) == before

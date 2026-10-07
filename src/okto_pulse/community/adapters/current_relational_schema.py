@@ -115,6 +115,14 @@ def inspect_current_schema(cursor: Any, contract: RelationalSchemaContract) -> b
         raise StorageFormatError("version")
     if objects != contract.objects:
         raise StorageFormatError("schema_fingerprint")
+    # A matching DDL fingerprint does not prove that stored rows are intact.
+    # These read-only checks precede WAL setup, schema writes and catalog seeds.
+    cursor.execute("PRAGMA main.quick_check(1)")
+    if tuple(tuple(row) for row in cursor.fetchall()) != (("ok",),):
+        raise StorageFormatError("database_integrity")
+    cursor.execute("PRAGMA main.foreign_key_check")
+    if cursor.fetchone() is not None:
+        raise StorageFormatError("foreign_key_integrity")
     return False
 
 
