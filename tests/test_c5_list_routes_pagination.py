@@ -29,6 +29,7 @@ from okto_pulse.community.api.ideations import router as ideations_router
 from okto_pulse.community.api.refinements import router as refinements_router
 from okto_pulse.community.api.specs import router as specs_router
 from okto_pulse.community.api.stories import router as stories_router
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
 from okto_pulse.core.domain.realm import RealmScope
 from okto_pulse.core.ports.application_persistence import (
     get_application_persistence_port,
@@ -189,15 +190,20 @@ async def _build_engine(path: Path) -> AsyncEngine:
             text(
                 "INSERT INTO specs "
                 "(id, board_id, title, status, edition, version, created_by, archived, "
-                "updated_at) VALUES "
+                "architecture_adoption, updated_at) VALUES "
                 "(:id, :board_id, :title, :status, :edition, :version, "
-                ":created_by, :archived, "
+                ":created_by, :archived, :architecture_adoption, "
                 "'2026-07-20 00:00:00')"
             ),
             [
                 {
                     "id": f"p{i:02d}",
                     "board_id": "b1",
+                    "architecture_adoption": ArchitectureAdoptionScope(
+                        board_id="b1", spec_id=f"p{i:02d}",
+                        adopted_in_edition=3 if i == 0 else 1,
+                        actor_id="u", inherited_resource_ids=(),
+                    ).model_dump_json(),
                     "title": f"Spec {i}",
                     "status": "draft" if i % 2 == 0 else "review",
                     # p00 exercises the public edition/revision projection.
@@ -214,6 +220,10 @@ async def _build_engine(path: Path) -> AsyncEngine:
                 {
                     "id": "px",
                     "board_id": "b2",
+                    "architecture_adoption": ArchitectureAdoptionScope(
+                        board_id="b2", spec_id="px", adopted_in_edition=1,
+                        actor_id="other", inherited_resource_ids=(),
+                    ).model_dump_json(),
                     "title": "Secret spec",
                     "status": "draft",
                     "edition": 1,
