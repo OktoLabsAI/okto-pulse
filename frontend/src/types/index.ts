@@ -2329,8 +2329,8 @@ export interface Card {
       finding_id: string;
       source_selector: string;
       target_ref: string | null;
-      reason_code: 'parent_absent' | 'target_absent' | 'target_ambiguous';
-      correction_surface: 'card_scenario_links' | 'spec_test_scenarios';
+      reason_code: 'parent_absent' | 'target_absent' | 'target_ambiguous' | 'source_disagreement';
+      correction_surface: 'card_scenario_links' | 'spec_test_scenarios' | 'card_and_spec_scenario_links';
     }[];
     truncated: boolean;
   } | null;

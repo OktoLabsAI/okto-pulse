@@ -149,7 +149,7 @@ async def materialize(root, *, incremental, card_type=None, final_unlinked=False
                             ConsolidationAudit.artifact_type == 'card', ConsolidationAudit.artifact_id == 'card'
                         ).order_by(ConsolidationAudit.committed_at.desc()))).scalars().first()
                         snapshot = ProjectionFindingSnapshot.from_payload(receipt.reference_findings)
-                        assert [item.reason_code for item in snapshot.findings] == ([] if card_linked else ['parent_absent'])
+                        assert [item.reason_code for item in snapshot.findings] == (['source_disagreement'] if card_linked else ['parent_absent'])
                 current = relationship_set(bundle.grafx_pool.get(physical, page_size=8192))
                 owned = Counter({edge: count for edge, count in current.items() if edge[3] in OWNED_RULES})
                 assert {edge[3] for edge in owned} == (OWNED_RULES if linked else set())
@@ -185,13 +185,17 @@ async def materialize(root, *, incremental, card_type=None, final_unlinked=False
         graph = bundle.grafx_pool.get(physical, page_size=8192)
         if exercise is not None:
             await exercise(factory, graph)
-        if card_type and final_unlinked:
+        if card_type and (final_unlinked or exercise is None):
             async with factory() as session:
                 receipt = (await session.execute(select(ConsolidationAudit).where(
                     ConsolidationAudit.artifact_type == 'card', ConsolidationAudit.artifact_id == 'card'
                 ).order_by(ConsolidationAudit.committed_at.desc()))).scalars().first()
                 snapshot = ProjectionFindingSnapshot.from_payload(receipt.reference_findings)
-                assert [item.reason_code for item in snapshot.findings] == ['parent_absent']
+                assert [item.reason_code for item in snapshot.findings] == (
+                    ['parent_absent'] if final_unlinked else ['source_disagreement'])
+                assert snapshot.findings[0].source_selector == 'card:card:test_scenario_ids'
+                assert snapshot.findings[0].target_ref == (
+                    'ts_one' if final_unlinked else 'spec:spec:test_scenario:ts_one')
         return relationship_set(graph)
     finally:
         drain_kg_health_probes()

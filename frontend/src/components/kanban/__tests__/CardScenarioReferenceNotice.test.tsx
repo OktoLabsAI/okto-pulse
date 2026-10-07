@@ -40,3 +40,14 @@ describe('Card scenario reference context', () => {
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
   });
 });
+
+it('shows source disagreement without treating the observed link as completed work', () => {
+  const { rerender } = render(<CardScenarioReferenceNotice context={{ ...context, findings: [{
+    ...context.findings[0], reason_code: 'source_disagreement', correction_surface: 'card_and_spec_scenario_links',
+  }] }} />);
+  expect(screen.getByText(/Card and Spec declare different scenario links/)).toHaveTextContent('does not prove execution');
+  expect(screen.getByText(/Review the scenario links in both/)).toHaveTextContent('current evidence checks');
+  expect(screen.queryByRole('button')).not.toBeInTheDocument();
+  rerender(<CardScenarioReferenceNotice context={{ ...context, finding_count: 0, findings: [] }} />);
+  expect(screen.queryByRole('region', { name: 'Scenario reference issues' })).not.toBeInTheDocument();
+});
