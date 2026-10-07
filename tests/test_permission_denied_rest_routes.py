@@ -1,7 +1,7 @@
 """REST mappings for permission-aware Card mutations."""
 
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -20,7 +20,9 @@ from okto_pulse.core.ports.authentication import Principal
 
 
 @pytest.fixture
-def client() -> TestClient:
+def client(monkeypatch) -> TestClient:
+    factory = Mock(side_effect=AssertionError("Permission denial must not retry"))
+    monkeypatch.setattr(boards_api, "get_unit_of_work_factory", lambda request: factory)
     app = FastAPI()
     app.include_router(boards_api.router, prefix="/boards")
     app.include_router(cards_api.router, prefix="/cards")
@@ -73,11 +75,11 @@ def test_card_mutations_map_permission_denial_to_structured_403(
     body: dict | None,
 ) -> None:
     denial = PermissionDeniedError(
-        json.dumps({"required_permission": "card:write", "resource_id": "card-1"})
+        json.dumps({"required_permission": "card.entity.edit", "resource_id": "card-1"})
     )
 
     with patch.object(use_case, "execute", new=AsyncMock(side_effect=denial)):
         response = client.request(method, path, json=body)
 
     assert response.status_code == 403
-    assert response.json()["detail"]["required_permission"] == "card:write"
+    assert response.json()["detail"]["required_permission"] == "card.entity.edit"
