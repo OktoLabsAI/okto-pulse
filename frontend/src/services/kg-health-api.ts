@@ -209,7 +209,6 @@ export interface KGCognitivePendingResponse {
   board_id: string;
   selected_kg_generation_id: string | null;
   readonly: true;
-  legacy_mode: boolean;
   counts: KGCognitivePendingCounts;
   items: KGCognitivePendingItem[];
 }

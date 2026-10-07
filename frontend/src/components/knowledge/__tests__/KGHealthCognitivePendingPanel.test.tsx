@@ -2,8 +2,7 @@
  * KGHealthCognitivePendingPanel unit tests — KG-03.5 / api_897dde99.
  *
  * Mocks getKGCognitivePendingItems at the module boundary. Asserts the
- * UI states (loading | empty | ready | error), counts rendering, legacy
- * mode badge, and — critically — that the panel exposes NO mutation
+ * UI states (loading | empty | ready | error), counts rendering, and — critically — that the panel exposes NO mutation
  * affordance: no complete/skip/fail button, no free-text cognitive
  * judgement input. The cognitive item mutation surface remains the MCP
  * tool only (br_2065f80b + AC9).
@@ -38,7 +37,6 @@ function baseResponse(
     board_id: BOARD,
     selected_kg_generation_id: '8c1f0000-0000-4000-8000-000000000000',
     readonly: true,
-    legacy_mode: false,
     counts: {
       pending: 2,
       in_progress: 0,
@@ -206,47 +204,6 @@ describe('UI state: error', () => {
       ).toBeInTheDocument(),
     );
     expect(screen.getByText(/cognitive_pending_unavailable/i)).toBeInTheDocument();
-  });
-});
-
-
-// -------- Legacy mode ---------------------------------------------------
-
-
-describe('legacy_mode badge', () => {
-  it('renders the legacy badge when the response carries legacy_mode=true', async () => {
-    mockApi(() =>
-      Promise.resolve(baseResponse({ legacy_mode: true })),
-    );
-    render(
-      <KGHealthCognitivePendingPanel
-        boardId={BOARD}
-        selectedKgGenerationId={null}
-        pollIntervalMs={30000}
-      />,
-    );
-    await waitFor(() =>
-      expect(
-        screen.getByTestId('kg-cognitive-pending-legacy-badge'),
-      ).toBeInTheDocument(),
-    );
-  });
-
-  it('hides the legacy badge when legacy_mode=false', async () => {
-    mockApi(() => Promise.resolve(baseResponse({ legacy_mode: false })));
-    render(
-      <KGHealthCognitivePendingPanel
-        boardId={BOARD}
-        selectedKgGenerationId={null}
-        pollIntervalMs={30000}
-      />,
-    );
-    await waitFor(() =>
-      expect(screen.getByTestId('kg-cognitive-pending-counts')).toBeInTheDocument(),
-    );
-    expect(
-      screen.queryByTestId('kg-cognitive-pending-legacy-badge'),
-    ).not.toBeInTheDocument();
   });
 });
 

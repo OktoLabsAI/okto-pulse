@@ -149,7 +149,6 @@ function mockCognitivePending(counts: KGCognitivePendingCounts) {
     board_id: 'b1',
     selected_kg_generation_id: 'gen1',
     readonly: true,
-    legacy_mode: false,
     counts,
     items: [],
   });

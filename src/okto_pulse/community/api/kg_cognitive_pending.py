@@ -17,7 +17,6 @@ Contract:
         "board_id": "...",
         "selected_kg_generation_id": "..." | null,
         "readonly": true,
-        "legacy_mode": <bool>,
         "counts": {pending, in_progress, consolidated, skipped, failed, total},
         "items": [<safe-projection items>],
       }
@@ -113,7 +112,6 @@ class CognitivePendingResponse(BaseModel):
     board_id: str
     selected_kg_generation_id: str | None = None
     readonly: bool = True
-    legacy_mode: bool = False
     counts: CognitivePendingCounts = Field(default_factory=CognitivePendingCounts)
     items: list[CognitivePendingItem] = Field(default_factory=list)
 
@@ -190,12 +188,20 @@ async def get_cognitive_pending(
             },
         ) from exc
 
-    explicit_generation = bool(kg_generation_id)
-    resolved_generation = (
-        kg_generation_id
-        if explicit_generation
-        else store.latest_generation(board_id)
-    )
+    try:
+        explicit_generation = bool(kg_generation_id)
+        resolved_generation = (
+            kg_generation_id
+            if explicit_generation
+            else store.latest_generation(board_id)
+        )
+
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail={
+            "code": "cognitive_pending_unavailable",
+            "message": "item store could not be read",
+            "reason": type(exc).__name__,
+        }) from exc
 
     if explicit_generation and not store.record_exists(
         board_id, resolved_generation
@@ -232,13 +238,11 @@ async def get_cognitive_pending(
             board_id=board_id,
             selected_kg_generation_id=None,
             readonly=True,
-            legacy_mode=False,
             counts=CognitivePendingCounts(**empty_status_counts()),
             items=[],
         )
 
     try:
-        legacy_mode = store.is_legacy_record(board_id, resolved_generation)
         all_items = store.list_items(
             board_id,
             resolved_generation,
@@ -279,7 +283,6 @@ async def get_cognitive_pending(
         board_id=board_id,
         selected_kg_generation_id=resolved_generation,
         readonly=True,
-        legacy_mode=legacy_mode,
         counts=CognitivePendingCounts(**counts),
         items=[CognitivePendingItem(**item) for item in safe_items],
     )

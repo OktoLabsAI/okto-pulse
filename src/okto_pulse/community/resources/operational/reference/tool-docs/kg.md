@@ -339,7 +339,7 @@ Implements api_ae3a932a:
 
     request: board_id, kg_generation_id?, status?, limit?, offset?
     response (success): board_id, selected_kg_generation_id,
-                        legacy_mode, counts, items
+                        counts, items
     errors: unauthorized | invalid_status | generation_not_found
 
 Resolves to the latest recorded generation when ``kg_generation_id``
