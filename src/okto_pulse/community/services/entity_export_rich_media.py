@@ -646,9 +646,6 @@ def _custom_or_top_level(item: Mapping[str, Any], key: str) -> Any:
 
 def _linked_interface_refs(item: Mapping[str, Any]) -> list[str]:
     values: list[Any] = []
-    legacy = _custom_or_top_level(item, "linkedInterfaceId")
-    if legacy not in (None, ""):
-        values.append(legacy)
     multiple = _custom_or_top_level(item, "linkedInterfaceIds")
     if isinstance(multiple, Sequence) and not isinstance(multiple, (str, bytes)):
         values.extend(multiple)

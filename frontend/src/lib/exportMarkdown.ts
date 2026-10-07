@@ -990,7 +990,6 @@ function linkedInterfaceFromElement(element: Record<string, unknown>): string | 
     'architecture_interface_id',
     'architectureInterfaceId',
     'linked_interface_id',
-    'linkedInterfaceId',
   ])
     || firstRecordArrayString(element, ['interface_ids', 'interfaceIds', 'linked_interface_ids', 'linkedInterfaceIds'])
     || nestedRecordString(element, ['customData', 'data', 'metadata'], [
@@ -999,7 +998,6 @@ function linkedInterfaceFromElement(element: Record<string, unknown>): string | 
       'architecture_interface_id',
       'architectureInterfaceId',
       'linked_interface_id',
-      'linkedInterfaceId',
     ]);
 }
 

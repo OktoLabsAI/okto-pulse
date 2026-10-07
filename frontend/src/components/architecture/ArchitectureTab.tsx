@@ -93,7 +93,6 @@ interface ArchitectureCanvasElement {
   displayType?: string | null;
   iconName?: string | null;
   linkedEntityId?: string | null;
-  linkedInterfaceId?: string | null;
   linkedInterfaceIds?: string[] | null;
   sourceElementId?: string | null;
   targetElementId?: string | null;
@@ -373,7 +372,6 @@ function interfaceRefsFor(item: ArchitectureInterface | undefined, index: number
 
 function linkedInterfaceRefs(element: ArchitectureCanvasElement): string[] {
   return uniqueRefs([
-    element.linkedInterfaceId || undefined,
     ...(Array.isArray(element.linkedInterfaceIds) ? element.linkedInterfaceIds : []),
   ]);
 }
@@ -387,7 +385,6 @@ function replaceLinkedInterfaceRefs(element: ArchitectureCanvasElement, previous
   const unique = uniqueRefs(refs);
   return {
     ...element,
-    linkedInterfaceId: unique[0] || null,
     linkedInterfaceIds: unique,
   };
 }
@@ -396,7 +393,6 @@ function removeLinkedInterfaceRefs(element: ArchitectureCanvasElement, refsToRem
   const refs = linkedInterfaceRefs(element).filter((ref) => !refsToRemove.includes(ref));
   return {
     ...element,
-    linkedInterfaceId: refs[0] || null,
     linkedInterfaceIds: refs,
   };
 }
@@ -519,7 +515,6 @@ function syncEntityElement(element: ArchitectureCanvasElement, entity: Architect
 function syncInterfaceElement(element: ArchitectureCanvasElement, item: ArchitectureInterface, ref: string): ArchitectureCanvasElement {
   return {
     ...element,
-    linkedInterfaceId: ref,
     linkedInterfaceIds: uniqueRefs([...linkedInterfaceRefs(element), ref]),
     text: item.name,
     displayType: item.endpoint || item.protocol || item.contract_type || 'Interface',

@@ -308,7 +308,7 @@ describe('exportMarkdown architecture warnings', () => {
           adapter_payload: {
             elements: [
               { id: 'node-worker', linkedEntityId: 'worker/service' },
-              { id: 'edge-api-worker', sourceElementId: 'node-api', targetElementId: 'node-worker', linkedInterfaceId: 'http-calls' },
+              { id: 'edge-api-worker', sourceElementId: 'node-api', targetElementId: 'node-worker', linkedInterfaceIds: ['http-calls'] },
               { id: 'node-api', linkedEntityId: 'api gateway' },
             ],
           },
@@ -533,7 +533,7 @@ describe('exportMarkdown architecture warnings', () => {
               elements: [
                 { id: 'node-ui', linkedEntityId: 'ui' },
                 { id: 'node-api', linkedEntityId: 'api' },
-                { id: 'edge-ui-api', sourceElementId: 'node-ui', targetElementId: 'node-api', linkedInterfaceId: 'uses-api' },
+                { id: 'edge-ui-api', sourceElementId: 'node-ui', targetElementId: 'node-api', linkedInterfaceIds: ['uses-api'] },
               ],
               appState: { viewBackgroundColor: '#fff' },
               files: { asset: { id: 'file-1' } },
@@ -595,7 +595,7 @@ describe('exportMarkdown architecture warnings', () => {
                 id: 'edge-portal-service',
                 sourceElementId: 'node-portal',
                 targetElementId: 'node-service',
-                linkedInterfaceId: 'call-service',
+                linkedInterfaceIds: ['call-service'],
                 customData: { password: 'RAW_EDGE_SECRET' },
               },
             ],

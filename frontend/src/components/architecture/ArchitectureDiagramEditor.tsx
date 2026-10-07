@@ -63,7 +63,6 @@ interface ExcalidrawElement {
   displayType?: string | null;
   iconName?: string | null;
   linkedEntityId?: string | null;
-  linkedInterfaceId?: string | null;
   linkedInterfaceIds?: string[] | null;
   linkedMockupId?: string | null;
   sourceElementId?: string | null;
@@ -201,7 +200,6 @@ function itemRefs(item: { id?: string | null; name?: string; title?: string }, i
 
 function linkedInterfaceRefs(element: ExcalidrawElement): string[] {
   return uniqueRefs([
-    element.linkedInterfaceId || undefined,
     ...(Array.isArray(element.linkedInterfaceIds) ? element.linkedInterfaceIds : []),
   ]);
 }
@@ -210,7 +208,6 @@ function withLinkedInterfaceRefs(element: ExcalidrawElement, refs: string[]): Ex
   const unique = uniqueRefs(refs);
   return {
     ...element,
-    linkedInterfaceId: unique[0] || null,
     linkedInterfaceIds: unique,
   };
 }
