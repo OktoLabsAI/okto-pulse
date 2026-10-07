@@ -30,7 +30,6 @@ from okto_pulse.community.api.knowledge_governance import (
 )
 from okto_pulse.community.api.pagination import (
     anchor_scope,
-    pagination_requested,
     project_page,
     record_fields,
     resolve_window,
@@ -47,7 +46,6 @@ from okto_pulse.community.api.quality_summary_projection import (
 )
 from okto_pulse.community.api.qa_count_projection import (
     project_open_qa_count,
-    redact_open_qa_count_records,
     resolve_board_projection_permissions,
 )
 from okto_pulse.core.ports.application_persistence import (
@@ -139,7 +137,6 @@ from okto_pulse.core.models.schemas import (
     RefinementResponse,
     RefinementSnapshotResponse,
     RefinementSnapshotSummary,
-    RefinementSummary,
     RefinementUpdate,
     DeriveSpecResponse,
 )
@@ -229,7 +226,7 @@ async def create_refinement(
 
 @router.get(
     "/ideations/{ideation_id}/refinements",
-    response_model=list[RefinementSummary] | PageEnvelope[RefinementPageItem],
+    response_model=PageEnvelope[RefinementPageItem],
     dependencies=[Depends(validate_pagination_query)],
 )
 async def list_refinements(
@@ -241,129 +238,96 @@ async def list_refinements(
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
-    """List refinements for an ideation, optionally filtered by status.
-
-    With ``offset``/``limit``: paginated envelope (spec 8b33f9a8; the
-    ideation id is the surface's identity anchor); without: legacy shape
-    unchanged (DR9).
-    """
+    """List refinements with one paginated envelope and defaults offset=0, limit=25."""
     actor = RESTAdapterContract.actor(user_id)
-    if pagination_requested(offset, limit):
-        command = ListRefinementsCommand(
-            ideation_id,
-            status_filter=status_filter,
-            include_archived=include_archived,
-        )
-        use_case = ListRefinementsUseCase()
-        try:
-            resolved_offset, resolved_limit = resolve_window(offset, limit)
-            filters: tuple[ApplicationFilter, ...] = ()
-            if status_filter:
-                filters = (ApplicationFilter("status", "eq", status_filter),)
-            page = await run_paginated_list(
-                uow,
-                lambda ideation: PageRequest(
-                    surface="refinement_list",
-                    scope=(
-                        ApplicationFilter("board_id", "eq", ideation.board_id),
-                        *anchor_scope(
-                            "ideation_id",
-                            ideation_id,
-                            include_archived=include_archived,
-                        ),
-                    ),
-                    offset=resolved_offset,
-                    limit=resolved_limit,
-                    filters=filters,
-                ),
-                preflight=lambda: use_case.preflight(command, actor=actor, uow=uow),
-            )
-        except EntityNotFoundError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
-            )
-        subject_ids = tuple(str(record.values["id"]) for record in page.items)
-        page_board_id = str(page.items[0].values["board_id"]) if page.items else ""
-        projection_permissions = (
-            await resolve_board_projection_permissions(
-                actor=actor,
-                uow=uow,
-                board_id=page_board_id,
-                permission_leaves=(
-                    "refinement.qa.read",
-                    "refinement.quality.read",
-                ),
-            )
-            if subject_ids
-            else {}
-        )
-        quality_summaries = await load_quality_summaries_for_page(
-            uow=uow,
-            user_id=user_id,
-            board_id=page_board_id,
-            subject_type="refinement",
-            subject_ids=subject_ids,
-            can_read_quality=projection_permissions.get("refinement.quality.read"),
-        )
-        return project_page(
-            page,
-            lambda record: RefinementPageItem(
-                **project_open_qa_count(
-                    record_fields(
-                        record,
-                        (
-                            "id",
-                            "ideation_id",
-                            "board_id",
-                            "title",
-                            "description",
-                            "status",
-                            "edition",
-                            "version",
-                            "assignee_id",
-                            "created_by",
-                            "created_at",
-                            "updated_at",
-                            "labels",
-                            "archived",
-                            "open_qa_count",
-                        ),
-                    ),
-                    can_read_qa=projection_permissions.get("refinement.qa.read", False),
-                ),
-                **quality_summary_field(
-                    str(record.values["id"]),
-                    quality_summaries,
-                ),
-            ),
-        )
+    command = ListRefinementsCommand(
+        ideation_id,
+        status_filter=status_filter,
+        include_archived=include_archived,
+    )
+    use_case = ListRefinementsUseCase()
     try:
-        result = await ListRefinementsUseCase().execute(
-            ListRefinementsCommand(
-                ideation_id,
-                status_filter=status_filter,
-                include_archived=include_archived,
+        resolved_offset, resolved_limit = resolve_window(offset, limit)
+        filters: tuple[ApplicationFilter, ...] = ()
+        if status_filter:
+            filters = (ApplicationFilter("status", "eq", status_filter),)
+        page = await run_paginated_list(
+            uow,
+            lambda ideation: PageRequest(
+                surface="refinement_list",
+                scope=(
+                    ApplicationFilter("board_id", "eq", ideation.board_id),
+                    *anchor_scope(
+                        "ideation_id",
+                        ideation_id,
+                        include_archived=include_archived,
+                    ),
+                ),
+                offset=resolved_offset,
+                limit=resolved_limit,
+                filters=filters,
             ),
-            actor=actor,
-            uow=uow,
+            preflight=lambda: use_case.preflight(command, actor=actor, uow=uow),
         )
     except EntityNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
         )
-    if result.refinements:
-        page_board_id = str(result.refinements[0].board_id)
-        projection_permissions = await resolve_board_projection_permissions(
+    subject_ids = tuple(str(record.values["id"]) for record in page.items)
+    page_board_id = str(page.items[0].values["board_id"]) if page.items else ""
+    projection_permissions = (
+        await resolve_board_projection_permissions(
             actor=actor,
             uow=uow,
             board_id=page_board_id,
-            permission_leaves=("refinement.qa.read",),
+            permission_leaves=(
+                "refinement.qa.read",
+                "refinement.quality.read",
+            ),
         )
-        redact_open_qa_count_records(
-            result.refinements,
-            can_read_qa=projection_permissions["refinement.qa.read"],
-        )
-    return result.refinements
+        if subject_ids
+        else {}
+    )
+    quality_summaries = await load_quality_summaries_for_page(
+        uow=uow,
+        user_id=user_id,
+        board_id=page_board_id,
+        subject_type="refinement",
+        subject_ids=subject_ids,
+        can_read_quality=projection_permissions.get("refinement.quality.read"),
+    )
+    return project_page(
+        page,
+        lambda record: RefinementPageItem(
+            **project_open_qa_count(
+                record_fields(
+                    record,
+                    (
+                        "id",
+                        "ideation_id",
+                        "board_id",
+                        "title",
+                        "description",
+                        "status",
+                        "edition",
+                        "version",
+                        "assignee_id",
+                        "created_by",
+                        "created_at",
+                        "updated_at",
+                        "labels",
+                        "archived",
+                        "open_qa_count",
+                    ),
+                ),
+                can_read_qa=projection_permissions.get("refinement.qa.read", False),
+            ),
+            **quality_summary_field(
+                str(record.values["id"]),
+                quality_summaries,
+            ),
+        ),
+    )
 
 
 @router.get(

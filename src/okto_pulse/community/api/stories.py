@@ -27,7 +27,6 @@ from okto_pulse.community.adapters.sqlalchemy_application_persistence import (
 from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.community.api.pagination import (
     board_scope,
-    pagination_requested,
     resolve_window,
     run_paginated_list,
     search_groups,
@@ -82,7 +81,6 @@ from okto_pulse.core.models.schemas import (
     StoryResponse,
     PageEnvelope,
     StoryPageItem,
-    StorySummary,
     StoryUpdate,
     TopicCreate,
     TopicDeleteResponse,
@@ -315,7 +313,7 @@ async def create_story(
 
 @router.get(
     "/boards/{board_id}/stories",
-    response_model=list[StorySummary] | PageEnvelope[StoryPageItem],
+    response_model=PageEnvelope[StoryPageItem],
     dependencies=[Depends(validate_story_pagination_query)],
 )
 async def list_stories(
@@ -331,38 +329,19 @@ async def list_stories(
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
-    """List Stories for a board.
-
-    With ``offset``/``limit`` the response is the paginated envelope
-    (server-side filters, two totals, lean projection — spec 8b33f9a8);
-    without them the legacy shape stays byte-identical (DR9).
-    """
+    """List Stories with one paginated envelope and defaults offset=0, limit=25."""
     try:
-        if pagination_requested(offset, limit):
-            return await _list_stories_page(
-                board_id,
-                status_filter=status_filter,
-                topic_id=topic_id,
-                search=search,
-                linked=linked,
-                converted=converted,
-                include_archived=include_archived,
-                offset=offset,
-                limit=limit,
-                user_id=user_id,
-                uow=uow,
-            )
-        result = await ListStoriesUseCase().execute(
-            ListStoriesCommand(
-                board_id,
-                status_filter=status_filter,
-                topic_id=topic_id,
-                search=search,
-                linked=linked,
-                converted=converted,
-                include_archived=include_archived,
-            ),
-            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+        return await _list_stories_page(
+            board_id,
+            status_filter=status_filter,
+            topic_id=topic_id,
+            search=search,
+            linked=linked,
+            converted=converted,
+            include_archived=include_archived,
+            offset=offset,
+            limit=limit,
+            user_id=user_id,
             uow=uow,
         )
     except PermissionDeniedError as exc:
@@ -371,7 +350,6 @@ async def list_stories(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    return result.stories
 
 
 async def _list_stories_page(
@@ -390,8 +368,7 @@ async def _list_stories_page(
 ) -> PageEnvelope[StoryPageItem]:
     """Paginated stories: surface executor + productive TR1 cap.
 
-    ``linked`` runs SERVER-SIDE as the adapter's correlated EXISTS (the
-    legacy post-fetch filter never runs on this path — C3/C5 contract).
+    ``linked`` runs server-side as the adapter's correlated EXISTS.
     """
     resolved_offset, resolved_limit = resolve_window(offset, limit)
     filters: tuple[ApplicationFilter, ...] = ()

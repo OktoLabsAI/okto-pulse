@@ -70,7 +70,8 @@ def test_cold_adapter_package_is_lazy_and_preserves_public_exports():
 import json, sys
 import okto_pulse.community.adapters as adapters
 assert "okto_pulse.community.adapters.composition" not in sys.modules
-assert len(adapters.__all__) == 71
+assert len(adapters.__all__) == 59
+assert not any(part in name.lower() for name in adapters.__all__ for part in ("retirement", "migration", "legacy"))
 for name in adapters.__all__:
     assert name in dir(adapters)
     assert getattr(adapters, name) is getattr(adapters, name)
@@ -80,4 +81,4 @@ print(json.dumps({"exports": len(adapters.__all__)}))
 '''
     result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert json.loads(result.stdout.strip().splitlines()[-1]) == {"exports": 71}
+    assert json.loads(result.stdout.strip().splitlines()[-1]) == {"exports": 59}

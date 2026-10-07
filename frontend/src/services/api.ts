@@ -377,6 +377,24 @@ export interface ActivityLogEntry {
 }
 
 function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
+  // Selectors need all candidates; the transport always uses the same page envelope.
+  async function collectListPages<T>(path: string, params: URLSearchParams): Promise<T[]> {
+    const items: T[] = [];
+    let offset = 0;
+    while (true) {
+      params.set('offset', String(offset));
+      params.set('limit', '100');
+      const page = await apiClient.fetchJson<PageEnvelope<T>>(`${path}?${params.toString()}`);
+      if (!Array.isArray(page.items) || page.offset !== offset || page.limit !== 100) {
+        throw new Error('Invalid list page response');
+      }
+      items.push(...page.items);
+      offset += page.items.length;
+      if (offset >= page.total_filtered) return items;
+      if (page.items.length === 0) throw new Error('Incomplete list page response');
+    }
+  }
+
   return {
     // ==================== QUALITY ASSESSMENTS ====================
 
@@ -1211,8 +1229,7 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       const p = new URLSearchParams();
       if (status) p.set('status', status);
       if (includeArchived) p.set('include_archived', 'true');
-      const qs = p.toString() ? `?${p.toString()}` : '';
-      return apiClient.fetchJson<SpecSummary[]>(`/boards/${boardId}/specs${qs}`);
+      return collectListPages<SpecSummary>(`/boards/${boardId}/specs`, p);
     },
 
     async listSpecsPage(
@@ -1746,8 +1763,7 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       if (filters?.linked !== undefined) p.set('linked', filters.linked ? 'true' : 'false');
       if (filters?.converted !== undefined) p.set('converted', filters.converted ? 'true' : 'false');
       if (filters?.includeArchived) p.set('include_archived', 'true');
-      const qs = p.toString() ? `?${p.toString()}` : '';
-      return apiClient.fetchJson<StorySummary[]>(`/boards/${boardId}/stories${qs}`);
+      return collectListPages<StorySummary>(`/boards/${boardId}/stories`, p);
     },
 
     async listStoriesPage(boardId: string, options: PageWindow & {
@@ -1827,8 +1843,7 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       const p = new URLSearchParams();
       if (status) p.set('status', status);
       if (includeArchived) p.set('include_archived', 'true');
-      const qs = p.toString() ? `?${p.toString()}` : '';
-      return apiClient.fetchJson<IdeationSummary[]>(`/boards/${boardId}/ideations${qs}`);
+      return collectListPages<IdeationSummary>(`/boards/${boardId}/ideations`, p);
     },
 
     async listIdeationsPage(
@@ -2010,7 +2025,9 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
     },
 
     async listRefinements(ideationId: string): Promise<RefinementSummary[]> {
-      return apiClient.fetchJson<RefinementSummary[]>(`/ideations/${ideationId}/refinements`);
+      return collectListPages<RefinementSummary>(
+        `/ideations/${ideationId}/refinements`, new URLSearchParams(),
+      );
     },
 
     async listBoardRefinementsPage(boardId: string, options: PageWindow & {

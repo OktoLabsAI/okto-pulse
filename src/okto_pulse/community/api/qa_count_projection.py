@@ -7,7 +7,7 @@ Resolve all requested leaves once for the board, then either expose the exact
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from okto_pulse.core.application.use_cases.authorization import (
@@ -55,26 +55,9 @@ def project_open_qa_count(
     return projected
 
 
-def redact_open_qa_count_records(
-    records: Sequence[Any],
-    *,
-    can_read_qa: bool,
-) -> Sequence[Any]:
-    """Set a legacy record count to ``None`` so its schema omits the field."""
-
-    if can_read_qa:
-        return records
-    for record in records:
-        attach = getattr(record, "attach", None)
-        if callable(attach):
-            attach("open_qa_count", None)
-        else:
-            setattr(record, "open_qa_count", None)
-    return records
 
 
 __all__ = [
     "project_open_qa_count",
-    "redact_open_qa_count_records",
     "resolve_board_projection_permissions",
 ]

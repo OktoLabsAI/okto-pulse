@@ -28,7 +28,6 @@ from okto_pulse.community.api.lookups import (
 )
 from okto_pulse.community.api.pagination import (
     board_scope,
-    pagination_requested,
     project_page,
     record_fields,
     resolve_window,
@@ -42,7 +41,6 @@ from okto_pulse.community.api.quality_summary_projection import (
 )
 from okto_pulse.community.api.qa_count_projection import (
     project_open_qa_count,
-    redact_open_qa_count_records,
     resolve_board_projection_permissions,
 )
 from okto_pulse.community.api.spec_dependency_errors import (
@@ -174,7 +172,6 @@ from okto_pulse.core.models.schemas import (
     SpecMove,
     SpecPageItem,
     SpecResponse,
-    SpecSummary,
     SpecUpdate,
     SpecValidationResponse,
     SpecValidationSubmit,
@@ -1141,7 +1138,7 @@ async def create_spec(
 
 @router.get(
     "/boards/{board_id}/specs",
-    response_model=list[SpecSummary] | PageEnvelope[SpecPageItem],
+    response_model=PageEnvelope[SpecPageItem],
     dependencies=[Depends(validate_pagination_query)],
 )
 async def list_specs(
@@ -1154,116 +1151,87 @@ async def list_specs(
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
-    """List specs for a board, optionally filtered by status.
-
-    With ``offset``/``limit``: paginated envelope (spec 8b33f9a8); without:
-    legacy shape unchanged (DR9).
-    """
+    """List specs with one paginated envelope and defaults offset=0, limit=25."""
     actor = RESTAdapterContract.actor(user_id, board_id=board_id)
-    if pagination_requested(offset, limit):
-        command = ListSpecsCommand(
-            board_id,
-            status_filter=status_filter,
-            include_archived=include_archived,
-        )
-        use_case = ListSpecsUseCase()
-        try:
-            resolved_offset, resolved_limit = resolve_window(offset, limit)
-            filters: tuple[ApplicationFilter, ...] = ()
-            if status_filter:
-                filters = (ApplicationFilter("status", "eq", status_filter),)
-            page = await run_paginated_list(
-                uow,
-                PageRequest(
-                    surface="spec_list",
-                    scope=board_scope(board_id, include_archived=include_archived),
-                    offset=resolved_offset,
-                    limit=resolved_limit,
-                    filters=filters,
-                    any_groups=search_groups(search, ("title", "description")),
-                ),
-                preflight=lambda: use_case.preflight(command, actor=actor, uow=uow),
-            )
-        except EntityNotFoundError:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
-            )
-        subject_ids = tuple(str(record.values["id"]) for record in page.items)
-        projection_permissions = (
-            await resolve_board_projection_permissions(
-                actor=actor,
-                uow=uow,
-                board_id=board_id,
-                permission_leaves=("spec.qa.read", "spec.quality.read"),
-            )
-            if subject_ids
-            else {}
-        )
-        quality_summaries = await load_quality_summaries_for_page(
-            uow=uow,
-            user_id=user_id,
-            board_id=board_id,
-            subject_type="spec",
-            subject_ids=subject_ids,
-            can_read_quality=projection_permissions.get("spec.quality.read"),
-        )
-        return project_page(
-            page,
-            lambda record: SpecPageItem(
-                **project_open_qa_count(
-                    record_fields(
-                        record,
-                        (
-                            "id",
-                            "board_id",
-                            "ideation_id",
-                            "refinement_id",
-                            "title",
-                            "description",
-                            "status",
-                            "edition",
-                            "version",
-                            "assignee_id",
-                            "created_by",
-                            "created_at",
-                            "updated_at",
-                            "labels",
-                            "archived",
-                            "open_qa_count",
-                        ),
-                    ),
-                    can_read_qa=projection_permissions.get("spec.qa.read", False),
-                ),
-                **quality_summary_field(
-                    str(record.values["id"]),
-                    quality_summaries,
-                ),
-            ),
-        )
+    command = ListSpecsCommand(
+        board_id,
+        status_filter=status_filter,
+        include_archived=include_archived,
+    )
+    use_case = ListSpecsUseCase()
     try:
-        result = await ListSpecsUseCase().execute(
-            ListSpecsCommand(
-                board_id, status_filter=status_filter, include_archived=include_archived
+        resolved_offset, resolved_limit = resolve_window(offset, limit)
+        filters: tuple[ApplicationFilter, ...] = ()
+        if status_filter:
+            filters = (ApplicationFilter("status", "eq", status_filter),)
+        page = await run_paginated_list(
+            uow,
+            PageRequest(
+                surface="spec_list",
+                scope=board_scope(board_id, include_archived=include_archived),
+                offset=resolved_offset,
+                limit=resolved_limit,
+                filters=filters,
+                any_groups=search_groups(search, ("title", "description")),
             ),
-            actor=actor,
-            uow=uow,
+            preflight=lambda: use_case.preflight(command, actor=actor, uow=uow),
         )
     except EntityNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
         )
-    if result.specs:
-        projection_permissions = await resolve_board_projection_permissions(
+    subject_ids = tuple(str(record.values["id"]) for record in page.items)
+    projection_permissions = (
+        await resolve_board_projection_permissions(
             actor=actor,
             uow=uow,
             board_id=board_id,
-            permission_leaves=("spec.qa.read",),
+            permission_leaves=("spec.qa.read", "spec.quality.read"),
         )
-        redact_open_qa_count_records(
-            result.specs,
-            can_read_qa=projection_permissions["spec.qa.read"],
-        )
-    return result.specs
+        if subject_ids
+        else {}
+    )
+    quality_summaries = await load_quality_summaries_for_page(
+        uow=uow,
+        user_id=user_id,
+        board_id=board_id,
+        subject_type="spec",
+        subject_ids=subject_ids,
+        can_read_quality=projection_permissions.get("spec.quality.read"),
+    )
+    return project_page(
+        page,
+        lambda record: SpecPageItem(
+            **project_open_qa_count(
+                record_fields(
+                    record,
+                    (
+                        "id",
+                        "board_id",
+                        "ideation_id",
+                        "refinement_id",
+                        "title",
+                        "description",
+                        "status",
+                        "edition",
+                        "version",
+                        "assignee_id",
+                        "created_by",
+                        "created_at",
+                        "updated_at",
+                        "labels",
+                        "archived",
+                        "open_qa_count",
+                    ),
+                ),
+                can_read_qa=projection_permissions.get("spec.qa.read", False),
+            ),
+            **quality_summary_field(
+                str(record.values["id"]),
+                quality_summaries,
+            ),
+        ),
+    )
 
 
 @router.get(

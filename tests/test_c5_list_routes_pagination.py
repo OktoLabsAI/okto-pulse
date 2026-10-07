@@ -1,7 +1,7 @@
 """C5 — the four surviving REST lists over the real Core/Community stack.
 
 The suite uses an isolated SQLite file and a real ``CommunityUnitOfWork``.
-It covers the opt-in envelope, DR9 legacy branch, two totals, stable windows,
+It covers the single native envelope, default windows, two totals, stable windows,
 typed query errors, parent/access parity, bounded SQL and lean SQL projection.
 No running Pulse process or installed data directory is touched.
 """
@@ -353,7 +353,7 @@ def client(tmp_path: Path):
 
 
 @pytest.mark.parametrize(("path", "active_total"), LIST_CASES)
-def test_four_routes_opt_in_to_exact_envelope(
+def test_four_routes_return_exact_envelope(
     client: TestClient, path: str, active_total: int
 ) -> None:
     response = client.get(f"{path}?offset=0&limit=25")
@@ -367,12 +367,18 @@ def test_four_routes_opt_in_to_exact_envelope(
 
 
 @pytest.mark.parametrize(("path", "_active_total"), LIST_CASES)
-def test_four_routes_preserve_successful_legacy_list_shape(
+def test_four_routes_default_to_the_same_envelope(
     client: TestClient, path: str, _active_total: int
 ) -> None:
+    route = path.replace("/b1/", "/{board_id}/").replace("/i00/", "/{ideation_id}/")
+    schema = client.app.openapi()["paths"][route]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+    assert "anyOf" not in schema
+    assert "PageEnvelope" in schema["$ref"]
     response = client.get(path)
     assert response.status_code == 200, response.text
-    assert isinstance(response.json(), list)
+    assert set(response.json()) == ENVELOPE_KEYS
+    assert response.json()["offset"] == 0
+    assert response.json()["limit"] == 25
 
 
 def test_offset_or_limit_alone_activates_defaults(client: TestClient) -> None:
@@ -560,7 +566,7 @@ def test_paginated_qa_parent_routes_omit_counts_without_qa_read(
         "/api/v1/boards/b1/specs",
     ),
 )
-def test_legacy_qa_parent_routes_omit_counts_without_qa_read(
+def test_default_qa_parent_routes_omit_counts_without_qa_read(
     client: TestClient,
     path: str,
 ) -> None:
@@ -572,8 +578,8 @@ def test_legacy_qa_parent_routes_omit_counts_without_qa_read(
         client.app.dependency_overrides[require_user] = original
 
     assert response.status_code == 200, response.text
-    assert response.json()
-    assert all("open_qa_count" not in item for item in response.json())
+    assert response.json()["items"]
+    assert all("open_qa_count" not in item for item in response.json()["items"])
 
 
 def test_ideation_derivation_pending_is_server_side_and_null_safe(
@@ -601,12 +607,14 @@ def test_ideation_derivation_pending_is_server_side_and_null_safe(
         "/api/v1/boards/b1/specs?search=definitely-missing",
     ),
 )
-def test_new_consumer_filters_preserve_legacy_list_semantics(
+def test_filters_apply_with_the_default_window(
     client: TestClient, path: str
 ) -> None:
     response = client.get(path)
     assert response.status_code == 200, response.text
-    assert len(response.json()) == 25
+    assert response.json()["items"] == []
+    assert response.json()["total_filtered"] == 0
+    assert response.json()["total_overall"] == 25
 
 
 
@@ -704,12 +712,14 @@ def test_ideation_derivation_pending_raw_type_is_typed_400(
     assert response.json()["detail"]["error"] == "derivation_pending_invalid"
 
 
-def test_unknown_query_params_remain_ignored_on_other_legacy_routes(
+def test_unrelated_query_params_remain_ignored(
     client: TestClient,
 ) -> None:
     response = client.get("/api/v1/boards/b1/ideations?linked=wat")
     assert response.status_code == 200, response.text
-    assert isinstance(response.json(), list)
+    assert set(response.json()) == ENVELOPE_KEYS
+    assert response.json()["offset"] == 0
+    assert response.json()["limit"] == 25
 
 
 @pytest.mark.parametrize(
@@ -721,15 +731,16 @@ def test_unknown_query_params_remain_ignored_on_other_legacy_routes(
         "/api/v1/boards/b1/stories?converted=wat",
     ),
 )
-def test_legacy_malformed_booleans_keep_fastapi_422(
+def test_malformed_booleans_use_typed_400_with_default_window(
     client: TestClient, path: str
 ) -> None:
     response = client.get(path)
-    assert response.status_code == 422, response.text
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"]["error"].endswith("_invalid")
 
 
 @pytest.mark.parametrize(("path", "_active_total"), LIST_CASES)
-def test_raw_offset_guard_applies_to_all_six_routes(
+def test_raw_offset_guard_applies_to_all_four_routes(
     client: TestClient, path: str, _active_total: int
 ) -> None:
     response = client.get(f"{path}?offset=not-an-int&limit=25")
@@ -757,13 +768,13 @@ def test_missing_foreign_and_mismatched_scopes_preserve_404(
     assert response.status_code == 404, response.text
 
 
-def test_refinement_page_preserves_legacy_cross_board_consistency_filter(
+def test_refinement_windows_preserve_cross_board_consistency_filter(
     client: TestClient,
 ) -> None:
-    legacy = client.get("/api/v1/ideations/i00/refinements")
+    default = client.get("/api/v1/ideations/i00/refinements")
     paged = client.get("/api/v1/ideations/i00/refinements?offset=0&limit=50")
-    assert legacy.status_code == paged.status_code == 200
-    assert "r-corrupt" not in {item["id"] for item in legacy.json()}
+    assert default.status_code == paged.status_code == 200
+    assert "r-corrupt" not in {item["id"] for item in default.json()["items"]}
     assert "r-corrupt" not in {item["id"] for item in paged.json()["items"]}
     assert paged.json()["total_filtered"] == paged.json()["total_overall"] == 25
 
@@ -792,9 +803,9 @@ def test_story_projection_is_lean_and_count_is_computed_in_sql(
     assert "stories.screen_mockups AS screen_mockups" not in page_sql
     assert "stories.pre_archive_status" not in page_sql
 
-    legacy = client.get("/api/v1/boards/b1/stories")
-    assert legacy.status_code == 200, legacy.text
-    assert len(response.content) < len(legacy.content)
+    default = client.get("/api/v1/boards/b1/stories")
+    assert default.status_code == 200, default.text
+    assert default.json() == response.json()
 
 
 @pytest.mark.parametrize(("path", "_active_total"), LIST_CASES)
