@@ -61,7 +61,8 @@ from test_evidence_v2_adapter import (
 
 @pytest_asyncio.fixture
 async def ledger(tmp_path, request):
-    native_bug = getattr(request, "param", None) == "native_bug"
+    native_lifecycle = getattr(request, "param", None) == "native_bug_lifecycle"
+    native_bug = native_lifecycle or getattr(request, "param", None) == "native_bug"
     if native_bug:
         from okto_pulse.community.adapters.sqlalchemy_database import build_community_engine, install_community_sqlite_pragmas
         engine = build_community_engine(f"sqlite+aiosqlite:///{tmp_path / 'delivery.sqlite'}")
@@ -97,6 +98,12 @@ async def ledger(tmp_path, request):
                  "About reports a stale version.",
                  "Use the authoritative release version in the compiled bundle."),
             )
+        if native_lifecycle:
+            await conn.exec_driver_sql(
+                "INSERT INTO cards (id, board_id, spec_id, title, status, position, created_by, card_type, test_scenario_ids) VALUES ('origin', ?, ?, 'Original implementation', 'done', 0, 'owner', 'normal', ?)",
+                (BOARD_ID, SPEC_ID, json.dumps([SCENARIO["id"]])),
+            )
+            await conn.exec_driver_sql("UPDATE cards SET origin_task_id='origin' WHERE id='task'")
     session = build_community_session_factory(engine)()
     evidence_ledger, _, evidence = await _produce(tmp_path)
     register_test_evidence_write_verifier(
