@@ -14,6 +14,7 @@ from okto_pulse.community.adapters.sqlalchemy_unit_of_work import CommunityUnitO
 from okto_pulse.core.application.use_cases.architecture_classification_review import (
     GetArchitectureClassificationsCommand, GetArchitectureClassificationsUseCase,
 )
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
 from okto_pulse.core.domain.architecture_classification import ArchitectureClassificationBatch
 from okto_pulse.core.services.architecture_candidates import load_spec_architecture_candidates
 
@@ -72,7 +73,7 @@ async def allocated_ir_snapshot(db, ir_id):
 @pytest.mark.asyncio
 async def test_same_origin_has_independent_persisted_decisions_in_two_specs(classified_context):
     db = classified_context
-    db.add(Spec(id="second", board_id="board", title="Second", created_by="author", edition=2))
+    db.add(Spec(architecture_adoption=ArchitectureAdoptionScope(board_id="board", spec_id="second", adopted_in_edition=2, actor_id="author", inherited_resource_ids=()).model_dump(mode="json"), id="second", board_id="board", title="Second", created_by="author", edition=2))
     await db.flush()
     db.add_all([design("copy-one", root="shared"), design("copy-two", owner_id="second", root="shared")])
     await db.commit()
@@ -225,7 +226,7 @@ async def test_association_preserves_pending_local_delivery_and_rejects_foreign_
     from okto_pulse.core.domain.delivery_evidence import evaluate_delivery_coverage
     assert not evaluate_delivery_coverage(inventory).allowed
     assert not inventory.implementations and not inventory.tests
-    db.add(Spec(id='foreign-spec', board_id='board', title='Other scope', created_by='author',
+    db.add(Spec(architecture_adoption=ArchitectureAdoptionScope(board_id="board", spec_id="foreign-spec", adopted_in_edition=1, actor_id="author", inherited_resource_ids=()).model_dump(mode="json"), id='foreign-spec', board_id='board', title='Other scope', created_by='author',
         integration_requirements=[{'id': 'foreign-ir', 'title': 'Consume orders', 'integration_type': 'event', 'status': 'active'}]))
     await db.commit()
     before = await writes.snapshot(db)
@@ -264,7 +265,7 @@ async def test_embedded_gate_instructions_remain_data_after_promotion(classified
             spec.skip_delivery_evidence, spec.skip_test_coverage) == before
     assert directive in str(spec.integration_requirements)
     from okto_pulse.core.services.main import SpecService
-    with pytest.raises(ValueError, match='spec_execution_contract_adoption_required'):
+    with pytest.raises(ValueError, match='spec_execution_contract_required'):
         await SpecService(db).require_execution_contract_ready(spec)
 
 

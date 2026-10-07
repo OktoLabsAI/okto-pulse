@@ -49,7 +49,7 @@ async def complete_start_fixture(db, tmp_path, candidate_count=3):
         refinement_id=None, status="draft", test_scenarios=[{"id": "scenario", "title": "Procedure display", "scenario_type": "integration", "linked_task_ids": ["test"],
             "status": "ready", "given": "A stored procedure", "when": "The procedure view opens",
             "then": "All steps are displayed", "verification_method": "automated_test", "linked_criteria": ["ac-procedure"]}],
-        evaluations=[{"evaluator_id": "reviewer", "recommendation": "approve", "overall_score": 95}],
+        evaluations=[{"spec_edition": 2, "evaluator_id": "reviewer", "recommendation": "approve", "overall_score": 95}],
         delivery_context="greenfield", delivery_context_provenance={"value": "greenfield",
             "source_spec_id": "spec", "source_spec_version": 1},
         source_context_manifest=manifest, source_context_sha256=digest,
@@ -126,13 +126,13 @@ async def test_pending_architecture_blocks_actual_start_without_workflow_mutatio
         # Assessment submission has separate integration tests. Seed its result
         # to test transition re-evaluation without replacing any admission gate.
         await db.execute(update(Spec).where(Spec.id == "spec").values(status="validated",
-            evaluations=[{"evaluator_id": "reviewer", "recommendation": "reject", "overall_score": 95}]))
+            evaluations=[{"spec_edition": row.edition, "evaluator_id": "reviewer", "recommendation": "reject", "overall_score": 95}]))
         await db.commit()
         rejected = await client.post("/api/v1/specs/spec/move", json={"status": "in_progress"})
         assert rejected.status_code == 400 and "reject" in rejected.text, rejected.text
         await db.refresh(row)
         assert row.status == "validated"
-        await db.execute(update(Spec).where(Spec.id == "spec").values(evaluations=fields["evaluations"]))
+        await db.execute(update(Spec).where(Spec.id == "spec").values(evaluations=[{**entry, "spec_edition": row.edition} for entry in fields["evaluations"]]))
         await db.commit()
         started = await client.post("/api/v1/specs/spec/move", json={"status": "in_progress"})
         assert started.status_code == 200, started.text

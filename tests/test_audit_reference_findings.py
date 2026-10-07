@@ -2,6 +2,8 @@
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
+from okto_pulse.core.domain.realm import RealmScope
+
 import pytest
 import pytest_asyncio
 from sqlalchemy import select, text
@@ -18,9 +20,9 @@ async def storage(tmp_path):
     engine = create_async_engine(f'sqlite+aiosqlite:///{tmp_path / "audit.db"}')
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
-    factory = async_sessionmaker(engine, expire_on_commit=False)
+    factory = async_sessionmaker(engine, expire_on_commit=False, info={"realm_scope": RealmScope.local()})
     async with factory() as session:
-        session.add(Board(id='board', name='Board', owner_id='owner'))
+        session.add(Board(realm_id="local", id='board', name='Board', owner_id='owner'))
         await session.commit()
     try:
         yield engine, factory, CommunityAuditRepository(factory)
