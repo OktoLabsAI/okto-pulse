@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
 import sqlite3
 from pathlib import Path
 
@@ -88,8 +89,8 @@ def test_each_qa_insert_update_delete_rotates_revision_and_nonce(
     connection.execute("PRAGMA foreign_keys = ON")
     try:
         connection.execute(
-            "INSERT INTO boards (id, name, owner_id) VALUES (?, ?, ?)",
-            ("board-c8", "C8 Q&A fence", "agent-c8"),
+            "INSERT INTO boards (id, name, owner_id, realm_id) VALUES (?, ?, ?, ?)",
+            ("board-c8", "C8 Q&A fence", "agent-c8", "local"),
         )
         connection.execute(
             "INSERT INTO ideations "
@@ -121,7 +122,7 @@ def test_each_qa_insert_update_delete_rotates_revision_and_nonce(
         connection.execute(
             "INSERT INTO specs "
             "(id, board_id, ideation_id, refinement_id, title, status, "
-            "version, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "version, created_by, architecture_adoption) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 "spec-c8",
                 "board-c8",
@@ -131,6 +132,10 @@ def test_each_qa_insert_update_delete_rotates_revision_and_nonce(
                 "draft",
                 1,
                 "agent-c8",
+                ArchitectureAdoptionScope(
+                    board_id="board-c8", spec_id="spec-c8", actor_id="agent-c8",
+                    adopted_in_edition=1, inherited_resource_ids=(),
+                ).model_dump_json(),
             ),
         )
         connection.commit()

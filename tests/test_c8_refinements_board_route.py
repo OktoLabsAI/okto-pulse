@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
 import json
 from pathlib import Path
 from typing import Any
@@ -66,9 +67,7 @@ async def _build_engine(path: Path) -> AsyncEngine:
     engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
-        # Base.metadata intentionally does not model migration-owned indexes.
-        # Install the C8 production shapes so the focal EXPLAIN assertion runs
-        # against the same schema contract as a migrated database.
+        # Install current supplemental indexes so EXPLAIN uses production shapes.
         for ddl in (
             "CREATE INDEX IF NOT EXISTS "
             "ix_refinements_board_archived_updated_iddesc "
@@ -201,20 +200,30 @@ async def _build_engine(path: Path) -> AsyncEngine:
             )
         )
 
-        # A draft active spec makes d-derived non-pending. Cancelled and
-        # archived specs do not count, so r000/r001 remain pending.
+        # Only the active child blocks derivation; cancelled/archived do not.
         await connection.execute(
             text(
                 "INSERT INTO specs "
                 "(id, board_id, ideation_id, refinement_id, title, status, "
-                "version, created_by, archived) VALUES "
-                "('sp-active', 'b1', 'i-main', 'd-derived', 'Active', "
-                " 'draft', 1, 'owner', 0), "
-                "('sp-cancelled', 'b1', 'i-main', 'r000', 'Cancelled', "
-                " 'cancelled', 1, 'owner', 0), "
-                "('sp-archived', 'b1', 'i-main', 'r001', 'Archived', "
-                " 'draft', 1, 'owner', 1)"
-            )
+                "version, created_by, archived, architecture_adoption) VALUES "
+                "(:id, 'b1', 'i-main', :refinement, :title, :status, "
+                "1, 'owner', :archived, :adoption)"
+            ),
+            [
+                dict(
+                    id=spec_id, refinement=refinement, title=title,
+                    status=status, archived=archived,
+                    adoption=ArchitectureAdoptionScope(
+                        board_id="b1", spec_id=spec_id, actor_id="owner",
+                        adopted_in_edition=1, inherited_resource_ids=(),
+                    ).model_dump_json(),
+                )
+                for spec_id, refinement, title, status, archived in (
+                    ("sp-active", "d-derived", "Active", "draft", False),
+                    ("sp-cancelled", "r000", "Cancelled", "cancelled", False),
+                    ("sp-archived", "r001", "Archived", "draft", True),
+                )
+            ],
         )
     return engine
 
