@@ -3,6 +3,7 @@ from collections import Counter
 from dataclasses import replace
 from datetime import datetime, timezone
 import hashlib
+import json
 
 import pytest
 from okto_grafx import connect
@@ -13,7 +14,7 @@ from okto_pulse.core import configure_settings
 from okto_pulse.core.application.processors.consolidation import ConsolidationProcessor
 from okto_pulse.core.ports.coordination import register_coordination_providers
 from okto_pulse.core.ports.consolidation import ConsolidationClaimScope
-from okto_pulse.core.ports.deterministic_projection import make_deterministic_projection_planner
+from okto_pulse.core.kg.rebuild_sources import RebuildSourceEnumerator, cognitive_durable_digest_from_rows
 from okto_pulse.core.ports.offline_kg_recovery import issue_offline_recovery_capability, reserve_offline_consolidation
 from okto_pulse.core.services.application_kg import drain_kg_health_probes
 from okto_pulse.community.config import CommunitySettings
@@ -23,7 +24,10 @@ from okto_pulse.community.adapters.coordination import register_community_coordi
 from okto_pulse.community.adapters.relational_effects import register_community_relational_effects
 from okto_pulse.community.adapters.graph_backend_binding import CommunityGraphBackendBindingStore
 from okto_pulse.community.adapters.board_source_reader import CommunityBoardSourceReader
-from okto_pulse.community.adapters.board_rebuild_ingestion import CommunityBoardRebuildIngestionAdapter
+from okto_pulse.community.adapters.board_rebuild_ingestion import (
+    CommunityBoardRebuildIngestionAdapter, _resolve_evidence_dependency_closure,
+)
+from okto_pulse.community.adapters.sqlalchemy_kg_cognitive_source import CommunitySqlAlchemyCognitiveSourceStore
 from okto_pulse.community.adapters.sqlalchemy_consolidation import CommunitySqlAlchemyConsolidationPersistence
 from okto_pulse.community.adapters.sqlalchemy_models import Base, Board, Spec, Card, ConsolidationQueue, ConsolidationAudit
 from okto_pulse.community.adapters.sqlalchemy_models import SpecDependency
@@ -169,22 +173,40 @@ async def materialize(root, *, incremental, card_type=None, final_unlinked=False
         else:
             snapshot = CommunityBoardSourceReader(path).fetch('board')
             assert snapshot.complete
-            planner = make_deterministic_projection_planner(CommunitySqlAlchemyConsolidationPersistence())
-            async with factory() as session:
-                document = await planner.prepare_board(session, board_id='board', source_rows=tuple(snapshot.rows),
-                    cognitive_rows=(), captured_at=datetime.now(timezone.utc))
-                sources = await planner.prepare_execution(session, document, board_id='board',
-                    source_rows=tuple(snapshot.rows), cognitive_rows=())
+            captured_at = datetime.now(timezone.utc)
+            cognitive_rows = await CommunitySqlAlchemyCognitiveSourceStore(factory).enumerate_latest_verified('board')
+            # This structural fixture has no authored cognitive sources. Read
+            # its actual store so an unavailable source class cannot look empty.
+            assert cognitive_rows == ()
+            source_set = RebuildSourceEnumerator(
+                source_store=lambda _board: list(snapshot.rows), now=captured_at,
+                cognitive_digest_provider=lambda _board: cognitive_durable_digest_from_rows(cognitive_rows),
+            ).enumerate(board_id='board')
+            sources = [row.to_dict() for row in source_set.materializable_sources]
+            for row in sources:
+                row['_rebuild_manifest_created_at'] = captured_at.isoformat()
+            for row in source_set.skipped_expired_working:
+                if row.artifact_type == 'code_evidence':
+                    sources.append({**row.to_dict(),
+                        '_rebuild_manifest_created_at': captured_at.isoformat(),
+                        '_rebuild_dependency_closure_candidate': 'code_evidence_supersedence'})
+            sources, _closure_count = _resolve_evidence_dependency_closure(
+                db_path=path, board_id='board', sources=sources)
             scope = ConsolidationClaimScope(board_id='board', source='rebuild:parity',
-                reservation_lineage_id=hashlib.sha256(document).hexdigest())
+                reservation_lineage_id=hashlib.sha256(json.dumps(
+                    sources, sort_keys=True, separators=(',', ':')).encode()).hexdigest())
             with offline_recovery_window((root, root / 'kg')):
                 with issue_offline_recovery_capability(board_id='board', lifetime_probe=lambda: True) as capability:
                     with reserve_offline_consolidation(claim_scope=scope, recovery_capability=capability,
                             write_lock_port=write_port, relational_scope_factory=factory, owner_id='parity-fixture') as reserved:
                         CommunityBoardRebuildIngestionAdapter(db_path=path).enqueue_sources(
                             board_id='board', run_id='parity', sources=sources)
-                        # The sealed reservation intentionally processes one owner per batch.
-                        for _ in range(2 if card_type else 1):
+                        # The sealed reservation processes one owner per batch.
+                        # Count the actually enqueued native sources, including optional
+                        # traceability fixtures; never infer membership from Card presence.
+                        async with factory() as session:
+                            queued_sources = (await session.execute(select(ConsolidationQueue.id))).all()
+                        for _ in queued_sources:
                             outcome = await reserved.process_next()
                             assert outcome.acked_count == 1, outcome
                         async with factory() as session:
