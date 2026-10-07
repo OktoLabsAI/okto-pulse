@@ -335,7 +335,7 @@ async def test_community_host_narrows_live_policy_board_schema_only_locally() ->
     # evidence classification are removed from the fresh-install contract. Keep the
     # inventory assertion explicit so a
     # schema silently falling back to FastMCP inference is still detected.
-    assert len(opted_in) == 45
+    assert len(opted_in) == 44
     assert {"okto_pulse_get_delivery_evidence", "okto_pulse_record_delivery_evidence", "okto_pulse_classify_architecture_candidates"} <= {
         tool.name for tool in opted_in
     }
@@ -518,3 +518,57 @@ def test_host_adapter_does_not_import_core_mcp_server() -> None:
     }
 
     assert "okto_pulse.core.mcp.server" not in modules
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool_name", "parent_field"),
+    [
+        ("okto_pulse_add_choice_comment", "card_id"),
+        ("okto_pulse_ask_ideation_choice_question", "ideation_id"),
+        ("okto_pulse_ask_refinement_choice_question", "refinement_id"),
+        ("okto_pulse_ask_spec_choice_question", "spec_id"),
+    ],
+)
+async def test_native_choice_schema_rejects_old_inputs_before_handler(
+    monkeypatch, tool_name, parent_field,
+):
+    from unittest.mock import AsyncMock
+    from okto_pulse.core.mcp import server as core_server
+
+    auth = AsyncMock(return_value=None)
+    monkeypatch.setattr(core_server, "_get_agent_ctx", auth)
+    catalog = CoreMcpCatalog(name="native-choice-contract", version="0.4.0")
+    catalog.tool()(getattr(core_server, tool_name).fn)
+    frozen = _frozen_projection()
+    host = CommunityMcpHostProvider().materialize_catalog(
+        catalog, resource_catalog=frozen, projection_identity=frozen.identity,
+    )
+    base = {"board_id": "board-1", parent_field: "parent-1", "question": "Which?"}
+    async with Client(host) as client:
+        for options in (
+            "A|B", '[{"label":"A"}]', ["A"],
+            [{"label": "A", "recommended": "false"}],
+            [{"label": "A", "unexpected": True}],
+        ):
+            rejected = await client.call_tool(
+                tool_name, {**base, "options": options}, raise_on_error=False,
+            )
+            assert rejected.is_error is True
+        retired = await client.call_tool(
+            tool_name, {**base, "options_json": [{"label": "A"}]},
+            raise_on_error=False,
+        )
+        assert retired.is_error is True
+        mixed = await client.call_tool(
+            tool_name,
+            {**base, "options": [{"label": "A"}], "options_json": [{"label": "B"}]},
+            raise_on_error=False,
+        )
+        assert mixed.is_error is True
+        auth.assert_not_awaited()
+        await client.call_tool(
+            tool_name, {**base, "options": [{"label": "A, B | C", "recommended": False}]},
+            raise_on_error=False,
+        )
+        auth.assert_awaited_once_with("board-1")
