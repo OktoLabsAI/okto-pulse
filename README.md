@@ -370,11 +370,6 @@ Grafx pool and refuses a handle whose observed effective mode differs from confi
 whitelist and transition matrix are specified in Okto Grafx's
 `docs/architecture/ST2_DESCRIPTOR_REVALIDATION.md`.
 
-One-shot schema-migration and rollout builders continue to open their separate, unbound candidate
-paths with Grafx's `strict` default and close them before activation. They do not share the live
-pool or its path, so this conservative choice neither changes nor weakens the configured policy of
-the active Pulse database.
-
 MCP admission is intentionally scoped to tool execution. Saturated calls receive
 a bounded, retryable outcome with `next_action.rel=retry_after`; initialization,
 streaming, resources, prompts, and the API/UI listener do not enter this queue.
@@ -389,16 +384,20 @@ All default local state lives under `~/.okto-pulse/`:
 |   `-- pulse.db
 |-- boards/
 |   `-- {board-id}/
-|       `-- graph.lbug
+|       |-- graph_backend_binding.json
+|       `-- grafx/
+|           `-- {generation}/
 |-- global/
-|   `-- discovery.lbug
+|   |-- graph_backend_binding.json
+|   `-- grafx/
+|       `-- {generation}/
 |-- uploads/
 |   `-- {board-id}/
 `-- mcp_traces/
 ```
 
 > [!WARNING]
-> Do not delete graph database directories to "fix" graph errors. Use the KG migration and health tools so schema or runtime issues remain diagnosable.
+> Do not delete graph database directories to "fix" graph errors. Use the KG health and recovery tools so runtime issues remain diagnosable. Pulse 0.4.0 accepts only its current storage format; incompatible storage is refused without conversion or automatic deletion. Select a new storage location for a fresh installation.
 
 ## From Source
 
