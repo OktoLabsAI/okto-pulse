@@ -84,8 +84,8 @@ async def test_b14_health_isolates_board_handler_and_delivery_buckets(
     async with get_session_factory()() as session:
         session.add_all(
             [
-                Board(id=board_id, name="B14 health", owner_id="owner"),
-                Board(
+                Board(realm_id="local", id=board_id, name="B14 health", owner_id="owner"),
+                Board(realm_id="local",
                     id=other_board_id,
                     name="B14 other",
                     owner_id="owner",

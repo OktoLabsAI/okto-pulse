@@ -13,6 +13,9 @@ from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.core.application.use_cases.base import ActorContext, EntityNotFoundError
 from okto_pulse.core.domain.delivery_evidence import DeliveryScope, DeliveryEvidenceSnapshot, DeliveryObligation, DeliveryBinding
 from okto_pulse.core.domain.delivery_inventory import COLLECTIONS
+from okto_pulse.core.domain.effective_delivery_coverage import EffectiveDeliveryContext
+from okto_pulse.core.domain.effective_delivery_inventory import EffectiveDeliveryInventory, EffectiveDeliveryObligation
+from okto_pulse.core.domain.implementation_responsibility import ImplementationResponsibilityPlan, RequirementContribution
 from okto_pulse.core.kg.interfaces.graph_errors import GraphCorruption, GraphQueryTimeout
 from okto_pulse.core.ports.spec_coverage_query import SpecCoverageSnapshot
 from okto_pulse.core.services.spec_coverage_query import project_spec_coverage
@@ -36,6 +39,17 @@ async def api(monkeypatch):
             **{field: [] for _, field in COLLECTIONS})
         proof = DeliveryEvidenceSnapshot(scope, tuple(DeliveryObligation(DeliveryBinding(f'fr:{i}', 'a' * 64), f'Requirement {i}')
             for i in range(2)), complete=True)
+        contribution = RequirementContribution(
+            "task", "direct", "selected_criteria", ("ac",), None, (), "b" * 64,
+        )
+        inventory = EffectiveDeliveryInventory(
+            tuple(EffectiveDeliveryObligation(row.binding, "fr", (contribution,), ())
+                  for row in proof.obligations),
+            ImplementationResponsibilityPlan((), True, ()), True, (),
+        )
+        proof = replace(proof, effective_context=EffectiveDeliveryContext(
+            inventory, (), (), frozenset({"automated_test"}),
+        ))
         facts = SpecCoverageSnapshot(scope, query.actor_scope_ref, 'revision', datetime.now(timezone.utc), spec, (), True, proof)
         if not query.read_delivery:
             facts = replace(facts, delivery=None, delivery_state='restricted')
