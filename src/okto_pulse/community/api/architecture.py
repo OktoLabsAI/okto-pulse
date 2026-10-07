@@ -14,8 +14,8 @@ from okto_pulse.core.domain.human_validation_cycle import (
     SubjectEditRequiresDraftError,
 )
 from okto_pulse.core.application.use_cases.architecture_crud import (
-    ArchitecturePropagationLegacyReportCommand,
-    ArchitecturePropagationLegacyReportUseCase,
+    ArchitecturePropagationReportCommand,
+    ArchitecturePropagationReportUseCase,
     CopyArchitectureFromSpecToCardCommand,
     CopyArchitectureFromSpecToCardUseCase,
     CreateArchitectureCommand,
@@ -345,8 +345,8 @@ async def validate_architecture_payload(
     return result.critique
 
 
-@router.get("/architecture/propagation-legacy-report")
-async def architecture_propagation_legacy_report(
+@router.get("/architecture/propagation-report")
+async def architecture_propagation_report(
     board_id: str = Query(...),
     limit: int = Query(100),
     offset: int = Query(0, ge=0, le=PAGE_OFFSET_MAX),
@@ -355,13 +355,13 @@ async def architecture_propagation_legacy_report(
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
-    """Spec C: read-only, forward-only diagnostic of legacy Architecture Design snapshots
+    """Spec C: read-only, forward-only diagnostic of propagated Architecture Design snapshots
     whose SOURCE is now ineligible for propagation. Bounded/idempotent; never mutates
     snapshots, findings, or SDLC status. Registered before /architecture/{design_id} so the
     static path wins route matching."""
     try:
-        result = await ArchitecturePropagationLegacyReportUseCase().execute(
-            ArchitecturePropagationLegacyReportCommand(
+        result = await ArchitecturePropagationReportUseCase().execute(
+            ArchitecturePropagationReportCommand(
                 board_id,
                 limit=limit,
                 offset=offset,

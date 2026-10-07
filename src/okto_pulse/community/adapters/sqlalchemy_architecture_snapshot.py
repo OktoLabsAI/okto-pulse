@@ -1,4 +1,4 @@
-"""Community SQLAlchemy legacy architecture snapshot reader."""
+"""Community SQLAlchemy propagated architecture snapshot reader."""
 
 from __future__ import annotations
 
@@ -7,13 +7,13 @@ from typing import Any
 from sqlalchemy import func, select
 
 from okto_pulse.community.adapters.sqlalchemy_models import ArchitectureDesign
-from okto_pulse.core.ports.architecture_legacy import (
-    ArchitectureLegacySnapshot,
-    ArchitectureLegacySnapshotPage,
+from okto_pulse.core.ports.architecture_snapshot import (
+    ArchitectureSnapshot,
+    ArchitectureSnapshotPage,
 )
 
 
-class CommunitySqlAlchemyArchitectureLegacySnapshotReader:
+class CommunitySqlAlchemyArchitectureSnapshotReader:
     async def list_page(
         self,
         context: Any,
@@ -22,7 +22,7 @@ class CommunitySqlAlchemyArchitectureLegacySnapshotReader:
         parent_type_filter: str | None,
         limit: int,
         offset: int,
-    ) -> ArchitectureLegacySnapshotPage:
+    ) -> ArchitectureSnapshotPage:
         base = select(ArchitectureDesign).where(
             ArchitectureDesign.board_id == board_id,
             ArchitectureDesign.source_design_id.is_not(None),
@@ -44,10 +44,10 @@ class CommunitySqlAlchemyArchitectureLegacySnapshotReader:
                 .offset(offset)
             )
         ).scalars().all()
-        return ArchitectureLegacySnapshotPage(
+        return ArchitectureSnapshotPage(
             total=int(total),
             items=tuple(
-                ArchitectureLegacySnapshot(
+                ArchitectureSnapshot(
                     id=str(row.id),
                     parent_type=str(row.parent_type),
                     parent_id=str(row.parent_id),
@@ -60,4 +60,4 @@ class CommunitySqlAlchemyArchitectureLegacySnapshotReader:
         )
 
 
-__all__ = ["CommunitySqlAlchemyArchitectureLegacySnapshotReader"]
+__all__ = ["CommunitySqlAlchemyArchitectureSnapshotReader"]

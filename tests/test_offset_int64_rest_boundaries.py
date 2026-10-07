@@ -17,7 +17,7 @@ from okto_pulse.core.ports.application_persistence import PAGE_OFFSET_MAX
 #: **HTTP 500 text/plain** (uncaught ``OverflowError``) at ``2**63`` during the
 #: 2026-07-25 E2E regression, reproduced independently on two boards.
 BOUNDED_LIST_PATHS = (
-    "/api/v1/architecture/propagation-legacy-report",
+    "/api/v1/architecture/propagation-report",
     "/api/v1/guidelines",
 )
 

@@ -54,8 +54,8 @@ from okto_pulse.core.ports.amendment_revision import (
     register_amendment_revision_store,
 )
 from okto_pulse.core.ports.parent_artifact import register_parent_artifact_read_port
-from okto_pulse.core.ports.architecture_legacy import (
-    register_architecture_legacy_snapshot_read_port,
+from okto_pulse.core.ports.architecture_snapshot import (
+    register_architecture_snapshot_snapshot_read_port,
 )
 from okto_pulse.core.ports.bug_regression_preview import (
     register_bug_regression_preview_read_port,
@@ -409,8 +409,8 @@ def register_community_relational_effects(
     from okto_pulse.community.adapters.sqlalchemy_parent_artifact import (
         CommunitySqlAlchemyParentArtifactReader,
     )
-    from okto_pulse.community.adapters.sqlalchemy_architecture_legacy import (
-        CommunitySqlAlchemyArchitectureLegacySnapshotReader,
+    from okto_pulse.community.adapters.sqlalchemy_architecture_snapshot import (
+        CommunitySqlAlchemyArchitectureSnapshotReader,
     )
     from okto_pulse.community.adapters.sqlalchemy_bug_regression_preview import (
         CommunitySqlAlchemyBugRegressionPreviewReader,
@@ -528,8 +528,8 @@ def register_community_relational_effects(
     register_discovery_catalog_read_port(CommunitySqlAlchemyDiscoveryCatalogReader())
     register_amendment_revision_store(CommunitySqlAlchemyAmendmentRevisionStore())
     register_parent_artifact_read_port(CommunitySqlAlchemyParentArtifactReader())
-    register_architecture_legacy_snapshot_read_port(
-        CommunitySqlAlchemyArchitectureLegacySnapshotReader()
+    register_architecture_snapshot_snapshot_read_port(
+        CommunitySqlAlchemyArchitectureSnapshotReader()
     )
     register_bug_regression_preview_read_port(
         CommunitySqlAlchemyBugRegressionPreviewReader()
