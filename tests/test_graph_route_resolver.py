@@ -922,33 +922,6 @@ def test_global_pointer_cutover_invalidates_snapshot_without_binding_fallback(
     assert mismatch.value.details["reason"] == "graph_route_snapshot_mismatch"
 
 
-@pytest.mark.skip(reason="legacy graph routing was removed from Community")
-def test_global_legacy_binding_stays_on_anchor_across_pointer_cutovers(
-    tmp_path: Path,
-) -> None:
-    store = CommunityGraphBackendBindingStore(tmp_path)
-    anchor = store.global_ladybug_path()
-    _legacy(anchor)
-    first_path = _publish_active(anchor, "gdr_lady1", backend="ladybug")
-    resolver = _resolver(store)
-    adopted = resolver.initialize_global_route()
-    assert adopted.binding_path == adopted.anchor_path == anchor
-    assert adopted.generation == "generation-1"
-    assert adopted.active_generation == "gdr_lady1"
-    assert adopted.active_path == first_path
-
-    second_path = _publish_active(anchor, "gdr_lady2", backend="ladybug")
-    current = resolver.inspect_global_route()
-
-    assert current.binding_path == current.anchor_path == anchor
-    assert current.generation == "generation-1"
-    assert current.binding_sha256 == adopted.binding_sha256
-    assert current.active_generation == "gdr_lady2"
-    assert current.active_path == second_path
-    assert current.route_sha256 != adopted.route_sha256
-    with pytest.raises(GraphCapabilityUnavailable) as stale:
-        resolver.revalidate_snapshot(adopted)
-    assert stale.value.details["reason"] == "graph_route_snapshot_mismatch"
 
 
 def test_global_generations_root_alias_is_refused_before_layout_reader(

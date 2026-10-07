@@ -41,7 +41,7 @@ from okto_pulse.community.config import (
     validate_grafx_page_size,
 )
 
-GraphBackend = Literal["ladybug", "grafx"]
+GraphBackend = Literal["grafx"]
 GraphBindingScope = Literal["board", "global"]
 
 BINDING_FORMAT = "okto-pulse-community-graph-binding/1"
@@ -50,7 +50,7 @@ GLOBAL_BINDING_FILENAME = "graph_backend_binding.json"
 BINDING_PUBLICATION_MUTEX_FILENAME = ".graph-binding-publication.lock"
 MAX_BINDING_BYTES = 16 * 1024
 
-_BACKENDS: frozenset[str] = frozenset({"ladybug", "grafx"})
+_BACKENDS: frozenset[str] = frozenset({"grafx"})
 _BINDING_KEYS: frozenset[str] = frozenset(
     {
         "binding_format",
@@ -270,36 +270,13 @@ def _canonical_physical_path(
     if tuple(parts[: len(required_prefix)]) != required_prefix:
         raise ValueError("physical_path_scope_mismatch")
 
-    lowered = tuple(part.casefold() for part in parts)
-    if backend == "grafx":
-        expected = (
-            root / "boards" / scope_id / "grafx" / generation
-            if scope == "board"
-            else root / "global" / "grafx" / generation
-        )
-        if os.path.normcase(str(lexical)) != os.path.normcase(str(expected)):
-            raise ValueError("grafx_physical_path_not_canonical")
-    else:
-        if "grafx" in lowered or lexical.suffix.casefold() != ".lbug":
-            raise ValueError("ladybug_physical_path_not_canonical")
-        if scope == "board":
-            expected = root / "boards" / scope_id / "graph.lbug"
-            if os.path.normcase(str(lexical)) != os.path.normcase(str(expected)):
-                raise ValueError("ladybug_physical_path_not_canonical")
-        else:
-            legacy = root / "global" / "discovery.lbug"
-            generation_path = (
-                root
-                / "global"
-                / "discovery.generations"
-                / generation
-                / "discovery.lbug"
-            )
-            if os.path.normcase(str(lexical)) not in {
-                os.path.normcase(str(legacy)),
-                os.path.normcase(str(generation_path)),
-            }:
-                raise ValueError("ladybug_physical_path_not_canonical")
+    expected = (
+        root / "boards" / scope_id / "grafx" / generation
+        if scope == "board"
+        else root / "global" / "grafx" / generation
+    )
+    if os.path.normcase(str(lexical)) != os.path.normcase(str(expected)):
+        raise ValueError("grafx_physical_path_not_canonical")
     return lexical
 
 
@@ -311,7 +288,7 @@ def _require_physical_database(
     scope_id: str,
 ) -> None:
     try:
-        exists_as_expected = path.is_dir() if backend == "grafx" else path.is_file()
+        exists_as_expected = path.is_dir()
     except OSError as exc:
         raise _unavailable(
             "physical_path_probe_failed",
@@ -554,15 +531,6 @@ class CommunityGraphBackendBindingStore:
     def global_ladybug_path(self) -> Path:
         return self._root / "global" / "discovery.lbug"
 
-    def global_ladybug_generation_path(self, generation: str) -> Path:
-        safe_generation = self._validated_segment(generation, field_name="generation")
-        return (
-            self._root
-            / "global"
-            / "discovery.generations"
-            / safe_generation
-            / "discovery.lbug"
-        )
 
     def global_grafx_path(self, generation: str) -> Path:
         safe_generation = self._validated_segment(generation, field_name="generation")
@@ -633,36 +601,6 @@ class CommunityGraphBackendBindingStore:
             database=database,
         )
 
-    def prepare_board_binding_candidate(
-        self,
-        *,
-        board_id: str,
-        backend: GraphBackend,
-        generation: str,
-        physical_path: str | os.PathLike[str],
-        page_size: int | None = None,
-        database: object | None = None,
-    ) -> CommunityGraphBackendBinding:
-        """Authenticate a prospective Board binding without publishing it.
-
-        Rollout certification needs the exact digest that a later CAS will
-        publish.  This door applies the same physical-path and Grafx admission
-        checks as publication, but performs no lock acquisition or filesystem
-        mutation of the binding authority.
-        """
-
-        safe_board_id = self._validated_segment(board_id, field_name="board_id")
-        candidate, _document = self._prepare_candidate(
-            scope="board",
-            scope_id=safe_board_id,
-            backend=backend,
-            generation=generation,
-            physical_path=physical_path,
-            page_size=page_size,
-            database=database,
-            operation="prepare_graph_backend_binding_candidate",
-        )
-        return candidate
 
     def compare_and_swap_global_binding(
         self,
@@ -869,14 +807,9 @@ class CommunityGraphBackendBindingStore:
                 backend=safe_backend,
                 generation=safe_generation,
             )
-            if safe_backend == "grafx":
-                effective_page_size = validate_grafx_page_size(
-                    PULSE_GRAFX_DEFAULT_PAGE_SIZE if page_size is None else page_size
-                )
-            elif page_size is not None:
-                raise ValueError("ladybug_page_size_must_be_null")
-            else:
-                effective_page_size = None
+            effective_page_size = validate_grafx_page_size(
+                PULSE_GRAFX_DEFAULT_PAGE_SIZE if page_size is None else page_size
+            )
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             raise _capability(
                 "binding_argument_invalid",
@@ -891,20 +824,19 @@ class CommunityGraphBackendBindingStore:
             scope=scope,
             scope_id=scope_id,
         )
-        if safe_backend == "grafx":
-            if database is None:
-                raise _capability(
-                    "grafx_database_admission_required",
-                    operation=operation,
-                    scope=scope,
-                    scope_id=scope_id,
-                )
-            admit_grafx_database(
-                database,
-                expected_page_size=effective_page_size,
-                expected_path=safe_path,
+        if database is None:
+            raise _capability(
+                "grafx_database_admission_required",
                 operation=operation,
+                scope=scope,
+                scope_id=scope_id,
             )
+        admit_grafx_database(
+            database,
+            expected_page_size=effective_page_size,
+            expected_path=safe_path,
+            operation=operation,
+        )
 
         body = self._body(
             scope=scope,
@@ -1186,13 +1118,7 @@ class CommunityGraphBackendBindingStore:
                 backend=backend,
                 generation=generation,
             )
-            raw_page_size = document["page_size"]
-            if backend == "grafx":
-                page_size = validate_grafx_page_size(raw_page_size)
-            elif raw_page_size is not None:
-                raise ValueError("ladybug_binding_page_size_not_null")
-            else:
-                page_size = None
+            page_size = validate_grafx_page_size(document["page_size"])
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             raise _corruption(
                 "binding_document_invalid",

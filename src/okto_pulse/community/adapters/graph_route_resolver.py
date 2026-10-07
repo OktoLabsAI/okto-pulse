@@ -920,18 +920,11 @@ class CommunityGraphRouteResolver:
         scope_id: str,
         backend: GraphBackend,
     ) -> CommunityGraphRouteCandidate:
-        if scope == "board":
-            path = (
-                self._store.board_ladybug_path(scope_id)
-                if backend == "ladybug"
-                else self._store.board_grafx_path(scope_id, _INITIAL_GENERATION)
-            )
-        else:
-            path = (
-                self._store.global_ladybug_path()
-                if backend == "ladybug"
-                else self._store.global_grafx_path(_INITIAL_GENERATION)
-            )
+        path = (
+            self._store.board_grafx_path(scope_id, _INITIAL_GENERATION)
+            if scope == "board"
+            else self._store.global_grafx_path(_INITIAL_GENERATION)
+        )
         return CommunityGraphRouteCandidate(
             scope=scope,
             scope_id=scope_id,
@@ -939,7 +932,7 @@ class CommunityGraphRouteResolver:
             generation=_INITIAL_GENERATION,
             binding_path=path,
             anchor_path=path,
-            page_size=self._grafx_page_size if backend == "grafx" else None,
+            page_size=self._grafx_page_size,
         )
 
     # -- route authentication --------------------------------------------
@@ -957,7 +950,7 @@ class CommunityGraphRouteResolver:
                 scope=binding.scope,
                 scope_id=binding.scope_id,
             )
-        expected = "directory" if binding.backend == "grafx" else "file"
+        expected = "directory"
         if binding.scope == "board":
             self._require_expected_path(
                 binding.physical_path,
@@ -968,11 +961,7 @@ class CommunityGraphRouteResolver:
             )
             return self._board_snapshot_from_authenticated_binding(binding)
 
-        anchor = (
-            binding.physical_path
-            if binding.backend == "grafx"
-            else self._store.global_ladybug_path()
-        )
+        anchor = binding.physical_path
         active = self._authenticated_active(
             anchor,
             expected=expected,
@@ -983,14 +972,6 @@ class CommunityGraphRouteResolver:
         active_path = active.graph_path if active is not None else anchor
         active_generation = active.generation_id if active is not None else None
         manifest_sha256 = active.manifest_sha256 if active is not None else None
-        if binding.backend == "ladybug" and not _same_path(
-            binding.physical_path, anchor
-        ):
-            raise _corruption(
-                "global_route_binding_anchor_invalid",
-                scope=binding.scope,
-                scope_id=binding.scope_id,
-            )
         self._require_expected_path(
             active_path,
             expected=expected,

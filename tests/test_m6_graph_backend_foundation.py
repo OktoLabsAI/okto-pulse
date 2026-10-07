@@ -50,6 +50,11 @@ def _grafx_database(path: Path, *, page_size: int = 8192) -> _FakeGrafxDatabase:
     return _FakeGrafxDatabase(path, page_size=page_size)
 
 
+def _native_directory(path: Path) -> Path:
+    _grafx_database(path)
+    return path
+
+
 def test_settings_default_to_grafx_and_safe_grafx_geometry(tmp_path: Path) -> None:
     settings = CommunitySettings(data_dir=str(tmp_path), _env_file=None)
 
@@ -113,47 +118,50 @@ def test_missing_binding_fails_closed_without_creating_state(tmp_path: Path) -> 
     assert list(tmp_path.iterdir()) == []
 
 
-def test_board_legacy_binding_is_durable_immutable_and_idempotent(
+def test_board_native_binding_is_durable_immutable_and_idempotent(
     tmp_path: Path,
 ) -> None:
     store = CommunityGraphBackendBindingStore(tmp_path)
-    legacy_path = _legacy_database(store.board_ladybug_path("board-1"))
+    native_path = _native_directory(store.board_grafx_path("board-1", "generation-1"))
 
     first = store.initialize_board_binding(
         board_id="board-1",
-        backend="ladybug",
+        backend="grafx",
         generation="generation-1",
-        physical_path=legacy_path,
+        physical_path=native_path,
+        database=_FakeGrafxDatabase(native_path, page_size=8192),
     )
     second = store.initialize_board_binding(
         board_id="board-1",
-        backend="ladybug",
+        backend="grafx",
         generation="generation-1",
-        physical_path=legacy_path,
+        physical_path=native_path,
+        database=_FakeGrafxDatabase(native_path, page_size=8192),
     )
 
     assert first == second == store.acquire_board_binding("board-1")
-    assert first.backend == "ladybug"
-    assert first.page_size is None
-    assert first.physical_path == legacy_path
+    assert first.backend == "grafx"
+    assert first.page_size == 8192
+    assert first.physical_path == native_path
     with pytest.raises(FrozenInstanceError):
         first.backend = "grafx"  # type: ignore[misc]
 
     document = json.loads(
-        (legacy_path.parent / "graph_backend_binding.json").read_text(encoding="utf-8")
+        (native_path.parent.parent / "graph_backend_binding.json").read_text(encoding="utf-8")
     )
-    assert document["physical_path"] == "boards/board-1/graph.lbug"
+    assert document["physical_path"] == "boards/board-1/grafx/generation-1"
     assert len(document["binding_sha256"]) == 64
 
 
-def test_binding_refuses_rebind_without_m7_cas(tmp_path: Path) -> None:
+def test_binding_refuses_rebind_without_explicit_cas(tmp_path: Path) -> None:
     store = CommunityGraphBackendBindingStore(tmp_path)
-    legacy_path = _legacy_database(store.board_ladybug_path("board-1"))
+    native_path = _native_directory(store.board_grafx_path("board-1", "generation-1"))
     store.initialize_board_binding(
         board_id="board-1",
-        backend="ladybug",
+        backend="grafx",
         generation="generation-1",
-        physical_path=legacy_path,
+        physical_path=native_path,
+        database=_FakeGrafxDatabase(native_path, page_size=8192),
     )
     grafx_path = store.board_grafx_path("board-1", "generation-2")
     database = _grafx_database(grafx_path)
@@ -169,24 +177,26 @@ def test_binding_refuses_rebind_without_m7_cas(tmp_path: Path) -> None:
         )
 
     assert captured.value.details["reason"] == "binding_conflict"
-    assert store.acquire_board_binding("board-1").backend == "ladybug"
+    assert store.acquire_board_binding("board-1").backend == "grafx"
 
 
 def test_global_binding_is_separate_from_each_board(tmp_path: Path) -> None:
     store = CommunityGraphBackendBindingStore(tmp_path)
-    board_path = _legacy_database(store.board_ladybug_path("board-1"))
-    global_path = _legacy_database(store.global_ladybug_path())
+    board_path = _native_directory(store.board_grafx_path("board-1", "generation-1"))
+    global_path = _native_directory(store.global_grafx_path("generation-1"))
 
     board = store.initialize_board_binding(
         board_id="board-1",
-        backend="ladybug",
-        generation="board-generation",
+        backend="grafx",
+        generation="generation-1",
         physical_path=board_path,
+        database=_FakeGrafxDatabase(board_path, page_size=8192),
     )
     global_binding = store.initialize_global_binding(
-        backend="ladybug",
-        generation="global-generation",
+        backend="grafx",
+        generation="generation-1",
         physical_path=global_path,
+        database=_FakeGrafxDatabase(global_path, page_size=8192),
     )
 
     assert board.scope == "board"
@@ -333,14 +343,15 @@ def test_binding_rejects_tampering_and_missing_physical_database(
     tmp_path: Path,
 ) -> None:
     store = CommunityGraphBackendBindingStore(tmp_path)
-    legacy_path = _legacy_database(store.board_ladybug_path("board-1"))
+    native_path = _native_directory(store.board_grafx_path("board-1", "generation-1"))
     store.initialize_board_binding(
         board_id="board-1",
-        backend="ladybug",
+        backend="grafx",
         generation="generation-1",
-        physical_path=legacy_path,
+        physical_path=native_path,
+        database=_FakeGrafxDatabase(native_path, page_size=8192),
     )
-    binding_path = legacy_path.parent / "graph_backend_binding.json"
+    binding_path = native_path.parent.parent / "graph_backend_binding.json"
     document = json.loads(binding_path.read_text(encoding="utf-8"))
     document["generation"] = "generation-tampered"
     binding_path.write_text(json.dumps(document), encoding="utf-8")
@@ -352,14 +363,16 @@ def test_binding_rejects_tampering_and_missing_physical_database(
     binding_path.unlink()
     store.initialize_board_binding(
         board_id="board-1",
-        backend="ladybug",
+        backend="grafx",
         generation="generation-1",
-        physical_path=legacy_path,
+        physical_path=native_path,
+        database=_FakeGrafxDatabase(native_path, page_size=8192),
     )
-    legacy_path.unlink()
+    (native_path / "meta.grafx").unlink()
+    native_path.rmdir()
     inspected = store.inspect_board_binding("board-1")
-    assert inspected.backend == "ladybug"
-    assert inspected.physical_path == legacy_path
+    assert inspected.backend == "grafx"
+    assert inspected.physical_path == native_path
     with pytest.raises(GraphUnavailable) as missing:
         store.acquire_board_binding("board-1")
     assert missing.value.details["reason"] == "physical_database_missing"
@@ -369,20 +382,22 @@ def test_global_binding_inspection_survives_missing_database_but_not_tampering(
     tmp_path: Path,
 ) -> None:
     store = CommunityGraphBackendBindingStore(tmp_path)
-    global_path = _legacy_database(store.global_ladybug_path())
+    global_path = _native_directory(store.global_grafx_path("generation-1"))
     expected = store.initialize_global_binding(
-        backend="ladybug",
+        backend="grafx",
         generation="generation-1",
         physical_path=global_path,
+        database=_FakeGrafxDatabase(global_path, page_size=8192),
     )
-    global_path.unlink()
+    (global_path / "meta.grafx").unlink()
+    global_path.rmdir()
 
     assert store.inspect_global_binding() == expected
     with pytest.raises(GraphUnavailable) as missing:
         store.acquire_global_binding()
     assert missing.value.details["reason"] == "physical_database_missing"
 
-    binding_path = global_path.parent / "graph_backend_binding.json"
+    binding_path = global_path.parent.parent / "graph_backend_binding.json"
     document = json.loads(binding_path.read_text(encoding="utf-8"))
     document["generation"] = "tampered"
     binding_path.write_text(json.dumps(document), encoding="utf-8")
@@ -416,19 +431,20 @@ def test_atomic_publication_fsyncs_and_replace_failure_leaves_no_binding(
     tmp_path: Path,
 ) -> None:
     store = CommunityGraphBackendBindingStore(tmp_path)
-    legacy_path = _legacy_database(store.board_ladybug_path("board-1"))
+    native_path = _native_directory(store.board_grafx_path("board-1", "generation-1"))
     fsynced: list[Path] = []
     monkeypatch.setattr(binding_module, "fsync_directory", fsynced.append)
 
     store.initialize_board_binding(
         board_id="board-1",
-        backend="ladybug",
+        backend="grafx",
         generation="generation-1",
-        physical_path=legacy_path,
+        physical_path=native_path,
+        database=_FakeGrafxDatabase(native_path, page_size=8192),
     )
-    assert fsynced == [legacy_path.parent]
+    assert fsynced == [native_path.parent.parent]
 
-    second_path = _legacy_database(store.board_ladybug_path("board-2"))
+    second_path = _native_directory(store.board_grafx_path("board-2", "generation-2"))
 
     def refuse_replace(source: Path, destination: Path) -> None:
         del source, destination
@@ -438,10 +454,45 @@ def test_atomic_publication_fsyncs_and_replace_failure_leaves_no_binding(
     with pytest.raises(GraphUnavailable) as captured:
         store.initialize_board_binding(
             board_id="board-2",
-            backend="ladybug",
+            backend="grafx",
             generation="generation-2",
             physical_path=second_path,
+        database=_FakeGrafxDatabase(second_path, page_size=8192),
         )
     assert captured.value.details["reason"] == "binding_publication_failed"
-    assert not (second_path.parent / "graph_backend_binding.json").exists()
-    assert list(second_path.parent.glob(".*.tmp")) == []
+    assert not (second_path.parent.parent / "graph_backend_binding.json").exists()
+    assert list(second_path.parent.parent.glob(".*.tmp")) == []
+
+@pytest.mark.parametrize("scope", ["board", "global"])
+def test_retired_backend_cannot_be_initialized_or_read(tmp_path: Path, scope: str) -> None:
+    store = CommunityGraphBackendBindingStore(tmp_path)
+    parent = tmp_path / "boards" / "old" if scope == "board" else tmp_path / "global"
+    old_path = _legacy_database(parent / ("graph.lbug" if scope == "board" else "discovery.lbug"))
+    before = {str(p.relative_to(tmp_path)): p.read_bytes() if p.is_file() else None
+              for p in tmp_path.rglob("*")}
+    with pytest.raises(GraphCapabilityUnavailable) as refused:
+        if scope == "board":
+            store.initialize_board_binding(board_id="old", backend="ladybug",
+                generation="old", physical_path=old_path)
+        else:
+            store.initialize_global_binding(backend="ladybug", generation="old", physical_path=old_path)
+    assert refused.value.details["reason"] == "binding_argument_invalid"
+    assert before == {str(p.relative_to(tmp_path)): p.read_bytes() if p.is_file() else None
+                      for p in tmp_path.rglob("*")}
+
+    # An authenticated old document is still incompatible, not an import source.
+    body = {"binding_format": binding_module.BINDING_FORMAT, "scope": scope,
+            "scope_id": "old" if scope == "board" else "global", "backend": "ladybug",
+            "generation": "old", "physical_path": old_path.relative_to(tmp_path).as_posix(),
+            "page_size": None}
+    document = dict(body, binding_sha256=binding_module._binding_sha256(body))
+    binding_path = parent / "graph_backend_binding.json"
+    binding_path.write_text(json.dumps(document), encoding="utf-8")
+    old_bytes = binding_path.read_bytes()
+    with pytest.raises(GraphCorruption) as refused_read:
+        if scope == "board":
+            store.inspect_board_binding("old")
+        else:
+            store.inspect_global_binding()
+    assert refused_read.value.details["reason"] == "binding_document_invalid"
+    assert binding_path.read_bytes() == old_bytes and old_path.read_bytes() == b"legacy"

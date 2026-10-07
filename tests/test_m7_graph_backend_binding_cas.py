@@ -29,10 +29,6 @@ class _FakeGrafxDatabase:
         self.mutations = 0
 
 
-def _legacy_database(path: Path) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(b"legacy")
-    return path
 
 
 def _grafx_database(path: Path, *, page_size: int = 8192) -> _FakeGrafxDatabase:
@@ -46,12 +42,14 @@ def _initial_board_binding(
     *,
     board_id: str = "board-1",
 ):
-    path = _legacy_database(store.board_ladybug_path(board_id))
+    path = store.board_grafx_path(board_id, "source")
+    database = _grafx_database(path)
     return store.initialize_board_binding(
         board_id=board_id,
-        backend="ladybug",
-        generation="legacy-source",
+        backend="grafx",
+        generation="source",
         physical_path=path,
+        database=database,
     )
 
 
@@ -80,63 +78,30 @@ def test_board_binding_cas_publishes_admitted_grafx_and_fsyncs(
     assert published.backend == "grafx"
     assert published.physical_path == grafx_path
     assert published.binding_sha256 != source.binding_sha256
-    assert source.physical_path.read_bytes() == b"legacy"
-    assert fsynced == [source.physical_path.parent]
+    assert (source.physical_path / "meta.grafx").read_bytes() == b"grafx"
+    assert fsynced == [source.physical_path.parent.parent]
 
     document = json.loads(
-        (source.physical_path.parent / "graph_backend_binding.json").read_text(
+        (source.physical_path.parent.parent / "graph_backend_binding.json").read_text(
             encoding="utf-8"
         )
     )
     assert document["binding_sha256"] == published.binding_sha256
 
 
-def test_board_candidate_digest_is_certified_without_publishing_binding(
-    tmp_path: Path,
-) -> None:
-    store = CommunityGraphBackendBindingStore(tmp_path)
-    source = _initial_board_binding(store)
-    binding_path = source.physical_path.parent / "graph_backend_binding.json"
-    original_document = binding_path.read_bytes()
-    grafx_path = store.board_grafx_path("board-1", "grafx-candidate")
-    database = _grafx_database(grafx_path)
-
-    candidate = store.prepare_board_binding_candidate(
-        board_id="board-1",
-        backend="grafx",
-        generation="grafx-candidate",
-        physical_path=grafx_path,
-        page_size=8192,
-        database=database,
-    )
-
-    assert candidate.backend == "grafx"
-    assert candidate.physical_path == grafx_path
-    assert len(candidate.binding_sha256) == 64
-    assert binding_path.read_bytes() == original_document
-    assert store.acquire_board_binding("board-1") == source
-
-    published = store.compare_and_swap_board_binding(
-        board_id="board-1",
-        expected_binding_sha256=source.binding_sha256,
-        backend="grafx",
-        generation="grafx-candidate",
-        physical_path=grafx_path,
-        page_size=8192,
-        database=database,
-    )
-    assert published == candidate
 
 
 def test_global_binding_cas_uses_the_same_admission_and_authenticated_readback(
     tmp_path: Path,
 ) -> None:
     store = CommunityGraphBackendBindingStore(tmp_path)
-    source_path = _legacy_database(store.global_ladybug_path())
+    source_path = store.global_grafx_path("source")
+    source_database = _grafx_database(source_path)
     source = store.initialize_global_binding(
-        backend="ladybug",
-        generation="legacy-source",
+        backend="grafx",
+        generation="source",
         physical_path=source_path,
+        database=source_database,
     )
     grafx_path = store.global_grafx_path("grafx-candidate")
     database = _grafx_database(grafx_path, page_size=4096)
@@ -153,7 +118,7 @@ def test_global_binding_cas_uses_the_same_admission_and_authenticated_readback(
     assert published == store.acquire_global_binding()
     assert published.backend == "grafx"
     assert published.page_size == 4096
-    assert source_path.read_bytes() == b"legacy"
+    assert (source_path / "meta.grafx").read_bytes() == b"grafx"
 
 
 def test_stale_binding_cas_fails_closed_with_a_specific_conflict(
@@ -161,7 +126,7 @@ def test_stale_binding_cas_fails_closed_with_a_specific_conflict(
 ) -> None:
     store = CommunityGraphBackendBindingStore(tmp_path)
     source = _initial_board_binding(store)
-    binding_path = source.physical_path.parent / "graph_backend_binding.json"
+    binding_path = source.physical_path.parent.parent / "graph_backend_binding.json"
     original_document = binding_path.read_bytes()
     grafx_path = store.board_grafx_path("board-1", "grafx-candidate")
     database = _grafx_database(grafx_path)
@@ -233,15 +198,15 @@ def test_binding_cas_rejects_invalid_target_and_failed_grafx_admission(
 ) -> None:
     store = CommunityGraphBackendBindingStore(tmp_path)
     source = _initial_board_binding(store)
-    binding_path = source.physical_path.parent / "graph_backend_binding.json"
+    binding_path = source.physical_path.parent.parent / "graph_backend_binding.json"
     original_document = binding_path.read_bytes()
 
     with pytest.raises(GraphCapabilityUnavailable) as invalid_expected_digest:
         store.compare_and_swap_board_binding(
             board_id="board-1",
             expected_binding_sha256="not-a-sha256",
-            backend="ladybug",
-            generation="legacy-candidate",
+            backend="grafx",
+            generation="candidate",
             physical_path=source.physical_path,
         )
     assert (
@@ -290,8 +255,10 @@ def test_binding_cas_requires_exact_authenticated_readback(
 ) -> None:
     store = CommunityGraphBackendBindingStore(tmp_path)
     source = _initial_board_binding(store)
-    binding_path = source.physical_path.parent / "graph_backend_binding.json"
+    binding_path = source.physical_path.parent.parent / "graph_backend_binding.json"
     original_document = binding_path.read_bytes()
+    candidate_path = store.board_grafx_path("board-1", "candidate")
+    candidate_database = _grafx_database(candidate_path)
 
     monkeypatch.setattr(
         CommunityGraphBackendBindingStore,
@@ -302,9 +269,10 @@ def test_binding_cas_requires_exact_authenticated_readback(
         store.compare_and_swap_board_binding(
             board_id="board-1",
             expected_binding_sha256=source.binding_sha256,
-            backend="ladybug",
-            generation="legacy-candidate",
-            physical_path=source.physical_path,
+            backend="grafx",
+            generation="candidate",
+            physical_path=candidate_path,
+            database=candidate_database,
         )
 
     assert captured.value.details["reason"] == "binding_readback_mismatch"
@@ -317,8 +285,10 @@ def test_binding_cas_replace_failure_preserves_the_previous_binding(
 ) -> None:
     store = CommunityGraphBackendBindingStore(tmp_path)
     source = _initial_board_binding(store)
-    binding_path = source.physical_path.parent / "graph_backend_binding.json"
+    binding_path = source.physical_path.parent.parent / "graph_backend_binding.json"
     original_document = binding_path.read_bytes()
+    candidate_path = store.board_grafx_path("board-1", "candidate")
+    candidate_database = _grafx_database(candidate_path)
 
     def refuse_replace(source_path: Path, destination_path: Path) -> None:
         del source_path, destination_path
@@ -329,9 +299,10 @@ def test_binding_cas_replace_failure_preserves_the_previous_binding(
         store.compare_and_swap_board_binding(
             board_id="board-1",
             expected_binding_sha256=source.binding_sha256,
-            backend="ladybug",
-            generation="legacy-candidate",
-            physical_path=source.physical_path,
+            backend="grafx",
+            generation="candidate",
+            physical_path=candidate_path,
+            database=candidate_database,
         )
 
     assert (
