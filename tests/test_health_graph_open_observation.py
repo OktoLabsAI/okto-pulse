@@ -55,14 +55,13 @@ def routed_access(tmp_path):
                         admit_grafx_route=lambda *_args, **_kwargs: None,
                         revalidate_snapshot=lambda *_args, **_kwargs: snapshot),
         SimpleNamespace(get=lambda *_args, **_kwargs: database), SimpleNamespace(),
-        SimpleNamespace(close_rollback_before_write_if_active=lambda *_args: effects.append("close_rollback")),
         configured_page_size=4096, connect=None, read_pools=(ReadPool(),),
     )
     return access, effects
 
 
 @pytest.mark.parametrize("probe_name", [_GRAPH_HEALTH_PROBE, _PARITY_HEALTH_PROBE])
-def test_health_graph_query_does_not_checkpoint_or_close_rollback_on_read_join(routed_access, monkeypatch, probe_name):
+def test_health_graph_query_does_not_checkpoint_on_read_join(routed_access, monkeypatch, probe_name):
     access, effects = routed_access
     executor = CommunityGrafxCypherExecutor(access.read_database, read_database_scope=access.read_database_scope)
     monkeypatch.setattr(interfaces, "get_kg_registry", lambda: SimpleNamespace(
@@ -87,7 +86,7 @@ def test_observation_context_restores_foreground_recovery_after_nested_failure(r
             access.read_database("board")
         assert effects == []
     assert access.read_database("board") is not None
-    assert effects == ["close_rollback", "checkpoint"]
+    assert effects == ["checkpoint"]
 
 
 def test_health_context_does_not_disable_another_threads_foreground_recovery(routed_access):
@@ -97,10 +96,10 @@ def test_health_context_does_not_disable_another_threads_foreground_recovery(rou
             access.read_database("board")
         assert effects == []
         assert worker.submit(access.read_database, "board").result(timeout=5) is not None
-        assert effects == ["close_rollback", "checkpoint"]
+        assert effects == ["checkpoint"]
         # Once foreground recovery succeeds, Health can observe the reader.
         assert access.read_database("board") is not None
-        assert effects == ["close_rollback", "checkpoint"]
+        assert effects == ["checkpoint"]
 
 
 @pytest.mark.parametrize("method", ["write_fence", "runtime_fence"])
