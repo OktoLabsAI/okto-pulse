@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+
 # Registers every ORM model on Base.metadata so init_db builds the full schema.
 import okto_pulse.community.app as _core_app  # noqa: F401
 import okto_pulse.core.infra.database as _db_mod
@@ -73,14 +75,23 @@ def test_af35_s1_community_adapters_round_trip_real_sqlalchemy(
 ):
     register_resource_gate_adapter_factory(CommunitySqlAlchemyResourceGateAdapter)
     sf = _temp_session_factory
+    from okto_pulse.community.adapters.sqlalchemy_knowledge_propagation import (
+        CommunitySqlAlchemyKnowledgePropagationStore,
+    )
+    from okto_pulse.core.ports.knowledge_propagation import register_knowledge_propagation_port
+    register_knowledge_propagation_port(CommunitySqlAlchemyKnowledgePropagationStore(sf))
     board_id = "af35-s1-board"
     spec_id = "af35-s1-spec"
 
     async def drive():
         async with sf() as db:
-            db.add(Board(id=board_id, name="AF35", owner_id="agent", settings={}))
+            db.add(Board(id=board_id, name="AF35", owner_id="agent", realm_id="local", settings={}))
             db.add(
                 Spec(
+                    architecture_adoption=ArchitectureAdoptionScope(
+                        board_id=board_id, spec_id=spec_id, adopted_in_edition=1,
+                        actor_id="agent", inherited_resource_ids=(),
+                    ).model_dump(mode="json"),
                     id=spec_id,
                     board_id=board_id,
                     title="AF35 Spec",
@@ -122,6 +133,7 @@ def test_af35_s1_community_adapters_round_trip_real_sqlalchemy(
     }
     assert traceability["summary"]["specs"] == 1
     assert traceability["orphan_specs"][0]["id"] == spec_id
+    assert traceability["orphan_specs"][0]["artifact_summary"]["artifact_drilldown"]["include_artifacts"] is True
     assert traceability["code_traceability"] == {
         "evidence_total": 0,
         "evidence_linked": 0,

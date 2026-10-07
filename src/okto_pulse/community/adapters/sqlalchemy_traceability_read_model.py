@@ -164,7 +164,7 @@ def _artifact_summary(entity: Any, *, entity_type: str) -> dict[str, Any]:
         "artifact_drilldown": {
             "available": total > 0,
             "tool_name": "okto_pulse_get_traceability_report",
-            "include_artifacts": "true",
+            "include_artifacts": True,
             "entity_type": entity_type,
             "entity_id": getattr(entity, "id", None),
         },
