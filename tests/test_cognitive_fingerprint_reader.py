@@ -3,6 +3,7 @@ from dataclasses import replace
 
 import pytest
 from sqlalchemy import update
+from sqlalchemy.exc import IntegrityError
 
 from okto_pulse.community.adapters.sqlalchemy_models import KGCognitiveSourceRevision
 from okto_pulse.core.ports.kg_cognitive_source import (
@@ -47,16 +48,25 @@ async def test_fingerprint_selector_refuses_invalid_identity(store, field, value
             await adapter.read_fingerprint_in_context(session, **args)
 
 
-async def test_selecting_birth_does_not_hide_corrupt_later_revision(store):
+async def test_selecting_birth_does_not_hide_corrupt_later_revision(store, monkeypatch):
     adapter, factory = store
     first = _record('learning-corruption')
     await adapter.append(first)
     changed = replace(first, payload={**first.payload, 'content': 'new'}, record_fingerprint='')
     revision_id = await adapter.append(changed)
     async with factory() as session:
-        await session.execute(update(KGCognitiveSourceRevision).where(
-            KGCognitiveSourceRevision.id == revision_id).values(payload={'content': 'tampered'}))
-        await session.commit()
+        with pytest.raises(IntegrityError, match='kg_cognitive_source_immutable'):
+            await session.execute(update(KGCognitiveSourceRevision).where(
+                KGCognitiveSourceRevision.id == revision_id).values(payload={'content': 'tampered'}))
+        await session.rollback()
+    # Simulate a corrupt read independently of the enforced write protection.
+    from okto_pulse.community.adapters import sqlalchemy_kg_cognitive_source as module
+    original = module._load_revision_rows
+    async def corrupt(*args, **kwargs):
+        rows = await original(*args, **kwargs)
+        next(row for row in rows if row.id == revision_id).payload = {'content': 'tampered'}
+        return rows
+    monkeypatch.setattr(module, '_load_revision_rows', corrupt)
     async with factory() as session:
         with pytest.raises(CognitiveSourceConflict, match='fingerprint_mismatch'):
             await adapter.read_fingerprint_in_context(session, board_id=BOARD,

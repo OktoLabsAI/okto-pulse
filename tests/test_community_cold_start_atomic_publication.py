@@ -245,7 +245,11 @@ async def test_failed_community_cold_start_publishes_nothing_atomically(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
     _fresh_main_module: None,
+    tmp_path,
 ) -> None:
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "runtime"))
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'runtime.db'}")
+    monkeypatch.setenv("KG_BASE_DIR", str(tmp_path / "kg"))
     core_server.reset_resource_catalog_for_tests()
     captured_compositions: list[RuntimeComposition] = []
     before_publication: list[_PublicationFingerprint] = []

@@ -13,8 +13,11 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
 )
 from okto_pulse.core.models.delivery_evidence import CardDeliveryEvidenceBatchCommand, DeliveryBatchEntryError
 from test_delivery_inline_execution import composed as _composed, db as _db, command, counts
-from test_delivery_execution_sets import composite_batch, seed_scope
+from test_delivery_execution_sets import composite_batch, seed_scope, native_verifier as _native_verifier
 
+pytestmark = pytest.mark.usefixtures("native_verifier")
+
+native_verifier = _native_verifier
 composed = _composed
 db = _db
 
@@ -35,6 +38,7 @@ async def test_origin_refusal_rolls_back_preceding_progress_in_mixed_batch(compo
     payload = command().model_dump(mode='json')
     payload['entries'].insert(0, {'client_ref': 'checkpoint', 'kind': 'progress',
         'justification': 'Work in progress before proof', 'progress': {
+            'material_change': 'unknown',
             'source_state': {'workspace_state': 'dirty', 'recoverability': 'unknown'},
             'remaining': 'Establish an admissible source observation'}})
     with pytest.raises(DeliveryBatchEntryError) as error:

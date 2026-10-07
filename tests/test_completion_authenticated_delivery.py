@@ -32,6 +32,10 @@ from okto_pulse.core.kg.rebuild_audit import (
     require_rebuild_audit_artifact_store,
 )
 from okto_pulse.core.models.delivery_evidence import card_delivery_command
+from datetime import datetime, timezone
+from okto_pulse.community.adapters.sqlalchemy_semantic_guideline_assessment import CommunitySqlAlchemySemanticGuidelineAssessment
+from okto_pulse.core.domain.guideline_policy import PolicyEntityType
+from okto_pulse.core.domain.quality_canonicalization import canonical_sha256
 
 ledger = adopted.ledger
 signed = adopted.contract.signed
@@ -90,6 +94,14 @@ async def test_signed_test_closeout_separates_product_proof_from_projection(
             artifact_type='test', artifact_id='test', source_ref='test:test',
             content_hash='d' * 64, target_status='done', canonical_state='pending',
             failure_reason='projection_pending'))
+        for card_id in ('test', 'task'):
+            key = f'native-completion-fixture:{card_id}'
+            await CommunitySqlAlchemySemanticGuidelineAssessment(session).record_semantic_subject_mutation(
+                board_id=BOARD, entity_type=PolicyEntityType.CARD, subject_id=card_id,
+                actor_id='owner', idempotency_key=key,
+                request_digest=canonical_sha256({'fixture': key}),
+                changed_at=datetime.now(timezone.utc),
+            )
         await session.commit()
         artifacts = require_rebuild_audit_artifact_store()
         if substantive:

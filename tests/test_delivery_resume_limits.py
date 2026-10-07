@@ -1,25 +1,29 @@
-"""Projection budget with a synthetic canonical inventory and real read scope."""
+"""Native inventory response budget and real progress cursor continuity."""
 import json
 
 import pytest
 
 from test_delivery_progress import db as progress_db, command, record
-from okto_pulse.core.domain.delivery_evidence import DeliveryBinding, DeliveryObligation, DeliveryEvidenceSnapshot, DeliveryScope
+from okto_pulse.community.adapters.sqlalchemy_models import Spec
 from okto_pulse.core.models.delivery_evidence import DeliveryEvidenceReadQuery
 
 db = progress_db
 
 
 @pytest.mark.asyncio
-async def test_multibyte_manifest_is_capped_without_skipping_progress_cursor(db, monkeypatch):
+async def test_multibyte_manifest_is_capped_without_skipping_progress_cursor(db):
     _, session, store = db
     for i in range(21):
         await record(store, command(idempotency_key=f"note-{i}", justification="界" * 1000))
     await session.commit()
-    obligations = tuple(DeliveryObligation(DeliveryBinding(f"fr-{i}", "a" * 64), "界" * 500) for i in range(100))
-    async def synthetic_inventory(scope, *, plan=None, records=None):
-        return DeliveryEvidenceSnapshot(DeliveryScope("b", "s", 1), obligations, complete=True)
-    monkeypatch.setattr(store, "load_card_snapshot", synthetic_inventory)
+    spec = await session.get(Spec, "s")
+    spec.functional_requirements = [{
+        "id": f"fr-{i}", "text": "界" * 500, "linked_task_ids": ["c"],
+        "verification": {"mode": "explicit", "required_profiles": ["functional"]},
+        "implementation_plan": {"contributions": [{"card_id": "c", "scope": "whole_requirement"}]},
+    } for i in range(100)]
+    spec.acceptance_criteria = []
+    await session.commit()
     query = DeliveryEvidenceReadQuery(board_id="b", spec_id="s", card_id="c", view="resume")
     result = await store.card_resume(query, actor_id="reader")
     assert result["response_truncated"] and result["obligations"]["truncated"]

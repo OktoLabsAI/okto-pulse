@@ -88,7 +88,7 @@ async def exact_store(tmp_path):
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     async with factory() as session:
-        session.add(Board(id=BOARD_ID, name="Exact relational", owner_id="tester"))
+        session.add(Board(id=BOARD_ID, name="Exact relational", owner_id="tester", realm_id="local"))
         await session.commit()
     try:
         yield factory, CommunitySqlAlchemyConsolidationPersistence()
@@ -295,6 +295,7 @@ async def _stage_unrelated_refs(session: AsyncSession) -> tuple[str, str]:
     session.add_all(
         [
             Board(
+                realm_id="local",
                 id=OTHER_BOARD_ID,
                 name="Other exact relational",
                 owner_id="tester",
