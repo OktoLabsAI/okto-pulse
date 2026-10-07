@@ -385,6 +385,15 @@ async def test_bug_origin_proxies_reconcile_all_consumers_without_spec_fanout(tm
                 spec_id='spec', changed_fields=[f.field for f in BUG_ORIGIN_PROXY_FAMILIES],
                 projection_card_ids=['card']), session)
             await session.commit()
+        async with factory() as session:
+            targets = (await session.execute(select(
+                ConsolidationQueue.artifact_type, ConsolidationQueue.artifact_id
+            ))).all()
+            assert set(targets) == {
+                ('spec', 'spec'), ('card', 'card'),
+                ('card', 'bug-first'), ('card', 'bug-second'),
+            }
+            assert len(targets) == 4
         deadline = asyncio.get_running_loop().time() + 90
         while asyncio.get_running_loop().time() < deadline:
             async with factory() as session:
@@ -414,6 +423,17 @@ async def test_bug_origin_proxies_reconcile_all_consumers_without_spec_fanout(tm
                 setattr(spec, family.field, values)
                 original[family.field] = values
                 expected.add(f'spec:spec:{family.section}:{values[0]["id"]}')
+            # Same-Board controls are outside this source's dependency closure.
+            # A Board sweep would enqueue these and fail the exact target assertion.
+            session.add(Spec(id='unrelated-spec', board_id='board', title='Unrelated',
+                status='draft', created_by='owner', architecture_adoption=ArchitectureAdoptionScope(
+                    board_id='board', spec_id='unrelated-spec', adopted_in_edition=1,
+                    actor_id='owner', inherited_resource_ids=()).model_dump(mode='json')))
+            session.add(Card(id='unrelated-card', board_id='board', spec_id='unrelated-spec',
+                title='Unrelated card', status='not_started', card_type='normal', created_by='owner'))
+            session.add(Card(id='unrelated-bug', board_id='board', spec_id='unrelated-spec',
+                title='Unrelated bug', status='not_started', card_type='bug',
+                origin_task_id='unrelated-card', created_by='owner'))
             for identity in ('bug-first', 'bug-second'):
                 session.add(Card(id=identity, board_id='board', spec_id='spec', title=identity,
                     status='done', card_type='bug', origin_task_id='card', created_by='owner',
