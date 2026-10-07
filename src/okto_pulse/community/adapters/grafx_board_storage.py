@@ -163,11 +163,7 @@ def grafx_board_privacy_storage_present(scope: GrafxBoardPrivacyScope, *, observ
 
 
 def _retired_board_artifacts(scope: GrafxBoardPrivacyScope, *, observation: FilesystemObservationBudget | None = None) -> tuple[Path, ...]:
-    """Opaque historical files, touched only by explicit privacy erasure.
-
-    No retired driver is opened. Preserve the original board-owned namespace
-    and preflight every alias before the first deletion, including sidecars.
-    """
+    """Observe incompatible storage opaquely so it cannot be treated as absent."""
     reject_filesystem_alias_ancestry(scope.board_root)
     if not scope.board_root.exists():
         return ()
@@ -176,7 +172,7 @@ def _retired_board_artifacts(scope: GrafxBoardPrivacyScope, *, observation: File
             (
                 path
                 for path in (observation.children(scope.board_root) if observation else scope.board_root.iterdir())
-                if path.name == "graph.lbug" or path.name.startswith("graph.lbug.")
+                if path.name in {"graph.lbug", "rollout"} or path.name.startswith("graph.lbug.")
             ),
             key=lambda path: path.name,
         )
@@ -245,7 +241,8 @@ def erase_grafx_board_privacy_storage(
 
     _revalidate_privacy_scope(scope)
     quarantine_artifacts = _privacy_directory_quarantine_artifacts(scope)
-    retired_artifacts = _retired_board_artifacts(scope)
+    if _retired_board_artifacts(scope):
+        raise ValueError("graph_storage_format_incompatible")
     removed = 0
     files, directories = remove_contained_tree(
         scope.grafx_root,
@@ -253,14 +250,6 @@ def erase_grafx_board_privacy_storage(
         before_mutation=before_mutation,
     )
     removed += files + directories
-
-    for artifact in retired_artifacts:
-        files, directories = remove_contained_tree(
-            artifact,
-            base_dir=scope.board_root,
-            before_mutation=before_mutation,
-        )
-        removed += files + directories
 
     for artifact in quarantine_artifacts:
         files, directories = remove_contained_tree(

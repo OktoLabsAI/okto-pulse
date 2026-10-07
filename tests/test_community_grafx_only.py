@@ -122,11 +122,11 @@ def test_explicit_privacy_erases_only_board_graph_artifacts_under_fence(tmp_path
     board_root = tmp_path / "boards" / "privacy-board"
     board_root.mkdir(parents=True)
     scope = grafx_board_privacy_scope("privacy-board", board_root)
-    graph = board_root / "graph.lbug"
-    wal = board_root / "graph.lbug.wal"
+    graph = board_root / "grafx" / "data.grafx"
+    graph.parent.mkdir()
     binding = board_root / "graph_backend_binding.json"
     preserved = board_root / "notes.txt"
-    for p in (graph, wal, binding, preserved):
+    for p in (graph, binding, preserved):
         p.write_bytes(b"opaque bytes")
     checks = []
 
@@ -139,10 +139,10 @@ def test_explicit_privacy_erases_only_board_graph_artifacts_under_fence(tmp_path
     if deny:
         with pytest.raises(PermissionError, match="fence lost"):
             erase_grafx_board_privacy_storage(scope, before_mutation=fence)
-        assert all(p.read_bytes() == b"opaque bytes" for p in (graph, wal, binding))
+        assert all(p.read_bytes() == b"opaque bytes" for p in (graph, binding))
     else:
         assert erase_grafx_board_privacy_storage(scope, before_mutation=fence) == 3
-        assert not any(p.exists() for p in (graph, wal, binding))
+        assert not any(p.exists() for p in (graph, binding))
     assert checks
     assert preserved.read_bytes() == b"opaque bytes"
 
@@ -226,7 +226,12 @@ from okto_pulse.community.adapters.routed_graph_composition import build_communi
 from okto_pulse.community.main import create_community_app
 settings = CommunitySettings(_env_file=None)
 bundle = build_community_routed_graph_composition(settings=settings)
-assert len(bundle.registry_providers()) == 14
+assert set(bundle.registry_providers()) == {
+    'graph_store', 'cypher_executor', 'graph_health_observation', 'graph_query_execution',
+    'graph_transaction', 'graph_schema_manager', 'graph_lifecycle', 'graph_runtime_store',
+    'graph_recovery', 'ranked_graph_search', 'graph_history', 'graph_analytics',
+    'global_discovery_runtime', 'global_discovery_recovery', 'quarantine_restore',
+}
 assert all(bundle.registry_providers()[name] is not None for name in ('ranked_graph_search', 'graph_history', 'graph_analytics', 'graph_health_observation'))
 from okto_pulse.core.infra.config import configure_settings
 configure_settings(lambda: settings)
@@ -244,3 +249,36 @@ print('grafx-only app composed')
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "grafx-only app composed" in result.stdout
+
+@pytest.mark.parametrize("artifact", ["graph.lbug", "graph.lbug.wal", "rollout"])
+@pytest.mark.parametrize("mixed", [False, True])
+def test_privacy_refuses_incompatible_storage_before_any_deletion(tmp_path, artifact, mixed):
+    from okto_pulse.community.adapters.grafx_board_storage import (
+        grafx_board_privacy_scope, grafx_board_privacy_storage_present,
+        erase_grafx_board_privacy_storage,
+    )
+
+    board = tmp_path / "boards" / "old"
+    board.mkdir(parents=True)
+    scope = grafx_board_privacy_scope("old", board)
+    old = board / artifact
+    if artifact == "rollout":
+        old.mkdir()
+        (old / "opaque").write_bytes(b"untrusted migration state")
+    else:
+        old.write_bytes(b"incompatible bytes")
+    if mixed:
+        (board / "grafx").mkdir()
+        (board / "grafx" / "data.grafx").write_bytes(b"current bytes")
+        (board / "graph_backend_binding.json").write_bytes(b"binding bytes")
+
+    def inventory():
+        return {str(p.relative_to(board)): p.read_bytes() if p.is_file() else None
+                for p in board.rglob("*")}
+
+    before = inventory()
+    assert grafx_board_privacy_storage_present(scope)
+    with pytest.raises(ValueError, match="graph_storage_format_incompatible"):
+        erase_grafx_board_privacy_storage(scope,
+            before_mutation=lambda: pytest.fail("must refuse before mutation"))
+    assert inventory() == before
