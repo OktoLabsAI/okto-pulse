@@ -625,7 +625,6 @@ async def link_stories_to_ideation(
 
 
 @router.post("/boards/{board_id}/stories/convert-to-ideation", response_model=StoryConversionResponse)
-@router.post("/boards/{board_id}/stories/convert", response_model=StoryConversionResponse)
 async def convert_stories(
     board_id: str,
     data: StoryConversionRequest,
