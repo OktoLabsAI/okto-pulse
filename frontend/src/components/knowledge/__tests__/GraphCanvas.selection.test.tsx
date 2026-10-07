@@ -97,6 +97,27 @@ describe('GraphCanvas — selection wiring (S4.1 / AC-4)', () => {
     }
   });
 
+  it('preserves both Target endpoints and selection after an obsolete overlap is removed', () => {
+    const first: KGNode = { ...NODE, id: 'target-a', node_type: 'Entity',
+      source_artifact_ref: 'implementation_target:a', kind_of: 'implementation_target' };
+    const second: KGNode = { ...first, id: 'target-b', source_artifact_ref: 'implementation_target:b' };
+    const onSelect = vi.fn();
+    const { container, rerender } = renderCanvas({ nodes: [first, second], onSelect,
+      initialSelectedNodeId: second.id,
+      edges: [{ id: 'overlap', source: first.id, target: second.id, edge_type: 'overlaps', confidence: 1 }] });
+    rerender(<GraphCanvas nodes={[first, second]} edges={[]} filters={FILTERS}
+      initialSelectedNodeId={second.id} onSelect={onSelect} />);
+    expect(container.querySelector('[data-testid="kg-canvas"]')).toHaveAttribute('data-selected-id', second.id);
+    for (const node of [first, second]) {
+      const button = container.querySelector('[data-node-id="' + node.id + '"]');
+      expect(button).not.toBeNull();
+      fireEvent.doubleClick(button!);
+      expect(onSelect).toHaveBeenLastCalledWith(expect.objectContaining({
+        id: node.id, source_artifact_ref: node.source_artifact_ref, kind_of: 'implementation_target',
+      }));
+    }
+  });
+
   it.each(['Entity', 'Bug'] as const)('keeps observed %s-to-scenario endpoints independently navigable', (kind) => {
     const card: KGNode = { ...NODE, id: 'card-root', title: 'Card', node_type: kind,
       source_artifact_ref: 'card:owner', graph_layer: 'working', maturity_status: 'working' };
