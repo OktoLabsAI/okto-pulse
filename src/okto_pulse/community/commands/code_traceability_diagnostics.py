@@ -15,7 +15,7 @@ from typing import Any, Literal
 
 from pydantic import ValidationError
 
-from okto_pulse.core.models.schemas import BoardSettings, CodeTraceabilitySettings
+from okto_pulse.core.models.schemas import BoardSettings
 
 
 DiagnosticKind = Literal["request", "receipt"]
@@ -286,17 +286,7 @@ def validate_policy(
             "Board not found",
         )
     decoded = dict(_decode_settings(row["settings"]))
-    raw_policy = decoded.get("code_traceability")
-    legacy_default_applied = (
-        "code_traceability" not in decoded
-        or raw_policy is None
-        or (isinstance(raw_policy, Mapping) and raw_policy.get("mode") == "off")
-    )
     try:
-        if legacy_default_applied:
-            decoded["code_traceability"] = CodeTraceabilitySettings.from_persisted(
-                raw_policy
-            ).model_dump(mode="json")
         settings = BoardSettings.model_validate(decoded)
     except ValidationError as exc:
         return {
@@ -314,7 +304,6 @@ def validate_policy(
     return {
         "valid": True,
         "effective_mode": policy.mode.value,
-        "legacy_default_applied": legacy_default_applied,
         "policy": policy.model_dump(mode="json"),
         "responsibility_boundary": "external_authenticated_agent",
     }

@@ -41,6 +41,10 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     Base,
 )
 from okto_pulse.core.domain import code_traceability as domain
+from okto_pulse.community.adapters.sqlalchemy_knowledge_propagation import CommunitySqlAlchemyKnowledgePropagationStore
+from okto_pulse.community.adapters.sqlalchemy_resource_gate_service import CommunitySqlAlchemyResourceGateAdapter
+from okto_pulse.core.ports.knowledge_propagation import register_knowledge_propagation_port
+from okto_pulse.core.ports.relational_services import register_resource_gate_adapter_factory
 from okto_pulse.core.ports.code_investigation import (
     CodeInvestigationHeadConflict,
     CodeInvestigationRequestCreateResult,
@@ -71,6 +75,14 @@ _C = "c" * 64
 _D = "d" * 64
 _E = "e" * 64
 _F = "f" * 64
+
+
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+
+_NATIVE_ARCHITECTURE = ArchitectureAdoptionScope(
+    board_id="board-1", spec_id="spec-1", adopted_in_edition=1,
+    actor_id="owner-1", inherited_resource_ids=(),
+).model_dump_json()
 
 
 def test_source_census_is_exact_and_every_manifest_is_closed() -> None:
@@ -668,12 +680,11 @@ def test_spec_context_keeps_active_v3_evidence_in_v4_snapshot_denominator(
                 ),
             )
             await connection.exec_driver_sql(
-                "INSERT INTO specs "
-                "(id, board_id, ideation_id, refinement_id, "
-                "source_refinement_snapshot_id, source_refinement_version, "
-                "title, status, edition, version, created_by) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                'INSERT INTO specs (architecture_adoption, id, board_id, ideation_id, refinement_id, '
+                'source_refinement_snapshot_id, source_refinement_version, title, status, edition, '
+                'version, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                 (
+                    _NATIVE_ARCHITECTURE,
                     "spec-1",
                     "board-1",
                     "ideation-1",
@@ -760,10 +771,9 @@ def test_resolution_snapshot_is_unique_under_real_sqlite_race(
                 ("board-1", "Board", "owner-1", "local"),
             )
             await connection.exec_driver_sql(
-                "INSERT INTO specs "
-                "(id, board_id, title, status, version, created_by) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                ("spec-1", "board-1", "Spec", "draft", 4, "owner-1"),
+                'INSERT INTO specs (architecture_adoption, id, board_id, title, status, version, '
+                'created_by) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                (_NATIVE_ARCHITECTURE, "spec-1", "board-1", "Spec", "draft", 4, "owner-1"),
             )
             await connection.exec_driver_sql(
                 "INSERT INTO cards "
@@ -1136,10 +1146,9 @@ def test_transaction_bound_stores_persist_only_submitted_attestations(
                 ),
             )
             await connection.exec_driver_sql(
-                "INSERT INTO specs "
-                "(id, board_id, title, status, version, created_by) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                ("spec-1", "board-1", "Spec", "draft", 1, "owner-1"),
+                'INSERT INTO specs (architecture_adoption, id, board_id, title, status, version, '
+                'created_by) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                (_NATIVE_ARCHITECTURE, "spec-1", "board-1", "Spec", "draft", 1, "owner-1"),
             )
             await connection.exec_driver_sql(
                 "UPDATE cards SET spec_id = ? WHERE board_id = ?",
@@ -1147,6 +1156,8 @@ def test_transaction_bound_stores_persist_only_submitted_attestations(
             )
 
         sessions = async_sessionmaker(engine, expire_on_commit=False)
+        register_knowledge_propagation_port(CommunitySqlAlchemyKnowledgePropagationStore(sessions))
+        register_resource_gate_adapter_factory(CommunitySqlAlchemyResourceGateAdapter)
         now = datetime.now(timezone.utc).replace(microsecond=0)
         request, consumed, receipt, head, workspace = _attestation_bundle(now)
         async with sessions() as session:

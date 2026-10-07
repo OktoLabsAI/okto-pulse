@@ -42,7 +42,7 @@ async def _database(tmp_path):
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     await initialize_current_schema(engine, current_schema_contract())
     async with factory() as session:
-        session.add(Board(id="board-1", name="Board", owner_id="agent"))
+        session.add(Board(id="board-1", name="Board", owner_id="agent", realm_id="local"))
         await session.commit()
     return engine, factory
 
@@ -338,7 +338,7 @@ async def test_tombstone_for_another_artifact_does_not_block_admission(tmp_path)
     adapter = CommunitySqlAlchemyRelationalEffects()
     try:
         async with factory() as session:
-            session.add(Board(id="board-2", name="Other Board", owner_id="agent"))
+            session.add(Board(id="board-2", name="Other Board", owner_id="agent", realm_id="local"))
             await session.flush()
             session.add_all(
                 [

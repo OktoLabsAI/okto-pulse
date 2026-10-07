@@ -18,7 +18,7 @@ async def test_history_is_bounded_scoped_and_preserves_unknown(tmp_path):
     adapter = CommunitySqlAlchemyConsolidationPersistence()
     try:
         async with factory() as session:
-            session.add(Board(id="other-board", name="Other", owner_id="agent"))
+            session.add(Board(id="other-board", name="Other", owner_id="agent", realm_id="local"))
             await session.flush()
 
             def event(identity, day, old, new, board="board-1", card="bug"):

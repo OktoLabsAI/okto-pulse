@@ -46,6 +46,9 @@ TRACEABILITY_TYPES = {
 }
 
 
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+
+
 async def seed_complete_traceability_source(connection) -> None:
     tables = Base.metadata.tables
     await connection.execute(
@@ -63,6 +66,10 @@ async def seed_complete_traceability_source(connection) -> None:
             "id": "spec-1",
             "board_id": "board-1",
             "title": "Traceability spec",
+            "architecture_adoption": ArchitectureAdoptionScope(
+                board_id="board-1", spec_id="spec-1", adopted_in_edition=1,
+                actor_id="owner-1", inherited_resource_ids=(),
+            ).model_dump(mode="json"),
             "description": "A deterministic rebuild fixture.",
             "functional_requirements": [
                 {
@@ -127,7 +134,9 @@ async def seed_complete_traceability_source(connection) -> None:
             "attestor_actor_id": "agent-1",
             "generation": 1,
             "acceptance_status": "accepted",
-            "outcome": "accessible",
+            "delivery_context": "brownfield",
+            "contextual_outcome": "evidence_applicable",
+            "context_contract_version": 2,
             "capabilities": ["file_read", "path_containment"],
             "source_ref": "source-opaque-1",
             "source_identity_digest": SHA_A,
@@ -182,6 +191,13 @@ async def seed_complete_traceability_source(connection) -> None:
             "parent_version": 1,
             "evidence_type": "structure",
             "claim": "The external agent observed the declared module.",
+            "source_role": "current_implementation",
+            "context_contract_version": 2,
+            "relevance_summary": "Current implementation behavior.",
+            "scope_relation": "same delivery scope",
+            "source_origin": "repository baseline",
+            "baseline_presence": "committed_snapshot",
+            "baseline_workspace_state_id": "workspace-1",
             "declared_revision": "revision-1",
             "workspace_state_id": "workspace-1",
             "declared_dirty": False,
@@ -307,6 +323,13 @@ async def seed_superseded_evidence_chain(connection) -> None:
         "card_id": "card-1",
         "parent_version": 1,
         "evidence_type": "structure",
+        "source_role": "current_implementation",
+        "context_contract_version": 2,
+        "relevance_summary": "Current implementation behavior.",
+        "scope_relation": "same delivery scope",
+        "source_origin": "repository baseline",
+        "baseline_presence": "committed_snapshot",
+        "baseline_workspace_state_id": "workspace-1",
         "declared_revision": "revision-1",
         "workspace_state_id": "workspace-1",
         "declared_dirty": False,

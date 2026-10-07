@@ -22,6 +22,14 @@ from okto_pulse.core.ports.code_traceability_event_effects import (
 )
 
 
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+
+_NATIVE_ARCHITECTURE = ArchitectureAdoptionScope(
+    board_id="board-1", spec_id="spec-1", adopted_in_edition=1,
+    actor_id="owner-1", inherited_resource_ids=(),
+).model_dump_json()
+
+
 def test_event_effect_is_transactional_idempotent_and_preserves_validation_history(
     tmp_path,
 ) -> None:
@@ -36,10 +44,10 @@ def test_event_effect_is_transactional_idempotent_and_preserves_validation_histo
                 ("board-1", "Board", "owner-1", "local"),
             )
             await connection.exec_driver_sql(
-                "INSERT INTO specs "
-                "(id, board_id, title, status, version, validations, "
-                "current_validation_id, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                'INSERT INTO specs (architecture_adoption, id, board_id, title, status, version, '
+                'validations, current_validation_id, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
                 (
+                    _NATIVE_ARCHITECTURE,
                     "spec-1",
                     "board-1",
                     "Spec",
@@ -131,11 +139,11 @@ def test_spec_entity_waiver_events_are_metadata_only_across_boards(
                     (board_id, board_id, "owner-1", "local"),
                 )
             await connection.exec_driver_sql(
-                "INSERT INTO specs "
-                "(id, board_id, title, status, version, functional_requirements, "
-                "validations, current_validation_id, created_by) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                'INSERT INTO specs (architecture_adoption, id, board_id, title, status, version, '
+                'functional_requirements, validations, current_validation_id, created_by) VALUES (?, '
+                '?, ?, ?, ?, ?, ?, ?, ?, ?)',
                 (
+                    _NATIVE_ARCHITECTURE,
                     "spec-1",
                     "board-1",
                     "Spec",

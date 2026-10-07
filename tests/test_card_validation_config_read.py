@@ -13,7 +13,11 @@ from okto_pulse.community.adapters.sqlalchemy_unit_of_work import CommunityUnitO
 from okto_pulse.core.application.use_cases.base import ActorContext, EntityNotFoundError
 from okto_pulse.core.application.use_cases.card_crud import GetCardCommand, GetCardUseCase
 from okto_pulse.core.domain.realm import RealmScope
+from okto_pulse.core.services.resource_gate_contracts import ResourceGateNotFound
 from okto_pulse.core.ports.knowledge_propagation import register_knowledge_propagation_port
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+from okto_pulse.core.ports.relational_services import register_resource_gate_adapter_factory
+from okto_pulse.community.adapters.sqlalchemy_resource_gate_service import CommunitySqlAlchemyResourceGateAdapter
 
 
 @pytest.mark.asyncio
@@ -42,6 +46,11 @@ async def test_card_policy_read_preserves_values_scope_and_source_data(tmp_path,
                               name="Foreign", owner_id="other")])
             if source != "missing":
                 db.add(Spec(id="spec", board_id="foreign" if source == "foreign" else "board",
+                            architecture_adoption=ArchitectureAdoptionScope(
+                                board_id="foreign" if source == "foreign" else "board",
+                                spec_id="spec", adopted_in_edition=1, actor_id="owner",
+                                inherited_resource_ids=(),
+                            ).model_dump(mode="json"),
                             title="Spec", created_by="owner", validation_min_completeness=92,
                             validation_min_confidence=confidence))
             db.add(Card(id="card", board_id="board", spec_id="spec", title="Task", created_by="owner"))
@@ -49,16 +58,20 @@ async def test_card_policy_read_preserves_values_scope_and_source_data(tmp_path,
         event.listen(engine.sync_engine, "before_cursor_execute", capture_write)
         event.listen(engine.sync_engine, "commit", lambda _connection: commits.append(True))
         factory = CommunityUnitOfWorkFactory(sessions)
+        register_resource_gate_adapter_factory(CommunitySqlAlchemyResourceGateAdapter)
         register_knowledge_propagation_port(CommunitySqlAlchemyKnowledgePropagationStore(sessions))
         actor = ActorContext("owner", "rest", board_id="board", permissions=["*"])
         async with factory(actor=actor) as uow:
             commit = AsyncMock(side_effect=AssertionError("read committed"))
             monkeypatch.setattr(uow, "commit", commit)
-            response = (await GetCardUseCase().execute(GetCardCommand("card"), actor=actor, uow=uow)).card
-            config = response.model_dump(mode="json")["validation_config"]
             if source in {"missing", "foreign"}:
-                assert config is None
+                # These deliberately invalid parent links fail closed in the
+                # current composite read; they never expose another Board.
+                with pytest.raises(ResourceGateNotFound, match="was not found on board"):
+                    await GetCardUseCase().execute(GetCardCommand("card"), actor=actor, uow=uow)
             else:
+                response = (await GetCardUseCase().execute(GetCardCommand("card"), actor=actor, uow=uow)).card
+                config = response.model_dump(mode="json")["validation_config"]
                 assert config["min_confidence"] == (confidence if confidence is not None else 70)
                 assert config["min_completeness"] == 92
                 assert config["max_drift"] == 12

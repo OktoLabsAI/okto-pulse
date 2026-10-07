@@ -32,9 +32,7 @@ from okto_pulse.core.ports.authentication import Principal
 
 def _payload(**overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
-        # Compatibility input alias is accepted, but the use case receives the
-        # one canonical Core fence name.
-        "expected_card_version": 9,
+        "expected_subject_version": 9,
         "idempotency_key": "validation-attempt-1",
         "confidence": 94,
         "confidence_justification": "The evidence is direct and reproducible.",
@@ -71,7 +69,7 @@ def _assert_rework_http_error(error: HTTPException) -> None:
     assert error.detail == _rework_handoff_error().to_dict()
 
 
-def test_submit_validation_exposes_typed_causal_response_and_alias(monkeypatch) -> None:
+def test_submit_validation_exposes_typed_causal_response_and_native_fence(monkeypatch) -> None:
     observed: dict[str, object] = {}
 
     async def execute(self, command, *, actor, uow):
@@ -83,6 +81,9 @@ def test_submit_validation_exposes_typed_causal_response_and_alias(monkeypatch) 
                 "card_id": "card-1",
                 "board_id": "board-1",
                 "reviewer_id": "reviewer",
+                "reviewer_name": "Reviewer",
+                "reviewer_separation": {"mode": "enforce", "allowed": True, "conflicts": []},
+                "expected_subject_version": 9,
                 "confidence": 94,
                 "confidence_justification": "The evidence is direct and reproducible.",
                 "estimated_completeness": 72,
@@ -162,6 +163,9 @@ def _stored_validation_with_ledger() -> dict[str, object]:
         "card_id": "card-1",
         "board_id": "board-1",
         "reviewer_id": "reviewer",
+        "reviewer_name": "Reviewer",
+        "reviewer_separation": {"mode": "enforce", "allowed": True, "conflicts": []},
+        "expected_subject_version": 9,
         "confidence": 94,
         "confidence_justification": "The evidence is direct and reproducible.",
         "estimated_completeness": 72,
@@ -434,6 +438,10 @@ async def test_delete_validation_real_use_case_projects_append_only_conflict() -
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     sessions = build_community_session_factory(engine)
+    validation = _stored_validation_with_ledger()
+    identity = {"id": "validation-real", "card_id": "card-real", "board_id": "board-real"}
+    validation.update(identity)
+    validation["response"].update(identity)
     async with sessions() as session:
         session.add_all(
             [
@@ -446,7 +454,7 @@ async def test_delete_validation_real_use_case_projects_append_only_conflict() -
                     title="Immutable validation history",
                     status="validation",
                     created_by="owner",
-                    validations=[{"id": "validation-real", "outcome": "failed"}],
+                    validations=[validation],
                 ),
             ]
         )
