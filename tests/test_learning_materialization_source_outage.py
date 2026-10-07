@@ -99,3 +99,57 @@ async def test_unavailable_projection_probe_does_not_attempt_graph_repair(graph_
     current, = store.list_items(BOARD, store.latest_generation(BOARD))
     assert current.status == 'consolidated'
     assert await source_store.enumerate(BOARD) == history
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('missing', ['capture', 'bug'])
+async def test_missing_native_source_records_never_generate_retrospective_learning(
+        runtime, work_store, monkeypatch, tmp_path, missing):
+    from unittest.mock import AsyncMock
+    from okto_pulse.community.adapters.sqlalchemy_kg_cognitive_source import CommunitySqlAlchemyCognitiveSourceStore
+    from okto_pulse.core.kg.cognitive_closeout_production import ConsolidationPipelinePersister
+    from test_bug_cognitive_context_adapter import _runtime
+
+    factory, assembler, source_store, request = runtime
+    work, discovery = work_store
+    async with factory() as session:
+        await StageLearningCaptureUseCase().execute(request, actor=actor(), uow=uow(session))
+        await session.commit()
+    history = await source_store.enumerate(BOARD)
+    await deliver_capture_events(factory)
+    generation = work.latest_generation(BOARD)
+    before, = work.list_items(BOARD, generation)
+    # Fault injection routes one source read to a genuinely empty current-schema
+    # database. It does not delete immutable native history or install old data.
+    empty_engine, empty_factory = await _runtime(tmp_path / 'missing-native-source.sqlite')
+    missing_store = CommunitySqlAlchemyCognitiveSourceStore(empty_factory)
+    persist = AsyncMock(side_effect=AssertionError('No authored material without its source'))
+    try:
+        with monkeypatch.context() as fault:
+            fault.setattr(ConsolidationPipelinePersister, 'persist_authored_learning', persist)
+            if missing == 'capture':
+                async def read_empty_capture(context, **identity):
+                    async with empty_factory() as empty_context:
+                        return await missing_store.read_fingerprint_in_context(empty_context, **identity)
+                fault.setattr(source_store, 'read_fingerprint_in_context', read_empty_capture)
+            else:
+                assemble = assembler.assemble_semantic
+                async def read_empty_source(context, *, board_id, bug_id):
+                    async with empty_factory() as empty_context:
+                        return await assemble(empty_context, board_id=board_id, bug_id=bug_id)
+                fault.setattr(assembler, 'assemble_semantic', read_empty_source)
+            worker = CognitiveCloseoutWorker(factory, store=work, pending_work_provider=discovery)
+            assert await worker.drain_once() == 1
+            item, = work.list_items(BOARD, generation)
+            assert item.item_id == before.item_id and item.content_hash == before.content_hash
+            assert item.status == ('failed' if missing == 'capture' else 'pending')
+            assert item.reason == ('learning_capture_work_source_mismatch'
+                if missing == 'capture' else 'learning_capture_source_unavailable')
+            assert not item.evidence_refs
+            persist.assert_not_called()
+            assert await missing_store.enumerate(BOARD) == ()
+            assert await source_store.enumerate(BOARD) == history
+            if missing == 'capture':
+                assert await worker.drain_once() == 0
+    finally:
+        await empty_engine.dispose()
