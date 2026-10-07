@@ -18,7 +18,7 @@ describe('Traceability graph API surface', () => {
     mockApiClient.fetchJson.mockResolvedValue({
       board_id: 'board/1',
       selected: { entity_type: 'spec', entity_id: 'spec 1' },
-      root_ideation: { id: 'spec 1', title: 'Spec 1' },
+      root_entity: { type: 'spec', id: 'spec 1', title: 'Spec 1' },
       resolution_path: [],
       nodes: [],
       edges: [],
@@ -27,7 +27,7 @@ describe('Traceability graph API surface', () => {
     });
   });
 
-  it('preserves the legacy lineage URL when no view is supplied', async () => {
+  it('uses the lineage URL when no view is supplied', async () => {
     const { result } = renderHook(() => useDashboardApi());
 
     await result.current.getLineageGraph('board/1', 'spec', 'spec 1', false);
@@ -37,7 +37,7 @@ describe('Traceability graph API surface', () => {
     );
   });
 
-  it('keeps the selected-entity dependency scope as the backward-compatible default', async () => {
+  it('uses selected-entity dependency scope by default', async () => {
     const { result } = renderHook(() => useDashboardApi());
 
     await result.current.getLineageGraph(

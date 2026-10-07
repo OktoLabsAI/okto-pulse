@@ -125,8 +125,7 @@ export interface LineageGraphEdge {
 
 export interface LineageGraphResponse {
   board_id: string;
-  /** Absent on rolling-upgrade servers, where lineage is the only view. */
-  view?: 'lineage' | 'dependency';
+  view: 'lineage' | 'dependency';
   /** Dependency projection scope; absent for origin/derivation responses. */
   dependency_scope?: 'selected' | 'lineage';
   /** Canonical IDs of the Spec/Card seeds represented by a lineage overlay. */
@@ -140,7 +139,8 @@ export interface LineageGraphResponse {
     entity_type: string;
     entity_id: string;
   };
-  root_ideation: {
+  root_entity: {
+    type: string;
     id: string;
     title: string;
     status?: string | null;

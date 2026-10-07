@@ -58,14 +58,6 @@ async def read_lineage_snapshot(context, query, *, timeout_ms):
     return await read(context, query, timeout_ms=timeout_ms)
 
 
-class _LegacyTraceabilityReadError(Exception):
-    """Contextual error raised while resolving traceability read models."""
-
-    def __init__(self, code: str, message: str, *, status_code: int = 400) -> None:
-        super().__init__(message)
-        self.code = code
-        self.message = message
-        self.status_code = status_code
 
 
 @dataclass(frozen=True)
@@ -744,26 +736,6 @@ async def build_traceability_report(
     }
 
 
-async def resolve_root_ideation_id(
-    db: AsyncSession,
-    board_id: str,
-    *,
-    entity_type: str,
-    entity_id: str,
-) -> tuple[str, list[dict[str, str]]]:
-    root_type, root_id, path = await resolve_lineage_root(
-        db,
-        board_id,
-        entity_type=entity_type,
-        entity_id=entity_id,
-    )
-    if root_type != "ideation":
-        raise TraceabilityReadError(
-            "unresolved_root_ideation",
-            f"Selected {entity_type.lower()} does not resolve to a root ideation.",
-            status_code=409,
-        )
-    return root_id, path
 
 
 async def resolve_lineage_root(
@@ -810,7 +782,7 @@ async def resolve_lineage_root(
         if len(links) > 1:
             raise TraceabilityReadError(
                 "ambiguous_root_ideation",
-                "Selected story has legacy duplicate ideation links. Restart the app to run database healing, then open lineage again.",
+                "Selected story has conflicting ideation links. Lineage cannot be resolved.",
                 status_code=409,
             )
         return "ideation", links[0].ideation_id, [
@@ -1029,7 +1001,7 @@ def _dependency_closure_edge_query(
     """Select only edges induced by the seeds' bidirectional closure.
 
     The recursive CTEs carry node ids rather than paths and use ``UNION`` so
-    each direction terminates even if invalid legacy data contains a cycle.
+    each direction terminates even if invalid data contains a cycle.
     The final query still returns the complete induced edge set between all
     reached ancestors and descendants in one database round trip.
     """
@@ -1337,13 +1309,6 @@ async def build_dependency_graph(
             "entity_id": entity_id,
         },
         "root_entity": root_entity,
-        # Retain the compatibility header consumed by the current graph modal.
-        "root_ideation": {
-            "id": anchor["entity_id"],
-            "title": anchor["title"],
-            "status": anchor.get("status"),
-            "entity_type": anchor["entity_type"],
-        },
         "resolution_path": [
             {"type": anchor["entity_type"], "id": entity_id}
         ],
@@ -1662,7 +1627,6 @@ async def build_lineage_dependency_overlay(
         "board_id": board_id,
         "selected": lineage["selected"],
         "root_entity": lineage["root_entity"],
-        "root_ideation": lineage["root_ideation"],
         "resolution_path": lineage["resolution_path"],
         "lineage_node_ids": lineage_node_ids,
         "lineage_entities": lineage_entities,
@@ -1870,11 +1834,6 @@ async def build_lineage_graph(
             "title": ideation["title"],
             "status": ideation.get("status"),
         }
-        root_ideation = {
-            "id": ideation["id"],
-            "title": ideation["title"],
-            "status": ideation.get("status"),
-        }
 
     elif root_type == "spec":
         report = await build_traceability_report(
@@ -1900,13 +1859,6 @@ async def build_lineage_graph(
             "id": root_spec["id"],
             "title": root_spec["title"],
             "status": root_spec.get("status"),
-        }
-        # Backward-compatible field name for the current frontend header.
-        root_ideation = {
-            "id": root_spec["id"],
-            "title": root_spec["title"],
-            "status": root_spec.get("status"),
-            "entity_type": "spec",
         }
         warnings.append(
             "Selected entity is rooted at a standalone spec because no ideation "
@@ -1939,13 +1891,6 @@ async def build_lineage_graph(
             "title": story.title,
             "status": _enum_value(story.status),
         }
-        # Backward-compatible field name for the current frontend header.
-        root_ideation = {
-            "id": story.id,
-            "title": story.title,
-            "status": _enum_value(story.status),
-            "entity_type": "story",
-        }
         report = {
             "summary": {
                 "stories": 1,
@@ -1973,7 +1918,6 @@ async def build_lineage_graph(
         "board_id": board_id,
         "selected": {"entity_type": entity_type, "entity_id": entity_id},
         "root_entity": root_entity,
-        "root_ideation": root_ideation,
         "resolution_path": resolution_path,
         "nodes": list(nodes.values()),
         "edges": list(edges.values()),

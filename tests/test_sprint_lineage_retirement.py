@@ -57,7 +57,10 @@ async def test_report_and_lineage_preserve_work_without_sprint_nodes(tmp_path, i
                                                 view="dependency", dependency_scope="lineage")
             dependency = await build_lineage_graph(db, "board", entity_type="task", entity_id="task",
                                                    view="dependency")
+            for graph_payload in (*graphs, overlay, dependency):
+                assert set(graph_payload["root_entity"]) == {"type", "id", "title", "status"}
             for payload in (report, *graphs, overlay, dependency):
+                assert "root_ideation" not in payload
                 serialized = json.dumps(payload, default=str)
                 assert "sprint" not in serialized.lower()
                 assert "Private archive" not in serialized

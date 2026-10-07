@@ -31,7 +31,7 @@ from okto_pulse.community.adapters.sqlalchemy_traceability_read_model import (
     build_lineage_graph,
 )
 from okto_pulse.community.api import traceability as traceability_api
-from okto_pulse.core.domain.realm import LOCAL_REALM_ID
+from okto_pulse.core.domain.realm import LOCAL_REALM_ID, RealmScope
 from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
 from okto_pulse.core.domain.enums import (
     CardStatus,
@@ -53,12 +53,21 @@ async def _database(path: Path):
     engine = _engine(path)
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
-    return engine, async_sessionmaker(
+    factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
         sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
+        info={"realm_scope": RealmScope.local()},
     )
+    from okto_pulse.community.adapters.sqlalchemy_knowledge_propagation import CommunitySqlAlchemyKnowledgePropagationStore
+    from okto_pulse.community.adapters.sqlalchemy_resource_gate_service import CommunitySqlAlchemyResourceGateAdapter
+    from okto_pulse.core.ports.knowledge_propagation import register_knowledge_propagation_port
+    from okto_pulse.core.ports.relational_services import register_resource_gate_adapter_factory
+    register_knowledge_propagation_port(CommunitySqlAlchemyKnowledgePropagationStore(factory))
+    register_resource_gate_adapter_factory(CommunitySqlAlchemyResourceGateAdapter)
+    return engine, factory
+
 
 
 def _spec(

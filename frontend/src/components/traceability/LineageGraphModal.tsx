@@ -1085,7 +1085,7 @@ export function LineageGraphModal({ boardId }: Props) {
   const requestedNodeTitle = request
     ? graph?.nodes.find((node) => isRequestedEntity(node, request))?.title
     : undefined;
-  const activeGraphTitle = graph?.root_ideation.title
+  const activeGraphTitle = graph?.root_entity.title
     || requestedNodeTitle
     || request?.entityType
     || 'lineage';
