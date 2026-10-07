@@ -10,6 +10,7 @@ from okto_pulse.community.adapters.test_evidence import CommunityTestEvidenceWri
 from okto_pulse.core.domain.delivery_inventory import COLLECTIONS
 from okto_pulse.core.domain.execution_contract import new_execution_contract
 from okto_pulse.core.domain.delivery_evidence import DeliveryScope
+from okto_pulse.core.models.delivery_evidence import CardDeliveryEvidenceCommand
 from okto_pulse.core.ports.test_evidence import register_test_evidence_write_verifier
 from okto_pulse.core.services.test_scenario_lifecycle import compute_test_scenario_semantic_sha256
 
@@ -71,11 +72,14 @@ async def test_scopes_persist_and_signed_test_completes_shared_rollup(ledger, tm
 
 
 @pytest.mark.asyncio
-async def test_adopted_writer_requires_explicit_contribution_not_legacy_shorthand(ledger, tmp_path, monkeypatch):
+async def test_native_writer_requires_explicit_contribution_not_legacy_shorthand(ledger, tmp_path, monkeypatch):
     db, store, _ = ledger
     await adopt_fixture(db, tmp_path, monkeypatch)
-    with pytest.raises(ValueError, match="delivery_contribution_declaration_required"):
-        await delivery.record(store, delivery.command())
+    payload = implementation().model_dump()
+    payload.pop("bindings")
+    payload["obligation_refs"] = ["fr:fr", "ac:ac-about"]
+    with pytest.raises(ValueError, match="delivery_contribution_bindings_required"):
+        await delivery.record(store, CardDeliveryEvidenceCommand.model_validate(payload))
     await db.rollback()
     assert not (await db.scalars(select(CardDeliveryEvidenceRecordRow))).all()
 
@@ -83,6 +87,8 @@ async def test_adopted_writer_requires_explicit_contribution_not_legacy_shorthan
 @pytest.mark.asyncio
 async def test_missing_contract_cannot_write_proof_or_use_old_snapshot_reader(ledger):
     db, store, _ = ledger
+    await db.execute(update(Spec).where(Spec.id == signed.SPEC_ID).values(execution_contract=None))
+    await db.commit()
     with pytest.raises(ValueError, match="spec_execution_contract_required"):
         await delivery.record(store, delivery.command())
     await db.rollback()
@@ -138,6 +144,7 @@ async def test_first_start_checks_real_shared_plan_without_requiring_execution(l
     register_resource_gate_adapter_factory(CommunitySqlAlchemyResourceGateAdapter)
     register_structured_spec_store(CommunitySqlAlchemyStructuredSpecStore())
     await db.execute(update(Spec).where(Spec.id == signed.SPEC_ID).values(
+        project_structure_revision=0,
         architecture_adoption=ArchitectureAdoptionScope(board_id=signed.BOARD_ID,
             spec_id=signed.SPEC_ID, adopted_in_edition=1, actor_id="author", inherited_resource_ids=()).model_dump(mode="json")))
     await db.commit()

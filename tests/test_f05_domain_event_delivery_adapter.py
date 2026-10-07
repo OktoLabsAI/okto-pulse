@@ -28,6 +28,8 @@ from okto_pulse.core.application.domain_event_delivery import (
     DomainEventDeliveryProcessor,
 )
 from okto_pulse.core.events.types import CardCreated, KGFullRebuildTick
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+from okto_pulse.core.domain.execution_contract import new_execution_contract
 
 
 NOW = datetime(2026, 7, 11, tzinfo=timezone.utc)
@@ -69,7 +71,7 @@ async def _seed(session_factory, *, execution_id: str, handler_name: str) -> Non
         if await session.get(Board, "board-f05") is None:
             session.add(
                 Board(
-                    id="board-f05",
+                    id="board-f05", realm_id="local",
                     name="F05",
                     owner_id="owner-f05",
                 )
@@ -177,7 +179,7 @@ async def test_full_rebuild_retry_success_ack_clears_stale_backoff(
         force_full_rebuild=True,
     )
     async with session_factory() as session:
-        session.add(Board(id="board-f05", name="F05", owner_id="owner-f05"))
+        session.add(Board(id="board-f05", realm_id="local", name="F05", owner_id="owner-f05"))
         session.add(
             DomainEventRow(
                 id=event.event_id,
@@ -280,12 +282,20 @@ async def test_cognitive_facts_match_rebuild_source_hashes(tmp_path: Path) -> No
     engine, session_factory = await _runtime(db_path)
     try:
         async with session_factory() as session:
-            session.add(Board(id="board-hash", name="Hash", owner_id="owner-hash"))
+            session.add(Board(id="board-hash", realm_id="local", name="Hash", owner_id="owner-hash"))
             session.add(
                 Spec(
                     id="spec-hash",
                     board_id="board-hash",
                     title="Hash parity spec",
+                    architecture_adoption=ArchitectureAdoptionScope(
+                        board_id="board-hash", spec_id="spec-hash", adopted_in_edition=1,
+                        actor_id="agent-hash", inherited_resource_ids=(),
+                    ).model_dump(mode="json"),
+                    execution_contract=new_execution_contract(
+                        board_id="board-hash", spec_id="spec-hash", edition=1,
+                        actor_id="agent-hash", origin="new_spec",
+                    ),
                     context="Stable cognitive context",
                     created_by="agent-hash",
                 )

@@ -10,6 +10,8 @@ from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import C
 from okto_pulse.community.adapters.sqlalchemy_spec_dependency import CommunitySqlAlchemySpecDependency
 from okto_pulse.core.domain.enums import SpecStatus
 from okto_pulse.core.domain.realm import RealmScope
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+from okto_pulse.core.domain.execution_contract import new_execution_contract
 from okto_pulse.core.ports.application_persistence import register_application_persistence_port
 from okto_pulse.core.ports.relational_application import register_relational_application_adapter
 from okto_pulse.core.services.card_errors import CardOperationError
@@ -18,6 +20,20 @@ from okto_pulse.community.adapters.sqlalchemy_spec_resource_propagation import C
 from okto_pulse.core.ports.spec_resource_propagation import register_spec_resource_propagation_store
 from okto_pulse.core.services.spec_resource_propagation import SpecResourcePropagationService
 from okto_pulse.core.domain.enums import CardStatus, CardType
+
+
+def native_spec(*, id, **fields):
+    return Spec(
+        id=id, **fields,
+        architecture_adoption=ArchitectureAdoptionScope(
+            board_id=fields["board_id"], spec_id=id, adopted_in_edition=1,
+            actor_id=fields["created_by"], inherited_resource_ids=(),
+        ).model_dump(mode="json"),
+        execution_contract=new_execution_contract(
+            board_id=fields["board_id"], spec_id=id, edition=1,
+            actor_id=fields["created_by"], origin="new_spec",
+        ),
+    )
 
 
 @pytest.mark.asyncio
@@ -34,8 +50,8 @@ async def test_normal_content_fence_revalidates_after_initial_read(tmp_path, mon
             await connection.run_sync(Base.metadata.create_all)
         async with sessions() as seed:
             seed.add(Board(id="board", realm_id=RealmScope.local().realm_id, name="Board", owner_id="owner"))
-            seed.add_all([Spec(id="spec", board_id="board", title="Open", status=SpecStatus.IN_PROGRESS, created_by="owner"),
-                          Spec(id="other", board_id="board", title="Other", status=SpecStatus.DONE, created_by="owner")])
+            seed.add_all([native_spec(id="spec", board_id="board", title="Open", status=SpecStatus.IN_PROGRESS, created_by="owner"),
+                          native_spec(id="other", board_id="board", title="Other", status=SpecStatus.DONE, created_by="owner")])
             seed.add(Card(id="card", board_id="board", spec_id="spec", title="Original", created_by="owner"))
             await seed.commit()
 
@@ -100,7 +116,7 @@ async def test_real_resource_projection_preserves_freezes_and_eligible_targets(t
         async with sessions() as seed:
             seed.add(Board(id="board", realm_id=RealmScope.local().realm_id, name="Board", owner_id="owner",
                 settings={"auto_derive_spec_resources_enabled": True, "auto_derive_spec_resource_types": ["mockup"]}))
-            seed.add(Spec(id="spec", board_id="board", title="Spec", status=spec_status, created_by="owner"))
+            seed.add(native_spec(id="spec", board_id="board", title="Spec", status=spec_status, created_by="owner"))
             seed.add(Card(id="card", board_id="board", spec_id="spec", title="Task", card_type=card_type,
                 status=status, created_by="owner", screen_mockups=[{"id": "historical", "title": "Preserved"}]))
             await seed.commit()
