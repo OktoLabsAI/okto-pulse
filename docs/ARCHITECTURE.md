@@ -123,7 +123,7 @@ bridge budgets are zero. If an adapter needs a missing Core capability, add a
 public port and keep the policy in Core; do not add an exception or duplicate
 the policy in Community.
 
-Bootstrap, schema migrations, CLI and seed paths must stay off
+Fresh-install admission, CLI and seed paths must stay off
 `core.models.db`; they use Community-owned row/SQL adapters or public facades.
 The F13 provenance registry additionally proves that representative relational
 and graph adapters are locally defined Community symbols implementing public
@@ -154,8 +154,9 @@ Registration flow:
 - `register_and_freeze_community_resource_catalog()` and
   `CommunityCapabilityDescriptorSource` extend the core MCP/resource metadata
   without importing Community from core.
-- `CommunityRelationalSchemaMigrator` and `CommunityDataBootstrapper` are the
-  initialization adapters consumed by `okto-pulse init` and startup.
+- `CommunityRelationalSchemaLifecycleOrchestrator` admits the current format
+  before initialization. New stores receive the final schema and current seeds;
+  incompatible stores are refused before writes, without conversion or deletion.
 
 Adapter source map:
 
@@ -165,12 +166,10 @@ Adapter source map:
 - Scheduler and workers: `community/adapters/scheduler.py` and
   `community/adapters/workers.py`.
 - Auth/storage/init: `community/auth.py`, `community/adapters/storage.py`,
-  `community/adapters/relational_schema_migrator.py` and
-  `community/adapters/data_bootstrapper.py`;
-  `community/adapters/data_bootstrap_steps.py` owns the local bootstrap step
-  implementations.
-- Relational schema lifecycle: `community/adapters/relational_schema_lifecycle.py`
-  and `community/adapters/relational_schema_steps.py`.
+  `community/adapters/current_relational_schema.py`,
+  `community/adapters/current_schema_guards.py` and
+  `community/adapters/current_data_seeds.py`.
+- Relational schema lifecycle: `community/adapters/relational_schema_lifecycle.py`.
 - Relational runtime: `community/adapters/sqlalchemy_database.py`,
   `community/adapters/sqlalchemy_unit_of_work.py`,
   `community/adapters/sqlalchemy_repositories.py`,
@@ -261,19 +260,10 @@ Adapter source map:
 - Bounded Health observation: `community/adapters/filesystem_observation.py`,
   `community/adapters/source_observation_budget.py` and
   `community/adapters/health_route_observation.py`.
-- Delivery migration and progress/resume reads: `community/adapters/delivery_*`.
-- Historical section grants and authorized context reads:
-  `community/adapters/historical_*`.
-- Offline retirement preparation, checkpoints, projection reconciliation and
-  activation: `community/adapters/retirement_*`,
-  `community/adapters/sprint_retirement_*`,
-  `community/adapters/sprint_work_retirement.py`,
-  `community/adapters/card_validation_retirement.py`,
-  `community/adapters/context_disposition_retirement.py`,
-  `community/adapters/global_outbox_retirement.py`,
-  `community/adapters/work_retirement_sql.py`,
-  `community/adapters/legacy_sprint_values.py` and
-  `community/adapters/migration_runtime_fence.py`.
+- Current Delivery progress/resume reads: `community/adapters/delivery_*`;
+  schema admission lives in `community/adapters/sqlite_delivery_contract.py`.
+- Native signed-evidence recovery: `community/adapters/evidence_recovery.py`;
+  active-runtime recovery fencing: `community/adapters/recovery_runtime_fence.py`.
 - Joint relational/storage/native recovery snapshots and exact graph inventory:
   `community/adapters/joint_recovery_snapshot.py`,
   `community/adapters/relational_recovery_snapshot.py`,
