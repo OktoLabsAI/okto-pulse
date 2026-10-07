@@ -22,13 +22,7 @@ from okto_pulse.community.adapters.grafx_database_pool import (
     GrafxDatabasePoolError,
 )
 from okto_pulse.community.adapters.graph_backend_binding import (
-    BOARD_BINDING_FILENAME,
     CommunityGraphBackendBindingStore,
-)
-from okto_pulse.community.adapters.graph_rollout_journal import (
-    CommunityGraphRolloutJournal,
-    GraphRolloutJournalConflict,
-    RolloutEndpointIdentity,
 )
 
 PAGE_SIZE = 8192
@@ -175,22 +169,6 @@ def test_schema_manager_receives_the_same_scoped_reader_scheduler(
     assert scope.__func__ is composition._GrafxBoardAccess.read_database_scope
 
 
-def _publish_legacy_binding(
-    bundle: composition.CommunityRoutedBoardGraphComposition,
-    board_id: str,
-) -> Path:
-    path = bundle.binding_store.board_ladybug_path(board_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(b"legacy")
-    bundle.binding_store.initialize_board_binding(
-        board_id=board_id,
-        backend="ladybug",
-        generation="legacy-1",
-        physical_path=path,
-    )
-    return path
-
-
 def _make_windows_junction(link: Path, target: Path) -> None:
     if os.name != "nt":
         pytest.skip("Windows junction semantics are required")
@@ -204,42 +182,7 @@ def _make_windows_junction(link: Path, target: Path) -> None:
         pytest.skip(f"junction creation unavailable: {completed.stderr.strip()}")
 
 
-def _leave_erased_rollout_with_unbound_legacy_residue(
-    bundle: composition.CommunityRoutedBoardGraphComposition,
-    board_id: str,
-) -> tuple[CommunityGraphRolloutJournal, Path, Path]:
-    source_path = _publish_legacy_binding(bundle, board_id)
-    source = bundle.binding_store.acquire_board_binding(board_id)
-    candidate_path = bundle.binding_store.board_grafx_path(
-        board_id,
-        "rollout-candidate-1",
-    )
-    journal = CommunityGraphRolloutJournal(bundle.binding_store.root, board_id)
-    rollout = journal.start(
-        source=RolloutEndpointIdentity(
-            backend="ladybug",
-            binding_sha256=source.binding_sha256,
-            generation=source.generation,
-            physical_path=source_path,
-        ),
-        candidate=RolloutEndpointIdentity(
-            backend="grafx",
-            binding_sha256=None,
-            generation="rollout-candidate-1",
-            physical_path=candidate_path,
-            page_size=PAGE_SIZE,
-        ),
-    )
-    journal.close_for_privacy(expected_version=rollout.state_version)
-    binding_path = source_path.parent / BOARD_BINDING_FILENAME
-    binding_path.unlink()
-    binding_lock = Path(f"{binding_path}.lock")
-    if binding_lock.exists():
-        binding_lock.unlink()
-    return journal, source_path, candidate_path
-
-
-def test_grafx_common_write_fence_closes_rollout_rollback_after_route_revalidation(
+def test_grafx_common_write_fence_revalidates_lease_and_route(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[object] = []
@@ -256,11 +199,6 @@ def test_grafx_common_write_fence_closes_rollout_rollback_after_route_revalidati
             ("revalidate", observed, require_physical)
         ),
     )
-    recorder = SimpleNamespace(
-        close_rollback_before_write_if_active=lambda *args: events.append(
-            ("close_rollback", *args)
-        )
-    )
     monkeypatch.setattr(
         composition,
         "revalidate_board_graph_write_lease",
@@ -272,7 +210,6 @@ def test_grafx_common_write_fence_closes_rollout_rollback_after_route_revalidati
         resolver,
         SimpleNamespace(),
         SimpleNamespace(),
-        recorder,
         configured_page_size=PAGE_SIZE,
         connect=None,
     )
@@ -283,11 +220,10 @@ def test_grafx_common_write_fence_closes_rollout_rollback_after_route_revalidati
         ("lease", "board-1", "schema_write"),
         ("resolve", "board-1", True),
         ("revalidate", snapshot, True),
-        ("close_rollback", "board-1", "a" * 64, "grafx"),
     ]
 
 
-def test_grafx_common_write_fence_never_closes_rollback_for_a_stale_route(
+def test_grafx_common_write_fence_rejects_stale_route(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     snapshot = SimpleNamespace(
@@ -295,7 +231,6 @@ def test_grafx_common_write_fence_never_closes_rollback_for_a_stale_route(
         page_size=PAGE_SIZE,
         binding_sha256="b" * 64,
     )
-    recorder_calls: list[object] = []
 
     def reject_stale_route(_snapshot: object, *, require_physical: bool) -> None:
         assert require_physical is True
@@ -308,9 +243,6 @@ def test_grafx_common_write_fence_never_closes_rollback_for_a_stale_route(
         current_board_snapshot=lambda _board_id, require_physical: snapshot,
         revalidate_snapshot=reject_stale_route,
     )
-    recorder = SimpleNamespace(
-        close_rollback_before_write_if_active=lambda *args: recorder_calls.append(args)
-    )
     monkeypatch.setattr(
         composition,
         "revalidate_board_graph_write_lease",
@@ -320,15 +252,12 @@ def test_grafx_common_write_fence_never_closes_rollback_for_a_stale_route(
         resolver,
         SimpleNamespace(),
         SimpleNamespace(),
-        recorder,
         configured_page_size=PAGE_SIZE,
         connect=None,
     )
 
     with pytest.raises(GraphCapabilityUnavailable):
         access.write_fence("board-1", "schema_write")
-
-    assert recorder_calls == []
 
 
 def test_first_reader_join_checkpoints_transparently_when_wal_is_ahead(
@@ -391,9 +320,6 @@ def test_first_reader_join_checkpoints_transparently_when_wal_is_ahead(
             (observed, require_physical)
         ),
     )
-    recorder = SimpleNamespace(
-        close_rollback_before_write_if_active=lambda *_args: None
-    )
     monkeypatch.setattr(
         composition,
         "revalidate_board_graph_write_lease",
@@ -404,7 +330,6 @@ def test_first_reader_join_checkpoints_transparently_when_wal_is_ahead(
         resolver,
         WriterPool(),
         SimpleNamespace(),
-        recorder,
         configured_page_size=PAGE_SIZE,
         connect=None,
         read_pools=(read_pool,),
@@ -417,67 +342,6 @@ def test_first_reader_join_checkpoints_transparently_when_wal_is_ahead(
     assert checkpoints == ["checkpoint"]
     assert admissions[-1][1] == "resolve_routed_board_grafx_read_database"
     assert "grafx_read_join_checkpoint" in revalidations
-
-
-def test_composed_rollout_privacy_keeps_tombstone_until_finalized(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    root = tmp_path / "kg"
-    bundle = _build(root, _GrafxConnector(), board_backend="grafx")
-    source_path = _publish_legacy_binding(bundle, "board-erase")
-    source = bundle.binding_store.acquire_board_binding("board-erase")
-    journal = CommunityGraphRolloutJournal(root, "board-erase")
-    journal.start(
-        source=RolloutEndpointIdentity(
-            backend="ladybug",
-            binding_sha256=source.binding_sha256,
-            generation=source.generation,
-            physical_path=source_path,
-        ),
-        candidate=RolloutEndpointIdentity(
-            backend="grafx",
-            binding_sha256=None,
-            generation="rollout-candidate-1",
-            physical_path=bundle.binding_store.board_grafx_path(
-                "board-erase", "rollout-candidate-1"
-            ),
-            page_size=PAGE_SIZE,
-        ),
-    )
-    monkeypatch.setattr(
-        composition,
-        "revalidate_board_graph_write_lease",
-        lambda _board_id, failure_phase: None,
-    )
-    invalidate_rollout = bundle.graph_runtime_store._rollout_erase_unguarded
-    finalize_rollout = bundle.graph_runtime_store._rollout_finalize_erase_unguarded
-    assert invalidate_rollout is not None
-    assert finalize_rollout is not None
-
-    first = invalidate_rollout("board-erase", reason="privacy")
-    retry = invalidate_rollout("board-erase", reason="privacy_retry")
-
-    assert first.status == "erased"
-    assert first.removed is True
-    assert retry.status == "not_found"
-    assert retry.not_found is True
-    assert journal.read().state == "erased"
-    assert journal.privacy_storage_present() is True
-    with pytest.raises(GraphRolloutJournalConflict) as refused:
-        journal.prepare_if_active(
-            family="upsert_node",
-            payload={"payload": "redacted"},
-            expected_binding_sha256=source.binding_sha256,
-            backend="ladybug",
-        )
-    assert refused.value.details["reason"] == "rollout_not_writable"
-
-    finalized = finalize_rollout("board-erase", reason="privacy")
-
-    assert finalized.status == "erased"
-    assert finalized.removed is True
-    assert journal.privacy_storage_present() is False
 
 
 def test_build_is_read_only_and_every_board_port_shares_one_route_identity(
@@ -802,3 +666,36 @@ async def test_transaction_terminal_close_is_safe_in_copied_worker_context(
 
     assert bundle.grafx_pool.pin_count(snapshot.active_path) == 0
     assert bundle.grafx_pool.close(snapshot.active_path) is True
+
+
+@pytest.mark.parametrize("kind", ["directory", "file"])
+@pytest.mark.parametrize("operation", ["inspect", "initialize"])
+def test_retired_rollout_storage_is_refused_without_writes(tmp_path: Path, kind: str, operation: str) -> None:
+    root = tmp_path / "kg"
+    connector = _GrafxConnector()
+    bundle = _build(root, connector, board_backend="grafx")
+    retired = root / "boards" / "board-old" / "rollout"
+    retired.parent.mkdir(parents=True)
+    if kind == "directory":
+        retired.mkdir()
+        (retired / "opaque.bin").write_bytes(b"untrusted retired storage")
+    else:
+        retired.write_bytes(b"not a journal")
+
+    def inventory():
+        return {str(p.relative_to(root)): p.read_bytes() if p.is_file() else None
+                for p in root.rglob("*")}
+
+    before = inventory()
+    with pytest.raises(GraphCapabilityUnavailable) as raised:
+        if operation == "inspect":
+            bundle.binding_store.inspect_board_binding("board-old")
+        else:
+            bundle.binding_store.initialize_board_binding(
+                board_id="board-old", backend="grafx", generation="generation-1",
+                physical_path=bundle.binding_store.board_grafx_path("board-old", "generation-1"),
+                page_size=PAGE_SIZE,
+            )
+    assert raised.value.details["reason"] == "graph_storage_format_incompatible"
+    assert inventory() == before
+    assert connector.calls == []

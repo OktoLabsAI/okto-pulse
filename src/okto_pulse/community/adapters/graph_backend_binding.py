@@ -528,6 +528,20 @@ class CommunityGraphBackendBindingStore:
         finally:
             self._publication_lock.release()
 
+    def require_current_board_storage(self, board_id: str) -> None:
+        """Refuse retired rollout bytes without reading, converting or deleting them."""
+        safe_id = self._validated_segment(board_id, field_name="board_id")
+        board_root = self._root / "boards" / safe_id
+        retired_rollout = board_root / "rollout"
+        # lexists also catches broken aliases; no journal contents are trusted.
+        if os.path.lexists(retired_rollout):
+            raise _capability(
+                "graph_storage_format_incompatible",
+                operation="admit_current_board_graph_storage",
+                scope="board",
+                scope_id=safe_id,
+            )
+
     def board_ladybug_path(self, board_id: str) -> Path:
         safe_board_id = self._validated_segment(board_id, field_name="board_id")
         return self._root / "boards" / safe_board_id / "graph.lbug"
@@ -840,6 +854,8 @@ class CommunityGraphBackendBindingStore:
         database: object | None,
         operation: str,
     ) -> tuple[CommunityGraphBackendBinding, dict[str, object]]:
+        if scope == "board":
+            self.require_current_board_storage(scope_id)
         try:
             safe_backend = _validate_backend(backend)
             safe_generation = _validate_portable_segment(
@@ -1095,6 +1111,8 @@ class CommunityGraphBackendBindingStore:
         scope: GraphBindingScope,
         scope_id: str,
     ) -> CommunityGraphBackendBinding:
+        if scope == "board":
+            self.require_current_board_storage(scope_id)
         try:
             path.lstat()
             if is_filesystem_alias(path):

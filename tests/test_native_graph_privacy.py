@@ -1,4 +1,4 @@
-"""M-PULSE-7 privacy ordering across rollout and physical graph storage."""
+"""Native graph privacy fences, physical receipts and retry semantics."""
 
 from __future__ import annotations
 
@@ -98,9 +98,7 @@ def _facade(
     resolver: _Resolver,
     events: list[str],
     active: list[bool],
-    rollout_erase: Any = None,
-    rollout_finalize: Any = None,
-    rollout_write_fence: Any = None,
+    revalidate_write_fence: Any = None,
     grafx_erase: Any,
     grafx_purge: Any = None,
 ) -> CommunityRoutedGraphRuntimeStore:
@@ -129,9 +127,7 @@ def _facade(
             )
         ),
         grafx_erase_unguarded=grafx_erase,
-        rollout_erase_unguarded=rollout_erase,
-        rollout_finalize_erase_unguarded=rollout_finalize,
-        rollout_write_fence=rollout_write_fence,
+        revalidate_write_fence=revalidate_write_fence,
     )
 
 
@@ -162,7 +158,7 @@ def test_purge_write_fence_runs_after_route_selection_before_physical_purge() ->
         resolver=resolver,
         events=events,
         active=active,
-        rollout_write_fence=write_fence,
+        revalidate_write_fence=write_fence,
         grafx_erase=lambda *_args, **_kwargs: None,
         grafx_purge=grafx_purge,
     )
@@ -193,7 +189,7 @@ def test_purge_write_fence_failure_blocks_physical_purge() -> None:
     ) -> None:
         assert active == [True]
         events.append("write_fence")
-        raise RuntimeError("rollout write fence refused purge")
+        raise RuntimeError("write fence refused purge")
 
     def forbidden_purge(*_args: object, **_kwargs: object) -> GraphPurgeResult:
         raise AssertionError("physical purge started after write-fence failure")
@@ -202,7 +198,7 @@ def test_purge_write_fence_failure_blocks_physical_purge() -> None:
         resolver=resolver,
         events=events,
         active=active,
-        rollout_write_fence=failing_write_fence,
+        revalidate_write_fence=failing_write_fence,
         grafx_erase=lambda *_args, **_kwargs: None,
         grafx_purge=forbidden_purge,
     )
@@ -214,207 +210,88 @@ def test_purge_write_fence_failure_blocks_physical_purge() -> None:
     assert not active
 
 
-def test_rollout_erasure_runs_first_and_aggregates_storage_receipts() -> None:
-    events: list[str] = []
-    active: list[bool] = []
+@pytest.mark.parametrize("removed", [False, True])
+def test_physical_erasure_normalizes_receipt(removed: bool) -> None:
+    events, active = [], []
     resolver = _Resolver(_route(), events=events, active=active)
 
-    def erase(name: str, *, removed: bool):
-        def operation(board_id: str, *, reason: str) -> GraphPurgeResult:
-            assert board_id == _BOARD_ID
-            assert active == [True]
-            events.append(name)
-            return _receipt(reason=reason, backend=name, removed=removed)
+    def erase(board_id, *, reason):
+        assert board_id == _BOARD_ID
+        assert active == [True]
+        events.append("grafx")
+        return _receipt(reason=reason, backend="grafx", removed=removed)
 
-        return operation
-
-    facade = _facade(
-        resolver=resolver,
-        events=events,
-        active=active,
-        rollout_erase=erase("rollout", removed=True),
-        grafx_erase=erase("grafx", removed=False),
-    )
-
-    result = facade.erase_board_graph(_BOARD_ID, reason="right_to_erasure")
-
-    assert result == GraphPurgeResult(
-        board_id=_BOARD_ID,
-        removed=True,
-        not_found=False,
-        status="erased",
-        reason="right_to_erasure",
-        backend=None,
-        error_code=None,
-    )
-    assert events == [
-        "window_enter",
-        "rollout",
-        "inspect",
-        "grafx",
-        "window_exit",
-    ]
+    facade = _facade(resolver=resolver, events=events, active=active, grafx_erase=erase)
+    result = facade.erase_board_graph(_BOARD_ID, reason="privacy")
+    assert result.removed is removed
+    assert result.not_found is (not removed)
+    assert result.status == ("erased" if removed else "not_found")
+    assert result.reason == "privacy"
+    assert events == ["window_enter", "inspect", "grafx", "window_exit"]
     assert not active
 
 
 @pytest.mark.parametrize("failure_mode", ["receipt", "exception"])
-def test_rollout_erasure_failure_blocks_every_physical_backend(
-    failure_mode: str,
-) -> None:
-    events: list[str] = []
-    active: list[bool] = []
+def test_failed_physical_erasure_is_not_reported_as_absent(failure_mode: str) -> None:
+    events, active = [], []
     resolver = _Resolver(_route(), events=events, active=active)
 
-    def rollout_erase(board_id: str, *, reason: str) -> GraphPurgeResult:
+    def erase(board_id, *, reason):
         assert board_id == _BOARD_ID
         assert active == [True]
-        events.append("rollout")
+        events.append("grafx")
         if failure_mode == "exception":
-            raise OSError("rollout residue remained")
-        return _receipt(
-            reason=reason,
-            backend="rollout",
-            removed=False,
-            failed=True,
-        )
+            raise OSError("physical residue remained")
+        return _receipt(reason=reason, backend="grafx", removed=False, failed=True)
 
-    def forbidden_backend(*_args: object, **_kwargs: object) -> GraphPurgeResult:
-        raise AssertionError("physical erasure started after rollout failure")
-
-    facade = _facade(
-        resolver=resolver,
-        events=events,
-        active=active,
-        rollout_erase=rollout_erase,
-        grafx_erase=forbidden_backend,
-    )
-
+    facade = _facade(resolver=resolver, events=events, active=active, grafx_erase=erase)
     result = facade.erase_board_graph(_BOARD_ID, reason="privacy")
-
     assert result.status == "failed"
     assert result.error_code == "privacy_erase_incomplete"
-    assert result.removed is False
-    assert result.not_found is False
-    assert resolver.inspect_calls == 0
-    assert events == ["window_enter", "rollout", "window_exit"]
+    assert not result.removed and not result.not_found
+    assert events == ["window_enter", "inspect", "grafx", "window_exit"]
     assert not active
 
 
-def test_retry_after_rollout_absence_still_sweeps_physical_storage() -> None:
-    events: list[str] = []
-    active: list[bool] = []
+def test_missing_binding_retry_still_checks_physical_storage() -> None:
+    events, active = [], []
     resolver = _Resolver(_missing_binding(), events=events, active=active)
-    present = {"rollout": True, "grafx": True}
+    present = True
 
-    def erase(name: str):
-        def operation(board_id: str, *, reason: str) -> GraphPurgeResult:
-            assert board_id == _BOARD_ID
-            assert active == [True]
-            events.append(name)
-            removed = present[name]
-            present[name] = False
-            return _receipt(reason=reason, backend=name, removed=removed)
+    def erase(board_id, *, reason):
+        nonlocal present
+        assert board_id == _BOARD_ID
+        assert active == [True]
+        events.append("grafx")
+        removed, present = present, False
+        return _receipt(reason=reason, backend="grafx", removed=removed)
 
-        return operation
-
-    facade = _facade(
-        resolver=resolver,
-        events=events,
-        active=active,
-        rollout_erase=erase("rollout"),
-        grafx_erase=erase("grafx"),
-    )
-
+    facade = _facade(resolver=resolver, events=events, active=active, grafx_erase=erase)
     first = facade.erase_board_graph(_BOARD_ID, reason="privacy")
     retry = facade.erase_board_graph(_BOARD_ID, reason="privacy_retry")
-
-    assert first.status == "erased"
-    assert first.removed is True
-    assert retry.status == "not_found"
-    assert retry.not_found is True
-    assert present == {"rollout": False, "grafx": False}
-    assert events == [
-        "window_enter",
-        "rollout",
-        "inspect",
-        "grafx",
-        "window_exit",
-        "window_enter",
-        "rollout",
-        "inspect",
-        "grafx",
-        "window_exit",
-    ]
+    assert first.status == "erased" and first.removed
+    assert retry.status == "not_found" and retry.not_found
+    assert events == ["window_enter", "inspect", "grafx", "window_exit"] * 2
     assert not active
 
 
-def test_partial_physical_failure_keeps_tombstone_until_retry_finalizes() -> None:
-    events: list[str] = []
-    active: list[bool] = []
+def test_partial_physical_failure_can_be_retried() -> None:
+    events, active = [], []
     resolver = _Resolver(_route(), events=events, active=active)
-    tombstone = {"present": False}
-    grafx_attempts = 0
+    attempts = 0
 
-    def invalidate(board_id: str, *, reason: str) -> GraphPurgeResult:
+    def erase(board_id, *, reason):
+        nonlocal attempts
         assert board_id == _BOARD_ID
-        events.append("invalidate")
-        changed = not tombstone["present"]
-        tombstone["present"] = True
-        return _receipt(
-            reason=reason,
-            backend="rollout",
-            removed=changed,
-        )
+        assert active == [True]
+        attempts += 1
+        return _receipt(reason=reason, backend="grafx",
+                        removed=attempts > 1, failed=attempts == 1)
 
-    def grafx_erase(board_id: str, *, reason: str) -> GraphPurgeResult:
-        nonlocal grafx_attempts
-        assert tombstone["present"]
-        events.append("grafx")
-        grafx_attempts += 1
-        return _receipt(
-            reason=reason,
-            backend="grafx",
-            removed=grafx_attempts > 1,
-            failed=grafx_attempts == 1,
-        )
-
-    def finalize(board_id: str, *, reason: str) -> GraphPurgeResult:
-        assert board_id == _BOARD_ID
-        assert tombstone["present"]
-        assert grafx_attempts == 2
-        events.append("finalize")
-        tombstone["present"] = False
-        return _receipt(reason=reason, backend="rollout", removed=True)
-
-    facade = _facade(
-        resolver=resolver,
-        events=events,
-        active=active,
-        rollout_erase=invalidate,
-        rollout_finalize=finalize,
-        grafx_erase=grafx_erase,
-    )
-
+    facade = _facade(resolver=resolver, events=events, active=active, grafx_erase=erase)
     first = facade.erase_board_graph(_BOARD_ID, reason="privacy")
     assert first.status == "failed"
     assert first.error_code == "privacy_erase_incomplete"
-    assert tombstone["present"] is True
-    assert "finalize" not in events
-
     retry = facade.erase_board_graph(_BOARD_ID, reason="privacy_retry")
-    assert retry.status == "erased"
-    assert retry.error_code is None
-    assert tombstone["present"] is False
-    assert events == [
-        "window_enter",
-        "invalidate",
-        "inspect",
-        "grafx",
-        "window_exit",
-        "window_enter",
-        "invalidate",
-        "inspect",
-        "grafx",
-        "finalize",
-        "window_exit",
-    ]
+    assert retry.status == "erased" and retry.error_code is None
+    assert attempts == 2 and not active

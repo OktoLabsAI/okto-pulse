@@ -93,20 +93,11 @@ async def test_restoration_refuses_concurrent_changes(graph):
     assert state(db) == before
 
 
-async def test_routed_capture_exposes_capability_and_records_before_mutation(graph):
-    from okto_pulse.community.adapters.graph_rollout_capture import CapturedGraphTransactionScope
-    from test_m7_graph_rollout_capture import _Recorder
+async def test_native_transaction_exposes_invalidation_capability(graph):
     db, provider = graph
-    events = []
-    delegate = await provider.begin(BOARD)
-    scope = CapturedGraphTransactionScope(delegate, recorder=_Recorder(events), board_id=BOARD,
-        backend='grafx', binding_sha256='a' * 64)
+    scope = await provider.begin(BOARD)
     assert isinstance(scope, LearningAssociationInvalidationTransaction)
     receipt = scope.snapshot_learning_invalidation('old', 'one')
-    assert events == []
     scope.invalidate_learning_association(receipt)
-    assert [row[0] for row in events] == ['prepare']
-    assert events[0][1]['family'] == 'invalidate_learning_association'
     await scope.commit()
-    assert events[-1][0] == 'committed'
     assert len(state(db)[1]) == 2

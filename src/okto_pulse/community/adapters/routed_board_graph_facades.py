@@ -9,7 +9,7 @@ backend settings or falls back to the other provider.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from typing import Any, Protocol, TypeVar
@@ -39,10 +39,7 @@ from okto_pulse.core.kg.interfaces.graph_store import (
 )
 from okto_pulse.core.kg.interfaces.storage_ref import StorageRef
 
-from okto_pulse.community.adapters.graph_rollout_capture import (
-    BoardRolloutMutationRecorder,
-    invoke_captured_auto_commit,
-)
+
 from okto_pulse.community.adapters.graph_route_resolver import (
     CommunityGraphRouteResolver,
     CommunityGraphRouteSnapshot,
@@ -234,7 +231,6 @@ class CommunityRoutedSemanticGraphStore:
         grafx: SemanticGraphStore,
         operation_window: BoardGraphOperationWindowFactory,
         revalidate_write_fence: BoardGraphWriteFenceRevalidator | None = None,
-        mutation_recorder: BoardRolloutMutationRecorder | None = None,
     ) -> None:
         self._resolver = resolver
         self._grafx = grafx
@@ -242,7 +238,6 @@ class CommunityRoutedSemanticGraphStore:
         self._revalidate_write_fence = revalidate_write_fence or (
             lambda _board_id, _phase: None
         )
-        self._mutation_recorder = mutation_recorder
 
     def _provider(self, board_id: str) -> SemanticGraphStore:
         snapshot = self._resolver.acquire_board_route(board_id)
@@ -272,26 +267,12 @@ class CommunityRoutedSemanticGraphStore:
         board_id: str,
         *,
         phase: str,
-        family: str,
-        args: Sequence[Any],
-        kwargs: Mapping[str, Any],
         operation: Callable[[SemanticGraphStore], _ResultT],
     ) -> _ResultT:
         with self._operation_window(board_id):
-            snapshot, provider = self._mutation_provider(board_id, phase=phase)
-            recorder = self._mutation_recorder
-            if recorder is None:
-                return operation(provider)
-            return invoke_captured_auto_commit(
-                lambda: operation(provider),
-                recorder=recorder,
-                board_id=board_id,
-                backend=snapshot.backend,
-                binding_sha256=snapshot.binding_sha256,
-                family=family,
-                args=args,
-                kwargs=kwargs,
-            )
+            _snapshot, provider = self._mutation_provider(board_id, phase=phase)
+            return operation(provider)
+
 
     def find_by_topic(
         self,
@@ -504,9 +485,6 @@ class CommunityRoutedSemanticGraphStore:
         self._invoke_mutation(
             board_id,
             phase="graph_store_create_node",
-            family="create_node",
-            args=(node_type, node_id, attrs),
-            kwargs={},
             operation=lambda provider: provider.create_node(
                 board_id, node_type, node_id, attrs
             ),
@@ -526,9 +504,6 @@ class CommunityRoutedSemanticGraphStore:
         self._invoke_mutation(
             board_id,
             phase="graph_store_create_edge",
-            family="create_edge",
-            args=(edge_type, from_id, to_id, attrs),
-            kwargs={"from_type": from_type, "to_type": to_type},
             operation=lambda provider: provider.create_edge(
                 board_id,
                 edge_type,
@@ -550,9 +525,6 @@ class CommunityRoutedSemanticGraphStore:
         self._invoke_mutation(
             board_id,
             phase="graph_store_update_node",
-            family="update_node",
-            args=(node_type, node_id, attrs),
-            kwargs={},
             operation=lambda provider: provider.update_node(
                 board_id, node_type, node_id, attrs
             ),
@@ -571,13 +543,6 @@ class CommunityRoutedSemanticGraphStore:
         self._invoke_mutation(
             board_id,
             phase="graph_store_mark_superseded",
-            family="mark_superseded",
-            args=(node_type, node_id),
-            kwargs={
-                "superseded_by": superseded_by,
-                "superseded_at": superseded_at,
-                "revocation_reason": revocation_reason,
-            },
             operation=lambda provider: provider.mark_superseded(
                 board_id,
                 node_type,
@@ -624,9 +589,6 @@ class CommunityRoutedSemanticGraphStore:
         self._invoke_mutation(
             board_id,
             phase="graph_store_increment_attestation",
-            family="increment_attestation",
-            args=(node_type, node_id),
-            kwargs={"attested_at": attested_at},
             operation=lambda provider: provider.increment_attestation(
                 board_id, node_type, node_id, attested_at=attested_at
             ),
@@ -636,9 +598,6 @@ class CommunityRoutedSemanticGraphStore:
         return self._invoke_mutation(
             board_id,
             phase="graph_store_delete_nodes_by_session",
-            family="delete_nodes_by_session",
-            args=(session_id,),
-            kwargs={},
             operation=lambda provider: provider.delete_nodes_by_session(
                 board_id, session_id
             ),
@@ -648,9 +607,6 @@ class CommunityRoutedSemanticGraphStore:
         return self._invoke_mutation(
             board_id,
             phase="graph_store_delete_edges_by_session",
-            family="delete_edges_by_session",
-            args=(session_id,),
-            kwargs={},
             operation=lambda provider: provider.delete_edges_by_session(
                 board_id, session_id
             ),
@@ -660,9 +616,6 @@ class CommunityRoutedSemanticGraphStore:
         self._invoke_mutation(
             board_id,
             phase="graph_store_bootstrap",
-            family="bootstrap",
-            args=(),
-            kwargs={},
             operation=lambda provider: provider.bootstrap(board_id),
         )
 
@@ -852,9 +805,7 @@ class CommunityRoutedGraphRuntimeStore:
         mutation_window: BoardStorageMutationWindowFactory,
         grafx_purge_unguarded: _BoardMutationOperation,
         grafx_erase_unguarded: _BoardMutationOperation,
-        rollout_erase_unguarded: _BoardMutationOperation | None = None,
-        rollout_finalize_erase_unguarded: _BoardMutationOperation | None = None,
-        rollout_write_fence: Callable[[str, str, CommunityGraphRouteSnapshot], None]
+        revalidate_write_fence: Callable[[str, str, CommunityGraphRouteSnapshot], None]
         | None = None,
     ) -> None:
         self._resolver = resolver
@@ -863,9 +814,7 @@ class CommunityRoutedGraphRuntimeStore:
         self._mutation_window = mutation_window
         self._grafx_purge_unguarded = grafx_purge_unguarded
         self._grafx_erase_unguarded = grafx_erase_unguarded
-        self._rollout_erase_unguarded = rollout_erase_unguarded
-        self._rollout_finalize_erase_unguarded = rollout_finalize_erase_unguarded
-        self._rollout_write_fence = rollout_write_fence
+        self._revalidate_write_fence = revalidate_write_fence
 
     @staticmethod
     def _aggregate_privacy_results(
@@ -874,7 +823,7 @@ class CommunityRoutedGraphRuntimeStore:
         reason: str,
         results: Sequence[GraphPurgeResult],
     ) -> GraphPurgeResult:
-        """Fold rollout plus physical erasure receipts into the stable contract."""
+        """Normalize physical erasure receipts into the stable contract."""
 
         removed = any(result.removed for result in results)
         if not all(_erase_succeeded(result) for result in results):
@@ -961,7 +910,7 @@ class CommunityRoutedGraphRuntimeStore:
                 board_id=board_id,
                 grafx=self._grafx_purge_unguarded,
             )
-            write_fence = self._rollout_write_fence
+            write_fence = self._revalidate_write_fence
             if write_fence is not None:
                 write_fence(board_id, "purge_board_graph", snapshot)
             return operation(board_id, reason=reason)
@@ -969,24 +918,6 @@ class CommunityRoutedGraphRuntimeStore:
     def erase_board_graph(self, board_id: str, *, reason: str) -> GraphPurgeResult:
         with self._mutation_window(board_id, phase="erase_board_graph"):
             results: list[GraphPurgeResult] = []
-            rollout_erase = self._rollout_erase_unguarded
-            if rollout_erase is not None:
-                try:
-                    rollout_result = rollout_erase(board_id, reason=reason)
-                except Exception as failure:  # noqa: BLE001 - fail closed before sweep
-                    rollout_result = _failed_erase_result(
-                        board_id,
-                        reason=reason,
-                        failure=failure,
-                    )
-                results.append(rollout_result)
-                if not _erase_succeeded(rollout_result):
-                    return self._aggregate_privacy_results(
-                        board_id,
-                        reason=reason,
-                        results=results,
-                    )
-
             try:
                 snapshot = self._resolver.inspect_board_route(board_id)
             except GraphCapabilityUnavailable as failure:
@@ -1001,9 +932,8 @@ class CommunityRoutedGraphRuntimeStore:
                 )
                 operations = (routed,)
 
-            # Privacy is an administrative all-storage sweep, not backend
-            # fallback.  Both physical backends are attempted under this one
-            # guard, including after a previous attempt removed the binding.
+            # Retry the native storage sweep under the same mutation guard,
+            # including after a previous attempt removed the binding.
             for operation in operations:
                 try:
                     results.append(operation(board_id, reason=reason))
@@ -1016,28 +946,6 @@ class CommunityRoutedGraphRuntimeStore:
                         )
                     )
 
-            # The durable ``erased`` rollout tombstone remains present until
-            # *both* physical stores have proved success.  This prevents a
-            # partial privacy sweep from silently re-enabling graph writes.
-            if not all(_erase_succeeded(result) for result in results):
-                return self._aggregate_privacy_results(
-                    board_id,
-                    reason=reason,
-                    results=results,
-                )
-
-            rollout_finalize = self._rollout_finalize_erase_unguarded
-            if rollout_finalize is not None:
-                try:
-                    results.append(rollout_finalize(board_id, reason=reason))
-                except Exception as failure:  # noqa: BLE001 - aggregate receipt
-                    results.append(
-                        _failed_erase_result(
-                            board_id,
-                            reason=reason,
-                            failure=failure,
-                        )
-                    )
             return self._aggregate_privacy_results(
                 board_id,
                 reason=reason,

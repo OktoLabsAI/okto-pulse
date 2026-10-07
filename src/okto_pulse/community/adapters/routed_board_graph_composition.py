@@ -87,10 +87,7 @@ from okto_pulse.community.adapters.grafx_schema_bootstrap import (
 from okto_pulse.community.adapters.graph_backend_binding import (
     CommunityGraphBackendBindingStore,
 )
-from okto_pulse.community.adapters.graph_rollout_journal import (
-    CommunityGraphRolloutJournal,
-    CommunityGraphRolloutMutationRecorder,
-)
+
 from okto_pulse.community.adapters.graph_route_resolver import (
     CommunityGraphRouteCandidate,
     CommunityGraphRouteResolver,
@@ -118,16 +115,7 @@ from okto_pulse.community.config import (
 
 GrafxConnector = Callable[..., Any]
 _SessionStatus = Literal["unresolved", "missing", "snapshot"]
-_ROLLOUT_ADMIN_MUTATION_PHASES = frozenset(
-    {
-        "graph_schema_ensure_bootstrapped",
-        "graph_lifecycle_rebuild",
-        "graph_lifecycle_purge",
-        "purge_board_graph",
-        "graph_recovery_grafx",
-    }
-)
-_ROLLOUT_INSPECT_ONLY_ADMIN_PHASES = frozenset(
+_INSPECT_ONLY_ADMIN_PHASES = frozenset(
     {"graph_recovery_grafx"}
 )
 
@@ -373,7 +361,6 @@ class _GrafxBoardAccess:
         resolver: CommunityBoardRouteSessionResolver,
         pool: CommunityGrafxDatabasePool,
         binding_store: CommunityGraphBackendBindingStore,
-        rollout_mutation_recorder: CommunityGraphRolloutMutationRecorder,
         *,
         configured_page_size: int,
         connect: GrafxConnector | None,
@@ -399,7 +386,6 @@ class _GrafxBoardAccess:
         self._read_join_lock = threading.Lock()
         self._next_read_pool = 0
         self.binding_store = binding_store
-        self.rollout_mutation_recorder = rollout_mutation_recorder
         self.configured_page_size = validate_grafx_page_size(configured_page_size)
         self.connect = connect
         self._health_observation: ContextVar[float | None] = ContextVar(
@@ -577,11 +563,7 @@ class _GrafxBoardAccess:
         revalidate_board_graph_write_lease(board_id, failure_phase=phase)
         snapshot = self._snapshot(board_id, require_physical=True)
         self.resolver.revalidate_snapshot(snapshot, require_physical=True)
-        self.rollout_mutation_recorder.close_rollback_before_write_if_active(
-            board_id,
-            snapshot.binding_sha256,
-            snapshot.backend,
-        )
+
 
     def runtime_fence(self, board_id: str, phase: str) -> None:
         self._refuse_health_mutation(board_id)
@@ -699,24 +681,10 @@ class CommunityRoutedBoardGraphComposition:
     observation_timeout: Callable[[], float | None] | None = None
 
     def _require_route_materialization_allowed(self, board_id: str) -> None:
-        """Refuse every route-creation door while privacy erasure is durable."""
+        """Refuse retired rollout storage before route creation or recovery."""
 
-        journal = CommunityGraphRolloutJournal(
-            self.binding_store.root,
-            board_id,
-        )
-        # Preserve the route resolver's existing empty-board and filesystem
-        # alias diagnostics when no rollout storage exists. ``lexists`` still
-        # sends a broken/aliased rollout root through the journal's fail-closed
-        # layout validation instead of treating it as finalized absence.
-        if not os.path.lexists(journal.rollout_root):
-            return
-        rollout = journal.read_if_exists()
-        if rollout is not None and rollout.state == "erased":
-            raise _route_failure(
-                "graph_rollout_privacy_tombstone_active",
-                board_id=board_id,
-            )
+        self.binding_store.require_current_board_storage(board_id)
+
 
     def initialize_board_route(self, board_id: str) -> CommunityGraphRouteSnapshot:
         """Create/adopt and publish one Board route, only when explicitly called."""
@@ -899,9 +867,7 @@ def build_community_routed_board_graph_composition(
         raise ValueError(
             "the shared Grafx pool constructor options must match settings"
         )
-    rollout_mutation_recorder = CommunityGraphRolloutMutationRecorder(
-        binding_store.root
-    )
+
     if getattr(resolver, "_board_backend", None) != board_backend:
         raise ValueError("shared resolver Board backend does not match settings")
     if getattr(resolver, "_global_backend", None) != global_backend:
@@ -947,7 +913,6 @@ def build_community_routed_board_graph_composition(
         resolver,
         grafx_pool,
         binding_store,
-        rollout_mutation_recorder,
         configured_page_size=configured_page_size,
         connect=connector,
         read_pools=grafx_read_pools,
@@ -961,15 +926,15 @@ def build_community_routed_board_graph_composition(
         # adoption door is rebound to the exact shared pool supplied here.
         resolver._open_grafx_database = access.open_for_adoption
 
-    def rollout_administrative_write_fence(
+    def administrative_write_fence(
         board_id: str,
         phase: str,
         snapshot: CommunityGraphRouteSnapshot | None = None,
     ) -> None:
-        """Fence non-logical mutations against a stale rollout checkpoint."""
+        """Fence native administrative mutations against stale route authority."""
 
         revalidate_board_graph_write_lease(board_id, failure_phase=phase)
-        require_physical = phase not in _ROLLOUT_INSPECT_ONLY_ADMIN_PHASES
+        require_physical = phase not in _INSPECT_ONLY_ADMIN_PHASES
         observed = snapshot or resolver.current_board_snapshot(
             board_id,
             require_physical=require_physical,
@@ -980,74 +945,9 @@ def build_community_routed_board_graph_composition(
             observed,
             require_physical=require_physical,
         )
-        if phase not in _ROLLOUT_ADMIN_MUTATION_PHASES:
-            return
-        if observed.backend == "grafx":
-            rollout_mutation_recorder.close_rollback_before_write_if_active(
-                board_id,
-                observed.binding_sha256,
-                "grafx",
-            )
-            return
+        if observed.backend != "grafx":
+            raise _route_failure("graph_backend_retired_files_preserved", board_id=board_id)
 
-        raise _route_failure("graph_backend_retired_files_preserved", board_id=board_id)
-
-    def invalidate_rollout_for_privacy(
-        board_id: str,
-        *,
-        reason: str,
-    ) -> GraphPurgeResult:
-        """Persist the privacy tombstone before either backend is touched."""
-
-        revalidate_board_graph_write_lease(
-            board_id,
-            failure_phase="privacy_invalidate_graph_rollout",
-        )
-        journal = CommunityGraphRolloutJournal(binding_store.root, board_id)
-        current = journal.read_if_exists()
-        if current is None:
-            return GraphPurgeResult(
-                board_id=board_id,
-                removed=False,
-                not_found=True,
-                status="not_found",
-                reason=reason,
-                backend="rollout",
-            )
-        already_invalidated = current.state == "erased"
-        journal.close_for_privacy(expected_version=current.state_version)
-        return GraphPurgeResult(
-            board_id=board_id,
-            removed=not already_invalidated,
-            not_found=already_invalidated,
-            status="not_found" if already_invalidated else "erased",
-            reason=reason,
-            backend="rollout",
-        )
-
-    def finalize_rollout_privacy_storage(
-        board_id: str,
-        *,
-        reason: str,
-    ) -> GraphPurgeResult:
-        """Remove rollout bytes only after both physical erasures succeeded."""
-
-        journal = CommunityGraphRolloutJournal(binding_store.root, board_id)
-        proof = journal.erase_privacy_storage(
-            before_mutation=lambda: revalidate_board_graph_write_lease(
-                board_id,
-                failure_phase="privacy_finalize_graph_rollout",
-            )
-        )
-        removed = proof.files_removed > 0 or proof.directories_removed > 0
-        return GraphPurgeResult(
-            board_id=board_id,
-            removed=removed,
-            not_found=not removed,
-            status="erased" if removed else "not_found",
-            reason=reason,
-            backend="rollout",
-        )
 
     @contextmanager
     def board_route_session(board_id: str) -> Iterator[None]:
@@ -1206,7 +1106,7 @@ def build_community_routed_board_graph_composition(
         snapshot = resolver.current_board_snapshot(board_id, require_physical=False)
         if snapshot is None:
             raise _route_failure("board_route_required", board_id=board_id)
-        rollout_administrative_write_fence(
+        administrative_write_fence(
             board_id,
             "graph_recovery_grafx",
             snapshot,
@@ -1226,7 +1126,6 @@ def build_community_routed_board_graph_composition(
         revalidate_write_fence=lambda board_id, phase: (
             revalidate_board_graph_write_lease(board_id, failure_phase=phase)
         ),
-        mutation_recorder=rollout_mutation_recorder,
     )
     cypher_executor = CommunityRoutedCypherExecutor(
         resolver,
@@ -1237,7 +1136,7 @@ def build_community_routed_board_graph_composition(
         resolver,
         grafx=grafx_schema,
         operation_window=operation_window,
-        revalidate_write_fence=rollout_administrative_write_fence,
+        revalidate_write_fence=administrative_write_fence,
     )
     graph_transaction = CommunityRoutedGraphTransaction(
         resolver,
@@ -1250,13 +1149,12 @@ def build_community_routed_board_graph_composition(
         # revalidate their immutable snapshot explicitly, so retain only the
         # thread-neutral physical close guard for their full lifetime.
         operation_window=kg_runtime.board_graph_operation_window,
-        mutation_recorder=rollout_mutation_recorder,
     )
     graph_lifecycle = CommunityRoutedGraphLifecycle(
         resolver,
         operation_window=operation_window,
         mutation_window_unguarded=lifecycle_mutation_window,
-        revalidate_write_fence=rollout_administrative_write_fence,
+        revalidate_write_fence=administrative_write_fence,
         grafx_open_unguarded=grafx_open,
         grafx_close_unguarded=grafx_close,
         grafx_rebuild_unguarded=grafx_rebuild,
@@ -1271,9 +1169,7 @@ def build_community_routed_board_graph_composition(
         mutation_window=mutation_window,
         grafx_purge_unguarded=grafx_runtime.purge_board_graph,
         grafx_erase_unguarded=grafx_erase,
-        rollout_erase_unguarded=invalidate_rollout_for_privacy,
-        rollout_finalize_erase_unguarded=finalize_rollout_privacy_storage,
-        rollout_write_fence=rollout_administrative_write_fence,
+        revalidate_write_fence=administrative_write_fence,
     )
     graph_recovery = CommunityRoutedGraphRecovery(
         resolver,
