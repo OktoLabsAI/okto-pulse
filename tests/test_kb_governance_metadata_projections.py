@@ -45,7 +45,7 @@ def _valid_metadata() -> dict[str, object]:
 @pytest.mark.parametrize("as_mapping", [False, True])
 @pytest.mark.parametrize(
     ("raw_metadata", "expected_status"),
-    [(None, "legacy_incomplete"), (_valid_metadata(), "complete")],
+    [(None, "omitted"), (_valid_metadata(), "complete")],
 )
 def test_traceability_kb_artifacts_use_canonical_governance_projection(
     as_mapping: bool,
@@ -112,7 +112,7 @@ def test_traceability_kb_artifacts_preserve_revision_hash_lineage(
 
 
 @pytest.mark.asyncio
-async def test_resource_gate_projects_card_snapshot_governance() -> None:
+async def test_resource_gate_does_not_hydrate_retired_inline_card_snapshots() -> None:
     governed = {
         "id": "kb-governed",
         "title": "Governed",
@@ -142,22 +142,15 @@ async def test_resource_gate_projects_card_snapshot_governance() -> None:
         ref={"id": "kb-legacy"},
     )
 
-    assert governed_result is not None
-    assert governed_result["governance"]["metadata_status"] == "complete"
-    assert governed_result["governance"]["metadata"] == _valid_metadata()
-    assert legacy_result is not None
-    assert legacy_result["governance"] == {
-        "authority": "advisory",
-        "metadata_status": "legacy_incomplete",
-        "missing_fields": ["governance_metadata"],
-        "metadata": None,
-    }
+    assert governed_result is None
+    assert legacy_result is None
+    assert source.entity.knowledge_bases == [governed, legacy]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("snapshot_metadata", "expected_status"),
-    [(None, "legacy_incomplete"), (_valid_metadata(), "complete")],
+    [(None, "omitted"), (_valid_metadata(), "complete")],
 )
 async def test_resource_gate_v2_snapshot_uses_frozen_governance(
     snapshot_metadata: dict[str, object] | None,
@@ -246,7 +239,7 @@ class _StubDb:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("raw_metadata", "expected_status"),
-    [(None, "legacy_incomplete"), (_valid_metadata(), "complete")],
+    [(None, "omitted"), (_valid_metadata(), "complete")],
 )
 async def test_resource_gate_projects_relational_kb_governance(
     raw_metadata: dict[str, object] | None,

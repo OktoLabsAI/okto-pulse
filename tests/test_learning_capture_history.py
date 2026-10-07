@@ -4,6 +4,7 @@ from dataclasses import replace
 
 import pytest
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 
 import test_learning_capture_rest as rest
 import test_learning_capture_writer as writer
@@ -55,7 +56,7 @@ async def test_history_each_read_permission_is_required(api, flag):
     assert response.status_code == 403, response.text
 
 
-async def test_history_preserves_capture_after_literal_head_and_detects_older_corruption(api, runtime):
+async def test_history_preserves_capture_after_literal_head_and_detects_older_corruption(api, runtime, monkeypatch):
     client, store, _, body = api
     factory, _, _, _ = runtime
     assert (await client.post(URL, json=body)).status_code == 200
@@ -73,12 +74,29 @@ async def test_history_preserves_capture_after_literal_head_and_detects_older_co
     async with factory() as session:
         oldest = (await session.execute(select(KGCognitiveSourceRevision).order_by(
             KGCognitiveSourceRevision.source_revision))).scalars().first()
-        await session.execute(update(KGCognitiveSourceRevision).where(
-            KGCognitiveSourceRevision.id == oldest.id).values(record_fingerprint='f' * 64))
-        await session.commit()
+        oldest_id = oldest.id
+        with pytest.raises(IntegrityError, match="kg_cognitive_source_immutable"):
+            await session.execute(update(KGCognitiveSourceRevision).where(
+                KGCognitiveSourceRevision.id == oldest_id).values(record_fingerprint='f' * 64))
+        await session.rollback()
+    assert await store.enumerate(writer.BOARD) == before
+
+    # Inject a corrupt read without weakening the database's write protection.
+    from okto_pulse.community.adapters import sqlalchemy_kg_cognitive_source as module
+    original_record = module._revision_record
+    observed = []
+
+    def corrupt_oldest(base, row):
+        if row.id == oldest_id:
+            observed.append(row.id)
+            row.record_fingerprint = 'f' * 64
+        return original_record(base, row)
+
+    monkeypatch.setattr(module, "_revision_record", corrupt_oldest)
     broken = await client.get(URL, params={'board_id': writer.BOARD})
     assert broken.status_code in (409, 503), broken.text
     assert 'items' not in broken.json()
+    assert observed == [oldest_id]
 
 
 async def test_history_rejects_invalid_page_and_cross_board(api):

@@ -15,7 +15,9 @@ def test_every_declared_artifact_namespace_is_preserved(tmp_path):
         store.write_json_atomic(RebuildAuditKey(namespace, 'b', kg_generation_id='g', artifact_id=namespace),
             {'original': namespace, 'opaque_history': 'Sprint'})
     before = {path.relative_to(root).as_posix(): path.read_bytes() for path in root.rglob('*.json')}
-    assert len(before) == 16
+    # The retired migration namespace is absent; every current namespace remains.
+    assert len(get_args(RebuildAuditNamespace)) == 15
+    assert len(before) == len(get_args(RebuildAuditNamespace))
     with custody.kg_artifact_capture_window(root,
             selected_paths=tuple(sorted(path.name for path in root.iterdir()))) as window:
         snapshot = window.capture(tmp_path / 'snapshot')
