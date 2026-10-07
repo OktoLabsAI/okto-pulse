@@ -75,7 +75,7 @@ const primary = `${button} bg-violet-600 text-white border-violet-600 hover:bg-v
 const input =
   "rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-3 py-2 text-sm w-full";
 
-export function artifactTarget(
+function artifactTarget(
   item: CognitiveReadinessItem,
 ): ModalStackEntry | null {
   const [kind, ...rest] = item.artifact_id.split(":");

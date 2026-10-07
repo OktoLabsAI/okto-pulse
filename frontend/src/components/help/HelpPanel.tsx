@@ -1608,7 +1608,7 @@ Configure the policy for the current board in **Menu → Board → Board Config*
 | **Advisory** | Enabled and stored as traceable evidence | Never blocks validation |
 | **Blocking** | Required | Requires a passing result for the current validation edition |
 
-**Advisory** is the recommended adoption mode while a team calibrates evidence and anchors. Promote the policy to **Blocking** once checklist runs are consistent. Use **Off** only for an intentional opt-out or legacy compatibility.
+**Advisory** is the recommended adoption mode while a team calibrates evidence and anchors. Promote the policy to **Blocking** once checklist runs are consistent. Use **Off** only for an intentional opt-out.
 
 ### The ten curated checks
 

@@ -9,7 +9,6 @@ import {
   exportIdeation,
   exportRefinement,
   exportSpec,
-  exportSprint,
   exportStory,
   markdownFilenameForCard,
   markdownFilenameForSpec,
@@ -1622,7 +1621,7 @@ describe('exportMarkdown complete task family export', () => {
 });
 
 describe('exportMarkdown existing entity export regressions', () => {
-  it('exports ideation refinement story and sprint without exceptions or object placeholders', () => {
+  it('exports ideation refinement and story without exceptions or object placeholders', () => {
     const commonMockup = {
       id: 'mockup-1',
       title: 'Export mockup',
@@ -1695,41 +1694,7 @@ describe('exportMarkdown existing entity export regressions', () => {
       architecture_designs: [architectureDesign],
       qa_items: [{ question: 'Validated?', answer: 'Yes.' }],
     } as any);
-    const sprintMarkdown = exportSprint({
-      title: 'Sprint export',
-      status: 'closed',
-      version: 1,
-      spec_version: 3,
-      spec_id: 'spec-1',
-      start_date: '2026-05-28',
-      end_date: '2026-05-29',
-      objective: 'Ship export regression.',
-      expected_outcome: 'All existing exports still render.',
-      description: 'Sprint description.',
-      cards: [
-        { id: 'card-1', title: 'Done card', status: 'done', card_type: 'normal' },
-        { id: 'card-2', title: 'Validation card', status: 'validation', card_type: 'test' },
-      ],
-      test_scenario_ids: ['ts-1'],
-      business_rule_ids: ['br-1'],
-      evaluations: [{ evaluator_name: 'Validator', recommendation: 'approve', overall_score: 96 }],
-      labels: ['export'],
-    }, {
-      title: 'Parent spec',
-      test_scenarios: [
-        {
-          id: 'ts-1',
-          title: 'Sprint scenario',
-          given: 'Existing exports',
-          when: 'Regression suite runs',
-          then: 'Markdown remains readable',
-          status: 'passed',
-        },
-      ],
-      business_rules: [{ id: 'br-1', title: 'Export rule', when: 'Export runs', then: 'It is readable' }],
-    });
-
-    const outputs = [storyMarkdown, ideationMarkdown, refinementMarkdown, sprintMarkdown];
+    const outputs = [storyMarkdown, ideationMarkdown, refinementMarkdown];
     for (const md of outputs) {
       expect(md).not.toContain('[object Object]');
       expect(md.trim().startsWith('#')).toBe(true);
@@ -1739,9 +1704,6 @@ describe('exportMarkdown existing entity export regressions', () => {
     expect(ideationMarkdown).toContain('| **Scope Ambiguity** | 1/5 | Clear. |');
     expect(refinementMarkdown).toContain('## In Scope');
     expect(refinementMarkdown).toContain('## Decisions');
-    expect(sprintMarkdown).toContain('## Progress');
-    expect(sprintMarkdown).toContain('## Scoped Test Scenarios');
-    expect(sprintMarkdown).toContain('## Scoped Business Rules');
   });
 });
 

@@ -488,7 +488,7 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
             <option value="blocking">Blocking</option>
           </select>
         </SettingRow>
-        <SettingRow label="Skip cognitive closeout" description="Allow done transitions even when legacy cognitive consolidation is pending. This does not waive the Bug Learning capture policy. Badges and KG Health pending lists remain visible.">
+        <SettingRow label="Skip cognitive closeout" description="Allow done transitions even when cognitive consolidation is pending. This does not waive the Bug Learning capture policy. Badges and KG Health pending lists remain visible.">
           <SettingsToggle
             checked={settings.skip_cognitive_consolidation ?? false}
             onChange={() => onChange({ skip_cognitive_consolidation: !(settings.skip_cognitive_consolidation ?? false) })}
@@ -1189,10 +1189,6 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
             );
           })}
         </div>
-        <p className="text-[10px] leading-4 text-gray-400 dark:text-gray-500">
-          Proofs recorded before this release are migrated automatically on
-          upgrade — boards keep their current protection level.
-        </p>
       </SettingsSection>
 
       <SettingsSection

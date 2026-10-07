@@ -1137,13 +1137,13 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
         const params = new URLSearchParams({ scope, profile: 'summary', limit: '100' });
         if (boardId) params.set('board_id', boardId);
         if (cursor) params.set('cursor', cursor);
-        const response = await apiClient.fetchJson<DesignSystemListPage | DesignSystem[]>(
+        const response = await apiClient.fetchJson<DesignSystemListPage>(
           `/design-systems?${params.toString()}`,
         );
-        // Rolling upgrades may briefly pair the new client with the legacy REST
-        // array. Keep the UI compatible while the canonical server contract is
-        // the bounded summary envelope.
-        if (Array.isArray(response)) return response;
+        if (!response || Array.isArray(response) || !Array.isArray(response.items)
+          || (response.next_cursor !== null && typeof response.next_cursor !== 'string')) {
+          throw new Error('Design System catalog response is incompatible with this release.');
+        }
         items.push(...response.items);
         cursor = response.next_cursor;
         if (cursor) {
