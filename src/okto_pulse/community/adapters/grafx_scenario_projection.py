@@ -4,7 +4,7 @@ from okto_pulse.core.kg.interfaces.graph_transaction import (
     ProjectionActiveSetReceipt, ProjectionActiveSetReconciliationError, ProjectionEdgeBeforeImage,
 )
 from okto_pulse.core.ports.spec_projection import spec_relationship_family
-from okto_pulse.core.ports.code_evidence_projection import CODE_EVIDENCE_LINK_FAMILY
+from okto_pulse.core.ports.code_evidence_projection import traceability_relationship_family
 from okto_pulse.community.adapters.grafx_query_values import normalize_query_value
 
 
@@ -13,8 +13,8 @@ def _refuse(code, message):
 
 
 def reconcile_spec_relationships(scope, intent):
-    evidence = intent.owner_type == "code_evidence"
-    family = CODE_EVIDENCE_LINK_FAMILY if evidence else spec_relationship_family(intent.namespace)
+    evidence = intent.owner_type in {"code_evidence", "implementation_target"}
+    family = traceability_relationship_family(intent.namespace) if evidence else spec_relationship_family(intent.namespace)
     owner_ref = f"{intent.owner_type}:{intent.owner_id}"
     if intent.active_nodes or not intent.owner_node_id:
         _refuse("projection_active_set_member_invalid", "Owned relationship projection owns edges and requires its root.")
