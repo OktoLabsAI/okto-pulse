@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -16,8 +17,16 @@ from repo_layout import resolve_core_repo
 
 COMMUNITY_REPO = Path(__file__).resolve().parents[1]
 CORE_REPO = resolve_core_repo(COMMUNITY_REPO)
-CORE_WHEEL = CORE_REPO / "dist" / "okto_pulse_core-0.3.3-py3-none-any.whl"
-COMMUNITY_WHEEL = COMMUNITY_REPO / "dist" / "okto_pulse-0.3.3-py3-none-any.whl"
+
+def _current_wheel(repo: Path, distribution: str, environment: str) -> Path:
+    """Resolve the exact current checkout version, never an old release wheel."""
+    version = tomllib.loads((repo / 'pyproject.toml').read_text(encoding='utf-8'))['project']['version']
+    filename = f'{distribution}-{version}-py3-none-any.whl'
+    configured = os.environ.get(environment)
+    wheel = Path(configured) if configured else repo / 'dist' / filename
+    assert wheel.name == filename, f'wheel must match current checkout: {filename}'
+    assert wheel.is_file(), f'build the current paired wheel first: {wheel}'
+    return wheel.resolve()
 
 
 def test_community_declares_every_runtime_dependency_directly() -> None:
@@ -62,6 +71,8 @@ def test_build_script_bootstraps_build_frontend_before_wheels() -> None:
 def test_community_wheel_builds_the_local_app_from_declared_metadata(
     tmp_path: Path,
 ) -> None:
+    core_wheel = _current_wheel(CORE_REPO, 'okto_pulse_core', 'OKTO_F14_CORE_WHEEL')
+    community_wheel = _current_wheel(COMMUNITY_REPO, 'okto_pulse', 'OKTO_F14_COMMUNITY_WHEEL')
     venv = tmp_path / "community-venv"
     subprocess.run(
         ["uv", "venv", str(venv), "--python", sys.executable],
@@ -77,15 +88,38 @@ def test_community_wheel_builds_the_local_app_from_declared_metadata(
             "--python",
             str(python),
             "--find-links",
-            str(CORE_REPO / "dist"),
-            str(CORE_WHEEL),
-            str(COMMUNITY_WHEEL),
+            str(core_wheel.parent),
+            str(core_wheel),
+            str(community_wheel),
         ],
         check=True,
         cwd=COMMUNITY_REPO,
     )
     script = r"""
+from pathlib import Path
+import sys
+import sysconfig
 from importlib.metadata import requires
+
+# Prove the installed pair before importing any product behavior. A fresh
+# process starts only after installation; no old in-memory runtime is reused.
+namespace = Path(sysconfig.get_paths()['purelib']) / 'okto_pulse'
+for edition, checkout in zip(('core', 'community'), sys.argv[1:]):
+    source = Path(checkout) / 'src' / 'okto_pulse' / edition
+    installed = namespace / edition
+    expected = {p.relative_to(source): p.read_bytes() for p in source.rglob('*.py')}
+    actual = {p.relative_to(installed): p.read_bytes() for p in installed.rglob('*.py')}
+    assert expected and expected == actual, f'installed {edition} differs from checkout'
+
+# Check storage isolation before application composition can access storage.
+from okto_pulse.community.config import CommunitySettings
+import os
+settings = CommunitySettings()
+root = Path(os.environ["DATA_DIR"]).resolve()
+assert Path(settings.data_dir).resolve() == root
+assert settings.database_url == f"sqlite+aiosqlite:///{root / 'data' / 'pulse.db'}"
+for value in (settings.kg_base_dir, settings.upload_dir, settings.metrics_dir):
+    assert Path(value).resolve().is_relative_to(root)
 from okto_pulse.community.main import app
 
 metadata = requires("okto-pulse") or []
@@ -97,15 +131,20 @@ assert "/api/v1/boards" in paths
 print(f"community_app={app.title!r} openapi_paths={len(paths)}")
 """
     result = subprocess.run(
-        [str(python), "-c", script],
-        check=True,
+        [str(python), "-I", "-c", script, str(CORE_REPO), str(COMMUNITY_REPO)],
+        check=False,
         capture_output=True,
         text=True,
         cwd=tmp_path,
         env={
             **os.environ,
             "PYTHONPATH": "",
-            "OKTO_DATA_DIR": str(tmp_path / "data"),
+            "DATA_DIR": str(tmp_path / "data"),
+            "DATABASE_URL": "",
+            "KG_BASE_DIR": "",
+            "UPLOAD_DIR": "",
+            "METRICS_DIR": "",
         },
     )
+    assert result.returncode == 0, result.stdout + result.stderr
     assert "community_app=" in result.stdout

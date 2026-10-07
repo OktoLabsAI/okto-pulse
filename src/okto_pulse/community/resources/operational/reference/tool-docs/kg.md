@@ -47,6 +47,20 @@ Args:
 Returns:
     JSON with accepted=true and edge_count_in_session
 
+
+### Source links and interpretations
+
+Correct broken or missing normative links through the owning Spec/Card/Bug
+operation, with its existing permissions, revision and content locks. A valid
+endpoint awaiting projection is handled internally; an optional association
+that is intentionally absent is not an obligation.
+
+Semantic suggestions are read-only until adopted through the owning domain
+operation. Similarity, inferred association and graph confidence do not establish
+causality or satisfy coverage, delivery evidence or a completion gate. Do not
+create graph edges to repair normative coverage. The public edge candidate
+contract does not accept writer metadata or a client-selected fallback layer.
+
 ## `okto_pulse_kg_add_node_candidate`
 
 Add a node candidate to an open consolidation session.
