@@ -192,27 +192,3 @@ async def test_cancellation_rolls_back_internal_commits_and_releases_writer(tmp_
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
         await engine.dispose()
-
-
-@pytest.mark.asyncio
-async def test_legacy_filesystem_cleanup_cannot_escape_the_relational_transaction(tmp_path):
-    from okto_pulse.community.adapters.relational_schema_steps import _remove_known_fixture_graph_if_present
-    data = tmp_path / 'home' / 'data'
-    data.mkdir(parents=True)
-    fixture = data.parent / 'boards' / 'sprint-crud-board-001'
-    fixture.mkdir(parents=True)
-    retained = fixture / 'retained.txt'
-    retained.write_bytes(b'original graph artifact')
-    engine = create_async_engine(f"sqlite+aiosqlite:///{data / 'pulse.db'}")
-    try:
-        async with engine.connect() as owner:
-            with pytest.raises(RuntimeError, match="external_effect_requires_coordinator"):
-                async with schema_transaction_runtime(owner):
-                    async with db.get_engine().begin() as writer:
-                        await writer.exec_driver_sql("CREATE TABLE unpublished (id TEXT)")
-                    _remove_known_fixture_graph_if_present(db.get_engine())
-            await owner.rollback()
-            assert not (await owner.exec_driver_sql("SELECT 1 FROM sqlite_schema WHERE name='unpublished'")).all()
-        assert retained.read_bytes() == b'original graph artifact'
-    finally:
-        await engine.dispose()

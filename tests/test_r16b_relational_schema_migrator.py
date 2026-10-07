@@ -86,11 +86,15 @@ def test_fresh_create_all_installs_canonical_lifecycle_edition_guards(
                     "'tester')"
                 )
             )
+            from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
             await connection.execute(
-                text(
-                    "INSERT INTO specs "
-                    "(id, board_id, title, status, edition, version, created_by) "
-                    "VALUES ('s-1', 'b-1', 'Spec', 'draft', 1, 1, 'tester')"
+                Spec.__table__.insert().values(
+                    id="s-1", board_id="b-1", title="Spec", status="draft",
+                    edition=1, version=1, created_by="tester",
+                    architecture_adoption=ArchitectureAdoptionScope(
+                        board_id="b-1", spec_id="s-1", adopted_in_edition=1,
+                        actor_id="tester", inherited_resource_ids=(),
+                    ).model_dump(mode="json"),
                 )
             )
 

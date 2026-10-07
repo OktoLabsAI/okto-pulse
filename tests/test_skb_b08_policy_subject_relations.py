@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
 from sqlalchemy import event, select
 
 import okto_pulse.core.infra.database as database_module
@@ -15,11 +16,13 @@ from okto_pulse.community.adapters.sqlalchemy_database import (
     get_engine,
     get_session_factory,
 )
+from okto_pulse.community.adapters.current_relational_schema import (
+    initialize_current_schema, current_schema_contract,
+)
 from okto_pulse.community.adapters.sqlalchemy_guideline_policy import (
     CommunitySqlAlchemyGuidelinePolicy,
 )
 from okto_pulse.community.adapters.sqlalchemy_models import (
-    Base,
     Board,
     Ideation,
     IdeationKnowledgeBase,
@@ -124,15 +127,14 @@ RELATION_CASES: tuple[
 
 async def _fresh_database(path: Path) -> None:
     database_module.create_database(f"sqlite+aiosqlite:///{path.as_posix()}")
-    async with get_engine().begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    await initialize_current_schema(get_engine(), current_schema_contract())
 
 
 async def _seed_subjects() -> None:
     async with get_session_factory()() as session:
         session.add_all(
             [
-                Board(id=BOARD_ID, name="B08 relations", owner_id="owner-b08"),
+                Board(realm_id="local", id=BOARD_ID, name="B08 relations", owner_id="owner-b08"),
                 Ideation(
                     id=IDEATION_ID,
                     board_id=BOARD_ID,
@@ -146,7 +148,7 @@ async def _seed_subjects() -> None:
                     title="Refinement",
                     created_by="owner-b08",
                 ),
-                Spec(
+                Spec(architecture_adoption=ArchitectureAdoptionScope(board_id=BOARD_ID, spec_id=SPEC_ID, adopted_in_edition=1, actor_id="owner-b08", inherited_resource_ids=()).model_dump(mode="json"),
                     id=SPEC_ID,
                     ideation_id=IDEATION_ID,
                     refinement_id=REFINEMENT_ID,
@@ -256,7 +258,7 @@ async def test_initial_relational_facts_remain_in_parent_version_one(
         )
         session.add_all(
             [
-                Board(id=BOARD_ID, name="Initial B08", owner_id="owner-b08"),
+                Board(realm_id="local", id=BOARD_ID, name="Initial B08", owner_id="owner-b08"),
                 ideation,
                 _qa_item("initial-qa"),
                 _ideation_kb("initial-kb"),
@@ -311,10 +313,10 @@ async def test_relational_writer_takes_board_mutex_before_subject_fact_write(
 
     async def mutate_relation() -> None:
         async with get_session_factory()() as writer:
+            writer_entered.set()
             row = await writer.get(relation_model, relation_id)
             assert row is not None
             mutate(row, "mutex-write")
-            writer_entered.set()
             await writer.commit()
 
     async with get_session_factory()() as snapshot:
@@ -324,8 +326,10 @@ async def test_relational_writer_takes_board_mutex_before_subject_fact_write(
         event.listen(engine, "before_cursor_execute", capture_statement)
         try:
             writer_task = asyncio.create_task(mutate_relation())
-            await writer_entered.wait()
+            await asyncio.wait_for(writer_entered.wait(), timeout=2)
             await asyncio.sleep(0.05)
+            if writer_task.done():
+                await writer_task  # Surface writer failure instead of hiding it behind an event.
             assert not writer_task.done()
             assert any(
                 statement.startswith("update boards") for statement in statements
@@ -338,6 +342,9 @@ async def test_relational_writer_takes_board_mutex_before_subject_fact_write(
             await snapshot.commit()
             await asyncio.wait_for(writer_task, timeout=2)
         finally:
+            if not writer_task.done():
+                writer_task.cancel()
+            await asyncio.gather(writer_task, return_exceptions=True)
             event.remove(engine, "before_cursor_execute", capture_statement)
 
     board_mutex_index = next(

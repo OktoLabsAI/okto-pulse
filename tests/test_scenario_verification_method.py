@@ -83,6 +83,25 @@ async def setup(db, monkeypatch, *, method=None):
         .where(Spec.id == "spec")
         .values(test_scenarios=[scenario], acceptance_criteria=[], version=1)
     )
+    from datetime import datetime, timezone
+    from okto_pulse.community.adapters.sqlalchemy_semantic_guideline_assessment import (
+        CommunitySqlAlchemySemanticGuidelineAssessment,
+    )
+    from okto_pulse.core.domain.guideline_policy import PolicyEntityType
+    from okto_pulse.core.domain.quality_canonicalization import canonical_sha256
+
+    await CommunitySqlAlchemySemanticGuidelineAssessment(db).record_semantic_subject_mutation(
+        board_id="board", entity_type=PolicyEntityType.SPEC, subject_id="spec",
+        actor_id="author", idempotency_key="native-method-fixture",
+        request_digest=canonical_sha256({"scenario": scenario}),
+        changed_at=datetime.now(timezone.utc),
+    )
+    await CommunitySqlAlchemySemanticGuidelineAssessment(db).record_semantic_subject_mutation(
+        board_id="board", entity_type=PolicyEntityType.TEST_SCENARIO, subject_id="ts",
+        actor_id="author", idempotency_key="native-method-scenario-fixture",
+        request_digest=canonical_sha256({"scenario": scenario}),
+        changed_at=datetime.now(timezone.utc),
+    )
     await db.commit()
     app, factory = transports.application(db)
     transports.mcp_factory(monkeypatch, factory)

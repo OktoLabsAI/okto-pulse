@@ -18,7 +18,7 @@ async def database(tmp_path):
         await initialize_current_schema(engine, current_schema_contract())
         async with engine.begin() as connection:
             await connection.execute(insert(Board), [
-                {"id": board, "name": board, "owner_id": "owner"}
+                {"id": board, "name": board, "owner_id": "owner", "realm_id": "local"}
                 for board in ("board-a", "board-b")
             ])
         yield engine, path

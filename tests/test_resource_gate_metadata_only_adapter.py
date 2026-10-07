@@ -8,6 +8,7 @@ import os
 import re
 
 import pytest
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
 from sqlalchemy import event
 
 import okto_pulse.community.app as _community_app  # noqa: F401
@@ -76,9 +77,9 @@ def test_gate_profile_projects_only_persisted_metadata(
 
     async def drive() -> tuple[dict, list[str], list[object]]:
         async with metadata_session_factory() as db:
-            db.add(Board(id="board-1", name="Board", owner_id="owner", settings={}))
+            db.add(Board(realm_id="local", id="board-1", name="Board", owner_id="owner", settings={}))
             db.add(
-                Spec(
+                Spec(architecture_adoption=ArchitectureAdoptionScope(board_id="board-1", spec_id="spec-1", adopted_in_edition=1, actor_id="owner", inherited_resource_ids=()).model_dump(mode="json"),
                     id="spec-1",
                     board_id="board-1",
                     title="Spec",
@@ -248,9 +249,9 @@ def test_missing_persisted_hash_is_not_computed_from_content(
 ) -> None:
     async def drive() -> dict:
         async with metadata_session_factory() as db:
-            db.add(Board(id="board-2", name="Board", owner_id="owner", settings={}))
+            db.add(Board(realm_id="local", id="board-2", name="Board", owner_id="owner", settings={}))
             db.add(
-                Spec(
+                Spec(architecture_adoption=ArchitectureAdoptionScope(board_id="board-2", spec_id="spec-2", adopted_in_edition=1, actor_id="owner", inherited_resource_ids=()).model_dump(mode="json"),
                     id="spec-2",
                     board_id="board-2",
                     title="Spec",
@@ -290,9 +291,9 @@ def test_gate_profile_filters_v2_snapshot_from_persisted_stamps_only(
 
     async def drive() -> tuple[dict, list[str]]:
         async with metadata_session_factory() as db:
-            db.add(Board(id="board-3", name="Board", owner_id="owner", settings={}))
+            db.add(Board(realm_id="local", id="board-3", name="Board", owner_id="owner", settings={}))
             db.add(
-                Spec(
+                Spec(architecture_adoption=ArchitectureAdoptionScope(board_id="board-3", spec_id="spec-3", adopted_in_edition=1, actor_id="owner", inherited_resource_ids=()).model_dump(mode="json"),
                     id="spec-3",
                     board_id="board-3",
                     title="Spec",
@@ -430,7 +431,7 @@ def test_every_metadata_collection_fails_closed_on_limit_plus_one(
     async def drive() -> list[ResourceGateError]:
         async with metadata_session_factory() as db:
             db.add(
-                Board(
+                Board(realm_id="local",
                     id="overflow-board",
                     name="Overflow",
                     owner_id="owner",
@@ -439,13 +440,13 @@ def test_every_metadata_collection_fails_closed_on_limit_plus_one(
             )
             db.add_all(
                 [
-                    Spec(
+                    Spec(architecture_adoption=ArchitectureAdoptionScope(board_id="overflow-board", spec_id="overflow-architecture", adopted_in_edition=1, actor_id="owner", inherited_resource_ids=()).model_dump(mode="json"),
                         id="overflow-architecture",
                         board_id="overflow-board",
                         title="Architecture owner",
                         created_by="owner",
                     ),
-                    Spec(
+                    Spec(architecture_adoption=ArchitectureAdoptionScope(board_id="overflow-board", spec_id="overflow-mockup", adopted_in_edition=1, actor_id="owner", inherited_resource_ids=()).model_dump(mode="json"),
                         id="overflow-mockup",
                         board_id="overflow-board",
                         title="Mockup owner",
@@ -455,13 +456,13 @@ def test_every_metadata_collection_fails_closed_on_limit_plus_one(
                         ],
                         created_by="owner",
                     ),
-                    Spec(
+                    Spec(architecture_adoption=ArchitectureAdoptionScope(board_id="overflow-board", spec_id="overflow-finding-run", adopted_in_edition=1, actor_id="owner", inherited_resource_ids=()).model_dump(mode="json"),
                         id="overflow-finding-run",
                         board_id="overflow-board",
                         title="Finding run owner",
                         created_by="owner",
                     ),
-                    Spec(
+                    Spec(architecture_adoption=ArchitectureAdoptionScope(board_id="overflow-board", spec_id="overflow-kb-row", adopted_in_edition=1, actor_id="owner", inherited_resource_ids=()).model_dump(mode="json"),
                         id="overflow-kb-row",
                         board_id="overflow-board",
                         title="KB owner",

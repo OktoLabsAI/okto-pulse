@@ -107,7 +107,7 @@ async def _seed_board(board_id: str) -> None:
     from okto_pulse.community.adapters.sqlalchemy_models import Board
 
     async with _db_mod.get_session_factory()() as session:
-        session.add(Board(id=board_id, name=f"seed-{board_id}", owner_id="test-owner"))
+        session.add(Board(realm_id="local", id=board_id, name=f"seed-{board_id}", owner_id="test-owner"))
         await session.commit()
 
 

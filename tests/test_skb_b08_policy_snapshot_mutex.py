@@ -6,16 +6,20 @@ import asyncio
 from pathlib import Path
 
 import pytest
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
 
 import okto_pulse.core.infra.database as database_module
 from okto_pulse.community.adapters.sqlalchemy_database import (
     get_engine,
     get_session_factory,
 )
+from okto_pulse.community.adapters.current_relational_schema import (
+    initialize_current_schema, current_schema_contract,
+)
 from okto_pulse.community.adapters.sqlalchemy_guideline_policy import (
     CommunitySqlAlchemyGuidelinePolicy,
 )
-from okto_pulse.community.adapters.sqlalchemy_models import Base, Board, Spec
+from okto_pulse.community.adapters.sqlalchemy_models import Board, Spec
 
 
 @pytest.mark.asyncio
@@ -24,13 +28,12 @@ async def test_subject_write_waits_for_policy_snapshot_board_mutex(
 ) -> None:
     database_path = tmp_path / "b08-policy-mutex.db"
     database_module.create_database(f"sqlite+aiosqlite:///{database_path.as_posix()}")
-    async with get_engine().begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    await initialize_current_schema(get_engine(), current_schema_contract())
 
     async with get_session_factory()() as seed:
-        seed.add(Board(id="board-b08-mutex", name="B08", owner_id="owner"))
+        seed.add(Board(realm_id="local", id="board-b08-mutex", name="B08", owner_id="owner"))
         seed.add(
-            Spec(
+            Spec(architecture_adoption=ArchitectureAdoptionScope(board_id="board-b08-mutex", spec_id="spec-b08-mutex", adopted_in_edition=1, actor_id="owner", inherited_resource_ids=()).model_dump(mode="json"),
                 id="spec-b08-mutex",
                 board_id="board-b08-mutex",
                 title="Before",
@@ -44,10 +47,10 @@ async def test_subject_write_waits_for_policy_snapshot_board_mutex(
 
     async def mutate_subject() -> None:
         async with get_session_factory()() as writer:
+            writer_entered.set()
             spec = await writer.get(Spec, "spec-b08-mutex")
             assert spec is not None
             spec.title = "After"
-            writer_entered.set()
             await writer.commit()
 
     async with get_session_factory()() as snapshot_session:
@@ -55,12 +58,19 @@ async def test_subject_write_waits_for_policy_snapshot_board_mutex(
         await adapter._lock_board(board_id="board-b08-mutex")  # noqa: SLF001
 
         writer_task = asyncio.create_task(mutate_subject())
-        await writer_entered.wait()
-        await asyncio.sleep(0.05)
-        assert not writer_task.done()
+        try:
+            await asyncio.wait_for(writer_entered.wait(), timeout=2)
+            await asyncio.sleep(0.05)
+            if writer_task.done():
+                await writer_task  # Surface writer failure instead of hiding it behind an event.
+            assert not writer_task.done()
 
-        await snapshot_session.commit()
-        await asyncio.wait_for(writer_task, timeout=2)
+            await snapshot_session.commit()
+            await asyncio.wait_for(writer_task, timeout=2)
+        finally:
+            if not writer_task.done():
+                writer_task.cancel()
+            await asyncio.gather(writer_task, return_exceptions=True)
 
     async with get_session_factory()() as verification:
         persisted = await verification.get(Spec, "spec-b08-mutex")
