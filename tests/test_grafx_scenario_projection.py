@@ -79,6 +79,18 @@ async def test_refusal_of_foreign_desired_endpoint_does_not_remove_owned_edges(p
     assert await rows(provider) == before
 
 
+async def test_removed_scenario_rule_is_refused_before_any_cleanup(provider):
+    before = await rows(provider)
+    obsolete = replace(intent(), active_edges=(ProjectionEdgeRef(
+        'tests', 'TestScenario', 'Criterion', 'scenario', 'criterion',
+        'tests/ac_match@v2.0'),))
+    async with await provider.begin('board') as scope:
+        with pytest.raises(ProjectionActiveSetReconciliationError, match='identity is invalid'):
+            scope.reconcile_projection_active_set(obsolete)
+        await scope.commit()
+    assert await rows(provider) == before
+
+
 async def test_failure_after_removal_restores_owned_edge_without_touching_parallel_writer(provider, monkeypatch):
     before = await rows(provider)
     async with await provider.begin('board') as scope:
