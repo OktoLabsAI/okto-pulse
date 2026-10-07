@@ -255,6 +255,9 @@ describe('Header Board settings resource automation', () => {
       openHeaderMenu();
       fireEvent.click(screen.getByRole('button', { name: entry }));
       expect(screen.getByText('Powered by Okto Grafx')).toBeInTheDocument();
+      if (entry === 'About') {
+        expect(screen.getByText('Community Edition — v' + __APP_VERSION__)).toBeInTheDocument();
+      }
     },
   );
 

@@ -39,13 +39,13 @@ def test_ts24_release_harness_freezes_installed_inventory_and_provenance() -> No
     for repo in (REPO, module.CORE_REPO):
         with (repo / "pyproject.toml").open("rb") as stream:
             assert module.EXPECTED_VERSION == tomllib.load(stream)["project"]["version"]
-    assert module.EXPECTED_VERSION == "0.3.4"
+    assert module.EXPECTED_VERSION == "0.4.0"
     assert module.EXPECTED_GRAFX_VERSION == "0.0.7"
     assert module.GRAFX_WHEEL_ENV == "OKTO_E2E_GRAFX_WHEEL"
     assert module.GRAFX_REPO_ENV == "OKTO_E2E_GRAFX_REPO"
-    assert module.EXPECTED_MCP_TOOL_COUNT == live_tool_count == 301
-    assert module.EXPECTED_CANONICAL_TOOL_COUNT == live_canonical_count == 294
-    assert module.EXPECTED_TOOL_ALIAS_COUNT == live_alias_count == 7
+    assert module.EXPECTED_MCP_TOOL_COUNT == live_tool_count == 282
+    assert module.EXPECTED_CANONICAL_TOOL_COUNT == live_canonical_count == 282
+    assert module.EXPECTED_TOOL_ALIAS_COUNT == live_alias_count == 0
     assert module.EXPECTED_RESOURCE_COUNT == live_resource_count == 54
     resource_manifest = json.loads(
         (module.CORE_REPO / "src/okto_pulse/core/mcp/resources/ska_resource_manifest.json")
@@ -77,8 +77,8 @@ def test_ts24_release_harness_freezes_installed_inventory_and_provenance() -> No
     assert module.RUNTIME_MATRIX_PROBE.is_file()
     runtime_probe = module.RUNTIME_MATRIX_PROBE.read_text(encoding="utf-8")
     assert '"coverage": "TS24-C11 covered"' in runtime_probe
-    assert '"productive_kuzu_materialized": False' in runtime_probe
-    assert '"productive_kuzu_purged": False' in runtime_probe
+    assert '"productive_grafx_materialized": False' in runtime_probe
+    assert '"productive_grafx_purged": False' in runtime_probe
     assert '"family_projection_hashes": family_hashes' in runtime_probe
     assert "third_rerun_snapshot" in runtime_probe
 
@@ -220,7 +220,7 @@ def test_fresh_wheels_install_and_serve_from_isolated_venv(tmp_path: Path) -> No
     evidence = json.loads(results[0])
 
     assert evidence["status"] == "passed"
-    assert evidence["expected_version"] == "0.3.4"
+    assert evidence["expected_version"] == "0.4.0"
     assert evidence["installed"]["runtime_version"]["python_major_minor"] == [3, 11]
     assert evidence["installed"]["runtime_version"]["required_major_minor"] == [3, 11]
     assert evidence["installed"]["runtime_version"]["pydantic"]
@@ -235,7 +235,7 @@ def test_fresh_wheels_install_and_serve_from_isolated_venv(tmp_path: Path) -> No
     assert origin["grafx_direct_url"]["url"].endswith(
         "/" + evidence["wheels"]["grafx"]["name"]
     )
-    assert origin["about_version"] == "0.3.4"
+    assert origin["about_version"] == "0.4.0"
     assert origin["ska_contract_manifests"]["tool_count"] == 13
     assert origin["ska_contract_manifests"]["resource_count"] == 22
     assert origin["semantic_v2_reader_contract"]["compatible"] is True
@@ -243,7 +243,7 @@ def test_fresh_wheels_install_and_serve_from_isolated_venv(tmp_path: Path) -> No
     assert len(origin["required_core_resources"]) == 2
     for distribution in ("core", "community"):
         provenance = evidence["installed"]["payload_provenance"][distribution]
-        assert provenance["version"] == "0.3.4"
+        assert provenance["version"] == "0.4.0"
         assert provenance["commit"]
         assert provenance["repository_root"]
         assert provenance["wheel"]["sha256"]
@@ -255,6 +255,9 @@ def test_fresh_wheels_install_and_serve_from_isolated_venv(tmp_path: Path) -> No
     assert runtime_matrix["status"] == "passed"
     sqlite = runtime_matrix["sqlite"]
     assert sqlite["fresh"]["foreign_key_errors"] == []
+    assert sqlite["incompatible_storage"]["rejected"] is True
+    assert sqlite["incompatible_storage"]["byte_identical"] is True
+    assert sqlite["incompatible_storage"]["sidecars_unchanged"] is True
     assert sqlite["rerun"]["logical_sha256"] == sqlite["fresh"]["logical_sha256"]
     assert sqlite["crash_resume"]["logical_sha256"] == sqlite["fresh"]["logical_sha256"]
     concurrency = sqlite["concurrency"]
@@ -282,8 +285,8 @@ def test_fresh_wheels_install_and_serve_from_isolated_venv(tmp_path: Path) -> No
         "story", "ideation", "refinement", "spec", "card",
     }
     assert kg_parity["mismatches"] == []
-    assert kg_parity["oracle"]["productive_kuzu_materialized"] is False
-    assert kg_parity["oracle"]["productive_kuzu_purged"] is False
+    assert kg_parity["oracle"]["productive_grafx_materialized"] is False
+    assert kg_parity["oracle"]["productive_grafx_purged"] is False
     assert all(
         family["match"] and family["incremental_sha256"] == family["rebuild_sha256"]
         for family in kg_parity["family_projection_hashes"].values()
@@ -291,13 +294,13 @@ def test_fresh_wheels_install_and_serve_from_isolated_venv(tmp_path: Path) -> No
     assert kg_parity["ska"]["quality"] == "covered"
     assert kg_parity["ska"]["research_decision_ledger"] == "covered"
     assert evidence["installed"]["cli_version"] == (
-        "okto-pulse 0.3.4 (okto-pulse-core 0.3.4)"
+        "okto-pulse 0.4.0 (okto-pulse-core 0.4.0)"
     )
     mcp_http = evidence["installed"]["mcp_http"]
     assert mcp_http["transport"] == "streamable-http-loopback"
-    assert mcp_http["tool_count"] == 301
-    assert mcp_http["canonical_tool_count"] == 294
-    assert mcp_http["tool_alias_count"] == 7
+    assert mcp_http["tool_count"] == 282
+    assert mcp_http["canonical_tool_count"] == 282
+    assert mcp_http["tool_alias_count"] == 0
     assert mcp_http["resource_count"] == 54
     assert mcp_http["ska_tool_count"] == 13
     assert (work_dir / "release-artifact-evidence.json").is_file()

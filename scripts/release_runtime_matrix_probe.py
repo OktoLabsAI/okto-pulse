@@ -30,13 +30,8 @@ from typing import Any
 
 RESULT_PREFIX = "INSTALLED_RUNTIME_MATRIX="
 CRASH_EXIT_CODE = 91
-CRASH_BOOTSTRAP_STEP = "_bootstrap_default_discovery_intents"
+CRASH_BOOTSTRAP_STEP = "after_current_permission_presets"
 
-_SKA_TABLE_PREFIXES = (
-    "quality_",
-    "research_decision_",
-    "checklist_",
-)
 _SEMANTIC_TABLES = (
     "permission_presets",
     "discovery_intents",
@@ -70,49 +65,18 @@ async def _initialize_database(path: Path) -> None:
 
 
 async def _crash_during_bootstrap(path: Path, marker: Path) -> None:
-    import okto_pulse.community.app as _community_app  # noqa: F401
-    from okto_pulse.community.adapters.data_bootstrapper import (
-        CommunityDataBootstrapper,
-        build_community_data_bootstrap_ledger,
-        make_community_data_bootstrapper,
-    )
-    from okto_pulse.community.adapters.relational_schema_migrator import (
-        make_community_relational_schema_migrator,
-    )
-    from okto_pulse.community.adapters.sqlalchemy_database import (
-        configure_community_database,
-    )
+    from okto_pulse.community.adapters import current_data_seeds
 
-    configure_community_database(_database_url(path))
-    migrator = make_community_relational_schema_migrator(
-        target="release-crash-resume"
-    )
-    migration_result = await migrator.aexecute(
-        migrator.plan(target="release-crash-resume")
-    )
-    if not migration_result.is_success:
-        raise RuntimeError(
-            "crash fixture could not establish schema: "
-            f"{migration_result.failure_reason}"
-        )
+    reconcile = current_data_seeds.reconcile_community_permission_presets
 
-    real_bootstrapper = make_community_data_bootstrapper(
-        target="release-crash-resume"
-    )
-    callables = dict(real_bootstrapper._callables)
-
-    def _abrupt_exit() -> None:
+    async def crash_after_presets() -> None:
+        await reconcile()
         marker.write_text(CRASH_BOOTSTRAP_STEP, encoding="utf-8")
         os._exit(CRASH_EXIT_CODE)
 
-    callables[CRASH_BOOTSTRAP_STEP] = _abrupt_exit
-    crashing = CommunityDataBootstrapper(
-        steps=build_community_data_bootstrap_ledger(),
-        callables=callables,
-        target="release-crash-resume",
-    )
-    await crashing.aexecute(crashing.plan(target="release-crash-resume"))
-    raise RuntimeError("injected bootstrap crash did not terminate the process")
+    current_data_seeds.reconcile_community_permission_presets = crash_after_presets
+    await _initialize_database(path)
+    raise RuntimeError("injected current-seed crash did not terminate the process")
 
 
 def _worker_main(args: argparse.Namespace) -> int:
@@ -249,71 +213,21 @@ def _run_worker(
     return completed
 
 
-def _prepare_upgrade_fixture(path: Path) -> dict[str, Any]:
-    sentinel_board = "release-upgrade-board"
-    sentinel_spec = "release-upgrade-spec"
+def _incompatible_storage_rejection(script: Path, path: Path) -> dict[str, Any]:
     with sqlite3.connect(path) as connection:
-        connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute(
-            "INSERT INTO boards (id, name, owner_id) VALUES (?, ?, ?)",
-            (sentinel_board, "Release upgrade sentinel", "release-gate"),
-        )
-        connection.execute(
-            "INSERT INTO specs "
-            "(id, board_id, title, status, version, created_by) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (
-                sentinel_spec,
-                sentinel_board,
-                "Release upgrade sentinel",
-                "draft",
-                1,
-                "release-gate",
-            ),
-        )
-        connection.commit()
-
-        all_tables = [
-            str(row[0])
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master "
-                "WHERE type='table' AND name NOT LIKE 'sqlite_%' "
-                "ORDER BY name"
-            ).fetchall()
-        ]
-        dropped = [
-            table
-            for table in all_tables
-            if table.startswith(_SKA_TABLE_PREFIXES)
-        ]
-        connection.execute("PRAGMA foreign_keys=OFF")
-        for table in dropped:
-            connection.execute(f'DROP TABLE "{table}"')
-        connection.commit()
-    if not dropped:
-        raise RuntimeError("upgrade fixture removed no SK-A tables")
-    return {
-        "sentinel_board_id": sentinel_board,
-        "sentinel_spec_id": sentinel_spec,
-        "dropped_table_count": len(dropped),
-        "dropped_tables": dropped,
-    }
-
-
-def _assert_upgrade_sentinel(path: Path, fixture: dict[str, Any]) -> None:
-    with sqlite3.connect(path) as connection:
-        board = connection.execute(
-            "SELECT name FROM boards WHERE id=?",
-            (fixture["sentinel_board_id"],),
-        ).fetchone()
-        spec = connection.execute(
-            "SELECT title, status, edition, version FROM specs WHERE id=?",
-            (fixture["sentinel_spec_id"],),
-        ).fetchone()
-    if board != ("Release upgrade sentinel",):
-        raise RuntimeError(f"upgrade board sentinel drifted: {board!r}")
-    if spec != ("Release upgrade sentinel", "draft", 1, 1):
-        raise RuntimeError(f"upgrade spec sentinel drifted: {spec!r}")
+        connection.execute("CREATE TABLE old_content (value TEXT NOT NULL)")
+        connection.execute("INSERT INTO old_content VALUES ('preserve me')")
+    before = hashlib.sha256(path.read_bytes()).hexdigest()
+    siblings_before = sorted(item.name for item in path.parent.glob(path.name + "*"))
+    rejected = _run_worker(script, "--init-worker", path, expected_codes=(1,))
+    if "storage_format_incompatible" not in rejected.stderr:
+        raise RuntimeError("incompatible storage failed for an unrelated reason")
+    after = hashlib.sha256(path.read_bytes()).hexdigest()
+    siblings_after = sorted(item.name for item in path.parent.glob(path.name + "*"))
+    if before != after or siblings_before != siblings_after:
+        raise RuntimeError("incompatible storage or sidecars changed during refusal")
+    return {"rejected": True, "byte_identical": True, "sha256": after,
+            "sidecars_unchanged": True}
 
 
 def _concurrent_fresh_start(script: Path, path: Path) -> dict[str, Any]:
@@ -448,7 +362,7 @@ def _kg_projection_parity() -> dict[str, Any]:
     This is the installed-runtime TS24-C11 oracle only.  It compares the
     deterministic projection produced after an incremental churn with a clean
     deterministic rebuild.  It intentionally does NOT materialize or purge
-    productive Kuzu; the permanent TS21/TS24 real-Kuzu tests retain that wider
+    productive Grafx; the permanent TS21/TS24 real-Grafx tests retain that wider
     integration coverage.
     """
 
@@ -635,24 +549,24 @@ def _kg_projection_parity() -> dict[str, Any]:
                 "incremental churn final projection versus clean rebuild "
                 "final projection"
             ),
-            "productive_kuzu_materialized": False,
-            "productive_kuzu_purged": False,
+            "productive_grafx_materialized": False,
+            "productive_grafx_purged": False,
             "boundary": (
                 "compara projecao deterministica; NAO materializa/purga "
-                "Kuzu produtivo"
+                "Grafx produtivo"
             ),
         },
-        "real_kuzu_regression_refs": [
+        "real_grafx_regression_refs": [
             {
                 "task": "[TEST] TS21",
                 "coverage": (
-                    "real-Kuzu incremental churn and active-set reconciliation"
+                    "real-Grafx incremental churn and active-set reconciliation"
                 ),
                 "path": (
-                    "tests/test_c8_projection_active_set_graph_transaction.py"
+                    "tests/test_grafx_projection_active_set.py"
                 ),
                 "test": (
-                    "test_real_kuzu_projection_active_set_is_exact_and_compensable"
+                    "test_compensation_restores_the_payload_and_every_incident_edge"
                 ),
             },
             {
@@ -661,7 +575,7 @@ def _kg_projection_parity() -> dict[str, Any]:
                     "clean deterministic rebuild and structural graph hash diff"
                 ),
                 "path": (
-                    "../okto-pulse-core/tests/"
+                    "../okto_labs_pulse_core/tests/"
                     "test_kg_rebuild_deterministic.py"
                 ),
                 "test": (
@@ -738,22 +652,9 @@ def run_matrix(work_dir: Path) -> dict[str, Any]:
             f"{fresh['logical_sha256']} != {rerun['logical_sha256']}"
         )
 
-    upgrade_db = work_dir / "upgrade.sqlite3"
-    _run_worker(script, "--init-worker", upgrade_db)
-    fixture = _prepare_upgrade_fixture(upgrade_db)
-    _run_worker(script, "--init-worker", upgrade_db)
-    _assert_upgrade_sentinel(upgrade_db, fixture)
-    upgrade = _sqlite_snapshot(upgrade_db)
-    if upgrade["foreign_key_errors"]:
-        raise RuntimeError(
-            f"upgraded SQLite lifecycle has FK errors: "
-            f"{upgrade['foreign_key_errors']}"
-        )
-    if upgrade["schema_sha256"] != fresh["schema_sha256"]:
-        raise RuntimeError(
-            "upgraded schema does not converge to fresh schema: "
-            f"{upgrade['schema_sha256']} != {fresh['schema_sha256']}"
-        )
+    incompatible = _incompatible_storage_rejection(
+        script, work_dir / "incompatible.sqlite3"
+    )
 
     crash_db = work_dir / "crash-resume.sqlite3"
     crash_marker = work_dir / "crash.marker"
@@ -798,10 +699,7 @@ def run_matrix(work_dir: Path) -> dict[str, Any]:
         "status": "passed",
         "sqlite": {
             "fresh": fresh,
-            "upgrade": {
-                **upgrade,
-                **fixture,
-            },
+            "incompatible_storage": incompatible,
             "rerun": rerun,
             "crash_resume": {
                 **crash_resume,
