@@ -26,12 +26,8 @@ from okto_pulse.core import configure_auth
 from okto_pulse.core import configure_settings
 from okto_pulse.community.adapters.sqlalchemy_database import (
     close_db,
-    get_engine,
     init_db,
     is_database_runtime_configured,
-)
-from okto_pulse.community.adapters.sprint_origin_integrity import (
-    inspect_sprint_origin_integrity,
 )
 from okto_pulse.core import StorageProvider, configure_storage
 from okto_pulse.core.composition import (
@@ -551,25 +547,10 @@ def create_app(
     @app.get("/health")
     async def health_check():
         # Liveness must remain constant-time and independent of database size
-        # or availability.  Storage-backed diagnostics live on the explicit
-        # endpoint below so an orchestrator probe cannot trigger a full scan.
+        # or availability. An orchestrator probe must never trigger a scan.
         return {
             "status": "healthy",
             "version": settings.app_version,
-        }
-
-    @app.get("/health/integrity")
-    async def health_integrity_check():
-        sprint_origin_finding = await inspect_sprint_origin_integrity(get_engine)
-        return {
-            # Diagnostics remain HTTP 200 so operators can inspect a complete
-            # finding even when relational integrity is degraded or critical.
-            "status": "healthy",
-            "version": settings.app_version,
-            "integrity_status": sprint_origin_finding["status"],
-            "findings": {
-                "sprint_origin_integrity": sprint_origin_finding,
-            },
         }
 
     # MockupDesignSystemGate (spec 3a006f65 / card 0192f58d): the gate runs inside the

@@ -178,8 +178,7 @@ Adapter source map:
   `community/adapters/sqlalchemy_runtime_settings_service.py`,
   `community/adapters/sqlalchemy_traceability_read_model.py`,
   `community/adapters/coordination.py` and
-  `community/adapters/relational_effects.py`; read-only sprint-lineage health is
-  owned by `community/adapters/sprint_origin_integrity.py`; the SQLite PRAGMA owner is
+  `community/adapters/relational_effects.py`; the SQLite PRAGMA owner is
   `install_community_sqlite_pragmas` in
   `community/adapters/sqlalchemy_database.py`.
 - Relational mappings and persistence implementations:
