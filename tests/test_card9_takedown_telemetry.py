@@ -82,10 +82,10 @@ async def telemetry_store(tmp_path):
     )
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
-        # The additive migration boundary must remain restart-safe.
+        # Creating the current schema again must leave it unchanged.
         await connection.run_sync(Base.metadata.create_all)
     async with sessions() as session:
-        session.add(Board(id=BOARD_ID, name="Card 9", owner_id="tester"))
+        session.add(Board(id=BOARD_ID, name="Card 9", owner_id="tester", realm_id="local"))
         await session.commit()
 
     ledger = CommunitySqlAlchemyDeliveryLedger()

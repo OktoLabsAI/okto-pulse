@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+
 import pytest
 import pytest_asyncio
 from sqlalchemy import select
@@ -55,7 +57,7 @@ async def sweep_db(tmp_path):
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     async with factory() as session:
-        session.add(Board(id=BOARD_ID, name="Card 8", owner_id="owner-card8"))
+        session.add(Board(id=BOARD_ID, name="Card 8", owner_id="owner-card8", realm_id="local"))
         await session.commit()
     try:
         yield factory, CommunitySqlAlchemyConsolidationPersistence()
@@ -290,6 +292,10 @@ async def test_source_recheck_skips_live_source_and_real_tombstone_is_not_advanc
                 id="spec-live",
                 board_id=BOARD_ID,
                 title="Recreated source",
+                architecture_adoption=ArchitectureAdoptionScope(
+                    board_id=BOARD_ID, spec_id="spec-live", actor_id="owner-card8",
+                    adopted_in_edition=1, inherited_resource_ids=(),
+                ).model_dump(mode="json"),
                 created_by="owner-card8",
             )
         )
