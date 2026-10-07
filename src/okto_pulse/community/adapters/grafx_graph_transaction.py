@@ -56,6 +56,7 @@ from okto_pulse.community.adapters.cypher_statement_policy import (
 )
 from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
 from okto_pulse.core.ports.spec_projection import SPEC_RELATIONSHIP_NAMESPACES, is_spec_relationship_writer
+from okto_pulse.core.ports.code_evidence_projection import CODE_EVIDENCE_LINK_NAMESPACE
 from okto_pulse.core.ports.card_projection import (
     is_card_scenario_writer, is_card_parent_writer, is_card_projection_writer, CARD_EDGE_NAMESPACES,
     CARD_DEPENDENCY_NAMESPACE,
@@ -2948,7 +2949,8 @@ class _GrafxTransactionScope:
         if intent.owner_type == 'card' and intent.namespace in ({'card_scenarios', 'card_parent'} | CARD_EDGE_NAMESPACES):
             from okto_pulse.community.adapters.grafx_card_scenario_projection import reconcile_card_scenarios
             return reconcile_card_scenarios(self, intent)
-        if intent.owner_type == "spec" and intent.namespace in SPEC_RELATIONSHIP_NAMESPACES:
+        if ((intent.owner_type == "spec" and intent.namespace in SPEC_RELATIONSHIP_NAMESPACES)
+                or (intent.owner_type == "code_evidence" and intent.namespace == CODE_EVIDENCE_LINK_NAMESPACE)):
             from okto_pulse.community.adapters.grafx_scenario_projection import reconcile_spec_relationships
             return reconcile_spec_relationships(self, intent)
         if intent.owner_type == "spec" and intent.namespace == "dependencies":

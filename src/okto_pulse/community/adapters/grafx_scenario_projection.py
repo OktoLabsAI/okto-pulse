@@ -1,9 +1,10 @@
-"""Grafx mechanics for closed, Core-owned Spec relationship families."""
+"""Grafx mechanics for closed, Core-owned Owned relationship families."""
 
 from okto_pulse.core.kg.interfaces.graph_transaction import (
     ProjectionActiveSetReceipt, ProjectionActiveSetReconciliationError, ProjectionEdgeBeforeImage,
 )
 from okto_pulse.core.ports.spec_projection import spec_relationship_family
+from okto_pulse.core.ports.code_evidence_projection import CODE_EVIDENCE_LINK_FAMILY
 from okto_pulse.community.adapters.grafx_query_values import normalize_query_value
 
 
@@ -12,18 +13,20 @@ def _refuse(code, message):
 
 
 def reconcile_spec_relationships(scope, intent):
-    family = spec_relationship_family(intent.namespace)
+    evidence = intent.owner_type == "code_evidence"
+    family = CODE_EVIDENCE_LINK_FAMILY if evidence else spec_relationship_family(intent.namespace)
+    owner_ref = f"{intent.owner_type}:{intent.owner_id}"
     if intent.active_nodes or not intent.owner_node_id:
-        _refuse("projection_active_set_member_invalid", "Spec relationship projection owns edges and requires its root.")
+        _refuse("projection_active_set_member_invalid", "Owned relationship projection owns edges and requires its root.")
     root = scope._node_snapshot("Entity", intent.owner_node_id)
-    if root is None or root.get("source_artifact_ref") != f"spec:{intent.owner_id}":
-        _refuse("projection_active_set_scope_invalid", "Spec relationship projection owner root does not match its Spec.")
+    if root is None or root.get("source_artifact_ref") != owner_ref:
+        _refuse("projection_active_set_scope_invalid", "Owned relationship projection owner root does not match its source.")
     desired = set()
     endpoints = set()
     for edge in intent.active_edges:
         pair = (edge.from_type, edge.from_id, edge.to_type, edge.to_id)
         if (edge.edge_type != family.edge_type or edge.rule_id not in family.rules or pair in endpoints):
-            _refuse("projection_active_set_member_invalid", "Spec relationship identity is invalid or duplicated.")
+            _refuse("projection_active_set_member_invalid", "Owned relationship identity is invalid or duplicated.")
         source = scope._node_snapshot(edge.from_type, edge.from_id)
         target = scope._node_snapshot(edge.to_type, edge.to_id)
         if source is None or target is None or not family.owns_endpoints(owner_id=intent.owner_id,
@@ -35,15 +38,15 @@ def reconcile_spec_relationships(scope, intent):
 
     def owned():
         result = {}
-        for target_type, _section in family.target_sections:
+        for target_type in dict.fromkeys(kind for kind, _section in family.target_sections):
             physical, definition = scope._relationship_definition(family.edge_type, family.source_type, target_type)
             properties = scope._projection_edge_properties(definition)
             projection = ", ".join(f"r.{name}" for name in properties)
             rows = scope._query(
                 f"MATCH (a:{family.source_type})-[r:{physical}]->(b:{target_type}) "
-                "WHERE a.source_artifact_ref STARTS WITH $prefix "
+                f"WHERE a.source_artifact_ref {'=' if evidence else 'STARTS WITH'} $prefix "
                 f"RETURN a.id, b.id, a.source_artifact_ref, b.source_artifact_ref, {projection}",
-                {"prefix": f"spec:{intent.owner_id}:"}, operation="projection_spec_relationship_read",
+                {"prefix": owner_ref if evidence else owner_ref + ":"}, operation="projection_spec_relationship_read",
             ).rows
             for row in rows:
                 attrs = {name: normalize_query_value(row[index + 4]) for index, name in enumerate(properties)}
@@ -61,7 +64,7 @@ def reconcile_spec_relationships(scope, intent):
 
     current = owned()
     if desired.difference(current):
-        _refuse("projection_active_set_member_missing", "An active Spec relationship is missing or untrusted.")
+        _refuse("projection_active_set_member_missing", "An active Owned relationship is missing or untrusted.")
     stale = tuple(edge for key, edge in current.items() if key not in desired)
     receipt = ProjectionActiveSetReceipt(intent=intent, edge_before_images=stale)
     try:
@@ -78,7 +81,7 @@ def reconcile_spec_relationships(scope, intent):
                     else 'delete_projection_spec_relationship_edge'),
             )
         if set(owned()) != desired:
-            _refuse("projection_stale_edge_cleanup_unconfirmed", "Spec relationship active set did not converge.")
+            _refuse("projection_stale_edge_cleanup_unconfirmed", "Owned relationship active set did not converge.")
     except BaseException as error:
         scope._projection_apply_failure(receipt, error, operation="reconcile_spec_relationships")
     return receipt
