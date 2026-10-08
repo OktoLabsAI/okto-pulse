@@ -56,6 +56,8 @@ async def test_mixed_declarations_persist_and_gate_matches_rollup(
         declared(states={"fr:fr": "partial", "tr:tr": "complete"}), actor=actor, uow=uow
     )
     record = await session.get(Record, saved["entries"][0]["id"])
+    # One technical receipt and one ledger record serve both exact bindings.
+    assert await counts(session) == [1, 1, 1, 1]
     assert (
         record.payload["contribution_contract_version"]
         == "card-binding-contribution/v2"
