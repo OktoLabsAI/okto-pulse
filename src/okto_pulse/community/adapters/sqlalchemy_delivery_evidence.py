@@ -1029,6 +1029,11 @@ class CommunityDeliveryEvidenceStore:
         card, spec, spec_scope = await self._card_scope_guard(scope)
         if card.policy_version != command.expected_card_version:
             raise ValueError("delivery_version_conflict")
+        if command.kind in {"implementation", "test"}:
+            # Existing-receipt association follows the same state boundary as
+            # inline and batch writes. Exact replay returned above; revocation
+            # and progress retain their own authority and lifecycle predicates.
+            require_delivery_batch_state(card)
         if command.progress_refs:
             reference_ids = {ref.record_id for ref in command.progress_refs}
             existing_ids = set((await self.session.scalars(select(CardRecord.id).where(
@@ -1040,7 +1045,6 @@ class CommunityDeliveryEvidenceStore:
                 raise ValueError("delivery_progress_reference_unavailable")
         inline = command.execution_submission
         if inline is not None:
-            require_delivery_batch_state(card)
             require_delivery_entry_card_type(card.card_type, command.kind)
             if execution_submitter is None:
                 raise ValueError("delivery_execution_submitter_unavailable")

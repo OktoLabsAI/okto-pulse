@@ -414,7 +414,7 @@ async def test_currentness_is_rechecked_not_cached(ledger, mutation):
 
 @pytest.mark.asyncio
 async def test_gate_accepts_chain_valid_proof_recorded_before_done(ledger):
-    """AC ac_c41b1fa3: record proof on a card in Validation, then done passes.
+    """AC ac_c41b1fa3: record during execution; validation consumes the frozen proof.
 
     evaluate_delivery_coverage only credits implementation facts whose card is
     already DONE; the card→done gate and the card-scoped record surface must
@@ -432,7 +432,7 @@ async def test_gate_accepts_chain_valid_proof_recorded_before_done(ledger):
     register_relational_application_adapter(CommunityRelationalApplicationAdapter())
     session, store, _ = ledger
     await session.execute(
-        update(Card).where(Card.id == "task").values(status="validation")
+        update(Card).where(Card.id == "task").values(status="in_progress")
     )
     await session.commit()
     card = await session.get(Card, "task")
@@ -443,6 +443,11 @@ async def test_gate_accepts_chain_valid_proof_recorded_before_done(ledger):
 
     result = await record(store, command(idempotency_key="pre-done-impl"))
     assert result["replayed"] is False
+    await session.execute(update(Card).where(Card.id == "task").values(status="validation"))
+    await session.commit()
+    await session.refresh(card)
+    with pytest.raises(ValueError, match="delivery_batch_card_frozen"):
+        await record(store, command(idempotency_key="new-proof-in-validation"))
 
     await require_card_delivery(session, card=card, spec=spec, board=None)
 

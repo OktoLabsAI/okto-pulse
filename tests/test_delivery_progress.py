@@ -281,3 +281,34 @@ async def test_rest_and_mcp_share_progress_writer_and_replay(db, monkeypatch):
     assert not replay.is_error, replay
     assert replay.payload == {"id": response.json()["id"], "replayed": True}
     assert await session.scalar(select(func.count()).select_from(Record)) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("workspace_state", ["dirty", "unknown"])
+async def test_unknown_source_identity_remains_unknown_after_persistence(db, workspace_state):
+    """DEI-T09/T10: checkpoint storage and reads must not invent source facts."""
+    _, session, store = db
+    value = command()
+    progress = value.progress.model_copy(update={
+        "source_state": value.progress.source_state.model_copy(update={
+            "workspace_state": workspace_state, "recoverability": "unknown",
+        })
+    })
+    value = value.model_copy(update={"progress": progress})
+    saved = await record(store, value)
+    await session.commit()
+    session.expunge_all()
+    stored = await session.get(Record, saved["id"])
+    expected = {
+        "source_ref": None, "declared_revision": None,
+        "workspace_state": workspace_state, "recoverability": "unknown",
+    }
+    assert stored.payload["progress"]["source_state"] == expected
+    assert stored.payload["execution_id"] is None
+    assert stored.payload["implementation_ids"] == []
+    await session.close()
+    projection = await store.projection("b", "s")
+    progress_view = projection["per_card"][0]["progress"]
+    assert progress_view["items"][0]["source_state"] == expected
+    assert progress_view["recovery_verified"] is False
+    assert projection["allowed"] is False

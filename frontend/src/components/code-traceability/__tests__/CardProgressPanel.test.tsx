@@ -121,3 +121,23 @@ it('shows several saved facts and an explicit history limit after reload', async
   expect(screen.getByText(/incomplete history/)).toBeInTheDocument();
   expect(screen.getByText(/does not complete this card/)).toBeInTheDocument();
 });
+
+
+it('keeps unknown source facts explicit without inventing revision or locator', async () => {
+  const p = props();
+  const view = render(<CardProgressPanel {...p} />);
+  fill();
+  fireEvent.click(screen.getByRole('button', { name: 'Save progress' }));
+  await waitFor(() => expect(p.onSaved).toHaveBeenCalledOnce());
+  const source = api.recordCardDeliveryEvidence.mock.calls[0][3].entries[0].progress.source_state;
+  expect(source).toEqual({ workspace_state: 'unknown', recoverability: 'unknown' });
+  view.rerender(<CardProgressPanel {...p} card={{ ...card, progress: {
+    total: 1, truncated: false, recovery_verified: false, items: [{
+      id: 'checkpoint', actor_id: 'author', created_at: 'today', summary: 'Context only',
+      remaining: 'Observe source', text_truncated: false, material_change: 'none',
+      source_state: source, target_ids: [],
+    }],
+  } }} />);
+  expect(screen.getByText('author · today · unknown · unknown')).toBeInTheDocument();
+  expect(screen.getByText(/does not complete this card/)).toBeInTheDocument();
+});
