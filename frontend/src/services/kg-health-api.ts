@@ -47,13 +47,13 @@ export interface DecaySchedulerDiagnostics {
 }
 
 export interface StorageFootprintProxy {
-  source: 'file_size_proxy' | string;
+  source: 'runtime_capability' | string;
   status: string;
   percentage: number | null;
   percentage_status?: 'available' | 'not_applicable' | 'unavailable';
   percentage_reason?: string | null;
   high_water_mark_pct: number | null;
-  graph_lbug_bytes: number | null;
+  graph_primary_bytes: number | null;
   sidecar_bytes: number | null;
   total_bytes: number | null;
   configured_max_db_size_bytes: number | null;

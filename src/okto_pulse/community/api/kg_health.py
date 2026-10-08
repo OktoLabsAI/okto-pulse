@@ -116,13 +116,15 @@ class DecaySchedulerDiagnostics(BaseModel):
 class StorageFootprintProxy(BaseModel):
     """Adapter-provided storage footprint; not direct memory/buffer telemetry."""
 
+    model_config = ConfigDict(extra="forbid")
+
     source: str = "runtime_capability"
     status: str = "unavailable"
     percentage: float | None = None
     percentage_status: Literal["available", "not_applicable", "unavailable"] = "unavailable"
     percentage_reason: str | None = None
     high_water_mark_pct: float | None = None
-    graph_lbug_bytes: int | None = None
+    graph_primary_bytes: int | None = None
     primary_bytes: int | None = None
     sidecar_bytes: int | None = None
     total_bytes: int | None = None
@@ -501,10 +503,6 @@ async def get_kg_health_endpoint(
             uow=db,
         )
         data = dict(result.data)
-        footprint = dict(data.get("storage_footprint_proxy") or {})
-        if "graph_primary_bytes" in footprint:
-            footprint["graph_lbug_bytes"] = footprint.pop("graph_primary_bytes")
-        data["storage_footprint_proxy"] = footprint
         data["graph_storage"] = await _graph_storage_snapshot(board_id)
     except PermissionDeniedError as exc:
         raise RESTAdapterContract.http_error(exc) from exc

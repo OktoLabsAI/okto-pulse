@@ -18,16 +18,18 @@ async def request_health(monkeypatch, board_id):
     class UseCase:
         async def execute(self, command, *, actor, uow):
             assert command.board_id == board_id
-            return SimpleNamespace(data={"board_id": board_id})
+            return SimpleNamespace(data={"board_id": board_id, "storage_footprint_proxy": {"graph_primary_bytes": 123}})
 
     # Isolate the endpoint's post-use-case metadata work. Response model
     # serialization has a separate strict contract suite.
     monkeypatch.setattr(api, "GetKgHealthUseCase", UseCase)
     monkeypatch.setattr(api, "KGHealthResponse", lambda **data: data)
     monkeypatch.setattr(api, "scheduler_control_from_request", lambda _: None)
-    return await api.get_kg_health_endpoint(
+    result = await api.get_kg_health_endpoint(
         request=SimpleNamespace(), board_id=board_id, user_id="owner", db=object(),
     )
+    assert result["storage_footprint_proxy"] == {"graph_primary_bytes": 123}
+    return result
 
 
 @pytest.mark.asyncio

@@ -159,3 +159,15 @@ def test_retired_backend_is_unavailable_without_opening_or_converting(tmp_path):
     assert result.backend is None
     assert result.binding_status == "unavailable"
     assert not list(tmp_path.iterdir())
+
+
+def test_storage_footprint_uses_native_field_and_refuses_retired_alias():
+    from pydantic import ValidationError
+    from okto_pulse.community.api.kg_health import StorageFootprintProxy
+
+    native = {"graph_primary_bytes": 123, "description": "disk", "tooltip": "disk"}
+    assert StorageFootprintProxy.model_validate(native).model_dump()["graph_primary_bytes"] == 123
+    with pytest.raises(ValidationError) as exc:
+        StorageFootprintProxy.model_validate({**native, "graph_lbug_bytes": 123})
+    assert any(error["loc"] == ("graph_lbug_bytes",) and error["type"] == "extra_forbidden"
+               for error in exc.value.errors())
