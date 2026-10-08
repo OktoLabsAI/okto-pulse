@@ -1032,12 +1032,9 @@ def upsert_grafx_decision_digest_vector(
 ) -> str:
     """Upsert one healthy digest identity and replace its embedding atomically."""
 
-    # ``legacy_unknown`` is a durable digest state by design (KG-R1/AC5): board
-    # nodes without a layer fail closed to it at write time, global queries
-    # coalesce it out of canonical, and the reconciler later promotes it.  It
-    # must round-trip through storage; only the search/read faces (``_LAYERS``)
-    # keep rejecting it as a request parameter.
-    if graph_layer not in {"canonical", "working", "legacy_unknown"}:
+    # The current publication contract has exactly two artifact layers.
+    # Refuse invalid/retired input before vector lookup or opening a transaction.
+    if graph_layer not in ("canonical", "working"):
         raise _invalid_argument("graph_layer", graph_layer, operation=_WRITE_OPERATION)
     try:
         vector = _validated_vector(

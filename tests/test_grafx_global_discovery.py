@@ -472,3 +472,18 @@ def test_global_ann_is_stable_cold_warm_after_reopen_and_never_leaks(
         "ineligible-board",
         "ineligible-null",
     }.intersection(hit["digest_id"] for hit in (*cold, *warm, *cold_reopen))
+
+
+@pytest.mark.parametrize("layer", ["legacy_unknown", None, "", "all", "unknown"])
+def test_digest_rejects_noncurrent_layer_without_mutation(layer):
+    with connect(":memory:") as database:
+        ensure_current_grafx_global_schema(database)
+        _upsert_board(database, "board")
+        before = database.transactions.published_lsn()
+        with pytest.raises(GraphCapabilityUnavailable) as failure:
+            _upsert_digest(database, board_id="board", digest_id="refused", graph_layer=layer)
+        assert failure.value.details["reason"] == "invalid_argument"
+        assert failure.value.details["field"] == "graph_layer"
+        assert database.transactions.published_lsn() == before
+        assert database.transactions.open_transactions == 0
+        assert database.execute("MATCH (d:DecisionDigest) RETURN count(d)").rows == ((0,),)
