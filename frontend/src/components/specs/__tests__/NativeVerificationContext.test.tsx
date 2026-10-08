@@ -6,7 +6,7 @@ import { CardResumePanel } from '@/components/code-traceability/CardResumePanel'
 import native from './fixtures/native-verification-context.json';
 
 // Exact payload emitted by the native relational + REST/MCP parity test.
-// Authentication is tested at the backend; here the network boundary is mocked.
+// Backend uses typed reader identities and real authorization; network is mocked here.
 const api = vi.hoisted(() => ({
   getRequirementVerification: vi.fn(), getDeliveryEvidence: vi.fn(),
   getCardDeliveryResume: vi.fn(), getBoard: vi.fn(), getSpec: vi.fn(),
@@ -14,7 +14,7 @@ const api = vi.hoisted(() => ({
 vi.mock('@/services/api', () => ({ useDashboardApi: () => api }));
 afterEach(cleanup);
 
-it('renders inherited responsibility, promoted IR pending work and partial checkpoint without proof credit', async () => {
+it('renders inherited responsibility, promoted IR pending work and partial authenticated proof without global completion', async () => {
   api.getRequirementVerification.mockResolvedValue(native.plan);
   api.getDeliveryEvidence.mockResolvedValue(native.delivery);
   api.getCardDeliveryResume.mockResolvedValue(native.resume);
@@ -37,7 +37,14 @@ it('renders inherited responsibility, promoted IR pending work and partial check
   expect(await screen.findByText(/Latest checkpoint by executor/)).toBeInTheDocument();
   expect(screen.getByText(/Progress recording is unavailable/)).toBeInTheDocument();
   expect(screen.getByText(/Workspace access and recovery are unknown/)).toBeInTheDocument();
-  expect(screen.queryByText('✓')).not.toBeInTheDocument();
+  expect(screen.getAllByText('✓')).toHaveLength(6);
+  expect(screen.getByText('ts: passed; authentication current.')).toBeInTheDocument();
+  expect(screen.getByText('History of Test Card test-card')).toBeInTheDocument();
+  expect(screen.getByText('agent-1')).toBeInTheDocument();
+  expect(screen.getByText(/src\/file.py · source-main @ a{40} · execution/)).toBeInTheDocument();
+  for (const ir of native.promoted) {
+    expect(screen.getByText(ir.title + ': implementation pending, test pending.')).toBeInTheDocument();
+  }
   expect(api.getRequirementVerification).toHaveBeenCalledTimes(1);
   expect(api.getDeliveryEvidence).toHaveBeenCalledTimes(1);
   expect(api.getCardDeliveryResume).toHaveBeenCalledTimes(1);

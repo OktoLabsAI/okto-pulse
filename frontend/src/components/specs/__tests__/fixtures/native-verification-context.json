@@ -11,30 +11,26 @@
     "delivery_evaluated": false,
     "rollout_evaluated": false,
     "verification_work_evaluated": true,
-    "method_plan_complete": false,
-    "verification_work_complete": false,
+    "method_plan_complete": true,
+    "verification_work_complete": true,
     "planning_population_complete": true,
-    "planning_issues": [
-      {
-        "code": "verification_method_capability_unavailable"
-      }
-    ],
-    "planning_issue_count": 1,
+    "planning_issues": [],
+    "planning_issue_count": 0,
     "planning_issues_truncated": false,
     "effective_inventory": {
       "contract_version": "effective-delivery-inventory/v1",
       "population_complete": true,
-      "plan_complete": false,
+      "plan_complete": true,
       "total": 7,
-      "pending_count": 1,
-      "unassigned_count": 1,
+      "pending_count": 0,
+      "unassigned_count": 0,
       "families": {
         "ac": 3,
         "br": 1,
         "fr": 1,
         "ir": 2
       },
-      "snapshot_sha256": "307426195b5d7aa9acec6b459200e351fede00209f77fd04429c1322d132e651",
+      "snapshot_sha256": "5b58a06f6f1bd7182a26a03a49ee6a2b3518ba73eedccb8faedfb32751e24dec",
       "issues": [],
       "adoption_evaluated": true,
       "contract_adopted": true,
@@ -81,8 +77,8 @@
         "qualification_origin": "authored",
         "default_proposal": null,
         "qualification_resolved": true,
-        "method_plan_complete": false,
-        "verification_work_complete": false,
+        "method_plan_complete": true,
+        "verification_work_complete": true,
         "implementation_contributions": [
           {
             "card_id": "implementation-card",
@@ -134,23 +130,21 @@
             "scenario_plans": [
               {
                 "scenario_id": "ts",
-                "method": "automated_test",
-                "method_admitted": false,
-                "method_plan_complete": false,
+                "method": "demonstration",
+                "method_admitted": true,
+                "method_plan_complete": true,
                 "test_card_ids": [
                   "test-card"
                 ],
-                "blockers": [
-                  "verification_method_unsupported"
-                ],
+                "blockers": [],
                 "work_blockers": [],
                 "test_card_count": 1,
                 "test_cards_truncated": false
               }
             ],
             "planning_blockers": [],
-            "method_plan_complete": false,
-            "verification_work_complete": false,
+            "method_plan_complete": true,
+            "verification_work_complete": true,
             "scenario_count": 1,
             "scenarios_truncated": false
           }
@@ -191,8 +185,8 @@
           }
         },
         "qualification_resolved": true,
-        "method_plan_complete": false,
-        "verification_work_complete": false,
+        "method_plan_complete": true,
+        "verification_work_complete": true,
         "implementation_contributions": [
           {
             "card_id": "implementation-card",
@@ -231,23 +225,21 @@
             "scenario_plans": [
               {
                 "scenario_id": "ts",
-                "method": "automated_test",
-                "method_admitted": false,
-                "method_plan_complete": false,
+                "method": "demonstration",
+                "method_admitted": true,
+                "method_plan_complete": true,
                 "test_card_ids": [
                   "test-card"
                 ],
-                "blockers": [
-                  "verification_method_unsupported"
-                ],
+                "blockers": [],
                 "work_blockers": [],
                 "test_card_count": 1,
                 "test_cards_truncated": false
               }
             ],
             "planning_blockers": [],
-            "method_plan_complete": false,
-            "verification_work_complete": false,
+            "method_plan_complete": true,
+            "verification_work_complete": true,
             "scenario_count": 1,
             "scenarios_truncated": false
           }
@@ -262,106 +254,9 @@
       },
       {
         "requirement_type": "integration_requirement",
-        "requirement_id": "ir_5ef0f573",
-        "title": "Export orders",
-        "source_digest": "43ac2c7e1a8463da8f3f75900248edcb029c63ee7d7360fdb360adfc0cd7c0c3",
-        "verification": {
-          "mode": "explicit",
-          "required_profiles": [
-            "integration"
-          ],
-          "inheritance": [],
-          "evidence_policy_ref": "pulse-verification/v1"
-        },
-        "qualification_origin": "authored",
-        "default_proposal": {
-          "version": "requirement-verification-defaults/v1",
-          "origin": "product",
-          "requires_author_acceptance": true,
-          "verification": {
-            "mode": "explicit",
-            "required_profiles": [
-              "integration"
-            ],
-            "inheritance": [],
-            "evidence_policy_ref": "pulse-verification/v1"
-          }
-        },
-        "qualification_resolved": true,
-        "method_plan_complete": false,
-        "verification_work_complete": false,
-        "implementation_contributions": [
-          {
-            "card_id": "implementation-card",
-            "origin": "direct",
-            "scope": "whole_requirement",
-            "criterion_ids": [
-              "ac-ir_5ef0f573"
-            ],
-            "summary": null,
-            "sources": [],
-            "scope_sha256": "a05206c19c1f24a44fe5bd9e90ce676f7aedf060ecde61bf973a6c930150f1d7",
-            "criterion_count": 1,
-            "criteria_truncated": false,
-            "source_count": 0,
-            "sources_truncated": false
-          }
-        ],
-        "contribution_blockers": [],
-        "blockers": [],
-        "blocker_count": 0,
-        "blockers_truncated": false,
-        "criteria_paths": [
-          {
-            "criterion_id": "ac-ir_5ef0f573",
-            "profile": "integration",
-            "path": [
-              {
-                "requirement_type": "integration_requirement",
-                "requirement_id": "ir_5ef0f573"
-              }
-            ],
-            "aspects": [
-              null
-            ],
-            "source_digests": [],
-            "scenario_plans": [
-              {
-                "scenario_id": "ts-ir_5ef0f573",
-                "method": "automated_test",
-                "method_admitted": false,
-                "method_plan_complete": false,
-                "test_card_ids": [],
-                "blockers": [
-                  "verification_method_unsupported"
-                ],
-                "work_blockers": [
-                  "verification_test_card_required"
-                ],
-                "test_card_count": 0,
-                "test_cards_truncated": false
-              }
-            ],
-            "planning_blockers": [],
-            "method_plan_complete": false,
-            "verification_work_complete": false,
-            "scenario_count": 1,
-            "scenarios_truncated": false
-          }
-        ],
-        "paths_total": 1,
-        "paths_offset": 0,
-        "contribution_count": 1,
-        "contributions_truncated": false,
-        "paths_has_more": false,
-        "next_paths_offset": null,
-        "paths_unavailable": false
-      },
-      {
-        "requirement_type": "integration_requirement",
-        "requirement_id": "ir_ed6ce012",
+        "requirement_id": "ir_19f23a69",
         "title": "Publish orders",
-        "source_digest": "ac78830f907e2842d811a0305fb400a90be432e238f9cd16320aba17a37a04fa",
+        "source_digest": "2a03bfcf76d80d53892e2d5ec0689b47bec84ef79a5f845f921f4604e21dad31",
         "verification": {
           "mode": "explicit",
           "required_profiles": [
@@ -385,19 +280,19 @@
           }
         },
         "qualification_resolved": true,
-        "method_plan_complete": false,
-        "verification_work_complete": false,
+        "method_plan_complete": true,
+        "verification_work_complete": true,
         "implementation_contributions": [
           {
             "card_id": "implementation-card",
             "origin": "direct",
             "scope": "whole_requirement",
             "criterion_ids": [
-              "ac-ir_ed6ce012"
+              "ac-ir_19f23a69"
             ],
             "summary": null,
             "sources": [],
-            "scope_sha256": "de8e03e3055f5f8aee6f55683e70112f5aca71398f60e31f74c1ac940f5d4050",
+            "scope_sha256": "bdfd0d5540484a73e1369930b00c1ae4154f917178655096e2ff730307872008",
             "criterion_count": 1,
             "criteria_truncated": false,
             "source_count": 0,
@@ -410,12 +305,12 @@
         "blockers_truncated": false,
         "criteria_paths": [
           {
-            "criterion_id": "ac-ir_ed6ce012",
+            "criterion_id": "ac-ir_19f23a69",
             "profile": "integration",
             "path": [
               {
                 "requirement_type": "integration_requirement",
-                "requirement_id": "ir_ed6ce012"
+                "requirement_id": "ir_19f23a69"
               }
             ],
             "aspects": [
@@ -424,24 +319,117 @@
             "source_digests": [],
             "scenario_plans": [
               {
-                "scenario_id": "ts-ir_ed6ce012",
+                "scenario_id": "ts-ir_19f23a69",
                 "method": "automated_test",
-                "method_admitted": false,
-                "method_plan_complete": false,
-                "test_card_ids": [],
-                "blockers": [
-                  "verification_method_unsupported"
+                "method_admitted": true,
+                "method_plan_complete": true,
+                "test_card_ids": [
+                  "test-ir_19f23a69"
                 ],
-                "work_blockers": [
-                  "verification_test_card_required"
-                ],
-                "test_card_count": 0,
+                "blockers": [],
+                "work_blockers": [],
+                "test_card_count": 1,
                 "test_cards_truncated": false
               }
             ],
             "planning_blockers": [],
-            "method_plan_complete": false,
-            "verification_work_complete": false,
+            "method_plan_complete": true,
+            "verification_work_complete": true,
+            "scenario_count": 1,
+            "scenarios_truncated": false
+          }
+        ],
+        "paths_total": 1,
+        "paths_offset": 0,
+        "contribution_count": 1,
+        "contributions_truncated": false,
+        "paths_has_more": false,
+        "next_paths_offset": null,
+        "paths_unavailable": false
+      },
+      {
+        "requirement_type": "integration_requirement",
+        "requirement_id": "ir_472c9dab",
+        "title": "Export orders",
+        "source_digest": "8b3a23dcddeb1e735c93ae4c2e3af2ff39f45e1108fdf8eba01e24e8a6df4f25",
+        "verification": {
+          "mode": "explicit",
+          "required_profiles": [
+            "integration"
+          ],
+          "inheritance": [],
+          "evidence_policy_ref": "pulse-verification/v1"
+        },
+        "qualification_origin": "authored",
+        "default_proposal": {
+          "version": "requirement-verification-defaults/v1",
+          "origin": "product",
+          "requires_author_acceptance": true,
+          "verification": {
+            "mode": "explicit",
+            "required_profiles": [
+              "integration"
+            ],
+            "inheritance": [],
+            "evidence_policy_ref": "pulse-verification/v1"
+          }
+        },
+        "qualification_resolved": true,
+        "method_plan_complete": true,
+        "verification_work_complete": true,
+        "implementation_contributions": [
+          {
+            "card_id": "implementation-card",
+            "origin": "direct",
+            "scope": "whole_requirement",
+            "criterion_ids": [
+              "ac-ir_472c9dab"
+            ],
+            "summary": null,
+            "sources": [],
+            "scope_sha256": "89a3bf3a3bd17fded089bbb1c69d65457580d5f56a426f876dc758fc8f82e44a",
+            "criterion_count": 1,
+            "criteria_truncated": false,
+            "source_count": 0,
+            "sources_truncated": false
+          }
+        ],
+        "contribution_blockers": [],
+        "blockers": [],
+        "blocker_count": 0,
+        "blockers_truncated": false,
+        "criteria_paths": [
+          {
+            "criterion_id": "ac-ir_472c9dab",
+            "profile": "integration",
+            "path": [
+              {
+                "requirement_type": "integration_requirement",
+                "requirement_id": "ir_472c9dab"
+              }
+            ],
+            "aspects": [
+              null
+            ],
+            "source_digests": [],
+            "scenario_plans": [
+              {
+                "scenario_id": "ts-ir_472c9dab",
+                "method": "automated_test",
+                "method_admitted": true,
+                "method_plan_complete": true,
+                "test_card_ids": [
+                  "test-ir_472c9dab"
+                ],
+                "blockers": [],
+                "work_blockers": [],
+                "test_card_count": 1,
+                "test_cards_truncated": false
+              }
+            ],
+            "planning_blockers": [],
+            "method_plan_complete": true,
+            "verification_work_complete": true,
             "scenario_count": 1,
             "scenarios_truncated": false
           }
@@ -479,14 +467,10 @@
     "version": 3,
     "status": "in_progress",
     "allowed": false,
-    "complete": false,
+    "complete": true,
     "blockers": [
-      "delivery_contribution_allocation_invalid",
-      "delivery_effective_inventory_incomplete",
       "delivery_implementation_missing",
-      "delivery_projection_incomplete",
-      "delivery_test_result_missing",
-      "delivery_verification_methods_unavailable"
+      "delivery_test_result_missing"
     ],
     "rejected_record_ids": [],
     "rows": [
@@ -498,23 +482,29 @@
           },
           "title": "Five failures block access"
         },
-        "implementation_ids": [],
-        "test_ids": [],
+        "implementation_ids": [
+          "card_delivery_c25622b1959049f2b8ae10660b2fedf7"
+        ],
+        "test_ids": [
+          "card_delivery_28bd1c3101804271a925623d3d15b421"
+        ],
         "implementation_waiver_ids": [],
         "test_waiver_ids": [],
-        "contributions_complete": false,
-        "criteria_complete": false,
-        "required_card_ids": [],
+        "contributions_complete": true,
+        "criteria_complete": true,
+        "required_card_ids": [
+          "implementation-card"
+        ],
         "missing_card_ids": [],
         "missing_criteria": [],
-        "implementation_satisfied": false,
-        "test_satisfied": false
+        "implementation_satisfied": true,
+        "test_satisfied": true
       },
       {
         "obligation": {
           "binding": {
-            "obligation_ref": "ac:ac-ir_5ef0f573",
-            "semantic_sha256": "8c6caff271648c449d89057bda298dc3e9b06d52bf5beb21474d3f0e69a8cfc4"
+            "obligation_ref": "ac:ac-ir_19f23a69",
+            "semantic_sha256": "7a18ef64c5ac42af19aa9ef0811e5b093bc3e9a0c097ddadbe461656b81862a9"
           },
           "title": "Integration delivers the declared payload"
         },
@@ -537,8 +527,8 @@
       {
         "obligation": {
           "binding": {
-            "obligation_ref": "ac:ac-ir_ed6ce012",
-            "semantic_sha256": "b3a22e70a9e810193be8027fe148ac7c05578ef93f257b5cca67f75175569222"
+            "obligation_ref": "ac:ac-ir_472c9dab",
+            "semantic_sha256": "5ce4e80fc183279b15e9fdf2c3893f28fa1f7dbc24c06959822da641430f3725"
           },
           "title": "Integration delivers the declared payload"
         },
@@ -566,21 +556,23 @@
           },
           "title": "Limit failed login attempts"
         },
-        "implementation_ids": [],
-        "test_ids": [],
+        "implementation_ids": [
+          "card_delivery_c25622b1959049f2b8ae10660b2fedf7"
+        ],
+        "test_ids": [
+          "card_delivery_28bd1c3101804271a925623d3d15b421"
+        ],
         "implementation_waiver_ids": [],
         "test_waiver_ids": [],
-        "contributions_complete": false,
-        "criteria_complete": false,
+        "contributions_complete": true,
+        "criteria_complete": true,
         "required_card_ids": [
           "implementation-card"
         ],
-        "missing_card_ids": [
-          "implementation-card"
-        ],
+        "missing_card_ids": [],
         "missing_criteria": [],
-        "implementation_satisfied": false,
-        "test_satisfied": false
+        "implementation_satisfied": true,
+        "test_satisfied": true
       },
       {
         "obligation": {
@@ -590,51 +582,29 @@
           },
           "title": "Block after five failures"
         },
-        "implementation_ids": [],
-        "test_ids": [],
+        "implementation_ids": [
+          "card_delivery_c25622b1959049f2b8ae10660b2fedf7"
+        ],
+        "test_ids": [
+          "card_delivery_28bd1c3101804271a925623d3d15b421"
+        ],
         "implementation_waiver_ids": [],
         "test_waiver_ids": [],
-        "contributions_complete": false,
-        "criteria_complete": false,
+        "contributions_complete": true,
+        "criteria_complete": true,
         "required_card_ids": [
           "implementation-card"
         ],
-        "missing_card_ids": [
-          "implementation-card"
-        ],
+        "missing_card_ids": [],
         "missing_criteria": [],
-        "implementation_satisfied": false,
-        "test_satisfied": false
+        "implementation_satisfied": true,
+        "test_satisfied": true
       },
       {
         "obligation": {
           "binding": {
-            "obligation_ref": "ir:ir_5ef0f573",
-            "semantic_sha256": "43ac2c7e1a8463da8f3f75900248edcb029c63ee7d7360fdb360adfc0cd7c0c3"
-          },
-          "title": "Export orders"
-        },
-        "implementation_ids": [],
-        "test_ids": [],
-        "implementation_waiver_ids": [],
-        "test_waiver_ids": [],
-        "contributions_complete": false,
-        "criteria_complete": false,
-        "required_card_ids": [
-          "implementation-card"
-        ],
-        "missing_card_ids": [
-          "implementation-card"
-        ],
-        "missing_criteria": [],
-        "implementation_satisfied": false,
-        "test_satisfied": false
-      },
-      {
-        "obligation": {
-          "binding": {
-            "obligation_ref": "ir:ir_ed6ce012",
-            "semantic_sha256": "ac78830f907e2842d811a0305fb400a90be432e238f9cd16320aba17a37a04fa"
+            "obligation_ref": "ir:ir_19f23a69",
+            "semantic_sha256": "2a03bfcf76d80d53892e2d5ec0689b47bec84ef79a5f845f921f4604e21dad31"
           },
           "title": "Publish orders"
         },
@@ -653,16 +623,286 @@
         "missing_criteria": [],
         "implementation_satisfied": false,
         "test_satisfied": false
+      },
+      {
+        "obligation": {
+          "binding": {
+            "obligation_ref": "ir:ir_472c9dab",
+            "semantic_sha256": "8b3a23dcddeb1e735c93ae4c2e3af2ff39f45e1108fdf8eba01e24e8a6df4f25"
+          },
+          "title": "Export orders"
+        },
+        "implementation_ids": [],
+        "test_ids": [],
+        "implementation_waiver_ids": [],
+        "test_waiver_ids": [],
+        "contributions_complete": false,
+        "criteria_complete": false,
+        "required_card_ids": [
+          "implementation-card"
+        ],
+        "missing_card_ids": [
+          "implementation-card"
+        ],
+        "missing_criteria": [],
+        "implementation_satisfied": false,
+        "test_satisfied": false
       }
     ],
-    "implementations": [],
-    "tests": [],
-    "candidates": [],
+    "implementations": [
+      {
+        "id": "card_delivery_c25622b1959049f2b8ae10660b2fedf7",
+        "scope": {
+          "board_id": "board",
+          "spec_id": "spec",
+          "edition": 2
+        },
+        "card_id": "implementation-card",
+        "card_type": "normal",
+        "card_status": "done",
+        "bindings": [
+          {
+            "obligation_ref": "fr:fr",
+            "semantic_sha256": "8c2bb4bfc3c39a43092b5863864d7c55cbb8655c6fea78011383c9e9a9bbb75c"
+          },
+          {
+            "obligation_ref": "br:br",
+            "semantic_sha256": "7e4e1db34b62250bc03aa0027a32becb32b98e7361cfad3664cf8f071543054b"
+          },
+          {
+            "obligation_ref": "ac:ac",
+            "semantic_sha256": "baf78a9cb3f049dcaa63770f8670f7c8304c75f0ea8d19249b6c474ff7ffb8a6"
+          }
+        ],
+        "explanation": "The implemented About version is tested by this health assertion.",
+        "actor_id": "agent-1",
+        "contributions": [
+          {
+            "binding": {
+              "obligation_ref": "fr:fr",
+              "semantic_sha256": "8c2bb4bfc3c39a43092b5863864d7c55cbb8655c6fea78011383c9e9a9bbb75c"
+            },
+            "contribution": "complete",
+            "execution_ids": [
+              "execution"
+            ]
+          },
+          {
+            "binding": {
+              "obligation_ref": "br:br",
+              "semantic_sha256": "7e4e1db34b62250bc03aa0027a32becb32b98e7361cfad3664cf8f071543054b"
+            },
+            "contribution": "complete",
+            "execution_ids": [
+              "execution"
+            ]
+          },
+          {
+            "binding": {
+              "obligation_ref": "ac:ac",
+              "semantic_sha256": "baf78a9cb3f049dcaa63770f8670f7c8304c75f0ea8d19249b6c474ff7ffb8a6"
+            },
+            "contribution": "complete",
+            "execution_ids": [
+              "execution"
+            ]
+          }
+        ],
+        "executions": [
+          {
+            "execution_id": "execution",
+            "target_id": "target",
+            "target_revision": 1,
+            "source_ref": "source-main",
+            "result_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "relative_path": "src/file.py",
+            "current_accepted_execution": true,
+            "symbol": null,
+            "blocking_progress_ids": [],
+            "blocking_progress_truncated": false
+          }
+        ],
+        "blocking_progress_ids": [],
+        "blocking_progress_truncated": false,
+        "admitted_obligation_refs": [
+          "fr:fr",
+          "br:br",
+          "ac:ac"
+        ],
+        "ready_obligation_refs": [
+          "fr:fr",
+          "br:br",
+          "ac:ac"
+        ]
+      }
+    ],
+    "tests": [
+      {
+        "id": "card_delivery_28bd1c3101804271a925623d3d15b421",
+        "scope": {
+          "board_id": "board",
+          "spec_id": "spec",
+          "edition": 2
+        },
+        "card_id": "test-card",
+        "card_type": "test",
+        "card_status": "done",
+        "bindings": [
+          {
+            "obligation_ref": "fr:fr",
+            "semantic_sha256": "8c2bb4bfc3c39a43092b5863864d7c55cbb8655c6fea78011383c9e9a9bbb75c"
+          },
+          {
+            "obligation_ref": "br:br",
+            "semantic_sha256": "7e4e1db34b62250bc03aa0027a32becb32b98e7361cfad3664cf8f071543054b"
+          },
+          {
+            "obligation_ref": "ac:ac",
+            "semantic_sha256": "baf78a9cb3f049dcaa63770f8670f7c8304c75f0ea8d19249b6c474ff7ffb8a6"
+          }
+        ],
+        "scenario_id": "ts",
+        "result": "passed",
+        "receipt_id": "ev2r.6078cc7c99a6bfcc062586405864defc.d650669824397c8aa2fa0cea87d1f9081064b18f06d8eeef5f4088446d52e5c3",
+        "current_verified_run": true,
+        "actor_id": "agent-1",
+        "verified_implementation_ids": [
+          "card_delivery_c25622b1959049f2b8ae10660b2fedf7"
+        ]
+      }
+    ],
+    "candidates": [
+      {
+        "kind": "implementation",
+        "id": "execution",
+        "card_id": "implementation-card",
+        "card_version": 1,
+        "label": "src/file.py @ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      {
+        "kind": "test",
+        "id": "ts",
+        "card_id": "test-card",
+        "card_version": 1,
+        "label": "Observe blocking: ts \u00b7 passed"
+      }
+    ],
     "per_card": [
       {
         "card_id": "implementation-card",
-        "complete": false,
+        "complete": true,
         "title": "Implement blocking",
+        "card_version": 1,
+        "delivery_revision": 2,
+        "selection": {
+          "total": 2,
+          "truncated": false,
+          "records": [
+            {
+              "id": "card_delivery_cd6dac1774aa45f4ac83cee54fdac3bb",
+              "kind": "progress",
+              "summary": "Failed-attempt counter implemented; blocking and integration remain"
+            },
+            {
+              "id": "card_delivery_c25622b1959049f2b8ae10660b2fedf7",
+              "kind": "implementation",
+              "summary": "The implemented About version is tested by this health assertion."
+            }
+          ]
+        },
+        "accumulated_impact": {
+          "contract_version": "delivery-net-impact/v1",
+          "status": "empty",
+          "claim_only": true,
+          "history_count": 0,
+          "sources": [],
+          "issues": [],
+          "issue_count": 0,
+          "issues_truncated": false
+        },
+        "report_impact": {
+          "source": "manual_or_absent",
+          "current": null,
+          "reason": null
+        },
+        "progress": {
+          "target_options": [
+            {
+              "id": "target",
+              "source_ref": "source-main",
+              "label": "src/file.py"
+            }
+          ],
+          "targets_truncated": false,
+          "total": 1,
+          "truncated": false,
+          "recovery_verified": false,
+          "items": [
+            {
+              "id": "card_delivery_cd6dac1774aa45f4ac83cee54fdac3bb",
+              "actor_id": "executor",
+              "revoked": false,
+              "created_at": "2026-10-08T10:45:43.820680+00:00",
+              "summary": "Failed-attempt counter implemented; blocking and integration remain",
+              "remaining": "Normalization and tests",
+              "text_truncated": false,
+              "source_state": {
+                "source_ref": null,
+                "declared_revision": null,
+                "workspace_state": "dirty",
+                "recoverability": "external_workspace"
+              },
+              "material_change": "unknown",
+              "target_ids": [],
+              "targets_truncated": false
+            }
+          ]
+        },
+        "card_type": "normal",
+        "status": "done",
+        "obligations": [
+          {
+            "ref": "ac:ac",
+            "title": "Five failures block access",
+            "implementation_satisfied": true
+          },
+          {
+            "ref": "ac:ac-ir_19f23a69",
+            "title": "Integration delivers the declared payload",
+            "implementation_satisfied": false
+          },
+          {
+            "ref": "ac:ac-ir_472c9dab",
+            "title": "Integration delivers the declared payload",
+            "implementation_satisfied": false
+          },
+          {
+            "ref": "br:br",
+            "title": "Limit failed login attempts",
+            "implementation_satisfied": true
+          },
+          {
+            "ref": "fr:fr",
+            "title": "Block after five failures",
+            "implementation_satisfied": true
+          },
+          {
+            "ref": "ir:ir_19f23a69",
+            "title": "Publish orders",
+            "implementation_satisfied": false
+          },
+          {
+            "ref": "ir:ir_472c9dab",
+            "title": "Export orders",
+            "implementation_satisfied": false
+          }
+        ],
+        "satisfied": false
+      },
+      {
+        "card_id": "test-card",
+        "complete": true,
+        "title": "Observe blocking",
         "card_version": 1,
         "delivery_revision": 1,
         "selection": {
@@ -670,9 +910,9 @@
           "truncated": false,
           "records": [
             {
-              "id": "card_delivery_158bd0ea08a54b0eb3f61b1509b5a714",
-              "kind": "progress",
-              "summary": "Failed-attempt counter implemented; blocking and integration remain"
+              "id": "card_delivery_28bd1c3101804271a925623d3d15b421",
+              "kind": "test",
+              "summary": "The implemented About version is tested by this health assertion."
             }
           ]
         },
@@ -694,40 +934,26 @@
         "progress": {
           "target_options": [],
           "targets_truncated": false,
-          "total": 1,
+          "total": 0,
           "truncated": false,
           "recovery_verified": false,
-          "items": [
-            {
-              "id": "card_delivery_158bd0ea08a54b0eb3f61b1509b5a714",
-              "actor_id": "executor",
-              "revoked": false,
-              "created_at": "2026-10-08T10:31:27.839051+00:00",
-              "summary": "Failed-attempt counter implemented; blocking and integration remain",
-              "remaining": "Normalization and tests",
-              "text_truncated": false,
-              "source_state": {
-                "source_ref": null,
-                "declared_revision": null,
-                "workspace_state": "dirty",
-                "recoverability": "external_workspace"
-              },
-              "material_change": "unknown",
-              "target_ids": [],
-              "targets_truncated": false
-            }
-          ]
+          "items": []
         },
-        "card_type": "normal",
-        "status": "in_progress",
+        "card_type": "test",
+        "status": "done",
         "obligations": [
           {
-            "ref": "ac:ac-ir_5ef0f573",
+            "ref": "ac:ac",
+            "title": "Five failures block access",
+            "implementation_satisfied": false
+          },
+          {
+            "ref": "ac:ac-ir_19f23a69",
             "title": "Integration delivers the declared payload",
             "implementation_satisfied": false
           },
           {
-            "ref": "ac:ac-ir_ed6ce012",
+            "ref": "ac:ac-ir_472c9dab",
             "title": "Integration delivers the declared payload",
             "implementation_satisfied": false
           },
@@ -742,22 +968,22 @@
             "implementation_satisfied": false
           },
           {
-            "ref": "ir:ir_5ef0f573",
-            "title": "Export orders",
+            "ref": "ir:ir_19f23a69",
+            "title": "Publish orders",
             "implementation_satisfied": false
           },
           {
-            "ref": "ir:ir_ed6ce012",
-            "title": "Publish orders",
+            "ref": "ir:ir_472c9dab",
+            "title": "Export orders",
             "implementation_satisfied": false
           }
         ],
         "satisfied": false
       },
       {
-        "card_id": "test-card",
-        "complete": false,
-        "title": "Observe blocking",
+        "card_id": "test-ir_19f23a69",
+        "complete": true,
+        "title": "Verify Publish orders",
         "card_version": 1,
         "delivery_revision": 0,
         "selection": {
@@ -797,12 +1023,12 @@
             "implementation_satisfied": false
           },
           {
-            "ref": "ac:ac-ir_5ef0f573",
+            "ref": "ac:ac-ir_19f23a69",
             "title": "Integration delivers the declared payload",
             "implementation_satisfied": false
           },
           {
-            "ref": "ac:ac-ir_ed6ce012",
+            "ref": "ac:ac-ir_472c9dab",
             "title": "Integration delivers the declared payload",
             "implementation_satisfied": false
           },
@@ -817,13 +1043,88 @@
             "implementation_satisfied": false
           },
           {
-            "ref": "ir:ir_5ef0f573",
-            "title": "Export orders",
+            "ref": "ir:ir_19f23a69",
+            "title": "Publish orders",
             "implementation_satisfied": false
           },
           {
-            "ref": "ir:ir_ed6ce012",
+            "ref": "ir:ir_472c9dab",
+            "title": "Export orders",
+            "implementation_satisfied": false
+          }
+        ],
+        "satisfied": false
+      },
+      {
+        "card_id": "test-ir_472c9dab",
+        "complete": true,
+        "title": "Verify Export orders",
+        "card_version": 1,
+        "delivery_revision": 0,
+        "selection": {
+          "total": 0,
+          "truncated": false,
+          "records": []
+        },
+        "accumulated_impact": {
+          "contract_version": "delivery-net-impact/v1",
+          "status": "empty",
+          "claim_only": true,
+          "history_count": 0,
+          "sources": [],
+          "issues": [],
+          "issue_count": 0,
+          "issues_truncated": false
+        },
+        "report_impact": {
+          "source": "manual_or_absent",
+          "current": null,
+          "reason": null
+        },
+        "progress": {
+          "target_options": [],
+          "targets_truncated": false,
+          "total": 0,
+          "truncated": false,
+          "recovery_verified": false,
+          "items": []
+        },
+        "card_type": "test",
+        "status": "not_started",
+        "obligations": [
+          {
+            "ref": "ac:ac",
+            "title": "Five failures block access",
+            "implementation_satisfied": false
+          },
+          {
+            "ref": "ac:ac-ir_19f23a69",
+            "title": "Integration delivers the declared payload",
+            "implementation_satisfied": false
+          },
+          {
+            "ref": "ac:ac-ir_472c9dab",
+            "title": "Integration delivers the declared payload",
+            "implementation_satisfied": false
+          },
+          {
+            "ref": "br:br",
+            "title": "Limit failed login attempts",
+            "implementation_satisfied": false
+          },
+          {
+            "ref": "fr:fr",
+            "title": "Block after five failures",
+            "implementation_satisfied": false
+          },
+          {
+            "ref": "ir:ir_19f23a69",
             "title": "Publish orders",
+            "implementation_satisfied": false
+          },
+          {
+            "ref": "ir:ir_472c9dab",
+            "title": "Export orders",
             "implementation_satisfied": false
           }
         ],
@@ -834,7 +1135,7 @@
   },
   "promoted": [
     {
-      "id": "ir_ed6ce012",
+      "id": "ir_19f23a69",
       "title": "Publish orders",
       "integration_type": "event",
       "description": "",
@@ -867,7 +1168,7 @@
       }
     },
     {
-      "id": "ir_5ef0f573",
+      "id": "ir_472c9dab",
       "title": "Export orders",
       "integration_type": "file",
       "description": "",
@@ -908,16 +1209,16 @@
     "edition": 2,
     "spec_version": 3,
     "card_version": 1,
-    "delivery_revision": 1,
+    "delivery_revision": 2,
     "card_type": "normal",
-    "status": "in_progress",
+    "status": "done",
     "spec_status": "in_progress",
     "title": "Implement blocking",
     "latest_checkpoint": {
-      "id": "card_delivery_158bd0ea08a54b0eb3f61b1509b5a714",
+      "id": "card_delivery_cd6dac1774aa45f4ac83cee54fdac3bb",
       "actor_id": "executor",
       "actor_kind": "agent",
-      "created_at": "2026-10-08T10:31:27.839051+00:00",
+      "created_at": "2026-10-08T10:45:43.820680+00:00",
       "revoked": false,
       "summary": "Failed-attempt counter implemented; blocking and integration remain",
       "remaining": "Normalization and tests",
@@ -940,9 +1241,9 @@
       "card_version": 1,
       "current_edition": 2,
       "historical": false,
-      "status": "in_progress",
+      "status": "done",
       "status_scope": "current_card",
-      "delivery_revision": 1,
+      "delivery_revision": 2,
       "total": 1,
       "next_cursor": null,
       "recovery_verified": false,
@@ -950,10 +1251,10 @@
       "detail": false,
       "items": [
         {
-          "id": "card_delivery_158bd0ea08a54b0eb3f61b1509b5a714",
+          "id": "card_delivery_cd6dac1774aa45f4ac83cee54fdac3bb",
           "actor_id": "executor",
           "actor_kind": "agent",
-          "created_at": "2026-10-08T10:31:27.839051+00:00",
+          "created_at": "2026-10-08T10:45:43.820680+00:00",
           "revoked": false,
           "summary": "Failed-attempt counter implemented; blocking and integration remain",
           "remaining": "Normalization and tests",
@@ -982,20 +1283,27 @@
       "issues_truncated": false
     },
     "obligations": {
-      "complete": false,
-      "total": 6,
+      "complete": true,
+      "total": 7,
       "truncated": false,
       "items": [
         {
-          "ref": "ac:ac-ir_5ef0f573",
-          "semantic_sha256": "8c6caff271648c449d89057bda298dc3e9b06d52bf5beb21474d3f0e69a8cfc4",
+          "ref": "ac:ac",
+          "semantic_sha256": "baf78a9cb3f049dcaa63770f8670f7c8304c75f0ea8d19249b6c474ff7ffb8a6",
+          "title": "Five failures block access",
+          "implementation_satisfied": true,
+          "test_satisfied": true
+        },
+        {
+          "ref": "ac:ac-ir_19f23a69",
+          "semantic_sha256": "7a18ef64c5ac42af19aa9ef0811e5b093bc3e9a0c097ddadbe461656b81862a9",
           "title": "Integration delivers the declared payload",
           "implementation_satisfied": false,
           "test_satisfied": false
         },
         {
-          "ref": "ac:ac-ir_ed6ce012",
-          "semantic_sha256": "b3a22e70a9e810193be8027fe148ac7c05578ef93f257b5cca67f75175569222",
+          "ref": "ac:ac-ir_472c9dab",
+          "semantic_sha256": "5ce4e80fc183279b15e9fdf2c3893f28fa1f7dbc24c06959822da641430f3725",
           "title": "Integration delivers the declared payload",
           "implementation_satisfied": false,
           "test_satisfied": false
@@ -1004,98 +1312,158 @@
           "ref": "br:br",
           "semantic_sha256": "7e4e1db34b62250bc03aa0027a32becb32b98e7361cfad3664cf8f071543054b",
           "title": "Limit failed login attempts",
-          "implementation_satisfied": false,
-          "test_satisfied": false
+          "implementation_satisfied": true,
+          "test_satisfied": true
         },
         {
           "ref": "fr:fr",
           "semantic_sha256": "8c2bb4bfc3c39a43092b5863864d7c55cbb8655c6fea78011383c9e9a9bbb75c",
           "title": "Block after five failures",
-          "implementation_satisfied": false,
-          "test_satisfied": false
+          "implementation_satisfied": true,
+          "test_satisfied": true
         },
         {
-          "ref": "ir:ir_5ef0f573",
-          "semantic_sha256": "43ac2c7e1a8463da8f3f75900248edcb029c63ee7d7360fdb360adfc0cd7c0c3",
-          "title": "Export orders",
-          "implementation_satisfied": false,
-          "test_satisfied": false
-        },
-        {
-          "ref": "ir:ir_ed6ce012",
-          "semantic_sha256": "ac78830f907e2842d811a0305fb400a90be432e238f9cd16320aba17a37a04fa",
+          "ref": "ir:ir_19f23a69",
+          "semantic_sha256": "2a03bfcf76d80d53892e2d5ec0689b47bec84ef79a5f845f921f4604e21dad31",
           "title": "Publish orders",
+          "implementation_satisfied": false,
+          "test_satisfied": false
+        },
+        {
+          "ref": "ir:ir_472c9dab",
+          "semantic_sha256": "8b3a23dcddeb1e735c93ae4c2e3af2ff39f45e1108fdf8eba01e24e8a6df4f25",
+          "title": "Export orders",
           "implementation_satisfied": false,
           "test_satisfied": false
         }
       ]
     },
     "implementation_proofs": {
-      "total": 0,
+      "total": 1,
       "truncated": false,
-      "items": []
+      "items": [
+        {
+          "record_id": "card_delivery_c25622b1959049f2b8ae10660b2fedf7",
+          "actor_id": "agent-1",
+          "executions": [
+            {
+              "execution_id": "execution",
+              "source_ref": "source-main",
+              "result_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "relative_path": "src/file.py"
+            }
+          ],
+          "execution_total": 1,
+          "executions_truncated": false,
+          "current_obligation_refs": [
+            "fr:fr",
+            "br:br",
+            "ac:ac"
+          ],
+          "current_obligation_total": 3,
+          "bindings_truncated": false,
+          "contributions": [
+            {
+              "obligation_ref": "fr:fr",
+              "declaration": "complete",
+              "execution_ids": [
+                "execution"
+              ]
+            },
+            {
+              "obligation_ref": "br:br",
+              "declaration": "complete",
+              "execution_ids": [
+                "execution"
+              ]
+            },
+            {
+              "obligation_ref": "ac:ac",
+              "declaration": "complete",
+              "execution_ids": [
+                "execution"
+              ]
+            }
+          ]
+        }
+      ]
     },
     "verification_plan": {
       "complete": true,
       "status": "resolved",
       "total": 3,
       "truncated": false,
-      "test_card_total": 1,
+      "test_card_total": 3,
       "test_cards_truncated": false,
       "items": [
         {
           "scenario_id": "ts",
-          "method": "automated_test",
+          "method": "demonstration",
           "criterion_ids": [
             "ac"
           ],
           "test_card_ids": [
             "test-card"
           ],
-          "blockers": [
-            "verification_method_unsupported"
-          ],
+          "blockers": [],
           "links_truncated": false
         },
         {
-          "scenario_id": "ts-ir_5ef0f573",
+          "scenario_id": "ts-ir_19f23a69",
           "method": "automated_test",
           "criterion_ids": [
-            "ac-ir_5ef0f573"
+            "ac-ir_19f23a69"
           ],
-          "test_card_ids": [],
-          "blockers": [
-            "verification_method_unsupported",
-            "verification_test_card_required"
+          "test_card_ids": [
+            "test-ir_19f23a69"
           ],
+          "blockers": [],
           "links_truncated": false
         },
         {
-          "scenario_id": "ts-ir_ed6ce012",
+          "scenario_id": "ts-ir_472c9dab",
           "method": "automated_test",
           "criterion_ids": [
-            "ac-ir_ed6ce012"
+            "ac-ir_472c9dab"
           ],
-          "test_card_ids": [],
-          "blockers": [
-            "verification_method_unsupported",
-            "verification_test_card_required"
+          "test_card_ids": [
+            "test-ir_472c9dab"
           ],
+          "blockers": [],
           "links_truncated": false
         }
       ]
     },
     "tests": {
       "scope": "card_and_related_obligations",
-      "total": 0,
-      "total_exact": false,
+      "total": 1,
+      "total_exact": true,
       "truncated": false,
-      "items": []
+      "items": [
+        {
+          "record_id": "card_delivery_28bd1c3101804271a925623d3d15b421",
+          "scenario_id": "ts",
+          "card_id": "test-card",
+          "actor_id": "agent-1",
+          "result": "passed",
+          "observes_this_card": true,
+          "current_verified_run": true
+        }
+      ]
     },
     "targets": {
-      "total": 0,
+      "total": 1,
       "truncated": false,
-      "items": []
+      "items": [
+        {
+          "id": "target",
+          "revision": 1,
+          "source_ref": "source-main",
+          "relative_path": "src/file.py",
+          "resolution_id": null,
+          "role": "modify"
+        }
+      ]
     },
     "recovery": {
       "verified": false,
@@ -1122,6 +1490,20 @@
           "board_id": "board",
           "spec_id": "spec",
           "card_id": "test-card",
+          "view": "ledger"
+        },
+        {
+          "tool": "okto_pulse_get_delivery_evidence",
+          "board_id": "board",
+          "spec_id": "spec",
+          "card_id": "test-ir_19f23a69",
+          "view": "ledger"
+        },
+        {
+          "tool": "okto_pulse_get_delivery_evidence",
+          "board_id": "board",
+          "spec_id": "spec",
+          "card_id": "test-ir_472c9dab",
           "view": "ledger"
         }
       ],
