@@ -388,3 +388,55 @@ async def test_equivalent_copy_and_layout_keep_persisted_classification_identity
     assert {row.id: row.payload for row in
             (await db.scalars(select(ArchitectureCandidateDecisionRow))).all()} == history
     assert (await writes.snapshot(db))[0].integration_requirements == irs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("access", ["health_only", "restricted"])
+@pytest.mark.parametrize("selector", ["summary", "old_page", "detail", "reverse"])
+async def test_restricted_actor_cannot_reuse_read_selectors_or_cached_scope(
+    classified_context, monkeypatch, access, selector,
+):
+    from okto_pulse.core.domain.permissions import ALL_FLAGS
+    from okto_pulse.core.ports.permission_policy import PermissionSet, set_permission_flag
+
+    db = classified_context
+    await writes.execute(db, await writes.batch_for(db))
+    visible = await review(db, limit=1)
+    item = visible["items"][0]
+    app, factory = transports.application(db)
+    transports.mcp_factory(monkeypatch, factory)
+    who = writes.actor()
+    flags = {}
+    for flag in ALL_FLAGS:
+        set_permission_flag(flags, flag, flag in (
+            {"kg.operations.health.read"} if access == "health_only"
+            else {"spec.entity.read", "spec.architecture.read"}
+        ))
+    who.permissions = PermissionSet(flags)
+    monkeypatch.setattr(RESTAdapterContract, "actor", staticmethod(lambda *args, **kwargs: who))
+    # A previously authorized page/detail selector conveys no new authority.
+    params = {
+        "summary": {},
+        "old_page": {"offset": 1, "limit": 1},
+        "detail": {"candidate_id": item["candidate_id"], "source_digest": item["current_source_digest"]},
+        "reverse": {"requirement_type": "integration_requirement", "requirement_id": "ir_existing"},
+    }[selector]
+    suffix = "requirement-verification" if selector == "reverse" else "architecture-classifications"
+    statements = []
+    def capture(conn, cursor, sql, parameters, context, many):
+        statements.append(sql.lower())
+    await db.rollback()
+    event.listen(db.bind.sync_engine, "before_cursor_execute", capture)
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get(f"/api/v1/boards/board/specs/spec/{suffix}", params=params)
+    finally:
+        event.remove(db.bind.sync_engine, "before_cursor_execute", capture)
+    assert response.status_code == 403, response.text
+    for hidden in ("ir_existing", item["candidate_id"], item["current_source_digest"], "state_counts", "population_total"):
+        assert hidden not in response.text
+    assert not any(
+        "architecture_designs" in sql or "architecture_candidate_decisions" in sql
+        or "specs.integration_requirements" in sql or "specs.functional_requirements" in sql
+        for sql in statements
+    )
