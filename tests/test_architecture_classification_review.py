@@ -346,3 +346,35 @@ async def test_public_review_cannot_expose_ir_bindings_to_architecture_only_read
     )
     assert response.status_code == native["status_code"] == 403
     assert "ir_existing" not in json.dumps(native) + response.text
+
+@pytest.mark.asyncio
+async def test_equivalent_copy_and_layout_keep_persisted_classification_identity(classified_context):
+    db = classified_context
+    await writes.execute(db, await writes.batch_for(db))
+    before = await review(db)
+    history = {row.id: dict(row.payload) for row in
+               (await db.scalars(select(ArchitectureCandidateDecisionRow))).all()}
+    irs = (await writes.snapshot(db))[0].integration_requirements
+    db.add(sources.design("context-copy", root="context", value="adopted", version=5))
+    await db.execute(update(ArchitectureDesign).where(ArchitectureDesign.id == "context").values(
+        interfaces=[{"id": "boundary", "name": "Boundary", "event_schema": {"const": "adopted"},
+                     "layout": {"x": 900, "y": 75}}],
+        version=7,
+    ))
+    await db.commit()
+    population = await sources.read(db)
+    assert population.resolved and len(population.candidates) == 3
+    candidate = next(item for item in population.candidates if item.root_design_id == "context")
+    assert set(candidate.adopted_sources) == {("context", 7), ("context-copy", 5)}
+    after = await review(db)
+    assert after["classification_complete"]
+    assert after["state_counts"] == before["state_counts"]
+    assert {item["candidate_id"] for item in after["items"]} == {
+        item["candidate_id"] for item in before["items"]}
+    detail = (await review(db, candidate_id=candidate.id,
+                           source_digest=candidate.source_digest))["items"][0]
+    assert detail["state"] == "current" and detail["changed_paths"] == []
+    assert detail["decisions"][0]["adopted_sources"] == [{"design_id": "context", "revision": 1}]
+    assert {row.id: row.payload for row in
+            (await db.scalars(select(ArchitectureCandidateDecisionRow))).all()} == history
+    assert (await writes.snapshot(db))[0].integration_requirements == irs
