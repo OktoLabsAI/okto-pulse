@@ -715,8 +715,7 @@ def cmd_init(args):
             await init_db()
             session_factory = get_session_factory()
 
-            # The demo seed is optional and may be skipped. Register the full
-            # Community composition independently of that path, after the
+            # Register the full Community composition after the
             # relational schema exists and before any seed/bootstrap work.
             # Passing settings explicitly avoids resolving an implicit Core
             # fallback configuration.
@@ -784,13 +783,7 @@ def cmd_init(args):
 
             return revealed_agents
         finally:
-            # ``init`` is a complete runtime lifecycle, not just a relational
-            # migration command.  The demo consolidation and the primary-board
-            # bootstrap both leave graph Database handles in the process-wide
-            # cache.  Closing only SQLite lets interpreter teardown strand recent
-            # commits in graph.lbug.wal (and can make strict WAL replay reject the
-            # fresh Demo graph).  Reuse the same checkpoint+close boundary as the
-            # server shutdown, off the event loop, before disposing SQLite.
+            # Close graph handles before disposing SQLite, as on server shutdown.
             try:
                 await asyncio.to_thread(close_all_graphs_on_shutdown)
             finally:

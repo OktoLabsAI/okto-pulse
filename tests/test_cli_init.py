@@ -99,10 +99,10 @@ def test_init_subparser_no_args_shows_help(tmp_path):
     assert result.stdout or result.stderr
 
 
-def test_init_registers_community_kg_before_demo_skip_and_fails_closed(
+def test_init_registers_community_kg_before_seed_and_fails_closed(
     tmp_path, monkeypatch, capsys
 ):
-    """A skipped demo cannot be the hidden owner of KG composition wiring."""
+    """KG composition is registered before seeding."""
     import okto_pulse.core as core
     import okto_pulse.community.adapters.composition as composition
     import okto_pulse.community.adapters.kg_shutdown as kg_shutdown
@@ -143,9 +143,8 @@ def test_init_registers_community_kg_before_demo_skip_and_fails_closed(
         events.append("configure_community_kg")
 
     async def fake_seed(_db, *, on_primary_committed=None):
-        assert os.environ[community_seed.DEMO_SKIP_ENV] == "1"
         assert events[-1] == "configure_community_kg"
-        events.append("seed_demo_skipped")
+        events.append("seed_primary")
         seeded = (
             SimpleNamespace(id="board-1", name="My Board"),
             SimpleNamespace(name="Local Agent"),
@@ -165,7 +164,6 @@ def test_init_registers_community_kg_before_demo_skip_and_fails_closed(
         assert board_id == "board-1"
         events.append("initialize_board_route")
 
-    monkeypatch.setenv(community_seed.DEMO_SKIP_ENV, "1")
     monkeypatch.setattr(cli, "_fail_fast_if_server_running", lambda _op: None)
     monkeypatch.setattr(community_config, "CommunitySettings", Settings)
     monkeypatch.setattr(community_main, "_ensure_data_dir", lambda _settings: None)
@@ -218,7 +216,7 @@ def test_init_registers_community_kg_before_demo_skip_and_fails_closed(
     assert events == [
         "init_db",
         "configure_community_kg",
-        "seed_demo_skipped",
+        "seed_primary",
         "initialize_board_route",
         "bootstrap",
         "kg_shutdown",
@@ -281,9 +279,7 @@ def test_init_real_engine_closes_wals_and_reopens_every_graph_strictly_offline(
             "OKTO_PULSE_SKIP_DEMO_SEED": "0",
             "OKTO_PULSE_NO_BANNER": "1",
             "PYTHONUTF8": "1",
-            # Keep the normal runtime semantic. The demo must override this in
-            # its isolated provider scope and therefore succeed with a brand-new,
-            # offline cache containing no model weights.
+            # Empty initialization must work offline without downloading model weights.
             "KG_EMBEDDING_MODE": "sentence-transformers",
             "HF_HOME": str(hf_home),
             "SENTENCE_TRANSFORMERS_HOME": str(hf_home),
@@ -341,15 +337,10 @@ def test_init_real_engine_closes_wals_and_reopens_every_graph_strictly_offline(
     finally:
         conn.close()
 
-    assert [name for _board_id, name in boards] == ["Demo", "My Board"]
-    assert cards == [
-        ("Demo", "Demo Normal Card", "not_started", "normal"),
-        ("Demo", "Demo Bug Card", "not_started", "bug"),
-        ("Demo", "Demo Test Card", "not_started", "test"),
-    ]
+    assert [name for _board_id, name in boards] == ["My Board"]
+    assert cards == []
 
     expected_counts = {
-        "Demo": (5, 3),  # BoardMeta + 4 cognitive nodes, all connected.
         "My Board": (1, 0),  # Schema bootstrap materializes BoardMeta only.
     }
     store = CommunityGraphBackendBindingStore(pulse_home)
