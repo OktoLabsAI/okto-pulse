@@ -238,7 +238,7 @@ class GraphStorageRoute(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     scope: Literal["board", "global"]
-    backend: Literal["ladybug", "grafx"] | None = None
+    backend: Literal["grafx"] | None = None
     binding_status: Literal["bound", "missing", "unavailable"] = "unavailable"
     generation: str | None = None
     page_size: int | None = None
@@ -294,6 +294,9 @@ def _graph_storage_route(
     except (AttributeError, TypeError, ValueError):
         # A path outside the configured storage root is never disclosed.  The
         # route authority is inconsistent, so Health reports it fail-closed.
+        return _unavailable_graph_storage(scope)
+
+    if snapshot.backend != "grafx":
         return _unavailable_graph_storage(scope)
 
     return GraphStorageRoute(
@@ -383,7 +386,7 @@ class KGHealthResponse(BaseModel):
     recent_events: list[RecentHealthEvent] = []
     checked_at: str
 
-    # --- Legacy / dashboard fields (preserved for backward compatibility) ---
+    # --- Current dashboard observations ---
     queue_depth: int
     oldest_pending_age_s: float | None
     dead_letter_count: int
@@ -392,8 +395,7 @@ class KGHealthResponse(BaseModel):
     default_score_count: int | None
     default_score_ratio: float | None
     avg_relevance: float | None
-    schema_version: str
-    health_schema_version: str = "1.3"
+    health_schema_version: Literal["1.3"]
     graph_schema_version: str | None = None
     source_count: int | None = None
     contradict_warn_count: int

@@ -46,7 +46,6 @@ const baseHealth: KGHealth = {
     { id: 'entity_aaa', type: 'Entity', degree: 0 },
     { id: 'decision_bbb', type: 'Decision', degree: 1 },
   ],
-  schema_version: '1.0',
   contradict_warn_count: 2,
   last_decay_tick_at: new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString(),
   nodes_recomputed_in_last_tick: 142,
@@ -289,7 +288,6 @@ describe('TS1 — mount inicial dispara 1 fetch e renderiza cards principais', (
     mockBoard('b1');
     mockApi(() => Promise.resolve({
       ...baseHealth,
-      schema_version: '1.0',
       health_schema_version: '1.3',
     }));
 
@@ -470,13 +468,23 @@ describe('TS6 — schema banner', () => {
     mockBoard('b1');
     mockApi(() => Promise.resolve({
       ...baseHealth,
-      schema_version: '1.0',
       health_schema_version: '1.3',
     }));
 
     render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
     await waitFor(() => expect(screen.getByText('Decay Scheduler')).toBeInTheDocument());
     expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('refuses a missing current version even when an old alias is present', async () => {
+    mockBoard('b1');
+    mockApi(() => Promise.resolve({
+      ...baseHealth,
+      health_schema_version: undefined,
+      schema_version: '1.3',
+    } as unknown as KGHealth));
+    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Schema outdated/);
   });
 
   it('mismatch (2.0) → red full-width banner with exact text', async () => {

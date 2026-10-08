@@ -123,7 +123,7 @@ export function GraphVisibilityMismatchState({
           <div className="rounded border border-surface-200 dark:border-surface-700 px-3 py-2">
             <div className="font-semibold text-surface-800 dark:text-surface-200">Schemas</div>
             <div>{schemaLabel}</div>
-            <div>Health schema {health.health_schema_version ?? health.schema_version}</div>
+            <div>Health schema {health.health_schema_version}</div>
           </div>
           <div className="rounded border border-surface-200 dark:border-surface-700 px-3 py-2">
             <div className="font-semibold text-surface-800 dark:text-surface-200">Tick</div>

@@ -254,8 +254,7 @@ export function KGHealthView({
                   <StorageFootprintCard proxy={data.storage_footprint_proxy ?? null} />
                 </div>
               <SchemaTickCard
-                schemaVersion={data.schema_version}
-                healthSchemaVersion={data.health_schema_version ?? data.schema_version}
+                healthSchemaVersion={data.health_schema_version}
                 graphSchemaVersion={data.graph_schema_version ?? null}
                 schemaMismatch={Boolean(schemaMismatch)}
                 tickInfo={tickInfo}
@@ -445,7 +444,6 @@ function SchemaBanner({ expected, received }: SchemaBannerProps) {
 }
 
 interface SchemaTickCardProps {
-  schemaVersion: string;
   healthSchemaVersion: string;
   graphSchemaVersion: string | null;
   schemaMismatch: boolean;
@@ -458,7 +456,6 @@ interface SchemaTickCardProps {
 }
 
 function SchemaTickCard({
-  schemaVersion,
   healthSchemaVersion,
   graphSchemaVersion,
   schemaMismatch,
@@ -489,7 +486,7 @@ function SchemaTickCard({
     : 'unavailable';
   return (
     <Card title="Decay Scheduler" testId="kg-health-card" icon={<Database className="w-4 h-4" aria-hidden />}>
-      <Row label="Schema version">
+      <Row label="Health schema">
         <span
           className={`text-sm font-mono px-2 py-0.5 rounded ${
             schemaMismatch
@@ -497,12 +494,7 @@ function SchemaTickCard({
               : 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300'
           }`}
         >
-          {schemaVersion} {schemaMismatch ? '✕' : '✓'}
-        </span>
-      </Row>
-      <Row label="Health schema">
-        <span className="text-sm font-mono text-surface-700 dark:text-surface-300">
-          {healthSchemaVersion}
+          {healthSchemaVersion} {schemaMismatch ? '✕' : '✓'}
         </span>
       </Row>
       <Row label="Graph schema">

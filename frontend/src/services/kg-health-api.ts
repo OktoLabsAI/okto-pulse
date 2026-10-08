@@ -101,7 +101,7 @@ export interface KGOperationalDomain {
 
 export interface KGGraphStorageRoute {
   scope: 'board' | 'global';
-  backend: 'ladybug' | 'grafx' | null;
+  backend: 'grafx' | null;
   binding_status: 'bound' | 'missing' | 'unavailable';
   generation: string | null;
   page_size: number | null;
@@ -127,7 +127,6 @@ export interface KGHealth {
   default_score_ratio: number | null;
   avg_relevance: number | null;
   top_disconnected_nodes: TopDisconnectedNode[];
-  schema_version: string;
   graph_schema_version?: string | null;
   source_count?: number | null;
   contradict_warn_count: number;

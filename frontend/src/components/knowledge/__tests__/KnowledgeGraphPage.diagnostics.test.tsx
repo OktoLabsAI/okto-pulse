@@ -112,7 +112,6 @@ const health: KGHealth = {
   default_score_ratio: 0,
   avg_relevance: 0.0057,
   top_disconnected_nodes: [],
-  schema_version: '1.0',
   health_schema_version: '1.3',
   graph_schema_version: '0.3.3',
   contradict_warn_count: 0,

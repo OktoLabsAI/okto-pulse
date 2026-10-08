@@ -20,7 +20,8 @@ def test_response_model_owns_the_atomic_schema_1_1_fields() -> None:
     fields = KGHealthResponse.model_fields
 
     assert KGHealthResponse.model_config.get("extra") == "forbid"
-    assert fields["health_schema_version"].default == "1.3"
+    assert fields["health_schema_version"].is_required()
+    assert "schema_version" not in fields
     assert "materialization_state" in fields
     assert "materialization_generation" in fields
     assert "probe_reason_codes" in fields
@@ -33,6 +34,7 @@ def test_response_model_owns_the_atomic_schema_1_1_fields() -> None:
 
 def test_materialization_contract_defaults_fail_closed() -> None:
     response = KGHealthResponse.model_construct(
+        health_schema_version="1.3",
         board_id="board-schema-1-1",
         correlation_id="corr-schema-1-1",
         checked_at="2026-07-16T00:00:00+00:00",
@@ -61,9 +63,9 @@ def test_graph_storage_snapshot_reports_the_authenticated_active_routes(
         page_size=8192,
     )
     global_route = SimpleNamespace(
-        backend="ladybug",
-        active_path=tmp_path / "global" / "discovery.lbug",
-        generation="legacy",
+        backend="grafx",
+        active_path=tmp_path / "global" / "grafx" / "generation-8",
+        generation="generation-8",
         page_size=None,
     )
     resolver = SimpleNamespace(
@@ -86,9 +88,9 @@ def test_graph_storage_snapshot_reports_the_authenticated_active_routes(
     }
     assert snapshot.global_graph.model_dump() == {
         "scope": "global",
-        "backend": "ladybug",
+        "backend": "grafx",
         "binding_status": "bound",
-        "generation": "legacy",
+        "generation": "generation-8",
         "page_size": None,
     }
     assert "physical_path" not in GraphStorageRoute.model_fields
@@ -137,3 +139,23 @@ def test_public_route_uses_only_inspection_and_preserves_unavailability(tmp_path
     assert result.backend == ("grafx" if status == "bound" else None)
     encoded = result.model_dump_json()
     assert all(value not in encoded for value in ("physical_path", "private", "foreign", "token", str(tmp_path)))
+
+
+@pytest.mark.parametrize("version", [None, "1.0", "1.1", "2.0"])
+def test_health_does_not_infer_or_accept_another_response_version(version):
+    from pydantic import ValidationError
+    payload = {} if version is None else {"health_schema_version": version}
+    with pytest.raises(ValidationError) as exc:
+        KGHealthResponse.model_validate(payload)
+    assert any(error["loc"] == ("health_schema_version",) for error in exc.value.errors())
+
+
+def test_retired_backend_is_unavailable_without_opening_or_converting(tmp_path):
+    route = SimpleNamespace(backend="ladybug", active_path=tmp_path / "old",
+                            generation="old", page_size=None)
+    resolver = SimpleNamespace(inspect_board_route=lambda board_id: route)
+    result = _graph_storage_route(resolver=resolver, storage_root=tmp_path,
+                                  scope="board", board_id="b")
+    assert result.backend is None
+    assert result.binding_status == "unavailable"
+    assert not list(tmp_path.iterdir())
