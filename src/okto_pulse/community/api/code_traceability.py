@@ -1236,14 +1236,14 @@ async def get_delivery_evidence(board_id: str, spec_id: str, response: Response,
 
 @router.post("/{board_id}/specs/{spec_id}/delivery-evidence")
 async def record_delivery_evidence(board_id: str, spec_id: str, body: DeliveryEvidenceInput, principal: Principal = Depends(require_principal), uow: PulseUnitOfWork = Depends(get_unit_of_work)) -> object:
-    """Legacy spec-scoped surface: waivers and their revocations (human-only)."""
+    """Spec-scoped exceptions: waivers and their revocations (human-only)."""
     command = DeliveryEvidenceCommand(board_id=board_id, spec_id=spec_id, **body.model_dump())
     return await _execute(RecordDeliveryEvidenceUseCase(), command, board_id=board_id, principal=principal, uow=uow)
 
 
 @router.post("/{board_id}/cards/{card_id}/specs/{spec_id}/delivery-evidence")
 async def record_card_delivery_evidence(board_id: str, card_id: str, spec_id: str, body: CardDeliveryRecordInput, principal: Principal = Depends(require_principal), uow: PulseUnitOfWork = Depends(get_unit_of_work)) -> object:
-    """Card-scoped recording surface (0.3.4, spec 793c43d0 / FR-7).
+    """Canonical card-scoped delivery recording surface.
 
     The task owns its implementation/test bindings; the command carries the
     card CAS fence. Waivers are not accepted here (BR-3).

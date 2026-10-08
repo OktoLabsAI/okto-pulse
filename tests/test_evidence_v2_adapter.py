@@ -120,6 +120,7 @@ async def _produce(
     tmp_path: Path,
     *,
     observed: str = "0.3.0",
+    executed_at: str = "2026-07-14T15:00:00Z",
     ledger: CommunityEvidenceLedger | None = None,
 ):
     ledger = ledger or _ledger(tmp_path)
@@ -133,7 +134,7 @@ async def _produce(
         return ProductExecutionObservation(
             run_id="community-run-1",
             outcome="passed",
-            executed_at="2026-07-14T15:00:00Z",
+            executed_at=executed_at,
             assertions=(
                 {
                     "name": "about-version",

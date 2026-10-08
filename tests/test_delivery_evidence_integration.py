@@ -63,17 +63,18 @@ from test_evidence_v2_adapter import (
 async def ledger(tmp_path, request):
     native_lifecycle = getattr(request, "param", None) == "native_bug_lifecycle"
     native_bug = native_lifecycle or getattr(request, "param", None) == "native_bug"
-    if native_bug:
+    native_schema = native_bug or getattr(request, "param", None) == "native_schema"
+    if native_schema:
         from okto_pulse.community.adapters.sqlalchemy_database import build_community_engine, install_community_sqlite_pragmas
         engine = build_community_engine(f"sqlite+aiosqlite:///{tmp_path / 'delivery.sqlite'}")
         install_community_sqlite_pragmas(engine)
     else:
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'delivery.sqlite'}")
-    if native_bug:
+    if native_schema:
         from okto_pulse.community.adapters.current_relational_schema import current_schema_contract, initialize_current_schema
         await initialize_current_schema(engine, current_schema_contract())
     async with engine.begin() as conn:
-        if not native_bug:
+        if not native_schema:
             await conn.run_sync(Base.metadata.create_all)
         await conn.exec_driver_sql(
             "INSERT INTO boards (id, name, owner_id, realm_id) VALUES (?, 'Delivery', 'owner', 'local')",
@@ -105,7 +106,10 @@ async def ledger(tmp_path, request):
             )
             await conn.exec_driver_sql("UPDATE cards SET origin_task_id='origin' WHERE id='task'")
     session = build_community_session_factory(engine)()
-    evidence_ledger, _, evidence = await _produce(tmp_path)
+    now = datetime.now(timezone.utc) if native_schema else datetime(2026, 7, 14, 14, tzinfo=timezone.utc)
+    observation_time = (datetime.now(timezone.utc).isoformat()
+                        if native_schema and not native_bug else "2026-07-14T15:00:00Z")
+    evidence_ledger, _, evidence = await _produce(tmp_path, executed_at=observation_time)
     register_test_evidence_write_verifier(
         CommunityTestEvidenceWriteVerifier(ledger=evidence_ledger)
     )
@@ -136,7 +140,6 @@ async def ledger(tmp_path, request):
             ]
         )
     )
-    now = datetime.now(timezone.utc) if native_bug else datetime(2026, 7, 14, 14, tzinfo=timezone.utc)
     open_request, consumed, receipt, head, workspace = _attestation_bundle(
         now, subject_id="task"
     )
@@ -159,7 +162,7 @@ async def ledger(tmp_path, request):
         workspace_state=workspace,
         observation_sha256=observation,
     )
-    if native_bug:
+    if native_schema:
         from okto_pulse.community.adapters.sqlalchemy_code_traceability import CommunitySqlAlchemyCodeInvestigationStore
         investigation = CommunitySqlAlchemyCodeInvestigationStore(session)
         await investigation.create_request(replace(open_request, board_id=BOARD_ID))
@@ -574,6 +577,7 @@ async def test_old_signed_test_cannot_be_associated_with_newer_source_observatio
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("ledger", [None, "native_schema"], indirect=True)
 async def test_rest_roundtrip_closed_schema_and_domain_errors(ledger, monkeypatch):
     from test_code_traceability_rest import _projection_rest_app
     from okto_pulse.core.application.use_cases import delivery_evidence as app
@@ -598,7 +602,7 @@ async def test_rest_roundtrip_closed_schema_and_domain_errors(ledger, monkeypatc
         read_url = f"/boards/{BOARD_ID}/specs/{SPEC_ID}/delivery-evidence"
         response = await client.get(read_url)
         assert response.status_code == 200 and response.json()["allowed"] is False
-        # Card-scoped recording surface (0.3.4, spec 793c43d0 / FR-7).
+        # Canonical card-scoped recording surface.
         url = f"/boards/{BOARD_ID}/cards/task/specs/{SPEC_ID}/delivery-evidence"
         test_url = f"/boards/{BOARD_ID}/cards/test/specs/{SPEC_ID}/delivery-evidence"
         payload = command().model_dump(exclude={"board_id", "card_id", "spec_id"})
@@ -620,16 +624,17 @@ async def test_rest_roundtrip_closed_schema_and_domain_errors(ledger, monkeypatc
             stale.status_code == 409
             and stale.json()["detail"]["code"] == "delivery_version_conflict"
         )
-        # The legacy spec surface stays for human-only waivers (BR-3) and
+        # The Spec exception surface serves human-only waivers (BR-3) and
         # rejects the card-scoped shape with the closed-schema 422.
-        legacy = await client.post(
+        rejected = await client.post(
             f"/boards/{BOARD_ID}/specs/{SPEC_ID}/delivery-evidence", json=payload
         )
-        assert legacy.status_code == 422
+        assert rejected.status_code == 422
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ["implementation", "test"])
+@pytest.mark.parametrize("ledger", [None, "native_schema"], indirect=True)
 async def test_legacy_spec_proof_writer_rejects_invisible_bindings(
     ledger, monkeypatch, kind
 ):
@@ -679,6 +684,7 @@ async def test_legacy_spec_proof_writer_rejects_invisible_bindings(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ["implementation", "test"])
+@pytest.mark.parametrize("ledger", [None, "native_schema"], indirect=True)
 async def test_direct_legacy_writer_cannot_bypass_closed_transport(ledger, monkeypatch, kind):
     """DEI-T53: both the public use case and persistence seam reject old writers."""
     from okto_pulse.core.application.use_cases import delivery_evidence as app
@@ -709,6 +715,7 @@ async def test_direct_legacy_writer_cannot_bypass_closed_transport(ledger, monke
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("ledger", [None, "native_schema"], indirect=True)
 async def test_mcp_runs_same_store_closed_inputs_permissions_and_explicit_errors(
     ledger, monkeypatch
 ):
