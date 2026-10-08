@@ -107,6 +107,10 @@ async def test_pending_architecture_blocks_actual_start_without_workflow_mutatio
     assert result.json()["detail"]["code"] == "spec_architecture_classification_incomplete", result.text
     assert result.json()["detail"]["details"]["blocking_candidate_count"] == 1
     assert result.json()["detail"]["details"]["blocking_candidate_ids"] == [pending_id]
+    remediation = result.json()["detail"]["details"]
+    assert remediation["required_tool"] == "okto_pulse_list_architecture_classifications"
+    assert remediation["follow_up_tool"] == "okto_pulse_classify_architecture_candidates"
+    assert "authorized Draft revision" in remediation["operator_action"]
     row = await db.get(Spec, "spec", populate_existing=True)
     assert row.status == "validated"
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
