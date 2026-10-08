@@ -67,11 +67,17 @@ async def test_new_storage_rejects_missing_adoption_scope(adopted_context, field
 
 
 @pytest_asyncio.fixture
-async def adopted_context(tmp_path):
+async def adopted_context(tmp_path, request):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'candidates.sqlite'}")
     try:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+        if getattr(request, "param", None) == "native_schema":
+            from okto_pulse.community.adapters.current_relational_schema import current_schema_contract, initialize_current_schema
+            from okto_pulse.community.adapters.sqlalchemy_database import install_community_sqlite_pragmas
+            install_community_sqlite_pragmas(engine)
+            await initialize_current_schema(engine, current_schema_contract())
+        else:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
         register_architecture_persistence_port(CommunitySqlAlchemyArchitecturePersistence())
         register_resource_gate_adapter_factory(CommunitySqlAlchemyResourceGateAdapter)
         install_policy_subject_versioning()

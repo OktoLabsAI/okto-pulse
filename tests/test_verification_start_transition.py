@@ -360,6 +360,7 @@ async def test_latency_and_alert_cannot_inherit_only_functional_http_success(ado
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("adopted_context", ["native_schema"], indirect=True)
 @pytest.mark.parametrize('case', ['vague_condition', 'unrelated_criterion', 'insufficient_inheritance'])
 @pytest.mark.parametrize('corrected', [False, True], ids=['review_rejects', 'condition_corrected'])
 async def test_semantic_review_is_distinct_from_structural_readiness(classified_context, tmp_path, case, corrected):
