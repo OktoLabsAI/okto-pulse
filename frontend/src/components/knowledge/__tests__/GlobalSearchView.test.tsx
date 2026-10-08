@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { GlobalSearchView } from '../GlobalSearchView';
@@ -689,3 +689,62 @@ describe('GlobalSearchView typed Discovery params', () => {
     });
   });
 });
+
+
+describe('Discovery Board isolation', () => {
+  it.each(['resolve', 'reject'] as const)(
+    'ignores a previous Board intent that settles by %s after switching',
+    async (outcome) => {
+      const query = intent(null);
+      vi.mocked(discoveryApi.listIntents).mockResolvedValue([query]);
+      let resolveOld!: (value: Awaited<ReturnType<typeof discoveryApi.executeIntent>>) => void;
+      let rejectOld!: (reason: Error) => void;
+      const old = new Promise<Awaited<ReturnType<typeof discoveryApi.executeIntent>>>(
+        (resolve, reject) => { resolveOld = resolve; rejectOld = reject; },
+      );
+      const response = (title: string) => ({
+        rows: [{ id: title, type: 'Spec', title, summary: 'Details',
+                 meta: { entity_type: 'spec', entity_id: title } }],
+        columns: ['Title'], total: 1, tool_binding: query.tool_binding,
+        params_echo: {}, execution: 'real_tool' as const,
+        intent_id: query.id, intent_name: query.name,
+      });
+      vi.mocked(discoveryApi.executeIntent)
+        .mockImplementationOnce(() => old)
+        .mockResolvedValueOnce(response('Current Board result'));
+      const view = render(<GlobalSearchView boardId="old-board" />);
+      fireEvent.click(await screen.findByTestId(`discovery-intent-${query.name}`));
+      await waitFor(() => expect(discoveryApi.executeIntent)
+        .toHaveBeenCalledWith(query.id, 'old-board', {}));
+      view.rerender(<GlobalSearchView boardId="current-board" />);
+      fireEvent.click(await screen.findByTestId(`discovery-intent-${query.name}`));
+      await screen.findByText('Current Board result');
+      await act(async () => {
+        if (outcome === 'resolve') resolveOld(response('Old Board result'));
+        else rejectOld(new Error('Old Board failure'));
+        await old.catch(() => undefined);
+      });
+      expect(screen.getByText('Current Board result')).toBeInTheDocument();
+      expect(screen.queryByText('Old Board result')).not.toBeInTheDocument();
+      expect(screen.queryByText('Old Board failure')).not.toBeInTheDocument();
+    },
+  );
+});
+
+
+it.each(['Permission denied', 'Search service unavailable'])(
+  'shows free-text search failure %s instead of a successful empty result',
+  async (message) => {
+    vi.mocked(discoveryApi.listIntents).mockResolvedValue([]);
+    vi.mocked(kgApi.globalSearch).mockRejectedValueOnce(new Error(message))
+      .mockResolvedValueOnce({ results: [], total: 0, graph_layer: 'canonical' });
+    render(<GlobalSearchView boardId={BOARD} />);
+    fireEvent.change(screen.getByTestId('discovery-search-input'), { target: { value: 'query' } });
+    fireEvent.click(screen.getByTestId('discovery-search-submit'));
+    expect(await screen.findByText(message)).toBeInTheDocument();
+    expect(screen.queryByText(/No results found/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('discovery-search-submit'));
+    expect(await screen.findByText(/No results found/)).toBeInTheDocument();
+    expect(screen.queryByText(message)).not.toBeInTheDocument();
+  },
+);

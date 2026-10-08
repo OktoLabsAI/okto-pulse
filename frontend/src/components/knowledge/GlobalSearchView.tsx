@@ -175,6 +175,12 @@ function humanizeCategory(category: string): string {
 }
 
 export function GlobalSearchView({ boardId }: Props) {
+  // Query results, inputs and selectors belong to one Board. Remounting also
+  // keeps late promises from publishing into a different Board's state.
+  return <BoardDiscoveryView key={boardId} boardId={boardId} />;
+}
+
+function BoardDiscoveryView({ boardId }: Props) {
   const [intents, setIntents] = useState<DiscoveryIntent[]>([]);
   const [loadingIntents, setLoadingIntents] = useState(true);
   const [activeIntent, setActiveIntent] = useState<DiscoveryIntent | null>(null);
@@ -497,8 +503,9 @@ export function GlobalSearchView({ boardId }: Props) {
     try {
       const data = await kgApi.globalSearch(trimmed, 20, 0.3, layer);
       setResults(data.results || []);
-    } catch {
+    } catch (error) {
       setResults([]);
+      setIntentError(error instanceof Error ? error.message : 'Failed to search');
     } finally {
       setLoading(false);
       // Scroll the results panel into view after the state settles.
