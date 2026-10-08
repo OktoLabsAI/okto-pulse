@@ -576,10 +576,29 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
         profile,
         context_scope: contextScope,
       });
-      return apiClient.fetchJson<CodeTraceabilityProjection>(
+      const readProjection = () => apiClient.fetchJson<CodeTraceabilityProjection>(
         `/boards/${encodeURIComponent(boardId)}/code-traceability-projection?${params.toString()}`,
         { signal: options.signal },
       );
+      try {
+        return await readProjection();
+      } catch (error) {
+        // A modal can outlive an MCP edit. Refresh this read once using the
+        // authorized response's current version; mutation fences stay unchanged.
+        if (!(error instanceof AuthenticatedFetchError)
+          || error.status !== 409
+          || error.code !== 'code_investigation_subject_version_conflict'
+          || !error.details || typeof error.details !== 'object') throw error;
+        const details = error.details as Record<string, unknown>;
+        const currentVersion = details.current_subject_version;
+        if (details.subject_type !== subjectType || details.subject_id !== subjectId
+          || details.expected_subject_version !== subjectVersion
+          || typeof currentVersion !== 'number' || !Number.isSafeInteger(currentVersion)
+          || currentVersion < 1 || currentVersion === subjectVersion) throw error;
+        options.signal?.throwIfAborted();
+        params.set('subject_version', String(currentVersion));
+        return readProjection();
+      }
     },
 
     async getValidationCycle(
