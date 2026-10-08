@@ -379,6 +379,37 @@ def test_literal_governance_routes_are_registered_before_legacy_param_routes() -
     )
 
 
+def test_revision_editor_shared_wire_contract() -> None:
+    """The frontend transport fixture must pass the actual closed REST boundary."""
+    fixture = json.loads(
+        (Path(__file__).parent / "fixtures/guideline_revision_editor_contract.json")
+        .read_text(encoding="utf-8")
+    )
+    facade = _Facade(results={"create_revision": fixture["response"]})
+    client, _ = _client(facade)
+    response = client.post(
+        "/api/v1/boards/board-b13/guidelines/guide-1/revisions",
+        json=fixture["request"],
+    )
+    assert response.status_code == 201, response.text
+    assert response.json() == fixture["response"]
+    assert facade.calls[-1][1]["patch"]["metrics"] == fixture["request"]["patch"]["metrics"]
+
+    before = len(facade.calls)
+    invalid = client.post(
+        "/api/v1/boards/board-b13/guidelines/guide-1/revisions",
+        json={
+            "expected_head_revision": 1,
+            "version_bump": "minor",
+            "content": {"title": "Architecture", "body": "Use ports"},
+            "metrics": fixture["request"]["patch"]["metrics"],
+        },
+    )
+    assert invalid.status_code == 400
+    assert invalid.json()["detail"]["code"] == "validation_failed"
+    assert len(facade.calls) == before
+
+
 def test_revision_projection_and_closed_body_plumb_to_one_facade() -> None:
     facade = _Facade()
     client, uow = _client(facade)

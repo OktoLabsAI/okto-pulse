@@ -96,6 +96,13 @@ function bumpLabel(bump: GuidelineVersionBump): string {
   return `${bump.charAt(0).toUpperCase()}${bump.slice(1)} bump`;
 }
 
+function nextSemanticVersion(current: string, bump: GuidelineVersionBump): string {
+  const [major, minor, patch] = current.split('.').map(Number);
+  if (bump === 'major') return `${major + 1}.0.0`;
+  if (bump === 'minor') return `${major}.${minor + 1}.0`;
+  return `${major}.${minor}.${patch + 1}`;
+}
+
 const POLICY_TARGET_LABELS: Readonly<Record<PolicyEntityType, string>> = {
   ideation: 'Ideation',
   refinement: 'Refinement',
@@ -696,6 +703,7 @@ export function GuidelineRevisionEditor({
   const metricsSectionRef = useRef<HTMLElement | null>(null);
   const initialSectionAppliedRef = useRef(false);
   const seenHistoryCursorsRef = useRef(new Set<string>());
+  const revisionAttempt = useRef<{ fingerprint: string; key: string } | null>(null);
 
   useEscapeToClose(onClose, {
     enabled: !retirementOpen,
@@ -867,22 +875,38 @@ export function GuidelineRevisionEditor({
     setMutationError(null);
     setMutationResult(null);
     try {
+      const patch = {
+        ...(title.trim() !== latest.title ? { title: title.trim() } : {}),
+        ...(content.trim() !== latest.content ? { content: content.trim() } : {}),
+        // An unchanged set must be omitted: supplying metrics requires author authority.
+        ...(metricsChanged ? { metrics: draftMetricInputs } : {}),
+      };
+      const declaredVersion = nextSemanticVersion(latest.semantic_version, versionBump);
+      const fingerprint = JSON.stringify([latest.revision_id, declaredVersion, patch]);
+      if (revisionAttempt.current?.fingerprint !== fingerprint) {
+        revisionAttempt.current = {
+          fingerprint,
+          key: createGuidelineClientId('revision'),
+        };
+      }
       const response = await api.createGuidelineRevision(
         boardId,
         guideline.id,
         {
-          expected_head_revision: currentHeadRevision,
-          version_bump: versionBump,
-          content: {
-            title: title.trim(),
-            body: content.trim(),
-          },
-          metrics: draftMetricInputs,
+          idempotency_key: revisionAttempt.current.key,
+          declared_semantic_version: declaredVersion,
+          patch,
         },
       );
-      setMutationResult(
-        `Created v${response.revision} · ${bumpLabel(versionBump)}.`,
-      );
+      if (response.status === 'noop') {
+        setMutationResult('No changes to publish. The current revision was preserved.');
+      } else if (response.status === 'applied' && response.revision) {
+        setMutationResult(
+          `Created v${response.revision.semantic_version} · ${bumpLabel(versionBump)}.`,
+        );
+      } else {
+        throw new Error('The revision was not published. Review the selected version bump.');
+      }
       await loadFirstPage();
       await onChanged();
     } catch (error) {
@@ -1249,8 +1273,8 @@ export function GuidelineRevisionEditor({
                       </h3>
                       <p className="mt-1 text-sm text-gray-500">
                         Choose the SemVer impact of this immutable revision.
-                        The current head revision is fenced to prevent
-                        overwriting concurrent edits.
+                        Previous revisions remain available in history.
+                        Adding a custom metric requires at least a minor bump.
                       </p>
                     </div>
                     <button

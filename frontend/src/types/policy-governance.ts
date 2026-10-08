@@ -679,23 +679,23 @@ export interface GuidelineRevisionAuthorityResponse {
   >;
 }
 
-export interface GuidelineRevisionContentInput {
-  title: string;
-  body: string;
-}
-
 export interface CreateGuidelineRevisionRequest {
-  expected_head_revision: number;
-  version_bump: GuidelineVersionBump;
-  content: GuidelineRevisionContentInput;
-  metrics: GuidelineMetricInput[];
+  idempotency_key: string;
+  declared_semantic_version?: string;
+  patch: {
+    title?: string;
+    content?: string;
+    tags?: string[];
+    metrics?: GuidelineMetricInput[];
+  };
 }
 
 export interface CreateGuidelineRevisionResponse {
-  revision_id: string;
-  revision: string;
-  revision_digest: string;
-  metrics: GuidelineMetric[];
+  status: 'applied' | 'noop';
+  revision: GuidelineRevision | null;
+  head: GuidelineHead | null;
+  minimum_bump: GuidelineVersionBump | null;
+  rejection_code?: string | null;
 }
 
 interface RetireGuidelineRequestBase {

@@ -1,3 +1,4 @@
+import revisionContract from '../../../tests/fixtures/guideline_revision_editor_contract.json';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -63,47 +64,10 @@ describe('policy-governance-api', () => {
 
   it('covers semantic revision, preview, and adoption with exact binding fences', async () => {
     const { api, fetch } = setup();
-    const revisionResponse = {
-      revision_id: 'revision-2',
-      revision: '1.1.0',
-      revision_digest: 'f'.repeat(64),
-      metrics: [{
-        metric_id: 'metric-1',
-        code: 'Title.Clarity:v2',
-        title: 'Title clarity',
-        description: 'Scores how clearly the title communicates intent.',
-        evaluation_rubric:
-          '0 is unclear; 100 is independently understandable.',
-        target_entity_types: ['spec', 'test_scenario'],
-        direction: 'minimum',
-        default_threshold: 70,
-      }],
-    };
+    const revisionResponse = revisionContract.response;
     fetch.mockResolvedValueOnce(jsonResponse(revisionResponse));
-
     const created = await api.createGuidelineRevision(
-      'board-1',
-      'guide-1',
-      {
-      expected_head_revision: 1,
-      version_bump: 'minor',
-      content: {
-        title: 'Second revision',
-        body: 'Require independently understandable titles.',
-      },
-      metrics: [
-        {
-          metric_id: 'metric-1',
-          code: 'Title.Clarity:v2',
-          title: 'Title clarity',
-          description: 'Scores how clearly the title communicates intent.',
-          evaluation_rubric: '0 is unclear; 100 is independently understandable.',
-          target_entity_types: ['spec', 'test_scenario'],
-          direction: 'minimum',
-          default_threshold: 70,
-        },
-      ],
-      },
+      'board-1', 'guide-1', revisionContract.request as import('@/types/policy-governance').CreateGuidelineRevisionRequest,
     );
     await api.getGuidelineRevision(
       'board-1',
@@ -161,33 +125,7 @@ describe('policy-governance-api', () => {
       '/boards/board-1/guidelines/guide-1/adoptions',
     ]);
     expect(created).toEqual(revisionResponse);
-    expect(requestBody(fetch, 0)).toEqual({
-      expected_head_revision: 1,
-      version_bump: 'minor',
-      content: {
-        title: 'Second revision',
-        body: 'Require independently understandable titles.',
-      },
-      metrics: [
-        {
-          metric_id: 'metric-1',
-          code: 'Title.Clarity:v2',
-          title: 'Title clarity',
-          description: 'Scores how clearly the title communicates intent.',
-          evaluation_rubric:
-            '0 is unclear; 100 is independently understandable.',
-          target_entity_types: ['spec', 'test_scenario'],
-          direction: 'minimum',
-          default_threshold: 70,
-        },
-      ],
-    });
-    expect(requestBody(fetch, 0)).not.toHaveProperty('board_id');
-    expect(requestBody(fetch, 0)).not.toHaveProperty('patch');
-    expect(requestBody(fetch, 0)).not.toHaveProperty(
-      'declared_semantic_version',
-    );
-    expect(requestBody(fetch, 0)).not.toHaveProperty('idempotency_key');
+    expect(requestBody(fetch, 0)).toEqual(revisionContract.request);
     expect(requestBody(fetch, 3)).toEqual({
       proposed_priority: 3,
       proposed_enforcement: 'blocking',
@@ -461,13 +399,13 @@ describe('policy-governance-api', () => {
 
     const error = await api
       .createGuidelineRevision('board-1', 'guide-1', {
-        expected_head_revision: 1,
-        version_bump: 'minor',
-        content: {
+        idempotency_key: 'revision-under-bump',
+        declared_semantic_version: '1.1.0',
+        patch: {
           title: 'Breaking',
-          body: 'Changes established meaning.',
+          content: 'Changes established meaning.',
+          metrics: [],
         },
-        metrics: [],
       })
       .catch((caught: unknown) => caught);
 
