@@ -1,13 +1,13 @@
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import insert
+from sqlalchemy import insert, select
 
 from test_delivery_inline_execution import composed as _composed, db as _db, counts
 from test_delivery_execution_sets import native_verifier as _native_verifier, composite_batch, seed_scope, clone_request
 from test_delivery_progress import command as progress_command
 from okto_pulse.community.adapters.sqlalchemy_models import (
-    CardDeliveryEvidenceRecordRow as Record,
+    CardDeliveryEvidenceRecordRow as Record, ImplementationTargetRow as Target,
     ImplementationTargetExecutionRecordRow as Execution, CodeInvestigationReceiptRow as Receipt,
 )
 from okto_pulse.core.models.delivery_evidence import CardDeliveryEvidenceCommand, CardDeliveryEvidenceBatchCommand, DeliveryBatchEntryError
@@ -61,6 +61,10 @@ async def test_progress_recomputes_exact_sets_candidates_and_pre_done_gate(compo
             await require_card_delivery(session, card, spec)
     # No lifecycle/version/history mutation is hidden inside the projection.
     assert card.status == "in_progress" and card.policy_version == 1
+    assert spec.version == 1
+    assert dict((await session.execute(select(Target.id, Target.revision))).all()) == {
+        "target": 1, "target-two": 1,
+    }
     assert await counts(session) == [2, 4, 2, 2]
 
 
