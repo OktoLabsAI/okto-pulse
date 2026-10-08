@@ -371,6 +371,9 @@ async def test_semantic_review_is_distinct_from_structural_readiness(classified_
         selected = next(item for item in criteria if item['id'] == 'ac-tr')
         correct_text = selected['text']
         selected['text'] = 'Respond rapidly'
+        technical = deepcopy(spec.technical_requirements)
+        technical[0].update(text='Respond rapidly', title='Respond rapidly', description='Respond rapidly')
+        await db.execute(update(Spec).where(Spec.id == 'spec').values(technical_requirements=technical))
         reason = 'Latency requires an observable limit; rapidly does not define one'
     elif case == 'unrelated_criterion':
         selected = criteria[0]
@@ -451,3 +454,42 @@ async def test_existing_functional_and_new_technical_criteria_share_authoring_an
     assert authored['requirement_links'] == technical['requirement_links']
     assert len(spec.test_scenarios) == 4  # No fictional functional test was created.
     assert await db.scalar(select(func.count()).select_from(SpecHistory).where(SpecHistory.spec_id == 'spec')) > before
+
+
+@pytest.mark.asyncio
+async def test_technical_profile_without_linked_condition_cannot_start(classified_context, tmp_path):
+    db = classified_context
+    app, _, _ = await four_profiles(db, tmp_path)
+    # The shared read fixture carries a description convenience field that is
+    # not part of the typed TR write contract. Seed canonical input here.
+    spec = await db.get(Spec, 'spec', populate_existing=True)
+    requirements = deepcopy(spec.technical_requirements)
+    for item in requirements:
+        item.pop('description', None)
+    await db.execute(update(Spec).where(Spec.id == 'spec').values(technical_requirements=requirements))
+    await db.commit()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+        await patch_requirement(client, db, 'technical_requirement', 'tr', {
+            'text': 'Respond rapidly', 'title': 'Respond rapidly'})
+        await patch_requirement(client, db, 'acceptance_criterion', 'ac-tr', {'requirement_links': []})
+        diagnostic = await client.get('/api/v1/boards/board/specs/spec/requirement-verification')
+        assert diagnostic.status_code == 200, diagnostic.text
+        result = diagnostic.json()
+        technical = next(item for item in result['items'] if item['requirement_id'] == 'tr')
+        assert not technical['qualification_resolved']
+        assert technical['verification']['required_profiles'] == ['technical']
+        assert technical['criteria_paths'] == []
+        assert not result['verification_work_complete']
+        assert not result['semantic_review_evaluated']
+        assert 'criterion_requirement_link_missing' in diagnostic.text
+        await classify_all(client, db, 'technical-without-condition')
+        # Existing approval is fixture input. A profile and approval still do
+        # not bypass the real structural start gate.
+        await db.execute(update(Spec).where(Spec.id == 'spec').values(status='validated'))
+        await db.commit()
+        before = await start.classification.snapshot(db)
+        denied = await client.post('/api/v1/specs/spec/move', json={'status': 'in_progress'})
+        assert denied.status_code in {400, 409}, denied.text
+        assert 'spec_execution_plan_incomplete' in denied.text
+        assert await start.classification.snapshot(db) == before
+        assert (await db.get(Spec, 'spec', populate_existing=True)).status == 'validated'
