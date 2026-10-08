@@ -82,3 +82,25 @@ it('does not reinterpret an unavailable result as passing when ready is not allo
   expect(api.admitTestVerificationReport).not.toHaveBeenCalled();
   expect(api.updateTestScenarioStatus).not.toHaveBeenCalled();
 });
+
+
+it('preserves operational failure and partial-query limits in the report details', () => {
+  const partial = {
+    ...evidence,
+    verification_report: {
+      ...report, result: 'failed', conclusion: 'Operational condition is not verified',
+      observations: [
+        { observation_id: 'alert', criterion_id: 'ac', outcome: 'failed', observed: 'No alert fired' },
+        { observation_id: 'query', criterion_id: 'ac', outcome: 'unavailable',
+          observed: 'Partial rows: second telemetry shard timed out' },
+      ],
+    },
+  };
+  render(<><EvidenceBadge scenario={{ status: 'failed', evidence: partial }} />
+    <VerificationReportDetails evidence={partial} /></>);
+  fireEvent.click(screen.getByText('External verification report'));
+  expect(screen.getByText(/No alert fired/)).toHaveTextContent('Partial rows: second telemetry shard timed out');
+  expect(screen.getByText(/No alert fired/)).toHaveTextContent('"outcome": "failed"');
+  expect(screen.getByText(/No alert fired/)).toHaveTextContent('"outcome": "unavailable"');
+  expect(screen.getByText(/Independent approval is separate/)).toBeInTheDocument();
+});
