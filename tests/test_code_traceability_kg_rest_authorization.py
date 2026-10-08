@@ -213,8 +213,13 @@ async def test_graph_page_runs_native_reads_outside_the_event_loop(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cypher", [
+    "MATCH (n) RETURN n",
+    "MATCH (n:Entity) RETURN count(n)",
+    "MATCH (n:Entity) RETURN collect(n.id)",
+])
 async def test_cypher_guard_denies_without_complete_ct_authority(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, cypher: str,
 ) -> None:
     calls: list[str] = []
     monkeypatch.setattr(
@@ -226,7 +231,7 @@ async def test_cypher_guard_denies_without_complete_ct_authority(
     with pytest.raises(HTTPException) as exc_info:
         await kg_routes.cypher_query(
             BOARD_ID,
-            cypher="MATCH (n) RETURN n",
+            cypher=cypher,
             actor=_actor(ct_read=False),
             uow=SimpleNamespace(),
         )
