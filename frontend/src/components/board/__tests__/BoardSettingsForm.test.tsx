@@ -21,6 +21,22 @@ const baseSettings: BoardSettings = {
   max_drift: 30,
 };
 
+describe('BoardSettingsForm — missing reference policy', () => {
+  it('defaults to advisory without writing and saves only the human selection', () => {
+    const onChange = vi.fn();
+    const { rerender } = render(<BoardSettingsForm settings={baseSettings} onChange={onChange} />);
+    const field = screen.getByRole('combobox', { name: 'Missing reference closeout' });
+    expect(field).toHaveValue('advisory');
+    expect(onChange).not.toHaveBeenCalled();
+    fireEvent.change(field, { target: { value: 'blocking' } });
+    expect(onChange).toHaveBeenCalledExactlyOnceWith({ missing_link_gate: 'blocking' });
+    rerender(<BoardSettingsForm settings={{ ...baseSettings, missing_link_gate: 'blocking' }} onChange={onChange} />);
+    expect(field).toHaveValue('blocking');
+    rerender(<BoardSettingsForm settings={baseSettings} onChange={onChange} />);
+    expect(field).toHaveValue('advisory');
+  });
+});
+
 describe('BoardSettingsForm — graph query policy', () => {
   it('shows the legacy default without writing and follows Board/template changes', () => {
     const onChange = vi.fn();

@@ -2106,7 +2106,19 @@ export interface SpecKnowledgeSummary {
 }
 
 // Spec
+export interface MissingLinkContext {
+  status: 'available' | 'not_authorized' | 'unavailable';
+  mode?: 'advisory' | 'blocking' | null;
+  authority: 'relational_source';
+  would_block_done?: boolean | null;
+  finding_count?: number | null;
+  findings: { source_ref: string; field: string; target_ref: string;
+    reason: 'target_absent' | 'target_ambiguous' | 'target_out_of_scope'; correction_operation: string }[];
+  truncated: boolean;
+}
+
 export interface Spec extends TaskValidationGateOverride {
+  missing_link_context?: MissingLinkContext | null;
   execution_contract: SpecExecutionContract;
   id: string;
   board_id: string;
@@ -2320,6 +2332,7 @@ export interface TaskValidationConfig {
 
 // Card
 export interface Card {
+  missing_link_context?: MissingLinkContext | null;
   scenario_reference_context?: {
     contract_version: 'card-scenario-reference-context/v1';
     status: 'available' | 'not_authorized' | 'unavailable';
@@ -3188,6 +3201,7 @@ export interface BoardSettings {
   skip_decisions_coverage_global: boolean;
   skip_cognitive_consolidation?: boolean;
   bug_learning_closeout?: 'advisory' | 'blocking';
+  missing_link_gate?: 'advisory' | 'blocking';
   kg_query_timeout_ms?: number;
   allow_agent_self_answering?: boolean;
   require_full_context_for_critical_actions?: boolean;

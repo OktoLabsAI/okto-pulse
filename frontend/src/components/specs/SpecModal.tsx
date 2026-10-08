@@ -11,6 +11,7 @@ import {
 } from 'react';
 import { DeliveryEvidencePanel } from '@/components/code-traceability/DeliveryEvidencePanel';
 import { SpecCoveragePanel } from './SpecCoveragePanel';
+import { MissingLinkNotice } from '@/components/shared/MissingLinkNotice';
 import { CriterionVerificationPanel } from './CriterionVerificationPanel';
 import { RequirementVerificationPanel } from './RequirementVerificationPanel';
 import { ScenarioVerificationMethodEditor } from './ScenarioVerificationMethodEditor';
@@ -2498,6 +2499,7 @@ export function SpecModal({
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto px-6 py-4">
+          <MissingLinkNotice context={spec.missing_link_context} />
           <AccessibleTabPanel
             idBase={`spec-${specId}`}
             tabId={activeTab}

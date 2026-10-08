@@ -477,6 +477,17 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
             activeColor="amber"
           />
         </SettingRow>
+        <SettingRow label="Missing reference closeout" description="Advisory reports unresolved declared references. Blocking requires correction before completion. Optional associations and graph projection delays do not block. Only an authenticated human can change this policy.">
+          <select
+            aria-label="Missing reference closeout"
+            value={settings.missing_link_gate ?? 'advisory'}
+            onChange={(event) => onChange({ missing_link_gate: event.target.value as 'advisory' | 'blocking' })}
+            className="rounded border border-gray-300 bg-transparent px-2 py-1 text-xs dark:border-gray-600"
+          >
+            <option value="advisory">Advisory</option>
+            <option value="blocking">Blocking</option>
+          </select>
+        </SettingRow>
         <SettingRow label="Bug Learning closeout" description="Advisory allows completion without Learning. Blocking requires a valid saved Learning capture; graph projection may follow later. Only an authenticated human can change this policy.">
           <select
             aria-label="Bug Learning closeout"
