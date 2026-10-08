@@ -42,9 +42,10 @@ def reconcile_spec_relationships(scope, intent):
             physical, definition = scope._relationship_definition(family.edge_type, family.source_type, target_type)
             properties = scope._projection_edge_properties(definition)
             projection = ", ".join(f"r.{name}" for name in properties)
+            owner_alias = "b" if getattr(family, "owner_endpoint", "source") == "target" else "a"
             rows = scope._query(
                 f"MATCH (a:{family.source_type})-[r:{physical}]->(b:{target_type}) "
-                f"WHERE a.source_artifact_ref {'=' if evidence else 'STARTS WITH'} $prefix "
+                f"WHERE {owner_alias}.source_artifact_ref {'=' if evidence else 'STARTS WITH'} $prefix "
                 f"RETURN a.id, b.id, a.source_artifact_ref, b.source_artifact_ref, {projection}",
                 {"prefix": owner_ref if evidence else owner_ref + ":"}, operation="projection_spec_relationship_read",
             ).rows

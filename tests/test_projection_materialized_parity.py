@@ -254,8 +254,8 @@ async def materialize(root, *, incremental, card_type=None, final_unlinked=False
 @pytest.mark.asyncio
 @pytest.mark.timeout(480)
 async def test_spec_relationships_converge_after_churn_and_clean_rebuild(tmp_path):
-    incremental = await materialize(tmp_path / 'incremental', incremental=True)
-    rebuilt = await materialize(tmp_path / 'rebuilt', incremental=False)
+    incremental = await materialize(tmp_path / 'incremental', incremental=True, native_schema=True)
+    rebuilt = await materialize(tmp_path / 'rebuilt', incremental=False, native_schema=True)
     assert incremental == rebuilt
     assert {edge[3] for edge in rebuilt if edge[3] in OWNED_RULES} == OWNED_RULES
     scenario = {edge: count for edge, count in rebuilt.items() if edge[3] == 'tests/ac_match@v2.1'}
@@ -311,7 +311,7 @@ async def test_reordering_fr_criteria_and_scenarios_preserves_native_ids_and_rel
         assert identities(graph) == before_ids
         assert relationship_set(graph) == before_relations
 
-    await materialize(tmp_path / 'reordered', incremental=False, exercise=exercise)
+    await materialize(tmp_path / 'reordered', incremental=False, exercise=exercise, native_schema=True)
 
 
 @pytest.mark.asyncio
