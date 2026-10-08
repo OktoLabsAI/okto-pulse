@@ -15,7 +15,7 @@ from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.core.application.use_cases.base import ActorContext
 from okto_pulse.core.domain.realm import LOCAL_REALM_ID
 from okto_pulse.core.kg.interfaces.graph_errors import GraphCorruption, GraphQueryTimeout
-from okto_pulse.core.ports.bug_clusters import BugClustersSnapshot, ClusterBugFact
+from okto_pulse.core.ports.bug_clusters import BugClustersSnapshot, ClusterBugFact, BugClusterAssociation
 from okto_pulse.core.services.bug_clusters import project_bug_clusters
 
 
@@ -123,9 +123,40 @@ async def test_failure_contract_is_explicit_and_does_not_expose_native_details(a
 
 
 @pytest.mark.asyncio
-async def test_generation_change_rejects_cursor_without_mixing_pages(api):
+async def test_filter_change_rejects_cursor_without_mixing_pages(api):
     first = (await api.client.get(URL, params={'group_by': 'severity', 'limit': 1})).json()
     # A different filter is a different cursor scope even if its rows coincide.
     response = await api.client.get(URL, params={**first['window'], 'group_by': 'spec',
         'limit': 1, 'cursor': first['next_cursor']})
     assert response.status_code == 409
+
+@pytest.mark.asyncio
+async def test_generation_change_alone_rejects_cursor_without_mixing_pages(api):
+    generation = ["generation-a"]
+
+    async def aggregate(query, **options):
+        facts = tuple(ClusterBugFact(str(i), "Bug", query.window.from_inclusive,
+            "done", "major", None, "revision") for i in range(2))
+        associations = tuple(BugClusterAssociation(str(i), "proxy", f"spec:one:tr:{i}",
+            f"Target {i}", f"rule:{i}", "unknown") for i in range(2))
+        return project_bug_clusters(query, BugClustersSnapshot(
+            query.board_id, query.actor_scope_ref, datetime.now(timezone.utc),
+            facts, 2, True, associations, graph_generation=generation[0],
+            projected_bug_ids=("0", "1")))
+
+    api.operation.side_effect = aggregate
+    response = await api.client.get(URL, params={"group_by": "proxy", "limit": 1})
+    assert response.status_code == 200, response.text
+    first = response.json()
+    assert first["next_cursor"]
+    params = {**first["window"], "group_by": "proxy", "limit": 1}
+    same = await api.client.get(URL, params={**params, "cursor": first["next_cursor"]})
+    assert same.status_code == 200, same.text
+    generation[0] = "generation-b"
+    stale = await api.client.get(URL, params={**params, "cursor": first["next_cursor"]})
+    assert stale.status_code == 409, stale.text
+    assert stale.json()["detail"]["code"] == "bug_clusters_cursor_stale"
+    assert "items" not in stale.json()
+    restarted = await api.client.get(URL, params=params)
+    assert restarted.status_code == 200, restarted.text
+    assert restarted.json()["projection_freshness"]["graph_generation"] == "generation-b"

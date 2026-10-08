@@ -27,6 +27,7 @@ async def api(monkeypatch):
     monkeypatch.setattr(RESTAdapterContract, 'actor', lambda *args, **kwargs: actor)
     board = SimpleNamespace(id='board', owner_id='owner', realm_id='local', settings={'kg_query_timeout_ms': 700})
     calls = []
+    graph_state = SimpleNamespace(generation=None)
     async def aggregate(query, **options):
         calls.append((query, options))
         fields = {field: [] for _, field in COLLECTIONS}
@@ -36,7 +37,9 @@ async def api(monkeypatch):
         facts = SpecCoverageSnapshot(DeliveryScope(query.board_id, query.spec_id, 1), query.actor_scope_ref,
             'revision', datetime.now(timezone.utc), spec, (), True, None, 'restricted')
         scope = build_decision_impact_scope(facts)
-        return project_decision_impact(query, facts, scope, SpecCoverageGraphFacts(state='unavailable'))
+        graph = (SpecCoverageGraphFacts(scope.nodes, scope.relations, graph_state.generation)
+            if graph_state.generation else SpecCoverageGraphFacts(state='unavailable'))
+        return project_decision_impact(query, facts, scope, graph)
     operation = AsyncMock(side_effect=aggregate)
     uow = SimpleNamespace(boards=SimpleNamespace(get=AsyncMock(return_value=board)),
         services=SimpleNamespace(analytics=SimpleNamespace(decision_impact=operation)))
@@ -44,7 +47,7 @@ async def api(monkeypatch):
     app.dependency_overrides[require_user] = lambda: 'user'
     app.dependency_overrides[get_unit_of_work] = lambda: uow
     async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as client:
-        yield SimpleNamespace(client=client, actor=actor, operation=operation, calls=calls)
+        yield SimpleNamespace(client=client, actor=actor, operation=operation, calls=calls, graph_state=graph_state)
 
 
 @pytest.mark.asyncio
@@ -93,3 +96,21 @@ async def test_failures_are_sanitized_not_empty_success(api, error, status, code
 async def test_transport_bounds_precede_aggregation(api, params):
     assert (await api.client.get(URL, params=params)).status_code == 422
     api.operation.assert_not_called()
+
+@pytest.mark.asyncio
+async def test_generation_change_alone_rejects_cursor_without_mixing_pages(api):
+    api.graph_state.generation = "generation-a"
+    first_response = await api.client.get(URL, params={"limit": 1})
+    assert first_response.status_code == 200, first_response.text
+    first = first_response.json()
+    assert first["next_cursor"]
+    params = {"limit": 1, "cursor": first["next_cursor"]}
+    assert (await api.client.get(URL, params=params)).status_code == 200
+    api.graph_state.generation = "generation-b"
+    stale = await api.client.get(URL, params=params)
+    assert stale.status_code == 409, stale.text
+    assert stale.json()["detail"]["code"] == "decision_impact_cursor_stale"
+    assert "items" not in stale.json()
+    restarted = await api.client.get(URL, params={"limit": 1})
+    assert restarted.status_code == 200, restarted.text
+    assert restarted.json()["projection_freshness"]["graph_generation"] == "generation-b"

@@ -167,3 +167,69 @@ async def test_real_sql_and_grafx_keep_unprojected_source_in_scope_without_proof
     assert result["delivery"]["counts"]["verification_proven"] == 0
     assert await session.scalar(select(func.count()).select_from(ConsolidationQueue)) == 0
     assert database.transactions == before
+
+
+@pytest.mark.asyncio
+async def test_persisted_native_generation_change_invalidates_next_page(ledger, tmp_path):
+    from okto_grafx import connect
+    from okto_pulse.core import configure_settings
+    from okto_pulse.community.config import CommunitySettings
+    from okto_pulse.community.adapters.coordination import register_community_coordination_providers
+    from okto_pulse.community.adapters.routed_board_graph_composition import build_community_routed_board_graph_composition
+    from logical_transfer_matrix_support import one_node_corpus, seed_generation
+
+    session, _, _ = ledger
+    settings = CommunitySettings(data_dir=str(tmp_path / "runtime"),
+        kg_base_dir=str(tmp_path / "kg"), kg_embedding_mode="stub", kg_embedding_dim=384)
+    configure_settings(settings)
+    register_community_coordination_providers()
+    bundle = build_community_routed_board_graph_composition(settings=settings)
+    board = relational.BOARD
+    query = replace(relational.QUERY, read_graph=True, limit=1)
+    reader = CommunitySpecCoverageReader(session, graph_reader=bundle.graph_store,
+        query_execution=bundle.graph_query_execution)
+    empty = replace(one_node_corpus("board", key="unused"), nodes=(), relations=())
+    try:
+        paths = {}
+        for generation in ("page-generation-a", "page-generation-b"):
+            path = bundle.binding_store.board_grafx_path(board, generation)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            seed_generation("grafx", path, empty)
+            paths[generation] = path
+        with connect(paths["page-generation-a"], page_size=8192) as database:
+            initial = bundle.binding_store.initialize_board_binding(board_id=board,
+                backend="grafx", generation="page-generation-a",
+                physical_path=paths["page-generation-a"], page_size=8192, database=database)
+
+        async def observe():
+            source = await reader.read(query, timeout_ms=15000)
+            scope = build_spec_coverage_graph_scope(source)
+            graph = await reader.read_graph(query, scope, source.source_revision, timeout_ms=15000)
+            return replace(source, graph=graph, graph_scope=scope)
+
+        first_snapshot = await observe()
+        first = project_spec_coverage(query, first_snapshot)
+        assert first["projection_freshness"]["graph_generation"] == "page-generation-a"
+        assert first["next_cursor"]
+        next_query = replace(query, cursor=first["next_cursor"])
+        second = project_spec_coverage(next_query, await observe())
+        assert second["items"] != first["items"]
+
+        with connect(paths["page-generation-b"], page_size=8192) as database:
+            published = bundle.binding_store.compare_and_swap_board_binding(
+                board_id=board, expected_binding_sha256=initial.binding_sha256,
+                backend="grafx", generation="page-generation-b",
+                physical_path=paths["page-generation-b"], page_size=8192, database=database)
+        assert bundle.binding_store.acquire_board_binding(board) == published
+        changed = await observe()
+        assert changed.source_revision == first_snapshot.source_revision
+        assert changed.graph.nodes == first_snapshot.graph.nodes
+        assert changed.graph.relations == first_snapshot.graph.relations
+        assert changed.graph.generation == "page-generation-b"
+        with pytest.raises(ValueError, match="spec_coverage_cursor_stale"):
+            project_spec_coverage(next_query, changed)
+        restarted = project_spec_coverage(query, changed)
+        assert restarted["projection_freshness"]["graph_generation"] == "page-generation-b"
+    finally:
+        for pool in (*bundle.grafx_read_pools, *bundle.grafx_query_pools, bundle.grafx_pool):
+            pool.close_all()

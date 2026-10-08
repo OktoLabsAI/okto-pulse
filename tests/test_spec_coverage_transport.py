@@ -17,8 +17,9 @@ from okto_pulse.core.domain.effective_delivery_coverage import EffectiveDelivery
 from okto_pulse.core.domain.effective_delivery_inventory import EffectiveDeliveryInventory, EffectiveDeliveryObligation
 from okto_pulse.core.domain.implementation_responsibility import ImplementationResponsibilityPlan, RequirementContribution
 from okto_pulse.core.kg.interfaces.graph_errors import GraphCorruption, GraphQueryTimeout
-from okto_pulse.core.ports.spec_coverage_query import SpecCoverageSnapshot
+from okto_pulse.core.ports.spec_coverage_query import SpecCoverageSnapshot, SpecCoverageGraphFacts
 from okto_pulse.core.services.spec_coverage_query import project_spec_coverage
+from okto_pulse.core.services.spec_coverage_graph import build_spec_coverage_graph_scope
 
 URL = '/boards/board/specs/spec/coverage'
 FLAGS = ['board.read', 'spec.entity.read', 'card.entity.read', 'spec.tests.read',
@@ -32,6 +33,7 @@ async def api(monkeypatch):
     monkeypatch.setattr(RESTAdapterContract, 'actor', lambda *args, **kwargs: actor)
     board = SimpleNamespace(id='board', owner_id='owner', realm_id='local', settings={'kg_query_timeout_ms': 700})
     calls = []
+    graph_state = SimpleNamespace(generation=None)
     async def aggregate(query, **options):
         calls.append((query, options))
         scope = DeliveryScope(query.board_id, query.spec_id, 1)
@@ -53,6 +55,10 @@ async def api(monkeypatch):
         facts = SpecCoverageSnapshot(scope, query.actor_scope_ref, 'revision', datetime.now(timezone.utc), spec, (), True, proof)
         if not query.read_delivery:
             facts = replace(facts, delivery=None, delivery_state='restricted')
+        if graph_state.generation is not None:
+            graph_scope = build_spec_coverage_graph_scope(facts)
+            facts = replace(facts, graph_scope=graph_scope, graph=SpecCoverageGraphFacts(
+                graph_scope.nodes, graph_scope.relations, graph_state.generation))
         return project_spec_coverage(query, facts)
     operation = AsyncMock(side_effect=aggregate)
     uow = SimpleNamespace(boards=SimpleNamespace(get=AsyncMock(return_value=board)),
@@ -61,7 +67,7 @@ async def api(monkeypatch):
     app.dependency_overrides[require_user] = lambda: 'user'
     app.dependency_overrides[get_unit_of_work] = lambda: uow
     async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as client:
-        yield SimpleNamespace(client=client, actor=actor, board=board, operation=operation, calls=calls)
+        yield SimpleNamespace(client=client, actor=actor, board=board, operation=operation, calls=calls, graph_state=graph_state)
 
 
 @pytest.mark.asyncio
@@ -110,3 +116,22 @@ async def test_failures_never_expose_native_details_or_become_empty_success(api,
     assert response.status_code == status
     assert response.json()['detail']['code'] == code
     assert 'secret' not in response.text
+
+@pytest.mark.asyncio
+async def test_generation_change_alone_rejects_cursor_without_mixing_pages(api):
+    api.actor.permissions.append("kg.query.related_context")
+    api.graph_state.generation = "generation-a"
+    first_response = await api.client.get(URL, params={"limit": 1})
+    assert first_response.status_code == 200, first_response.text
+    first = first_response.json()
+    assert first["next_cursor"]
+    params = {"limit": 1, "cursor": first["next_cursor"]}
+    assert (await api.client.get(URL, params=params)).status_code == 200
+    api.graph_state.generation = "generation-b"
+    stale = await api.client.get(URL, params=params)
+    assert stale.status_code == 409, stale.text
+    assert stale.json()["detail"]["code"] == "spec_coverage_cursor_stale"
+    assert "items" not in stale.json()
+    restarted = await api.client.get(URL, params={"limit": 1})
+    assert restarted.status_code == 200, restarted.text
+    assert restarted.json()["projection_freshness"]["graph_generation"] == "generation-b"
