@@ -73,3 +73,35 @@ def test_non_budget_plan_errors_keep_original_classification(details):
         mapped = map_grafx_error(failure, operation='read_only_query')
     assert mapped.code == 'graph_invalid_query'
     assert 'limit' not in mapped.details
+
+
+@pytest.mark.parametrize("count", [2, 100], ids=["within_payload", "single_row_exceeds_payload"])
+def test_native_single_row_collection_also_obeys_serialized_payload_budget(tmp_path, monkeypatch, count):
+    from okto_pulse.core.kg.interfaces.graph_errors import GraphQueryResourceLimit
+
+    # Each scalar and the 100-element array fit native value limits. The large
+    # case still exceeds Pulse's response budget in just one result row.
+    cell = "x" * 50000
+    query = "UNWIND range(1, $count) AS i RETURN collect($cell) AS items"
+    with connect(tmp_path / "payload") as database:
+        native = database.execute(query, {"count": count, "cell": cell})
+        assert len(native.rows) == 1 and len(native.rows[0][0]) == count
+        executor = CommunityGrafxCypherExecutor(lambda board: database)
+        monkeypatch.setattr(registry, "get_kg_registry", lambda: SimpleNamespace(cypher_executor=executor))
+        if count == 2:
+            result = execute_cypher_read_only("b", query, {"count": count, "cell": cell},
+                max_rows=1, include_working=True)
+            assert result["rows"] == [[(cell, cell)]]
+            assert result["row_count"] == 1
+        else:
+            with pytest.raises(GraphQueryResourceLimit) as refused:
+                execute_cypher_read_only("b", query, {"count": count, "cell": cell},
+                    max_rows=1, include_working=True)
+            assert refused.value.details["resource"] == "serialized_payload_bytes"
+            assert refused.value.details["limit"] == 4 * 1024 * 1024
+            assert refused.value.details["observed"] > refused.value.details["limit"]
+            from okto_pulse.community.api.kg_routes import _graph_problem
+            response = _graph_problem(refused.value)
+            assert response.status_code == 413
+            assert json.loads(response.body)["resource_limit"] == refused.value.details
+            assert cell not in response.body.decode()
