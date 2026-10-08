@@ -80,6 +80,31 @@ async def call(client, name, **arguments):
     return body['data'] if 'outcome' in body else body
 
 
+async def read_execution_resources(client, *, reviewer=False, card_review=False):
+    """Consume protocol guidance in each new session; benchmark includes bodies."""
+    uris = [
+        "okto-pulse://workflows/preflight",
+        "okto-pulse://workflows/specs",
+        "okto-pulse://reference/policy-compliance",
+        "okto-pulse://reference/quality-assessments",
+        "okto-pulse://reference/spec_gates",
+    ]
+    if not reviewer or card_review:
+        uris.extend([
+            "okto-pulse://workflows/cards",
+            "okto-pulse://reference/card_types",
+            "okto-pulse://reference/code-traceability",
+        ])
+    if not reviewer:
+        uris.extend([
+            "okto-pulse://reference/knowledge-governance",
+            "okto-pulse://reference/project-structure",
+        ])
+    for uri in uris:
+        contents = await client.read_resource(uri)
+        assert contents and all(getattr(item, "text", "").strip() for item in contents), uri
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('separate_review', [False, True], ids=['broad-agent', 'separate-reviewer'])
 @pytest.mark.parametrize('late_requirement_link', [False, True])
@@ -176,6 +201,8 @@ async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(
         identity = 'independent'
         try:
             async with Client(host) as reviewer_client:
+                await read_execution_resources(reviewer_client, reviewer=True,
+                                               card_review=name == 'okto_pulse_submit_task_validation')
                 assert (await server._get_agent_ctx('board')).agent_id == 'independent'
                 return await call(reviewer_client, name, **arguments)
         finally:
@@ -208,6 +235,7 @@ async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(
     register_test_evidence_write_verifier(CommunityTestEvidenceWriteVerifier(ledger=evidence_ledger))
     scope = {'board_id': 'board', 'spec_id': 'spec'}
     async with Client(host) as client:
+        await read_execution_resources(client)
         resolved = await server._get_agent_ctx('board')
         assert resolved.agent_id == 'solo'
         assert not resolved.permissions.owner_review_required
