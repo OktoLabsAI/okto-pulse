@@ -76,6 +76,28 @@ function renderPanel(props: {
 }
 
 describe('PathBRemediationPanel', () => {
+  it('replaces prior readiness with pending when the authoritative proof becomes stale', () => {
+    const onCreate = vi.fn();
+    const onAssociate = vi.fn();
+    const props = {
+      revisions: [revision({ status: 'done', lineage_state: 'complete' })],
+      bugRegressionPreview: PATH_B_PREVIEW,
+      onCreateAmendment: onCreate,
+      onAssociate,
+    };
+    const { rerender } = render(
+      <PathBRemediationPanel {...props} pathBResolution={{ coverage_state: 'path_b_ready' }} />,
+    );
+    expect(screen.queryByTestId('coverage-not-closure-ready')).toBeNull();
+    rerender(<PathBRemediationPanel {...props} pathBResolution={{
+      coverage_state: 'coverage_pending', safe_next_actions: ['confirm_validator_coverage'],
+    }} />);
+    expect(screen.getByTestId('coverage-state-badge')).toHaveTextContent(/pending/i);
+    expect(screen.getByTestId('coverage-not-closure-ready')).toBeInTheDocument();
+    expect(onCreate).not.toHaveBeenCalled();
+    expect(onAssociate).not.toHaveBeenCalled();
+  });
+
   it('shows regression and amendment paths without execution lane controls', () => {
     renderPanel({ preview: PATH_B_PREVIEW });
     expect(screen.getByText('Path A')).toBeInTheDocument();
