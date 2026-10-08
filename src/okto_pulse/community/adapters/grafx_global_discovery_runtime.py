@@ -179,7 +179,7 @@ class CommunityGrafxGlobalDiscoveryRuntime:
 
         observed_at = datetime.now(timezone.utc)
         try:
-            legacy = Path(self._path_resolver())
+            anchor = Path(self._path_resolver())
         except Exception:
             return self._state_value(
                 GraphRuntimeObservationState.PROVIDER_UNAVAILABLE,
@@ -193,7 +193,7 @@ class CommunityGrafxGlobalDiscoveryRuntime:
             observation = None
             if self._query_timeout is not None and self._query_timeout() is not None:
                 observation = FilesystemObservationBudget(self._query_timeout)
-            active = read_safe_active_generation(legacy, observation=observation)
+            active = read_safe_active_generation(anchor, observation=observation)
             if active is not None:
                 if not has_grafx_identity(active.graph_path):
                     raise GlobalDiscoveryLayoutError(
@@ -211,16 +211,16 @@ class CommunityGrafxGlobalDiscoveryRuntime:
                         "manifest_sha256": active.manifest_sha256,
                     },
                 )
-            if has_grafx_identity(legacy):
+            if has_grafx_identity(anchor):
                 if observation is not None:
                     observation.check()
                 return self._state_value(
                     GraphRuntimeObservationState.PRESENT_READABLE_CANDIDATE,
                     generation=generation,
-                    reason_code="global_discovery_legacy_primary_present",
+                    reason_code="global_discovery_anchor_primary_present",
                     observed_at=observed_at,
                 )
-            residues = global_layout_targets(legacy, observation=observation)
+            residues = global_layout_targets(anchor, observation=observation)
             if observation is not None:
                 observation.check()
             if residues:
@@ -953,8 +953,8 @@ class CommunityGrafxGlobalDiscoveryRuntime:
 
         with self._lock:
             try:
-                legacy = Path(self._path_resolver())
-                active_path = resolved_global_graph_path(legacy)
+                anchor = Path(self._path_resolver())
+                active_path = resolved_global_graph_path(anchor)
                 self._fence("flush")
                 database = self._database()
                 self._fence("flush")
@@ -992,10 +992,10 @@ class CommunityGrafxGlobalDiscoveryRuntime:
                 raise mapped from exc
 
     @staticmethod
-    def _quarantine(legacy: Path, targets: tuple[Path, ...], *, reason: str) -> int:
+    def _quarantine(anchor: Path, targets: tuple[Path, ...], *, reason: str) -> int:
         service = KGQuarantineService(
-            base_storage_ref_hint=local_storage_ref(legacy.parent.parent),
-            scope_storage_refs=[local_storage_ref(legacy.parent)],
+            base_storage_ref_hint=local_storage_ref(anchor.parent.parent),
+            scope_storage_refs=[local_storage_ref(anchor.parent)],
         )
         response = service.create(
             board_id=GLOBAL_SCOPE,
@@ -1009,8 +1009,8 @@ class CommunityGrafxGlobalDiscoveryRuntime:
     def purge(self, *, reason: str = "manual") -> GraphPurgeResult:
         with self._lock:
             try:
-                legacy = Path(self._path_resolver())
-                targets = global_layout_targets(legacy)
+                anchor = Path(self._path_resolver())
+                targets = global_layout_targets(anchor)
                 if not targets:
                     return GraphPurgeResult(
                         board_id=GLOBAL_SCOPE,
@@ -1025,8 +1025,8 @@ class CommunityGrafxGlobalDiscoveryRuntime:
                 for target in targets:
                     validate_plain_global_artifact(target)
                 self._fence("purge_global_discovery")
-                moved = self._quarantine(legacy, targets, reason=reason)
-                remaining = global_layout_targets(legacy)
+                moved = self._quarantine(anchor, targets, reason=reason)
+                remaining = global_layout_targets(anchor)
                 if moved <= 0 or remaining:
                     return GraphPurgeResult(
                         board_id=GLOBAL_SCOPE,
@@ -1122,12 +1122,12 @@ class CommunityGrafxGlobalDiscoveryRuntime:
         safe_board_id = validate_scope_id(board_id)
         with self._lock:
             try:
-                legacy = Path(self._path_resolver())
+                anchor = Path(self._path_resolver())
                 boards, digests, links = self._capture_privacy_survivors(
                     board_id=safe_board_id,
                     survivor_board_ids=survivor_board_ids,
                 )
-                targets = list(global_layout_targets(legacy))
+                targets = list(global_layout_targets(anchor))
                 if self._privacy_artifact_resolver is not None:
                     targets.extend(self._privacy_artifact_resolver(safe_board_id))
                 unique_targets: list[Path] = []
@@ -1141,7 +1141,7 @@ class CommunityGrafxGlobalDiscoveryRuntime:
                 directories_removed = 0
                 for target in unique_targets:
                     self._fence("privacy_erase_global_discovery")
-                    base = legacy.parent
+                    base = anchor.parent
                     if (
                         self._privacy_artifact_resolver is not None
                         and target.parent != base
@@ -1156,15 +1156,15 @@ class CommunityGrafxGlobalDiscoveryRuntime:
                     )
                     files_removed += files
                     directories_removed += directories
-                reject_filesystem_alias_ancestry(legacy.parent.parent)
+                reject_filesystem_alias_ancestry(anchor.parent.parent)
                 try:
-                    legacy.parent.lstat()
+                    anchor.parent.lstat()
                 except FileNotFoundError:
                     pass
                 else:
-                    reject_filesystem_alias_ancestry(legacy.parent)
-                    fsync_directory(legacy.parent)
-                if global_layout_targets(legacy):
+                    reject_filesystem_alias_ancestry(anchor.parent)
+                    fsync_directory(anchor.parent)
+                if global_layout_targets(anchor):
                     raise _capability(
                         "privacy_physical_erasure_unverified",
                         operation="erase_storage_for_privacy",

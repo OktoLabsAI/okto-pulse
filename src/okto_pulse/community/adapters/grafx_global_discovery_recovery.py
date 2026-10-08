@@ -36,7 +36,7 @@ from okto_pulse.community.adapters.global_discovery_layout import (
     active_pointer_path,
     canonical_sha256,
     generations_root,
-    restore_legacy_generation,
+    restore_anchor_generation,
     switch_active_generation,
     validate_generation_id,
     write_generation_manifest,
@@ -443,8 +443,8 @@ class CommunityGrafxGlobalDiscoveryRecovery:
 
     def inspect_live_artifact(self) -> GlobalDiscoveryArtifactSnapshot:
         try:
-            legacy = Path(self._path_resolver())
-            return snapshot_global_artifact(legacy)
+            anchor = Path(self._path_resolver())
+            return snapshot_global_artifact(anchor)
         except CommunityGrafxGlobalDiscoveryRecoveryError:
             raise
         except Exception as exc:
@@ -504,13 +504,13 @@ class CommunityGrafxGlobalDiscoveryRecovery:
 
     @staticmethod
     def _attempt_directory(
-        legacy: Path,
+        anchor: Path,
         *,
         run_id: str,
         epoch: int,
     ) -> Path:
         root = Path(
-            os.path.abspath(legacy.parent / "quarantine" / "global-discovery" / run_id)
+            os.path.abspath(anchor.parent / "quarantine" / "global-discovery" / run_id)
         )
         reject_filesystem_alias_ancestry(root.parent)
         if is_filesystem_alias(root):
@@ -740,8 +740,8 @@ class CommunityGrafxGlobalDiscoveryRecovery:
             invalid("physical_evidence")
 
         self._fence("recovery_journal_active", call_fence)
-        legacy = Path(self._path_resolver())
-        active = read_safe_active_generation(legacy)
+        anchor = Path(self._path_resolver())
+        active = read_safe_active_generation(anchor)
         if (
             active is None
             or active.generation_id != generation_id
@@ -821,22 +821,16 @@ class CommunityGrafxGlobalDiscoveryRecovery:
         boards: tuple[GlobalDiscoveryBoardSeed, ...],
         call_fence: Callable[[], None],
     ) -> GlobalDiscoveryCutoverResult:
-        # Preserve the established direct adapter API used by unit-level callers
-        # with legacy, non-worker attempt labels.  The production worker always
-        # supplies the canonical identity and receives durable attempt evidence.
-        try:
-            normalized_run_id = self._worker_identity(
-                run_id=run_id,
-                epoch=epoch,
-                attempt_id=attempt_id,
-                expected_live_sha256=expected_live_sha256,
-            )
-        except CommunityGrafxGlobalDiscoveryRecoveryError:
-            return result
+        normalized_run_id = self._worker_identity(
+            run_id=run_id,
+            epoch=epoch,
+            attempt_id=attempt_id,
+            expected_live_sha256=expected_live_sha256,
+        )
         _, _, source_fingerprint, expected_semantic = self._input_fingerprints(boards)
-        legacy = Path(self._path_resolver())
+        anchor = Path(self._path_resolver())
         attempt_dir = self._attempt_directory(
-            legacy,
+            anchor,
             run_id=normalized_run_id,
             epoch=epoch,
         )
@@ -860,7 +854,7 @@ class CommunityGrafxGlobalDiscoveryRecovery:
             )
 
         self._fence("recovery_journal_capture", call_fence)
-        active = read_safe_active_generation(legacy)
+        active = read_safe_active_generation(anchor)
         if active is None:
             raise CommunityGrafxGlobalDiscoveryRecoveryError(
                 "global_discovery_active_generation_mismatch"
@@ -1003,9 +997,9 @@ class CommunityGrafxGlobalDiscoveryRecovery:
                 )
             known[epoch] = attempt_id
 
-        legacy = Path(self._path_resolver())
+        anchor = Path(self._path_resolver())
         root = self._attempt_directory(
-            legacy,
+            anchor,
             run_id=normalized_run_id,
             epoch=1,
         ).parent
@@ -1027,14 +1021,14 @@ class CommunityGrafxGlobalDiscoveryRecovery:
             if child.name not in expected_names:
                 quarantined.append(f"{normalized_run_id}/{child.name}")
 
-        active = read_safe_active_generation(legacy)
+        active = read_safe_active_generation(anchor)
         active_generation_id = active.generation_id if active is not None else None
         directories: dict[int, Path] = {}
         journals: dict[int, dict[str, object] | None] = {}
         terminal_times: dict[int, datetime | None] = {}
         for epoch, attempt_id in sorted(known.items()):
             directory = self._attempt_directory(
-                legacy,
+                anchor,
                 run_id=normalized_run_id,
                 epoch=epoch,
             )
@@ -1193,7 +1187,7 @@ class CommunityGrafxGlobalDiscoveryRecovery:
                 ),
             }.get(manifest_kind)
             self._fence("recovery_retention_active_recheck", fence_check)
-            current_active = read_safe_active_generation(legacy)
+            current_active = read_safe_active_generation(anchor)
             if (
                 current_active is not None
                 and current_active.generation_id == generation_id
@@ -1205,7 +1199,7 @@ class CommunityGrafxGlobalDiscoveryRecovery:
                 direct_generation == generation_id
                 and generation_id not in retained_generation_ids
             ):
-                generation_root = safe_global_generation_dir(legacy, generation_id)
+                generation_root = safe_global_generation_dir(anchor, generation_id)
                 try:
                     generation_root.lstat()
                 except FileNotFoundError:
@@ -1234,7 +1228,7 @@ class CommunityGrafxGlobalDiscoveryRecovery:
                         continue
                     remove_contained_tree(
                         generation_root,
-                        base_dir=generations_root(legacy),
+                        base_dir=generations_root(anchor),
                         before_mutation=lambda: self._fence(
                             "recovery_retention_generation", fence_check
                         ),
@@ -1350,13 +1344,13 @@ class CommunityGrafxGlobalDiscoveryRecovery:
             invalid("predecessor_identity")
         predecessor_index = ancestry.index(recorded)  # type: ignore[arg-type]
 
-        legacy = Path(self._path_resolver())
+        anchor = Path(self._path_resolver())
         # The recorded source must be the first ancestry entry with durable
         # evidence.  A journal before it means the successor skipped a source.
         for earlier_epoch, _earlier_attempt_id in ancestry[:predecessor_index]:
             earlier_path = (
                 self._attempt_directory(
-                    legacy,
+                    anchor,
                     run_id=run_id,
                     epoch=earlier_epoch,
                 )
@@ -1368,7 +1362,7 @@ class CommunityGrafxGlobalDiscoveryRecovery:
 
         predecessor_path = (
             self._attempt_directory(
-                legacy,
+                anchor,
                 run_id=run_id,
                 epoch=int(predecessor_epoch),
             )
@@ -1446,10 +1440,10 @@ class CommunityGrafxGlobalDiscoveryRecovery:
             expected_live_sha256=expected_live_sha256,
         )
         ordered, expected, source_fingerprint, _ = self._input_fingerprints(boards)
-        legacy = Path(self._path_resolver())
+        anchor = Path(self._path_resolver())
         journal_path = (
             self._attempt_directory(
-                legacy,
+                anchor,
                 run_id=normalized_run_id,
                 epoch=epoch,
             )
@@ -1489,7 +1483,7 @@ class CommunityGrafxGlobalDiscoveryRecovery:
             )
 
         self._fence("recovery_reconcile_active", fence_check)
-        active = read_safe_active_generation(legacy)
+        active = read_safe_active_generation(anchor)
         if active is None:
             return None
         normal_generation = _generation_id(
@@ -1505,7 +1499,7 @@ class CommunityGrafxGlobalDiscoveryRecovery:
         reconciled: GlobalDiscoveryCutoverResult | None
         if active.generation_id == normal_generation:
             reconciled = self._completed_retry(
-                legacy=legacy,
+                anchor=anchor,
                 generation_id=normal_generation,
                 run_id=normalized_run_id,
                 epoch=epoch,
@@ -1517,7 +1511,7 @@ class CommunityGrafxGlobalDiscoveryRecovery:
             )
         elif active.generation_id == adoption_generation:
             reconciled = self._completed_adoption_retry(
-                legacy=legacy,
+                anchor=anchor,
                 generation_id=adoption_generation,
                 run_id=normalized_run_id,
                 epoch=epoch,
@@ -1566,10 +1560,10 @@ class CommunityGrafxGlobalDiscoveryRecovery:
         ordered, _, source_fingerprint, expected_semantic = self._input_fingerprints(
             boards
         )
-        legacy = Path(self._path_resolver())
+        anchor = Path(self._path_resolver())
         own_journal_path = (
             self._attempt_directory(
-                legacy,
+                anchor,
                 run_id=normalized_run_id,
                 epoch=epoch,
             )
@@ -1617,7 +1611,7 @@ class CommunityGrafxGlobalDiscoveryRecovery:
 
         predecessor_journal_path = (
             self._attempt_directory(
-                legacy,
+                anchor,
                 run_id=normalized_run_id,
                 epoch=int(predecessor_epoch),
             )
@@ -1894,7 +1888,7 @@ class CommunityGrafxGlobalDiscoveryRecovery:
     def _completed_adoption_retry(
         self,
         *,
-        legacy: Path,
+        anchor: Path,
         generation_id: str,
         run_id: str,
         epoch: int,
@@ -1902,7 +1896,7 @@ class CommunityGrafxGlobalDiscoveryRecovery:
         expected_live_sha256: str,
         call_fence: Callable[[], None],
     ) -> GlobalDiscoveryCutoverResult | None:
-        active = read_safe_active_generation(legacy)
+        active = read_safe_active_generation(anchor)
         if active is None or active.generation_id != generation_id:
             return None
         document = self._manifest_document(
@@ -1984,7 +1978,7 @@ class CommunityGrafxGlobalDiscoveryRecovery:
     def _try_adopt_complete_live(
         self,
         *,
-        legacy: Path,
+        anchor: Path,
         generation_id: str,
         run_id: str,
         epoch: int,
@@ -2002,7 +1996,7 @@ class CommunityGrafxGlobalDiscoveryRecovery:
                 "global_discovery_live_close_failed"
             ) from exc
         before = snapshot_global_artifact(
-            legacy,
+            anchor,
             fence_check=lambda: self._fence("recovery_adoption_snapshot", call_fence),
         )
         if before.sha256 != expected_live_sha256:
@@ -2011,7 +2005,7 @@ class CommunityGrafxGlobalDiscoveryRecovery:
             )
         if not before.exists:
             return None
-        source_graph = resolved_global_graph_path(legacy)
+        source_graph = resolved_global_graph_path(anchor)
         source_snapshot = snapshot_global_artifact(
             source_graph,
             fence_check=lambda: self._fence(
@@ -2020,8 +2014,8 @@ class CommunityGrafxGlobalDiscoveryRecovery:
         )
         if not source_snapshot.exists:
             return None
-        candidate_root = safe_global_generation_dir(legacy, generation_id)
-        candidate_path = safe_global_generation_graph_path(legacy, generation_id)
+        candidate_root = safe_global_generation_dir(anchor, generation_id)
+        candidate_path = safe_global_generation_graph_path(anchor, generation_id)
         reject_filesystem_alias_ancestry(candidate_root.parent)
         try:
             candidate_root.lstat()
@@ -2137,7 +2131,7 @@ class CommunityGrafxGlobalDiscoveryRecovery:
             "directory_fsync_supported": False,
         }
         current = snapshot_global_artifact(
-            legacy,
+            anchor,
             fence_check=lambda: self._fence(
                 "recovery_adoption_pre_manifest", call_fence
             ),
@@ -2154,11 +2148,11 @@ class CommunityGrafxGlobalDiscoveryRecovery:
                 "global_discovery_generation_manifest_unsafe"
             )
         manifest_sha, _manifest_fsync = write_generation_manifest(
-            legacy,
+            anchor,
             generation_id,
             manifest_payload,
         )
-        pointer = active_pointer_path(legacy)
+        pointer = active_pointer_path(anchor)
         previous_pointer = self._optional_plain_bytes(pointer)
         self._fence("recovery_adoption_close_live", call_fence)
         try:
@@ -2168,7 +2162,7 @@ class CommunityGrafxGlobalDiscoveryRecovery:
                 "global_discovery_live_close_failed"
             ) from exc
         current = snapshot_global_artifact(
-            legacy,
+            anchor,
             fence_check=lambda: self._fence(
                 "recovery_adoption_pre_cutover", call_fence
             ),
@@ -2184,12 +2178,12 @@ class CommunityGrafxGlobalDiscoveryRecovery:
                 "global_discovery_active_pointer_unsafe"
             )
         switch_active_generation(
-            legacy,
+            anchor,
             generation_id=generation_id,
             manifest_sha256=manifest_sha,
         )
         try:
-            active = read_safe_active_generation(legacy)
+            active = read_safe_active_generation(anchor)
             if active is None or active.generation_id != generation_id:
                 raise CommunityGrafxGlobalDiscoveryRecoveryError(
                     "global_discovery_cutover_readback_mismatch"
@@ -2232,7 +2226,7 @@ class CommunityGrafxGlobalDiscoveryRecovery:
             self._fence("recovery_adoption_rollback", call_fence)
             if previous_pointer is None:
                 reject_filesystem_alias_ancestry(pointer.parent)
-                restore_legacy_generation(legacy)
+                restore_anchor_generation(anchor)
             else:
                 try:
                     document = json.loads(previous_pointer.decode("utf-8"))
@@ -2343,7 +2337,7 @@ class CommunityGrafxGlobalDiscoveryRecovery:
     def _completed_retry(
         self,
         *,
-        legacy: Path,
+        anchor: Path,
         generation_id: str,
         run_id: str,
         epoch: int,
@@ -2353,7 +2347,7 @@ class CommunityGrafxGlobalDiscoveryRecovery:
         expected: dict[str, object],
         call_fence: Callable[[], None],
     ) -> GlobalDiscoveryCutoverResult | None:
-        active = read_safe_active_generation(legacy)
+        active = read_safe_active_generation(anchor)
         if active is None or active.generation_id != generation_id:
             return None
         document = self._manifest_document(
@@ -2429,22 +2423,12 @@ class CommunityGrafxGlobalDiscoveryRecovery:
         boards: tuple[GlobalDiscoveryBoardSeed, ...],
         fence_check: Callable[[], None],
     ) -> GlobalDiscoveryCutoverResult:
-        if type(run_id) is not str or not run_id:
-            raise CommunityGrafxGlobalDiscoveryRecoveryError(
-                "global_discovery_recovery_run_id_invalid"
-            )
-        if type(attempt_id) is not str or not attempt_id:
-            raise CommunityGrafxGlobalDiscoveryRecoveryError(
-                "global_discovery_recovery_attempt_id_invalid"
-            )
-        if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 1:
-            raise CommunityGrafxGlobalDiscoveryRecoveryError(
-                "global_discovery_recovery_epoch_invalid"
-            )
-        if _HEX_SHA256.fullmatch(expected_live_sha256) is None:
-            raise CommunityGrafxGlobalDiscoveryRecoveryError(
-                "global_discovery_expected_live_sha_invalid"
-            )
+        self._worker_identity(
+            run_id=run_id,
+            epoch=epoch,
+            attempt_id=attempt_id,
+            expected_live_sha256=expected_live_sha256,
+        )
         ordered = _ordered_boards(boards)
         expected = _expected_projection(ordered)
         source_fingerprint = canonical_sha256([row.to_dict() for row in ordered])
@@ -2454,9 +2438,9 @@ class CommunityGrafxGlobalDiscoveryRecovery:
             attempt_id=attempt_id,
         )
         self._fence("recovery_start", fence_check)
-        legacy = Path(self._path_resolver())
+        anchor = Path(self._path_resolver())
         retry = self._completed_retry(
-            legacy=legacy,
+            anchor=anchor,
             generation_id=generation_id,
             run_id=run_id,
             epoch=epoch,
@@ -2470,15 +2454,15 @@ class CommunityGrafxGlobalDiscoveryRecovery:
             return retry
 
         observed = snapshot_global_artifact(
-            legacy,
+            anchor,
             fence_check=lambda: self._fence("recovery_snapshot", fence_check),
         )
         if observed.sha256 != expected_live_sha256:
             raise CommunityGrafxGlobalDiscoveryRecoveryError(
                 "global_discovery_live_snapshot_changed"
             )
-        candidate_root = safe_global_generation_dir(legacy, generation_id)
-        candidate_path = safe_global_generation_graph_path(legacy, generation_id)
+        candidate_root = safe_global_generation_dir(anchor, generation_id)
+        candidate_path = safe_global_generation_graph_path(anchor, generation_id)
         reject_filesystem_alias_ancestry(candidate_root.parent)
         try:
             candidate_root.lstat()
@@ -2566,12 +2550,12 @@ class CommunityGrafxGlobalDiscoveryRecovery:
                 "global_discovery_generation_manifest_unsafe"
             )
         manifest_sha, _manifest_fsync = write_generation_manifest(
-            legacy,
+            anchor,
             generation_id,
             manifest_payload,
         )
         current = snapshot_global_artifact(
-            legacy,
+            anchor,
             fence_check=lambda: self._fence("recovery_pre_cutover", fence_check),
         )
         if current.sha256 != expected_live_sha256:
@@ -2579,7 +2563,7 @@ class CommunityGrafxGlobalDiscoveryRecovery:
                 "global_discovery_live_snapshot_changed"
             )
 
-        pointer = active_pointer_path(legacy)
+        pointer = active_pointer_path(anchor)
         previous_pointer = self._optional_plain_bytes(pointer)
         self._fence("recovery_close_live", fence_check)
         try:
@@ -2595,13 +2579,13 @@ class CommunityGrafxGlobalDiscoveryRecovery:
                 "global_discovery_active_pointer_unsafe"
             )
         _pointer_fsync = switch_active_generation(
-            legacy,
+            anchor,
             generation_id=generation_id,
             manifest_sha256=manifest_sha,
         )
         switched = True
         try:
-            active = read_safe_active_generation(legacy)
+            active = read_safe_active_generation(anchor)
             if active is None or active.generation_id != generation_id:
                 raise CommunityGrafxGlobalDiscoveryRecoveryError(
                     "global_discovery_cutover_readback_mismatch"
@@ -2636,7 +2620,7 @@ class CommunityGrafxGlobalDiscoveryRecovery:
                 self._fence("recovery_rollback", fence_check)
                 if previous_pointer is None:
                     reject_filesystem_alias_ancestry(pointer.parent)
-                    restore_legacy_generation(legacy)
+                    restore_anchor_generation(anchor)
                 else:
                     try:
                         document = json.loads(previous_pointer.decode("utf-8"))
@@ -2671,22 +2655,12 @@ class CommunityGrafxGlobalDiscoveryRecovery:
     ) -> GlobalDiscoveryCutoverResult:
         """Adopt a complete live primary, otherwise rebuild from authoritative seeds."""
 
-        if type(run_id) is not str or not run_id:
-            raise CommunityGrafxGlobalDiscoveryRecoveryError(
-                "global_discovery_recovery_run_id_invalid"
-            )
-        if type(attempt_id) is not str or not attempt_id:
-            raise CommunityGrafxGlobalDiscoveryRecoveryError(
-                "global_discovery_recovery_attempt_id_invalid"
-            )
-        if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 1:
-            raise CommunityGrafxGlobalDiscoveryRecoveryError(
-                "global_discovery_recovery_epoch_invalid"
-            )
-        if _HEX_SHA256.fullmatch(expected_live_sha256) is None:
-            raise CommunityGrafxGlobalDiscoveryRecoveryError(
-                "global_discovery_expected_live_sha_invalid"
-            )
+        self._worker_identity(
+            run_id=run_id,
+            epoch=epoch,
+            attempt_id=attempt_id,
+            expected_live_sha256=expected_live_sha256,
+        )
         ordered = _ordered_boards(boards)
         expected = _expected_projection(ordered)
         source_fingerprint = canonical_sha256([row.to_dict() for row in ordered])
@@ -2701,9 +2675,9 @@ class CommunityGrafxGlobalDiscoveryRecovery:
             attempt_id=attempt_id,
         )
         self._fence("recovery_start", fence_check)
-        legacy = Path(self._path_resolver())
+        anchor = Path(self._path_resolver())
         adoption_retry = self._completed_adoption_retry(
-            legacy=legacy,
+            anchor=anchor,
             generation_id=adoption_generation_id,
             run_id=run_id,
             epoch=epoch,
@@ -2715,7 +2689,7 @@ class CommunityGrafxGlobalDiscoveryRecovery:
             result = adoption_retry
         else:
             retry = self._completed_retry(
-                legacy=legacy,
+                anchor=anchor,
                 generation_id=generation_id,
                 run_id=run_id,
                 epoch=epoch,
@@ -2729,7 +2703,7 @@ class CommunityGrafxGlobalDiscoveryRecovery:
                 result = retry
             else:
                 adopted = self._try_adopt_complete_live(
-                    legacy=legacy,
+                    anchor=anchor,
                     generation_id=adoption_generation_id,
                     run_id=run_id,
                     epoch=epoch,

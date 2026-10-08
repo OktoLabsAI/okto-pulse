@@ -13,6 +13,7 @@ from okto_pulse.core.kg.interfaces.global_discovery_recovery import (
     GlobalDiscoveryDigestSeed,
     GlobalDiscoveryRecovery,
 )
+from okto_pulse.core.ports.global_discovery_recovery_control import recovery_attempt_id
 from okto_pulse.core.kg.interfaces.global_discovery_runtime import (
     GlobalDiscoveryRuntime,
 )
@@ -266,6 +267,7 @@ def test_runtime_current_methods_and_exhaustive_search_are_real(
 
     assert runtime.state().state is GraphRuntimeObservationState.CONFIRMED_ABSENT
     assert runtime.bootstrap().opened is True
+    assert runtime.state().reason_code == "global_discovery_anchor_primary_present"
     assert (
         runtime.state().state is GraphRuntimeObservationState.PRESENT_READABLE_CANDIDATE
     )
@@ -489,9 +491,9 @@ def test_windows_reparse_points_fail_closed_without_path_is_junction(
             match="linked_global_discovery_generations_root",
         ):
             recovery.recover_and_cutover(
-                run_id="run-reparse",
+                run_id="gdr_reparse",
                 epoch=1,
-                attempt_id="attempt-reparse",
+                attempt_id=recovery_attempt_id("gdr_reparse", 1),
                 expected_live_sha256=before.sha256,
                 boards=(_board_seed("replacement", "replacement-source"),),
                 fence_check=lambda: None,
@@ -561,9 +563,9 @@ def test_recovery_builds_authenticated_active_generation_and_is_idempotent(
     boards = (_board_seed("board-a", "source-a"),)
 
     result = recovery.recover_and_cutover(
-        run_id="run-a",
+        run_id="gdr_native_a",
         epoch=1,
-        attempt_id="attempt-a",
+        attempt_id=recovery_attempt_id("gdr_native_a", 1),
         expected_live_sha256=before.sha256,
         boards=boards,
         fence_check=lambda: None,
@@ -593,9 +595,9 @@ def test_recovery_builds_authenticated_active_generation_and_is_idempotent(
     slot.close()
 
     repeated = recovery.recover_and_cutover(
-        run_id="run-a",
+        run_id="gdr_native_a",
         epoch=1,
-        attempt_id="attempt-a",
+        attempt_id=recovery_attempt_id("gdr_native_a", 1),
         expected_live_sha256=before.sha256,
         boards=boards,
         fence_check=lambda: None,
@@ -624,9 +626,9 @@ def test_recovery_adopts_a_complete_copy_without_mutating_live_primary(
     replacement = (_board_seed("replacement", "replacement-source"),)
 
     result = recovery.recover_and_cutover(
-        run_id="run-adopt",
+        run_id="gdr_adopt",
         epoch=1,
-        attempt_id="attempt-adopt",
+        attempt_id=recovery_attempt_id("gdr_adopt", 1),
         expected_live_sha256=before.sha256,
         boards=replacement,
         fence_check=lambda: None,
@@ -650,9 +652,9 @@ def test_recovery_adopts_a_complete_copy_without_mutating_live_primary(
     slot.close()
 
     repeated = recovery.recover_and_cutover(
-        run_id="run-adopt",
+        run_id="gdr_adopt",
         epoch=1,
-        attempt_id="attempt-adopt",
+        attempt_id=recovery_attempt_id("gdr_adopt", 1),
         expected_live_sha256=before.sha256,
         boards=replacement,
         fence_check=lambda: None,
@@ -679,9 +681,9 @@ def test_recovery_mismatch_and_invalid_seed_leave_live_pointer_unchanged(
 
     with pytest.raises(CommunityGrafxGlobalDiscoveryRecoveryError) as mismatch:
         recovery.rebuild_candidate_and_cutover(
-            run_id="run-mismatch",
+            run_id="gdr_mismatch",
             epoch=1,
-            attempt_id="attempt-mismatch",
+            attempt_id=recovery_attempt_id("gdr_mismatch", 1),
             expected_live_sha256="f" * 64,
             boards=(_board_seed("board-a", "source-a"),),
             fence_check=lambda: None,
@@ -693,9 +695,9 @@ def test_recovery_mismatch_and_invalid_seed_leave_live_pointer_unchanged(
     invalid = _board_seed("board-a", "source-a")
     with pytest.raises(CommunityGrafxGlobalDiscoveryRecoveryError):
         recovery.rebuild_candidate_and_cutover(
-            run_id="run-invalid",
+            run_id="gdr_invalid",
             epoch=1,
-            attempt_id="attempt-invalid",
+            attempt_id=recovery_attempt_id("gdr_invalid", 1),
             expected_live_sha256=before.sha256,
             boards=(invalid, invalid),
             fence_check=lambda: None,
@@ -715,9 +717,9 @@ def test_recovery_mismatch_and_invalid_seed_leave_live_pointer_unchanged(
     )
     with pytest.raises(CommunityGrafxGlobalDiscoveryRecoveryError) as factory_failure:
         failed_candidate.rebuild_candidate_and_cutover(
-            run_id="run-factory-failure",
+            run_id="gdr_factory-failure",
             epoch=1,
-            attempt_id="attempt-factory-failure",
+            attempt_id=recovery_attempt_id("gdr_factory-failure", 1),
             expected_live_sha256=before.sha256,
             boards=(_board_seed("board-a", "source-a"),),
             fence_check=lambda: None,
@@ -725,3 +727,26 @@ def test_recovery_mismatch_and_invalid_seed_leave_live_pointer_unchanged(
     assert factory_failure.value.code == "global_discovery_candidate_open_failed"
     assert read_active_generation(slot.legacy) is None
     assert recovery.inspect_live_artifact().sha256 == before.sha256
+
+
+@pytest.mark.parametrize("method", ["recover_and_cutover", "rebuild_candidate_and_cutover"])
+@pytest.mark.parametrize("run_id,attempt_id", [
+    ("run-old", "attempt-old"),
+    ("gdr_native", "attempt-old"),
+])
+def test_old_attempt_identity_is_refused_before_any_io(tmp_path, method, run_id, attempt_id):
+    def forbidden(*args):
+        pytest.fail("invalid identity reached graph, filesystem or mutation fence")
+
+    recovery = CommunityGrafxGlobalDiscoveryRecovery(
+        forbidden, forbidden, forbidden, forbidden,
+    )
+    with pytest.raises(CommunityGrafxGlobalDiscoveryRecoveryError) as rejected:
+        getattr(recovery, method)(
+            run_id=run_id, epoch=1, attempt_id=attempt_id,
+            expected_live_sha256="0" * 64,
+            boards=(_board_seed("board-a", "source-a"),),
+            fence_check=forbidden,
+        )
+    assert rejected.value.code == "global_discovery_recovery_attempt_identity_invalid"
+    assert not list(tmp_path.iterdir())
