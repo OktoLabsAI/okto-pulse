@@ -79,7 +79,8 @@ async def test_native_authorship_classification_and_second_agent_resume(
 
     async def protocol(client):
         for uri in ("okto-pulse://workflows/preflight", "okto-pulse://workflows/specs",
-                    "okto-pulse://reference/tool-docs/architecture"):
+                    "okto-pulse://reference/tool-docs/architecture",
+                    "okto-pulse://reference/tool-docs/spec"):
             assert await client.read_resource(uri)
 
     async with Client(host) as client:
@@ -88,9 +89,42 @@ async def test_native_authorship_classification_and_second_agent_resume(
         for count in (1, 26):
             authored = await call(client, "okto_pulse_create_spec", board_id="board",
                                   title="Classification population " + str(count),
-                                  ideation_id="idea", delivery_context="greenfield")
+                                  ideation_id="idea", delivery_context="greenfield",
+                                  functional_requirements=[{"id": "fr", "text": "Publish an order notification"}],
+                                  acceptance_criteria=[{"id": "ac", "text": "Notification includes order_id",
+                                                        "verification_profile": "functional",
+                                                        "requirement_links": [{"requirement_type": "functional_requirement",
+                                                                               "requirement_id": "fr"}]}])
             assert "spec" in authored, authored
             scope = {"board_id": "board", "spec_id": authored["spec"]["id"]}
+            initial_plan = await call(client, "okto_pulse_get_requirement_verification", **scope)
+            requirement = initial_plan["items"][0]
+            proposal = requirement["default_proposal"]
+            assert proposal["requires_author_acceptance"] and not requirement["qualification_resolved"]
+            assert proposal["verification"]["required_profiles"] == ["functional"]
+            await call(client, "okto_pulse_update_spec_entity", **scope,
+                       entity_type="functional_requirement", entity_id=requirement["requirement_id"],
+                       operation="update", expected_spec_version=initial_plan["spec_version"],
+                       payload_json={"verification": proposal["verification"]})
+            qualified = await call(client, "okto_pulse_get_requirement_verification", **scope)
+            assert qualified["items"][0]["qualification_resolved"]
+            assert not qualified["delivery_evaluated"] and not qualified["verification_work_complete"]
+            await call(client, "okto_pulse_update_spec_entity", **scope,
+                       entity_type="business_rule", operation="create",
+                       expected_spec_version=qualified["spec_version"],
+                       payload_json={
+                           "id": "br", "title": "Notification identity",
+                           "rule": "Every notification identifies its order",
+                           "when": "An order notification is published", "then": "order_id is present",
+                           "linked_requirements": ["fr"],
+                           "verification": {"mode": "inherited", "required_profiles": ["functional"],
+                                            "inheritance": [{
+                                                "source": {"requirement_type": "functional_requirement",
+                                                           "requirement_id": "fr"},
+                                                "source_digest": qualified["items"][0]["source_digest"],
+                                                "criterion_ids": ["ac"], "covered_aspect": "Notification includes order_id",
+                                            }]},
+                       })
             payload = dict(board_id="board",
                        parent_type="spec", parent_id=scope["spec_id"], title="Order event contracts",
                        global_description="External order notifications; contextual interfaces outside this delivery.",
@@ -150,6 +184,15 @@ async def test_native_authorship_classification_and_second_agent_resume(
             assert resumed["state_counts"]["current"] == scenario["count"]
             assert not resumed["admission_evaluated"] and not resumed["semantic_review_evaluated"]
             scenario["resumed"] = resumed
+            verification = await call(client, "okto_pulse_get_requirement_verification", **scenario["scope"])
+            assert verification["items"][0]["qualification_resolved"]
+            assert verification["items"][0]["verification"]["required_profiles"] == ["functional"]
+            assert not verification["delivery_evaluated"] and not verification["verification_work_complete"]
+            inherited = next(row for row in verification["items"] if row["requirement_type"] == "business_rule")
+            assert inherited["verification"]["mode"] == "inherited" and inherited["qualification_resolved"]
+            assert inherited["criteria_paths"][0]["criterion_id"] == "ac"
+            assert any(step["requirement_id"] == "fr" for step in inherited["criteria_paths"][0]["path"])
+            scenario["verification"] = verification
         if read_only:
             refused = await client.call_tool("okto_pulse_classify_architecture_candidates", {
                 **scope, "batch": {
@@ -166,6 +209,8 @@ async def test_native_authorship_classification_and_second_agent_resume(
         for scenario in scenarios:
             authored_spec = await session.get(Spec, scenario["scope"]["spec_id"])
             assert authored_spec.ideation_id == "idea" and authored_spec.created_by == "first"
+            assert len(authored_spec.acceptance_criteria) == 1
+            assert len(authored_spec.business_rules) == 1
             scoped = [row for row in decisions if row.spec_id == scenario["scope"]["spec_id"]]
             assert len(scoped) == scenario["count"]
             assert {row.payload["interface_id"] for row in scoped} == {
