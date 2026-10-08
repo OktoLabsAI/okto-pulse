@@ -20,6 +20,7 @@ import tiktoken
 from mcp import ClientSession
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
+from okto_pulse.community.adapters.test_evidence import CommunityHttpManifestExecutor
 
 
 def main() -> int:
@@ -33,6 +34,8 @@ def main() -> int:
     in_flight: dict[int, dict] = {}
     active_test = {"nodeid": None}
     original = ClientSession.send_request
+    original_execution = CommunityHttpManifestExecutor.__call__
+    executions: list[dict] = []
 
     def payload(value):
         return value.model_dump(mode="json", by_alias=True, exclude_none=True)
@@ -93,6 +96,25 @@ def main() -> int:
                 seen.add(cursor)
         return result
 
+    async def measured_execution(self, manifest, manifest_ref):
+        active = next(iter(in_flight.values())) if len(in_flight) == 1 else None
+        observation = {"test": active_test["nodeid"],
+                       "request_index": next((i for i, row in enumerate(rows) if row is active), None),
+                       "steps": len(manifest["steps"])}
+        executions.append(observation)
+        started = time.perf_counter()
+        try:
+            result = await original_execution(self, manifest, manifest_ref)
+        except Exception as exc:
+            observation["exception_type"] = type(exc).__name__
+            raise
+        else:
+            observation["outcome"] = result.outcome
+            observation["assertions"] = len(result.assertions)
+            return result
+        finally:
+            observation["elapsed_ms"] = (time.perf_counter() - started) * 1000
+
     class Observer:
         def pytest_runtest_setup(self, item):
             active_test["nodeid"] = item.nodeid
@@ -102,12 +124,14 @@ def main() -> int:
                              "outcome": report.outcome, "seconds": report.duration})
 
     ClientSession.send_request = measured
+    CommunityHttpManifestExecutor.__call__ = measured_execution
     event.listen(Engine, "before_cursor_execute", before_sql)
     event.listen(Engine, "after_cursor_execute", after_sql)
     try:
         code = int(pytest.main(sys.argv[2:], plugins=[Observer()]))
     finally:
         ClientSession.send_request = original
+        CommunityHttpManifestExecutor.__call__ = original_execution
         event.remove(Engine, "before_cursor_execute", before_sql)
         event.remove(Engine, "after_cursor_execute", after_sql)
         report = {
@@ -122,9 +146,9 @@ def main() -> int:
             "limits": ["Fixture setup and seeded facts are not measured authorship.",
                        "Only actually consumed resources are measured.",
                        "SQL counts cover serial MCP request windows, not fixture setup/verification; they do not establish causality for background work.",
-                       "External execution is included in request latency but not separately instrumented.",
+                       "HTTP manifest execution calls are separately timed and linked to their serial MCP request; other executor implementations are not instrumented.",
                        "No baseline equivalence or cost reduction is established by this capture."],
-            "outcomes": outcomes, "requests": rows,
+            "outcomes": outcomes, "requests": rows, "external_executions": executions,
         }
         (output / "capture.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return code

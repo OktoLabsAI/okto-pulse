@@ -382,7 +382,15 @@ async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(
                 completeness_justification='All assigned observable assertions passed', drift=0,
                 drift_justification='Within the planned verification scope'))
         tested = await call(client, 'okto_pulse_record_delivery_evidence', **scope, card_id='test', evidence=test_report)
+        replayed = await call(client, 'okto_pulse_record_delivery_evidence', **scope, card_id='test', evidence=test_report)
+        assert replayed['replayed'] and replayed['entries'] == tested['entries']
         await call(client, 'okto_pulse_move_spec', **scope, status='done')
+        rollup = await call(client, 'okto_pulse_get_delivery_evidence', **scope)
+        assert rollup['allowed']
+        shared = [row for row in rollup['rows'] if row['obligation']['binding']['obligation_ref']
+                  in {'fr:fr', 'br:br', 'ac:ac-procedure'}]
+        assert len(shared) == 3
+        assert all(row['test_satisfied'] and row['test_ids'] == [tested['entries'][0]['id']] for row in shared)
     async with factory() as reader:
         current = await reader.get(Spec, 'spec')
         assert current.status == 'done'
