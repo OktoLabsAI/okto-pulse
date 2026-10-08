@@ -91,3 +91,16 @@ it('uses a conclusive empty state only for complete scopes', async () => {
   render(<BugClustersView boardId="one" onBack={vi.fn()} />);
   expect(await screen.findByText('No clusters in this scope.')).toBeInTheDocument();
 });
+
+
+it.each([null, 72])('labels latest-completion duration with unknown or measured value %s', async hours => {
+  const result = page('Reopened Bug group');
+  result.items[0].observed_median_resolution_hours = hours;
+  result.items[0].observed_resolution_timestamp_count = hours === null ? 0 : 1;
+  api.getBugClusters.mockResolvedValue(result);
+  render(<BugClustersView boardId="one" onBack={vi.fn()} />);
+  expect(await screen.findByText(/Median hours from creation to latest completion:/))
+    .toHaveTextContent(hours === null ? 'Unknown' : '72.0');
+  expect(screen.getByText(/Duration runs from source creation/))
+    .toHaveTextContent('includes reopened periods and is not operational MTTR');
+});

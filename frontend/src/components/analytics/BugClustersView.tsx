@@ -108,14 +108,14 @@ export function BugClustersView({ boardId, onBack }: { boardId: string; onBack: 
         {' '}Graph freshness: {data.projection_freshness.state}. Scope completeness: {data.completeness.complete_for_scope ? 'complete' : 'not established'}.</p>
       {!data.completeness.complete_for_scope && <p role="status">Available observations may be incomplete. Missing associations are not proof of absence.</p>}
       {data.items.length === 0 && <p>{data.completeness.complete_for_scope ? 'No clusters in this scope.' : 'No clusters found in the available observations.'}</p>}
-      <p className="text-sm">Resolution time uses the latest verified Done transition of currently Done Bugs.
-        Missing timestamps remain unknown; the median includes only Bugs with verified timestamps.</p>
+      <p className="text-sm">Duration runs from source creation to the latest verified Done transition of currently Done Bugs.
+        It includes reopened periods and is not operational MTTR. Missing timestamps remain unknown; the median includes only Bugs with verified timestamps.</p>
       <div className="space-y-3">
         {data.items.map(item => <article key={`${item.target_ref}:${item.validity}`} className="border dark:border-gray-700 rounded p-3 space-y-2">
           <h3 className="font-medium">{item.title}</h3>
           <p>{groupingLabels[data.group_by]} · Validity: {item.validity} · Graph: {item.projection_freshness}</p>
           <p>Distinct Bugs: {item.distinct_bug_count ?? 'Unknown'}; observed: {item.observed_bug_count}; currently Done: {item.observed_done_count}.</p>
-          <p>Median resolution hours: {item.observed_median_resolution_hours === null ? 'Unknown' : item.observed_median_resolution_hours.toFixed(1)}
+          <p>Median hours from creation to latest completion: {item.observed_median_resolution_hours === null ? 'Unknown' : item.observed_median_resolution_hours.toFixed(1)}
             {' '}({item.observed_resolution_timestamp_count} verified timestamps).</p>
           <details><summary>Bug references and provenance</summary>
             <p className="break-all">Target: {item.target_ref ?? 'Unspecified'}</p>
