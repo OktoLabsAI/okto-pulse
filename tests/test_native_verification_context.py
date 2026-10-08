@@ -22,7 +22,7 @@ classified_context = reads.classified_context
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("adopted_context", ["native_schema"], indirect=True)
-async def test_inherited_br_promoted_ir_and_partial_work_remain_distinct(classified_context, tmp_path):
+async def test_inherited_br_promoted_ir_and_partial_work_remain_distinct(classified_context, tmp_path, monkeypatch):
     db = classified_context
     await reads.seed(db)
     await reads.seed_plan(db)
@@ -105,7 +105,86 @@ async def test_inherited_br_promoted_ir_and_partial_work_remain_distinct(classif
     persisted = await db.get(Spec, "spec", populate_existing=True)
     assert persisted.integration_requirements == promoted
     assert persisted.test_scenarios[0]["status"] == "ready"
-    # Disposable diagnostic payload for subsequent transport/UI parity work.
+    resume = await compare_transports(db, monkeypatch, plan, delivery)
+    # Payload shared with frontend rendering tests.
     (tmp_path / "native-context.json").write_text(json.dumps({
-        "plan": plan, "delivery": delivery, "promoted": promoted,
+        "plan": plan, "delivery": delivery, "promoted": promoted, "resume": resume,
     }, indent=2, default=str), encoding="utf-8")
+
+
+async def compare_transports(db, monkeypatch, plan, delivery):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    import httpx
+    from fastmcp import Client
+    import test_architecture_classification_transports as transports
+    from okto_pulse.community.api import code_traceability as api
+    from okto_pulse.community.adapters.mcp_host import CommunityMcpHostProvider
+    from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
+    from okto_pulse.core.mcp import server
+    from okto_pulse.core.mcp.catalog import CoreMcpCatalog
+    from okto_pulse.core.mcp.code_traceability_tools import register_code_traceability_tools
+    from okto_pulse.core.ports.authentication import Principal
+    from okto_pulse.core.ports.permission_policy import PermissionSet, set_permission_flag
+    from okto_pulse.core.application.use_cases.base import ActorContext
+    from okto_pulse.core.ports.mcp_resources import StaticMcpResourceCatalog, freeze_mcp_resource_catalog
+
+    who = reads.actor(planning=True)
+    flags = who.permissions.flags
+    set_permission_flag(flags, "code_traceability.evidence.read", True)
+    set_permission_flag(flags, "board.read", True)
+    who = ActorContext("author", "rest", actor_kind="human", board_id="board", realm_id="local", permissions=PermissionSet(flags))
+    from okto_pulse.core.application.use_cases.authorization import decide_authorization
+    from okto_pulse.core.application.use_cases.authorization import PermissionRequirement
+    decision = decide_authorization(who, PermissionRequirement("code_traceability.evidence.read"), permissions=who.permissions)
+    assert decision.allowed, decision.reason
+    app, factory = transports.application(db)
+    app.include_router(api.router)
+    app.dependency_overrides[api.require_principal] = lambda: Principal(subject="author", realm_id="local")
+    monkeypatch.setattr(api, "_actor", lambda *args: who)
+    monkeypatch.setattr(RESTAdapterContract, "actor", staticmethod(lambda *args, **kwargs: who))
+    transports.mcp_factory(monkeypatch, factory)
+    context = SimpleNamespace(agent_id="author", agent_name="New reader session",
+                              realm_id="local", board_id="board", permissions=who.permissions)
+    monkeypatch.setattr(server, "_get_agent_ctx", AsyncMock(return_value=context))
+
+    @asynccontextmanager
+    async def scope(**kwargs):
+        async with factory() as session, CommunityUnitOfWork(session, actor=kwargs["actor"]) as uow:
+            yield uow
+
+    async def agent(board_id):
+        assert board_id == "board"
+        return context
+
+    catalog = CoreMcpCatalog(name="combined-context", version="0.4.0")
+    catalog.tool()(server.okto_pulse_get_requirement_verification.fn)
+    register_code_traceability_tools(catalog, get_board_agent=agent, get_uow=lambda: scope,
+                                    get_settings=SimpleNamespace)
+    frozen = freeze_mcp_resource_catalog(StaticMcpResourceCatalog("combined-context", (), precedence=1))
+    host = CommunityMcpHostProvider().materialize_catalog(
+        catalog, resource_catalog=frozen, projection_identity=frozen.identity)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as rest, Client(host) as mcp:
+        response = await rest.get("/api/v1/boards/board/specs/spec/requirement-verification")
+        assert response.status_code == 200, response.text
+        result = await mcp.call_tool("okto_pulse_get_requirement_verification",
+                                    {"board_id": "board", "spec_id": "spec"})
+        assert result.structured_content["data"] == {"success": True, **response.json()}
+        assert response.json() == json.loads(json.dumps(plan, default=str))
+        for view in ("rollup", "resume"):
+            query = {"view": "resume", "card_id": "implementation-card"} if view == "resume" else {}
+            response = await rest.get("/boards/board/specs/spec/delivery-evidence", params=query)
+            assert response.status_code == 200, response.text
+            result = await mcp.call_tool("okto_pulse_get_delivery_evidence", {
+                "board_id": "board", "spec_id": "spec", **query})
+            body = json.loads(result.content[0].text)
+            assert not result.is_error, body
+            assert body["data"] == response.json()
+            if view == "rollup":
+                assert response.json() == json.loads(json.dumps(delivery, default=str))
+            else:
+                resume = response.json()
+                assert resume["latest_checkpoint"]["actor_id"] == "executor"
+                assert not resume["actions"]["record_progress"]
+    return resume
