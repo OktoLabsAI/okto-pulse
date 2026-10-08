@@ -1265,7 +1265,7 @@ export function GlobalSearchView({ boardId }: Props) {
             ? activeIntent.label.replace(/\?$/, '').slice(0, 28)
             : (query.trim().slice(0, 28) || 'Query');
           const activeFilterLabels = Array.from(typeFilter);
-          const availableDimensions = ['status', 'sprint', 'assignee'].filter(
+          const availableDimensions = ['status', 'assignee'].filter(
             (d) => !activeFilterLabels.includes(d),
           );
           const headingTitle = activeIntent

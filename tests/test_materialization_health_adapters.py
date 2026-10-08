@@ -214,11 +214,32 @@ async def test_relational_census_is_exact_and_board_scoped(tmp_path: Path) -> No
             )
             await session.commit()
 
-        census = await CommunitySqlAlchemyMaterializationCensus(factory).snapshot(
-            board_id,
-            generation="generation-census",
-            deadline=HealthProbeDeadline(time.monotonic() + 2.0),
-        )
+        from sqlalchemy import event
+
+        statements = []
+
+        def observed_sql(_connection, _cursor, statement, _parameters, _context, _many):
+            statements.append(statement)
+
+        event.listen(engine.sync_engine, "before_cursor_execute", observed_sql)
+        try:
+            observations = [
+                await CommunitySqlAlchemyMaterializationCensus(factory).snapshot(
+                    board_id, generation="generation-census",
+                    deadline=HealthProbeDeadline(time.monotonic() + 2.0),
+                )
+                for _ in range(3)
+            ]
+        finally:
+            event.remove(engine.sync_engine, "before_cursor_execute", observed_sql)
+        assert statements
+        assert all(statement.lstrip().upper().startswith("SELECT ") for statement in statements)
+        assert all(observation.status is CensusStatus.AVAILABLE for observation in observations)
+        assert all(observation.generation == "generation-census" for observation in observations)
+        assert {(observation.source_count, observation.queue_depth, observation.active_queue_count,
+                 observation.dead_letter_count, observation.global_outbox_dead_letter_count)
+                for observation in observations} == {(3, 2, 3, 1, 1)}
+        census = observations[-1]
 
         assert census.status is CensusStatus.AVAILABLE
         assert census.generation == "generation-census"

@@ -11,6 +11,14 @@ from okto_pulse.core.kg.interfaces.rebuild_audit_storage import RebuildAuditKey,
 from okto_pulse.core.services.kg_health_service import _read_cognitive_health_counts, _read_current_kg_generation
 
 
+def current_item(status="pending", generation="generation"):
+    return rebuild_audit.CognitiveConsolidationItem(
+        item_id="item-" + status, board_id="board", kg_generation_id=generation,
+        source_ref="spec:one", artifact_type="spec", status=status,
+        recorded_at="2026-09-24T00:00:00Z",
+    ).to_dict()
+
+
 @pytest.fixture
 def observation(tmp_path, monkeypatch):
     store = CommunityFileSystemRebuildAuditArtifactStore(tmp_path)
@@ -18,6 +26,7 @@ def observation(tmp_path, monkeypatch):
     store.write_json_atomic(key, {
         "board_id": "board", "kg_generation_id": "generation",
         "recorded_at": "2026-09-24T00:00:00Z", "pending_refs": ["spec:one"],
+        "items": [current_item()],
     })
     monkeypatch.setattr(rebuild_audit, "require_rebuild_audit_artifact_store", lambda: store)
     return store, tmp_path / "rebuild/audit/cognitive_pending/board/generation.json"
@@ -40,7 +49,7 @@ def test_corrupt_cognitive_artifact_is_unavailable_not_empty(observation):
     assert path.read_text(encoding="utf-8") == "{ incomplete"
 
 
-@pytest.mark.parametrize("damage", ["array", "missing_generation", "unknown_status", "invalid_refs"])
+@pytest.mark.parametrize("damage", ["array", "missing_generation", "unknown_status", "invalid_refs", "aggregate_only"])
 def test_invalid_cognitive_evidence_does_not_become_zero(observation, damage):
     _store, path = observation
     record = json.loads(path.read_text(encoding="utf-8"))
@@ -49,9 +58,11 @@ def test_invalid_cognitive_evidence_does_not_become_zero(observation, damage):
     elif damage == "missing_generation":
         del record["kg_generation_id"]
     elif damage == "unknown_status":
-        record["items"] = [{"status": "invented"}]
+        record["items"][0]["status"] = "invented"
+    elif damage == "aggregate_only":
+        del record["items"]
     else:
-        record["pending_refs"] = "spec:one"
+        record["items"][0]["evidence_refs"] = "spec:one"
     path.write_text(json.dumps(record), encoding="utf-8")
     assert _read_cognitive_health_counts("board")[2] == "unavailable"
 
@@ -110,8 +121,8 @@ def test_latest_generation_order_and_item_interpretation_are_preserved(observati
     store, path = observation
     first = json.loads(path.read_text(encoding="utf-8"))
     second = dict(first, kg_generation_id="z-latest", items=[
-        {"status": "pending"}, {"status": "failed"}, {"status": "in_progress"},
-        {"status": "consolidated"}, {"status": "skipped"},
+        current_item(status, "z-latest")
+        for status in ("pending", "failed", "in_progress", "consolidated", "skipped")
     ])
     store.write_json_atomic(RebuildAuditKey(namespace="cognitive_pending", board_id="board", kg_generation_id="z-latest"), second)
     assert _read_cognitive_health_counts("board") == (3, 0, "available")

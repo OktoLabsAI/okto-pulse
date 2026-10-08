@@ -172,7 +172,9 @@ describe('GlobalSearchView typed Discovery params', () => {
     render(<GlobalSearchView boardId={BOARD} />);
     fireEvent.change(screen.getByTestId('discovery-search-input'), { target: { value: 'remote decision' } });
     fireEvent.click(screen.getByTestId('discovery-search-submit'));
-    fireEvent.click(await screen.findByTestId('global-search-result-remote-node'));
+    const result = await screen.findByTestId('global-search-result-remote-node');
+    expect(screen.queryByRole('button', { name: /\+\s*sprint/i })).not.toBeInTheDocument();
+    fireEvent.click(result);
     expect(mocks.pushModal).toHaveBeenCalledWith({ type: 'kg_node', id: 'remote-node', boardId: 'other-board' });
     expect(screen.getByTestId('discovery-search-input')).toHaveValue('remote decision');
   });
