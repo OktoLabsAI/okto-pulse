@@ -162,6 +162,7 @@ async def test_report_cannot_borrow_complete_proof_outside_its_selection(ledger,
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("ledger", ["native_schema"], indirect=True)
 @pytest.mark.parametrize("mode", ["blocking", "advisory"])
 @pytest.mark.parametrize("adopted", [False, True])
 async def test_direct_done_obeys_delivery_policy_without_human_validation(ledger, tmp_path, monkeypatch, mode, adopted):

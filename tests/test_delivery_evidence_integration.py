@@ -466,22 +466,41 @@ async def test_gate_accepts_chain_valid_proof_recorded_before_done(ledger):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("ledger", ["native_schema"], indirect=True)
 async def test_waiver_is_human_scoped_phase_specific_revocable_and_preserves_done(
     ledger,
 ):
     session, store, _ = ledger
     await session.execute(update(Spec).values(status="done"))
-    # Waivers stay on the legacy spec-rollup surface (BR-3).
+    # Native human-only Spec exceptions, with real authorization before writes.
+    from okto_pulse.core.application.use_cases.base import ActorContext, PermissionDeniedError
+    from okto_pulse.core.application.use_cases.delivery_evidence import RecordDeliveryEvidenceUseCase
+    uow = SimpleNamespace(services=SimpleNamespace(delivery_evidence=store), commit=session.commit)
+    async def authorized(data, *, human=True, granted=True):
+        actor = ActorContext(actor_id="owner" if human else "agent-1",
+            actor_kind="user" if human else "agent", source="rest", board_id=BOARD_ID,
+            permissions=["code_traceability.waiver.create", "code_traceability.waiver.clear"] if granted else [])
+        return await RecordDeliveryEvidenceUseCase().execute(data, actor=actor, uow=uow)
+    for human, granted, error in [(True, False, "permission"), (False, True, "human_authorization")]:
+        with pytest.raises(PermissionDeniedError, match=error):
+            await authorized(spec_exception_command(), human=human, granted=granted)
+    assert not list(await session.scalars(select(DeliveryEvidenceRecordRow)))
+
     with pytest.raises(ValueError, match="human_authorization"):
         await record(store, spec_exception_command("waiver"))
-    first = await record(store, spec_exception_command("waiver"), human=True)
+    first = await authorized(spec_exception_command("waiver"))
     view = await store.projection(BOARD_ID, SPEC_ID)
     assert not view["allowed"] and view["rows"][0]["implementation_waiver_ids"]
-    await record(
-        store, spec_exception_command("waiver", phase="test", idempotency_key="waive-test"), human=True
-    )
-    assert (await store.projection(BOARD_ID, SPEC_ID))["allowed"]
-    await record(store, spec_exception_command("revoke", record_id=first["id"]), human=True)
+    await authorized(spec_exception_command("waiver", phase="test", idempotency_key="waive-test"))
+    waived = await store.projection(BOARD_ID, SPEC_ID)
+    assert waived["allowed"]
+    assert all(not row["implementation_ids"] and not row["test_ids"] for row in waived["rows"])
+    revoke = spec_exception_command("revoke", record_id=first["id"])
+    for human, granted, error in [(True, False, "permission"), (False, True, "human_authorization")]:
+        with pytest.raises(PermissionDeniedError, match=error):
+            await authorized(revoke, human=human, granted=granted)
+        assert await store.projection(BOARD_ID, SPEC_ID) == waived
+    await authorized(revoke)
     view = await store.projection(BOARD_ID, SPEC_ID)
     assert not view["allowed"] and view["status"] == "done"
     assert len(view["records"]) == 3
@@ -829,6 +848,7 @@ async def test_mcp_runs_same_store_closed_inputs_permissions_and_explicit_errors
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("ledger", ["native_schema"], indirect=True)
 async def test_spec_level_skip_overrides_the_spec_done_gate(ledger):
     """Spec-level skip flag (Tests-tab pattern) unblocks spec→done.
 

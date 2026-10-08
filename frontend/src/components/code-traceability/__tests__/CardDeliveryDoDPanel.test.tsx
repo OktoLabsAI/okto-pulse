@@ -236,7 +236,7 @@ it('offers only this card receipts as accepted proof', async () => {
   expect(options.some(o => o.value.includes('execution-2'))).toBeFalsy();
 });
 
-it('routes a human waiver to the legacy spec surface, never the card ledger', async () => {
+it('routes a human waiver to the native Spec exception surface, never the card ledger', async () => {
   render(<CardDeliveryDoDPanel boardId="b" card={CARD} canWaiver />);
   fireEvent.click(await screen.findByText('Request Waiver (human)'));
   fireEvent.click(screen.getByLabelText('Select ac:ac_77ce'));
