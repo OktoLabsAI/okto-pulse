@@ -145,3 +145,74 @@ async def test_failed_result_uses_atomic_batch_and_same_replay_contract(ledger, 
     await session.commit()
     assert await store.record_card(valid, actor_id="agent-1", actor_kind="agent") == {**saved, "replayed": True}
     assert not (await store.projection(BOARD_ID, SPEC_ID))["allowed"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("complete_scope", [False, True])
+async def test_successor_execution_never_inherits_prior_bindings_or_test_credit(ledger, tmp_path, complete_scope):
+    """DEI-T22/T28: E2 is explicit; E1 and its test remain immutable history."""
+    from datetime import datetime, timezone
+    from sqlalchemy import insert
+    from test_delivery_execution_sets import clone_request
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        CodeInvestigationReceiptRow as Receipt,
+        ImplementationTargetExecutionRecordRow as Execution,
+    )
+
+    session, store, _ = ledger
+    first = await record(store, command())
+    tested = await record(store, command("test", implementation_ids=[first["id"]]))
+    await session.commit()
+    assert (await store.projection(BOARD_ID, SPEC_ID))["allowed"]
+    historical_payloads = {
+        identity: deepcopy((await session.get(CardDeliveryEvidenceRecordRow, identity)).payload)
+        for identity in (first["id"], tested["id"])
+    }
+
+    # Seed a later accepted origin observation; admission of external repo facts
+    # belongs to the origin's tests. Do not mutate the prior immutable receipt.
+    old_execution = await session.get(Execution, "execution")
+    old_receipt = await session.get(Receipt, old_execution.result_investigation_receipt_id)
+    values = {column.name: getattr(old_receipt, column.name) for column in Receipt.__table__.columns}
+    values.update(id="successor-observation", declared_revision="b" * 40,
+                  observed_at=datetime(2026, 7, 14, 15, 30, tzinfo=timezone.utc))
+    values["request_id"] = await clone_request(session, old_receipt.request_id, values["id"])
+    await session.execute(insert(Receipt).values(**values))
+    execution = {column.name: getattr(old_execution, column.name) for column in Execution.__table__.columns}
+    execution.update(id="execution-successor", idempotency_key="successor-origin",
+                     result_investigation_receipt_id=values["id"],
+                     result_declared_revision="b" * 40,
+                     received_at=datetime(2026, 7, 14, 16, tzinfo=timezone.utc))
+    await session.execute(insert(Execution).values(**execution))
+    await session.commit()
+
+    refs = ["fr:fr-about", "ac:ac-about"] if complete_scope else ["fr:fr-about"]
+    second = await record(store, command(
+        execution_id="execution-successor", idempotency_key="successor-binding", obligation_refs=[],
+        bindings=[dict(obligation_ref=ref, contribution="complete") for ref in refs]))
+    await session.commit()
+    view = await store.projection(BOARD_ID, SPEC_ID)
+    assert not view["allowed"]
+    rows = {row["obligation"]["binding"]["obligation_ref"]: row for row in view["rows"]}
+    assert rows["fr:fr-about"]["implementation_ids"] == (second["id"],)
+    assert rows["ac:ac-about"]["implementation_satisfied"] is complete_scope
+    assert all(not row["test_satisfied"] for row in rows.values())
+    assert all(tested["id"] not in row["test_ids"] for row in rows.values())
+    for identity, payload in historical_payloads.items():
+        assert (await session.get(CardDeliveryEvidenceRecordRow, identity)).payload == payload
+
+    with pytest.raises(ValueError, match="verified_test_and_implementation"):
+        await record(store, command("test", implementation_ids=[second["id"]],
+                                    obligation_refs=refs, idempotency_key="old-test-new-code"))
+    if complete_scope:
+        _, evidence = await signed_run(tmp_path, "passed")
+        await session.execute(update(Spec).values(test_scenarios=[
+            {**SCENARIO, "status": "passed", "evidence": evidence}]))
+        current_test = await record(store, command("test", implementation_ids=[second["id"]],
+                                                   idempotency_key="successor-test"))
+        await session.commit()
+        final = await store.projection(BOARD_ID, SPEC_ID)
+        assert final["allowed"]
+        assert all(row["test_ids"] == (current_test["id"],) for row in final["rows"])
+        for identity, payload in historical_payloads.items():
+            assert (await session.get(CardDeliveryEvidenceRecordRow, identity)).payload == payload
