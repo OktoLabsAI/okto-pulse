@@ -11,6 +11,9 @@ from okto_pulse.community.adapters.sqlalchemy_resource_gate_service import Commu
 from okto_pulse.core.application.use_cases.mcp_spec_crud import McpDeriveSpecCommand, McpDeriveSpecUseCase
 from okto_pulse.core.ports.relational_services import register_resource_gate_adapter_factory
 from okto_pulse.core.services.architecture_candidates import load_spec_architecture_candidates
+from okto_pulse.core.services.architecture_classification import ArchitectureClassificationService
+from okto_pulse.core.ports.structured_spec import register_structured_spec_store
+from okto_pulse.community.adapters.sqlalchemy_structured_spec import CommunitySqlAlchemyStructuredSpecStore
 from okto_pulse.core.services.resource_gate import ResourceGateService
 from okto_pulse.core.services.resource_lineage import ResolvedResourceLineageService
 
@@ -100,6 +103,21 @@ async def test_new_derive_persists_selection_for_candidates_coverage_and_card_co
         population = await load_spec_architecture_candidates(db, board_id=BOARD_ID, spec_id=spec_id)
         assert population.resolved
         assert {candidate.root_design_id for candidate in population.candidates} == expected_roots
+        register_structured_spec_store(CommunitySqlAlchemyStructuredSpecStore())
+        review = await ArchitectureClassificationService(db).review(
+            board_id=BOARD_ID, spec_id=spec_id,
+        )
+        assert review["enumeration_complete"]
+        assert review["total"] == len(expected_roots)
+        assert review["state_counts"]["pending"] == len(expected_roots)
+        assert review["blocking_candidate_count"] == len(expected_roots)
+        assert not review["admission_evaluated"]
+        assert not review["semantic_review_evaluated"]
+        assert all(item["state"] == "pending" for item in review["items"])
+        # Review itself must not promote contracts or manufacture execution work.
+        await db.refresh(spec)
+        assert not spec.integration_requirements
+        assert await db.scalar(select(func.count()).select_from(Card)) == 0
         resolver = ResolvedResourceLineageService(ResourceGateService(db))
         lineage = await resolver.resolve(BOARD_ID, "spec", spec_id, projection_profile="gate")
         assert {item.revision_stamp.root_id for item in lineage.coverage_obligations
