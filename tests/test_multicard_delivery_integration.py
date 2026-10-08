@@ -522,3 +522,57 @@ async def test_one_signed_report_preserves_distinct_criterion_verdicts(ledger, t
     await session.commit()
     assert not any(row['test_satisfied'] for row in (await store.projection(BOARD, SPEC))['rows'])
     assert (await session.get(CardDeliveryEvidenceRecordRow, result['id'])).payload == historical_payload
+
+@pytest.mark.asyncio
+async def test_distinct_test_cards_jointly_cover_current_implementations_without_gaps(ledger, tmp_path):
+    session, store = await setup(ledger)
+    await session.execute(update(Card).where(Card.id == "test").values(test_scenario_ids=["ts-ui"]))
+    session.add(Card(id="test-authorization", board_id=BOARD, spec_id=SPEC,
+        title="Verify authorization", status="done", card_type="test", created_by="tester",
+        test_scenario_ids=["ts-auth"]))
+    await session.commit()
+    ui = await delivery.record(store, implementation())
+    authorization = await delivery.record(store, implementation("authorization"))
+    first = await bind_test(session, store, tmp_path, "ui", [ui["id"]])
+    await session.commit()
+    before = deepcopy((await session.get(CardDeliveryEvidenceRecordRow, first["id"])).payload)
+    partial = await store.projection(BOARD, SPEC)
+    assert not partial["allowed"]
+    assert rows(partial)["fr:fr"]["missing_criteria"] == ((authorization["id"], "ac-auth"),)
+    await run_result(session, tmp_path, "auth")
+    second = await delivery.record(store, delivery.command("test", card_id="test-authorization",
+        scenario_id="ts-auth", idempotency_key="separate-test-card",
+        implementation_ids=[authorization["id"]], obligation_refs=AUTH_REFS))
+    await session.commit()
+    # Read the committed joint result through a new identity map.
+    session.expire_all()
+    projection = await store.projection(BOARD, SPEC)
+    assert projection["allowed"]
+    records = list(await session.scalars(select(CardDeliveryEvidenceRecordRow).where(
+        CardDeliveryEvidenceRecordRow.kind == "test")))
+    assert {row.id for row in records} == {first["id"], second["id"]}
+    assert {row.card_id for row in records} == {"test", "test-authorization"}
+    assert (await session.get(CardDeliveryEvidenceRecordRow, first["id"])).payload == before
+    assert len(list(await session.scalars(select(CardDeliveryEvidenceRecordRow).where(
+        CardDeliveryEvidenceRecordRow.kind == "implementation")))) == 2
+
+
+@pytest.mark.asyncio
+async def test_normal_card_claim_cannot_replace_test_card_even_with_signed_result(ledger, tmp_path):
+    session, store = await setup(ledger)
+    ui = await delivery.record(store, implementation())
+    await run_result(session, tmp_path, "ui")
+    # Give the normal Card the scenario link too: the type boundary must still hold.
+    await session.execute(update(Card).where(Card.id == "task").values(
+        test_scenario_ids=["ts-ui"], conclusions=[{"text": "I tested payment UI successfully"}]))
+    await session.commit()
+    with pytest.raises(ValueError, match="delivery_current_verified_test_and_implementation_required"):
+        await delivery.record(store, delivery.command("test", card_id="task",
+            scenario_id="ts-ui", idempotency_key="normal-claim",
+            implementation_ids=[ui["id"]], obligation_refs=UI_REFS))
+    await session.commit()
+    projection = await store.projection(BOARD, SPEC)
+    assert not projection["allowed"]
+    assert not rows(projection)["ac:ac-ui"]["test_satisfied"]
+    assert not list(await session.scalars(select(CardDeliveryEvidenceRecordRow).where(
+        CardDeliveryEvidenceRecordRow.kind == "test")))
