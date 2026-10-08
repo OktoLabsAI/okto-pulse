@@ -294,10 +294,10 @@ describe('GlobalSearchView typed Discovery params', () => {
     );
   });
 
-  it('preserves legacy text params and sends text values unchanged', async () => {
+  it('preserves explicitly typed text params and sends values unchanged', async () => {
     await openParamsForm(
       intent({
-        topic: { required: true, label: 'Topic' },
+        topic: { type: 'text', required: true, label: 'Topic' },
       }),
     );
 
@@ -313,6 +313,17 @@ describe('GlobalSearchView typed Discovery params', () => {
         { topic: 'authorization' },
       ),
     );
+  });
+
+  it('refuses untyped saved intent metadata without creating text inputs', async () => {
+    const incompatible = intent({ topic: { required: true, label: 'Topic' } });
+    vi.mocked(discoveryApi.listIntents).mockResolvedValue([incompatible]);
+    render(<GlobalSearchView boardId={BOARD} />);
+    fireEvent.click(await screen.findByTestId(`discovery-intent-${incompatible.name}`));
+    expect(await screen.findByText('This saved query has an incompatible parameter schema.')).toBeInTheDocument();
+    expect(screen.queryByTestId('discovery-params-form')).not.toBeInTheDocument();
+    expect(discoveryApi.executeIntent).not.toHaveBeenCalled();
+    expect(discoveryApi.listSelectorOptions).not.toHaveBeenCalled();
   });
 
   it('renders card entity selectors and sends the selected card reference', async () => {

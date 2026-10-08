@@ -107,18 +107,15 @@ interface SelectorUiState {
   selectedChildRef: string;
 }
 
-function normalizeParamMeta(meta: DiscoveryParamSchema | undefined): DiscoveryParamSchema {
-  return {
-    ...(meta || {}),
-    type: meta?.type || 'text',
-  };
-}
-
 function getParamsSchema(intent: DiscoveryIntent): DiscoveryParamsSchema {
-  const schema = intent.params_schema || {};
-  return Object.fromEntries(
-    Object.entries(schema).map(([key, meta]) => [key, normalizeParamMeta(meta)]),
-  );
+  const schema = intent.params_schema ?? {};
+  if (typeof schema !== 'object' || Array.isArray(schema) ||
+      Object.values(schema).some((meta) =>
+        !meta || !['text', 'entity_selector', 'spec_child_selector'].includes(meta.type ?? ''),
+      )) {
+    throw new Error('This saved query has an incompatible parameter schema.');
+  }
+  return schema;
 }
 
 function specChildTypeLabel(value: string): string {
@@ -560,7 +557,17 @@ export function GlobalSearchView({ boardId }: Props) {
   }
 
   async function handleIntentClick(intent: DiscoveryIntent): Promise<void> {
-    const schema = getParamsSchema(intent);
+    let schema: DiscoveryParamsSchema;
+    try {
+      schema = getParamsSchema(intent);
+    } catch {
+      setPendingIntent(null);
+      setIntentResult(null);
+      setActiveIntent(null);
+      setIntentError('This saved query has an incompatible parameter schema.');
+      return;
+    }
+    setIntentError(null);
     const requiredKeys = Object.entries(schema)
       .filter(([, meta]) => meta.required)
       .map(([k]) => k);
