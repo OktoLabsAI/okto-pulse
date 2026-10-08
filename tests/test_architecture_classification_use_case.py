@@ -439,17 +439,17 @@ async def test_non_enumerable_scope_rejects_without_changes(classified_context, 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("legacy", [None, tuple(sorted(OPERATIONS))])
-async def test_canonical_legacy_mcp_authority_is_reified_without_mutating_policy(
-    classified_context, legacy
+@pytest.mark.parametrize("authority", [None, tuple(sorted(OPERATIONS))])
+async def test_canonical_internal_mcp_authority_is_reified_without_mutating_policy(
+    classified_context, authority
 ):
     db = classified_context
     batch = await batch_for(db)
     who = actor(source="mcp")
-    who.permissions = copy.deepcopy(legacy)
+    who.permissions = copy.deepcopy(authority)
     result = await execute(db, batch, who=who)
     assert result["replayed"] is False and len(result["created_ir_ids"]) == 2
-    assert who.permissions == legacy
+    assert who.permissions == authority
 
 
 @pytest.mark.asyncio

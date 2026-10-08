@@ -176,7 +176,7 @@ async def test_failed_fence_rolls_back_key_decisions_and_irs(adopted_context, ca
     db = adopted_context
     batch = await prepared(db)
     # Deliberately exercise each SQL predicate independently, including an
-    # edition changed without a version bump by an out-of-band legacy writer.
+    # edition changed without a version bump by deliberate invariant fault injection.
     changes = {
         "version": "version=version+1",
         "edition": "edition=edition+1",
