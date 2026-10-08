@@ -575,8 +575,8 @@ async def test_typed_card_dependencies_converge_through_normal_queue(tmp_path):
 @pytest.mark.timeout(480)
 @pytest.mark.parametrize('card_type', ['normal', 'test', 'bug'])
 async def test_card_scenario_links_match_native_rebuild_after_removal_and_replay(tmp_path, card_type):
-    incremental = await materialize(tmp_path / 'incremental', incremental=True, card_type=card_type)
-    rebuilt = await materialize(tmp_path / 'rebuilt', incremental=False, card_type=card_type)
+    incremental = await materialize(tmp_path / 'incremental', incremental=True, card_type=card_type, native_schema=True)
+    rebuilt = await materialize(tmp_path / 'rebuilt', incremental=False, card_type=card_type, native_schema=True)
     assert incremental == rebuilt
     supports = {edge: count for edge, count in rebuilt.items()
                 if edge[3] == 'supports/card_scenario_observed_card@v2.1'}
@@ -589,8 +589,8 @@ async def test_card_scenario_links_match_native_rebuild_after_removal_and_replay
 @pytest.mark.asyncio
 @pytest.mark.timeout(480)
 async def test_known_unlinked_source_rebuild_preserves_diagnostic_without_stale_edge(tmp_path):
-    incremental = await materialize(tmp_path / 'incremental', incremental=True, card_type='normal', final_unlinked=True)
-    rebuilt = await materialize(tmp_path / 'rebuilt', incremental=False, card_type='normal', final_unlinked=True)
+    incremental = await materialize(tmp_path / 'incremental', incremental=True, card_type='normal', final_unlinked=True, native_schema=True)
+    rebuilt = await materialize(tmp_path / 'rebuilt', incremental=False, card_type='normal', final_unlinked=True, native_schema=True)
     assert incremental == rebuilt
     assert not [edge for edge in rebuilt if edge[3].startswith('supports/card_scenario_observed_')]
 
@@ -659,7 +659,7 @@ async def test_known_removal_is_not_current_while_new_valid_scenario_waits_for_p
             assert not (await session.execute(select(ConsolidationQueue.id))).all()
             assert len(list((await session.execute(select(ConsolidationAudit.session_id))).scalars())) == len(audits_before) + 2
         assert any(edge[1:3] == ('card:card', 'spec:spec:test_scenario:ts_next') for edge in relationship_set(graph))
-    await materialize(tmp_path / 'pending', incremental=False, card_type='normal', exercise=exercise)
+    await materialize(tmp_path / 'pending', incremental=False, card_type='normal', exercise=exercise, native_schema=True)
 
 
 @pytest.mark.asyncio
