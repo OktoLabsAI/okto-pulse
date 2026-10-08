@@ -38,6 +38,7 @@ def test_native_deadline_finishes_and_releases_read_resources(tmp_path, door):
             assert failure.value.details["backend_error_code"] == "query_deadline_exceeded"
         finally:
             db._clock = original_clock
+        assert db.transactions.open_transactions == 0
         # No abandoned native work or retained read transaction blocks a writer.
         with db.begin("write") as writer:
             writer.execute("CREATE (:Decision {id: 'after-timeout'})")
@@ -88,3 +89,19 @@ def test_health_deadline_cannot_be_widened_by_query_timeout():
     executor = CommunityGrafxCypherExecutor(lambda board: Database(), query_timeout=lambda board: 0.01)
     executor.execute_read_only("b", "MATCH (n) RETURN n", timeout_ms=30000)
     assert budgets == [0.01]
+
+def test_repeated_real_clock_deadlines_leave_no_open_native_transactions(tmp_path):
+    with connect(tmp_path / "real-clock-deadlines") as db:
+        executor = CommunityGrafxCypherExecutor(lambda board: db)
+        query = "UNWIND range(1, 1000) AS x UNWIND range(1, 1000) AS y RETURN sum(x + y)"
+        for _ in range(3):
+            with pytest.raises(GraphQueryTimeout) as failure:
+                executor.execute_read_only("b", query, max_rows=1, timeout_ms=10)
+            assert failure.value.details["backend_error_code"] == "query_deadline_exceeded"
+            assert db.transactions.open_transactions == 0
+            assert not db.transactions.recovery_required
+            with db.begin("write") as writer:
+                writer.execute("RETURN 1")
+            db.checkpoint()
+            assert executor.execute_read_only("b", "RETURN 1", timeout_ms=1000)["rows"] == [[1]]
+            assert db.transactions.open_transactions == 0
