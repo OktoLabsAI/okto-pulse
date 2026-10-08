@@ -216,3 +216,105 @@ async def test_concurrent_identical_submissions_share_one_batch_and_report(db):
     finally:
         await first.close()
         await second.close()
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("report_first", [False, True])
+async def test_report_and_new_evidence_serialize_without_mixing_snapshots(db, monkeypatch, report_first):
+    first, left, actor = await setup(db)
+    second, right, _ = await setup(db)
+    use_case = RecordCardDeliveryEvidenceUseCase()
+    report = request()
+    batch = report.batch_command().model_copy(update={"idempotency_key": "concurrent-append"})
+    winner_uow, loser_uow = (left, right) if report_first else (right, left)
+    winner_command, loser_command = (report, batch) if report_first else (batch, report)
+    acquired, attempted, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    winner_store, loser_store = winner_uow.services.delivery_evidence, loser_uow.services.delivery_evidence
+    winner_lock, loser_lock = winner_store.lock_scope, loser_store.lock_scope
+
+    async def hold_fence(scope):
+        await winner_lock(scope)
+        acquired.set()
+        await release.wait()
+
+    async def observe_attempt(scope):
+        attempted.set()
+        await loser_lock(scope)
+
+    monkeypatch.setattr(winner_store, "lock_scope", hold_fence)
+    monkeypatch.setattr(loser_store, "lock_scope", observe_attempt)
+    tasks = []
+    try:
+        tasks.append(asyncio.create_task(use_case.execute(winner_command, actor=actor, uow=winner_uow)))
+        await asyncio.wait_for(acquired.wait(), 20)
+        tasks.append(asyncio.create_task(use_case.execute(loser_command, actor=actor, uow=loser_uow)))
+        await asyncio.wait_for(attempted.wait(), 20)
+        release.set()
+        winner, loser = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 30)
+        assert isinstance(winner, dict), winner
+        assert isinstance(loser, ValueError), loser
+        if report_first:
+            assert str(loser) in {"delivery_version_conflict", "delivery_batch_card_frozen"}
+        else:
+            assert str(loser) == "delivery_revision_conflict"
+        # Even a caller committing after the caught conflict cannot persist a partial report.
+        await first.commit()
+        await second.commit()
+        first.expire_all()
+        records = (await first.scalars(select(Record))).all()
+        assert len(records) == 1 and records[0].id == winner["entries"][0]["id"]
+        card = await first.get(Card, "c")
+        if report_first:
+            assert card.status == "validation" and len(card.conclusions) == 1
+            manifest = card.conclusions[0]["delivery_manifest"]
+            assert [row["id"] for row in manifest["records"]] == [records[0].id]
+            assert manifest["sha256"] == winner["report"]["manifest_sha256"]
+        else:
+            assert card.status == "in_progress" and not card.conclusions
+    finally:
+        release.set()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await first.close()
+        await second.close()
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("committed", [False, True])
+async def test_unknown_report_outcome_retries_once_in_fresh_session(db, committed):
+    first, left, actor = await setup(db)
+    second, right, _ = await setup(db)
+    try:
+        async def lose_response():
+            if committed:
+                await first.commit()
+            raise TimeoutError("report_outcome_unknown")
+
+        left.commit = AsyncMock(side_effect=lose_response)
+        use_case, command = RecordCardDeliveryEvidenceUseCase(), request()
+        with pytest.raises(TimeoutError, match="report_outcome_unknown"):
+            await use_case.execute(command, actor=actor, uow=left)
+        # Inspection is server-side evidence for this test, not a promise that the
+        # interrupted client knows whether its write committed.
+        before_ids = set((await second.scalars(select(Record.id))).all())
+        before_events = set((await second.scalars(select(DomainEventRow.id))).all())
+        assert len(before_ids) == int(committed)
+        await second.rollback()
+        recovered = await use_case.execute(command, actor=actor, uow=right)
+        assert recovered["replayed"] is committed
+        ids = set((await second.scalars(select(Record.id))).all())
+        events = set((await second.scalars(select(DomainEventRow.id))).all())
+        card = await second.get(Card, "c")
+        assert len(ids) == 1 and len(card.conclusions) == 1 and card.status == "validation"
+        manifest = card.conclusions[0]["delivery_manifest"]
+        assert ids == {entry["id"] for entry in recovered["entries"]}
+        assert manifest["sha256"] == recovered["report"]["manifest_sha256"]
+        if committed:
+            assert ids == before_ids and events == before_events
+        replay = await use_case.execute(command, actor=actor, uow=right)
+        assert replay == {**recovered, "replayed": True}
+        assert set((await second.scalars(select(DomainEventRow.id))).all()) == events
+        assert len((await second.get(Card, "c")).conclusions) == 1
+    finally:
+        await first.close()
+        await second.close()
