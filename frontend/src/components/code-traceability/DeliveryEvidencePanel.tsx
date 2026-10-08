@@ -8,15 +8,61 @@ import type { DeliveryEvidenceProjection } from '@/types/delivery-evidence';
 interface Props {
   boardId: string;
   specId: string;
+  revision?: string;
   skipDeliveryEvidence?: boolean;
   onSkipDeliveryEvidenceChange?: (value: boolean) => void;
+}
+
+function ObligationEvidenceDetails({ data, row }: {
+  data: DeliveryEvidenceProjection; row: DeliveryEvidenceProjection['rows'][number];
+}) {
+  const ids = new Set([...row.implementation_ids, ...row.test_ids,
+    ...row.implementation_waiver_ids, ...row.test_waiver_ids]);
+  return <div className="space-y-4 break-words">
+    <section aria-label="Implementation evidence" className="space-y-2">
+      <h4 className="font-semibold">Implementation evidence</h4>
+      {row.implementation_ids.length === 0 && <p>No admitted implementation evidence.</p>}
+      {row.implementation_ids.map(id => {
+        const proof = data.implementations.find(item => item.id === id);
+        return <div key={id} className="space-y-1 rounded border border-gray-200 p-2 dark:border-gray-700">
+          <p className="break-all">Record: {id}</p>
+          {proof ? <>
+            <p>Card: {proof.card_id}</p><p>{proof.explanation}</p>
+            {proof.executions.map(execution => <p key={execution.execution_id} className="break-all">
+              {execution.relative_path} · Revision {execution.result_revision} · {execution.symbol || execution.execution_id}
+              {' · '}{execution.current_accepted_execution ? 'Current accepted execution' : 'Not a current accepted execution'}
+            </p>)}
+          </> : <p>Record details unavailable in this projection.</p>}
+        </div>;
+      })}
+      {row.implementation_waiver_ids.length > 0 && <p className="break-all">Implementation waivers (not proof): {row.implementation_waiver_ids.join(', ')}</p>}
+    </section>
+    <section aria-label="Verification evidence" className="space-y-2">
+      <h4 className="font-semibold">Verification evidence</h4>
+      {row.test_ids.length === 0 && <p>No admitted verification evidence.</p>}
+      {row.test_ids.map(id => {
+        const proof = data.tests?.find(item => item.id === id);
+        return <div key={id} className="space-y-1 rounded border border-gray-200 p-2 dark:border-gray-700">
+          <p className="break-all">Record: {id}</p>
+          {proof ? <><p>Card: {proof.card_id} · Scenario: {proof.scenario_id}</p>
+            <p>Result: {proof.result} · {proof.current_verified_run ? 'Current verified run' : 'Current verification not established'}</p></>
+            : <p>Record details unavailable in this projection.</p>}
+        </div>;
+      })}
+      {row.test_waiver_ids.length > 0 && <p className="break-all">Verification waivers (not proof): {row.test_waiver_ids.join(', ')}</p>}
+    </section>
+    {data.records.filter(record => ids.has(record.id)).map(record => <p key={record.id} className="break-all">
+      {record.id} · {record.created_at} · Actor: {record.actor_id}{record.revoked ? ' · Revoked' : ''}
+      {' · '}{record.payload.justification}
+    </p>)}
+  </div>;
 }
 
 // Spec "Delivery" tab — informational rollup over the linked cards' ledgers
 // (mockup sm_5ebd7063). Read-only by design: recording is card-scoped
 // (task DoD) and waivers are rollup-level, human-only — this surface only
 // presents the aggregated verdict, never mutates it.
-export function DeliveryEvidencePanel({ boardId, specId, skipDeliveryEvidence = false, onSkipDeliveryEvidenceChange }: Props) {
+export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryEvidence = false, onSkipDeliveryEvidenceChange }: Props) {
   const api = useDashboardApi();
   const [data, setData] = useState<DeliveryEvidenceProjection | null>(null);
   const [gateMode, setGateMode] = useState<'advisory' | 'blocking' | null>(null);
@@ -33,23 +79,24 @@ export function DeliveryEvidencePanel({ boardId, specId, skipDeliveryEvidence = 
       if (!controller.signal.aborted) setGateMode(resolveDeliveryGateMode(board.settings?.delivery_evidence_gate));
     }).catch(() => { if (!controller.signal.aborted) setGateMode(null); });
     return () => controller.abort();
-  }, [api, boardId, specId, reload]);
+  }, [api, boardId, specId, revision, reload]);
 
   const missingImplementation = data?.rows.filter(row => !row.implementation_satisfied).length ?? 0;
   const missingTest = data?.rows.filter(row => !row.test_satisfied).length ?? 0;
   const summary = !data ? '' : data.allowed
-    ? `All ${data.rows.length} obligations satisfied by accepted proof`
+    ? `All ${data.rows.length} obligations satisfied (proof or authorized waiver)`
     : [missingImplementation ? `implementation missing on ${missingImplementation}` : '',
        missingTest ? `test coverage missing on ${missingTest}` : '']
       .filter(Boolean).join(' · ') + ' obligation' + ((missingImplementation + missingTest) === 1 ? '' : 's');
 
-  return <section className="space-y-5" aria-label="Delivery evidence">
-    <div className="flex items-center justify-between gap-4">
+  return <section className="space-y-5" aria-label="Implementation and verification">
+    <p className="text-sm text-gray-500 dark:text-gray-400">Track implementation and verification for each obligation. Expand an item to inspect its evidence.</p>
+    <div className="flex flex-wrap items-center justify-between gap-4">
       <div className="flex min-w-0 items-center gap-2">
         {data && (data.allowed
           ? <span className="shrink-0 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] uppercase tracking-wide text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">Complete</span>
           : <span className="shrink-0 rounded-full bg-red-100 px-2 py-0.5 text-[10px] uppercase tracking-wide text-red-700 dark:bg-red-900/40 dark:text-red-300">Blocked</span>)}
-        <span className="truncate text-xs text-gray-500 dark:text-gray-400" role="status">
+        <span className="text-xs text-gray-500 dark:text-gray-400" role="status">
           {error ? error : !data ? 'Loading delivery rollup…' : `${summary} · Edition ${data.edition}`}
         </span>
       </div>
@@ -58,8 +105,8 @@ export function DeliveryEvidencePanel({ boardId, specId, skipDeliveryEvidence = 
           Gate: {gateMode === null ? 'Unknown' : gateMode === 'advisory' ? 'Advisory' : 'Blocking'} (Board)
         </span>
         <button type="button" onClick={() => setReload(v => v + 1)} aria-label="Refresh delivery rollup"
-          className="rounded border border-gray-200 p-1.5 text-gray-500 transition-colors hover:bg-gray-100 dark:border-gray-800 dark:text-gray-400 dark:hover:bg-gray-800">
-          <RefreshCw size={12} />
+          className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-lg border border-gray-200 bg-white px-3 text-xs font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700">
+          <RefreshCw size={14} /> Refresh
         </button>
       </div>
     </div>
@@ -103,7 +150,7 @@ export function DeliveryEvidencePanel({ boardId, specId, skipDeliveryEvidence = 
               <tr className="border-b border-gray-100 text-left text-xs text-gray-400 dark:border-gray-800">
                 <th scope="col" className="py-1 pr-4">Obligation</th>
                 <th scope="col" className="px-2">Implementation</th>
-                <th scope="col" className="px-2">Test</th>
+                <th scope="col" className="px-2">Verification</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50 dark:divide-gray-800">
@@ -113,18 +160,24 @@ export function DeliveryEvidencePanel({ boardId, specId, skipDeliveryEvidence = 
                 const waivedTest = row.test_waiver_ids.length > 0;
                 return <tr key={ref}>
                   <td className="min-w-0 py-1.5 pr-4 text-gray-700 dark:text-gray-200">
-                    <span className="block">{row.obligation.title}</span>
+                    <details className="group py-2">
+                    <summary className="cursor-pointer rounded font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">{row.obligation.title}</summary>
+                    <div className="mt-3 space-y-3 rounded-lg bg-gray-50 p-3 text-xs dark:bg-gray-800/50">
                     <ObligationRefText value={ref} />
                     {row.required_card_ids && <p className="text-xs">{row.required_card_ids.length} planned implementation Card(s)</p>}
                     {Boolean(row.missing_card_ids?.length) && <p className="text-xs text-amber-600 dark:text-amber-400">Pending implementation Cards: {row.missing_card_ids!.slice(0, 20).join(', ')}{row.missing_card_ids!.length > 20 ? ' (additional Cards omitted)' : ''}</p>}
                     {row.missing_criteria?.slice(0, 20).map(([implementation, criterion]) => <p key={JSON.stringify([implementation, criterion])} className="text-xs text-amber-600 dark:text-amber-400">Implementation {implementation}: missing verification of {criterion}</p>)}
                     {(row.missing_criteria?.length ?? 0) > 20 && <p className="text-xs">Additional criterion gaps are omitted from this summary.</p>}
+                    <p className="break-all text-gray-500">Semantic revision: {row.obligation.binding.semantic_sha256}</p>
+                    <ObligationEvidenceDetails data={data} row={row} />
+                    </div>
+                    </details>
                   </td>
                   <td className="px-2 text-green-600 dark:text-green-400" title={waivedImpl ? 'Explicitly waived — human authorization' : row.implementation_satisfied ? 'Accepted proof recorded' : 'No accepted proof'}>
-                    {row.implementation_satisfied || waivedImpl ? '✓' : <span className="text-amber-500">◌</span>}
+                    {waivedImpl ? <span className="text-xs text-amber-600 dark:text-amber-400">Waived</span> : row.implementation_satisfied ? '✓' : <span className="text-amber-500">◌</span>}
                   </td>
                   <td className="px-2 text-green-600 dark:text-green-400" title={waivedTest ? 'Explicitly waived — human authorization' : row.test_satisfied ? 'Current passing evidence for this obligation' : 'Missing / stale'}>
-                    {row.test_satisfied || waivedTest ? '✓' : <span className="text-amber-500">◌</span>}
+                    {waivedTest ? <span className="text-xs text-amber-600 dark:text-amber-400">Waived</span> : row.test_satisfied ? '✓' : <span className="text-amber-500">◌</span>}
                   </td>
                 </tr>;
               })}

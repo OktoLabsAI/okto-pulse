@@ -4,6 +4,7 @@ import { AuthenticatedFetchError } from '@/lib/authFetch';
 import type { SpecCoverageResponse } from './specCoverageTypes';
 const api = vi.hoisted(() => ({ getSpecCoverage: vi.fn() }));
 vi.mock('@/services/api', () => ({ useDashboardApi: () => api }));
+vi.mock('@/components/code-traceability/DeliveryEvidencePanel', () => ({ DeliveryEvidencePanel: () => <div>Unified implementation checks</div> }));
 import { SpecCoveragePanel } from './SpecCoveragePanel';
 
 const base: SpecCoverageResponse = {
@@ -23,10 +24,7 @@ const base: SpecCoverageResponse = {
     blockers: [], rejected_record_refs: [], interpretation: 'informational' }, items: [], next_cursor: null,
 };
 function page(title: string, next: string | null = null): SpecCoverageResponse {
-  return { ...base, next_cursor: next, items: [{ kind: 'delivery', title, obligation_ref: title,
-    semantic_sha256: 'digest', implementation: 'missing', verification: 'missing',
-    implementation_record_refs: [], verification_record_refs: [], implementation_waiver_refs: [],
-    verification_waiver_refs: [], required_card_refs: [], missing_card_refs: [], missing_criteria: [] }] };
+  return { ...base, next_cursor: next, items: [{ kind: 'structure_node', node_type: 'spec', subject_ref: title, observation: 'observed' }] };
 }
 beforeEach(() => { vi.clearAllMocks(); api.getSpecCoverage.mockResolvedValue(base); });
 
@@ -37,45 +35,41 @@ it('keeps linked Test Cards separate from passing proof and graph absence', asyn
   expect(screen.getAllByText('0%')).toHaveLength(2);
   expect(screen.queryByText('Unverified requirement')).not.toBeInTheDocument();
   expect(screen.getByText('Technical diagnostics').closest('details')).not.toHaveAttribute('open');
-  fireEvent.click(screen.getByRole('button', { name: 'Planning' }));
+  fireEvent.click(screen.getByRole('tab', { name: 'Planning' }));
   expect(screen.getByRole('progressbar', { name: 'Scenarios → Test Cards' })).toHaveAttribute('aria-valuenow', '1');
-  fireEvent.click(screen.getByRole('button', { name: 'Verification' }));
-  expect(screen.getByText('Unverified requirement')).toBeInTheDocument();
-  expect(screen.getByText('Proof missing')).toBeInTheDocument();
   expect(screen.getByText(/does not approve a gate/)).toBeInTheDocument();
 });
 
 it('paginates a pinned observation without adding whole-scope counts', async () => {
   api.getSpecCoverage.mockResolvedValueOnce(page('first', 'cursor')).mockResolvedValueOnce(page('second'));
   render(<SpecCoveragePanel boardId="board" specId="spec" revision="1" onOpenSection={vi.fn()} />);
-  fireEvent.click(screen.getByRole('button', { name: 'Implementation' }));
-  fireEvent.click(await screen.findByRole('button', { name: 'Load more coverage' }));
-  expect(await screen.findByText('second')).toBeInTheDocument();
-  expect(screen.getByText('first')).toBeInTheDocument();
+  fireEvent.click(await screen.findByText('Technical diagnostics'));
+  fireEvent.click(screen.getByRole('button', { name: 'Load more diagnostics' }));
+  expect(await screen.findByText(/spec: second/)).toBeInTheDocument();
+  expect(screen.getByText(/spec: first/)).toBeInTheDocument();
   expect(api.getSpecCoverage.mock.calls[1][2]).toEqual({ limit: 200, cursor: 'cursor' });
-  expect(screen.getByText('0 of 2')).toBeInTheDocument();
+  expect(screen.getAllByText('0 of 2')).toHaveLength(2);
 });
 
 it.each([403, 409, 503])('clears earlier data on HTTP %s', async status => {
   api.getSpecCoverage.mockResolvedValueOnce(page('first', 'cursor')).mockRejectedValueOnce(new AuthenticatedFetchError({ status, message: 'failure' }));
   render(<SpecCoveragePanel boardId="board" specId="spec" revision="1" onOpenSection={vi.fn()} />);
-  fireEvent.click(screen.getByRole('button', { name: 'Implementation' }));
-  fireEvent.click(await screen.findByRole('button', { name: 'Load more coverage' }));
+  fireEvent.click(await screen.findByText('Technical diagnostics'));
+  fireEvent.click(screen.getByRole('button', { name: 'Load more diagnostics' }));
   expect(await screen.findByRole('alert')).toBeInTheDocument();
-  expect(screen.queryByText('first')).not.toBeInTheDocument();
+  expect(screen.queryByText(/spec: first/)).not.toBeInTheDocument();
 });
 
 it('aborts on Spec changes and ignores a late response', async () => {
   let resolveOld!: (value: SpecCoverageResponse) => void;
   api.getSpecCoverage.mockReturnValueOnce(new Promise(resolve => { resolveOld = resolve; })).mockResolvedValueOnce(page('new-spec'));
   const view = render(<SpecCoveragePanel boardId="board" specId="old" revision="1" onOpenSection={vi.fn()} />);
-  fireEvent.click(screen.getByRole('button', { name: 'Implementation' }));
   const signal = api.getSpecCoverage.mock.calls[0][3] as AbortSignal;
   view.rerender(<SpecCoveragePanel boardId="board" specId="new" revision="1" onOpenSection={vi.fn()} />);
   expect(signal.aborted).toBe(true);
-  expect(await screen.findByText('new-spec')).toBeInTheDocument();
+  expect(await screen.findByText(/spec: new-spec/)).toBeInTheDocument();
   await act(async () => resolveOld(page('old-spec')));
-  expect(screen.queryByText('old-spec')).not.toBeInTheDocument();
+  expect(screen.queryByText(/spec: old-spec/)).not.toBeInTheDocument();
   view.unmount();
   expect((api.getSpecCoverage.mock.calls[1][3] as AbortSignal).aborted).toBe(true);
 });
@@ -86,14 +80,12 @@ it('keeps restricted proof unknown rather than zero', async () => {
   render(<SpecCoveragePanel boardId="board" specId="spec" revision="1" onOpenSection={vi.fn()} />);
   expect(await screen.findAllByText('Unavailable')).toHaveLength(2);
   expect(screen.queryByText('0%')).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole('button', { name: 'Verification' }));
-  expect(screen.getByText('You do not have permission to view delivery proof.')).toBeInTheDocument();
 });
 
 it('correction only opens authorized domain editing and never writes', async () => {
   const navigate = vi.fn();
   const view = render(<SpecCoveragePanel boardId="board" specId="spec" revision="1" onOpenSection={navigate} />);
-  fireEvent.click(screen.getByRole('button', { name: 'Planning' }));
+  fireEvent.click(screen.getByRole('tab', { name: 'Planning' }));
   await screen.findByText('Functional requirements → rules');
   expect(screen.queryByRole('button', { name: 'Correct rules links' })).not.toBeInTheDocument();
   view.rerender(<SpecCoveragePanel boardId="board" specId="spec" revision="1" onOpenSection={navigate} canCorrect={['rules']} />);
@@ -110,19 +102,32 @@ it('reloads after a source revision without retaining previous pages', async () 
   expect(api.getSpecCoverage.mock.calls[1][2].cursor).toBeUndefined();
 });
 
-it('does not count waived obligations as proof or fetch again when switching views', async () => {
-  const response = page('Waived requirement');
-  if (response.items[0].kind === 'delivery') response.items[0].implementation = 'satisfied_with_waiver';
-  api.getSpecCoverage.mockResolvedValue(response);
+it('merges implementation and verification navigation into the original checks', async () => {
   render(<SpecCoveragePanel boardId="board" specId="spec" revision="1" onOpenSection={vi.fn()} />);
   await screen.findByText('67%');
-  fireEvent.click(screen.getByRole('button', { name: 'Review implementation' }));
-  expect(screen.getByText('Satisfied by waiver (not proof)')).toBeInTheDocument();
-  expect(screen.getByText('0%')).toBeInTheDocument();
-  fireEvent.click(screen.getByRole('button', { name: 'Overview' }));
+  expect(screen.getAllByRole('tab')).toHaveLength(3);
+  expect(screen.queryByRole('tab', { name: 'Verification' })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Review verification' }));
+  expect(screen.getByRole('tab', { name: 'Implementation' })).toHaveAttribute('aria-selected', 'true');
+  expect(screen.getByText('Unified implementation checks')).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('tab', { name: 'Overview' }));
   fireEvent.click(screen.getByRole('button', { name: 'Review planning gaps' }));
-  expect(screen.getByRole('button', { name: 'Planning' })).toHaveAttribute('aria-current', 'page');
+  expect(screen.getByRole('tab', { name: 'Planning' })).toHaveAttribute('aria-selected', 'true');
   expect(api.getSpecCoverage).toHaveBeenCalledTimes(1);
+});
+
+it('preserves implementation access without requiring broader summary permissions', () => {
+  render(<SpecCoveragePanel boardId="board" specId="spec" revision="1" canReadSummary={false} onOpenSection={vi.fn()} />);
+  expect(screen.getByText('Unified implementation checks')).toBeInTheDocument();
+  expect(screen.getAllByRole('tab')).toHaveLength(1);
+  expect(api.getSpecCoverage).not.toHaveBeenCalled();
+});
+
+it('does not expose implementation without its permission', async () => {
+  render(<SpecCoveragePanel boardId="board" specId="spec" revision="1" canReadImplementation={false} onOpenSection={vi.fn()} />);
+  await screen.findByText('67%');
+  expect(screen.queryByRole('tab', { name: 'Implementation' })).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Review implementation' })).toBeDisabled();
 });
 
 it('shows empty scopes without claiming full coverage', async () => {

@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useDashboardApi } from '@/services/api';
 import { AuthenticatedFetchError } from '@/lib/authFetch';
-import type { CoverageSection, ProofStatus, SpecCoverageResponse } from './specCoverageTypes';
+import { AccessibleTabList, AccessibleTabPanel } from '@/components/shared/AccessibleTabs';
+import { DeliveryEvidencePanel } from '@/components/code-traceability/DeliveryEvidencePanel';
+import type { CoverageSection, SpecCoverageResponse } from './specCoverageTypes';
 
 const dimensions: [string, string, string, CoverageSection][] = [
   ['Acceptance criteria → scenarios', 'ac_covered', 'ac_total', 'tests'],
@@ -14,15 +16,13 @@ const dimensions: [string, string, string, CoverageSection][] = [
   ['Integration requirements → Cards', 'irs_linked', 'irs_total', 'irs'],
   ['Observability requirements → Cards', 'ors_linked', 'ors_total', 'ors'],
 ];
-const proofLabels: Record<ProofStatus, string> = { unknown: 'Unknown', proven: 'Proven',
-  partial: 'Partial proof', missing: 'Proof missing', satisfied_with_waiver: 'Satisfied by waiver (not proof)' };
 const observations = { observed: 'Observed', observed_expected: 'Expected relation observed',
   graph_only: 'Graph observation only; not confirmed by this source comparison',
   not_found_in_projection: 'Not found in the available projection' };
-const button = 'border rounded px-2 py-1 dark:border-gray-600';
-type CoverageView = 'overview' | 'planning' | 'implementation' | 'verification';
+const button = 'inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-lg border border-gray-200 bg-white px-3 text-xs font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700';
+type CoverageView = 'overview' | 'planning' | 'implementation';
 const views: [CoverageView, string][] = [['overview', 'Overview'], ['planning', 'Planning'],
-  ['implementation', 'Implementation'], ['verification', 'Verification']];
+  ['implementation', 'Implementation']];
 
 function ratio(covered: unknown, total: unknown) {
   return typeof covered === 'number' && typeof total === 'number'
@@ -53,12 +53,14 @@ function Meter({ label, value, description }: { label: string;
 }
 
 /** Lazy contextual read. Navigation never repairs the graph or changes a gate. */
-export function SpecCoveragePanel({ boardId, specId, revision, canCorrect = [], onOpenSection }: {
+export function SpecCoveragePanel({ boardId, specId, revision, canCorrect = [], onOpenSection, canReadSummary = true, canReadImplementation = true, skipDeliveryEvidence, onSkipDeliveryEvidenceChange }: {
   boardId: string; specId: string; revision: string; canCorrect?: CoverageSection[];
   onOpenSection: (section: CoverageSection) => void;
+  canReadSummary?: boolean; canReadImplementation?: boolean; skipDeliveryEvidence?: boolean;
+  onSkipDeliveryEvidenceChange?: (value: boolean) => void;
 }) {
   const api = useDashboardApi();
-  const [view, setView] = useState<CoverageView>('overview');
+  const [view, setView] = useState<CoverageView>(canReadSummary ? 'overview' : 'implementation');
   const [data, setData] = useState<SpecCoverageResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -88,9 +90,13 @@ export function SpecCoveragePanel({ boardId, specId, revision, canCorrect = [], 
     }
   }, [api, boardId, specId]);
   useEffect(() => {
-    void load();
+    if (canReadSummary) void load();
+    else setData(null);
     return () => request.current?.abort();
-  }, [load, revision]);
+  }, [load, revision, canReadSummary]);
+  const availableViews = views.filter(([id]) => id === 'implementation' ? canReadImplementation : canReadSummary);
+  const activeView = availableViews.some(([id]) => id === view) ? view : availableViews[0]?.[0] ?? 'overview';
+  const tabId = `spec-coverage-${specId}`;
   const summary = data?.structure.summary;
   const planning = dimensions.map(([label, numerator, denominator, section]) => ({
     label, section, value: ratio(summary?.[numerator], summary?.[denominator]),
@@ -104,28 +110,25 @@ export function SpecCoveragePanel({ boardId, specId, revision, canCorrect = [], 
     ? ratio(data.delivery.counts.implementation_proven, data.delivery.counts.obligations) : null;
   const verificationValue = proofAvailable
     ? ratio(data.delivery.counts.verification_proven, data.delivery.counts.obligations) : null;
-  const proofUnavailable = data?.delivery.state === 'restricted' ? 'You do not have permission to view delivery proof.'
-    : 'Complete delivery proof counts are unavailable. Reload to try again.';
   const gaps = planning.filter(row => row.value && row.value.covered < row.value.total);
-  const deliveryItems = data?.items.filter(item => item.kind === 'delivery') ?? [];
   return <section className="space-y-5 text-sm text-gray-700 dark:text-gray-300" aria-label="Spec coverage">
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div><h3 className="text-lg font-semibold text-gray-900 dark:text-white">Coverage</h3>
         <p className="mt-1 text-gray-500 dark:text-gray-400">Find planning gaps and track proof of delivery.</p>
       </div>
-      <button type="button" className={button} disabled={loading} onClick={() => void load()}>Reload coverage</button>
+      {activeView !== 'implementation' && <button type="button" className={button} disabled={loading} onClick={() => void load()}>Reload coverage</button>}
     </div>
-    <nav aria-label="Coverage views" className="flex flex-wrap gap-1 border-b border-gray-200 pb-2 dark:border-gray-700">
-      {views.map(([id, label]) => <button key={id} type="button" aria-current={view === id ? 'page' : undefined}
-        onClick={() => setView(id)} className={`rounded-lg px-3 py-2 text-sm font-medium ${view === id
-          ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300'
-          : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800'}`}>{label}</button>)}
-    </nav>
-    {loading && <p role="status">Loading coverage…</p>}
-    {error && <p role="alert">{error}</p>}
-    {data && <>
+    <AccessibleTabList idBase={tabId} ariaLabel="Coverage views" variant="secondary"
+      items={availableViews.map(([id, label]) => ({ id, label }))} value={activeView} onValueChange={setView} />
+    {canReadImplementation && <AccessibleTabPanel idBase={tabId} tabId="implementation" value={activeView}>
+      <DeliveryEvidencePanel boardId={boardId} specId={specId} revision={revision}
+        skipDeliveryEvidence={skipDeliveryEvidence} onSkipDeliveryEvidenceChange={onSkipDeliveryEvidenceChange} />
+    </AccessibleTabPanel>}
+    {activeView !== 'implementation' && loading && <p role="status">Loading coverage…</p>}
+    {activeView !== 'implementation' && error && <p role="alert">{error}</p>}
+    {canReadSummary && data && activeView !== 'implementation' && <>
       <p className="text-xs text-gray-500 dark:text-gray-400">Edition {data.edition} · Informational view — this does not approve a gate.</p>
-      {view === 'overview' && <>
+      <AccessibleTabPanel idBase={tabId} tabId="overview" value={activeView} className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-3">
           <Meter label="Planning coverage" value={planningValue} description="Applicable link dimensions fully covered. Empty dimensions are excluded." />
           <Meter label="Implementation proof" value={implementationValue} description="Obligations with admitted implementation proof." />
@@ -144,13 +147,13 @@ export function SpecCoveragePanel({ boardId, specId, revision, canCorrect = [], 
                 <span>{!value ? `${kind === 'implementation' ? 'Implementation' : 'Verification'} proof unavailable.`
                   : value.total === 0 ? `No ${kind} obligations in scope.`
                   : `${value.total - value.covered} of ${value.total} obligations without ${kind} proof.`}</span>
-                <button className={button} onClick={() => setView(kind)}>Review {kind}</button>
+                <button className={button} disabled={!canReadImplementation} onClick={() => setView('implementation')}>Review {kind}</button>
               </li>)}
           </ul>
         </section>
         <p className="text-xs text-gray-500 dark:text-gray-400">Planning links are not delivery proof. Waivers do not count as proven work.</p>
-      </>}
-      {view === 'planning' && <section aria-label="Authoritative structural coverage" className="space-y-3">
+      </AccessibleTabPanel>
+      <AccessibleTabPanel idBase={tabId} tabId="planning" value={activeView}><section aria-label="Authoritative structural coverage" className="space-y-3">
         <div><h4 className="font-semibold">Planning coverage</h4>
           <p className="mt-1 text-gray-500 dark:text-gray-400">Connect the Spec to rules, scenarios and Cards. A linked Test Card does not prove a passing run.</p></div>
         <div className="grid gap-3 sm:grid-cols-2">{planning.map(({ label, section, value }) => {
@@ -164,31 +167,7 @@ export function SpecCoveragePanel({ boardId, specId, revision, canCorrect = [], 
               {gap && canCorrect.includes(section) ? `Correct ${section} links` : `Open ${section}`}</button>
           </article>;
         })}</div>
-      </section>}
-      {(view === 'implementation' || view === 'verification') && <section aria-label="Admitted delivery proof" className="space-y-3">
-        <Meter label={view === 'implementation' ? 'Implementation proof' : 'Verification proof'}
-          value={view === 'implementation' ? implementationValue : verificationValue}
-          description="Whole authorized scope. Waivers do not count as proven work." />
-        {!proofAvailable && <p>{proofUnavailable}</p>}
-        {proofAvailable && deliveryItems.length === 0 && <p>{data.delivery.counts.obligations === 0
-          ? 'No obligations in scope.' : 'No obligations on this page. Load more to continue.'}</p>}
-        {deliveryItems.map(item => <article className="rounded-xl border border-gray-200 p-4 dark:border-gray-700" key={item.obligation_ref}>
-          <div className="flex flex-wrap items-center justify-between gap-2"><h5 className="font-medium">{item.title || item.obligation_ref}</h5>
-            <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${item[view] === 'proven'
-              ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
-              : 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'}`}>{proofLabels[item[view]]}</span></div>
-          <details className="mt-3 text-xs text-gray-500 dark:text-gray-400"><summary className="cursor-pointer">Proof details</summary>
-            <div className="mt-2 space-y-2 break-all">
-              <p>Obligation: {item.obligation_ref} · Revision {item.semantic_sha256}</p>
-              <p>Records: {item[`${view}_record_refs`].join(', ') || 'None admitted'}</p>
-              <p>Waivers: {item[`${view}_waiver_refs`].join(', ') || 'None'}</p>
-              <p>Missing Cards: {item.missing_card_refs.join(', ') || 'None reported'}</p>
-              <p>Missing criteria: {item.missing_criteria.map(parts => parts.join(' / ')).join(', ') || 'None reported'}</p>
-            </div>
-          </details>
-        </article>)}
-        {data.next_cursor && <button type="button" className={button} disabled={loading} onClick={() => void load(data)}>Load more coverage</button>}
-      </section>}
+      </section></AccessibleTabPanel>
       <details className="rounded-lg border border-gray-200 p-3 text-xs text-gray-500 dark:border-gray-700 dark:text-gray-400">
         <summary className="cursor-pointer">Technical diagnostics</summary>
         <section aria-label="Structural graph observations" className="mt-3 space-y-2">

@@ -9,7 +9,6 @@ import {
   useRef,
   useState,
 } from 'react';
-import { DeliveryEvidencePanel } from '@/components/code-traceability/DeliveryEvidencePanel';
 import { SpecCoveragePanel } from './SpecCoveragePanel';
 import { MissingLinkNotice } from '@/components/shared/MissingLinkNotice';
 import { CriterionVerificationPanel } from './CriterionVerificationPanel';
@@ -172,7 +171,6 @@ interface SpecModalProps {
 type ModalTab =
   | 'details'
   | 'evidence-matrix'
-  | 'delivery-evidence'
   | 'coverage'
   | 'project-structure'
   | 'tests'
@@ -2312,9 +2310,9 @@ export function SpecModal({
     || canReadSpecEvaluations;
   const allTabs: { id: ModalTab; label: string; icon: React.ReactNode; count?: number; highlight?: boolean; permission?: string }[] = [
     { id: 'details', label: 'Details', icon: <FileText size={14} /> },
-    ...(canReadCoverage ? [{ id: 'coverage' as ModalTab, label: 'Coverage', icon: <GitBranch size={14} /> }] : []),
+    ...((canReadCoverage || canReadCodeTraceability) ? [{ id: 'coverage' as ModalTab, label: 'Coverage', icon: <GitBranch size={14} /> }] : []),
     ...(canReadCodeTraceability
-      ? [{ id: 'evidence-matrix' as ModalTab, label: 'Code Evidence Matrix', icon: <Grid3X3 size={14} /> }, { id: 'delivery-evidence' as ModalTab, label: 'Delivery evidence', icon: <ShieldCheck size={14} /> }]
+      ? [{ id: 'evidence-matrix' as ModalTab, label: 'Code Evidence Matrix', icon: <Grid3X3 size={14} /> }]
       : []),
     ...(showProjectStructure
       ? [{
@@ -2805,9 +2803,9 @@ export function SpecModal({
               }}
             />
           )}
-          {activeTab === 'delivery-evidence' && spec && canReadCodeTraceability && (
-            <DeliveryEvidencePanel
-              boardId={spec.board_id} specId={spec.id}
+          {activeTab === 'coverage' && spec.id === specId && (canReadCoverage || canReadCodeTraceability) && (
+            <SpecCoveragePanel boardId={spec.board_id} specId={spec.id} revision={`${spec.edition}:${spec.version}:${spec.updated_at}`}
+              canReadSummary={canReadCoverage} canReadImplementation={canReadCodeTraceability}
               skipDeliveryEvidence={spec.skip_delivery_evidence}
               onSkipDeliveryEvidenceChange={async (value) => {
                 try {
@@ -2817,10 +2815,6 @@ export function SpecModal({
                   toast.error(err instanceof Error && err.message ? err.message : 'Failed to update spec');
                 }
               }}
-            />
-          )}
-          {activeTab === 'coverage' && spec.id === specId && canReadCoverage && (
-            <SpecCoveragePanel boardId={spec.board_id} specId={spec.id} revision={`${spec.edition}:${spec.version}:${spec.updated_at}`}
               onOpenSection={setActiveTab}
               canCorrect={!spec.archived && spec.status === 'draft' ? [
                 ...(hasPermissionWithState(perms.has, 'spec.tests.edit', 'spec', spec.status) ? ['tests' as const] : []),

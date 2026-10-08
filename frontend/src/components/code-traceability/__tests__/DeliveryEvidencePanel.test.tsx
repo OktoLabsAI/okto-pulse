@@ -35,6 +35,50 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
+it('expands only the selected obligation proofs, with implementation and verification separated', async () => {
+  const data = projection();
+  data.rows[1].implementation_ids = ['other'];
+  data.implementations = [
+    { id: 'impl', card_id: 'task-1', explanation: 'Implemented the guarded transaction', bindings: [], contributions: [],
+      admitted_obligation_refs: [], ready_obligation_refs: [], executions: [{ execution_id: 'exec-1', target_id: 'target',
+        source_ref: 'source', relative_path: 'services/reservations.py', result_revision: 'abc123', current_accepted_execution: true }] },
+    { id: 'other', card_id: 'task-2', explanation: 'Unrelated proof', bindings: [], contributions: [],
+      admitted_obligation_refs: [], ready_obligation_refs: [], executions: [] },
+  ];
+  data.tests = [{ id: 'test', card_id: 'test-1', scenario_id: 'scenario-1', result: 'passed', current_verified_run: true }];
+  api.getDeliveryEvidence.mockResolvedValue(data);
+  render(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  const title = await screen.findByText('Bindings live on the card ledger');
+  expect(title.closest('details')).not.toHaveAttribute('open');
+  expect(screen.getByText('Implemented the guarded transaction')).not.toBeVisible();
+  fireEvent.click(title);
+  expect(title.closest('details')).toHaveAttribute('open');
+  expect(screen.getByText('Implemented the guarded transaction')).toBeVisible();
+  expect(screen.getByText(/services\/reservations.py/)).toBeVisible();
+  expect(screen.getByText(/Result: passed/)).toBeVisible();
+  expect(screen.getByText('Unrelated proof')).not.toBeVisible();
+  expect(api.getDeliveryEvidence).toHaveBeenCalledTimes(1);
+  expect(api.recordDeliveryEvidence).not.toHaveBeenCalled();
+});
+
+it('labels waived checks explicitly instead of presenting them as proof', async () => {
+  const data = projection();
+  data.rows = [{ ...data.rows[0], implementation_satisfied: false, implementation_ids: [], implementation_waiver_ids: ['waiver-1'] }];
+  api.getDeliveryEvidence.mockResolvedValue(data);
+  render(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  expect(await screen.findByText('Waived')).toBeInTheDocument();
+  fireEvent.click(screen.getByText('Bindings live on the card ledger'));
+  expect(screen.getByText('Implementation waivers (not proof): waiver-1')).toBeVisible();
+  expect(screen.getByText('No admitted implementation evidence.')).toBeVisible();
+});
+
+it('refreshes the rollup when the containing Spec revision changes', async () => {
+  const view = render(<DeliveryEvidencePanel boardId="b" specId="s" revision="1" />);
+  await screen.findByTestId('delivery-coverage-table');
+  view.rerender(<DeliveryEvidencePanel boardId="b" specId="s" revision="2" />);
+  await waitFor(() => expect(api.getDeliveryEvidence).toHaveBeenCalledTimes(2));
+});
+
 it('renders the informational rollup: verdict, summary and board gate mode', async () => {
   render(<DeliveryEvidencePanel boardId="b" specId="s" />);
   expect(await screen.findByText('Blocked')).toBeTruthy();
