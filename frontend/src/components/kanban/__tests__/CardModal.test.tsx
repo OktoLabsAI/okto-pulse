@@ -2577,7 +2577,28 @@ describe('ExecutionReportsPanel impact evidence (TS-11)', () => {
 // remediation renders IN-PLACE and the prompt keeps its state; the same
 // submit succeeds after the gate clears.
 describe('conclusion prompt keeps state on impact_evidence_required (TS-16)', () => {
-  beforeEach(() => { vi.clearAllMocks(); permissionsMock.has.mockImplementation(() => true); });
+  beforeEach(() => {
+    // This group must also run alone, without state from the CardModal group.
+    vi.clearAllMocks();
+    permissionsMock.has.mockImplementation(() => true);
+    storeMock.isCardModalOpen = true;
+    storeMock.columns = emptyColumns();
+    apiMock.getBoard.mockReset().mockResolvedValue({ settings: {} });
+    apiMock.getSpec.mockReset().mockResolvedValue({
+      id: 'spec-1', title: 'Stories spec', test_scenarios: [], business_rules: [], api_contracts: [],
+      technical_requirements: [], knowledge_bases: [],
+    });
+    apiMock.getSpecKnowledge.mockReset().mockResolvedValue(null);
+    apiMock.listAgentsForBoard.mockReset().mockResolvedValue([]);
+    apiMock.getCardSeenStatus.mockReset().mockResolvedValue({ items: {} });
+    apiMock.getCardDependencies.mockReset().mockResolvedValue([]);
+    apiMock.getCardDependents.mockReset().mockResolvedValue([]);
+    apiMock.getCardActivity.mockReset().mockResolvedValue([]);
+    learningCaptureApi.source.mockReset().mockResolvedValue({
+      source_digest: 'a'.repeat(64), source_policy_version: 1, scenarios: [],
+    });
+    learningCaptureApi.history.mockReset().mockResolvedValue({ items: [], next_cursor: null });
+  });
   async function prepareAtomicReport(target: 'validation' | 'done' = 'validation', cardType: 'normal' | 'bug' = 'normal') {
     const normalCard = { ...cardForType(cardType), status: 'in_progress', spec_id: 'spec-1' } as Card;
     storeMock.selectedCardId = normalCard.id;

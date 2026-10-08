@@ -143,19 +143,32 @@ async def test_current_impact_changes_without_rewriting_report_or_delivery_verdi
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mutation", ["old_observation", "missing_identity", "manual", "unselected_material"])
+@pytest.mark.parametrize("mutation", ["old_observation", "missing_identity", "manual", "unselected_material", "revision_mismatch", "empty_net", "ambiguous_chain"])
 async def test_reuse_refuses_ambiguous_or_stale_input_without_staging_report(composed, mutation):
     factory, request, record_id = await prepare(composed, fresh=mutation != "old_observation")
     session, uow, use_case, actor = composed
     if mutation == "missing_identity":
-        # Simulate a legacy immutable record through a seeded copy, never an UPDATE.
+        # Seed a damaged native record without its identity seal; it must fail closed.
         old = await session.get(Record, record_id)
         values = {column.name: getattr(old, column.name) for column in Record.__table__.columns}
-        values.update(id="legacy-progress", idempotency_key="legacy-progress", payload={key: value for key, value in old.payload.items() if key != "_impact_source_identity_sha256"})
+        values.update(id="missing-identity-progress", idempotency_key="missing-identity-progress", payload={key: value for key, value in old.payload.items() if key != "_impact_source_identity_sha256"})
         await session.execute(insert(Record).values(**values))
         await session.commit()
-        request.delivery_selection.record_ids = ["legacy-progress"]
+        request.delivery_selection.record_ids = ["missing-identity-progress"]
         request.delivery_selection.expected_delivery_revision = 2
+    if mutation == "revision_mismatch":
+        await observation(session, "different-revision", revision="c" * 40)
+    if mutation in {"empty_net", "ambiguous_chain"}:
+        head = (await session.scalars(select(Head))).one()
+        extra = await use_case.execute(
+            delta("second-impact", head.source_ref,
+                  "a" * 40 if mutation == "empty_net" else "b" * 40,
+                  "c" * 40, "deleted" if mutation == "empty_net" else "modified"),
+            actor=actor, uow=uow,
+        )
+        request.delivery_selection.record_ids.append(extra["id"])
+        request.delivery_selection.expected_delivery_revision = 2
+        await observation(session, "latest-impact", revision="c" * 40)
     if mutation == "unselected_material":
         from test_delivery_progress import command
         await use_case.execute(command(idempotency_key="unselected"), actor=actor, uow=uow)
@@ -164,11 +177,22 @@ async def test_reuse_refuses_ambiguous_or_stale_input_without_staging_report(com
         from okto_pulse.core.models.schemas import ImpactEvidence
         request.impact_evidence = ImpactEvidence(files=[dict(repo="core", path="manual.py", change_kind="created")])
     async with factory() as writer:
-        with pytest.raises(ValueError, match="delivery_impact_"):
+        before = {row.id: dict(row.payload) for row in (await writer.scalars(select(Record))).all()}
+        with pytest.raises(ValueError) as error:
             await CardService(writer).move_card("c", "owner", request)
+        if mutation == "empty_net":
+            assert error.value.code == "impact_evidence_required"
+        elif mutation == "ambiguous_chain":
+            assert "delivery_impact_needs_reconciliation" in str(error.value)
+        elif mutation == "revision_mismatch":
+            assert "delivery_impact_current_observation_required" in str(error.value)
+        else:
+            assert "delivery_impact_" in str(error.value)
         await writer.commit()
         card = await writer.get(Card, "c")
         assert card.status == "in_progress" and not card.conclusions
+        after = {row.id: dict(row.payload) for row in (await writer.scalars(select(Record))).all()}
+        assert after == before
 
 
 @pytest.mark.asyncio

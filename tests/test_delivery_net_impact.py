@@ -50,10 +50,10 @@ async def test_persisted_net_claims_preserve_history_without_delivery_credit(com
 
 
 @pytest.mark.asyncio
-async def test_legacy_delta_missing_base_is_visible_as_reconciliation(composed):
+async def test_native_delta_missing_base_is_visible_as_reconciliation(composed):
     session, uow, use_case, actor = composed
     source = (await session.get(Target, "target")).source_ref
-    request = delta("legacy", source, None, B, "created")
+    request = delta("unknown-base", source, None, B, "created")
     await use_case.execute(request, actor=actor, uow=uow)
     impact = (await uow.services.delivery_evidence.projection("b", "s"))["per_card"][0]["accumulated_impact"]
     assert impact["status"] == "needs_reconciliation" and not impact["sources"]
