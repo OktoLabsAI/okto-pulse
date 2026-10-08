@@ -141,7 +141,7 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
     } finally { setBusy(false); }
   }
 
-  return <section className="space-y-4" aria-label="Delivery evidence (Definition of Done)">
+  return <section className="space-y-4" aria-label={isTest ? "Test verification evidence" : "Delivery evidence (Definition of Done)"}>
     {error && <p role="alert" className="rounded-md border border-red-300 bg-red-50 p-3 text-xs text-red-700 dark:border-red-900/70 dark:bg-red-950/25 dark:text-red-300">{error}</p>}
     {!data && !error && <p role="status" className="text-sm text-gray-500">Loading card delivery obligations…</p>}
     {data && <>
@@ -151,7 +151,10 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
       {mine?.report_impact?.source === 'accumulated' && <p role="status" className="text-sm">
         {mine.report_impact.current ? 'Submitted impact matches the known source bases.' : 'Submitted impact needs a new current basis before required impact validation can pass.'}
       </p>}
-      <div className="rounded-md border border-gray-200 p-4 dark:border-gray-800">
+      {isTest && <p role="status" className="text-sm text-gray-500">
+        Test Cards are excluded from the implementation DoD gate. Authenticated test outcomes contribute to the Spec rollup; other validation requirements still apply.
+      </p>}
+      {!isTest && <div className="rounded-md border border-gray-200 p-4 dark:border-gray-800">
         <div className="mb-3 flex items-center justify-between gap-3">
           <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200">Delivery Evidence (Definition of Done)</h3>
           <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wide ${unproven.length ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300' : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'}`} data-testid="dod-gate-pill">
@@ -181,7 +184,7 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
             ? 'Save authenticated passed or failed results during execution. Delivery credit requires current passing evidence for every required criterion and completed cards.'
             : "Test-phase verification is aggregated at the Spec rollup; this card's DoD requires implementation proof only."}
         </p>
-      </div>
+      </div>}
 
       {isTest && (data.tests ?? []).some(row => row.card_id === card.id) && <section aria-label="Recorded test outcomes" className="space-y-2 text-sm">
         <h3>Recorded test outcomes</h3>
@@ -193,7 +196,7 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
         {(data.tests ?? []).filter(row => row.card_id === card.id).length > 20 && <p className="text-xs">Showing the latest 20 of {(data.tests ?? []).filter(row => row.card_id === card.id).length} recorded results in this view.</p>}
       </section>}
 
-      {gateMode === 'blocking' && mine && !mine.satisfied && obligations.length > 0 && (
+      {!isTest && gateMode === 'blocking' && mine && !mine.satisfied && obligations.length > 0 && (
         <div className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 p-3 dark:border-red-900/70 dark:bg-red-950/25" data-testid="dod-blocked-banner">
           <span className="mt-0.5 text-sm text-red-500">⚠</span>
           <div className="text-xs text-red-700 dark:text-red-300">

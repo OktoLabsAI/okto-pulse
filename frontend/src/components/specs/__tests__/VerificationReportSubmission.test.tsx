@@ -88,10 +88,10 @@ it('preserves operational failure and partial-query limits in the report details
   const partial = {
     ...evidence,
     verification_report: {
-      ...report, result: 'failed', conclusion: 'Operational condition is not verified',
+      ...report, result: 'failed' as const, conclusion: 'Operational condition is not verified',
       observations: [
-        { observation_id: 'alert', criterion_id: 'ac', outcome: 'failed', observed: 'No alert fired' },
-        { observation_id: 'query', criterion_id: 'ac', outcome: 'unavailable',
+        { observation_id: 'alert', criterion_id: 'ac', outcome: 'failed', expected: 'Alert fires', observation_ref: 'telemetry:alerts', observed: 'No alert fired' },
+        { observation_id: 'query', criterion_id: 'ac', outcome: 'unavailable', expected: 'All shards respond', observation_ref: 'telemetry:query',
           observed: 'Partial rows: second telemetry shard timed out' },
       ],
     },

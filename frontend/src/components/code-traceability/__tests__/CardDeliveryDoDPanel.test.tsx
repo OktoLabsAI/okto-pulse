@@ -297,3 +297,17 @@ it('clears the previous gate mode when a different Board cannot be read', async 
   expect(await screen.findByText(/Unknown/)).toBeInTheDocument();
   expect(screen.queryByText(/Advisory/)).not.toBeInTheDocument();
 });
+
+
+it('does not apply the implementation DoD presentation to a Test Card with inherited obligations', async () => {
+  const value = projection();
+  value.per_card![0].card_type = 'test';
+  api.getDeliveryEvidence.mockResolvedValue(value);
+  render(<CardDeliveryDoDPanel boardId="b" card={{ ...CARD, card_type: 'test' }} canTest />);
+  expect(await screen.findByText(/Test Cards are excluded from the implementation DoD gate/)).toBeInTheDocument();
+  expect(screen.queryByTestId('dod-gate-pill')).not.toBeInTheDocument();
+  expect(screen.queryByTestId('dod-obligations')).not.toBeInTheDocument();
+  expect(screen.queryByTestId('dod-blocked-banner')).not.toBeInTheDocument();
+  expect(screen.getByTestId('dod-record-button')).toBeInTheDocument();
+  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
+});

@@ -36,7 +36,8 @@ async def test_inherited_br_promoted_ir_and_partial_work_remain_distinct(classif
     assert len(promotion_receipts) == 1
     rule = {
         "id": "br", "title": "Limit failed login attempts",
-        "rule": "Five failures block access", "linked_requirements": ["fr"],
+        "rule": "Five failures block access", "when": "Five failures", "then": "Block access",
+        "linked_requirements": ["fr"],
         "verification": {"mode": "inherited", "required_profiles": ["functional"],
             "inheritance": [{
                 "source": {"requirement_type": "functional_requirement", "requirement_id": "fr"},
@@ -47,6 +48,7 @@ async def test_inherited_br_promoted_ir_and_partial_work_remain_distinct(classif
     criteria = deepcopy(spec.acceptance_criteria)
     criteria[0]["linked_task_ids"] = ["implementation-card"]
     scenarios = deepcopy(spec.test_scenarios)
+    scenarios[0]["title"] = "Observe blocking after five failures"
     for ir in promoted:
         ir.update(verification={"mode": "explicit", "required_profiles": ["integration"]},
                   linked_task_ids=["implementation-card"],
