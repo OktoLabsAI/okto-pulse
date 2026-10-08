@@ -1,3 +1,4 @@
+import { ArchitectureBoundariesEditor } from './ArchitectureBoundariesEditor';
 import { loadEffectiveResourceItems } from '@/services/effectiveResources';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
@@ -559,7 +560,7 @@ function makeBlankEntity(): ArchitectureEntityDraft {
     color: '#0891b2',
     icon: 'boxes',
     responsibility: '',
-    boundaries: '',
+    boundaries: [],
     technologies: [],
     relationships: [],
     notes: '',
@@ -1074,7 +1075,7 @@ export function ArchitectureTab({
           color: element.strokeColor || colorForEntityType(element.displayType || element.architectureKind),
           icon: (element.iconName as ArchitectureVisualIcon | null) || iconForEntityType(element.displayType || element.architectureKind),
           responsibility: '',
-          boundaries: '',
+          boundaries: [],
           technologies: [],
           relationships: [],
           notes: '',
@@ -1147,7 +1148,7 @@ export function ArchitectureTab({
       color: preset.color,
       icon: preset.icon,
       responsibility: '',
-      boundaries: '',
+      boundaries: [],
       technologies: [],
       relationships: [],
       notes: '',
@@ -1648,10 +1649,7 @@ export function ArchitectureTab({
                     <textarea value={entityDraft.responsibility || ''} onChange={(event) => setEntityDraft({ ...entityDraft, responsibility: event.target.value })} rows={2} className="mt-1 w-full px-2 py-1 text-xs border border-gray-200 dark:border-gray-700 rounded bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100 resize-none" />
                   </label>
                   <div className="grid grid-cols-2 gap-2">
-                    <label className="block">
-                      <span className="text-xs text-gray-500 dark:text-gray-400">Boundary</span>
-                      <input value={entityDraft.boundaries || ''} onChange={(event) => setEntityDraft({ ...entityDraft, boundaries: event.target.value })} className="mt-1 w-full px-2 py-1 text-xs border border-gray-200 dark:border-gray-700 rounded bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100" />
-                    </label>
+                    <ArchitectureBoundariesEditor value={entityDraft.boundaries ?? []} onChange={(boundaries) => setEntityDraft({ ...entityDraft, boundaries })} />
                     <label className="block">
                       <span className="text-xs text-gray-500 dark:text-gray-400">Technologies</span>
                       <input value={listToCsv(entityDraft.technologies)} onChange={(event) => setEntityDraft({ ...entityDraft, technologies: csvToList(event.target.value) })} className="mt-1 w-full px-2 py-1 text-xs border border-gray-200 dark:border-gray-700 rounded bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100" />
@@ -1750,10 +1748,7 @@ export function ArchitectureTab({
                       <span className="text-xs text-gray-500 dark:text-gray-400">Responsibility</span>
                       <textarea value={entity.responsibility || ''} onChange={(event) => updateEntity(index, { responsibility: event.target.value })} readOnly={locked} rows={2} className="mt-1 w-full px-2 py-1 text-xs border border-gray-200 dark:border-gray-700 rounded bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100 resize-none" />
                     </label>
-                    <label className="block">
-                      <span className="text-xs text-gray-500 dark:text-gray-400">Boundary</span>
-                      <input value={entity.boundaries || ''} onChange={(event) => updateEntity(index, { boundaries: event.target.value })} readOnly={locked} placeholder="domain, bounded context, trust zone..." className="mt-1 w-full px-2 py-1 text-xs border border-gray-200 dark:border-gray-700 rounded bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100" />
-                    </label>
+                    <ArchitectureBoundariesEditor value={entity.boundaries ?? []} onChange={(boundaries) => updateEntity(index, { boundaries })} readOnly={locked} />
                     <label className="block">
                       <span className="text-xs text-gray-500 dark:text-gray-400">Technologies</span>
                       <input value={listToCsv(entity.technologies)} onChange={(event) => updateEntity(index, { technologies: csvToList(event.target.value) })} readOnly={locked} placeholder="FastAPI, SQLite, React..." className="mt-1 w-full px-2 py-1 text-xs border border-gray-200 dark:border-gray-700 rounded bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100" />

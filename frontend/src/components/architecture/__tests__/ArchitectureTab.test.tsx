@@ -243,6 +243,34 @@ describe('ArchitectureTab', () => {
     expect(screen.getAllByText('API').length).toBeGreaterThan(0);
   });
 
+  it('saves new catalog entities with an empty boundaries array', async () => {
+    apiMock.updateArchitectureDesign.mockResolvedValue(design);
+    render(<ArchitectureTab parentType="ideation" parentId="ideation-1" />);
+    await screen.findByText('Runtime Architecture');
+    fireEvent.click(await screen.findByTitle('Add API component'));
+    fireEvent.click(screen.getByText('Save'));
+    await waitFor(() => expect(apiMock.updateArchitectureDesign).toHaveBeenCalledTimes(1));
+    expect(apiMock.updateArchitectureDesign.mock.calls[0][1].entities[0].boundaries).toEqual([]);
+  });
+
+  it('edits and saves boundaries as the same ordered array sent to validation', async () => {
+    const initial = { ...design, entities: [{ id: 'checkout', name: 'Checkout API', entity_type: 'service', boundaries: ['Tenant data, isolated'] }] };
+    apiMock.getArchitectureDesign.mockResolvedValue(initial);
+    apiMock.updateArchitectureDesign.mockResolvedValue(initial);
+    render(<ArchitectureTab parentType="ideation" parentId="ideation-1" />);
+    await screen.findByText('Checkout API');
+    fireEvent.click(screen.getByTitle('Edit entity'));
+    expect(screen.getByRole('textbox', { name: /Boundary 1/ })).toHaveValue('Tenant data, isolated');
+    fireEvent.click(screen.getByRole('button', { name: 'Add boundary' }));
+    fireEvent.change(screen.getByRole('textbox', { name: /Boundary 2/ }), { target: { value: 'Public ports\nNo private imports' } });
+    const expected = ['Tenant data, isolated', 'Public ports\nNo private imports'];
+    await waitFor(() => expect(apiMock.validateArchitectureDesign.mock.calls.some(([payload]) => JSON.stringify(payload.entities?.[0]?.boundaries) === JSON.stringify(expected))).toBe(true));
+    fireEvent.click(screen.getByText('Save'));
+    await waitFor(() => expect(apiMock.updateArchitectureDesign).toHaveBeenCalledTimes(1));
+    expect(apiMock.updateArchitectureDesign.mock.calls[0][1].entities[0].boundaries).toEqual(expected);
+    expect(apiMock.validateArchitectureDesign.mock.calls.some(([payload]) => JSON.stringify(payload.entities?.[0]?.boundaries) === JSON.stringify(expected))).toBe(true);
+  });
+
   it('shows backend architecture design warnings in the UI', async () => {
     apiMock.validateArchitectureDesign.mockResolvedValue({
       valid: true,

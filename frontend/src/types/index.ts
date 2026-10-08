@@ -1744,7 +1744,7 @@ export interface ArchitectureEntity {
   name: string;
   entity_type?: string | null;
   responsibility?: string | null;
-  boundaries?: string | null;
+  boundaries?: string[];
   technologies?: string[];
   relationships?: string[];
   notes?: string | null;

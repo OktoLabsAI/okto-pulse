@@ -35,6 +35,14 @@ function extractMermaidBlocks(markdown: string): string[] {
 }
 
 describe('exportMarkdown export warning collector', () => {
+  it('preserves individual architecture boundaries in the export', () => {
+    const boundaries = ['Tenant data, isolated', 'Public ports\nNo private imports'];
+    const markdown = exportSpec(specWithArchitecture([{
+      id: 'arch-1', title: 'Runtime', entities: [{ id: 'api', name: 'Checkout API', entity_type: 'service', boundaries }],
+      interfaces: [], diagrams: [],
+    }]));
+    expect(markdown).toContain('  - **Boundaries:**\n    - Tenant data, isolated\n    - Public ports\n      No private imports');
+  });
   it('normalizes, deduplicates and sorts warning buckets deterministically', () => {
     const warnings = collectExportWarnings({
       asset_warnings: [

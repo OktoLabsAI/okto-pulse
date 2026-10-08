@@ -1237,10 +1237,12 @@ function renderArchitectureDesigns(
           `- **${entity.name || entity.title || entity.id || 'Unnamed entity'}**`,
           entity.entity_type ? `type=${entity.entity_type}` : '',
           entity.responsibility ? `responsibility=${entity.responsibility}` : '',
-          entity.boundaries ? `boundaries=${entity.boundaries}` : '',
           entity.technologies?.length ? `technologies=${entity.technologies.join(', ')}` : '',
         ].filter(Boolean);
-        return parts.join(' — ');
+        const boundaries = (entity.boundaries || []).map((boundary: string) =>
+          `    - ${boundary.replace(/\n/g, '\n      ')}`,
+        );
+        return parts.join(' — ') + (boundaries.length ? `\n  - **Boundaries:**\n${boundaries.join('\n')}` : '');
       }).join('\n');
       entry += `\n\n`;
     }

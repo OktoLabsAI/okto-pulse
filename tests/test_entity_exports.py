@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from dataclasses import replace
 from copy import deepcopy
 import json
 from spec_validation_fixtures import native_validation
@@ -48,6 +49,26 @@ from okto_pulse.core.ports.authentication import Principal
 
 
 _NOW = datetime(2026, 8, 13, 12, 0, tzinfo=timezone.utc)
+
+
+def test_architecture_boundaries_render_as_individual_list_items():
+    bundle = _bundle()
+    section = EntityExportSection(
+        section_key="architecture", schema_version="entity-export-architecture/v1",
+        payload={"records": {"architecture_designs": [{"title": "Checkout runtime", "entities": [
+            {"name": "Checkout API", "boundaries": ["Tenant data, isolated", "Public ports only", "<script>alert(1)</script>"]},
+        ]}]}},
+    )
+    manifest_entry = replace(bundle.manifest.entries[0], section_key=section.section_key, schema_version=section.schema_version)
+    bundle = replace(bundle, sections=(section,), manifest=replace(bundle.manifest, entries=(manifest_entry,)))
+    html = render_entity_export_html(bundle.to_dict())
+    markdown = render_entity_export_markdown(bundle.to_dict())
+    assert "<li>Tenant data, isolated</li>" in html
+    assert "<li>Public ports only</li>" in html
+    assert "- Tenant data, isolated" in markdown
+    assert "- Public ports only" in markdown
+    assert "<script>alert(1)</script>" not in html
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
 
 
 def _bundle(

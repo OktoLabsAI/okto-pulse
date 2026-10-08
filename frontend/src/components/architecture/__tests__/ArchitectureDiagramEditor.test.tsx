@@ -360,6 +360,7 @@ describe('ArchitectureDiagramEditor', () => {
             name: 'Checkout API',
             entity_type: 'api',
             responsibility: 'Persists checkout commands.',
+            boundaries: ['Tenant data, isolated', 'Public ports only'],
           },
           {
             id: 'entity-db',
@@ -384,6 +385,8 @@ describe('ArchitectureDiagramEditor', () => {
     fireEvent.doubleClick(screen.getByTestId('architecture-element-box_1'));
     expect(screen.getByRole('dialog', { name: 'Entity details' })).toBeInTheDocument();
     expect(screen.getByText('Persists checkout commands.')).toBeInTheDocument();
+    expect(screen.getAllByRole('listitem').map((item) => item.textContent)).toContain('Tenant data, isolated');
+    expect(screen.getAllByRole('listitem').map((item) => item.textContent)).toContain('Public ports only');
 
     fireEvent.click(screen.getByText('Close'));
     fireEvent.doubleClick(screen.getByTestId('architecture-element-edge_1'));

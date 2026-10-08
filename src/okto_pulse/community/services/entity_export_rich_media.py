@@ -17,6 +17,11 @@ import math
 import re
 from typing import Any
 
+from pydantic import TypeAdapter
+from okto_pulse.core.models.schemas import ArchitectureBoundaries
+
+
+_BOUNDARIES_ADAPTER = TypeAdapter(ArchitectureBoundaries)
 
 RICH_MEDIA_CSS = """
 .rich-media-list{display:grid;gap:12px}.rich-media-item{border:1px solid var(--line);border-radius:12px;background:var(--panel-soft);overflow:hidden}
@@ -1243,6 +1248,18 @@ def _architecture_diagram_html(
     )
 
 
+def _architecture_boundaries(design: Mapping[str, Any]) -> list[tuple[str, list[str]]]:
+    """Project the authored boundary lists without merging or splitting items."""
+    rows = []
+    for entity in design.get("entities") or []:
+        if not isinstance(entity, Mapping):
+            continue
+        boundaries = _BOUNDARIES_ADAPTER.validate_python(entity.get("boundaries", []))
+        if boundaries:
+            rows.append((str(entity.get("name") or entity.get("id") or "Entity"), boundaries))
+    return rows
+
+
 def _architecture_html(value: Any) -> str:
     designs = _architecture_designs(value)
     if not designs:
@@ -1275,10 +1292,16 @@ def _architecture_html(value: Any) -> str:
             if description
             else ""
         )
+        boundaries_html = "".join(
+            f'<section><h4>{_html(name)} — Boundaries</h4><ul class="plain-list">'
+            + "".join(f'<li>{_html(item)}</li>' for item in boundaries)
+            + '</ul></section>'
+            for name, boundaries in _architecture_boundaries(design)
+        )
         rendered.append(
             '<details class="rich-media-item architecture-item">'
             f'<summary><span>{_html(title)}</span><span class="rich-media-badge">Architecture</span></summary>'
-            f'<div class="rich-media-body">{description_html}<div class="architecture-diagrams">{diagrams_html}</div></div></details>'
+            f'<div class="rich-media-body">{description_html}{boundaries_html}<div class="architecture-diagrams">{diagrams_html}</div></div></details>'
         )
     return '<div class="rich-media-list">' + "".join(rendered) + "</div>"
 
@@ -1368,6 +1391,10 @@ def _architecture_markdown(value: Any) -> list[str]:
         description = design.get("global_description") or design.get("description")
         if description:
             lines.extend([_md(description), ""])
+        for name, boundaries in _architecture_boundaries(design):
+            lines.extend([f"#### {_md(name)} — Boundaries", ""])
+            lines.extend("- " + "\n  ".join(_md(line) for line in item.splitlines()) for item in boundaries)
+            lines.append("")
         diagrams = _ordered_diagrams(design)
         if not diagrams:
             source = _semantic_mermaid(design)

@@ -966,7 +966,7 @@ export function ArchitectureDiagramEditor({
                 <DetailRow label="Linked entity">{entityDetail?.label || detailElement.linkedEntityId}</DetailRow>
                 <DetailRow label="Entity type">{entity?.entity_type}</DetailRow>
                 <DetailRow label="Responsibility">{entity?.responsibility}</DetailRow>
-                <DetailRow label="Boundary">{entity?.boundaries}</DetailRow>
+                <DetailRow label="Boundaries">{entity?.boundaries?.length ? <ul className="list-disc pl-4">{entity.boundaries.map((item, index) => <li key={index}>{item}</li>)}</ul> : null}</DetailRow>
                 <DetailRow label="Technologies">{detailText(entity?.technologies)}</DetailRow>
                 <DetailRow label="Relationships">{detailText(entity?.relationships)}</DetailRow>
                 <DetailRow label="Linked screen">{mockupLabel}</DetailRow>
