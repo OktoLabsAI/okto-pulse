@@ -106,6 +106,21 @@ async def test_rest_mcp_admission_and_real_status_write_with_freshness(classifie
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('missing', ['sources', 'rules', 'configuration'])
+async def test_incomplete_static_report_cannot_mint_receipt_or_change_history(classified_context, monkeypatch, tmp_path, missing):
+    db = classified_context
+    app, _, ledger = await setup(db, monkeypatch, tmp_path, 'static_analysis')
+    before = await methods.writes.snapshot(db)
+    value = report('static_analysis')
+    del value[missing]
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+        response = await client.post('/api/v1/specs/spec/scenarios/ts/evidence/reports', json={'report': value})
+        assert response.status_code == 422, response.text
+    assert await methods.writes.snapshot(db) == before
+    assert not ledger.receipt_root.exists() or not list(ledger.receipt_root.iterdir())
+
+
+@pytest.mark.asyncio
 async def test_report_denials_happen_before_receipt_and_preserve_scope(classified_context, monkeypatch, tmp_path):
     app, _, ledger = await setup(classified_context, monkeypatch, tmp_path, 'inspection')
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:

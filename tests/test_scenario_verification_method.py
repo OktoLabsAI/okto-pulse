@@ -66,11 +66,11 @@ def actor(*, deny=False, board_id="board"):
     )
 
 
-async def setup(db, monkeypatch, *, method=None):
+async def setup(db, monkeypatch, *, method=None, scenario_type="manual"):
     scenario = {
         "id": "ts",
         "title": "Observe version",
-        "scenario_type": "manual",
+        "scenario_type": scenario_type,
         "status": "ready",
         "given": "Runtime available",
         "when": "Health queried",
@@ -121,11 +121,12 @@ async def setup(db, monkeypatch, *, method=None):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("scenario_type", ["manual", "integration"])
 async def test_rest_mcp_same_body_writer_version_conflict_and_closed_method(
-    classified_context, monkeypatch
+    classified_context, monkeypatch, scenario_type
 ):
     db = classified_context
-    app, _ = await setup(db, monkeypatch)
+    app, _ = await setup(db, monkeypatch, scenario_type=scenario_type)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -134,7 +135,7 @@ async def test_rest_mcp_same_body_writer_version_conflict_and_closed_method(
             path, json={"verification_method": "inspection", "expected_spec_version": 1}
         )
         assert first.status_code == 200, first.text
-        assert first.json()["scenario"]["scenario_type"] == "manual"
+        assert first.json()["scenario"]["scenario_type"] == scenario_type
         assert first.json()["scenario"]["verification_method"] == "inspection"
         stale = await client.patch(
             path,
@@ -166,6 +167,7 @@ async def test_rest_mcp_same_body_writer_version_conflict_and_closed_method(
         assert native.get("error") is None, native
         persisted = await db.get(Spec, "spec", populate_existing=True)
         assert persisted.test_scenarios[0]["verification_method"] == "automated_test"
+        assert persisted.test_scenarios[0]["scenario_type"] == scenario_type
 
 
 @pytest.mark.asyncio
