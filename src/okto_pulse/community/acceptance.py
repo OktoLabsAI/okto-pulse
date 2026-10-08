@@ -23,7 +23,7 @@ TERMS_HASH = "tos-2026-04-29-elv2-addendum-trademark-cla-cr2026"
 def _state_path() -> Path:
     from okto_pulse.community.config import CommunitySettings
 
-    # Use the same DATA_DIR / legacy home / dotenv precedence as the runtime.
+    # Use the same DATA_DIR / dotenv / default home precedence as the runtime.
     base = Path(CommunitySettings().data_dir)
     base.mkdir(parents=True, exist_ok=True)
     return base / ".terms-accepted.json"

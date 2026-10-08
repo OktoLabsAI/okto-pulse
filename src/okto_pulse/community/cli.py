@@ -946,7 +946,7 @@ def _generate_mcp_json(
 def cmd_serve(args):
     """Start the API + Frontend server and the MCP server.
 
-    Both servers run inside a single Python process (so the embedded Kùzu
+    Both servers run inside a single Python process (so the embedded Okto Grafx
     DB is owned by exactly one OS process), but listen on two different
     ports — ``--api-port`` for the REST API + UI, ``--mcp-port`` for the
     MCP transport. Each port has its own uvicorn ``Server`` instance
