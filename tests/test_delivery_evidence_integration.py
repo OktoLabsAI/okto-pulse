@@ -413,6 +413,7 @@ async def test_currentness_is_rechecked_not_cached(ledger, mutation):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("ledger", ["native_schema"], indirect=True)
 async def test_gate_accepts_chain_valid_proof_recorded_before_done(ledger):
     """AC ac_c41b1fa3: record during execution; validation consumes the frozen proof.
 
@@ -443,6 +444,12 @@ async def test_gate_accepts_chain_valid_proof_recorded_before_done(ledger):
 
     result = await record(store, command(idempotency_key="pre-done-impl"))
     assert result["replayed"] is False
+    # Passing authenticated test evidence still cannot give final credit to an
+    # implementation Card that has not reached Done.
+    await record(store, command("test", implementation_ids=[result["id"]]))
+    await session.commit()
+    assert not (await store.projection(BOARD_ID, SPEC_ID))["allowed"]
+    await require_card_delivery(session, card=card, spec=spec, board=None)
     await session.execute(update(Card).where(Card.id == "task").values(status="validation"))
     await session.commit()
     await session.refresh(card)
@@ -450,6 +457,12 @@ async def test_gate_accepts_chain_valid_proof_recorded_before_done(ledger):
         await record(store, command(idempotency_key="new-proof-in-validation"))
 
     await require_card_delivery(session, card=card, spec=spec, board=None)
+    assert not (await store.projection(BOARD_ID, SPEC_ID))["allowed"]
+    # Controlled lifecycle stimulus isolates rollup's status predicate; actual
+    # governed transitions are exercised by the complete lifecycle suites.
+    await session.execute(update(Card).where(Card.id == "task").values(status="done"))
+    await session.commit()
+    assert (await store.projection(BOARD_ID, SPEC_ID))["allowed"]
 
 
 @pytest.mark.asyncio
