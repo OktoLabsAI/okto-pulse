@@ -203,6 +203,7 @@ async def test_cross_board_scope_cannot_return_another_specs_body(classified_con
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("adopted_context", ["native_schema"], indirect=True)
 @pytest.mark.parametrize("planning", [False, True])
 async def test_native_transport_parity_global_pending_and_no_read_writes(
     classified_context, monkeypatch, tmp_path, planning
