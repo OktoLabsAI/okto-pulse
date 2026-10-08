@@ -94,3 +94,16 @@ async def test_governed_criterion_edits_keep_independent_proof_and_assessment_hi
     assert {row.id: row.payload for row in await session.scalars(select(CardDeliveryEvidenceRecordRow))} == history
     new_audit = {row.id for row in await session.scalars(select(SpecHistory))}
     assert old_audit < new_audit
+    # ADV-13: adding another obligation after the run cannot retroactively
+    # extend what its signed observation proves, even if the text is unchanged.
+    await edit("ac-ui", {"requirement_links": [
+        {"requirement_type": "functional_requirement", "requirement_id": "fr"},
+        {"requirement_type": "business_rule", "requirement_id": "br"},
+    ]})
+    after_link = await store.projection(multi.BOARD, multi.SPEC)
+    assert not multi.rows(after_link)["ac:ac-ui"]["test_satisfied"]
+    assert not multi.rows(after_link)["br:br"]["test_satisfied"]
+    assert not after_link["allowed"]
+    assert {row.id: row.payload for row in await session.scalars(select(CardDeliveryEvidenceRecordRow))} == history
+    spec = await session.get(Spec, multi.SPEC, populate_existing=True)
+    assert spec.evaluations == assessments
