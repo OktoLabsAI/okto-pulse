@@ -316,11 +316,8 @@ async def test_reordering_fr_criteria_and_scenarios_preserves_native_ids_and_rel
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(480)
-async def test_spec_without_links_characterizes_rebuild_guard_conflict(tmp_path, monkeypatch):
-    """Known KG-10 conflict, pending the guard decision recorded in the ledger.
-
-    This characterizes the rejection; it does not claim rebuild parity.
-    """
+async def test_spec_without_links_preserves_owned_decision_in_clean_rebuild(tmp_path, monkeypatch):
+    """KG-10 authorized: provenance-only native Decision survives both paths."""
     from okto_pulse.core.kg.connectivity_guard import KGNodeConnectivityGuard
 
     validate = KGNodeConnectivityGuard.validate
@@ -332,22 +329,16 @@ async def test_spec_without_links_characterizes_rebuild_guard_conflict(tmp_path,
             rejected.append(result.to_response())
         return result
 
-    monkeypatch.setattr(KGNodeConnectivityGuard, 'validate', capture_guard)
-    incremental = await materialize(tmp_path / 'incremental-empty', incremental=True,
+    monkeypatch.setattr(KGNodeConnectivityGuard, "validate", capture_guard)
+    incremental = await materialize(tmp_path / "incremental-empty", incremental=True,
                                     final_empty=True, native_schema=True)
+    rebuilt = await materialize(tmp_path / "rebuilt-empty", incremental=False,
+                                final_empty=True, native_schema=True)
     assert not rejected
     assert not [edge for edge in incremental if edge[3] in OWNED_RULES]
-    with pytest.raises(AssertionError):
-        await materialize(tmp_path / 'rebuilt-empty', incremental=False,
-                          final_empty=True, native_schema=True)
-    assert len(rejected) == 1
-    violations = rejected[0]['violations']
-    assert len(violations) == 1
-    assert violations[0]['node_type'] == 'Decision'
-    assert violations[0]['source_artifact_ref'] == 'spec:spec:decision:dec_one'
-    assert violations[0]['writer_path'] == 'deterministic_worker'
-    assert violations[0]['reason'] == 'missing_required_edge'
-    assert violations[0]['required_edge'].startswith('supersedes:outgoing:Decision OR ')
+    assert incremental == rebuilt
+    assert any(edge[0] == "belongs_to" and edge[1] == "spec:spec:decision:dec_one"
+               and edge[2] == "spec:spec" for edge in rebuilt)
 
 
 @pytest.mark.asyncio
