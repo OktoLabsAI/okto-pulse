@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 import test_adopted_delivery_report as adopted
+from test_native_delivery_currentness import advance_source
 from okto_pulse.community.adapters.mcp_auth import make_community_mcp_authenticator
 from okto_pulse.community.adapters.mcp_host import CommunityMcpHostProvider
 from okto_pulse.community.adapters.sqlalchemy_models import (
@@ -69,6 +70,7 @@ async def snapshot(factory):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('ledger', ['native_schema'], indirect=True)
 @pytest.mark.parametrize('recommendation', ['approve', 'reject'])
 @pytest.mark.parametrize('executor_can_review', [False, True], ids=['grant-denied', 'separation-enforced'])
 async def test_executor_and_reviewer_handoff_preserves_report_and_grant_boundaries(
@@ -227,21 +229,54 @@ async def test_executor_and_reviewer_handoff_preserves_report_and_grant_boundari
                 assert working['rejections'] == completed['rejections']
                 async with factory() as observer:
                     assert (await observer.get(Card, 'task')).current_rejection_id is None
-                payload(await executor_client.call_tool('okto_pulse_move_card', {
-                    'board_id': adopted.BOARD, 'card_id': 'task', 'status': 'validation',
-                    'conclusion': 'Rework report explicitly addresses the prior review',
-                    'completeness': 100, 'completeness_justification': 'Selected implementation is complete',
-                    'drift': 0, 'drift_justification': 'Scope remains unchanged',
-                    'delivery_selection': {
+                # DEI-T42: a new accepted source execution supersedes the old
+                # proof after authorized rework. Source attestation is fixture
+                # input; MCP authorizes the new report and independent review.
+                async with factory() as source_writer:
+                    await advance_source(source_writer)
+                stale_report = adopted.request('complete')
+                stale_report = stale_report.model_copy(update={
+                    'batch': stale_report.batch.model_copy(update={
                         'expected_card_version': working['version'],
-                        'expected_spec_edition': command.batch.expected_spec_edition,
                         'expected_delivery_revision': accepted['delivery_revision'],
-                        'record_ids': [record_id],
-                    },
-                }, raise_on_error=False))
+                        'idempotency_key': 'rework-report',
+                    }),
+                    'report': stale_report.report.model_copy(update={
+                        'status': 'validation',
+                        'conclusion': 'Rework uses a new accepted source revision',
+                    }),
+                })
+                def report_arguments(report):
+                    return {**arguments, 'evidence': report.model_dump(
+                        mode='json', exclude_none=True,
+                        exclude={'board_id', 'card_id', 'spec_id'})}
+                refused = await executor_client.call_tool(
+                    'okto_pulse_record_delivery_evidence',
+                    report_arguments(stale_report), raise_on_error=False)
+                assert refused.is_error, refused.content
+                assert 'accepted_committed' in str(refused), refused.content
+                assert await snapshot(factory) == working
+                new_report = stale_report.model_copy(update={
+                    'batch': stale_report.batch.model_copy(update={
+                        'entries': [stale_report.batch.entries[0].model_copy(
+                            update={'execution_id': 'execution-2'})],
+                    }),
+                })
+                reworked = payload(await executor_client.call_tool(
+                    'okto_pulse_record_delivery_evidence',
+                    report_arguments(new_report), raise_on_error=False))
+                new_record_id = reworked['entries'][0]['id']
+                assert new_record_id != record_id
             next_review = await snapshot(factory)
             assert next_review['status'] == 'validation'
-            assert next_review['records'] == completed['records']
+            assert next_review['records'][record_id] == completed['records'][record_id]
+            assert set(next_review['records']) == {*completed['records'], new_record_id}
+            assert next_review['records'][new_record_id]['actor_id'] == 'executor'
+            assert next_review['conclusions'][-1]['delivery_manifest']['records'][0]['id'] == new_record_id
+            assert reworked['delivery_revision'] > accepted['delivery_revision']
+            # Rework changes delivery facts, not the Card's semantic content.
+            assert next_review['version'] == completed['version']
+            assert next_review['validations'] == completed['validations']
             assert next_review['conclusions'][:len(completed['conclusions'])] == completed['conclusions']
             identity = 'reviewer'
             async with Client(host) as reviewer_client:
@@ -256,6 +291,6 @@ async def test_executor_and_reviewer_handoff_preserves_report_and_grant_boundari
             assert final['validations'][1]['reviewer_id'] == 'reviewer'
             assert final['validations'][1]['recommendation'] == 'approve'
             assert final['rejections'] == completed['rejections']
-            assert final['records'] == completed['records']
+            assert final['records'] == next_review['records']
     finally:
         await seed.close()
