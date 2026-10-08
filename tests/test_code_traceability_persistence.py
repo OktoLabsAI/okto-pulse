@@ -23,7 +23,7 @@ from okto_pulse.community.adapters.board_source_reader import (
     CommunityBoardSourceReader,
     read_realm_source_snapshot,
 )
-from okto_pulse.community.adapters.graph_ddl import COMMON_NODE_ATTRIBUTES
+from okto_pulse.community.adapters.graph_ddl import COMMON_NODE_COLUMNS
 from okto_pulse.community.adapters.current_schema_guards import (
     code_traceability_sqlite_trigger_manifest,
 )
@@ -100,7 +100,7 @@ def test_source_census_is_exact_and_every_manifest_is_closed() -> None:
 
 def test_graph_ddl_declares_only_contract_owned_traceability_columns() -> None:
     for column_name, column_type in CODE_TRACEABILITY_COLUMNS:
-        assert f"{column_name} {column_type}" in COMMON_NODE_ATTRIBUTES
+        assert (column_name, column_type) in COMMON_NODE_COLUMNS
 
 
 def test_open_request_admission_is_atomic_for_quota_and_replay(
