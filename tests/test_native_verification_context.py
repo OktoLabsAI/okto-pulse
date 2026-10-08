@@ -149,11 +149,17 @@ async def compare_transports(db, monkeypatch, plan, delivery, tmp_path):
     flags = who.permissions.flags
     set_permission_flag(flags, "code_traceability.evidence.read", True)
     set_permission_flag(flags, "board.read", True)
+    if os.environ.get("PULSE_NATIVE_BROWSER_TEST") == "1":
+        set_permission_flag(flags, "spec.tests.execute", True)
+        set_permission_flag(flags, "spec.tests.update_status", True)
     who = ActorContext("author", "rest", actor_kind="human", board_id="board", realm_id="local", permissions=PermissionSet(flags))
     from okto_pulse.core.application.use_cases.authorization import decide_authorization
     from okto_pulse.core.application.use_cases.authorization import PermissionRequirement
     decision = decide_authorization(who, PermissionRequirement("code_traceability.evidence.read"), permissions=who.permissions)
     assert decision.allowed, decision.reason
+    if os.environ.get("PULSE_NATIVE_BROWSER_TEST") == "1":
+        write_decision = decide_authorization(who, PermissionRequirement("spec.tests.execute"), permissions=who.permissions)
+        assert write_decision.allowed, write_decision.reason
     app, factory = transports.application(db)
     app.include_router(api.router)
     app.dependency_overrides[api.require_principal] = lambda: Principal(subject="author", realm_id="local")
@@ -204,6 +210,24 @@ async def compare_transports(db, monkeypatch, plan, delivery, tmp_path):
                 assert not resume["actions"]["record_progress"]
     if os.environ.get("PULSE_NATIVE_BROWSER_TEST") == "1":
         await verify_native_browser(app, tmp_path)
+        recorded = json.loads((tmp_path / "browser-write.json").read_text(encoding="utf-8"))
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as rest, Client(host) as mcp:
+            replay = await rest.post(recorded["path"], json=recorded["payload"])
+            assert replay.status_code == 200, replay.text
+            assert replay.json() == {**recorded["response"], "replayed": True}
+            response = await rest.get("/boards/board/specs/spec/delivery-evidence")
+            result = await mcp.call_tool("okto_pulse_get_delivery_evidence", {"board_id": "board", "spec_id": "spec"})
+            current = response.json()
+            assert current == json.loads(result.content[0].text)["data"]
+            assert not current["allowed"]
+            assert any(row["id"] == recorded["response"]["id"] for row in current["tests"])
+        from okto_pulse.community.adapters.sqlalchemy_models import CardDeliveryEvidenceRecordRow
+        async with factory() as verified:
+            saved = await verified.get(CardDeliveryEvidenceRecordRow, recorded["response"]["id"])
+            assert (saved.actor_id, saved.actor_kind, saved.kind, saved.card_id) == ("author", "human", "test", "test-card")
+            records = list(await verified.scalars(select(CardDeliveryEvidenceRecordRow)))
+            assert len(records) == 4  # checkpoint, implementation, original test, browser association
+
     return resume
 
 
@@ -303,7 +327,8 @@ async def verify_native_browser(app, tmp_path):
                 raise AssertionError("Disposable REST listener exited before startup")
             await asyncio.sleep(0.05)
         assert server.started
-        env = dict(os.environ, CI="1", PULSE_NATIVE_DELIVERY_BACKEND=f"http://127.0.0.1:{port}")
+        env = dict(os.environ, CI="1", PULSE_NATIVE_DELIVERY_BACKEND=f"http://127.0.0.1:{port}",
+                   PULSE_NATIVE_BROWSER_RESULT=str(tmp_path / "browser-write.json"))
         process = await asyncio.create_subprocess_exec(
             "node", "node_modules/@playwright/test/cli.js", "test",
             "--config=playwright.architecture.config.ts", "delivery-evidence.spec.ts",
