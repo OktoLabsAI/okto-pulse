@@ -64,6 +64,39 @@ async def patch_requirement(client, db, kind, identity, payload):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('qualification', [None, {'mode': 'none'}, {'mode': 'explicit', 'required_profiles': []}])
+async def test_active_operational_obligation_cannot_be_dispensed_by_qualification_edit(adopted_context, tmp_path, qualification):
+    """AC-VER-17: even the author cannot waive an active OR through metadata."""
+    from okto_pulse.core.domain.realm import RealmScope
+
+    db = adopted_context
+    db.info['realm_scope'] = RealmScope.local()
+    app, _, _ = await four_profiles(db, tmp_path)
+    await db.execute(update(Spec).where(Spec.id == 'spec').values(status='in_progress'))
+    await db.commit()
+    before = await start.classification.snapshot(db)
+    spec = await db.get(Spec, 'spec', populate_existing=True)
+    version = spec.version
+    obligation = deepcopy(spec.observability_requirements)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+        refused = await client.patch('/api/v1/specs/spec/structured-entities/observability_requirement/or', json={
+            'expected_spec_version': version, 'payload': {'verification': qualification}})
+        assert refused.status_code in {409, 422}, refused.text
+        if qualification is None:
+            assert 'draft' in refused.text.lower(), refused.text
+        assert await start.classification.snapshot(db) == before
+        diagnostic = await client.get('/api/v1/boards/board/specs/spec/requirement-verification')
+        assert diagnostic.status_code == 200, diagnostic.text
+        observed = next(row for row in diagnostic.json()['items'] if row['requirement_id'] == 'or')
+        assert observed['verification']['required_profiles'] == ['operational']
+        assert observed['qualification_resolved']
+        assert diagnostic.json()['delivery_evaluated'] is False
+    spec = await db.get(Spec, 'spec', populate_existing=True)
+    assert spec.status == 'in_progress' and spec.version == version
+    assert spec.observability_requirements == obligation
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('disposition', ['not_applicable', 'revoked'])
 async def test_read_only_user_cannot_dispense_active_ir_or_replace_its_cause(adopted_context, tmp_path, disposition):
     """ADV-09: actual Board sharing never turns read access into a waiver."""
