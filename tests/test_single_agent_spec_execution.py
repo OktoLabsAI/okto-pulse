@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 import pytest
 from fastmcp import Client
-from sqlalchemy import insert, select
+from sqlalchemy import insert, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from okto_pulse.community.adapters.mcp_auth import make_community_mcp_authenticator
@@ -40,14 +40,14 @@ async def seed_external_implementation(db):
     from test_code_traceability_persistence import _attestation_bundle
     from okto_pulse.community.adapters.sqlalchemy_code_traceability import _receipt_row, _request_row
     from okto_pulse.community.adapters.sqlalchemy_models import (
-        CodeInvestigationRequestRow, CodeInvestigationReceiptRow,
+        CodeInvestigationRequestRow, CodeInvestigationReceiptRow, CodeInvestigationHeadRow,
         ImplementationTargetRow, ImplementationTargetExecutionRecordRow,
     )
     from okto_pulse.core.domain.code_traceability import code_investigation_observation_sha256_v2
     now = datetime.now(timezone.utc)
-    _, consumed, receipt, _, workspace = _attestation_bundle(now, subject_id='task')
+    issued, consumed, receipt, _, workspace = _attestation_bundle(now, subject_id='task')
     workspace = replace(workspace, declared_revision='a' * 40)
-    request = replace(consumed, board_id='board')
+    request = replace(issued, board_id='board')
     observation = code_investigation_observation_sha256_v2(source_ref=receipt.source_ref,
         selector_scope_digest=receipt.selector_scope_digest, delivery_context=receipt.delivery_context, outcome=receipt.contextual_outcome,
         capabilities=receipt.capabilities, source_identity_digest=receipt.source_identity_digest,
@@ -56,6 +56,14 @@ async def seed_external_implementation(db):
         workspace_state=workspace, observation_sha256=observation)
     await db.execute(insert(CodeInvestigationRequestRow).values(**_request_row(request)))
     await db.execute(insert(CodeInvestigationReceiptRow).values(**_receipt_row(receipt)))
+    # Native trigger requires an open request before admitting its receipt.
+    await db.execute(update(CodeInvestigationRequestRow).where(
+        CodeInvestigationRequestRow.id == request.id).values(
+            status=consumed.status.value, consumed_at=consumed.consumed_at))
+    await db.execute(insert(CodeInvestigationHeadRow).values(
+        board_id='board', source_ref=receipt.source_ref, generation=1,
+        latest_receipt_id=receipt.id, current_receipt_id=receipt.id,
+        state='current', revision=1, updated_at=now))
     spec = await db.get(Spec, 'spec')
     db.add(ImplementationTargetRow(id='target', board_id='board', card_id='task',
         source_ref=receipt.source_ref, selector_kind='file', relative_path_hint='src/file.py',
@@ -109,7 +117,8 @@ async def read_execution_resources(client, *, reviewer=False, card_review=False)
 @pytest.mark.parametrize('separate_review', [False, True], ids=['broad-agent', 'separate-reviewer'])
 @pytest.mark.parametrize('late_requirement_link', [False, True])
 async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(
-    adopted_context, tmp_path, monkeypatch, late_requirement_link, separate_review
+    adopted_context, tmp_path, monkeypatch, late_requirement_link, separate_review,
+    classification_batch_size=None,
 ):
     db = adopted_context
     await complete_start_fixture(db, tmp_path)
@@ -236,6 +245,9 @@ async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(
     scope = {'board_id': 'board', 'spec_id': 'spec'}
     async with Client(host) as client:
         await read_execution_resources(client)
+        if classification_batch_size is not None:
+            from test_native_continuous_cost import classify_execution_context
+            await classify_execution_context(client, scope, classification_batch_size)
         resolved = await server._get_agent_ctx('board')
         assert resolved.agent_id == 'solo'
         assert not resolved.permissions.owner_review_required
@@ -420,3 +432,28 @@ async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(
         assert current.validations[-1]['receipt_id'] == current.current_validation_id
         assert all(receipt.created_by == 'solo' and receipt.subject_edition == current.edition for receipt in receipts)
         assert any(receipt.id == lint['result_id'] for receipt in receipts)
+
+        if classification_batch_size is not None:
+            from okto_pulse.community.adapters.sqlalchemy_models import ArchitectureCandidateDecisionRow
+            decisions = list(await reader.scalars(select(ArchitectureCandidateDecisionRow).where(
+                ArchitectureCandidateDecisionRow.spec_id == 'spec')))
+            assert len(decisions) == 26
+            semantic = sorted([{
+                key: row.payload[key] for key in ('interface_id', 'source_contract_json',
+                    'actor_id', 'disposition', 'integration_requirement_ids', 'reason')
+            } for row in decisions], key=lambda row: row['interface_id'])
+            assert all(row['actor_id'] == 'solo' and row['disposition'] == 'context_only'
+                       and row['integration_requirement_ids'] == [] for row in semantic)
+            (tmp_path / 'continuous-outcome.json').write_text(json.dumps({
+                'batch_size': classification_batch_size, 'separate_review': separate_review,
+                'spec_status': current.status, 'task_status': task.status, 'test_status': test.status,
+                'record_kinds': sorted(record.kind for record in records),
+                'record_actors': sorted(record.actor_id for record in records),
+                'validation_reviewer': current.validations[-1]['reviewer_id'],
+                'evaluation_reviewer': current.evaluations[-1]['evaluator_id'],
+                'task_reviewer': task.validations[-1]['reviewer_id'],
+                'semantic_decisions': semantic,
+                'shared_proof_refs': sorted(row['obligation']['binding']['obligation_ref'] for row in shared),
+                'premature_done_refused': 'delivery_test_result_missing' in str(refused),
+                'association_replay_preserved': replayed['replayed'],
+            }, indent=2), encoding='utf-8')
