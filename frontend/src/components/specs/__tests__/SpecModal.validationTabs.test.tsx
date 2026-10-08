@@ -241,7 +241,28 @@ function blockedPolicyDecision() {
   };
 }
 
+async function openCriteria() {
+  fireEvent.click(await screen.findByRole('tab', { name: 'Tests & Verifications' }));
+  fireEvent.click(screen.getByRole('tab', { name: 'Criterion verification' }));
+}
+
 describe('SpecModal validation navigation', () => {
+  it('groups requirement and verification editors without duplicating the old top-level tabs', async () => {
+    renderSpec('draft');
+    await screen.findByText(baseSpec.title);
+    const mainTabs = within(screen.getByRole('tablist', { name: 'Spec sections' }));
+    expect(mainTabs.queryByRole('tab', { name: 'Rules' })).not.toBeInTheDocument();
+    expect(mainTabs.queryByRole('tab', { name: 'Tests' })).not.toBeInTheDocument();
+    fireEvent.click(mainTabs.getByRole('tab', { name: 'Requirements & Decisions' }));
+    const requirements = within(screen.getByRole('tablist', { name: 'Requirements and decisions sections' }));
+    expect(requirements.getAllByRole('tab').map(tab => tab.textContent)).toEqual([
+      'Functional', 'Business', 'Integration', 'Observability', 'Contracts', 'Decisions',
+    ]);
+    expect(screen.getByText('Functional Requirements')).toBeInTheDocument();
+    await openCriteria();
+    expect(screen.getByRole('region', { name: 'Criterion verification' })).toBeInTheDocument();
+    expect(screen.queryByText('Functional Requirements')).not.toBeInTheDocument();
+  });
   it.each(['draft', 'review', 'approved', 'validated', 'in_progress', 'done'] as SpecStatus[])(
     'allows requirement qualification authoring only in an unarchived authorized Draft: %s', async status => {
       apiMock.getRequirementVerification.mockResolvedValue({
@@ -253,6 +274,7 @@ describe('SpecModal validation navigation', () => {
           verification: null, default_proposal: null, criteria_paths: [], blockers: [] }],
       });
       renderSpec(status);
+      await openCriteria();
       fireEvent.click(await screen.findByRole('button', { name: 'Review requirement qualification' }));
       await screen.findByText(/Block access · fr-plan/);
       expect(Boolean(screen.queryByRole('button', { name: 'Edit qualification fr-plan' }))).toBe(status === 'draft');
@@ -272,6 +294,7 @@ describe('SpecModal validation navigation', () => {
           verification: null, default_proposal: null, criteria_paths: [], blockers: [] }],
       });
       render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+      await openCriteria();
       fireEvent.click(await screen.findByRole('button', { name: 'Review requirement qualification' }));
       await screen.findByText(/Block access · fr-plan/);
       expect(screen.queryByRole('button', { name: 'Edit qualification fr-plan' })).not.toBeInTheDocument();
@@ -284,7 +307,8 @@ describe('SpecModal validation navigation', () => {
     });
     apiMock.updateSpecEntity.mockResolvedValue({ success: true, spec_version: 5 });
     render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit verification ac-plan' }));
+    await openCriteria();
+      fireEvent.click(await screen.findByRole('button', { name: 'Edit verification ac-plan' }));
     fireEvent.change(screen.getByLabelText('Verification profile'), { target: { value: 'functional' } });
     fireEvent.change(screen.getByLabelText('Requirement to link'), { target: { value: JSON.stringify(['functional_requirement', 'fr-plan']) } });
     fireEvent.click(screen.getByRole('button', { name: 'Add link' }));
@@ -300,7 +324,8 @@ describe('SpecModal validation navigation', () => {
       acceptance_criteria: [{ id: 'ac-plan', text: 'Five attempts block access' }],
     });
     render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
-    await screen.findByRole('region', { name: 'Criterion verification' });
+    await openCriteria();
+      await screen.findByRole('region', { name: 'Criterion verification' });
     expect(screen.queryByRole('button', { name: 'Edit verification ac-plan' })).not.toBeInTheDocument();
   });
 
@@ -310,6 +335,7 @@ describe('SpecModal validation navigation', () => {
       permissionMock.allowed = new Set(['spec.entity.read', 'spec.structured_entity.acceptance_criterion.update', 'spec.interact_in.draft'].filter(flag => flag !== missing));
       apiMock.getSpec.mockResolvedValue({ ...baseSpec, acceptance_criteria: [{ id: 'ac-plan', text: 'Condition' }] });
       render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+      await openCriteria();
       await screen.findByRole('region', { name: 'Criterion verification' });
       expect(screen.queryByRole('button', { name: 'Edit verification ac-plan' })).not.toBeInTheDocument();
     },
@@ -318,7 +344,8 @@ describe('SpecModal validation navigation', () => {
   it('keeps archived Draft criterion qualification read-only', async () => {
     apiMock.getSpec.mockResolvedValue({ ...baseSpec, archived: true, acceptance_criteria: [{ id: 'ac-plan', text: 'Condition' }] });
     render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
-    await screen.findByRole('region', { name: 'Criterion verification' });
+    await openCriteria();
+      await screen.findByRole('region', { name: 'Criterion verification' });
     expect(screen.queryByRole('button', { name: 'Edit verification ac-plan' })).not.toBeInTheDocument();
   });
 
@@ -384,20 +411,15 @@ describe('SpecModal validation navigation', () => {
     });
   });
 
-  it('loads architecture candidates only when the user opens the IRs tab', async () => {
+  it('loads one candidate classification population only when Integration opens', async () => {
+    apiMock.getArchitectureClassifications.mockRejectedValue(new Error('Isolated transport error'));
     renderSpec('draft');
     await screen.findByText(baseSpec.title);
-    expect(apiMock.getArchitectureCandidates).not.toHaveBeenCalled();
     expect(apiMock.getArchitectureClassifications).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('tab', { name: 'IRs' }));
-    await screen.findByText('No declared contracts in the effective architecture.');
-    expect(apiMock.getArchitectureCandidates).toHaveBeenCalledExactlyOnceWith(
-      baseSpec.board_id, baseSpec.id, expect.any(AbortSignal), { offset: 0, limit: 25 },
-    );
-    expect(apiMock.getArchitectureClassifications).not.toHaveBeenCalled();
-    apiMock.getArchitectureClassifications.mockRejectedValue(new Error('Isolated transport error'));
-    fireEvent.click(screen.getByRole('button', { name: 'Review classifications' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Requirements & Decisions' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Integration' }));
     await screen.findByText('Classification review could not be loaded. Its completeness is unknown.');
+    expect(apiMock.getArchitectureCandidates).not.toHaveBeenCalled();
     expect(apiMock.getArchitectureClassifications).toHaveBeenCalledExactlyOnceWith(
       baseSpec.board_id, baseSpec.id, expect.any(AbortSignal), { offset: 0, limit: 25 },
     );
@@ -430,8 +452,8 @@ describe('SpecModal validation navigation', () => {
     'keeps classification authoring unavailable in %s while retaining review', async status => {
       renderSpec(status);
       await screen.findByText(baseSpec.title);
-      fireEvent.click(screen.getByRole('tab', { name: 'IRs' }));
-      fireEvent.click(screen.getByRole('button', { name: 'Review classifications' }));
+      fireEvent.click(screen.getByRole('tab', { name: 'Requirements & Decisions' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Integration' }));
       expect(screen.getByText(/Classification authoring requires an unarchived Draft Spec/)).toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'Save queued classifications' })).not.toBeInTheDocument();
     },
@@ -443,8 +465,8 @@ describe('SpecModal validation navigation', () => {
       permissionMock.allowed = new Set(['spec.entity.read', 'spec.architecture.read', 'spec.integration_requirements.read', 'spec.entity.edit_fields', 'spec.interact_in.draft'].filter(flag => flag !== missing));
       renderSpec('draft');
       await screen.findByText(baseSpec.title);
-      fireEvent.click(screen.getByRole('tab', { name: 'IRs' }));
-      fireEvent.click(screen.getByRole('button', { name: 'Review classifications' }));
+      fireEvent.click(screen.getByRole('tab', { name: 'Requirements & Decisions' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Integration' }));
       expect(screen.queryByRole('button', { name: 'Save queued classifications' })).not.toBeInTheDocument();
       expect(screen.getByText(/Classification authoring requires an unarchived Draft Spec/)).toBeInTheDocument();
     },
@@ -458,12 +480,13 @@ describe('SpecModal validation navigation', () => {
       ].filter(permission => permission !== missing));
       renderSpec('draft');
       await screen.findByText(baseSpec.title);
-      const irTab = screen.queryByRole('tab', { name: 'IRs' });
+      fireEvent.click(screen.getByRole('tab', { name: 'Requirements & Decisions' }));
+      const irTab = screen.queryByRole('tab', { name: 'Integration' });
       if (missing === 'spec.integration_requirements.read') {
         expect(irTab).not.toBeInTheDocument();
       } else {
         fireEvent.click(irTab!);
-        expect(screen.getByText('Architecture read permission is required.')).toBeInTheDocument();
+        expect(screen.getByText('Spec, architecture and IR read permissions are required.')).toBeInTheDocument();
       }
       expect(apiMock.getArchitectureCandidates).not.toHaveBeenCalled();
       expect(apiMock.getArchitectureClassifications).not.toHaveBeenCalled();

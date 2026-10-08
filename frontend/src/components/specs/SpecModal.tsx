@@ -102,7 +102,6 @@ import { ContractsTab } from './ContractsTab';
 import { TechnicalRequirementsTab } from './TechnicalRequirementsTab';
 import { DecisionsTab } from './DecisionsTab';
 import { IntegrationRequirementsTab } from './IntegrationRequirementsTab';
-import { ArchitectureCandidatesPanel } from './ArchitectureCandidatesPanel';
 import { ArchitectureClassificationsPanel } from './ArchitectureClassificationsPanel';
 import { ObservabilityRequirementsTab } from './ObservabilityRequirementsTab';
 import { KGValidationTab } from './KGValidationTab';
@@ -170,6 +169,10 @@ interface SpecModalProps {
 
 type ModalTab =
   | 'details'
+  | 'frs'
+  | 'criterion-verification'
+  | 'requirements'
+  | 'tests-verifications'
   | 'evidence-matrix'
   | 'coverage'
   | 'project-structure'
@@ -429,87 +432,6 @@ function EditableRequirementsList({
       )}
     </div>
   );
-}
-
-function newRequirementId(prefix: 'ir' | 'or'): string {
-  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-}
-
-function requirementDisplayText(item: { title?: string; description?: string }): string {
-  return (item.title || item.description || '').trim();
-}
-
-function reconcileIntegrationRequirements(
-  current: IntegrationRequirement[] | null,
-  items: string[],
-): IntegrationRequirement[] {
-  const existing = current || [];
-  const active = existing.filter((item) => item.status === 'active');
-  const inactive = existing.filter((item) => item.status !== 'active');
-  const byText = new Map(active.map((item) => [requirementDisplayText(item), item]));
-
-  return [
-    ...inactive,
-    ...items.map((text) => {
-      const trimmed = text.trim();
-      const prior = byText.get(trimmed);
-      if (prior) return prior;
-      const next: IntegrationRequirement = {
-        id: newRequirementId('ir'),
-        title: trimmed,
-        integration_type: 'other',
-        description: trimmed,
-        provider: null,
-        consumer: null,
-        contract_ref: null,
-        endpoint: null,
-        method: null,
-        data_contract: null,
-        linked_requirements: null,
-        linked_api_contracts: null,
-        linked_task_ids: null,
-        status: 'active',
-        notes: null,
-      };
-      return next;
-    }),
-  ];
-}
-
-function reconcileObservabilityRequirements(
-  current: ObservabilityRequirement[] | null,
-  items: string[],
-): ObservabilityRequirement[] {
-  const existing = current || [];
-  const active = existing.filter((item) => item.status === 'active');
-  const inactive = existing.filter((item) => item.status !== 'active');
-  const byText = new Map(active.map((item) => [requirementDisplayText(item), item]));
-
-  return [
-    ...inactive,
-    ...items.map((text) => {
-      const trimmed = text.trim();
-      const prior = byText.get(trimmed);
-      if (prior) return prior;
-      const next: ObservabilityRequirement = {
-        id: newRequirementId('or'),
-        title: trimmed,
-        signal_type: 'other',
-        description: trimmed,
-        target: null,
-        metric_name: null,
-        threshold: null,
-        severity: null,
-        owner: null,
-        linked_requirements: null,
-        linked_integration_requirements: null,
-        linked_task_ids: null,
-        status: 'active',
-        notes: null,
-      };
-      return next;
-    }),
-  ];
 }
 
 type StructuredObjectEntity =
@@ -2322,8 +2244,10 @@ export function SpecModal({
         count: spec.project_structure?.filter((node) => node.status === 'active').length || undefined,
       }]
       : []),
+    { id: 'frs', label: 'Functional', icon: <Circle size={14} />, count: spec.functional_requirements?.length || 0 },
+    { id: 'criterion-verification', label: 'Criterion verification', icon: <Target size={14} /> },
     { id: 'tests', label: 'Tests', icon: <FlaskConical size={14} />, count: spec.test_scenarios?.length || 0 },
-    { id: 'rules', label: 'Rules', icon: <Scale size={14} />, count: spec.business_rules?.length || 0 },
+    { id: 'rules', label: 'Business', icon: <Scale size={14} />, count: spec.business_rules?.length || 0 },
     ...(canReadDependencies
       ? [{
         id: 'dependencies' as ModalTab,
@@ -2334,8 +2258,8 @@ export function SpecModal({
       }]
       : []),
     { id: 'contracts', label: 'Contracts', icon: <FileCode size={14} />, count: spec.api_contracts?.length || 0 },
-    { id: 'irs', label: 'IRs', icon: <Network size={14} />, count: spec.integration_requirements?.length || 0, permission: 'spec.integration_requirements.read' },
-    { id: 'ors', label: 'ORs', icon: <Gauge size={14} />, count: spec.observability_requirements?.length || 0, permission: 'spec.observability_requirements.read' },
+    { id: 'irs', label: 'Integration', icon: <Network size={14} />, count: spec.integration_requirements?.length || 0, permission: 'spec.integration_requirements.read' },
+    { id: 'ors', label: 'Observability', icon: <Gauge size={14} />, count: spec.observability_requirements?.length || 0, permission: 'spec.observability_requirements.read' },
     { id: 'trs', label: 'TRs', icon: <Settings size={14} />, count: spec.technical_requirements?.length || 0 },
     { id: 'decisions', label: 'Decisions', icon: <GitBranch size={14} />, count: spec.decisions?.length || 0 },
     { id: 'resources', label: 'Resources', icon: <BookOpen size={14} /> },
@@ -2348,6 +2272,18 @@ export function SpecModal({
     { id: 'activity', label: 'Activity', icon: <History size={14} /> },
   ];
   const tabs = allTabs.filter((tab) => !tab.permission || perms.has(tab.permission));
+  const requirementSections: ModalTab[] = ['frs', 'rules', 'irs', 'ors', 'contracts', 'decisions'];
+  const verificationSections: ModalTab[] = ['tests', 'criterion-verification'];
+  const requirementTabs = requirementSections.flatMap(id => tabs.filter(tab => tab.id === id));
+  const verificationTabs = verificationSections.flatMap(id => tabs.filter(tab => tab.id === id));
+  const primaryTab: ModalTab = requirementSections.includes(activeTab) ? 'requirements'
+    : verificationSections.includes(activeTab) ? 'tests-verifications' : activeTab;
+  const primaryTabs = tabs.filter(tab => !requirementSections.includes(tab.id) && !verificationSections.includes(tab.id));
+  primaryTabs.splice(1, 0,
+    { id: 'requirements', label: 'Requirements & Decisions', icon: <FileText size={14} /> },
+    { id: 'tests-verifications', label: 'Tests & Verifications', icon: <FlaskConical size={14} /> });
+  const subTabs = primaryTab === 'requirements' ? requirementTabs : primaryTab === 'tests-verifications' ? verificationTabs : [];
+
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
@@ -2482,15 +2418,16 @@ export function SpecModal({
           <AccessibleTabList
             idBase={`spec-${specId}`}
             ariaLabel="Spec sections"
-            items={tabs.map((tab) => ({
+            items={primaryTabs.map((tab) => ({
               id: tab.id,
               label: tab.label,
               icon: tab.icon,
               count: tab.count,
               attention: tab.highlight,
             }))}
-            value={activeTab}
-            onValueChange={setActiveTab}
+            value={primaryTab}
+            onValueChange={id => setActiveTab(id === 'requirements' ? requirementTabs[0].id
+              : id === 'tests-verifications' ? verificationTabs[0].id : id)}
             className="px-6 pt-3 scrollbar-hide"
           />
         </div>
@@ -2500,10 +2437,15 @@ export function SpecModal({
           <MissingLinkNotice context={spec.missing_link_context} />
           <AccessibleTabPanel
             idBase={`spec-${specId}`}
-            tabId={activeTab}
-            value={activeTab}
+            tabId={primaryTab}
+            value={primaryTab}
             className="outline-none"
           >
+          {subTabs.length > 0 && <AccessibleTabList idBase={`spec-${specId}-${primaryTab}`}
+            ariaLabel={primaryTab === 'requirements' ? 'Requirements and decisions sections' : 'Tests and verifications sections'}
+            items={subTabs} value={activeTab} onValueChange={setActiveTab} variant="secondary" className="mb-4" />}
+          <AccessibleTabPanel idBase={subTabs.length ? `spec-${specId}-${primaryTab}` : `spec-${specId}-content`}
+            tabId={activeTab} value={activeTab} className="space-y-4">
           {activeTab === 'details' && (
             <div className="space-y-5">
               {spec.status === 'cancelled' && (
@@ -2542,94 +2484,6 @@ export function SpecModal({
                 />
               </div>
               <EditableRequirementsList
-                title="Functional Requirements"
-                icon={<Circle size={14} />}
-                items={((spec.functional_requirements || []) as unknown[])
-                  .map(normalizeTextEntity)
-                  .filter((item) => item.status === 'active')
-                  .map((item) => item.text)}
-                placeholder="Add a functional requirement..."
-                canAdd={canStructured('functional_requirement', 'create')}
-                canEdit={canStructured('functional_requirement', 'update')}
-                canRemove={canStructured('functional_requirement', 'revoke')}
-                onEditItem={async (index, text) => {
-                  await updateTextEntityAtIndex('functional_requirement', spec.functional_requirements as unknown[] | null, index, text);
-                }}
-                onUpdate={async (items) => {
-                  await syncTextEntityList('functional_requirement', spec.functional_requirements as unknown[] | null, items);
-                }}
-              />
-              {canReadIR && (
-                <EditableRequirementsList
-                  title="Integration Requirements"
-                  icon={<Network size={14} />}
-                  items={(spec.integration_requirements || [])
-                    .filter((item) => item.status === 'active')
-                    .map(requirementDisplayText)
-                    .filter(Boolean)}
-                  placeholder="Add an integration requirement..."
-                  canAdd={canCreateIR}
-                  canEdit={canEditIR}
-                  canRemove={canDeleteIR}
-                  onAddItem={() => openDetailsStructuredEditor('irs', 'add')}
-                  onOpenItemEditor={(index) => {
-                    const item = (spec.integration_requirements || []).filter((entry) => entry.status === 'active')[index];
-                    if (item) openDetailsStructuredEditor('irs', 'edit', item.id);
-                  }}
-                  onEditItem={async (index, text) => {
-                    const item = (spec.integration_requirements || []).filter((entry) => entry.status === 'active')[index];
-                    await updateStructuredEntityAtIndex(
-                      'integration_requirement',
-                      spec.integration_requirements || [],
-                      index,
-                      { title: text, description: item?.description || text },
-                    );
-                  }}
-                  onUpdate={async (items) => {
-                    await syncStructuredCollection(
-                      'integration_requirements',
-                      spec.integration_requirements || [],
-                      reconcileIntegrationRequirements(spec.integration_requirements, items),
-                    );
-                  }}
-                />
-              )}
-              {canReadOR && (
-                <EditableRequirementsList
-                  title="Observability Requirements"
-                  icon={<Gauge size={14} />}
-                  items={(spec.observability_requirements || [])
-                    .filter((item) => item.status === 'active')
-                    .map(requirementDisplayText)
-                    .filter(Boolean)}
-                  placeholder="Add an observability requirement..."
-                  canAdd={canCreateOR}
-                  canEdit={canEditOR}
-                  canRemove={canDeleteOR}
-                  onAddItem={() => openDetailsStructuredEditor('ors', 'add')}
-                  onOpenItemEditor={(index) => {
-                    const item = (spec.observability_requirements || []).filter((entry) => entry.status === 'active')[index];
-                    if (item) openDetailsStructuredEditor('ors', 'edit', item.id);
-                  }}
-                  onEditItem={async (index, text) => {
-                    const item = (spec.observability_requirements || []).filter((entry) => entry.status === 'active')[index];
-                    await updateStructuredEntityAtIndex(
-                      'observability_requirement',
-                      spec.observability_requirements || [],
-                      index,
-                      { title: text, description: item?.description || text },
-                    );
-                  }}
-                  onUpdate={async (items) => {
-                    await syncStructuredCollection(
-                      'observability_requirements',
-                      spec.observability_requirements || [],
-                      reconcileObservabilityRequirements(spec.observability_requirements, items),
-                    );
-                  }}
-                />
-              )}
-              <EditableRequirementsList
                 title="Technical Requirements"
                 icon={<Settings size={14} />}
                 items={(spec.technical_requirements || [])
@@ -2660,6 +2514,56 @@ export function SpecModal({
                   await syncStructuredCollection('technical_requirements', existingTRs, nextTRs);
                 }}
               />
+
+              {spec.labels && spec.labels.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {spec.labels.map((label, i) => (
+                    <span key={i} className="text-xs px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300">{label}</span>
+                  ))}
+                </div>
+              )}
+
+              {/* Validation Gate Override */}
+              <ValidationGateOverride
+                title="Task Validation Gate"
+                description="Controls whether cards derived from this spec must pass Task Validation. These settings do not change the Spec Validation Gate."
+                requireValue={spec.require_task_validation ?? null}
+                minConfidence={spec.validation_min_confidence ?? null}
+                minCompleteness={spec.validation_min_completeness ?? null}
+                maxDrift={spec.validation_max_drift ?? null}
+                parentLabel="Board default"
+                onUpdate={async (patch) => {
+                  try {
+                    const updated = await api.updateSpec(specId, patch);
+                    setSpec(updated);
+                  } catch { toast.error('Failed to update validation gate'); }
+                }}
+              />
+
+            </div>
+          )}
+
+          {activeTab === 'frs' && <div className="space-y-5">
+              <EditableRequirementsList
+                title="Functional Requirements"
+                icon={<Circle size={14} />}
+                items={((spec.functional_requirements || []) as unknown[])
+                  .map(normalizeTextEntity)
+                  .filter((item) => item.status === 'active')
+                  .map((item) => item.text)}
+                placeholder="Add a functional requirement..."
+                canAdd={canStructured('functional_requirement', 'create')}
+                canEdit={canStructured('functional_requirement', 'update')}
+                canRemove={canStructured('functional_requirement', 'revoke')}
+                onEditItem={async (index, text) => {
+                  await updateTextEntityAtIndex('functional_requirement', spec.functional_requirements as unknown[] | null, index, text);
+                }}
+                onUpdate={async (items) => {
+                  await syncTextEntityList('functional_requirement', spec.functional_requirements as unknown[] | null, items);
+                }}
+              />
+          </div>}
+          {activeTab === 'criterion-verification' && <div className="space-y-5">
               <EditableRequirementsList
                 title="Acceptance Criteria"
                 icon={<Target size={14} />}
@@ -2700,86 +2604,7 @@ export function SpecModal({
                 criteria={(spec.acceptance_criteria || []) as unknown[]}
                 onSaved={async () => { await reloadSpecAfterStructuredEdit(); }}
               />
-              {/* Decisions — contextual choices, same bulleted pattern as FR/AC.
-                  Only active decisions show in the list; supersedence/revocation
-                  happens via MCP tools + KG. Text is mapped to Decision.title
-                  (and rationale mirrors it by default). */}
-              <EditableRequirementsList
-                title="Decisions"
-                icon={<Lightbulb size={14} />}
-                items={(spec.decisions || [])
-                  .filter((d) => d.status === 'active')
-                  .map((d) => d.title)}
-                placeholder="Add a decision (e.g. 'Use embedded graph storage over an external graph database')..."
-                canAdd={canStructured('decision', 'create')}
-                canEdit={canStructured('decision', 'update')}
-                canRemove={canStructured('decision', 'revoke')}
-                onAddItem={() => openDetailsStructuredEditor('decisions', 'add')}
-                onOpenItemEditor={(index) => {
-                  const item = (spec.decisions || []).filter((decision) => decision.status === 'active')[index];
-                  if (item) openDetailsStructuredEditor('decisions', 'edit', item.id);
-                }}
-                onEditItem={async (index, text) => {
-                  await updateStructuredEntityAtIndex('decision', spec.decisions || [], index, { title: text });
-                }}
-                onUpdate={async (items) => {
-                  const existing = spec.decisions || [];
-                  const byTitle = new Map(
-                    existing.filter((d) => d.status === 'active').map((d) => [d.title, d]),
-                  );
-                  const keptTitles = new Set(items);
-                  const next: Decision[] = existing
-                    .filter((d) => d.status !== 'active')
-                    .map((d) => ({ ...d }));
-                  for (const text of items) {
-                    const prior = byTitle.get(text);
-                    next.push(prior || {
-                      id: `dec_${Date.now().toString(16).slice(-8)}${Math.random().toString(16).slice(2, 4)}`,
-                      title: text,
-                      rationale: text,
-                      context: null,
-                      alternatives_considered: null,
-                      supersedes_decision_id: null,
-                      linked_requirements: null,
-                      linked_task_ids: null,
-                      status: 'active',
-                      notes: null,
-                    });
-                  }
-                  for (const [title, d] of byTitle) {
-                    if (!keptTitles.has(title)) next.push({ ...d, status: 'revoked' });
-                  }
-                  await syncStructuredCollection('decisions', existing, next);
-                }}
-              />
-              {spec.labels && spec.labels.length > 0 && (
-                <div className="flex flex-wrap gap-1">
-                  {spec.labels.map((label, i) => (
-                    <span key={i} className="text-xs px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300">{label}</span>
-                  ))}
-                </div>
-              )}
-
-              {/* Validation Gate Override */}
-              <ValidationGateOverride
-                title="Task Validation Gate"
-                description="Controls whether cards derived from this spec must pass Task Validation. These settings do not change the Spec Validation Gate."
-                requireValue={spec.require_task_validation ?? null}
-                minConfidence={spec.validation_min_confidence ?? null}
-                minCompleteness={spec.validation_min_completeness ?? null}
-                maxDrift={spec.validation_max_drift ?? null}
-                parentLabel="Board default"
-                onUpdate={async (patch) => {
-                  try {
-                    const updated = await api.updateSpec(specId, patch);
-                    setSpec(updated);
-                  } catch { toast.error('Failed to update validation gate'); }
-                }}
-              />
-
-            </div>
-          )}
-
+          </div>}
           {activeTab === 'evidence-matrix' && spec && canReadCodeTraceability && (
             <EvidenceMatrixPanel
               boardId={spec.board_id}
@@ -2969,28 +2794,6 @@ export function SpecModal({
           )}
           {activeTab === 'irs' && spec && canReadIR && (
             <>
-            <ArchitectureCandidatesPanel
-              boardId={spec.board_id}
-              specId={spec.id}
-              specVersion={spec.version}
-              canRead={perms.has('spec.architecture.read') && perms.has('spec.entity.read')}
-            />
-            <ArchitectureClassificationsPanel
-              boardId={spec.board_id}
-              specId={spec.id}
-              specVersion={spec.version}
-              canRead={canReadIR && perms.has('spec.architecture.read') && perms.has('spec.entity.read')}
-              authoring={{
-                canClassify: !spec.archived && spec.status === 'draft' && canReadIR
-                  && perms.has('spec.architecture.read') && perms.has('spec.entity.read')
-                  && hasPermissionWithState(perms.has, 'spec.entity.edit_fields', 'spec', spec.status),
-                canPromote: hasPermissionWithState(perms.has, 'spec.structured_entity.integration_requirement.create', 'spec', spec.status),
-                canAssociate: hasPermissionWithState(perms.has, 'spec.structured_entity.integration_requirement.update', 'spec', spec.status),
-                specEdition: spec.edition,
-                requirements: spec.integration_requirements || [],
-                onApplied: async () => { await reloadSpecAfterStructuredEdit(); },
-              }}
-            />
             <IntegrationRequirementsTab
               spec={spec}
               canCreate={canCreateIR}
@@ -3019,6 +2822,22 @@ export function SpecModal({
                 const updated = await api.unlinkTaskFromSpecItem(specId, 'integration_requirements', requirementId, cardId);
                 setSpec(updated);
               } : undefined}
+            />
+            <ArchitectureClassificationsPanel integrated
+              boardId={spec.board_id}
+              specId={spec.id}
+              specVersion={spec.version}
+              canRead={canReadIR && perms.has('spec.architecture.read') && perms.has('spec.entity.read')}
+              authoring={{
+                canClassify: !spec.archived && spec.status === 'draft' && canReadIR
+                  && perms.has('spec.architecture.read') && perms.has('spec.entity.read')
+                  && hasPermissionWithState(perms.has, 'spec.entity.edit_fields', 'spec', spec.status),
+                canPromote: hasPermissionWithState(perms.has, 'spec.structured_entity.integration_requirement.create', 'spec', spec.status),
+                canAssociate: hasPermissionWithState(perms.has, 'spec.structured_entity.integration_requirement.update', 'spec', spec.status),
+                specEdition: spec.edition,
+                requirements: spec.integration_requirements || [],
+                onApplied: async () => { await reloadSpecAfterStructuredEdit(); },
+              }}
             />
             </>
           )}
@@ -3385,6 +3204,7 @@ export function SpecModal({
               </AccessibleTabPanel>
             </div>
           )}
+          </AccessibleTabPanel>
           </AccessibleTabPanel>
         </div>
 

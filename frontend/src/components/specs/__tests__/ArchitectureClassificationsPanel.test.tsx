@@ -34,7 +34,7 @@ it('reads only on request and retains off-page pending counts without approval',
   render(<ArchitectureClassificationsPanel {...props} />);
   expect(api.getArchitectureClassifications).not.toHaveBeenCalled();
   open();
-  await screen.findByText('Orders · Current');
+  await screen.findByText('Orders');
   expect(within(screen.getByRole('list', { name: 'Global classification counts' })).getByText('Pending: 1')).toBeInTheDocument();
   expect(screen.getByText('Classification is incomplete across the adopted architecture.')).toBeInTheDocument();
   expect(screen.getByText(/does not approve requirements or authorize/)).toBeInTheDocument();
@@ -44,12 +44,12 @@ it('reads only on request and retains off-page pending counts without approval',
 it('paginates then resets the page when filtering while keeping global counts', async () => {
   api.getArchitectureClassifications.mockResolvedValue(result());
   render(<ArchitectureClassificationsPanel {...props} />); open();
-  await screen.findByText('Orders · Current');
+  await screen.findByText('Orders');
   fireEvent.click(screen.getByRole('button', { name: 'Next classifications' }));
-  await screen.findByText('Orders · Current');
+  await screen.findByText('Orders');
   expect(api.getArchitectureClassifications).toHaveBeenLastCalledWith('board', 'spec', expect.any(AbortSignal), { offset: 25, limit: 25 });
   fireEvent.change(screen.getByRole('combobox', { name: 'Classification state' }), { target: { value: 'pending' } });
-  await screen.findByText('Orders · Current');
+  await screen.findByText('Orders');
   expect(api.getArchitectureClassifications).toHaveBeenLastCalledWith('board', 'spec', expect.any(AbortSignal), { offset: 0, limit: 25, state: 'pending' });
   expect(screen.getByText('Current: 30')).toBeInTheDocument();
 });
@@ -93,12 +93,12 @@ it('requires all read permissions and fetches anew after access is restored', as
   expect(screen.getByText('Spec, architecture and IR read permissions are required.')).toBeInTheDocument();
   expect(api.getArchitectureClassifications).not.toHaveBeenCalled();
   rerender(<ArchitectureClassificationsPanel {...props} />); open();
-  await screen.findByText('Orders · Current');
+  await screen.findByText('Orders');
   rerender(<ArchitectureClassificationsPanel {...props} canRead={false} />);
-  expect(screen.queryByText('Orders · Current')).not.toBeInTheDocument();
+  expect(screen.queryByText('Orders')).not.toBeInTheDocument();
   api.getArchitectureClassifications.mockReturnValueOnce(new Promise(() => {}));
   rerender(<ArchitectureClassificationsPanel {...props} />);
-  expect(screen.queryByText('Orders · Current')).not.toBeInTheDocument();
+  expect(screen.queryByText('Orders')).not.toBeInTheDocument();
   expect(api.getArchitectureClassifications).toHaveBeenCalledTimes(2);
 });
 
@@ -140,9 +140,9 @@ it.each(['board', 'spec', 'edition', 'version', 'digest'])(
 it.each([403, 409, 500])('handles %i without leaking provider diagnostics', async status => {
   api.getArchitectureClassifications.mockResolvedValueOnce(result()).mockRejectedValueOnce(new AuthenticatedFetchError({ message: 'SECRET provider details', status }));
   render(<ArchitectureClassificationsPanel {...props} />); open();
-  await screen.findByText('Orders · Current');
+  await screen.findByText('Orders');
   fireEvent.click(screen.getByRole('button', { name: 'Refresh classifications' }));
   await screen.findByRole('alert');
-  expect(screen.queryByText('Orders · Current')).not.toBeInTheDocument();
+  expect(screen.queryByText('Orders')).not.toBeInTheDocument();
   expect(screen.queryByText(/SECRET/)).not.toBeInTheDocument();
 });

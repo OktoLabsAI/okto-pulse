@@ -3,6 +3,7 @@ import { useDashboardApi } from '@/services/api';
 import { AuthenticatedFetchError } from '@/lib/authFetch';
 import type { ArchitectureClassificationReviewItem, ArchitectureClassificationsResponse, ArchitectureReviewState } from '@/types/architecture-classifications';
 import { ArchitectureClassificationAuthoring, type ArchitectureAuthoringAuthority } from './ArchitectureClassificationAuthoring';
+import { ArchitectureContractContent } from './ArchitectureContractContent';
 
 const labels: Record<ArchitectureReviewState, string> = {
   pending: 'Pending', current: 'Current', review_required: 'Review required',
@@ -42,10 +43,10 @@ function ReviewDetails({ boardId, specId, specVersion, specEdition, item, childr
   }, [api, boardId, specId, specVersion, specEdition, item.candidate_id, digest]);
   const current = result?.digest === digest ? result : null;
   const variants = item.source_digests.length ? item.source_digests : item.analyzed_source_digest ? [item.analyzed_source_digest] : [];
-  return <article className="mt-2 rounded border border-gray-200 p-2 dark:border-gray-700">
-    {children}
-    <p className="text-sm font-medium">{item.name || item.interface_id} · {labels[item.state]}</p>
-    <p className="text-xs">Origin: {item.root_design_id} · Interface: {item.interface_id}</p>
+  return <article className="mt-3 space-y-3 rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800/30">
+    <div className="flex flex-wrap items-center justify-between gap-2"><h4 className="text-sm font-semibold">{item.name || item.interface_id}</h4>
+      <span className="rounded-full bg-blue-50 px-2 py-1 text-xs text-blue-700 dark:bg-blue-900/30 dark:text-blue-200">{labels[item.state]}</span></div>
+    <details className="text-xs text-gray-500"><summary className="cursor-pointer">Source references</summary><p className="mt-2 break-all">Origin: {item.root_design_id} · Interface: {item.interface_id}</p></details>
     {item.state === 'retired' && <p className="text-xs">The source left the current population. Existing IR obligations remain in scope.</p>}
     {item.state === 'unresolved' && <p className="text-xs">Resolve the source or history conflict before classifying this contract.</p>}
     {item.issues.includes('architecture_classification_ir_not_active_in_spec') && <p className="text-xs">A referenced IR is missing, inactive or ambiguous in this Spec.</p>}
@@ -71,19 +72,21 @@ function ReviewDetails({ boardId, specId, specVersion, specEdition, item, childr
         </div>)}
         {(['analyzed_contract', 'current_contract'] as const).map(key => current.detail![key] && <div key={key} className="mt-2">
           <p>{key === 'analyzed_contract' ? 'Analyzed contract' : 'Current contract'}</p>
-          <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-all">{JSON.stringify(current.detail![key], null, 2)}</pre>
+          <ArchitectureContractContent value={current.detail![key]} />
         </div>)}
       </>}
     </div>}
+    {children}
   </article>;
 }
 
-export function ArchitectureClassificationsPanel({ boardId, specId, specVersion, canRead, authoring }: {
+export function ArchitectureClassificationsPanel({ boardId, specId, specVersion, canRead, authoring, integrated = false }: {
   boardId: string; specId: string; specVersion: number; canRead: boolean;
   authoring?: ArchitectureAuthoringAuthority;
+  integrated?: boolean;
 }) {
   const api = useDashboardApi();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(integrated);
   const [refresh, setRefresh] = useState(0);
   const [filter, setFilter] = useState<ArchitectureReviewState | ''>('');
   const baseScope = JSON.stringify([boardId, specId, specVersion, canRead, open, refresh, filter]);
@@ -107,7 +110,8 @@ export function ArchitectureClassificationsPanel({ boardId, specId, specVersion,
   const current = result?.scope === scope ? result : null;
   const data = current?.data;
   return <section aria-label="Architecture classifications" className="mb-4 rounded border border-gray-200 p-3 dark:border-gray-700">
-    <h3 className="text-sm font-medium">Architecture classifications</h3>
+    <h3 className="text-sm font-semibold">{integrated ? 'Architecture candidates' : 'Architecture classifications'}</h3>
+    {integrated && <p className="mt-1 text-xs text-gray-500">Interface contracts from the adopted architecture. Create or reuse an integration requirement, or keep the interface as context. API Contracts are separate definitions.</p>}
     {!canRead ? <p className="mt-2 text-sm">Spec, architecture and IR read permissions are required.</p> : <>
       <button type="button" aria-expanded={open} className="mt-2 text-xs text-blue-600 dark:text-blue-400" onClick={() => { setOpen(!open); setRefresh(value => value + 1); }}>Review classifications</button>
       {open && <>
@@ -124,13 +128,19 @@ export function ArchitectureClassificationsPanel({ boardId, specId, specVersion,
           {data.classification_complete && <p>Current contracts are classified. Execution gates and semantic review still apply.</p>}
           <ul aria-label="Global classification counts" className="mt-2 text-xs">{Object.entries(labels).map(([value, label]) => <li key={value}>{label}: {data.state_counts[value as ArchitectureReviewState]}</li>)}</ul>
           {data.items.length === 0 && <p>No classifications in this page or filter.</p>}
-          {!authoring?.canClassify && data.items.map(item => <ReviewDetails key={`${scope}:${item.candidate_id}`} boardId={boardId} specId={specId} specVersion={data.spec_version} specEdition={data.spec_edition} item={item} />)}
+          {(!authoring?.canClassify || integrated) && data.items.map(item => <ReviewDetails key={`${scope}:${item.candidate_id}`} boardId={boardId} specId={specId} specVersion={data.spec_version} specEdition={data.spec_edition} item={item}>
+            {integrated && authoring?.canClassify && <ArchitectureClassificationAuthoring
+              key={`${specVersion}:${item.candidate_id}`} {...authoring} boardId={boardId} specId={specId} specVersion={specVersion}
+              inlineItem={item} items={[]} renderItem={() => null}
+              sourceReady={Boolean(data.source_complete && data.spec_version === specVersion && data.spec_edition === authoring.specEdition
+                && item.current_source_digest && item.source_variant_count === 1 && ['pending', 'current', 'review_required'].includes(item.state))} />}
+          </ReviewDetails>)}
           {(offset > 0 || data.has_more) && <nav aria-label="Classification pages" className="mt-2 flex gap-3 text-xs">
             <button type="button" disabled={offset === 0} onClick={() => setPage({ scope: baseScope, offset: Math.max(0, offset - 25) })}>Previous classifications</button>
             <button type="button" disabled={!data.has_more} onClick={() => setPage({ scope: baseScope, offset: offset + 25 })}>Next classifications</button>
           </nav>}
         </>}
-        {authoring?.canClassify && <ArchitectureClassificationAuthoring
+        {!integrated && authoring?.canClassify && <ArchitectureClassificationAuthoring
           key={JSON.stringify([boardId, specId, specVersion, authoring.specEdition, authoring.canPromote, authoring.canAssociate])}
           {...authoring} boardId={boardId} specId={specId} specVersion={specVersion}
           sourceReady={Boolean(data?.source_complete && data.spec_version === specVersion && data.spec_edition === authoring.specEdition)}

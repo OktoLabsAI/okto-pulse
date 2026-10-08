@@ -19,6 +19,25 @@ function ir(id = 'ir_existing', status: IntegrationRequirement['status'] = 'acti
 }
 const props = { boardId: 'board', specId: 'spec', specVersion: 9, specEdition: 2, sourceReady: true, canClassify: true, canPromote: true, canAssociate: true, requirements: [ir()], onApplied,
   items: [item()], renderItem: (row: ArchitectureClassificationReviewItem, selection: ReactNode) => <article key={row.candidate_id}>{selection}<span>{row.name}</span></article> };
+
+it('applies a decision on the candidate without a second selection or approval queue', async () => {
+  render(<ArchitectureClassificationAuthoring {...props} inlineItem={item()} />);
+  expect(screen.queryByLabelText('Select Contract a')).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Save queued classifications' })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Context only' }));
+  fireEvent.change(screen.getByLabelText('Context reason'), { target: { value: 'Outside this delivery scope' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Apply decision' }));
+  await waitFor(() => expect(api.classifyArchitectureCandidates).toHaveBeenCalledTimes(1));
+  expect(api.classifyArchitectureCandidates.mock.calls[0][2]).toMatchObject({ expected_spec_version: 9,
+    decisions: [{ candidate_ref: 'a', expected_source_digest: 'a'.repeat(64), disposition: 'context_only', reason: 'Outside this delivery scope', scope_paths: [''] }] });
+});
+
+it('disables direct candidate actions when its source is not ready', () => {
+  render(<ArchitectureClassificationAuthoring {...props} inlineItem={item()} sourceReady={false} />);
+  expect(screen.getByRole('button', { name: 'Create IR' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Associate IR' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Context only' })).toBeDisabled();
+});
 function receipt(batch: ArchitectureClassificationBatch, changes: Partial<ArchitectureClassificationReceipt> = {}): ArchitectureClassificationReceipt {
   return { contract_version: 'architecture-classification/v1', board_id: 'board', spec_id: 'spec', spec_edition: 2, spec_version: 10, idempotency_key: batch.idempotency_key, created_ir_ids: [], decisions: [], pending_checks: ['requirement_readiness_and_spec_start_gates_not_evaluated'], replayed: false, ...changes };
 }

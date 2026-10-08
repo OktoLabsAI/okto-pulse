@@ -15,6 +15,7 @@ export interface ArchitectureAuthoringAuthority {
 }
 
 interface Props extends ArchitectureAuthoringAuthority {
+  inlineItem?: ArchitectureClassificationReviewItem;
   boardId: string; specId: string; specVersion: number;
   sourceReady: boolean; items: ArchitectureClassificationReviewItem[];
   renderItem: (item: ArchitectureClassificationReviewItem, selection: ReactNode) => ReactNode;
@@ -48,7 +49,7 @@ function authoredIR(draft: IRDraft): AuthoredArchitectureIR {
   return ir;
 }
 
-export function ArchitectureClassificationAuthoring({ boardId, specId, specVersion, specEdition, canClassify, canPromote, canAssociate, requirements, onApplied, sourceReady, items, renderItem }: Props) {
+export function ArchitectureClassificationAuthoring({ boardId, specId, specVersion, specEdition, canClassify, canPromote, canAssociate, requirements, onApplied, sourceReady, items, renderItem, inlineItem }: Props) {
   const api = useDashboardApi();
   const [selected, setSelected] = useState<Record<string, ArchitectureClassificationReviewItem>>({});
   const [queue, setQueue] = useState<{ name: string; source: ArchitectureClassificationReviewItem; decision: ArchitectureClassificationDecision }[]>([]);
@@ -74,7 +75,7 @@ export function ArchitectureClassificationAuthoring({ boardId, specId, specVersi
     mounted.current = true;
     return () => { mounted.current = false; suggestion.current?.abort(); };
   }, []);
-  const chosen = Object.values(selected);
+  const chosen = inlineItem ? [inlineItem] : Object.values(selected);
   const editable = mode === 'editing' && canClassify;
   const irCounts = new Map<string, number>();
   requirements.forEach(ir => irCounts.set(ir.id, (irCounts.get(ir.id) ?? 0) + 1));
@@ -130,6 +131,7 @@ export function ArchitectureClassificationAuthoring({ boardId, specId, specVersi
         ...(disposition === 'associate_existing_ir' ? { integration_requirement_refs: [...refs] } : {}),
         ...(content ? { integration_requirements: content } : {}),
       } }));
+      if (inlineItem) { void submit(authored.map(row => row.decision)); return; }
       setQueue(value => editingIndex === null ? [...value, ...authored] : value.flatMap((row, index) => index === editingIndex ? authored : [row]));
       resetForm(); setMessage('');
     } catch (error) { setMessage(error instanceof Error ? error.message : 'Review the authored decision.'); }
@@ -154,10 +156,10 @@ export function ArchitectureClassificationAuthoring({ boardId, specId, specVersi
     try { await onApplied(); } catch { if (mounted.current) setMessage('Classifications were saved. Refresh the Spec to load its current requirements; do not submit again.'); }
   }
 
-  async function submit() {
-    if (inFlight.current || !canClassify || (mode !== 'unknown' && (!sourceReady || mode !== 'editing' || !queue.length || editingIndex !== null))) return;
+  async function submit(inlineDecisions?: ArchitectureClassificationDecision[]) {
+    if (inFlight.current || !canClassify || (mode !== 'unknown' && (!sourceReady || mode !== 'editing' || !(inlineDecisions?.length || queue.length) || editingIndex !== null))) return;
     if (!attempt.current) {
-      const batch: ArchitectureClassificationBatch = { expected_spec_version: specVersion, expected_spec_edition: specEdition, idempotency_key: uuidv4(), decisions: queue.map(row => row.decision) };
+      const batch: ArchitectureClassificationBatch = { expected_spec_version: specVersion, expected_spec_edition: specEdition, idempotency_key: uuidv4(), decisions: inlineDecisions ?? queue.map(row => row.decision) };
       if (new TextEncoder().encode(JSON.stringify(batch)).length > 256 * 1024) { setMessage('The batch exceeds 256 KiB. Reduce the authored content before submitting.'); return; }
       attempt.current = JSON.parse(JSON.stringify(batch)) as ArchitectureClassificationBatch;
     }
@@ -187,20 +189,29 @@ export function ArchitectureClassificationAuthoring({ boardId, specId, specVersi
   }
 
   return <div aria-label="Classification authoring" className="mt-3 space-y-3">
-    <p className="text-xs">Select explicit contracts and queue your decisions. Saving applies the whole batch once; it does not start or approve the Spec.</p>
+    {!inlineItem && <p className="text-xs">Select explicit contracts and queue your decisions. Saving applies the whole batch once; it does not start or approve the Spec.</p>}
     {!sourceReady && <p role="status" className="text-xs">Refresh the Spec and wait for current sources before preparing a submission.</p>}
-    {items.map(item => renderItem(item, <label className="text-xs"><input type="checkbox" aria-label={`Select ${item.name || item.interface_id}`} checked={Boolean(selected[item.candidate_id])}
+    {!inlineItem && items.map(item => renderItem(item, <label className="text-xs"><input type="checkbox" aria-label={`Select ${item.name || item.interface_id}`} checked={Boolean(selected[item.candidate_id])}
       disabled={!editable || editingIndex !== null || !sourceReady || !item.current_source_digest || item.source_variant_count !== 1 || !['pending', 'current', 'review_required'].includes(item.state)}
       onChange={event => { cancelSuggestion(); discardSourcePrefill(); setSelected(previous => { const next = { ...previous }; if (event.target.checked) next[item.candidate_id] = item; else delete next[item.candidate_id]; return next; }); }} /> Include in authored decision</label>))}
-    <p className="text-xs">{chosen.length} selected across pages · {queue.length} queued decisions</p>
-    <fieldset disabled={!editable || !chosen.length} className="space-y-2 rounded border p-3">
+    {!inlineItem && <p className="text-xs">{chosen.length} selected across pages · {queue.length} queued decisions</p>}
+    {inlineItem && <div className="flex flex-wrap gap-2">{(['promote_to_ir', 'associate_existing_ir', 'context_only'] as const).map(action =>
+      <button key={action} type="button" aria-pressed={disposition === action}
+        disabled={!editable || !sourceReady || (action === 'promote_to_ir' && !canPromote) || (action === 'associate_existing_ir' && !canAssociate)}
+        onClick={() => { cancelSuggestion(); setDisposition(action); }}
+        className={`inline-flex h-9 items-center rounded-lg border px-3 text-xs font-medium transition-colors disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-blue-500 ${disposition === action
+          ? 'border-blue-300 bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
+          : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200'}`}>
+        {action === 'promote_to_ir' ? 'Create IR' : action === 'associate_existing_ir' ? 'Associate IR' : 'Context only'}
+      </button>)}</div>}
+    <fieldset hidden={Boolean(inlineItem && !disposition)} disabled={!editable || !chosen.length || !sourceReady} className="space-y-3 rounded-lg border border-gray-200 p-3 dark:border-gray-700 [&_input:not([type=checkbox])]:rounded-md [&_input:not([type=checkbox])]:p-2 [&_select]:rounded-md [&_select]:border [&_select]:p-2 [&_textarea]:rounded-md [&_textarea]:p-2">
       <legend className="text-sm">Author a decision</legend>
-      <label className="block text-xs">Decision <select value={disposition} onChange={event => { cancelSuggestion(); setDisposition(event.target.value as Disposition | ''); }}>
+      {!inlineItem && <label className="block text-xs">Decision <select value={disposition} onChange={event => { cancelSuggestion(); setDisposition(event.target.value as Disposition | ''); }}>
         <option value="">Choose a decision</option>
         <option value="promote_to_ir" disabled={!canPromote || chosen.length !== 1}>Promote to IR</option>
         <option value="associate_existing_ir" disabled={!canAssociate}>Associate existing IR</option>
         <option value="context_only">Context only</option>
-      </select></label>
+      </select></label>}
       {chosen.length > 1 && <p className="text-xs">Context and association can cover several selected candidates. For promotion, author each candidate's IRs and queue them in this same batch.</p>}
       <label className="block text-xs"><input type="checkbox" checked={partial} onChange={event => { cancelSuggestion(); discardSourcePrefill(); setPartial(event.target.checked); }} /> Adopt only selected contract parts</label>
       {partial && <>
@@ -225,7 +236,7 @@ export function ArchitectureClassificationAuthoring({ boardId, specId, specVersi
         </fieldset>)}
         <button type="button" onClick={() => { cancelSuggestion(); setIRs(value => [...value, emptyIR()]); }}>Add another proposed IR</button>
       </>}
-      <button type="button" disabled={!disposition || !sourceReady || suggesting} onClick={addDecisions} className="btn btn-secondary text-xs">{editingIndex === null ? 'Queue decision' : 'Update queued decision'}</button>
+      <button type="button" disabled={!disposition || !sourceReady || suggesting} onClick={addDecisions} className="btn btn-secondary text-xs">{inlineItem ? 'Apply decision' : editingIndex === null ? 'Queue decision' : 'Update queued decision'}</button>
       {editingIndex !== null && <button type="button" onClick={resetForm}>Cancel queued edit</button>}
     </fieldset>
     {queue.length > 0 && <section aria-label="Queued classifications" className="text-xs">
@@ -237,7 +248,7 @@ export function ArchitectureClassificationAuthoring({ boardId, specId, specVersi
       </div>)}
     </section>}
     {message && <p role={mode === 'saved' ? 'status' : 'alert'} className="text-sm">{message}</p>}
-    {mode === 'editing' && <button type="button" disabled={!canClassify || !queue.length || !sourceReady || suggesting || editingIndex !== null} onClick={() => void submit()} className="btn btn-primary text-xs">Save queued classifications</button>}
+    {!inlineItem && mode === 'editing' && <button type="button" disabled={!canClassify || !queue.length || !sourceReady || suggesting || editingIndex !== null} onClick={() => void submit()} className="btn btn-primary text-xs">Save queued classifications</button>}
     {mode === 'submitting' && <p role="status">Saving classifications…</p>}
     {mode === 'unknown' && <button type="button" disabled={!canClassify} onClick={() => void submit()} className="btn btn-primary text-xs">Retry exact submission</button>}
     {mode === 'rejected' && <button type="button" onClick={() => { attempt.current = null; setQueue([]); setSelected({}); setMessage(''); setMode('editing'); }}>Discard rejected batch</button>}
