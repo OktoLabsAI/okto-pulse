@@ -2,7 +2,7 @@
 from datetime import datetime, timezone
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import insert, select, update
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
     CodeInvestigationReceiptRevocationRow as Revocation,
@@ -23,19 +23,27 @@ db = _db
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('invalidity', ['revoked_receipt', 'changed_selector'])
+@pytest.mark.parametrize('invalidity', ['revoked_receipt', 'changed_selector', 'target_created_after_observation'])
 async def test_origin_refusal_rolls_back_preceding_progress_in_mixed_batch(composed, invalidity):
     session, uow, use_case, actor = composed
     if invalidity == 'revoked_receipt':
         session.add(Revocation(id='revoke-origin', board_id='b', receipt_id='receipt-1',
             reason_code='invalid', justification='Observation withdrawn by its authority',
             revoked_by='owner', revoked_at=datetime.now(timezone.utc)))
-    else:
+    elif invalidity == 'changed_selector':
         # The observation covered Target revision 1; it cannot execute revision
         # 2 just because the Target ID and path still happen to match.
         await session.execute(update(Target).where(Target.id == 'target').values(revision=2))
+    else:
+        original = await session.get(Target, 'target')
+        values = {column.name: getattr(original, column.name) for column in Target.__table__.columns}
+        values.update(id='later-target', created_at=datetime.now(timezone.utc),
+                      updated_at=datetime.now(timezone.utc))
+        await session.execute(insert(Target).values(**values))
     await session.commit()
     payload = command().model_dump(mode='json')
+    if invalidity == 'target_created_after_observation':
+        payload['entries'][0]['execution_submission']['target_id'] = 'later-target'
     payload['entries'].insert(0, {'client_ref': 'checkpoint', 'kind': 'progress',
         'justification': 'Work in progress before proof', 'progress': {
             'material_change': 'unknown',
@@ -49,6 +57,34 @@ async def test_origin_refusal_rolls_back_preceding_progress_in_mixed_batch(compo
     assert (await session.get(Receipt, 'receipt-1')) is not None
     if invalidity == 'revoked_receipt':
         assert (await session.get(Revocation, 'revoke-origin')) is not None
+
+    if invalidity != 'revoked_receipt':
+        from okto_pulse.core.domain.code_traceability import (
+            CodeInvestigationSelectorScopeMismatch, CodeInvestigationTrustLevel,
+        )
+        from okto_pulse.core.models.code_traceability import ImplementationTargetResolutionSubmission
+        from okto_pulse.core.services.code_investigation import CodeInvestigationService
+        from okto_pulse.core.services.implementation_targets import ImplementationTargetService
+        from okto_pulse.community.adapters.sqlalchemy_models import ImplementationTargetResolutionRow
+
+        resolution = ImplementationTargetResolutionSubmission(
+            board_id='b', card_id='c',
+            target_id='later-target' if invalidity == 'target_created_after_observation' else 'target',
+            investigation_receipt_id='receipt-1', state='resolved',
+            resolved_relative_path='src/file.py', declared_file_blob_sha256='a' * 64, confidence=0.99,
+            tooling={'tool_id': 'codex', 'tool_version': '1', 'method_id': 'file-resolution/v1'},
+            agent_observed_at=datetime.now(timezone.utc), idempotency_key='old-scope-resolution',
+        )
+        with pytest.raises(CodeInvestigationSelectorScopeMismatch):
+            await ImplementationTargetService().submit_resolution(
+                resolution, actor_id=actor.actor_id, actor_kind=actor.actor_kind,
+                current_card_version=1, minimum_trust=CodeInvestigationTrustLevel.SINGLE_ATTESTATION,
+                require_committed_state=True, investigation_service=CodeInvestigationService(),
+                investigation_store=uow.services.code_investigations, store=uow.services.code_traceability,
+            )
+        await session.commit()
+        assert not (await session.scalars(select(ImplementationTargetResolutionRow))).all()
+        assert await counts(session) == [0, 0, 0, 0]
 
 
 @pytest.mark.asyncio
