@@ -4,7 +4,9 @@ from test_delivery_inline_execution import composed as origin_composed, db as pr
 from test_delivery_progress import command as progress_command
 from test_delivery_execution_sets import seed_scope, native_verifier as _native_verifier
 from test_delivery_net_impact import delta, A, B, C
-from okto_pulse.community.adapters.sqlalchemy_models import ImplementationTargetRow as Target
+from okto_pulse.community.adapters.sqlalchemy_models import (
+    ImplementationTargetRow as Target, ImplementationTargetExecutionRecordRow as Execution,
+)
 from okto_pulse.core.models.delivery_evidence import CardDeliveryEvidenceBatchCommand, DeliveryEvidenceReadQuery
 
 db = progress_db
@@ -43,6 +45,10 @@ async def test_resume_keeps_partial_proof_author_and_invalidates_it_after_dirty_
     assert after["implementation_proofs"]["items"][0]["current_obligation_refs"] == []
     assert after["implementation_proofs"]["items"][0]["actor_id"] == actor.actor_id
     assert after["recovery"]["verified"] is False
+    assert after["recovery"]["receipt_ownership_transferred"] is False
+    execution = await session.get(Execution, proof["executions"][0]["execution_id"])
+    assert execution.submitted_by == actor.actor_id
+    assert execution.submitted_by != "successor"
 
 
 @pytest.mark.asyncio
