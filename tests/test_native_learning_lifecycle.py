@@ -68,7 +68,10 @@ def configure_graph(factory, tmp_path):
     return require_community_routed_graph_composition()
 
 
-async def test_capture_is_durable_before_actual_review_and_materializes_after_done(ledger, tmp_path, monkeypatch):
+@pytest.mark.parametrize("same_reviewer", [False, True])
+async def test_capture_is_durable_before_actual_review_and_materializes_after_done(
+    ledger, tmp_path, monkeypatch, same_reviewer
+):
     # A native authored workflow must not activate an optional LLM bridge or
     # contact a provider, even if a caller catches and suppresses its failure.
     # Keep an attempt ledger as well as refusing the operation.
@@ -132,6 +135,8 @@ async def test_capture_is_durable_before_actual_review_and_materializes_after_do
         board = await session.get(Board, BOARD)
         board.settings = {**board.settings, "bug_learning_closeout": "blocking",
             "skip_cognitive_consolidation": False, "require_task_validation": True}
+        if same_reviewer:
+            board.settings = {**board.settings, "reviewer_separation_mode": "off"}
         await session.commit()
         source = await assembler.assemble_semantic(session, board_id=BOARD, bug_id="task")
         assert source.verified, source.load_errors
@@ -179,7 +184,8 @@ async def test_capture_is_durable_before_actual_review_and_materializes_after_do
             assert denied.status.value == "validation" and not denied.validations
             assert not denied.learning_closeout_bindings
         assert await store.enumerate(BOARD) == (capture,)
-        reviewer = ActorContext("independent-reviewer", "mcp", actor_kind="agent", board_id=BOARD,
+        reviewer_id = executor.actor_id if same_reviewer else "independent-reviewer"
+        reviewer = ActorContext(reviewer_id, "mcp", actor_kind="agent", board_id=BOARD,
             permissions=[*LEARNING_CAPTURE_HISTORY_PERMISSIONS, "card.validation.submit"])
         result = await SubmitTaskValidationUseCase().execute(SubmitTaskValidationCommand("task", review),
             actor=reviewer, uow=uow)
@@ -187,6 +193,7 @@ async def test_capture_is_durable_before_actual_review_and_materializes_after_do
         async with factory() as reader:
             card = await reader.get(Card, "task")
             assert card.status.value == "done" and len(card.learning_closeout_bindings) == 1
+            assert card.validations[-1]["reviewer_id"] == reviewer_id
             closed = await assembler.assemble_semantic(reader, board_id=BOARD, bug_id="task")
             assert closeout_binding_is_current(card.learning_closeout_bindings[0], closed)
             events = list(await reader.scalars(select(DomainEventRow)))
