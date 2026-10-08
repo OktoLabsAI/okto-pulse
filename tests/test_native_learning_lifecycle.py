@@ -69,6 +69,53 @@ def configure_graph(factory, tmp_path):
 
 
 async def test_capture_is_durable_before_actual_review_and_materializes_after_done(ledger, tmp_path, monkeypatch):
+    # A native authored workflow must not activate an optional LLM bridge or
+    # contact a provider, even if a caller catches and suppresses its failure.
+    # Keep an attempt ledger as well as refusing the operation.
+    import socket
+    from contextvars import ContextVar
+    from okto_pulse.core.kg.llm_provider_bridge_cache import BridgeCacheRegistry
+
+    activation_attempts = []
+
+    def refuse_bridge(*args, **kwargs):
+        activation_attempts.append("llm_bridge")
+        raise AssertionError("native_learning_must_not_activate_llm_bridge")
+
+    def refuse_network(*args, **kwargs):
+        activation_attempts.append("outbound_connection")
+        raise AssertionError("native_learning_must_not_contact_provider")
+
+    # Windows asyncio uses stdlib socketpair's private loopback connection
+    # for its wakeup pipe. Permit only the original socketpair constructor,
+    # not arbitrary loopback connections (a local LLM could use those).
+    constructing_socketpair = ContextVar("native_test_socketpair", default=False)
+    original_socketpair = socket.socketpair
+    original_connect = socket.socket.connect
+    original_connect_ex = socket.socket.connect_ex
+
+    def socketpair(*args, **kwargs):
+        token = constructing_socketpair.set(True)
+        try:
+            return original_socketpair(*args, **kwargs)
+        finally:
+            constructing_socketpair.reset(token)
+
+    def connect(sock, address):
+        if constructing_socketpair.get():
+            return original_connect(sock, address)
+        return refuse_network(sock, address)
+
+    def connect_ex(sock, address):
+        if constructing_socketpair.get():
+            return original_connect_ex(sock, address)
+        return refuse_network(sock, address)
+
+    monkeypatch.setattr(BridgeCacheRegistry, "get_or_create", refuse_bridge)
+    monkeypatch.setattr(socket, "socketpair", socketpair)
+    monkeypatch.setattr(socket.socket, "connect", connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", connect_ex)
+    monkeypatch.setattr(socket, "create_connection", refuse_network)
     session, uow, owner = await setup(ledger, tmp_path, monkeypatch)
     bundle = None
     try:
@@ -192,3 +239,4 @@ async def test_capture_is_durable_before_actual_review_and_materializes_after_do
             for pool in (*bundle.board.grafx_read_pools, *bundle.board.grafx_query_pools):
                 pool.close_all()
         await session.close()
+    assert activation_attempts == []
