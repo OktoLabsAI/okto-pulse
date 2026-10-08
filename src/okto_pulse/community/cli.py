@@ -1503,7 +1503,36 @@ def main():
 
     if not (args.command == "status" and getattr(args, "json", False)):
         _print_banner()
-    args.func(args)
+    from okto_pulse.community.adapters.current_relational_schema import StorageFormatError
+
+    try:
+        args.func(args)
+    except StorageFormatError as exc:
+        if args.command not in {"init", "serve"}:
+            raise
+        from okto_pulse.community.config import CommunitySettings
+
+        settings = CommunitySettings()
+        print(
+            "\nCannot start Pulse: incompatible stored data.\n"
+            f"Data home: {settings.data_dir}\n"
+            "This location contains data incompatible with Pulse 0.4.0. "
+            "Data from earlier Pulse versions cannot be opened by this version.\n"
+            f"Diagnostic: storage_format_incompatible:{exc.reason}\n\n"
+            "To keep using this data home:\n"
+            "  1. Stop all Pulse processes using these data.\n"
+            "  2. Back up and manually rename the entire data home to an unused "
+            "backup location. Keep the backup to access with its original version.\n"
+            "  3. Run 'okto-pulse init', then 'okto-pulse serve' to create "
+            "a fresh installation at the same path.\n"
+            "If DATABASE_URL, KG_BASE_DIR, UPLOAD_DIR or METRICS_DIR point outside "
+            "the data home, preserve those locations too and select fresh paths "
+            "before initializing.\n"
+            "Alternatively, set DATA_DIR to a new directory.\n"
+            "No automatic conversion or deletion was performed.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
 
 if __name__ == "__main__":
