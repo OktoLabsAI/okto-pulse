@@ -3,9 +3,9 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import func, select, update
 
-from okto_pulse.community.adapters.sqlalchemy_models import Card
+from okto_pulse.community.adapters.sqlalchemy_models import Card, ConsolidationQueue
 from okto_pulse.community.adapters.sqlalchemy_spec_coverage import CommunitySpecCoverageReader
 from okto_pulse.community.adapters.routed_board_graph_facades import CommunityRoutedSemanticGraphStore
 from okto_pulse.community.adapters.grafx_query_execution import CommunityGraphQueryExecution
@@ -118,7 +118,10 @@ async def test_real_sql_and_grafx_keep_unprojected_source_in_scope_without_proof
     reader = CommunitySpecCoverageReader(session, graph_reader=store, query_execution=execution)
     snapshot = await reader.read(query, timeout_ms=15000)
     scope = build_spec_coverage_graph_scope(snapshot)
-    # Deliberately omit one authorized source; an anti-join must retain it.
+    # A committed source with no queued event can still be absent in Grafx.
+    # Empty queue is not evidence of projection completeness, even when every
+    # currently observed identity/edge happens to match.
+    assert await session.scalar(select(func.count()).select_from(ConsolidationQueue)) == 0
     projected = scope.nodes[:-1]
     identities = {key: f'composed-coverage-{index}' for index, key in enumerate(projected)}
     for (kind, ref), identity in identities.items():
@@ -135,6 +138,32 @@ async def test_real_sql_and_grafx_keep_unprojected_source_in_scope_without_proof
     assert result['structure']['graph']['expected_nodes'] == len(scope.nodes)
     assert result['structure']['graph']['missing_nodes'] == 1
     assert result['projection_freshness']['state'] == 'incomplete'
+    assert result['projection_freshness']['projection_checkpoint'] is None
+    assert result['completeness']['complete_for_scope'] is False
     assert result['delivery']['counts']['verification_proven'] == 0
     assert any(row.get('observation') == 'not_found_in_projection' for row in result['items'])
+    assert await session.scalar(select(func.count()).select_from(ConsolidationQueue)) == 0
+    assert database.transactions == before
+    # Now materialize the missing identity and its owned relations. Even exact
+    # observations cannot manufacture a full projection checkpoint.
+    missing = scope.nodes[-1]
+    identities[missing] = "composed-coverage-final"
+    store.create_node(board, missing[0], identities[missing],
+        native._attrs(missing[1], missing[1], "coverage-composed"))
+    for edge in scope.relations:
+        start, end = tuple(edge[:2]), tuple(edge[3:5])
+        if missing in (start, end):
+            store.create_edge(board, edge[2], identities[start], identities[end],
+                {"confidence": 1.0, "rule_id": edge[5], "layer": edge[6], "created_by": edge[7]},
+                from_type=edge[0], to_type=edge[3])
+    before = database.transactions
+    graph = await reader.read_graph(query, scope, snapshot.source_revision, timeout_ms=15000)
+    result = project_spec_coverage(query, replace(snapshot, graph=graph, graph_scope=scope))
+    assert result["structure"]["graph"]["missing_nodes"] == 0
+    assert result["structure"]["graph"]["missing_relations"] == 0
+    assert result["projection_freshness"]["state"] == "unknown"
+    assert result["projection_freshness"]["projection_checkpoint"] is None
+    assert result["completeness"]["complete_for_scope"] is False
+    assert result["delivery"]["counts"]["verification_proven"] == 0
+    assert await session.scalar(select(func.count()).select_from(ConsolidationQueue)) == 0
     assert database.transactions == before
