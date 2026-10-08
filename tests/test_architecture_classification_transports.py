@@ -355,3 +355,72 @@ async def test_native_mcp_validation_uses_safe_classification_contract_before_au
     )
     assert "DO_NOT_ECHO_THIS" not in rejected.content[0].text
     auth.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("surface", ["rest", "mcp"])
+async def test_context_batch_then_only_exception_preserves_exact_pending_summary(
+    classified_context, monkeypatch, surface,
+):
+    from okto_pulse.core.services.architecture_classification import ArchitectureClassificationService
+
+    db = classified_context
+    raw = (await coordinator_fixtures.batch_for(db)).model_dump(mode="json")
+    pending_ref = raw["decisions"][0]["candidate_ref"]
+    raw["decisions"] = [
+        {"candidate_ref": row["candidate_ref"],
+         "expected_source_digest": row["expected_source_digest"],
+         "disposition": "context_only", "reason": "Outside this delivery"}
+        for row in raw["decisions"][1:]
+    ]
+    raw["idempotency_key"] = "known-context"
+    app, factory = application(db)
+    mcp_factory(monkeypatch, factory)
+    before, _ = await coordinator_fixtures.snapshot(db)
+
+    async def submit(batch):
+        if surface == "rest":
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test",
+            ) as client:
+                response = await client.post(
+                    "/api/v1/boards/board/specs/spec/architecture-classifications",
+                    json=batch,
+                )
+            assert response.status_code == 200, response.text
+            return response.json()
+        response = json.loads(await server.okto_pulse_classify_architecture_candidates.fn(
+            board_id="board", spec_id="spec", batch=batch,
+        ))
+        assert response["success"], response
+        return response
+
+    first = await submit(raw)
+    replay = await submit(raw)
+    assert not first["replayed"] and replay["replayed"]
+    after_context, counts = await coordinator_fixtures.snapshot(db)
+    assert after_context.integration_requirements == before.integration_requirements
+    assert after_context.version == before.version + 1
+    assert counts[:3] == [1, 2, 1]
+    review = await ArchitectureClassificationService(db).review(board_id="board", spec_id="spec")
+    assert review["enumeration_complete"] and review["total"] == 3
+    assert review["state_counts"]["current"] == 2
+    assert review["state_counts"]["pending"] == 1
+    assert review["blocking_candidate_ids"] == [pending_ref]
+    assert not review["classification_complete"]
+    assert not review["admission_evaluated"] and not review["semantic_review_evaluated"]
+
+    exception = (await coordinator_fixtures.batch_for(db, disposition="promote_to_ir")).model_dump(mode="json")
+    exception["idempotency_key"] = "author-reviewed-exception"
+    applied = await submit(exception)
+    assert not applied["replayed"]
+    final, counts = await coordinator_fixtures.snapshot(db)
+    assert counts[:3] == [2, 3, 2]
+    assert final.integration_requirements[0] == before.integration_requirements[0]
+    assert len(final.integration_requirements) == len(before.integration_requirements) + 2
+    assert final.version == before.version + 2
+    review = await ArchitectureClassificationService(db).review(board_id="board", spec_id="spec")
+    assert review["classification_complete"]
+    assert review["state_counts"]["current"] == 3
+    assert review["blocking_candidate_count"] == 0
+    assert not review["admission_evaluated"] and not review["semantic_review_evaluated"]
