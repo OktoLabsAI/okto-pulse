@@ -5,4 +5,4 @@ import { DeliveryEvidencePanel } from '../../src/components/code-traceability/De
 import '../../src/index.css';
 
 await adapterReady;
-createRoot(document.getElementById('root')!).render(<ApiProvider><main className="m-4 max-w-5xl rounded-xl bg-white p-5 text-slate-900 dark:bg-slate-800 dark:text-slate-100"><DeliveryEvidencePanel boardId="fixture" specId="spec-1" canRecord canTest canWaive /></main></ApiProvider>);
+createRoot(document.getElementById('root')!).render(<ApiProvider><main className="m-4 max-w-5xl rounded-xl bg-white p-5 text-slate-900 dark:bg-slate-800 dark:text-slate-100"><DeliveryEvidencePanel boardId="board" specId="spec" /></main></ApiProvider>);

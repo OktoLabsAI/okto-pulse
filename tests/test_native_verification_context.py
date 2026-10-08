@@ -1,6 +1,7 @@
 """Combined native population for AC-VER-18 context parity."""
 from copy import deepcopy
 import json
+import os
 
 import pytest
 from sqlalchemy import select, update
@@ -115,7 +116,7 @@ async def test_inherited_br_promoted_ir_and_partial_work_remain_distinct(classif
     persisted = await db.get(Spec, "spec", populate_existing=True)
     assert persisted.integration_requirements == promoted
     assert persisted.test_scenarios[0]["status"] == "passed"
-    resume = await compare_transports(db, monkeypatch, plan, delivery)
+    resume = await compare_transports(db, monkeypatch, plan, delivery, tmp_path)
     assert resume["tests"]["items"][0]["current_verified_run"]
     assert resume["tests"]["items"][0]["actor_id"] == "agent-1"
     assert resume["implementation_proofs"]["items"][0]["actor_id"] == "agent-1"
@@ -126,7 +127,7 @@ async def test_inherited_br_promoted_ir_and_partial_work_remain_distinct(classif
     }, indent=2, default=str), encoding="utf-8")
 
 
-async def compare_transports(db, monkeypatch, plan, delivery):
+async def compare_transports(db, monkeypatch, plan, delivery, tmp_path):
     from contextlib import asynccontextmanager
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
@@ -201,6 +202,8 @@ async def compare_transports(db, monkeypatch, plan, delivery):
                 resume = response.json()
                 assert resume["latest_checkpoint"]["actor_id"] == "executor"
                 assert not resume["actions"]["record_progress"]
+    if os.environ.get("PULSE_NATIVE_BROWSER_TEST") == "1":
+        await verify_native_browser(app, tmp_path)
     return resume
 
 
@@ -275,3 +278,46 @@ async def add_authenticated_partial_coverage(db, store, tmp_path):
         "test", card_id="test-card", scenario_id="ts", implementation_ids=[implementation["id"]], **shared))
     await db.commit()
     return proof
+
+
+async def verify_native_browser(app, tmp_path):
+    """Own both disposable listeners; no access to a running user instance."""
+    import asyncio
+    from pathlib import Path
+    import socket
+    import uvicorn
+
+    frontend = Path(__file__).resolve().parents[1] / "frontend"
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    port = listener.getsockname()[1]
+    server = uvicorn.Server(uvicorn.Config(app, log_level="warning", lifespan="off"))
+    serving = asyncio.create_task(server.serve(sockets=[listener]))
+    process = None
+    try:
+        for _ in range(100):
+            if server.started:
+                break
+            if serving.done():
+                await serving
+                raise AssertionError("Disposable REST listener exited before startup")
+            await asyncio.sleep(0.05)
+        assert server.started
+        env = dict(os.environ, CI="1", PULSE_NATIVE_DELIVERY_BACKEND=f"http://127.0.0.1:{port}")
+        process = await asyncio.create_subprocess_exec(
+            "node", "node_modules/@playwright/test/cli.js", "test",
+            "--config=playwright.architecture.config.ts", "delivery-evidence.spec.ts",
+            "--retries=0", "--output=" + str(tmp_path / "browser"),
+            cwd=frontend, env=env, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        output, _ = await asyncio.wait_for(process.communicate(), timeout=150)
+        (tmp_path / "browser.log").write_bytes(output)
+        assert process.returncode == 0, output.decode("utf-8", errors="replace")
+    finally:
+        if process is not None and process.returncode is None:
+            process.terminate()
+            await process.wait()
+        server.should_exit = True
+        await asyncio.wait_for(serving, timeout=10)
+        listener.close()
