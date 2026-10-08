@@ -3,6 +3,7 @@ from copy import deepcopy
 from dataclasses import replace
 from datetime import datetime, timezone
 from hashlib import sha256
+import subprocess
 
 import pytest
 from sqlalchemy import select
@@ -18,11 +19,12 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     ImplementationTargetExecutionRecordRow as Execution,
 )
 from okto_pulse.core.domain.code_traceability import code_investigation_observation_sha256_v2
+from okto_pulse.core.domain.delivery_evidence import CardDeliveryScope, implementation_binding_proof_issue
 
 ledger = delivery.ledger
 
 
-async def advance_source(session, *, independent_target=False, disposition="touched"):
+async def advance_source(session, *, independent_target=False, disposition="touched", revision="b" * 40):
     """Accepted origin facts are fixture input; persist using native append/CAS.
 
     This isolates the consumer's currentness predicate, not agent attestation
@@ -35,7 +37,7 @@ async def advance_source(session, *, independent_target=False, disposition="touc
         challenge_token_hash="e" * 64, idempotency_key="request-2")
     opened = replace(opened, **request_changes)
     consumed = replace(consumed, **request_changes)
-    workspace = replace(workspace, declared_revision="b" * 40, workspace_state_id="workspace-2")
+    workspace = replace(workspace, declared_revision=revision, workspace_state_id="workspace-2")
     digest = code_investigation_observation_sha256_v2(source_ref=receipt.source_ref,
         selector_scope_digest=receipt.selector_scope_digest, delivery_context=receipt.delivery_context,
         outcome=receipt.contextual_outcome, capabilities=receipt.capabilities,
@@ -116,3 +118,82 @@ async def test_non_delivery_disposition_is_preserved_without_inventing_credit(le
     assert not projection["allowed"]
     assert not [row for row in projection["candidates"] if row["kind"] == "implementation"]
     assert (await session.get(Execution, "execution-2")).disposition == disposition
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ledger", ["native_schema"], indirect=True)
+@pytest.mark.parametrize("revision", ["0" * 40, "b" * 40, "a" * 40], ids=["lower-hash", "higher-hash", "same-base"])
+@pytest.mark.parametrize("reverse", [False, True], ids=["old-first", "new-first"])
+async def test_composite_proof_never_infers_ancestry_from_hash_or_observation_order(ledger, revision, reverse):
+    session, store, _ = ledger
+    await advance_source(session, independent_target=True, revision=revision)
+    executions = ["execution", "execution-2"]
+    if reverse:
+        executions.reverse()
+    # Both origin receipts are accepted/current for their own Target; the second
+    # observation is newer. These facts do not establish a common commit base.
+    request = delivery.command(execution_id=None, obligation_refs=[], bindings=[{
+        "obligation_ref": "ac:ac-about", "contribution": "complete",
+        "execution_refs": [{"execution_id": identity} for identity in executions],
+    }])
+    if revision == "a" * 40:
+        saved = await delivery.record(store, request)
+        await session.commit()
+        assert len(list(await session.scalars(select(Record)))) == 1
+        assert (await session.get(Record, saved["id"])).kind == "implementation"
+    else:
+        with pytest.raises(ValueError, match="delivery_execution_base_conflict"):
+            await delivery.record(store, request)
+        await session.commit()
+        assert not list(await session.scalars(select(Record)))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ledger", ["native_schema"], indirect=True)
+@pytest.mark.parametrize("relationship", ["divergent", "revert"])
+@pytest.mark.parametrize("reverse", [False, True])
+async def test_actual_branch_and_revert_commits_do_not_imply_integrated_delivery(ledger, tmp_path, relationship, reverse):
+    # Git is fixture mechanics only. The domain receives opaque commit identities;
+    # it cannot substitute branch ancestry or restored file content for same base.
+    repository = tmp_path / "commit-basis"
+    repository.mkdir()
+
+    def git(*args):
+        return subprocess.check_output(["git", "-C", str(repository),
+            "-c", "user.name=Native Test", "-c", "user.email=native-test@example.invalid",
+            "-c", "commit.gpgsign=false", *args], text=True, stderr=subprocess.PIPE).strip()
+
+    git("init", "-b", "main")
+    source = repository / "source.txt"
+    source.write_text("baseline\n", encoding="utf-8")
+    git("add", "source.txt")
+    git("commit", "-m", "baseline")
+    baseline = git("rev-parse", "HEAD")
+    source.write_text("feature\n", encoding="utf-8")
+    git("commit", "-am", "feature")
+    feature = git("rev-parse", "HEAD")
+    if relationship == "divergent":
+        git("checkout", "-b", "other", baseline)
+        source.write_text("independent\n", encoding="utf-8")
+        git("commit", "-am", "independent")
+        alternative = git("rev-parse", "HEAD")
+        assert git("merge-base", feature, alternative) == baseline
+    else:
+        git("revert", "--no-edit", feature)
+        alternative = git("rev-parse", "HEAD")
+        assert source.read_text(encoding="utf-8") == "baseline\n"
+        assert alternative != baseline and git("merge-base", feature, alternative) == feature
+    session, store, _ = ledger
+    saved = await delivery.record(store, delivery.command())
+    snapshot = await store.load_card_snapshot(CardDeliveryScope(delivery.BOARD_ID, "task", delivery.SPEC_ID, 1))
+    fact = next(item for item in snapshot.implementations if item.id == saved["id"])
+    binding = fact.bindings[0]
+    revisions = [feature, alternative]
+    if reverse:
+        revisions.reverse()
+    proofs = tuple(replace(fact.executions[0], execution_id=f"proof-{index}",
+        target_id=f"target-{index}", result_revision=revision) for index, revision in enumerate(revisions))
+    contribution = next(item for item in fact.contributions if item.binding == binding)
+    candidate = replace(fact, executions=proofs, contributions=(replace(contribution,
+        execution_ids=tuple(item.execution_id for item in proofs)),))
+    assert implementation_binding_proof_issue(candidate, binding) == "delivery_execution_base_conflict"
