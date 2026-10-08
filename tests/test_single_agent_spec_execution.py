@@ -1,4 +1,4 @@
-"""BASE T01: one authenticated agent from Draft through Spec Done."""
+"""BASE T01 / AC-INT-04: broad or independent review from Draft through Done."""
 import copy
 import json
 from dataclasses import replace
@@ -81,9 +81,10 @@ async def call(client, name, **arguments):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('separate_review', [False, True], ids=['broad-agent', 'separate-reviewer'])
 @pytest.mark.parametrize('late_requirement_link', [False, True])
 async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(
-    adopted_context, tmp_path, monkeypatch, late_requirement_link
+    adopted_context, tmp_path, monkeypatch, late_requirement_link, separate_review
 ):
     db = adopted_context
     await complete_start_fixture(db, tmp_path)
@@ -113,7 +114,7 @@ async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(
             await resources.save_not_applicable('board', 'card', identity, resource, 'author',
                 justification='Procedure fixture has no additional design or mockup', source_channel='test')
     board = await db.get(Board, 'board')
-    board.settings = {**(board.settings or {}), 'reviewer_separation_mode': 'off',
+    board.settings = {**(board.settings or {}), 'reviewer_separation_mode': 'enforce' if separate_review else 'off',
                       'require_spec_validation': True, 'require_task_validation': True,
                       'skip_cognitive_consolidation': True, 'impact_evidence_mode': 'off'}
     spec = await db.get(Spec, 'spec', populate_existing=True)
@@ -134,6 +135,11 @@ async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(
         api_key_hash=AgentService.hash_api_key('fixture-solo'), is_active=True,
         preset_id='solo-preset', permission_flags={}))
     db.add(AgentBoard(id='solo-board', agent_id='solo', board_id='board', granted_by='author'))
+    if separate_review:
+        db.add(Agent(id='independent', name='Independent reviewer', created_by='author',
+            api_key='fixture-independent', api_key_hash=AgentService.hash_api_key('fixture-independent'),
+            is_active=True, preset_id='solo-preset', permission_flags={}))
+        db.add(AgentBoard(id='independent-board', agent_id='independent', board_id='board', granted_by='author'))
     from datetime import datetime, timezone
     from okto_pulse.community.adapters.sqlalchemy_semantic_guideline_assessment import CommunitySqlAlchemySemanticGuidelineAssessment
     from okto_pulse.core.domain.guideline_policy import PolicyEntityType
@@ -157,11 +163,24 @@ async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(
     register_quality_assessment_preflight_reader(CommunitySqlAlchemyQualityAssessmentPreflightReader(factory))
     server.register_mcp_authenticator(make_community_mcp_authenticator(session_factory=factory))
     server._permission_cache.clear()
+    identity = 'solo'
     monkeypatch.setattr(server, 'active_api_key_credential', lambda: McpCredential(
-        source='x_api_key_header', value='fixture-solo'))
+        source='x_api_key_header', value='fixture-' + identity))
     frozen = freeze_mcp_resource_catalog(server.effective_resource_catalog())
     host = CommunityMcpHostProvider().materialize_catalog(server.mcp,
         resource_catalog=frozen, projection_identity=frozen.identity)
+    async def review_call(client, name, **arguments):
+        nonlocal identity
+        if not separate_review:
+            return await call(client, name, **arguments)
+        identity = 'independent'
+        try:
+            async with Client(host) as reviewer_client:
+                assert (await server._get_agent_ctx('board')).agent_id == 'independent'
+                return await call(reviewer_client, name, **arguments)
+        finally:
+            identity = 'solo'
+
     # External project fixture: a real GET/assertion replay, signed by the
     # Community issuer and later authenticated by the write verifier.
     import httpx
@@ -251,8 +270,8 @@ async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(
         for metric in ('confidence', 'clarity', 'assertiveness', 'decidability', 'ambiguity'):
             metrics[metric] = 0 if metric == 'ambiguity' else 95
             metrics[metric + '_justification'] = 'Inspected observable requirements, linked criteria and explicit task allocations'
-        await call(client, 'okto_pulse_submit_spec_validation', **scope, **fence, **metrics, recommendation='approve')
-        await call(client, 'okto_pulse_submit_spec_evaluation', **scope,
+        await review_call(client, 'okto_pulse_submit_spec_validation', **scope, **fence, **metrics, recommendation='approve')
+        await review_call(client, 'okto_pulse_submit_spec_evaluation', **scope,
             breakdown_completeness=95, breakdown_justification='All requirements have explicit task contributions',
             granularity=95, granularity_justification='Implementation and verification are separately allocated',
             dependency_coherence=95, dependency_justification='No unresolved dependency is required for this procedure',
@@ -295,7 +314,7 @@ async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(
                 drift_justification='Matches the approved procedure scope'))
         delivered = await call(client, 'okto_pulse_record_delivery_evidence', **scope, card_id='task', evidence=report)
         resume = await call(client, 'okto_pulse_get_delivery_evidence', **scope, card_id='task', view='resume')
-        reviewed = await call(client, 'okto_pulse_submit_task_validation', board_id='board', card_id='task',
+        reviewed = await review_call(client, 'okto_pulse_submit_task_validation', board_id='board', card_id='task',
             expected_subject_version=resume['card_version'], idempotency_key='solo-review',
             confidence=95, confidence_justification='Inspected the accepted implementation record',
             estimated_completeness=100, completeness_justification='All allocated implementation is present',
@@ -340,11 +359,12 @@ async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(
         current = await reader.get(Spec, 'spec')
         assert current.status == 'done'
         assert (current.validations, current.evaluations, current.current_validation_id) == preserved
-        assert current.validations[-1]['reviewer_id'] == 'solo'
-        assert current.evaluations[-1]['evaluator_id'] == 'solo'
+        expected_reviewer = 'independent' if separate_review else 'solo'
+        assert current.validations[-1]['reviewer_id'] == expected_reviewer
+        assert current.evaluations[-1]['evaluator_id'] == expected_reviewer
         task = await reader.get(Card, 'task')
         assert task.status == 'done', json.dumps([reviewed, task.validations, task.rejection_records], default=str)
-        assert task.validations[-1]['reviewer_id'] == 'solo'
+        assert task.validations[-1]['reviewer_id'] == expected_reviewer
         assert task.conclusions[0]['author_id'] == 'solo'
         assert task.conclusions[0]['delivery_manifest']['records'][0]['id'] == delivered['entries'][0]['id']
         test = await reader.get(Card, 'test')
@@ -356,7 +376,7 @@ async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(
         assert all(record.actor_id == 'solo' for record in records)
         assert (await reader.get(CardDeliveryEvidenceRecordRow, checkpoint['id'])).payload == progress_payload
         assert (await reader.get(CardDeliveryEvidenceRecordRow, delivered['entries'][0]['id'])).payload == implementation_payload
-        assert list(await reader.scalars(select(Agent.id))) == ['solo']
+        assert set(await reader.scalars(select(Agent.id))) == ({'solo', 'independent'} if separate_review else {'solo'})
         receipts = list(await reader.scalars(select(QualityAssessmentReceiptRow)))
         # Canonical five-metric validation is append-only Spec JSON; external
         # Requirement Lint has its own quality receipt table.
