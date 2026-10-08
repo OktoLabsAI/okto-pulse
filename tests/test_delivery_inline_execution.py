@@ -461,3 +461,46 @@ async def test_rest_inline_and_mcp_replay_use_origin_composition(
                  execution_ids=[record.payload["execution_id"]])
             for item in payload["entries"][0]["bindings"]
         ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("batch", [False, True])
+async def test_retry_after_committed_response_timeout_preserves_all_identities(composed, batch):
+    """DEI-T37: the caller loses the reply after the transaction is durable."""
+    session, uow, use_case, actor = composed
+
+    async def commit_then_lose_response():
+        await session.commit()
+        raise TimeoutError("response lost after durable commit")
+
+    uow.commit.side_effect = commit_then_lose_response
+    with pytest.raises(TimeoutError, match="response lost"):
+        await use_case.execute(command(batch=batch), actor=actor, uow=uow)
+    assert await counts(session) == [1, 1, 1, 1]
+    models = (
+        ImplementationTargetExecutionRecordRow,
+        CardDeliveryEvidenceRecordRow,
+        DomainEventRow,
+        DomainEventHandlerExecution,
+    )
+    before = [
+        tuple((await session.scalars(select(model))).all())
+        for model in models
+    ]
+    execution_id = before[0][0].id
+    binding_id = before[1][0].id
+
+    # A fresh identity map forces the retry to recover its receipt from SQL.
+    session.expunge_all()
+    uow.commit.side_effect = session.commit
+    replay = await use_case.execute(command(batch=batch), actor=actor, uow=uow)
+    assert replay["replayed"]
+    saved = replay["entries"][0] if batch else replay
+    assert saved["id"] == binding_id
+    assert saved["execution_id"] == execution_id
+    assert await counts(session) == [1, 1, 1, 1]
+    for model, original in zip(models, before, strict=True):
+        current = tuple((await session.scalars(select(model))).all())
+        assert [row.__mapper__.primary_key_from_instance(row) for row in current] == [
+            row.__mapper__.primary_key_from_instance(row) for row in original
+        ]

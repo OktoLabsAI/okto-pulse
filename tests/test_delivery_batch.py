@@ -100,7 +100,7 @@ async def test_failure_after_first_insert_rolls_back_even_if_caller_commits(db):
 
 
 @pytest.mark.asyncio
-async def test_single_writer_key_cannot_be_reused_as_batch_and_legacy_append_fences_batch(
+async def test_single_writer_key_cannot_be_reused_as_batch_and_current_append_fences_batch(
     db,
 ):
     _, session, store = db
