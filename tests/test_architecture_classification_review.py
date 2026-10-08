@@ -121,6 +121,9 @@ async def test_real_read_currentness_tracks_contracts_not_revision_and_never_wri
     db = classified_context
     await writes.execute(db, await writes.batch_for(db))
     before = await writes.snapshot(db)
+    stale_raw = (await writes.batch_for(db)).model_dump(mode="json")
+    stale_raw["idempotency_key"] = "opened-before-contract-edit"
+    stale_batch = writes.ArchitectureClassificationBatch.model_validate(stale_raw)
     statements = []
 
     def capture(conn, cursor, statement, parameters, context, many):
@@ -188,6 +191,13 @@ async def test_real_read_currentness_tracks_contracts_not_revision_and_never_wri
     assert (await writes.snapshot(db))[0].integration_requirements == before[
         0
     ].integration_requirements
+
+    before_rejection = await writes.snapshot(db)
+    with pytest.raises(writes.ArchitectureClassificationError, match="architecture_candidate_source_changed|architecture_classification_version_conflict"):
+        await writes.execute(db, stale_batch)
+    assert await writes.snapshot(db) == before_rejection
+    persisted = await db.get(ArchitectureDesign, "context", populate_existing=True)
+    assert persisted.interfaces[0]["event_schema"] == {"const": "new-contract"}
 
 
 @pytest.mark.asyncio

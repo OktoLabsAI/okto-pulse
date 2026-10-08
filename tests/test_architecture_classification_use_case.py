@@ -493,3 +493,62 @@ async def test_owner_review_required_cannot_be_bypassed_by_classification(
     with pytest.raises(PermissionDeniedError):
         await execute(db, batch, who=who)
     assert await snapshot(db) == before
+
+
+@pytest.mark.asyncio
+async def test_stale_classification_after_other_writer_ir_edit_preserves_committed_work(
+    classified_context, tmp_path,
+):
+    from types import SimpleNamespace
+    from okto_pulse.core.domain.realm import RealmScope
+    from okto_pulse.community.adapters.relational_effects import register_community_relational_effects
+    from okto_pulse.core.domain.permissions import get_builtin_presets, resolve_permissions
+    from okto_pulse.core.services.spec_structured_entities import StructuredSpecEntityCommand, StructuredSpecEntityService
+
+    db = classified_context
+    register_community_relational_effects(settings=SimpleNamespace(
+        data_dir=str(tmp_path / "runtime"), port=1, environment="test",
+    ))
+    await db.execute(update(Spec).where(Spec.id == "spec").values(project_structure_revision=0))
+    await db.commit()
+    await execute(db, await batch_for(db))
+    old = (await batch_for(db)).model_dump(mode="json")
+    old["idempotency_key"] = "first-author-opened-before-edit"
+    old_batch = ArchitectureClassificationBatch.model_validate(old)
+    historical_decisions = {
+        row.id: copy.deepcopy(row.payload)
+        for row in await db.scalars(select(ArchitectureCandidateDecisionRow))
+    }
+    await db.rollback()
+
+    # A distinct session commits the second author's governed edit before the
+    # first author submits the version they previously read.
+    sessions = async_sessionmaker(
+        db.bind, expire_on_commit=False, sync_session_class=CommunitySemanticSession,
+        info={"realm_scope": RealmScope.local()},
+    )
+    flags = next(p["flags"] for p in get_builtin_presets() if p["name"] == "Spec")
+    async with sessions() as other_db:
+        edited = await StructuredSpecEntityService(other_db).mutate(StructuredSpecEntityCommand(
+            board_id="board", spec_id="spec", actor_id="second-author",
+            entity_type="integration_requirement", entity_id="ir_existing",
+            operation="update", expected_spec_version=old_batch.expected_spec_version,
+            payload={"description": "Consumer must reject an order with a missing correlation ID"},
+            permission_set=resolve_permissions(None, flags, None),
+        ))
+        assert edited.success, edited.as_dict()
+        await other_db.commit()
+
+    before_rejection = await snapshot(db)
+    assert before_rejection[0].version > old_batch.expected_spec_version
+    assert before_rejection[0].integration_requirements[0]["description"] == (
+        "Consumer must reject an order with a missing correlation ID"
+    )
+    with pytest.raises(ArchitectureClassificationError, match="architecture_classification_version_conflict"):
+        await execute(db, old_batch)
+    assert await snapshot(db) == before_rejection
+    assert {
+        row.id: copy.deepcopy(row.payload)
+        for row in await db.scalars(select(ArchitectureCandidateDecisionRow))
+    } == historical_decisions
+    assert any(row.actor_id == "second-author" for row in await db.scalars(select(SpecHistory)))
