@@ -36,6 +36,18 @@ describe('HelpPanel after maintenance CLI retirement', () => {
     expect(screen.getByRole('heading', { name: 'Cognitive consolidation (KG-03)' })).toBeInTheDocument();
   });
 
+  it('describes authored Learning and its authority boundaries without retired inference setup', () => {
+    render(<HelpPanel initialSectionId="knowledge-graph" onClose={vi.fn()} />);
+    const dialog = screen.getByRole('dialog', { name: 'Help Guide' });
+    expect(screen.getByRole('heading', { name: 'Authored Learning capture' })).toBeInTheDocument();
+    expect(dialog).toHaveTextContent(/Learning content is authored explicitly when closing a Bug/i);
+    expect(dialog).toHaveTextContent(/does not grant authority to approve the Bug/i);
+    expect(dialog).toHaveTextContent(/projection waits for the Bug to reach Done/i);
+    expect(dialog).toHaveTextContent(/replay preserves the capture history/i);
+    expect(dialog).toHaveTextContent(/an absent LLM configuration is not a failure/i);
+    expect(dialog).not.toHaveTextContent(/cognitive_llm_config|provider \+ model \+ API key|cognitive extractors \(opt-in\)/i);
+  });
+
   it('falls back from the retired Sprint help deep link without offering Sprint actions', () => {
     render(<HelpPanel initialSectionId="sprints" onClose={vi.fn()} />);
     expect(screen.queryByRole('button', { name: 'Sprints' })).not.toBeInTheDocument();

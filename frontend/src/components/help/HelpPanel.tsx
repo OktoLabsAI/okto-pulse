@@ -1487,9 +1487,13 @@ Structural nodes (Decision, Requirement, TestScenario…) are re-derivable mecha
 
 The zero-orphan **connectivity guard** validates every commit: new nodes must arrive connected (provenance \`belongs_to\` for deterministic writers; strict judgement-edge pairs for cognitive writers), so the graph never accumulates orphans.
 
-### Cognitive extractors (opt-in)
+### Authored Learning capture
 
-Beyond the structural extractors, the KG can suggest **Learning**, **Alternative**, and **Assumption** candidates via LLM. This is **opt-in** per board via \`cognitive_llm_config\` (provider + model + API key). When disabled, the system logs a structured event but does not call any LLM.
+Learning content is authored explicitly when closing a Bug. The capture records its source and provenance, follows the Board's closeout policy, and remains subject to delivery evidence, permissions and review gates. Recording a capture does not grant authority to approve the Bug.
+
+An admitted capture is durable before graph materialization. Its projection waits for the Bug to reach Done and for the required canonical source; replay preserves the capture history.
+
+These workflows do not require a server-side LLM configuration. Health reports actual component availability and pending work; an absent LLM configuration is not a failure.
 
 ### AI agent integration
 
