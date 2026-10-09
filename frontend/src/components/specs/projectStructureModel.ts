@@ -17,10 +17,8 @@ export interface ProjectStructureParseResult {
 
 export function shouldShowProjectStructureTab(
   canRead: boolean,
-  canAuthor: boolean,
-  structure: unknown,
 ): boolean {
-  return canRead && (canAuthor || (structure !== null && structure !== undefined));
+  return canRead;
 }
 
 export function canMutateProjectStructureInStatus(

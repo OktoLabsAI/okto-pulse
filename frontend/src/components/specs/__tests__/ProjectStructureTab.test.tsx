@@ -124,6 +124,24 @@ describe('ProjectStructureTab', () => {
     apiMock.mutateProjectStructure.mockResolvedValue(mutation(2, nodes));
   });
 
+  it('shows the absent structure in an in-progress Spec without authoring controls', async () => {
+    apiMock.getProjectStructure.mockResolvedValue({
+      ...snapshot(1, []), state: 'not_authored', authored: false,
+    });
+    renderTab({
+      spec: { ...spec, status: 'in_progress', project_structure: null },
+      canCreate: false, canUpdate: false, canRevoke: false,
+      canRestore: false, canReorder: false,
+      canLinkTask: false, canUnlinkTask: false,
+      canLinkTest: false, canUnlinkTest: false,
+      canLinkEvidence: false, canUnlinkEvidence: false,
+    });
+    expect(await screen.findByText('No project structure has been authored')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Start project structure' })).not.toBeInTheDocument();
+    expect(apiMock.mutateProjectStructure).not.toHaveBeenCalled();
+  });
+
   it('defaults to a clean single-column View with inline notes and no technical node IDs', async () => {
     renderTab();
 

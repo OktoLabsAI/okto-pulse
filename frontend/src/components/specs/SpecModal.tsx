@@ -1234,12 +1234,8 @@ export function SpecModal({
   // Evidence changes alter the authored AS-IS boundary and remain Draft-only.
   const canLinkProjectStructureEvidence = canMutateProjectStructure('link_evidence');
   const canUnlinkProjectStructureEvidence = canMutateProjectStructure('unlink_evidence');
-  // An absent structure can only be authored by creating its first node.
-  const canAuthorProjectStructure = canCreateProjectStructure;
   const showProjectStructure = shouldShowProjectStructureTab(
     canReadProjectStructure,
-    canAuthorProjectStructure,
-    spec?.project_structure,
   );
   const canEditCodeEvidenceCoverage = !spec?.archived && spec?.status === 'draft' && hasPermissionWithState(
     perms.has,
