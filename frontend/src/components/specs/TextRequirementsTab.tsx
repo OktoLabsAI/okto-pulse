@@ -64,7 +64,7 @@ export function TextRequirementsTab({ kind, items, canCreate, canEdit, canRevoke
           <header className="flex items-center gap-2 px-3 py-2 bg-gray-50 dark:bg-gray-700/50">
             <button type="button" aria-expanded={expanded} aria-controls={`requirement-details-${item.id}`} onClick={() => setExpandedId(expanded ? null : item.id)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
               {kind === 'FR' && (taskCount > 0 ? <CheckCircle size={14} className="text-green-500 shrink-0" /> : <XCircle size={14} className="text-gray-300 dark:text-gray-600 shrink-0" />)}
-              <span title={item.id} className="max-w-[40%] truncate shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300 font-medium">{kind === 'FR' ? item.id : 'AC'}</span>
+              <span title={item.id} className="max-w-[40%] truncate shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300 font-medium">{item.id}</span>
               <span className="text-sm font-medium text-gray-900 dark:text-white truncate flex-1" title={label}>{label}</span>
               {kind === 'FR' && <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded ${taskCount > 0 ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300' : 'bg-gray-100 text-gray-400 dark:bg-gray-700 dark:text-gray-500'}`}>{taskCount} tasks</span>}
               {expanded ? <ChevronUp size={14} className="text-gray-400 shrink-0" /> : <ChevronDown size={14} className="text-gray-400 shrink-0" />}

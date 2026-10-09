@@ -26,6 +26,7 @@ describe('structured FR and AC cards', () => {
   });
   it('shows AC titles in compact rows and expands the independently stored content', () => {
     render(<TextRequirementsTab {...props({ kind: 'AC' as const })} />);
+    expect(screen.getByRole('button', { name: /First title/ })).toHaveTextContent('fr-a');
     expect(screen.queryByText('Same content')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /First title/ }));
     expect(screen.getByText('Same content')).toBeInTheDocument();
