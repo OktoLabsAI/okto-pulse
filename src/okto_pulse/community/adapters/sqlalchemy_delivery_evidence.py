@@ -1367,7 +1367,7 @@ class CommunityDeliveryEvidenceStore:
                 {
                     "card_id": card.id,
                     "complete": snapshot.complete,
-                    "delivery_completeness": asdict(calculate_delivery_completeness(snapshot, card.id)) if card.card_type == CardType.NORMAL else None,
+                    "delivery_completeness": None,
                     "title": card.title,
                     "card_version": card.policy_version,
                     "delivery_revision": await self._delivery_revision(card_scope),
@@ -1408,4 +1408,9 @@ class CommunityDeliveryEvidenceStore:
             CardRecord.spec_edition == scope.edition, CardRecord.id.in_(identities),
         ))).all())
         snapshot = self._with_effective_context(snapshot, plan, records, spec)
+        # Test evidence belongs to other Cards; calculate only after assembling
+        # the complete selected and authenticated Spec population.
+        for row in per_card:
+            if row["card_type"] == CardType.NORMAL.value:
+                row["delivery_completeness"] = asdict(calculate_delivery_completeness(snapshot, row["card_id"]))
         return snapshot, per_card

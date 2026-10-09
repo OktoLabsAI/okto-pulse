@@ -19,7 +19,7 @@ export function useTaskDeliveryCompleteness(boardId: string, cards: CardSummary[
     if (!enabled) { setResult(undefined); return; }
     const controller = new AbortController();
     const values: Record<string, DeliveryCompletenessState> = {};
-    for (const card of tasks) values[card.id] = card.spec_id ? { loading: true } : { value: { percent: null, completed: 0, total: 0, reason: 'scope_missing' } };
+    for (const card of tasks) values[card.id] = card.spec_id ? { loading: true } : { value: { percent: null, planned: 0, implemented: 0, verified: 0, accepted: 0, total: 0, scope_sha256: null, reason: 'scope_missing' } };
     const publish = () => { if (!controller.signal.aborted) setResult({ tasks, boardId, refreshKey, revision, values: { ...values } }); };
     publish();
     const specs = [...new Set(tasks.map(card => card.spec_id).filter((id): id is string => !!id))];

@@ -340,6 +340,33 @@ async def test_full_delivery_roundtrip_signed_test_replay_and_read_only_projecti
 
 
 @pytest.mark.asyncio
+async def test_maturity_reads_other_cards_authenticated_tests_before_completion(ledger):
+    session, store, evidence = ledger
+    await session.execute(update(Card).where(Card.id.in_(['task', 'test'])).values(status='in_progress'))
+    await session.commit()
+    impl = await record(store, command())
+    async def score():
+        view = await store.projection(BOARD_ID, SPEC_ID)
+        return next(c['delivery_completeness'] for c in view['per_card'] if c['card_id'] == 'task')
+    implemented = await score()
+    assert (implemented['percent'], implemented['implemented']) == (50, 2)
+    await record(store, command('test', implementation_ids=[impl['id']]))
+    verified = await score()
+    assert (verified['percent'], verified['verified']) == (80, 2)
+    assert not (await store.projection(BOARD_ID, SPEC_ID))['allowed']
+    await session.execute(update(Card).where(Card.id.in_(['task', 'test'])).values(status='done'))
+    await session.commit()
+    accepted = await score()
+    assert (accepted['percent'], accepted['accepted']) == (100, 2)
+    assert accepted['scope_sha256'] == implemented['scope_sha256']
+    # A later unsuccessful/currentness-invalid run cannot borrow prior passing credit.
+    await session.execute(update(Spec).where(Spec.id == SPEC_ID).values(
+        test_scenarios=[{**SCENARIO, 'status': 'failed', 'evidence': evidence}]))
+    await session.commit()
+    assert (await score())['percent'] == 50
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "mutation",
     [

@@ -189,7 +189,11 @@ export interface DeliveryPerCard {
 
 export interface DeliveryCompleteness {
   percent: number | null;
-  completed: number;
+  planned: number;
+  implemented: number;
+  verified: number;
+  accepted: number;
+  scope_sha256: string | null;
   total: number;
   reason: 'scope_missing' | 'scope_incomplete' | null;
 }
