@@ -28,6 +28,18 @@ function page(title: string, next: string | null = null): SpecCoverageResponse {
 }
 beforeEach(() => { vi.clearAllMocks(); api.getSpecCoverage.mockResolvedValue(base); });
 
+it('shows the shared pulse animation while coverage is pending and removes it when loaded', async () => {
+  let finish!: (value: SpecCoverageResponse) => void;
+  api.getSpecCoverage.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+  render(<SpecCoveragePanel boardId="board" specId="spec" revision="1" onOpenSection={vi.fn()} />);
+  const loader = screen.getByRole('status', { name: 'Loading coverage…' });
+  expect(loader.querySelector('.pulse-loader__trace')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Reload coverage' })).toBeDisabled();
+  await act(async () => finish(base));
+  expect(screen.queryByRole('status', { name: 'Loading coverage…' })).not.toBeInTheDocument();
+  expect(screen.getByText('67%')).toBeInTheDocument();
+});
+
 it('keeps linked Test Cards separate from passing proof and graph absence', async () => {
   api.getSpecCoverage.mockResolvedValue(page('Unverified requirement'));
   render(<SpecCoveragePanel boardId="board" specId="spec" revision="1" onOpenSection={vi.fn()} />);

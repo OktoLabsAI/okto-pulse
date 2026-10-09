@@ -1,6 +1,7 @@
 import { resolveDeliveryGateMode } from '@/components/board/deliveryGateSettings';
 import { useEffect, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
+import { PulseLoader } from '@/components/shared/PulseLoader';
 import { useDashboardApi } from '@/services/api';
 import { ObligationRefText } from './obligationPresentation';
 import type { DeliveryEvidenceProjection } from '@/types/delivery-evidence';
@@ -96,9 +97,9 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
         {data && (data.allowed
           ? <span className="shrink-0 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] uppercase tracking-wide text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">Complete</span>
           : <span className="shrink-0 rounded-full bg-red-100 px-2 py-0.5 text-[10px] uppercase tracking-wide text-red-700 dark:bg-red-900/40 dark:text-red-300">Blocked</span>)}
-        <span className="text-xs text-gray-500 dark:text-gray-400" role="status">
-          {error ? error : !data ? 'Loading delivery rollup…' : `${summary} · Edition ${data.edition}`}
-        </span>
+        {(error || data) && <span className="text-xs text-gray-500 dark:text-gray-400" role="status">
+          {error || `${summary} · Edition ${data!.edition}`}
+        </span>}
       </div>
       <div className="flex shrink-0 items-center gap-2">
         <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] uppercase tracking-wide text-gray-600 dark:bg-gray-800 dark:text-gray-300" data-testid="delivery-gate-mode">
@@ -111,6 +112,7 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
       </div>
     </div>
 
+      {!data && !error && <PulseLoader label="Loading delivery rollup…" size="sm" className="py-6" />}
       <div className="flex items-center justify-between gap-3 rounded-lg border border-gray-200 bg-gray-50/50 px-3 py-2 dark:border-gray-700 dark:bg-gray-700/20">
         <div className="min-w-0">
           <span className="text-xs font-medium text-gray-700 dark:text-gray-300">Skip delivery evidence requirement</span>

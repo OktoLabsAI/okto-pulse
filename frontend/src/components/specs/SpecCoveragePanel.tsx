@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useDashboardApi } from '@/services/api';
 import { AuthenticatedFetchError } from '@/lib/authFetch';
 import { AccessibleTabList, AccessibleTabPanel } from '@/components/shared/AccessibleTabs';
+import { PulseLoader } from '@/components/shared/PulseLoader';
 import { DeliveryEvidencePanel } from '@/components/code-traceability/DeliveryEvidencePanel';
 import type { CoverageSection, SpecCoverageResponse } from './specCoverageTypes';
 
@@ -124,7 +125,7 @@ export function SpecCoveragePanel({ boardId, specId, revision, canCorrect = [], 
       <DeliveryEvidencePanel boardId={boardId} specId={specId} revision={revision}
         skipDeliveryEvidence={skipDeliveryEvidence} onSkipDeliveryEvidenceChange={onSkipDeliveryEvidenceChange} />
     </AccessibleTabPanel>}
-    {activeView !== 'implementation' && loading && <p role="status">Loading coverage…</p>}
+    {activeView !== 'implementation' && loading && <PulseLoader label="Loading coverage…" size="sm" className="py-6" />}
     {activeView !== 'implementation' && error && <p role="alert">{error}</p>}
     {canReadSummary && data && activeView !== 'implementation' && <>
       <p className="text-xs text-gray-500 dark:text-gray-400">Edition {data.edition} · Informational view — this does not approve a gate.</p>
