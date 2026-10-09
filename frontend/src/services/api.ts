@@ -2921,10 +2921,18 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       return apiClient.fetchJson('/checklist-templates');
     },
 
-    async getChecklistBinding(boardId: string): Promise<ChecklistBinding> {
-      return apiClient.fetchJson(
-        `/boards/${boardId}/checklist-bindings/spec/spec_validation`,
-      );
+    async getChecklistBinding(boardId: string): Promise<ChecklistBinding | null> {
+      try {
+        return await apiClient.fetchJson(
+          `/boards/${boardId}/checklist-bindings/spec/spec_validation`,
+        );
+      } catch (error) {
+        if (error instanceof AuthenticatedFetchError && error.status === 422
+          && (error.details as Record<string, unknown> | null)?.reason_code === 'checklist_board_binding_missing') {
+          return null;
+        }
+        throw error;
+      }
     },
 
     async updateChecklistBinding(

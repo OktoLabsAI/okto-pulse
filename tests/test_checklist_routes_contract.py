@@ -31,13 +31,27 @@ from okto_pulse.core.domain.checklist import (
     ChecklistMode,
 )
 from okto_pulse.core.services.gate_contracts import GateContractError
-from okto_pulse.core.services.checklist import ChecklistConflictError
+from okto_pulse.core.services.checklist import ChecklistConflictError, ChecklistPortContractError
 from okto_pulse.core.domain.spec_validation import (
     RequirementLintRequired,
     SpecValidationEditionConflict,
     SpecValidationGateNotReady,
     SpecValidationVersionConflict,
 )
+
+
+@pytest.mark.asyncio
+async def test_missing_board_binding_is_an_actionable_read_error(monkeypatch):
+    async def missing(self, command, *, actor, uow):
+        raise ChecklistPortContractError("checklist_board_binding_missing")
+
+    monkeypatch.setattr(checklists.GetChecklistBindingUseCase, "execute", missing)
+    result = await checklists.get_checklist_binding(
+        board_id="board-1", target_type="spec", phase="spec_validation",
+        user_id="human-1", realm_id=None, uow=object(),
+    )
+    assert result.status_code == 422
+    assert json.loads(result.body)["details"]["reason_code"] == "checklist_board_binding_missing"
 
 
 @pytest.mark.asyncio

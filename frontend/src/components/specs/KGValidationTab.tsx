@@ -13,6 +13,7 @@ import * as kgApi from '@/services/kg-api';
 import { NODE_TYPE_CONFIG, type KGNode, type KGEdge, type KGNodeType } from '@/types/knowledge-graph';
 import { NodeDetailModal } from '@/components/knowledge/NodeDetailModal';
 import { RelevanceBadge } from '@/components/knowledge/RelevanceBadge';
+import { PulseLoader } from '@/components/shared/PulseLoader';
 
 interface Props {
   boardId: string;
@@ -110,8 +111,8 @@ export function KGValidationTab({ boardId, specId }: Props) {
 
   if (loading) {
     return (
-      <div className="p-6 text-sm text-gray-500 animate-pulse" data-testid="kg-validation-loading">
-        Loading validation data from Knowledge Graph…
+      <div className="py-6" data-testid="kg-validation-loading">
+        <PulseLoader size="sm" label="Loading Knowledge Graph…" />
       </div>
     );
   }
