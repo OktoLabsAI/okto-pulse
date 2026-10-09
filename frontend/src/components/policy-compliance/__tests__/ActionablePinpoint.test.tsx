@@ -66,12 +66,12 @@ describe('ActionablePinpoint', () => {
     );
     const text = container.textContent ?? '';
     const ordered = [
+      'Persistence responsibility leaks into Core',
       'Boundary integrity',
       'high',
       'Structured item',
       'Current issue',
       'TR-2: Core creates and commits the SQLAlchemy session. (tr-secret-id)',
-      'Persistence responsibility leaks into Core',
       'The use case owns a Community transaction detail.',
       'Suggested remediation:',
       'Move session ownership to the Community adapter.',
@@ -80,6 +80,14 @@ describe('ActionablePinpoint', () => {
 
     expect(ordered.every((position) => position >= 0)).toBe(true);
     expect([...ordered].sort((left, right) => left - right)).toEqual(ordered);
+    const summary = screen.getByTestId('actionable-pinpoint-title').closest('summary')!;
+    expect(screen.getByTestId('actionable-pinpoint-detail')).not.toBeVisible();
+    expect(screen.getByTestId('actionable-pinpoint-metric')).toBeVisible();
+    fireEvent.click(summary);
+    expect(screen.getByTestId('actionable-pinpoint-detail')).toBeVisible();
+    expect(screen.getByTestId('actionable-pinpoint-remediation')).toBeVisible();
+    fireEvent.click(summary);
+    expect(screen.getByTestId('actionable-pinpoint-detail')).not.toBeVisible();
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
     expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
   });

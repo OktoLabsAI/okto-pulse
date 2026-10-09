@@ -626,12 +626,23 @@ function AssessmentCard({
                 </p>
                 <ul className="space-y-2">
                   {metric.pinpoints.map((pinpoint) => (
-                    <li key={pinpoint.pinpoint_key}
-                      className="rounded-lg border border-surface-200 bg-surface-50 p-2 text-surface-600 dark:border-surface-700 dark:bg-surface-900/60 dark:text-surface-300">
-                      <p className="font-semibold">{pinpoint.title}</p>
-                      <p>{pinpoint.anchor_snapshot.label}</p>
-                      <p className="whitespace-pre-wrap">{pinpoint.detail}</p>
-                      {pinpoint.remediation && <p>{pinpoint.remediation}</p>}
+                    <li key={pinpoint.pinpoint_key}>
+                      <ActionablePinpoint
+                        metricLabel={metric.metric_code}
+                        policyState={assessment.currentness === 'stale' ? 'stale' : metric.outcome === 'fail' ? 'fail' : pinpoint.kind === 'issue' ? 'non_blocking_warning' : 'positive_evidence'}
+                        pinpoint={{
+                          contractVersion: 'v2',
+                          state: pinpoint.anchor_snapshot.availability_at_seal,
+                          kind: pinpoint.kind, title: pinpoint.title, detail: pinpoint.detail,
+                          severity: pinpoint.severity, remediation: pinpoint.remediation,
+                          blocking: pinpoint.blocking,
+                          categoryLabel: pinpoint.anchor.anchor_type.replace(/_/g, ' '),
+                          locationLabel: pinpoint.anchor_snapshot.label,
+                          locationReference: pinpoint.anchor_snapshot.availability_at_seal === 'inaccessible' ? null : pinpoint.anchor.anchor_ref,
+                          excerpt: pinpoint.anchor_snapshot.excerpt,
+                          navigationTarget: null, unavailableMessage: null, technicalDetails: null,
+                        }}
+                      />
                     </li>
                   ))}
                 </ul>
@@ -2257,8 +2268,11 @@ export function PolicyCompliancePanel({
                 {previousLifecycleAssessments.map((assessment) => (
                   <li
                     key={assessment.receipt_id}
-                    className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-surface-200 bg-surface-50/70 p-3 text-xs dark:border-surface-700 dark:bg-surface-800/40"
+                    className="rounded-lg border border-surface-200 bg-surface-50/70 text-xs dark:border-surface-700 dark:bg-surface-800/40"
                   >
+                    <details className="group/history">
+                    <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-3 p-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-600 [&::-webkit-details-marker]:hidden" aria-label={`View policy evaluation from ${assessment.validation_edition == null ? 'history' : `edition ${assessment.validation_edition}`} at ${formatTimestamp(assessment.recorded_at)}`}>
+                    <span aria-hidden="true" className="transition-transform group-open/history:rotate-90">›</span>
                     <span>
                       <span className="font-semibold text-surface-800 dark:text-surface-100">
                         {assessment.validation_edition == null
@@ -2276,6 +2290,12 @@ export function PolicyCompliancePanel({
                         ? 'passed'
                         : 'needs_attention'}
                     />
+                    </summary>
+                    <div className="border-t border-surface-200 p-3 dark:border-surface-700">
+                      <AssessmentCard assessment={assessment} activeSkip={null}
+                        canManageSkips={false} onCreateSkip={() => {}} onRevokeSkip={() => {}} />
+                    </div>
+                    </details>
                   </li>
                 ))}
               </ol>

@@ -1414,6 +1414,21 @@ describe('guideline compliance summary', () => {
     expect(within(previousContent).getByText('Legacy')).toBeInTheDocument();
     expect(within(previousContent).queryByText('Edition 1')).not.toBeInTheDocument();
     expect(within(previousContent).queryByText(/receipt-/i)).not.toBeInTheDocument();
+    const priorCard = within(previousContent).getByTestId('semantic-assessment-card');
+    expect(priorCard).not.toBeVisible();
+    fireEvent.click(previousContent.querySelector('summary')!);
+    expect(priorCard).toBeVisible();
+    expect(within(priorCard).getByTestId('semantic-confidence-score')).toHaveTextContent('92 / 100');
+    const priorMetric = previous.metric_results[0];
+    fireEvent.click(within(priorCard).getByText(`${priorMetric.metric_code}: rationale, evidence and pinpoints`));
+    expect(within(priorCard).getByText(priorMetric.rationale)).toBeVisible();
+    expect(within(priorCard).getByText(`sha256:${HASH_A}`)).toBeVisible();
+    const priorPinpoint = within(priorCard).getByTestId('actionable-pinpoint');
+    expect(within(priorPinpoint).getByTestId('actionable-pinpoint-detail')).not.toBeVisible();
+    fireEvent.click(priorPinpoint.querySelector('summary')!);
+    expect(within(priorPinpoint).getByTestId('actionable-pinpoint-detail')).toHaveTextContent(priorMetric.pinpoints[0].detail);
+    expect(within(priorPinpoint).getByTestId('actionable-pinpoint-target')).toHaveTextContent(priorMetric.pinpoints[0].anchor_snapshot.excerpt!);
+    expect(within(priorCard).queryByRole('button', {name: /skip|waiver/i})).not.toBeInTheDocument();
     expect(
       policyApiMock.getCurrentSemanticGuidelineAssessment,
     ).toHaveBeenCalledWith(
