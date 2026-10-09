@@ -10,6 +10,26 @@ const page = { board_id: 'b', card_id: 'c', spec_id: 's', edition: 2, current_ed
 beforeEach(() => { vi.resetAllMocks(); api.getCardDeliveryLedger.mockResolvedValue(page); });
 afterEach(cleanup);
 
+it('limits the edition slider to whole existing editions and shows the selection', () => {
+  render(<CardLedgerPanel {...props} />);
+  const slider = screen.getByRole('slider', { name: 'History edition' });
+  expect(slider).toHaveAttribute('min', '1');
+  expect(slider).toHaveAttribute('max', '2');
+  expect(slider).toHaveAttribute('step', '1');
+  expect(slider).toHaveValue('2');
+  expect(screen.getByText('Edition 2 · Current')).toBeInTheDocument();
+  fireEvent.change(slider, { target: { value: '1' } });
+  expect(screen.getByText('Edition 1')).toBeInTheDocument();
+  expect(api.getCardDeliveryLedger).not.toHaveBeenCalled();
+});
+
+it('keeps a single edition selected without offering an unavailable range', () => {
+  render(<CardLedgerPanel {...props} edition={1} />);
+  expect(screen.getByRole('slider', { name: 'History edition' })).toBeDisabled();
+  expect(screen.getByRole('slider', { name: 'History edition' })).toHaveValue('1');
+  expect(screen.getByText('Edition 1 · Current')).toBeInTheDocument();
+});
+
 it('pages mixed records and reads original detail without presenting it as current proof', async () => {
   render(<CardLedgerPanel {...props} />);
   fireEvent.click(screen.getByText('Browse delivery records'));
