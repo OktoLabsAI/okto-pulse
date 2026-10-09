@@ -154,6 +154,7 @@ describe('SpecValidationHistoryPanel score presentation', () => {
           anchor_type: 'structured_child',
           anchor_ref: 'fr-availability',
           detail: 'The scaling requirement does not define minimum capacity.',
+          rationale: 'Without a capacity floor, implementers cannot size the deployment or verify availability.',
         }],
         resolved_thresholds: {
           min_spec_confidence: 70,
@@ -186,6 +187,9 @@ describe('SpecValidationHistoryPanel score presentation', () => {
     expect(screen.getByTestId('spec-validation-score-decidability'))
       .toHaveClass('border-red-400');
     expect(screen.getByText('decidability')).toBeInTheDocument();
+    expect(screen.getByText('problem')).toBeVisible();
+    expect(screen.getByText('high')).toBeVisible();
+    expect(screen.getByLabelText('Associated dimensions')).toBeVisible();
     expect(screen.getByTestId('spec-validation-pinpoint-target'))
       .toHaveTextContent(
         'fr-availability',
@@ -195,6 +199,9 @@ describe('SpecValidationHistoryPanel score presentation', () => {
     fireEvent.click(screen.getByText('The scaling requirement does not define minimum capacity.', { selector: 'summary span' }));
     expect(quote).toBeVisible();
     expect(screen.getByText('Specify minimum capacity.')).toBeVisible();
+    expect(screen.getByText(/Without a capacity floor/)).toBeVisible();
+    expect(screen.getByText('Identified issue')).toHaveClass('text-orange-700');
+    expect(screen.getByText('Recommended action')).toHaveClass('text-emerald-700');
     expect(screen.queryByText('FR-4: Run across three availability zones.')).not.toBeInTheDocument();
     expect(screen.getByText(/confident assessment/)).toBeInTheDocument();
     expect(screen.getByText(/capacity decision/)).toBeInTheDocument();

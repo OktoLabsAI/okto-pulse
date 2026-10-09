@@ -118,6 +118,7 @@ function newPinpoint(): PinpointDraft {
     severity: 'medium',
     excerpt: '',
     recommendation: '',
+    rationale: '',
     anchor_type: 'whole_artifact',
     anchor_ref: null,
     detail: '',
@@ -287,6 +288,7 @@ export function SubmitSpecValidationModal({
       ambiguity_justification: metrics.ambiguity.justification.trim(),
       pinpoints: pinpoints.map(({ key: _key, ...pinpoint }) => ({
         ...pinpoint,
+        rationale: pinpoint.rationale?.trim() || undefined,
         anchor_ref: pinpoint.anchor_type === 'whole_artifact'
           ? null
           : pinpoint.anchor_ref?.trim() || null,
@@ -492,9 +494,9 @@ export function SubmitSpecValidationModal({
                     </select>
                   </label>)}
                 </div>
-                {(['excerpt', 'recommendation'] as const).map(field => <label key={field} className="block text-xs font-medium">
-                  {field === 'excerpt' ? 'Verbatim excerpt' : 'Recommended action'}
-                  <textarea aria-label={`Pinpoint ${index + 1} ${field}`} value={pinpoint[field]} maxLength={1000} rows={2}
+                {(['excerpt', 'rationale', 'recommendation'] as const).map(field => <label key={field} className="block text-xs font-medium">
+                  {field === 'excerpt' ? 'Verbatim excerpt' : field === 'rationale' ? 'Rationale — why this matters and its impact' : 'Recommended action'}
+                  <textarea aria-label={`Pinpoint ${index + 1} ${field}`} value={pinpoint[field] ?? ''} maxLength={1000} rows={2}
                     onChange={event => setPinpoints(current => current.map(item => item.key === pinpoint.key ? { ...item, [field]: event.target.value } : item))}
                     className="mt-1 block w-full rounded border border-gray-300 bg-white p-2 text-xs text-gray-900 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100" />
                 </label>)}

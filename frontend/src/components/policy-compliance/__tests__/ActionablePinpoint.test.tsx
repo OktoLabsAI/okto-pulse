@@ -48,6 +48,14 @@ function pinpoint(
 }
 
 describe('ActionablePinpoint', () => {
+  it('presents sealed structured requirements as title and prose without transport metadata', () => {
+    const excerpt = JSON.stringify({id: 'tr-1', title: 'Hexagonal isolation', text: 'Use public ports.', linked_task_ids: ['task-private'], verification: {mode: 'explicit'}});
+    render(<ActionablePinpoint metricLabel="Architecture" policyState="positive_evidence"
+      pinpoint={pinpoint({locationLabel: 'Hexagonal isolation', excerpt})} />);
+    expect(screen.getByText(/Hexagonal isolation\s+Use public ports\./)).toBeInTheDocument();
+    expect(screen.queryByText(/linked_task_ids|task-private/)).not.toBeInTheDocument();
+    expect(excerpt).toContain('linked_task_ids');
+  });
   it('renders issue content in the ambiguity FindingItems hierarchy', () => {
     const { container } = render(
       <ActionablePinpoint

@@ -1847,6 +1847,9 @@ def _restore_required_nones(item: object, payload: object) -> None:
     real detail/full page into a 500.
     """
 
+    from okto_pulse.core.domain.quality_assessment import UnboundFindingAnchor
+    from okto_pulse.core.domain.guideline_semantic_v2 import AnchorSnapshot
+
     if is_dataclass(item) and not isinstance(item, type):
         if not isinstance(payload, dict):
             return
@@ -1857,7 +1860,9 @@ def _restore_required_nones(item: object, payload: object) -> None:
                 and dataclass_field.default_factory is MISSING
             )
             if value is None:
-                if required:
+                # Domain construction defaults do not make these nullable wire
+                # fields optional. exclude_unset must retain them on pages too.
+                if required or isinstance(item, (UnboundFindingAnchor, AnchorSnapshot)):
                     payload[dataclass_field.name] = None
                 continue
             _restore_required_nones(value, payload.get(dataclass_field.name))

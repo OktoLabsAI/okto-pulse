@@ -1146,3 +1146,10 @@ def test_semantic_detail_page_preserves_nested_required_nulls() -> None:
     assert pinpoints[1].anchor.anchor_ref is None
     assert pinpoints[0].anchor_snapshot.excerpt is None
     assert pinpoints[1].severity is None and pinpoints[1].remediation is None
+    # Validate the actual route serialization, not defaults reinserted by Pydantic.
+    wire = validated.model_dump(mode="json", exclude_unset=True)
+    wire_pinpoints = wire["items"][0]["metric_results"][0]["pinpoints"]
+    assert wire_pinpoints[0]["anchor"]["excerpt_hash"] is None
+    assert wire_pinpoints[1]["anchor"]["anchor_ref"] is None
+    assert wire_pinpoints[1]["anchor"]["excerpt_hash"] is None
+    assert wire_pinpoints[0]["anchor_snapshot"]["excerpt"] is None

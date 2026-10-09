@@ -347,22 +347,23 @@ function ValidationRecord({
             {validation.pinpoints!.map((pinpoint, index) => (
               <li key={index}>
                 <details className="group rounded-lg border border-surface-200 bg-white dark:border-surface-700 dark:bg-surface-900/50">
-                  <summary className="flex cursor-pointer list-none items-center gap-2 p-3 text-xs [&::-webkit-details-marker]:hidden">
+                  <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 p-3 text-xs [&::-webkit-details-marker]:hidden">
                     <ChevronDown size={14} className="shrink-0 transition-transform group-open:rotate-180" aria-hidden="true" />
                     <span className="min-w-0 flex-1 truncate font-medium text-surface-800 dark:text-surface-100">{pinpoint.detail.slice(0, 140)}</span>
-                    <span className="rounded bg-surface-100 px-2 py-1 capitalize dark:bg-surface-800">{pinpoint.kind ?? 'Not classified'}</span>
+                    <span className={`rounded-full px-2.5 py-1 font-bold capitalize ${pinpoint.kind === 'opportunity' ? 'bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-200' : 'bg-orange-100 text-orange-900 dark:bg-orange-950 dark:text-orange-200'}`}>{pinpoint.kind ?? 'Not classified'}</span>
                     {pinpoint.severity && <span className={`rounded px-2 py-1 font-semibold capitalize ${pinpoint.severity === 'critical' || pinpoint.severity === 'high' ? 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-200' : 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200'}`}>{pinpoint.severity}</span>}
+                    <span className="flex w-full flex-wrap gap-1 pl-5" aria-label="Associated dimensions">
+                      {(pinpoint.metrics ?? (pinpoint.metric ? [pinpoint.metric] : [])).map(metric => <span key={metric} className="rounded-full bg-violet-100 px-2 py-0.5 font-semibold capitalize text-violet-800 dark:bg-violet-950 dark:text-violet-200">{metric}</span>)}
+                    </span>
                   </summary>
                   <div className="space-y-3 border-t border-surface-200 p-3 text-xs text-surface-700 dark:border-surface-700 dark:text-surface-300">
-                    <div className="flex flex-wrap gap-1" aria-label="Associated dimensions">
-                      {(pinpoint.metrics ?? (pinpoint.metric ? [pinpoint.metric] : [])).map(metric => <span key={metric} className="rounded-full bg-violet-100 px-2 py-0.5 capitalize text-violet-800 dark:bg-violet-950 dark:text-violet-200">{metric}</span>)}
-                    </div>
                     <p data-testid="spec-validation-pinpoint-target">{pinpoint.anchor_ref ?? 'Whole Spec'}</p>
                     <div><h5 className="font-semibold">Verbatim excerpt</h5>
                       {pinpoint.excerpt ? <blockquote className="mt-1 whitespace-pre-wrap border-l-2 border-violet-400 pl-3">{pinpoint.excerpt}</blockquote> : <p>No focused excerpt was recorded in this evaluation.</p>}
                     </div>
-                    <div><h5 className="font-semibold">Identified issue</h5><p className="mt-1 whitespace-pre-wrap">{pinpoint.detail}</p></div>
-                    <div><h5 className="font-semibold">Recommended action</h5><p className="mt-1 whitespace-pre-wrap">{pinpoint.recommendation ?? 'No separate action was recorded in this evaluation.'}</p></div>
+                    <div className="rounded-lg border-l-4 border-orange-400 bg-orange-50 p-3 text-orange-950 dark:bg-orange-950/30 dark:text-orange-100"><h5 className="font-bold text-orange-700 dark:text-orange-300">{pinpoint.kind === 'opportunity' ? 'Identified opportunity' : 'Identified issue'}</h5><p className="mt-1 whitespace-pre-wrap leading-relaxed">{pinpoint.detail}</p></div>
+                    <div className="rounded-lg border border-surface-200 bg-surface-50 p-3 dark:border-surface-700 dark:bg-surface-800"><h5 className="font-bold">Rationale — why this matters</h5><p className="mt-1 whitespace-pre-wrap leading-relaxed">{pinpoint.rationale ?? 'No separate rationale was recorded in this evaluation.'}</p></div>
+                    <div className="rounded-lg border-l-4 border-emerald-400 bg-emerald-50 p-3 text-emerald-950 dark:bg-emerald-950/30 dark:text-emerald-100"><h5 className="font-bold text-emerald-700 dark:text-emerald-300">Recommended action</h5><p className="mt-1 whitespace-pre-wrap leading-relaxed">{pinpoint.recommendation ?? 'No separate action was recorded in this evaluation.'}</p></div>
                   </div>
                 </details>
               </li>

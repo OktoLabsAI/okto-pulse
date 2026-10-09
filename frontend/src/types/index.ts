@@ -3287,6 +3287,7 @@ export interface SpecValidationPinpoint {
   severity?: 'low' | 'medium' | 'high' | 'critical';
   excerpt?: string;
   recommendation?: string;
+  rationale?: string | null;
   anchor_type: QualityFindingAnchorType;
   anchor_ref?: string | null;
   detail: string;

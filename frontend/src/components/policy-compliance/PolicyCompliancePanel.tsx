@@ -2238,7 +2238,7 @@ export function PolicyCompliancePanel({
           <PreviousResultsSection
             expanded={historyExpanded}
             onToggle={() => setHistoryExpanded((value) => !value)}
-            count={assessments.loaded && !assessments.hasMore
+            count={assessments.loaded && !assessments.hasMore && !assessments.error
               ? previousLifecycleAssessments.length
               : undefined}
             description="Earlier policy evaluations from this and prior editions."
@@ -2248,7 +2248,7 @@ export function PolicyCompliancePanel({
               <p role="status" className="text-xs text-surface-500 dark:text-surface-400">
                 Loading previous results…
               </p>
-            ) : previousLifecycleAssessments.length === 0 ? (
+            ) : previousLifecycleAssessments.length === 0 && !assessments.error ? (
               <p className="text-xs text-surface-500 dark:text-surface-400">
                 No previous policy results are available.
               </p>

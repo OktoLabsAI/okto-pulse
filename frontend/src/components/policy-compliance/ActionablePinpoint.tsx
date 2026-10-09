@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { readableSealedExcerpt } from './sealedExcerpt';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -110,7 +111,7 @@ export function ActionablePinpoint({
   );
   const locationText = useMemo(() => {
     const label = pinpoint.locationLabel.trim();
-    const excerpt = pinpoint.excerpt?.trim();
+    const excerpt = pinpoint.excerpt ? readableSealedExcerpt(pinpoint.excerpt).trim() : '';
     if (!excerpt || label === excerpt || label.includes(excerpt)) return label;
     if (!label || excerpt.includes(label)) return excerpt;
     return `${label}: ${excerpt}`;
