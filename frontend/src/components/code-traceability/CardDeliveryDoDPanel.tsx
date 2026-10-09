@@ -4,6 +4,8 @@ import { useDashboardApi } from '@/services/api';
 import { ObligationRefText } from './obligationPresentation';
 import { CardProgressPanel } from './CardProgressPanel';
 import { DeliveryNetImpactPanel } from './DeliveryNetImpactPanel';
+import { TestDeliveryOverview } from './TestDeliveryOverview';
+import { PulseLoader } from '@/components/shared/PulseLoader';
 import type {
   CardDeliveryEvidenceInput,
   CardDeliveryBatchDraft,
@@ -142,17 +144,16 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
   }
 
   return <section className="space-y-4" aria-label={isTest ? "Test verification evidence" : "Delivery evidence (Definition of Done)"}>
+    {isTest && !onStage && <div className="flex justify-end"><button type="button" disabled={!data && !error} onClick={() => setReload(value => value + 1)} className="rounded-md border border-gray-300 px-3 py-2 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800">Refresh evidence</button></div>}
     {error && <p role="alert" className="rounded-md border border-red-300 bg-red-50 p-3 text-xs text-red-700 dark:border-red-900/70 dark:bg-red-950/25 dark:text-red-300">{error}</p>}
-    {!data && !error && <p role="status" className="text-sm text-gray-500">Loading card delivery obligations…</p>}
+    {!data && !error && <PulseLoader label="Loading delivery evidence…" />}
     {data && <>
-      {mine && <CardProgressPanel key={`${boardId}:${card.id}:${data.edition}:${canProgress}`} boardId={boardId} specId={card.spec_id} edition={data.edition} card={mine} canWrite={canProgress} onStage={onStage} onSaved={() => { setReload(v => v + 1); onChanged?.(); }} />}
+      {isTest && !onStage && <TestDeliveryOverview data={data} cardId={card.id} />}
+      {mine && !isTest && <CardProgressPanel key={`${boardId}:${card.id}:${data.edition}:${canProgress}`} boardId={boardId} specId={card.spec_id} edition={data.edition} card={mine} canWrite={canProgress} onStage={onStage} onSaved={() => { setReload(v => v + 1); onChanged?.(); }} />}
       {!onStage && <>
-      {mine?.accumulated_impact && <DeliveryNetImpactPanel value={mine.accumulated_impact} />}
-      {mine?.report_impact?.source === 'accumulated' && <p role="status" className="text-sm">
+      {!isTest && mine?.accumulated_impact && <DeliveryNetImpactPanel value={mine.accumulated_impact} />}
+      {!isTest && mine?.report_impact?.source === 'accumulated' && <p role="status" className="text-sm">
         {mine.report_impact.current ? 'Submitted impact matches the known source bases.' : 'Submitted impact needs a new current basis before required impact validation can pass.'}
-      </p>}
-      {isTest && <p role="status" className="text-sm text-gray-500">
-        Test Cards are excluded from the implementation DoD gate. Authenticated test outcomes contribute to the Spec rollup; other validation requirements still apply.
       </p>}
       {!isTest && <div className="rounded-md border border-gray-200 p-4 dark:border-gray-800">
         <div className="mb-3 flex items-center justify-between gap-3">
@@ -186,16 +187,6 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
         </p>
       </div>}
 
-      {isTest && (data.tests ?? []).some(row => row.card_id === card.id) && <section aria-label="Recorded test outcomes" className="space-y-2 text-sm">
-        <h3>Recorded test outcomes</h3>
-        <p className="text-xs">Saving a result does not approve delivery. Earlier outcomes remain visible when a newer run replaces them.</p>
-        {(data.tests ?? []).filter(row => row.card_id === card.id).slice(-20).map(row => <div key={row.id}>
-          <span>{row.scenario_id} · {row.result}</span>
-          <span className="block text-xs">{row.current_verified_run ? 'Current authenticated run' : 'Outside the current authenticated run'}</span>
-        </div>)}
-        {(data.tests ?? []).filter(row => row.card_id === card.id).length > 20 && <p className="text-xs">Showing the latest 20 of {(data.tests ?? []).filter(row => row.card_id === card.id).length} recorded results in this view.</p>}
-      </section>}
-
       {!isTest && gateMode === 'blocking' && mine && !mine.satisfied && obligations.length > 0 && (
         <div className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 p-3 dark:border-red-900/70 dark:bg-red-950/25" data-testid="dod-blocked-banner">
           <span className="mt-0.5 text-sm text-red-500">⚠</span>
@@ -209,7 +200,7 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
       </>}
       <div className="flex gap-2">
         {canRecordKind && <button type="button" onClick={() => { setFormOpen(v => !v); setError(''); }} className="rounded-md bg-gray-800 px-4 py-2 text-sm text-white dark:bg-gray-100 dark:text-gray-900" data-testid="dod-record-button">
-          {formOpen ? 'Close recording form' : onStage ? 'Prepare delivery evidence for report' : 'Record Delivery Evidence'}
+          {formOpen ? 'Close recording form' : onStage ? 'Prepare delivery evidence for report' : isTest ? 'Record test evidence' : 'Record Delivery Evidence'}
         </button>}
         {canWaiver && !onStage && <button type="button" onClick={() => { setFormOpen(true); setError(''); }} className="rounded-md border border-gray-300 px-4 py-2 text-sm text-gray-600 dark:border-gray-700 dark:text-gray-300">
           Request Waiver (human)
@@ -218,9 +209,15 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
 
       {formOpen && (canRecordKind || canWaiver) && (
         <form className="space-y-3 rounded-md border p-3" onSubmit={e => { e.preventDefault(); void (canWaiver && !canRecordKind ? submitWaiver() : submit()); }} data-testid="dod-record-form">
+          {isTest && canRecordKind && <div className="border-b border-gray-200 pb-3 dark:border-gray-700">
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Connect a test result to delivery</h3>
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Select only the obligations and implementation this run actually checked. The passed or failed result comes from the authenticated run.</p>
+          </div>}
           {!isTest && canRecordKind && <label className="block text-sm"><input type="checkbox" checked={composeProofs} disabled={busy} onChange={e => setComposeProofs(e.target.checked)} /> Select receipts separately for each obligation</label>}
           <fieldset disabled={busy}>
-            <legend className="text-sm font-medium">Which obligations does this proof cover?</legend>
+            <legend className="text-sm font-medium">{isTest ? 'Obligations checked by this run' : 'Which obligations does this proof cover?'}</legend>
+            {isTest && <p className="mt-1 text-xs text-gray-500">Available obligations belong to the Spec; they are not all assigned to this card.</p>}
+            {selectableRefs.length === 0 && <p className="mt-2 text-sm text-gray-500">No obligations available to associate. Review the requirements and coverage in the Spec.</p>}
             <div className="mt-2 max-h-44 space-y-1 overflow-y-auto">
               {selectableRefs.map(o => (
                 <div key={o.ref}>
@@ -254,15 +251,17 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
                 <option value="">Select…</option>
                 {candidates.map(c => <option key={`${c.card_id}:${c.id}`} value={`${c.card_id}:${c.id}`}>{c.label}</option>)}
               </select>
-              {candidates.length === 0 && <span className="text-xs text-gray-400">No eligible receipts yet. {isTest ? 'Execute the linked scenarios with authenticated evidence. Results can be recorded during execution.' : 'Submit an accepted execution receipt for the committed files in the Implementation Targets tab — it becomes pickable here immediately, before completion.'}</span>}
+              {candidates.length === 0 && <span className="text-xs text-gray-500">{isTest ? 'No authenticated runs available. Execute the linked scenarios with authenticated evidence, then reload this tab.' : 'No eligible receipts yet. Submit an accepted execution receipt for the committed files in the Implementation Targets tab — it becomes pickable here immediately, before completion.'}</span>}
             </label>}
             {isTest && <fieldset>
               <legend className="text-sm font-medium">Implementation records verified by this run</legend>
+              <p className="mt-1 text-xs text-gray-500">Choose the implementation evidence from the cards whose work was tested.</p>
+              {verifiableImpls.length === 0 && <p className="mt-2 rounded-md bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-950/30 dark:text-amber-300">No implementation evidence is ready to verify. Record accepted implementation evidence on the corresponding development card first.</p>}
               <div className="mt-2 max-h-36 space-y-1 overflow-y-auto">
                 {verifiableImpls.map(i => (
                   <label key={i.id} className="flex items-start gap-2 text-sm">
                     <input type="checkbox" checked={testedIds.includes(i.id)} onChange={e => setTestedIds(e.target.checked ? [...testedIds, i.id] : testedIds.filter(v => v !== i.id))} />
-                    <span className="min-w-0"><span className="block truncate">{i.executions.map(proof => `${proof.relative_path}${proof.symbol ? ` · ${proof.symbol}` : ''}`).join(', ')}</span><code className="text-[10px] text-gray-400">{i.id}</code></span>
+                    <span className="min-w-0"><span className="block font-medium">{data.per_card?.find(owner => owner.card_id === i.card_id)?.title ?? i.card_id}</span><span className="block break-words text-gray-500">{i.executions.map(proof => `${proof.relative_path}${proof.symbol ? ` · ${proof.symbol}` : ''}`).join(', ')}</span><code className="text-[10px] text-gray-400">{i.id}</code></span>
                   </label>
                 ))}
               </div>
@@ -283,6 +282,15 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
           </button>
         </form>
       )}
+      {isTest && mine && <details className="rounded-xl border border-gray-200 dark:border-gray-800">
+        <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-gray-700 dark:text-gray-200">Progress & recovery <span className="ml-2 text-xs font-normal text-gray-500">Checkpoints and code impact</span></summary>
+        <div className="space-y-3 border-t border-gray-200 p-4 dark:border-gray-800">
+          <p className="text-xs text-gray-500">Use checkpoints to resume unfinished work. Test results are recorded separately above.</p>
+          <CardProgressPanel key={`${boardId}:${card.id}:${data.edition}:${canProgress}`} boardId={boardId} specId={card.spec_id} edition={data.edition} card={mine} canWrite={canProgress} onStage={onStage} onSaved={() => { setReload(v => v + 1); onChanged?.(); }} />
+          {!onStage && mine.accumulated_impact && <DeliveryNetImpactPanel value={mine.accumulated_impact} />}
+          {!onStage && mine.report_impact?.source === 'accumulated' && <p role="status" className="text-sm">{mine.report_impact.current ? 'Submitted impact matches the known source bases.' : 'Submitted impact needs a new current basis before required impact validation can pass.'}</p>}
+        </div>
+      </details>}
     </>}
   </section>;
 }

@@ -60,11 +60,58 @@ it('keeps failed outcomes visible alongside the current run without adding deliv
   api.getDeliveryEvidence.mockResolvedValue(value);
   render(<CardDeliveryDoDPanel boardId="b" card={{ id: 'test-card', card_type: 'test', spec_id: 's' }} />);
   expect(await screen.findByRole('region', { name: 'Recorded test outcomes' })).toBeInTheDocument();
-  expect(screen.getByText('scenario · failed')).toBeInTheDocument();
-  expect(screen.getByText('scenario · passed')).toBeInTheDocument();
+  expect(screen.getByText('failed', { selector: 'summary span' })).toBeInTheDocument();
+  expect(screen.getByText('passed', { selector: 'summary span' })).toBeInTheDocument();
+  const rows = screen.getAllByText('scenario').filter(element => element.closest('summary'));
+  expect(rows).toHaveLength(2);
+  for (const row of rows) {
+    expect(row.closest('details')).not.toHaveAttribute('open');
+    fireEvent.click(row.closest('summary')!);
+    expect(row.closest('details')).toHaveAttribute('open');
+  }
   expect(screen.getByText('Outside the current authenticated run')).toBeInTheDocument();
   expect(screen.getByText('Current authenticated run')).toBeInTheDocument();
   expect(screen.queryByText(/other-card-scenario/)).not.toBeInTheDocument();
+  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
+});
+
+it('explains an empty Test delivery and keeps checkpoints secondary', async () => {
+  const value = projection();
+  value.implementations = [];
+  value.per_card![0].card_type = 'test';
+  api.getDeliveryEvidence.mockResolvedValue(value);
+  render(<CardDeliveryDoDPanel boardId="b" card={{ ...CARD, card_type: 'test' }} canTest />);
+  expect(await screen.findByRole('heading', { name: 'Evidence of test execution' })).toBeInTheDocument();
+  expect(screen.getByText('No test evidence recorded yet')).toBeInTheDocument();
+  expect(screen.getByText(/Start by executing a scenario/)).toBeInTheDocument();
+  expect(screen.getByText('Progress & recovery').closest('details')).not.toHaveAttribute('open');
+  fireEvent.click(screen.getByRole('button', { name: 'Record test evidence' }));
+  expect(screen.getByText(/No authenticated runs available/)).toBeInTheDocument();
+  expect(screen.getByText(/No implementation evidence is ready/)).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Record delivery evidence' })).toBeDisabled();
+  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
+});
+
+it('uses the pulse loader and preserves a failed read instead of presenting empty results', async () => {
+  api.getDeliveryEvidence.mockRejectedValue(new Error('Evidence unavailable'));
+  render(<CardDeliveryDoDPanel boardId="b" card={{ ...CARD, card_type: 'test' }} />);
+  expect(screen.getByRole('status', { name: 'Loading delivery evidence…' })).toBeInTheDocument();
+  expect(await screen.findByRole('alert')).toHaveTextContent('Evidence unavailable');
+  expect(screen.queryByText('No test evidence recorded yet')).not.toBeInTheDocument();
+});
+
+it('shows recorded explanations without substituting another cards evidence', async () => {
+  const value = projection();
+  value.tests = [{ id: 'proof', card_id: 'task-1', scenario_id: 'scenario-1', result: 'failed', current_verified_run: true }];
+  value.candidates = [{ kind: 'test', id: 'scenario-1', card_id: 'task-1', label: 'Capacity boundary', card_version: 4 }];
+  value.records = [{ id: 'proof', kind: 'test', actor_id: 'reviewer', created_at: '2026-10-09', revoked: false, payload: { justification: 'Capacity exceeded the configured limit.' } }];
+  api.getDeliveryEvidence.mockResolvedValue(value);
+  render(<CardDeliveryDoDPanel boardId="b" card={{ ...CARD, card_type: 'test' }} />);
+  const label = await screen.findByText('Capacity boundary');
+  fireEvent.click(label.closest('summary')!);
+  expect(screen.getByText('Capacity exceeded the configured limit.')).toBeVisible();
+  expect(screen.getByText('reviewer')).toBeVisible();
+  expect(screen.getByText('1 recorded · 1 current')).toBeInTheDocument();
   expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
 });
 
