@@ -20,13 +20,14 @@ afterEach(cleanup);
 it('renders the same server-calculated percentage on the task cover and Delivery bar', async () => {
   render(<><KanbanCard card={cards[0]} nameMap={{}} onClick={vi.fn()} deliveryCompleteness={{ value: score }} /><CardDeliveryDoDPanel boardId="b" card={{ id: 'c', card_type: 'normal', spec_id: 's' }} /></>);
   expect(screen.getByText('60%')).toBeVisible();
+  expect(screen.getByRole('progressbar', { name: 'Task delivery completeness' })).toHaveAttribute('aria-valuenow', '60');
   expect(await screen.findByRole('progressbar', { name: 'Delivery completeness' })).toHaveAttribute('aria-valuenow', '60');
   expect(screen.getByText(/3 of 5 obligations supported/)).toBeVisible();
   expect(screen.getByText(/100% does not approve or complete/)).toBeVisible();
 });
 
 it.each(['scope_missing', 'scope_incomplete'] as const)('never presents %s as zero percent', reason => {
-  render(<DeliveryCompletenessView value={{ percent: null, completed: 0, total: 0, reason }} />);
+  render(<DeliveryCompletenessView compact value={{ percent: null, completed: 0, total: 0, reason }} />);
   expect(screen.getByText('Not calculable')).toBeVisible();
   expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
 });
