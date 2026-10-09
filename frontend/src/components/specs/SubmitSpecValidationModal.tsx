@@ -17,7 +17,7 @@ import type {
   ChecklistSpecState,
   QualityFindingAnchorType,
   SpecValidationMetric,
-  SpecValidationPinpoint,
+  SpecValidationPinpointInput,
   SpecValidationSubmitPayload,
   SpecValidationSubmitResponse,
   ValidationSubmissionFence,
@@ -106,14 +106,18 @@ interface MetricDraft {
   justification: string;
 }
 
-interface PinpointDraft extends SpecValidationPinpoint {
+interface PinpointDraft extends SpecValidationPinpointInput {
   key: string;
 }
 
 function newPinpoint(): PinpointDraft {
   return {
     key: `pinpoint-${crypto.randomUUID()}`,
-    metric: 'clarity',
+    metrics: ['clarity'],
+    kind: 'problem',
+    severity: 'medium',
+    excerpt: '',
+    recommendation: '',
     anchor_type: 'whole_artifact',
     anchor_ref: null,
     detail: '',
@@ -239,6 +243,9 @@ export function SubmitSpecValidationModal({
   );
   const pinpointsReady = pinpoints.every((pinpoint) => (
     pinpoint.detail.trim().length > 0
+    && pinpoint.metrics.length > 0
+    && pinpoint.excerpt.trim().length > 0
+    && pinpoint.recommendation.trim().length > 0
     && (
       pinpoint.anchor_type === 'whole_artifact'
       || Boolean(pinpoint.anchor_ref?.trim())
@@ -433,14 +440,14 @@ export function SubmitSpecValidationModal({
                 </legend>
                 <div className="grid gap-3 sm:grid-cols-3">
                   <label className="text-xs font-medium text-gray-700 dark:text-gray-200">
-                    Metric
-                    <select
-                      aria-label={`Pinpoint ${index + 1} metric`}
-                      value={pinpoint.metric}
+                    Dimensions
+                    <select multiple
+                      aria-label={`Pinpoint ${index + 1} dimensions`}
+                      value={pinpoint.metrics}
                       onChange={(event) => setPinpoints((current) => current.map((item) => item.key === pinpoint.key
-                        ? { ...item, metric: event.target.value as SpecValidationMetric }
+                        ? { ...item, metrics: Array.from(event.target.selectedOptions, option => option.value as SpecValidationMetric) }
                         : item))}
-                      className="mt-1 block min-h-9 w-full rounded border border-gray-300 bg-white px-2 text-xs text-gray-900 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100"
+                      className="mt-1 block w-full rounded border border-gray-300 bg-white px-2 text-xs text-gray-900 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100"
                     >
                       {METRIC_DEFINITIONS.map(({ metric, label }) => <option key={metric} value={metric}>{label}</option>)}
                     </select>
@@ -476,10 +483,26 @@ export function SubmitSpecValidationModal({
                     />
                   </label>
                 </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {(['kind', 'severity'] as const).map(field => <label key={field} className="text-xs font-medium capitalize">{field}
+                    <select aria-label={`Pinpoint ${index + 1} ${field}`} value={pinpoint[field]}
+                      onChange={event => setPinpoints(current => current.map(item => item.key === pinpoint.key ? { ...item, [field]: event.target.value } : item))}
+                      className="mt-1 block min-h-9 w-full rounded border border-gray-300 bg-white px-2 text-xs text-gray-900 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100">
+                      {(field === 'kind' ? ['problem', 'opportunity'] : ['low', 'medium', 'high', 'critical']).map(value => <option key={value} value={value}>{value}</option>)}
+                    </select>
+                  </label>)}
+                </div>
+                {(['excerpt', 'recommendation'] as const).map(field => <label key={field} className="block text-xs font-medium">
+                  {field === 'excerpt' ? 'Verbatim excerpt' : 'Recommended action'}
+                  <textarea aria-label={`Pinpoint ${index + 1} ${field}`} value={pinpoint[field]} maxLength={1000} rows={2}
+                    onChange={event => setPinpoints(current => current.map(item => item.key === pinpoint.key ? { ...item, [field]: event.target.value } : item))}
+                    className="mt-1 block w-full rounded border border-gray-300 bg-white p-2 text-xs text-gray-900 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100" />
+                </label>)}
                 <label className="block text-xs font-medium text-gray-700 dark:text-gray-200">
-                  Finding detail
+                  Identified issue
                   <textarea
                     aria-label={`Pinpoint ${index + 1} detail`}
+                    maxLength={1000}
                     value={pinpoint.detail}
                     onChange={(event) => setPinpoints((current) => current.map((item) => item.key === pinpoint.key
                       ? { ...item, detail: event.target.value }

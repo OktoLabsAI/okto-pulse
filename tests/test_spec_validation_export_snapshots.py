@@ -18,7 +18,8 @@ from okto_pulse.core.domain.spec_validation import SpecValidationPinpoint
 
 def _pinpoint():
     return SpecValidationPinpoint.from_dict({
-        "metric": "clarity", "anchor_type": "field",
+        "metrics": ["clarity"], "kind": "problem", "severity": "medium",
+        "excerpt": "Original condition", "recommendation": "Specify the condition.", "anchor_type": "field",
         "anchor_ref": "description", "detail": "Make the condition explicit.",
     }).seal(AnchorSnapshot(
         label="Description", excerpt="Original condition", source_version="3",

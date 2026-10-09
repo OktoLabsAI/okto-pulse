@@ -1791,8 +1791,9 @@ export function PolicyCompliancePanel({
         data-testid="policy-compliance-panel"
       >
         <p role="alert" className="text-sm text-red-700 dark:text-red-300">
-          Semantic guideline evidence is unavailable because effective
-          authority could not be verified. The panel is fail-closed.
+          {permissions.error
+            ? 'Could not load access permissions. Check the Pulse connection and refresh Validation to try again. Guideline evidence remains unavailable until access is verified.'
+            : 'Access requires an owner review of the permission configuration. Guideline evidence remains unavailable until access is verified.'}
         </p>
       </section>
     );

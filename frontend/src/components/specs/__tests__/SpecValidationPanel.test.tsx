@@ -906,5 +906,8 @@ describe('SpecValidationPanel lifecycle edition projection', () => {
     fireEvent.click(previousToggle);
     fireEvent.click(previousToggle);
     expect(apiMock.listSpecValidations).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh validation cycle', exact: true }));
+    await waitFor(() => expect(apiMock.getCurrentSpecValidation).toHaveBeenCalledTimes(2));
+    expect(apiMock.listSpecValidations).toHaveBeenCalledTimes(2);
   });
 });

@@ -501,7 +501,12 @@ export function SpecValidationPanel({
     cycleSummary?.cycle_state ?? null,
     cycleLoading,
   );
+  const [workspaceReloadKey, setWorkspaceReloadKey] = useState(0);
   const refreshCycle = () => setCycleReloadKey((value) => value + 1);
+  const refreshWorkspace = () => {
+    refreshCycle();
+    setWorkspaceReloadKey(value => value + 1);
+  };
   const currentHeadline = validationState === 'not_started'
     ? `No result for Edition ${specEdition}`
     : cycleLoading
@@ -582,7 +587,7 @@ export function SpecValidationPanel({
           <span className="flex flex-wrap items-center gap-2">
             <button
               type="button"
-              onClick={refreshCycle}
+              onClick={refreshWorkspace}
               disabled={cycleLoading}
               aria-label="Refresh validation cycle"
               className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-surface-300 bg-white px-3 py-2 text-xs font-semibold text-surface-700 hover:bg-surface-50 disabled:opacity-50 dark:border-surface-600 dark:bg-surface-800 dark:text-surface-200"
@@ -637,6 +642,7 @@ export function SpecValidationPanel({
             description={currentDescription}
           >
             <SpecValidationHistoryPanel
+              key={`current:${workspaceReloadKey}`}
               specId={specId}
               currentEdition={specEdition}
               refreshKey={validationHistoryRefreshKey}
@@ -670,6 +676,7 @@ export function SpecValidationPanel({
             testId="spec-validation-previous"
           >
             <SpecValidationHistoryPanel
+              key={`previous:${workspaceReloadKey}`}
               specId={specId}
               currentEdition={specEdition}
               refreshKey={validationHistoryRefreshKey}
@@ -727,6 +734,7 @@ export function SpecValidationPanel({
             <ValidationCycleStatusBadge state={checklistState} label={checklistNotRequired ? 'Not required' : undefined} />
           </div>
           <SpecChecklistPanel
+            key={`checklist:${workspaceReloadKey}`}
             boardId={boardId}
             specId={specId}
             expectedSpecVersion={specVersion}
@@ -748,6 +756,7 @@ export function SpecValidationPanel({
             <ValidationCycleStatusBadge state={lintState} />
           </div>
           <QualityPanel
+            key={`lint:${workspaceReloadKey}`}
             subjectType="spec"
             subjectId={specId}
             subjectVersion={specVersion}
@@ -790,6 +799,7 @@ export function SpecValidationPanel({
             </p>
           )}
           <PolicyCompliancePanel
+            key={`policy:${workspaceReloadKey}`}
             boardId={boardId}
             entityType="spec"
             subjectId={specId}

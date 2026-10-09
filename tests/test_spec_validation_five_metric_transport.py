@@ -36,7 +36,8 @@ def _canonical_submit_payload() -> dict[str, object]:
         "ambiguity_justification": "Only negligible ambiguity remains.",
         "pinpoints": [
             {
-                "metric": "decidability",
+                "metrics": ["decidability"], "kind": "problem", "severity": "medium",
+                "excerpt": "Original requirement", "recommendation": "Specify the expected measurable bounds.",
                 "anchor_type": "structured_child",
                 "anchor_ref": "fr_availability",
                 "detail": "State an availability target and scaling bounds.",
@@ -118,7 +119,7 @@ def test_openapi_publishes_five_metric_input_and_typed_history(
         pinpoint_ref.rsplit("/", 1)[-1]
     ]
     assert pinpoint_schema["additionalProperties"] is False
-    assert pinpoint_schema["properties"]["metric"]["enum"] == [
+    assert pinpoint_schema["properties"]["metrics"]["items"]["enum"] == [
         "confidence",
         "clarity",
         "assertiveness",
@@ -147,7 +148,7 @@ def test_submit_schema_rejects_unknown_fields_and_normalizes_pinpoints() -> None
     assert parsed.clarity == 88
     assert parsed.decidability == 90
     assert parsed.pinpoints is not None
-    assert parsed.pinpoints[0].metric == "decidability"
+    assert parsed.pinpoints[0].metrics == ["decidability"]
 
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         specs.SpecValidationSubmit.model_validate(

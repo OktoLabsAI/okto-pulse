@@ -3280,10 +3280,25 @@ export type SpecValidationMetric =
   | 'ambiguity';
 
 export interface SpecValidationPinpoint {
-  metric: SpecValidationMetric;
+  /** Present only in previously sealed native records. */
+  metric?: SpecValidationMetric;
+  metrics?: SpecValidationMetric[];
+  kind?: 'problem' | 'opportunity';
+  severity?: 'low' | 'medium' | 'high' | 'critical';
+  excerpt?: string;
+  recommendation?: string;
   anchor_type: QualityFindingAnchorType;
   anchor_ref?: string | null;
   detail: string;
+}
+
+export interface SpecValidationPinpointInput extends SpecValidationPinpoint {
+  metrics: SpecValidationMetric[];
+  kind: 'problem' | 'opportunity';
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  excerpt: string;
+  recommendation: string;
+  metric?: never;
 }
 
 export interface SpecValidation {
@@ -3338,7 +3353,7 @@ export interface SpecValidationSubmitPayload {
   decidability_justification: string;
   ambiguity: number;
   ambiguity_justification: string;
-  pinpoints: SpecValidationPinpoint[];
+  pinpoints: SpecValidationPinpointInput[];
   recommendation: 'approve' | 'reject';
 }
 

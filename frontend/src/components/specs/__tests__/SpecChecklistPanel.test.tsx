@@ -606,7 +606,7 @@ describe('SpecChecklistPanel', () => {
       });
     }
     fireEvent.click(screen.getByRole('button', { name: 'Add pinpoint' }));
-    fireEvent.change(screen.getByLabelText('Pinpoint 1 metric'), {
+    fireEvent.change(screen.getByLabelText('Pinpoint 1 dimensions'), {
       target: { value: 'decidability' },
     });
     fireEvent.change(screen.getByLabelText('Pinpoint 1 location type'), {
@@ -618,6 +618,8 @@ describe('SpecChecklistPanel', () => {
     fireEvent.change(screen.getByLabelText('Pinpoint 1 detail'), {
       target: { value: 'The requirement does not establish a minimum capacity.' },
     });
+    fireEvent.change(screen.getByLabelText('Pinpoint 1 excerpt'), { target: { value: 'Original requirement' } });
+    fireEvent.change(screen.getByLabelText('Pinpoint 1 recommendation'), { target: { value: 'Specify capacity.' } });
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
     fireEvent.click(screen.getByRole('button', { name: 'Submit Validation' }));
 
@@ -631,7 +633,8 @@ describe('SpecChecklistPanel', () => {
         ambiguity: 30,
         recommendation: 'approve',
         pinpoints: [{
-          metric: 'decidability',
+          metrics: ['decidability'], kind: 'problem', severity: 'medium',
+          excerpt: 'Original requirement', recommendation: 'Specify capacity.',
           anchor_type: 'structured_child',
           anchor_ref: 'fr-availability',
           detail: 'The requirement does not establish a minimum capacity.',

@@ -149,7 +149,8 @@ describe('SpecValidationHistoryPanel score presentation', () => {
         ambiguity: 18,
         ambiguity_justification: 'Only a small interpretation gap remains.',
         pinpoints: [{
-          metric: 'decidability',
+          metrics: ['decidability', 'clarity'], kind: 'problem', severity: 'high',
+          excerpt: 'Run across three availability zones.', recommendation: 'Specify minimum capacity.',
           anchor_type: 'structured_child',
           anchor_ref: 'fr-availability',
           detail: 'The scaling requirement does not define minimum capacity.',
@@ -187,9 +188,14 @@ describe('SpecValidationHistoryPanel score presentation', () => {
     expect(screen.getByText('decidability')).toBeInTheDocument();
     expect(screen.getByTestId('spec-validation-pinpoint-target'))
       .toHaveTextContent(
-        'FR-4: Run across three availability zones. (fr-availability)',
+        'fr-availability',
       );
-    expect(screen.getByText(/minimum capacity/)).toBeInTheDocument();
+    const quote = screen.getByText('Run across three availability zones.');
+    expect(quote).not.toBeVisible();
+    fireEvent.click(screen.getByText('The scaling requirement does not define minimum capacity.', { selector: 'summary span' }));
+    expect(quote).toBeVisible();
+    expect(screen.getByText('Specify minimum capacity.')).toBeVisible();
+    expect(screen.queryByText('FR-4: Run across three availability zones.')).not.toBeInTheDocument();
     expect(screen.getByText(/confident assessment/)).toBeInTheDocument();
     expect(screen.getByText(/capacity decision/)).toBeInTheDocument();
     expect(screen.queryByRole('button', {
@@ -281,9 +287,13 @@ describe('SpecValidationHistoryPanel score presentation', () => {
   it('surfaces incompatible-history refusal without rendering a legacy result', async () => {
     apiMock.listSpecValidations.mockRejectedValue(new Error('spec_validation_edition_required'));
     render(<SpecValidationHistoryPanel specId="spec-1" currentEdition={2} view="previous" />);
-    expect(await screen.findByText('No previous validation results are available.')).toBeInTheDocument();
+    expect(await screen.findByRole('alert')).toHaveTextContent('spec_validation_edition_required');
+    expect(screen.queryByText('No previous validation results are available.')).not.toBeInTheDocument();
     expect(toast.error).toHaveBeenCalledWith('spec_validation_edition_required');
     expect(screen.queryByText('Legacy')).not.toBeInTheDocument();
+    apiMock.listSpecValidations.mockResolvedValue({ spec_id: 'spec-1', validations: [], current_validation_id: null });
+    fireEvent.click(screen.getByRole('button', { name: 'Retry validation results' }));
+    expect(await screen.findByText('No previous validation results are available.')).toBeInTheDocument();
   });
 
   it('refetches the bounded Current result when the edition changes on the same Spec', async () => {

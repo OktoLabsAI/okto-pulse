@@ -450,7 +450,8 @@ def _canonical_submit_data(
     pinpoint = (
         SpecValidationPinpoint.from_dict(
             {
-                "metric": "decidability",
+                "metrics": ["decidability"], "kind": "problem", "severity": "medium",
+                "excerpt": "Required scaling bounds", "recommendation": "Specify the expected measurable bounds.",
                 "anchor_type": "field",
                 "anchor_ref": "technical_requirements.tr_availability",
                 "detail": "State the required scaling bounds.",

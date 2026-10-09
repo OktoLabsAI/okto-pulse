@@ -8,7 +8,6 @@ import { measureValidationWorkspaceInteraction } from '@/services/validation-wor
 import type {
   SpecValidation,
   SpecValidationList,
-  SpecValidationPinpoint,
 } from '@/types';
 
 interface SpecValidationHistoryPanelProps {
@@ -40,7 +39,6 @@ export function SpecValidationHistoryPanel({
   currentEdition,
   view = 'all',
   currentValidation,
-  anchorTexts,
 }: SpecValidationHistoryPanelProps) {
   const api = useDashboardApi();
   const apiRef = useRef(api);
@@ -49,6 +47,8 @@ export function SpecValidationHistoryPanel({
   const [loading, setLoading] = useState(true);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [offset, setOffset] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const [retryKey, setRetryKey] = useState(0);
 
   useEffect(() => {
     setOffset(0);
@@ -56,6 +56,7 @@ export function SpecValidationHistoryPanel({
   }, [currentEdition, specId, view]);
 
   useEffect(() => {
+    setError(null);
     if (view === 'current' && currentValidation !== undefined) {
       setData({
         spec_id: specId,
@@ -104,6 +105,7 @@ export function SpecValidationHistoryPanel({
       })
       .catch((error: unknown) => {
         if (!cancelled) {
+          setError(error instanceof Error ? error.message : 'Failed to load validation results');
           toast.error(
             error instanceof Error
               ? error.message
@@ -118,7 +120,7 @@ export function SpecValidationHistoryPanel({
       cancelled = true;
       controller.abort();
     };
-  }, [currentEdition, currentValidation, offset, refreshKey, specId, view]);
+  }, [currentEdition, currentValidation, offset, refreshKey, retryKey, specId, view]);
 
   if (loading && !data) {
     return (
@@ -126,6 +128,13 @@ export function SpecValidationHistoryPanel({
         Loading validation results…
       </p>
     );
+  }
+
+  if (error) {
+    return <div role="alert" className="rounded-lg border border-red-200 p-3 text-xs text-red-700 dark:border-red-800 dark:text-red-300">
+      <p>Validation results could not be loaded. {error}</p>
+      <button type="button" onClick={() => setRetryKey(value => value + 1)} className="mt-2 rounded border px-3 py-1.5 font-semibold">Retry validation results</button>
+    </div>;
   }
 
   const validations = data?.validations ?? [];
@@ -166,7 +175,6 @@ export function SpecValidationHistoryPanel({
           onToggleExpand={() => setExpandedId(
             expandedId === validation.id ? null : validation.id,
           )}
-          anchorTexts={anchorTexts}
         />
       ))}
       {view === 'previous' && data?.has_more && (
@@ -200,7 +208,6 @@ function ValidationRecord({
   attemptNumber,
   expanded,
   onToggleExpand,
-  anchorTexts,
 }: ValidationRecordProps) {
   const detailsId = useId();
   const isSuccess = validation.outcome === 'success';
@@ -337,40 +344,29 @@ function ValidationRecord({
             Pinpoint findings
           </h4>
           <ol className="space-y-2">
-            {validation.pinpoints!.map((pinpoint, index) => {
-              const anchorReference = pinpoint.anchor_ref?.trim() || null;
-              const anchorText = resolvePinpointAnchorText(
-                pinpoint.anchor_type,
-                anchorReference,
-                anchorTexts,
-              );
-              return (
-              <li key={`${pinpoint.metric}-${pinpoint.anchor_type}-${pinpoint.anchor_ref ?? index}`} className="rounded-lg border border-surface-200 bg-white p-3 dark:border-surface-700 dark:bg-surface-900/50">
-                <div className="flex flex-wrap items-start gap-2">
-                  <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-semibold uppercase text-violet-700 dark:bg-violet-950/50 dark:text-violet-300">
-                    {pinpoint.metric}
-                  </span>
-                  <p
-                    data-testid="spec-validation-pinpoint-target"
-                    className="min-w-0 flex-1 whitespace-pre-wrap text-xs font-medium text-surface-800 dark:text-surface-100"
-                  >
-                    {anchorText}
-                    {anchorReference ? (
-                      <>
-                        {' '}
-                        <span className="font-mono text-[11px] font-normal text-surface-500 dark:text-surface-400">
-                          ({anchorReference})
-                        </span>
-                      </>
-                    ) : null}
-                  </p>
-                </div>
-                <p className="mt-2 whitespace-pre-wrap text-xs text-surface-700 dark:text-surface-300">
-                  {pinpoint.detail}
-                </p>
+            {validation.pinpoints!.map((pinpoint, index) => (
+              <li key={index}>
+                <details className="group rounded-lg border border-surface-200 bg-white dark:border-surface-700 dark:bg-surface-900/50">
+                  <summary className="flex cursor-pointer list-none items-center gap-2 p-3 text-xs [&::-webkit-details-marker]:hidden">
+                    <ChevronDown size={14} className="shrink-0 transition-transform group-open:rotate-180" aria-hidden="true" />
+                    <span className="min-w-0 flex-1 truncate font-medium text-surface-800 dark:text-surface-100">{pinpoint.detail.slice(0, 140)}</span>
+                    <span className="rounded bg-surface-100 px-2 py-1 capitalize dark:bg-surface-800">{pinpoint.kind ?? 'Not classified'}</span>
+                    {pinpoint.severity && <span className={`rounded px-2 py-1 font-semibold capitalize ${pinpoint.severity === 'critical' || pinpoint.severity === 'high' ? 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-200' : 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200'}`}>{pinpoint.severity}</span>}
+                  </summary>
+                  <div className="space-y-3 border-t border-surface-200 p-3 text-xs text-surface-700 dark:border-surface-700 dark:text-surface-300">
+                    <div className="flex flex-wrap gap-1" aria-label="Associated dimensions">
+                      {(pinpoint.metrics ?? (pinpoint.metric ? [pinpoint.metric] : [])).map(metric => <span key={metric} className="rounded-full bg-violet-100 px-2 py-0.5 capitalize text-violet-800 dark:bg-violet-950 dark:text-violet-200">{metric}</span>)}
+                    </div>
+                    <p data-testid="spec-validation-pinpoint-target">{pinpoint.anchor_ref ?? 'Whole Spec'}</p>
+                    <div><h5 className="font-semibold">Verbatim excerpt</h5>
+                      {pinpoint.excerpt ? <blockquote className="mt-1 whitespace-pre-wrap border-l-2 border-violet-400 pl-3">{pinpoint.excerpt}</blockquote> : <p>No focused excerpt was recorded in this evaluation.</p>}
+                    </div>
+                    <div><h5 className="font-semibold">Identified issue</h5><p className="mt-1 whitespace-pre-wrap">{pinpoint.detail}</p></div>
+                    <div><h5 className="font-semibold">Recommended action</h5><p className="mt-1 whitespace-pre-wrap">{pinpoint.recommendation ?? 'No separate action was recorded in this evaluation.'}</p></div>
+                  </div>
+                </details>
               </li>
-              );
-            })}
+            ))}
           </ol>
         </section>
       )}
@@ -388,27 +384,6 @@ function MetricJustificationEntries({ validation }: { validation: SpecValidation
       <div><dt className="font-semibold">Ambiguity</dt><dd>{validation.ambiguity_justification}</dd></div>
     </>
   );
-}
-
-function resolvePinpointAnchorText(
-  anchorType: SpecValidationPinpoint['anchor_type'],
-  anchorRef: string | null,
-  anchorTexts?: Readonly<Record<string, string>>,
-): string {
-  if (anchorType === 'whole_artifact') return 'Whole Spec';
-  if (!anchorRef) return 'Referenced Spec item';
-  const direct = anchorTexts?.[anchorRef];
-  if (direct) return direct;
-  const stableId = anchorRef.split('.').at(-1);
-  const qualified = stableId ? anchorTexts?.[stableId] : undefined;
-  if (qualified) return qualified;
-  if (anchorType === 'field') {
-    return anchorRef
-      .split('_')
-      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-      .join(' ');
-  }
-  return 'Referenced item is no longer available in the current Spec';
 }
 
 interface ScoreCellProps {
