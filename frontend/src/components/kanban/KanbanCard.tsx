@@ -12,8 +12,10 @@ import { PRIORITY_COLORS, PRIORITY_LABELS, BUG_SEVERITY_LABELS, BUG_SEVERITY_COL
 import type { KGCognitivePendingBadgeView } from '@/services/kg-health-api';
 import { CognitivePendingBadge } from '@/components/knowledge/CognitivePendingBadge';
 import { QABadge } from '@/components/shared/QABadge';
+import { DeliveryCompletenessView, type DeliveryCompletenessState } from '@/components/code-traceability/DeliveryCompletenessView';
 
 interface KanbanCardProps {
+  deliveryCompleteness?: DeliveryCompletenessState;
   card: CardSummary;
   onClick: (cardId: string) => void;
   nameMap: Record<string, string>;
@@ -38,7 +40,7 @@ function validationPassed(validation: NonNullable<CardSummary['validations']>[nu
   return validation.outcome === 'success';
 }
 
-export function KanbanCard({ card, onClick, nameMap, canDrag = true, cognitiveBadge }: KanbanCardProps) {
+export function KanbanCard({ card, onClick, nameMap, canDrag = true, cognitiveBadge, deliveryCompleteness }: KanbanCardProps) {
   const {
     attributes,
     listeners,
@@ -187,6 +189,7 @@ export function KanbanCard({ card, onClick, nameMap, canDrag = true, cognitiveBa
           ) : null}
 
           {/* Test card: scenario count */}
+          {!isBug && !isTest && deliveryCompleteness && <DeliveryCompletenessView {...deliveryCompleteness} compact />}
           {isTest && card.test_scenario_ids && card.test_scenario_ids.length > 0 && (
             <div className="flex gap-1 mt-1.5">
               <span className="text-[9px] px-1.5 py-0.5 rounded font-medium bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300 inline-flex items-center gap-0.5">

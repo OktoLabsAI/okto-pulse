@@ -166,6 +166,8 @@ export interface CardLedgerPage {
 }
 
 export interface DeliveryPerCard {
+  complete?: boolean;
+  delivery_completeness?: DeliveryCompleteness | null;
   card_id: string;
   title: string;
   card_type: string;
@@ -183,6 +185,13 @@ export interface DeliveryPerCard {
     targets_truncated?: boolean;
     items: Array<{ id: string; actor_id: string; created_at: string; revoked?: boolean; summary: string; remaining: string; text_truncated: boolean; source_state: { workspace_state: string; recoverability: string }; target_ids: string[]; material_change: string;  }>;
   };
+}
+
+export interface DeliveryCompleteness {
+  percent: number | null;
+  completed: number;
+  total: number;
+  reason: 'scope_missing' | 'scope_incomplete' | null;
 }
 // Rollup projection extension (0.3.4): the spec read returns the aggregated
 // card-ledger view. Assign to DeliveryEvidenceProjection via declaration

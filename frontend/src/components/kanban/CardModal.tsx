@@ -1821,7 +1821,7 @@ export function CardModal({
                     canTest={perms.has('spec.tests.execute')}
                     canWaiver={perms.has('code_traceability.waiver.create')}
                     onOpenTests={canReadTests && card.card_type === 'test' ? () => setActiveTab('tests') : undefined}
-                    onChanged={() => loadCard(card.id)}
+                    onChanged={() => { void loadCard(card.id); window.dispatchEvent(new Event('pulse:delivery-evidence-changed')); }}
                   />
                 </AccessibleTabPanel>
               )}

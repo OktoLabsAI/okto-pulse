@@ -56,6 +56,7 @@ import {
   type KanbanDropDestination,
 } from './kanbanDnd';
 import { KanbanColumnPage } from './KanbanColumnPage';
+import { useTaskDeliveryCompleteness } from '@/components/code-traceability/useTaskDeliveryCompleteness';
 
 interface KanbanBoardProps {
   boardId: string;
@@ -441,6 +442,8 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
     boardId,
     visibleCardSourceRefs,
   );
+  const deliveryCards = useMemo(() => CARD_STATUSES.flatMap(status => renderedColumns[status] || []), [renderedColumns]);
+  const deliveryCompleteness = useTaskDeliveryCompleteness(boardId, deliveryCards, permissions.has('code_traceability.evidence.read'), String(refreshKey));
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -775,6 +778,7 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
                 canDragCard: canStartCardDrag,
                 nameMap,
                 cognitiveBadges,
+                deliveryCompleteness,
               };
 
               if (activeViewAllStatus === status) {

@@ -67,6 +67,7 @@ from okto_pulse.core.ports.delivery_inventory import (
 from okto_pulse.core.services.test_scenario_lifecycle import (
     compute_test_scenario_semantic_sha256,
 )
+from okto_pulse.core.domain.delivery_completeness import calculate_delivery_completeness
 
 
 class CommunityDeliveryEvidenceStore:
@@ -1366,6 +1367,7 @@ class CommunityDeliveryEvidenceStore:
                 {
                     "card_id": card.id,
                     "complete": snapshot.complete,
+                    "delivery_completeness": asdict(calculate_delivery_completeness(snapshot, card.id)) if card.card_type == CardType.NORMAL else None,
                     "title": card.title,
                     "card_version": card.policy_version,
                     "delivery_revision": await self._delivery_revision(card_scope),

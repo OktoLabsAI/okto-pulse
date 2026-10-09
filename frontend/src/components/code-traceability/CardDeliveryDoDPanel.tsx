@@ -7,6 +7,7 @@ import { DeliveryNetImpactPanel } from './DeliveryNetImpactPanel';
 import { TestDeliveryOverview } from './TestDeliveryOverview';
 import { PulseLoader } from '@/components/shared/PulseLoader';
 import { DeliveryDisclosure } from './deliveryPresentation';
+import { DeliveryCompletenessView } from './DeliveryCompletenessView';
 import type {
   CardDeliveryEvidenceInput,
   CardDeliveryBatchDraft,
@@ -150,6 +151,7 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
     {error && <p role="alert" className="rounded-md border border-red-300 bg-red-50 p-3 text-xs text-red-700 dark:border-red-900/70 dark:bg-red-950/25 dark:text-red-300">{error}</p>}
     {!data && !error && <PulseLoader label="Loading delivery evidence…" />}
     {data && <>
+      {card.card_type === 'normal' && !onStage && <DeliveryCompletenessView value={mine?.delivery_completeness} />}
       {isTest && !onStage && <TestDeliveryOverview data={data} cardId={card.id} />}
       {mine && !isTest && <CardProgressPanel key={`${boardId}:${card.id}:${data.edition}:${canProgress}`} boardId={boardId} specId={card.spec_id} edition={data.edition} card={mine} canWrite={canProgress} onStage={onStage} onSaved={() => { setReload(v => v + 1); onChanged?.(); }} />}
       {!onStage && <>

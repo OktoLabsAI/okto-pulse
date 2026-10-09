@@ -69,6 +69,12 @@ async def test_mixed_declarations_persist_and_gate_matches_rollup(
     assert all(
         len(binding["semantic_sha256"]) == 64 for binding in record.payload["bindings"]
     )
+    projection = await uow.services.delivery_evidence.projection('b', 's')
+    measured = next(row for row in projection['per_card'] if row['card_id'] == 'c')['delivery_completeness']
+    # Only FR/TR belong to c; the two ACs belong to criteria-card.
+    assert measured == dict(percent=50, completed=1, total=2, reason=None)
+    assert next(row for row in projection['per_card'] if row['card_id'] == 'criteria-card')['delivery_completeness'] == dict(percent=0, completed=0, total=2, reason=None)
+    assert next(row for row in projection['per_card'] if row['card_id'] == 'scope-test-card')['delivery_completeness'] is None
     from okto_pulse.core.services import delivery_evidence as gate
 
     monkeypatch.setattr(
@@ -89,6 +95,7 @@ async def test_mixed_declarations_persist_and_gate_matches_rollup(
         for row in result.rows
     } == {"fr:fr": False, "tr:tr": True, "ac:ac-functional": False, "ac:ac-technical": False}
     assert not per_card[0]["satisfied"]
+    assert per_card[0]['delivery_completeness'] == measured
 
 
 @pytest.mark.asyncio
