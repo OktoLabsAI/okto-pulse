@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useDashboardApi } from '@/services/api';
 import type { DeliveryProgressHistory } from '@/types/delivery-evidence';
+import { DeliveryDisclosure, deliveryButton, deliveryError, deliverySection } from './deliveryPresentation';
 
 export function CardProgressHistory({ boardId, cardId, specId, edition }: {
   boardId: string; cardId: string; specId: string; edition: number;
@@ -35,21 +36,21 @@ export function CardProgressHistory({ boardId, cardId, specId, edition }: {
     }
   }
 
-  return <section aria-label="Progress history" className="space-y-2 border-t pt-2">
-    <button type="button" disabled={busy} onClick={() => read()}>{page ? 'Restart history' : 'Browse progress history'}</button>
-    {error && <p role="alert">{error}</p>}
+  return <section aria-label="Progress history" className={deliverySection}>
+    <button type="button" className={deliveryButton} disabled={busy} onClick={() => read()}>{page ? 'Restart history' : 'Browse progress history'}</button>
+    {error && <p role="alert" className={deliveryError}>{error}</p>}
     {page && <>
       <p>Newest first. {page.total} saved checkpoints. Earlier pending work is not resolved by a newer note.</p>
-      {page.items.map(item => <article key={item.id} className="border-t py-2">
+      {page.items.map(item => <DeliveryDisclosure key={item.id} title={item.summary} badge={item.revoked ? 'Revoked' : 'Checkpoint'}>
         <p>{item.summary}</p><p>Remaining: {item.remaining}</p>
         <p>{item.actor_id} · {item.created_at} · {item.source_state.workspace_state} · {item.source_state.recoverability}</p>
         {item.revoked && <p>Revoked; retained as history.</p>}
-        <button type="button" disabled={busy} onClick={() => read({ recordId: item.id })}>Read full checkpoint {item.id}</button>
-      </article>)}
-      {page.next_cursor && <button type="button" disabled={busy} onClick={() => read({ cursor: page.next_cursor! })}>Older checkpoints</button>}
+        <button type="button" className={deliveryButton} disabled={busy} onClick={() => read({ recordId: item.id })}>Read full checkpoint {item.id}</button>
+      </DeliveryDisclosure>)}
+      {page.next_cursor && <button type="button" className={deliveryButton} disabled={busy} onClick={() => read({ cursor: page.next_cursor! })}>Older checkpoints</button>}
       {!page.next_cursor && <p>End of this edition’s progress history.</p>}
     </>}
-    {detail && <article aria-label="Full checkpoint" className="whitespace-pre-wrap border p-2">
+    {detail && <article aria-label="Full checkpoint" className={`${deliverySection} whitespace-pre-wrap break-words`}>
       <p>{detail.summary}</p><p>Remaining: {detail.remaining}</p>
       <p>{detail.actor_id} · {detail.created_at}</p>
       {detail.revoked && <p>Revoked; retained as history.</p>}

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useDashboardApi } from '@/services/api';
 import { CardProgressHistory } from './CardProgressHistory';
 import { CardResumePanel } from './CardResumePanel';
+import { DeliveryDisclosure, deliveryButton, deliveryError, deliveryField, deliveryNotice, deliverySection } from './deliveryPresentation';
 import type { CardDeliveryBatchInput, CardDeliveryBatchDraft, DeliveryPerCard } from '@/types/delivery-evidence';
 
 export function CardProgressPanel({ boardId, specId, edition, card, canWrite, onSaved, onStage }: {
@@ -48,26 +49,28 @@ export function CardProgressPanel({ boardId, specId, edition, card, canWrite, on
     } finally { pending.current = false; if (mounted.current) setBusy(false); }
   }
 
-  return <section aria-label="Recorded progress" className="space-y-2 rounded border p-3 text-sm">
-    <h3>Recorded progress</h3>
-    <p>Declared work does not complete this card or satisfy delivery gates. Recovery is limited to confirmed records and material you can access.</p>
-    {!onStage && card.progress?.items.map(item => <article key={item.id} className="border-t py-2">
-      <p>{item.summary}</p><p>Remaining: {item.remaining}</p>
+  return <section aria-label="Recorded progress" className="space-y-4">
+    <div><h3 className="text-sm font-semibold text-gray-800 dark:text-gray-100">Recorded progress</h3>
+    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Declared work does not complete this card or satisfy delivery gates. Recovery is limited to confirmed records and material you can access.</p></div>
+    {!onStage && !card.progress?.items.length && <div className="rounded-lg border border-dashed border-gray-300 p-5 text-center text-xs text-gray-500 dark:border-gray-600 dark:text-gray-400">No progress checkpoints recorded yet.</div>}
+    {!onStage && card.progress?.items.map(item => <DeliveryDisclosure key={item.id} title={item.summary} badge={item.revoked ? 'Revoked' : 'Checkpoint'}>
+      <p className="whitespace-pre-wrap break-words">{item.summary}</p><div className={deliveryNotice}><span className="font-semibold">Remaining: </span>{item.remaining}</div>
       {item.revoked && <p>Revoked by an authorized reviewer; retained as history.</p>}
       <p className="text-xs">{item.actor_id} · {item.created_at} · {item.source_state.workspace_state} · {item.source_state.recoverability}</p>
       {item.material_change && item.material_change !== 'none' && <p>Code change: {item.material_change}. Earlier observations of the affected work require renewed evidence.</p>}
       {item.text_truncated && <p>This record is shortened in the summary.</p>}
-    </article>)}
+    </DeliveryDisclosure>)}
     {card.progress?.truncated && <p>Showing recent records from {card.progress.total} saved checkpoints. This is an incomplete history.</p>}
-    {!onStage && !!card.progress?.total && <CardProgressHistory key={`${boardId}:${card.card_id}:${specId}:${edition}:${card.delivery_revision}`} boardId={boardId} cardId={card.card_id} specId={specId} edition={edition} />}
+    {!onStage && !!card.progress?.total && <CardProgressHistory key={`history:${boardId}:${card.card_id}:${specId}:${edition}:${card.delivery_revision}`} boardId={boardId} cardId={card.card_id} specId={specId} edition={edition} />}
     {!onStage && <CardResumePanel key={`${boardId}:${card.card_id}:${specId}:${edition}:${card.delivery_revision}`} boardId={boardId} cardId={card.card_id} specId={specId} edition={edition} />}
-    {error && <p role="alert">{error}</p>}
-    {writable ? <div className="space-y-2">
-      <label className="block">Work recorded<textarea aria-label="Work recorded" value={summary} maxLength={20000} onChange={e => setSummary(e.target.value)} disabled={busy} className="block w-full border bg-transparent" /></label>
-      <label className="block">Remaining work<textarea aria-label="Remaining work" value={remaining} maxLength={8000} onChange={e => setRemaining(e.target.value)} disabled={busy} className="block w-full border bg-transparent" /></label>
+    {error && <p role="alert" className={deliveryError}>{error}</p>}
+    {writable ? <div className={deliverySection}>
+      <h4 className="text-sm font-semibold text-gray-800 dark:text-gray-100">New checkpoint</h4>
+      <label className="block font-medium">Work recorded<textarea rows={3} aria-label="Work recorded" value={summary} maxLength={20000} onChange={e => setSummary(e.target.value)} disabled={busy} className={deliveryField} /></label>
+      <label className="block font-medium">Remaining work<textarea rows={3} aria-label="Remaining work" value={remaining} maxLength={8000} onChange={e => setRemaining(e.target.value)} disabled={busy} className={deliveryField} /></label>
       <label className="block"><input type="checkbox" checked={dirty} onChange={e => { setDirty(e.target.checked); if (e.target.checked && (!change || change === 'none')) setChange('unknown'); }} disabled={busy} /> Work is in an external dirty workspace</label>
       <label className="block">Code change in this checkpoint
-        <select aria-label="Code change in this checkpoint" value={change} onChange={e => setChange(e.target.value as typeof change)} disabled={busy} className="block border bg-transparent">
+        <select aria-label="Code change in this checkpoint" value={change} onChange={e => setChange(e.target.value as typeof change)} disabled={busy} className={deliveryField}>
           <option value="">Select the effect on code…</option>
           <option value="none">Context only — no code change</option>
           <option value="targets">Code changed for selected Targets</option>
@@ -79,7 +82,7 @@ export function CardProgressPanel({ boardId, specId, edition, card, canWrite, on
         {card.progress?.targets_truncated && <p>The Target list is shortened. Use the scoped API for other Targets.</p>}
       </fieldset>}
       {change && change !== 'none' && <p>Earlier observations of {change === 'targets' ? 'these Targets' : 'this card’s work'} stop proving the current result until a new accepted observation. Other notes do not restore proof.</p>}
-      <button type="button" onClick={save} disabled={busy || !summary.trim() || !remaining.trim() || !change || (change === 'targets' && !targets.length)}>{onStage ? 'Add progress to report draft' : 'Save progress'}</button>
-    </div> : <p>Recording progress requires execution state and permission to write the card’s report.</p>}
+      <button type="button" className={deliveryButton} onClick={save} disabled={busy || !summary.trim() || !remaining.trim() || !change || (change === 'targets' && !targets.length)}>{onStage ? 'Add progress to report draft' : 'Save progress'}</button>
+    </div> : <p className={deliveryNotice}>Recording progress requires execution state and permission to write the card’s report.</p>}
   </section>;
 }

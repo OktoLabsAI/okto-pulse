@@ -79,17 +79,39 @@ it('explains an empty Test delivery and keeps checkpoints secondary', async () =
   const value = projection();
   value.implementations = [];
   value.per_card![0].card_type = 'test';
+  value.per_card![0].status = 'not_started';
   api.getDeliveryEvidence.mockResolvedValue(value);
-  render(<CardDeliveryDoDPanel boardId="b" card={{ ...CARD, card_type: 'test' }} canTest />);
+  const onOpenTests = vi.fn();
+  render(<CardDeliveryDoDPanel boardId="b" card={{ ...CARD, card_type: 'test' }} canTest onOpenTests={onOpenTests} />);
   expect(await screen.findByRole('heading', { name: 'Evidence of test execution' })).toBeInTheDocument();
   expect(screen.getByText('No test evidence recorded yet')).toBeInTheDocument();
   expect(screen.getByText(/Start by executing a scenario/)).toBeInTheDocument();
   expect(screen.getByText('Progress & recovery').closest('details')).not.toHaveAttribute('open');
   fireEvent.click(screen.getByRole('button', { name: 'Record test evidence' }));
   expect(screen.getByText(/No authenticated runs available/)).toBeInTheDocument();
+  expect(screen.getByRole('combobox', { name: /Authenticated run/ })).toBeDisabled();
+  expect(screen.getByText(/This card is not started/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Open Tests' }));
+  expect(onOpenTests).toHaveBeenCalledOnce();
   expect(screen.getByText(/No implementation evidence is ready/)).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Record delivery evidence' })).toBeDisabled();
   expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
+});
+
+it('loads a newly eligible run after refresh, without listing foreign cards runs', async () => {
+  const value = projection();
+  api.getDeliveryEvidence.mockResolvedValueOnce(value);
+  render(<CardDeliveryDoDPanel boardId="b" card={{ ...CARD, card_type: 'test' }} canTest />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Record test evidence' }));
+  expect(screen.getByRole('combobox', { name: /Authenticated run/ })).toBeDisabled();
+  api.getDeliveryEvidence.mockResolvedValue({ ...value, candidates: [
+    { kind: 'test', id: 'scenario', card_id: 'task-1', label: 'Verified capacity run · passed' },
+    { kind: 'test', id: 'foreign', card_id: 'another-card', label: 'Foreign run' },
+  ] });
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh evidence' }));
+  expect(await screen.findByRole('option', { name: 'Verified capacity run · passed' })).toBeInTheDocument();
+  expect(screen.getByRole('combobox', { name: /Authenticated run/ })).toBeEnabled();
+  expect(screen.queryByRole('option', { name: 'Foreign run' })).not.toBeInTheDocument();
 });
 
 it('uses the pulse loader and preserves a failed read instead of presenting empty results', async () => {

@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { useDashboardApi } from '@/services/api';
 import type { CardLedgerPage } from '@/types/delivery-evidence';
+import { DeliveryDisclosure, deliveryButton, deliveryError, deliveryField, deliverySection } from './deliveryPresentation';
 
 type Scope = { boardId: string; cardId: string; specId: string; edition: number };
 
 export function CardLedgerPanel(props: Scope) {
   const [edition, setEdition] = useState(props.edition);
-  return <section aria-label="Delivery record history" className="space-y-2 border-t pt-2">
-    <label>History edition <input aria-label="History edition" type="number" min={1} max={props.edition} value={edition}
+  return <section aria-label="Delivery record history" className={deliverySection}>
+    <h4 className="text-sm font-semibold text-gray-800 dark:text-gray-100">Delivery record history</h4>
+    <label className="block max-w-40 font-medium">History edition <input className={deliveryField} aria-label="History edition" type="number" min={1} max={props.edition} value={edition}
       onChange={event => { const value = Number(event.target.value); if (Number.isInteger(value) && value >= 1 && value <= props.edition) setEdition(value); }} /></label>
     <LedgerPage key={`${props.boardId}:${props.cardId}:${props.specId}:${edition}`} {...props} edition={edition} />
   </section>;
@@ -40,19 +42,19 @@ function LedgerPage({ boardId, cardId, specId, edition }: Scope) {
     }
   }
   return <>
-    <button type="button" disabled={busy} onClick={() => read()}>Browse delivery records</button>
-    {error && <p role="alert">{error}</p>}
+    <button type="button" className={deliveryButton} disabled={busy} onClick={() => read()}>Browse delivery records</button>
+    {error && <p role="alert" className={deliveryError}>{error}</p>}
     {page && <>
       <p>{page.total} records in edition {page.edition}. {page.historical ? 'Previous edition.' : 'Current edition.'} Historical declarations do not establish current proof or completion.</p>
-      {page.items.map(row => <article key={row.id} className="border-t py-2">
+      {page.items.map(row => <DeliveryDisclosure key={row.id} title={row.summary} badge={row.revoked ? 'Revoked' : row.kind}>
         <p>{row.kind} · {row.actor_id} · {row.created_at}</p><p>{row.summary}</p>
         {row.revoked && <p>Revoked; retained as history.</p>}
-        <button type="button" disabled={busy} onClick={() => read({ recordId: row.id })}>Read delivery record {row.id}</button>
-      </article>)}
-      {page.next_cursor && <button type="button" disabled={busy} onClick={() => read({ cursor: page.next_cursor! })}>Older delivery records</button>}
+        <button type="button" className={deliveryButton} disabled={busy} onClick={() => read({ recordId: row.id })}>Read delivery record {row.id}</button>
+      </DeliveryDisclosure>)}
+      {page.next_cursor && <button type="button" className={deliveryButton} disabled={busy} onClick={() => read({ cursor: page.next_cursor! })}>Older delivery records</button>}
       {!page.next_cursor && <p>End of this edition’s delivery records.</p>}
     </>}
-    {detail && <article aria-label="Delivery record detail" className="whitespace-pre-wrap border p-2">
+    {detail && <article aria-label="Delivery record detail" className={`${deliverySection} whitespace-pre-wrap break-words`}>
       <p>{detail.kind} · {detail.actor_id} · {detail.created_at}</p><p>{detail.summary}</p>
       {detail.revoked && <p>Revoked; retained as history.</p>}
       {detail.payload?.contributions?.map(row => <p key={row.obligation_ref}>{row.obligation_ref}: declared {row.contribution}.</p>)}

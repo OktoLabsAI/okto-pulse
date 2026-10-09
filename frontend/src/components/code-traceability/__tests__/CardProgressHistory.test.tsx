@@ -15,10 +15,13 @@ it('loads older pages and full text without accumulating the whole history', asy
   render(<CardProgressHistory {...props} />);
   expect(api.getCardProgressHistory).not.toHaveBeenCalled();
   fireEvent.click(screen.getByText('Browse progress history'));
-  await screen.findByText('Old partial work');
+  await screen.findByText('Old partial work', { selector: 'summary span' });
   api.getCardProgressHistory.mockResolvedValueOnce({ ...page, next_cursor: null, items: [{ ...item, id: 'older', summary: 'Earlier blocker' }] });
   fireEvent.click(screen.getByText('Older checkpoints'));
-  await screen.findByText('Earlier blocker');
+  const older = await screen.findByText('Earlier blocker', { selector: 'summary span' });
+  expect(older.closest('details')).not.toHaveAttribute('open');
+  fireEvent.click(older.closest('summary')!);
+  expect(screen.getByText('Read full checkpoint older')).toBeVisible();
   expect(screen.queryByText('Old partial work')).not.toBeInTheDocument();
   expect(api.getCardProgressHistory.mock.calls[1]).toEqual(['b', 'c', 's', { cursor: 'cursor' }, expect.any(AbortSignal)]);
   api.getCardProgressHistory.mockResolvedValueOnce({ ...page, detail: true, items: [{ ...item, summary: 'Complete original text', revoked: true }] });
@@ -31,7 +34,7 @@ it('loads older pages and full text without accumulating the whole history', asy
 it('clears stale history after denial and offers restart', async () => {
   render(<CardProgressHistory {...props} />);
   fireEvent.click(screen.getByText('Browse progress history'));
-  await screen.findByText('Old partial work');
+  await screen.findByText('Old partial work', { selector: 'summary span' });
   api.getCardProgressHistory.mockRejectedValueOnce(new Error('Permission denied'));
   fireEvent.click(screen.getByText('Older checkpoints'));
   await screen.findByRole('alert');

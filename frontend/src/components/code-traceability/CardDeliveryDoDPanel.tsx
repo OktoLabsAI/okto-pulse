@@ -6,6 +6,7 @@ import { CardProgressPanel } from './CardProgressPanel';
 import { DeliveryNetImpactPanel } from './DeliveryNetImpactPanel';
 import { TestDeliveryOverview } from './TestDeliveryOverview';
 import { PulseLoader } from '@/components/shared/PulseLoader';
+import { DeliveryDisclosure } from './deliveryPresentation';
 import type {
   CardDeliveryEvidenceInput,
   CardDeliveryBatchDraft,
@@ -22,6 +23,7 @@ interface Props {
   canProgress?: boolean;
   onChanged?: () => void;
   onStage?: (draft: CardDeliveryBatchDraft) => void;
+  onOpenTests?: () => void;
 }
 
 const field = 'w-full rounded border border-gray-300 bg-white p-2 text-sm dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100';
@@ -32,7 +34,7 @@ const field = 'w-full rounded border border-gray-300 bg-white p-2 text-sm dark:b
 // authenticated passing runs verifying implementations on other cards.
 // Waivers stay spec-level and human-only (BR-3): the button routes an
 // authorized human to the Spec rollup surface.
-export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest = false, canWaiver = false, canProgress = false, onChanged, onStage }: Props) {
+export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest = false, canWaiver = false, canProgress = false, onChanged, onStage, onOpenTests }: Props) {
   const api = useDashboardApi();
   const [data, setData] = useState<DeliveryEvidenceProjection | null>(null);
   const [gateMode, setGateMode] = useState<'advisory' | 'blocking' | null>(null);
@@ -247,12 +249,17 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
           {compose && <p className="text-xs">Each set must share the same observed source and immutable revision. A newer commit does not establish that it contains another receipt's changes.</p>}
           {canRecordKind ? <>
             {!compose && <label className="block text-sm">{isTest ? 'Authenticated run on this test card' : 'Accepted execution receipt (this card)'}
-              <select required value={choice} onChange={e => setChoice(e.target.value)} className={`${field} mt-1`}>
-                <option value="">Select…</option>
+              <select required disabled={busy || candidates.length === 0} value={choice} onChange={e => setChoice(e.target.value)} className={`${field} mt-1 disabled:opacity-60`}>
+                <option value="">{isTest && !candidates.length ? 'No eligible authenticated run' : 'Select…'}</option>
                 {candidates.map(c => <option key={`${c.card_id}:${c.id}`} value={`${c.card_id}:${c.id}`}>{c.label}</option>)}
               </select>
-              {candidates.length === 0 && <span className="text-xs text-gray-500">{isTest ? 'No authenticated runs available. Execute the linked scenarios with authenticated evidence, then reload this tab.' : 'No eligible receipts yet. Submit an accepted execution receipt for the committed files in the Implementation Targets tab — it becomes pickable here immediately, before completion.'}</span>}
+              {candidates.length === 0 && <span className="text-xs text-gray-500">{isTest ? 'No authenticated runs available. Planned scenarios do not appear here: a passed or failed result with valid authenticated evidence is required.' : 'No eligible receipts yet. Submit an accepted execution receipt for the committed files in the Implementation Targets tab — it becomes pickable here immediately, before completion.'}</span>}
             </label>}
+            {isTest && candidates.length === 0 && <div className="space-y-2 rounded-lg border border-sky-200 bg-sky-50 p-3 text-xs text-sky-800 dark:border-sky-900 dark:bg-sky-950/20 dark:text-sky-300">
+              {mine && !['started', 'in_progress', 'done'].includes(mine.status) && <p>This card is {mine.status.replace(/_/g, ' ')}. Runs become eligible in Started, In Progress or Done.</p>}
+              <p>Review the linked scenarios in Tests. Execute them and record authenticated evidence, then use Refresh evidence here.</p>
+              {onOpenTests && <button type="button" className="btn btn-secondary text-xs" onClick={onOpenTests}>Open Tests</button>}
+            </div>}
             {isTest && <fieldset>
               <legend className="text-sm font-medium">Implementation records verified by this run</legend>
               <p className="mt-1 text-xs text-gray-500">Choose the implementation evidence from the cards whose work was tested.</p>
@@ -282,15 +289,12 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
           </button>
         </form>
       )}
-      {isTest && mine && <details className="rounded-xl border border-gray-200 dark:border-gray-800">
-        <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-gray-700 dark:text-gray-200">Progress & recovery <span className="ml-2 text-xs font-normal text-gray-500">Checkpoints and code impact</span></summary>
-        <div className="space-y-3 border-t border-gray-200 p-4 dark:border-gray-800">
+      {isTest && mine && <DeliveryDisclosure title="Progress & recovery" badge={`${mine.progress?.total ?? 0} checkpoints`}>
           <p className="text-xs text-gray-500">Use checkpoints to resume unfinished work. Test results are recorded separately above.</p>
           <CardProgressPanel key={`${boardId}:${card.id}:${data.edition}:${canProgress}`} boardId={boardId} specId={card.spec_id} edition={data.edition} card={mine} canWrite={canProgress} onStage={onStage} onSaved={() => { setReload(v => v + 1); onChanged?.(); }} />
           {!onStage && mine.accumulated_impact && <DeliveryNetImpactPanel value={mine.accumulated_impact} />}
           {!onStage && mine.report_impact?.source === 'accumulated' && <p role="status" className="text-sm">{mine.report_impact.current ? 'Submitted impact matches the known source bases.' : 'Submitted impact needs a new current basis before required impact validation can pass.'}</p>}
-        </div>
-      </details>}
+      </DeliveryDisclosure>}
     </>}
   </section>;
 }

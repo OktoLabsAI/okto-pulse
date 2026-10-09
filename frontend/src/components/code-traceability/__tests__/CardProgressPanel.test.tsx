@@ -116,8 +116,11 @@ it('shows several saved facts and an explicit history limit after reload', async
   api.getBoard.mockResolvedValue({ settings: {} });
   api.getDeliveryEvidence.mockResolvedValue({ edition: 2, candidates: [], implementations: [], rejected_record_ids: [], rows: [], per_card: [{ ...card, progress: { total: 25, truncated: true, recovery_verified: false, items: entries } }] });
   render(<CardDeliveryDoDPanel boardId="board" card={{ id: 'card', card_type: 'normal', spec_id: 'spec' }} canProgress />);
-  await screen.findByText('First change');
-  expect(screen.getByText('Second change')).toBeInTheDocument();
+  const first = await screen.findByText('First change', { selector: 'summary span' });
+  expect(first.closest('details')).not.toHaveAttribute('open');
+  fireEvent.click(first.closest('summary')!);
+  expect(first.closest('details')).toHaveAttribute('open');
+  expect(screen.getByText('Second change', { selector: 'summary span' })).toBeInTheDocument();
   expect(screen.getByText(/incomplete history/)).toBeInTheDocument();
   expect(screen.getByText(/does not complete this card/)).toBeInTheDocument();
 });

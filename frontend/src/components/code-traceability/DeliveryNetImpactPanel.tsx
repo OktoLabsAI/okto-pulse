@@ -1,4 +1,5 @@
 import type { DeliveryNetImpact } from '@/types/delivery-evidence';
+import { deliveryNotice, deliverySection } from './deliveryPresentation';
 
 const reasons: Record<string, string> = {
   source_unknown: 'Identify the source of this declaration.',
@@ -26,10 +27,10 @@ export function DeliveryNetImpactPanel({ value }: { value: DeliveryNetImpact }) 
     ...source.impact_evidence.tests.map(row => `${source.source_ref} · ${row.repo}:${row.test_file_path} · ${row.action}`),
     ...source.impact_evidence.surfaces.map(row => `${source.source_ref} · ${row.kind}: ${row.identifier}`),
   ]);
-  return <section aria-label="Accumulated impact claims" className="space-y-2 rounded border p-3 text-sm">
-    <h4 className="font-medium">Accumulated impact claims</h4>
+  return <section aria-label="Accumulated impact claims" className={deliverySection}>
+    <h4 className="text-sm font-semibold text-gray-800 dark:text-gray-100">Accumulated impact claims</h4>
     <p>{value.history_count} active declarations. This view does not verify changes or approve delivery.</p>
-    {value.status === 'empty' && <p>No incremental impact declarations.</p>}
+    {value.status === 'empty' && <p className={deliveryNotice}>No incremental impact declarations.</p>}
     {value.status === 'needs_reconciliation' && <p role="status">Needs reconciliation: {value.issue_count} unresolved source groups or limits.</p>}
     {value.status === 'composed' && !changes.length && <p>No net changes in the declared sequence. The original work history is retained.</p>}
     {value.sources.map(source => <p key={source.source_ref}>{source.source_ref}: {source.base_revision.slice(0, 12)} → {source.result_revision.slice(0, 12)}</p>)}

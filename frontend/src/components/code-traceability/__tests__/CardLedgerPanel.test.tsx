@@ -13,10 +13,13 @@ afterEach(cleanup);
 it('pages mixed records and reads original detail without presenting it as current proof', async () => {
   render(<CardLedgerPanel {...props} />);
   fireEvent.click(screen.getByText('Browse delivery records'));
-  await screen.findByText('Original implementation');
+  await screen.findByText('Original implementation', { selector: 'summary span' });
   api.getCardDeliveryLedger.mockResolvedValueOnce({ ...page, next_cursor: null, items: [{ ...row, id: 'old', summary: 'Earlier proof' }] });
   fireEvent.click(screen.getByText('Older delivery records'));
-  await screen.findByText('Earlier proof');
+  const older = await screen.findByText('Earlier proof', { selector: 'summary span' });
+  expect(older.closest('details')).not.toHaveAttribute('open');
+  fireEvent.click(older.closest('summary')!);
+  expect(screen.getByText('Read delivery record old')).toBeVisible();
   expect(api.getCardDeliveryLedger.mock.calls[1][4]).toEqual({ cursor: 'cursor' });
   api.getCardDeliveryLedger.mockResolvedValueOnce({ ...page, items: [{ ...row, summary: 'Full original explanation', payload: {
     execution_id: 'execution-A', contributions: [{ obligation_ref: 'fr', contribution: 'partial' }],
@@ -46,7 +49,7 @@ it('changes edition by cancelling pending reads and clearing the old scope', asy
 it('clears prior results after denial and refuses a foreign scope response', async () => {
   render(<CardLedgerPanel {...props} />);
   fireEvent.click(screen.getByText('Browse delivery records'));
-  await screen.findByText('Original implementation');
+  await screen.findByText('Original implementation', { selector: 'summary span' });
   api.getCardDeliveryLedger.mockRejectedValueOnce(new Error('Permission denied'));
   fireEvent.click(screen.getByText('Older delivery records'));
   await screen.findByRole('alert');

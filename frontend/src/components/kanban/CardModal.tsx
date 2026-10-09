@@ -1820,6 +1820,7 @@ export function CardModal({
                     canProgress={perms.has('card.conclusion.write')}
                     canTest={perms.has('spec.tests.execute')}
                     canWaiver={perms.has('code_traceability.waiver.create')}
+                    onOpenTests={canReadTests && card.card_type === 'test' ? () => setActiveTab('tests') : undefined}
                     onChanged={() => loadCard(card.id)}
                   />
                 </AccessibleTabPanel>
