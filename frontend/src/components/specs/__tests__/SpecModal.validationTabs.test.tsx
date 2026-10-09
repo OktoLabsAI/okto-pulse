@@ -256,12 +256,19 @@ describe('SpecModal validation navigation', () => {
     fireEvent.click(mainTabs.getByRole('tab', { name: 'Requirements & Decisions' }));
     const requirements = within(screen.getByRole('tablist', { name: 'Requirements and decisions sections' }));
     expect(requirements.getAllByRole('tab').map(tab => tab.textContent)).toEqual([
-      'Functional', 'Business', 'Integration', 'Observability', 'Contracts', 'Decisions',
+      'Functional', 'Business', 'Integration', 'Observability', 'Technical', 'Contracts', 'Decisions',
     ]);
-    expect(screen.getByText('Functional Requirements')).toBeInTheDocument();
+    expect(screen.getByText('Functional requirements')).toBeInTheDocument();
+    fireEvent.click(requirements.getByRole('tab', { name: 'Technical' }));
+    expect(mainTabs.queryByRole('tab', { name: 'Technical' })).not.toBeInTheDocument();
+    fireEvent.click(mainTabs.getByRole('tab', { name: 'Tests & Verifications' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'AC' }));
+    expect(screen.getByRole('region', { name: 'Acceptance criteria' })).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Criterion verification' })).not.toBeInTheDocument();
     await openCriteria();
+    expect(screen.queryByRole('region', { name: 'Acceptance criteria' })).not.toBeInTheDocument();
     expect(screen.getByRole('region', { name: 'Criterion verification' })).toBeInTheDocument();
-    expect(screen.queryByText('Functional Requirements')).not.toBeInTheDocument();
+    expect(screen.queryByText('Functional requirements')).not.toBeInTheDocument();
   });
   it.each(['draft', 'review', 'approved', 'validated', 'in_progress', 'done'] as SpecStatus[])(
     'allows requirement qualification authoring only in an unarchived authorized Draft: %s', async status => {
@@ -276,7 +283,7 @@ describe('SpecModal validation navigation', () => {
       renderSpec(status);
       await openCriteria();
       fireEvent.click(await screen.findByRole('button', { name: 'Review requirement qualification' }));
-      await screen.findByText(/Block access · fr-plan/);
+      await screen.findByRole('heading', { name: 'Block access' });
       expect(Boolean(screen.queryByRole('button', { name: 'Edit qualification fr-plan' }))).toBe(status === 'draft');
     });
 
@@ -296,7 +303,7 @@ describe('SpecModal validation navigation', () => {
       render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
       await openCriteria();
       fireEvent.click(await screen.findByRole('button', { name: 'Review requirement qualification' }));
-      await screen.findByText(/Block access · fr-plan/);
+      await screen.findByRole('heading', { name: 'Block access' });
       expect(screen.queryByRole('button', { name: 'Edit qualification fr-plan' })).not.toBeInTheDocument();
     });
 

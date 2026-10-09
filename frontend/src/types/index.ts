@@ -1276,6 +1276,7 @@ export interface ObservabilityRequirement {
 // Technical Requirement (structured)
 export interface SpecTextRequirement {
   id: string;
+  title?: string | null;
   text: string;
   status?: 'active' | 'superseded' | 'revoked';
   linked_task_ids?: string[] | null;

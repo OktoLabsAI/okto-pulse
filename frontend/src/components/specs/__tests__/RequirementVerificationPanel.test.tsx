@@ -87,7 +87,9 @@ describe('requirement qualification', () => {
     api.getRequirementVerification.mockResolvedValueOnce(response({ population_total: 27, total: 27, next_offset: 25, has_more: true, issue_count: 3 }))
       .mockResolvedValueOnce(response({ items: [], population_complete: false, total: null, population_total: null, counts_scope: 'observed', offset: 25 }));
     render(<RequirementVerificationPanel {...props()} />); open();
-    expect(await screen.findByText(/27 requirements in scope · 3/)).toBeInTheDocument();
+    expect(await screen.findByText('27')).toBeInTheDocument();
+    expect(screen.getByText('3')).toBeInTheDocument();
+    expect(screen.getByText('Requirements in scope')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Next requirements' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('population is incomplete');
     expect(api.getRequirementVerification.mock.calls[1][3]).toEqual({ offset: 25, limit: 25 });

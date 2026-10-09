@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useDashboardApi } from '@/services/api';
+import { verificationBadge, verificationButton, verificationCard, verificationInput, requirementTypeLabels } from './verificationPresentation';
 import type { RequirementVerification, RequirementVerificationResponse, RequirementVerificationRow, VerificationInheritanceSelection, VerificationProfile, VerificationRequirementType } from '@/types/requirement-verification';
 import type { VerificationRequirementOption } from './CriterionVerificationPanel';
 
@@ -120,11 +121,11 @@ function QualificationEditor({ scope, row, options, criterionLabels, onSaved }: 
       if (live.current) setError(cause instanceof Error ? cause.message : 'Could not save. Refresh before retrying.');
     } finally { writing.current = false; if (live.current) setBusy(false); }
   }
-  return <div className="space-y-3 rounded border border-slate-600 p-3">
+  return <div className={verificationCard}>
     <fieldset disabled={busy || saved} className="space-y-3">
-      {row.default_proposal && <button type="button" onClick={() => { setDraft(structuredClone(row.default_proposal!.verification)); resetSource(''); }}>Use proposed default ({row.default_proposal.version})</button>}
+      {row.default_proposal && <button className={verificationButton} type="button" onClick={() => { setDraft(structuredClone(row.default_proposal!.verification)); resetSource(''); }}>Use proposed default ({row.default_proposal.version})</button>}
       <label className="block text-sm">Qualification mode
-        <select aria-label="Qualification mode" className="ml-2 rounded bg-slate-800 p-1" value={draft.mode} onChange={event => { setDraft({ ...draft, mode: event.target.value as 'explicit' | 'inherited', inheritance: [] }); resetSource(''); }}>
+        <select aria-label="Qualification mode" className={verificationInput} value={draft.mode} onChange={event => { setDraft({ ...draft, mode: event.target.value as 'explicit' | 'inherited', inheritance: [] }); resetSource(''); }}>
           <option value="explicit">Explicit criteria</option><option value="inherited">Selected inheritance</option>
         </select>
       </label>
@@ -132,31 +133,31 @@ function QualificationEditor({ scope, row, options, criterionLabels, onSaved }: 
       {draft.mode === 'inherited' && <>
         {(draft.inheritance || []).map((item, index) => <div key={keyOf(item.source.requirement_type, item.source.requirement_id)} className="rounded border border-slate-700 p-2 text-sm">
           <p>{item.source.requirement_id} · {item.criterion_ids.join(', ')} · {item.covered_aspect}</p>
-          <button type="button" onClick={() => { resetSource(keyOf(item.source.requirement_type, item.source.requirement_id)); setSelected([...item.criterion_ids]); setAspect(item.covered_aspect); }}>Review source selection {index + 1}</button>
-          <button type="button" className="ml-3" onClick={() => setDraft({ ...draft, inheritance: draft.inheritance?.filter((_, i) => i !== index) })}>Remove source {index + 1}</button>
+          <button className={verificationButton} type="button" onClick={() => { resetSource(keyOf(item.source.requirement_type, item.source.requirement_id)); setSelected([...item.criterion_ids]); setAspect(item.covered_aspect); }}>Review source selection {index + 1}</button>
+          <button className={verificationButton} type="button" onClick={() => setDraft({ ...draft, inheritance: draft.inheritance?.filter((_, i) => i !== index) })}>Remove source {index + 1}</button>
         </div>)}
         <label className="block text-sm">Inheritance source
-          <select aria-label="Inheritance source" className="block w-full rounded bg-slate-800 p-2" value={sourceKey} onChange={event => resetSource(event.target.value)}>
+          <select aria-label="Inheritance source" className={verificationInput} value={sourceKey} onChange={event => resetSource(event.target.value)}>
             <option value="">Select a requirement</option>
             {choices.map(option => <option key={keyOf(option.type, option.id)} value={keyOf(option.type, option.id)}>{option.title} ({option.id})</option>)}
           </select>
         </label>
-        <button type="button" disabled={!sourceKey || loading} onClick={() => void loadSource()}>Load source criteria</button>
+        <button className={verificationButton} type="button" disabled={!sourceKey || loading} onClick={() => void loadSource()}>Load source criteria</button>
         {loading && <p role="status">Loading source criteria…</p>}
         {source && <div className="space-y-2">
           {!source.qualification_resolved && <p>Source qualification has pending issues; selecting it does not resolve them.</p>}
           {sourceCriteria.map(id => <label key={id} className="block text-sm"><input type="checkbox" checked={selected.includes(id)} onChange={event => setSelected(event.target.checked ? [...selected, id] : selected.filter(item => item !== id))} /> {criterionLabels[id] || id} ({id})</label>)}
-          {selected.filter(id => !sourceCriteria.includes(id)).map(id => <p key={id}>Selected criterion not loaded or unavailable: {id} <button type="button" onClick={() => setSelected(selected.filter(item => item !== id))}>Remove {id}</button></p>)}
-          {source.next_paths_offset != null && <button type="button" disabled={loading} onClick={() => void loadSource(true)}>Load more source criteria</button>}
+          {selected.filter(id => !sourceCriteria.includes(id)).map(id => <p key={id}>Selected criterion not loaded or unavailable: {id} <button className={verificationButton} type="button" onClick={() => setSelected(selected.filter(item => item !== id))}>Remove {id}</button></p>)}
+          {source.next_paths_offset != null && <button className={verificationButton} type="button" disabled={loading} onClick={() => void loadSource(true)}>Load more source criteria</button>}
           {source.paths_unavailable && <p role="alert">Some paths could not be displayed within the response limit.</p>}
-          <label className="block text-sm">Covered aspect<textarea aria-label="Covered aspect" maxLength={2000} className="block w-full rounded bg-slate-800 p-2" value={aspect} onChange={event => setAspect(event.target.value)} /></label>
-          <button type="button" disabled={loading} onClick={adoptSelection}>Use selected criteria</button>
+          <label className="block text-sm">Covered aspect<textarea aria-label="Covered aspect" maxLength={2000} className={verificationInput} value={aspect} onChange={event => setAspect(event.target.value)} /></label>
+          <button className={verificationButton} type="button" disabled={loading} onClick={adoptSelection}>Use selected criteria</button>
         </div>}
       </>}
-      <button type="button" onClick={() => void save()}>{busy ? 'Saving…' : 'Save qualification'}</button>
+      <button className={verificationButton} type="button" onClick={() => void save()}>{busy ? 'Saving…' : 'Save qualification'}</button>
     </fieldset>
     {error && <p role="alert">{error}</p>}
-    {saved && <button type="button" onClick={() => void reload()}>Reload saved qualification</button>}
+    {saved && <button className={verificationButton} type="button" onClick={() => void reload()}>Reload saved qualification</button>}
   </div>;
 }
 
@@ -207,14 +208,16 @@ function RequirementVerificationContent({ scope, canRead, canReadPlanning = fals
     return () => { live = false; controller.abort(); };
   }, [api, scope, canRead, open, offset, stamp]);
   if (!canRead) return <p className="text-xs text-slate-400">Requirement qualification needs Spec, IR and OR read permissions.</p>;
-  return <section aria-label="Requirement qualification" className="space-y-3 rounded border border-slate-700 p-3">
-    <button type="button" aria-expanded={open} onClick={() => { setOpen(!open); setEditor(null); }}>Review requirement qualification</button>
+  return <section aria-label="Requirement qualification" className={verificationCard}>
+    <button className={verificationButton} type="button" aria-expanded={open} onClick={() => { setOpen(!open); setEditor(null); }}>Review requirement qualification</button>
     {open && <>
       <p className="text-xs text-slate-400">Declared criteria, methods and Test Cards describe planned verification. Implementation responsibilities, dependencies, semantic review and delivery evidence are evaluated separately.</p>
       {!current && <p role="status">Loading qualification…</p>}
       {current?.error && <p role="alert">{current.error}</p>}
       {current?.data && <>
-        <p>{current.data.resolved_count} with resolved criterion paths · {current.data.population_total ?? 'unknown'} requirements in scope · {current.data.issue_count} criterion/population issue(s)</p>
+        <dl className="grid grid-cols-3 gap-3">
+          {[[current.data.resolved_count, 'Resolved paths'], [current.data.population_total ?? 'Unknown', 'Requirements in scope'], [current.data.issue_count, 'Issues']].map(([value, label]) => <div key={label} className="rounded-xl bg-gray-50 p-3 dark:bg-gray-900/40"><dt className="text-xs text-gray-500">{label}</dt><dd className="mt-1 text-xl font-semibold">{value}</dd></div>)}
+        </dl>
         {!current.data.population_complete && <p role="alert">The requirement population is incomplete. Counts describe only observed requirements.</p>}
         {canReadPlanning && current.data.methods_evaluated ? <>
           <p>Method planning: {current.data.method_plan_complete ? 'complete' : 'pending'} · Test Card planning: {current.data.verification_work_complete ? 'complete' : 'pending'}</p>
@@ -237,9 +240,9 @@ function RequirementVerificationContent({ scope, canRead, canReadPlanning = fals
             : <p role="alert">The complete obligation population is unavailable; readiness is unknown.</p>}
           <p className="text-xs">Includes acceptance criteria, API contracts, decisions and Cards without requirement links. This planning inventory does not change the adopted delivery contract or grant credit.</p>
         </div>}
-        {current.data.items.map(row => <div key={keyOf(row.requirement_type, row.requirement_id)} className="space-y-2 rounded border border-slate-700 p-2 text-sm">
-          <p>{row.title} · {row.requirement_id} · {row.verification?.mode || 'Not qualified'}</p>
-          <p>{row.verification?.required_profiles.join(', ') || 'Profiles not defined'}</p>
+        {current.data.items.map(row => <div key={keyOf(row.requirement_type, row.requirement_id)} className={verificationCard}>
+          <header className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0 flex-1"><span className="text-xs font-medium text-blue-600 dark:text-blue-400">{requirementTypeLabels[row.requirement_type]}</span><h5 className="mt-1 font-semibold break-words">{row.title}</h5></div><span className={verificationBadge}>{row.verification?.mode || 'Not qualified'}</span></header>
+          <dl className="grid gap-3 rounded-lg bg-gray-50 p-3 sm:grid-cols-2 dark:bg-gray-900/40"><div><dt className="text-xs text-gray-500">Required profiles</dt><dd className="mt-1">{row.verification?.required_profiles.join(', ') || 'Profiles not defined'}</dd></div><div><dt className="text-xs text-gray-500">Requirement reference</dt><dd className="mt-1 break-all font-mono text-xs">{row.requirement_id}</dd></div></dl>
           {canReadPlanning && row.contribution_blockers?.map(code => <p key={code} className="text-amber-400">{blockerLabels[code] || 'Review the declared implementation scope.'}</p>)}
           {canReadPlanning && row.implementation_contributions?.map(contribution => <div key={contribution.card_id} className="text-xs">
             <p>Implementation Card: {contribution.card_id} · {contribution.origin} · {contribution.scope === 'whole_requirement' ? 'whole requirement' : 'selected criteria'}</p>
@@ -250,10 +253,10 @@ function RequirementVerificationContent({ scope, canRead, canReadPlanning = fals
           </div>)}
           {canReadPlanning && row.contributions_truncated && <p>Additional contributions are omitted; the result considers all {row.contribution_count} contributions.</p>}
           {row.blockers.map((blocker, i) => <p key={i} className="text-amber-400">{blockerLabels[blocker.code] || 'Review this qualification.'}{blocker.profile ? ` (${blocker.profile})` : ''}</p>)}
-          {row.criteria_paths.map((path, i) => <div key={i} className="space-y-1 text-xs">
-            <p>{path.criterion_id} · {path.profile} · {path.path.map(step => step.requirement_id).join(' → ')}</p>
+          {row.criteria_paths.map((path, i) => <div key={i} className="space-y-2 rounded-lg border border-gray-200 p-3 text-xs dark:border-gray-700">
+            <div className="flex items-start justify-between gap-2"><p className="font-medium">{criterionLabels[path.criterion_id] || path.criterion_id}</p><span className={verificationBadge}>{path.profile}</span></div><dl className="grid gap-2 sm:grid-cols-2"><div><dt className="text-gray-500">Criterion reference</dt><dd className="break-all">{path.criterion_id}</dd></div><div><dt className="text-gray-500">Requirement path</dt><dd className="break-words">{path.path.map(step => step.requirement_id).join(' → ')}</dd></div></dl>
             {canReadPlanning && path.planning_blockers?.map(code => <p key={code}>{blockerLabels[code] || 'Review this verification plan.'}</p>)}
-            {canReadPlanning && path.scenario_plans?.map(plan => <div key={plan.scenario_id} className="ml-3">
+            {canReadPlanning && path.scenario_plans?.map(plan => <div key={plan.scenario_id} className="space-y-2 rounded-lg bg-gray-50 p-3 dark:bg-gray-900/40">
               <p>{plan.scenario_id} · {plan.method || 'Method not defined'} · Test Cards: {plan.test_card_ids.join(', ') || 'none'}</p>
               {[...plan.blockers, ...plan.work_blockers].map(code => <p key={code} className="text-amber-400">{blockerLabels[code] || 'Review this scenario plan.'}</p>)}
               {plan.test_cards_truncated && <p>Showing {plan.test_card_ids.length} of {plan.test_card_count} Test Cards.</p>}
@@ -261,12 +264,12 @@ function RequirementVerificationContent({ scope, canRead, canReadPlanning = fals
             {canReadPlanning && path.scenarios_truncated && <p>Additional scenarios are omitted from this summary; planning considers all {path.scenario_count} scenarios.</p>}
           </div>)}
           {(row.paths_has_more || row.blockers_truncated) && <p>Additional paths or issues are not shown in this summary.</p>}
-          {canEdit(row.requirement_type) && <button type="button" onClick={() => setEditor(row)}>Edit qualification {row.requirement_id}</button>}
+          {canEdit(row.requirement_type) && <button className={verificationButton} type="button" onClick={() => setEditor(row)}>Edit qualification {row.requirement_id}</button>}
         </div>)}
-        {offset > 0 && <button type="button" onClick={() => { setOffset(0); setEditor(null); }}>First requirements</button>}
-        {current.data.next_offset != null && <button type="button" onClick={() => { setOffset(current.data!.next_offset!); setEditor(null); }}>Next requirements</button>}
+        {offset > 0 && <button className={verificationButton} type="button" onClick={() => { setOffset(0); setEditor(null); }}>First requirements</button>}
+        {current.data.next_offset != null && <button className={verificationButton} type="button" onClick={() => { setOffset(current.data!.next_offset!); setEditor(null); }}>Next requirements</button>}
       </>}
-      <button type="button" onClick={() => { setEditor(null); setRefresh(refresh + 1); }}>Refresh qualification</button>
+      <button className={verificationButton} type="button" onClick={() => { setEditor(null); setRefresh(refresh + 1); }}>Refresh qualification</button>
       {editor && canEdit(editor.requirement_type) && <QualificationEditor key={keyOf(editor.requirement_type, editor.requirement_id)} scope={scope} row={editor} options={options} criterionLabels={criterionLabels} onSaved={onSaved} />}
     </>}
   </section>;

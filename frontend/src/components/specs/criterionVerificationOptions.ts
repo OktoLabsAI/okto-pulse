@@ -16,7 +16,7 @@ export function verificationRequirementOptions(collections: {
     if (!value || typeof value !== 'object') return [];
     const row = value as Record<string, unknown>;
     if (typeof row.id !== 'string' || !row.id || (row.status != null && row.status !== 'active')) return [];
-    return [{ type, id: row.id, title: String(row.text || row.title || row.rule || row.id) }];
+    return [{ type, id: row.id, title: String(row.title || row.text || row.rule || row.id) }];
   }));
 }
 

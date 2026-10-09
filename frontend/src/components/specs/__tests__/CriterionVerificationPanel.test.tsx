@@ -120,4 +120,8 @@ describe('criterion verification authoring', () => {
     expect(verificationRequirementOptions(collections, false, false)).toEqual([{ type: 'functional_requirement', id: 'fr', title: 'FR' }]);
     expect(verificationRequirementOptions(collections, true, true)).toHaveLength(3);
   });
+  it('uses the authored requirement title in links without substituting its content', () => {
+    expect(verificationRequirementOptions({ functional_requirements: [{ id: 'fr', title: 'Short title', text: 'Full obligation content' }] }, false, false))
+      .toEqual([{ type: 'functional_requirement', id: 'fr', title: 'Short title' }]);
+  });
 });

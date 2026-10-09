@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useDashboardApi } from '@/services/api';
+import { verificationBadge, verificationButton, verificationCard, verificationInput, requirementTypeLabels } from './verificationPresentation';
 
 export type VerificationProfile = 'functional' | 'integration' | 'technical' | 'operational';
 export type VerificationRequirementType = 'functional_requirement' | 'technical_requirement' | 'integration_requirement' | 'observability_requirement' | 'business_rule';
@@ -15,6 +16,7 @@ export interface VerificationRequirementOption {
 }
 interface Criterion {
   id: string;
+  title?: string | null;
   text: string;
   verification_profile?: VerificationProfile | null;
   requirement_links?: CriterionRequirementLink[] | null;
@@ -79,10 +81,10 @@ function CriterionEditor({ specId, version, criterion, options, onSaved }: {
       if (mounted.current) setBusy(false);
     }
   }
-  return <div className="space-y-3 rounded border border-slate-700 p-3">
+  return <div className={verificationCard}>
     <fieldset disabled={busy || saved} className="space-y-3">
       <label className="block text-sm">Verification profile
-        <select aria-label="Verification profile" className="ml-2 rounded bg-slate-800 p-1" value={profile} onChange={event => setProfile(event.target.value as VerificationProfile | '')}>
+        <select aria-label="Verification profile" className={verificationInput} value={profile} onChange={event => setProfile(event.target.value as VerificationProfile | '')}>
           <option value="">Not defined</option>
           {profiles.map(value => <option key={value} value={value}>{value}</option>)}
         </select>
@@ -93,26 +95,26 @@ function CriterionEditor({ specId, version, criterion, options, onSaved }: {
         return <div key={identity(link.requirement_type, link.requirement_id)} className="space-y-1 text-sm">
           <p>{option?.title || 'Requirement unavailable'} · {link.requirement_id}</p>
           <label className="block">Covered aspect (optional)
-            <input aria-label={`Covered aspect ${index + 1}`} maxLength={2000} className="block w-full rounded bg-slate-800 p-2" value={link.aspect || ''} onChange={event => setLinks(links.map((item, i) => i === index ? { ...item, aspect: event.target.value } : item))} />
+            <input aria-label={`Covered aspect ${index + 1}`} maxLength={2000} className={verificationInput} value={link.aspect || ''} onChange={event => setLinks(links.map((item, i) => i === index ? { ...item, aspect: event.target.value } : item))} />
           </label>
-          <button type="button" onClick={() => setLinks(links.filter((_, i) => i !== index))}>Remove link {index + 1}</button>
+          <button className={verificationButton} type="button" onClick={() => setLinks(links.filter((_, i) => i !== index))}>Remove link {index + 1}</button>
         </div>;
       })}
       <div className="flex gap-2">
-        <select aria-label="Requirement to link" className="min-w-0 flex-1 rounded bg-slate-800 p-2" value={selection} onChange={event => setSelection(event.target.value)}>
+        <select aria-label="Requirement to link" className={verificationInput} value={selection} onChange={event => setSelection(event.target.value)}>
           <option value="">Select a requirement</option>
           {available.map(option => <option key={identity(option.type, option.id)} value={identity(option.type, option.id)}>{option.type}: {option.title} ({option.id})</option>)}
         </select>
-        <button type="button" disabled={!selection || links.length >= 100} onClick={() => {
+        <button className={verificationButton} type="button" disabled={!selection || links.length >= 100} onClick={() => {
           const option = available.find(item => identity(item.type, item.id) === selection);
           if (option) setLinks([...links, { requirement_type: option.type, requirement_id: option.id }]);
           setSelection('');
         }}>Add link</button>
       </div>
-      <button type="button" onClick={() => void save()}>{busy ? 'Saving…' : 'Save verification plan'}</button>
+      <button className={verificationButton} type="button" onClick={() => void save()}>{busy ? 'Saving…' : 'Save verification plan'}</button>
     </fieldset>
     {error && <p role="alert">{error}</p>}
-    {saved && <button type="button" onClick={() => void refresh()}>Reload saved criterion</button>}
+    {saved && <button className={verificationButton} type="button" onClick={() => void refresh()}>Reload saved criterion</button>}
   </div>;
 }
 
@@ -129,14 +131,24 @@ export function CriterionVerificationPanel({ specId, version, criteria, options,
     <h4 className="text-sm font-medium">Criterion verification</h4>
     <p className="text-xs text-slate-400">Define each criterion’s profile and requirement links. Planning completeness and evidence are evaluated separately.</p>
     {currentCount > rows.length && <p role="status">{currentCount - rows.length} criterion(s) have legacy or unsupported identity/metadata and require review.</p>}
-    {rows.map(criterion => <div key={criterion.id} className="space-y-2 text-sm">
-      <p>{criterion.text} · {criterion.verification_profile || 'Profile not defined'} · {(criterion.requirement_links || []).length} requirement link(s)</p>
-      {(openId !== criterion.id || !canEdit) && (criterion.requirement_links || []).map(link => <p key={identity(link.requirement_type, link.requirement_id)} className="text-xs text-slate-400">
-        {unambiguousOptions.find(item => identity(item.type, item.id) === identity(link.requirement_type, link.requirement_id))?.title || 'Requirement unavailable'} · {link.requirement_id}{link.aspect ? ` · ${link.aspect}` : ''}
-      </p>)}
-      {canEdit && <button type="button" onClick={() => setOpenId(openId === criterion.id ? null : criterion.id)}>Edit verification {criterion.id}</button>}
+    {rows.map((criterion, index) => <article key={criterion.id} className={verificationCard} aria-label={criterion.title || `Criterion ${index + 1}`}>
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 flex-1"><span className="text-xs font-medium text-gray-500">AC {index + 1}</span><h5 className="mt-1 font-semibold">{criterion.title || 'Acceptance criterion'}</h5></div>
+        <span className={verificationBadge}>{criterion.verification_profile || 'Profile not defined'}</span>
+      </header>
+      <p className="whitespace-pre-wrap break-words text-gray-600 dark:text-gray-300">{criterion.text}</p>
+      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-gray-100 pt-3 dark:border-gray-700">
+        <span className="text-xs font-medium">{(criterion.requirement_links || []).length} requirement link(s)</span>
+        {canEdit && <button className={verificationButton} type="button" aria-expanded={openId === criterion.id} aria-label={`Edit verification ${criterion.id}`} onClick={() => setOpenId(openId === criterion.id ? null : criterion.id)}>{openId === criterion.id ? 'Close editor' : 'Edit verification'}</button>}
+      </div>
+      {(openId !== criterion.id || !canEdit) && <div className="grid gap-2 sm:grid-cols-2">{(criterion.requirement_links || []).map(link => <div key={identity(link.requirement_type, link.requirement_id)} className="space-y-2 rounded-lg bg-gray-50 p-3 dark:bg-gray-900/40">
+        <span className="text-xs font-medium text-blue-600 dark:text-blue-400">{requirementTypeLabels[link.requirement_type]}</span>
+        <p className="break-words text-sm">{unambiguousOptions.find(item => identity(item.type, item.id) === identity(link.requirement_type, link.requirement_id))?.title || 'Requirement unavailable'} · {link.requirement_id}</p>
+        {link.aspect && <dl className="text-xs"><dt className="font-medium text-gray-500">Covered aspect</dt><dd className="mt-1 whitespace-pre-wrap">{link.aspect}</dd></dl>}
+      </div>)}</div>}
       {canEdit && openId === criterion.id && <CriterionEditor key={`${specId}:${version}:${criterion.id}`} specId={specId} version={version} criterion={criterion} options={unambiguousOptions} onSaved={onSaved} />}
-    </div>)}
+      <details className="text-xs text-gray-500"><summary className="cursor-pointer">Criterion reference</summary><code className="block break-all pt-1">{criterion.id}</code></details>
+    </article>)}
     {!rows.length && <p className="text-xs text-slate-400">No current criteria with supported metadata and stable IDs. Legacy criteria keep their history; use the existing criterion editor to materialize their IDs.</p>}
   </section>;
 }

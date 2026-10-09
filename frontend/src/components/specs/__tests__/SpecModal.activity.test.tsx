@@ -363,7 +363,6 @@ describe('SpecModal Activity tab', () => {
       'Code Evidence Matrix',
       'Project structure',
       'Dependencies',
-      'TRs',
       'Resources',
       'Q&A',
       'References',

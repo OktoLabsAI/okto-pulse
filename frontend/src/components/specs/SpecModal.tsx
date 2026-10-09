@@ -11,6 +11,7 @@ import {
 } from 'react';
 import { SpecCoveragePanel } from './SpecCoveragePanel';
 import { MissingLinkNotice } from '@/components/shared/MissingLinkNotice';
+import { TextRequirementsTab, type TextRequirementDraft } from './TextRequirementsTab';
 import { CriterionVerificationPanel } from './CriterionVerificationPanel';
 import { RequirementVerificationPanel } from './RequirementVerificationPanel';
 import { ScenarioVerificationMethodEditor } from './ScenarioVerificationMethodEditor';
@@ -48,7 +49,6 @@ import {
   Network,
   ShieldCheck,
   Gauge,
-  Pencil,
   Grid3X3,
   AlertTriangle,
   FolderTree,
@@ -170,6 +170,7 @@ interface SpecModalProps {
 type ModalTab =
   | 'details'
   | 'frs'
+  | 'acs'
   | 'criterion-verification'
   | 'requirements'
   | 'tests-verifications'
@@ -252,188 +253,6 @@ function requiresSpecValidationSubmission(
   );
 }
 
-function EditableRequirementsList({
-  title,
-  icon,
-  items,
-  onUpdate,
-  placeholder,
-  renderItemExtra,
-  canAdd = true,
-  canEdit = true,
-  canRemove = true,
-  onAddItem,
-  onEditItem,
-  onOpenItemEditor,
-}: {
-  title: string;
-  icon: React.ReactNode;
-  items: string[] | null;
-  onUpdate: (items: string[]) => void;
-  placeholder: string;
-  renderItemExtra?: (item: string, index: number) => React.ReactNode;
-  canAdd?: boolean;
-  canEdit?: boolean;
-  canRemove?: boolean;
-  onAddItem?: () => void;
-  onEditItem?: (index: number, value: string) => void | Promise<void>;
-  onOpenItemEditor?: (index: number) => void;
-}) {
-  const [draft, setDraft] = useState('');
-  const [editing, setEditing] = useState(false);
-  const [editingIndex, setEditingIndex] = useState<number | null>(null);
-  const [editDraft, setEditDraft] = useState('');
-
-  const add = () => {
-    const trimmed = draft.trim();
-    if (trimmed) {
-      onUpdate([...(items || []), trimmed]);
-      setDraft('');
-    }
-  };
-
-  const remove = (idx: number) => {
-    onUpdate((items || []).filter((_, i) => i !== idx));
-  };
-
-  const startEdit = (idx: number, value: string) => {
-    setEditingIndex(idx);
-    setEditDraft(value);
-  };
-
-  const cancelEdit = () => {
-    setEditingIndex(null);
-    setEditDraft('');
-  };
-
-  const saveEdit = async () => {
-    if (editingIndex === null) return;
-    const trimmed = editDraft.trim();
-    if (!trimmed) return;
-    if (onEditItem) {
-      await onEditItem(editingIndex, trimmed);
-    } else {
-      onUpdate((items || []).map((item, index) => (index === editingIndex ? trimmed : item)));
-    }
-    cancelEdit();
-  };
-
-  const hasItems = items && items.length > 0;
-
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-2">
-        <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 flex items-center gap-1.5">
-          {icon} {title}
-          {hasItems && <span className="text-xs font-normal text-gray-400">({items.length})</span>}
-        </h4>
-        {!editing && canAdd && (
-          <button
-            onClick={() => {
-              if (onAddItem) {
-                onAddItem();
-              } else {
-                setEditing(true);
-              }
-            }}
-            className="text-xs text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-0.5"
-          >
-            <Plus size={12} /> Add
-          </button>
-        )}
-      </div>
-
-      {hasItems ? (
-        <ol className="space-y-1.5 ml-1">
-          {items.map((item, i) => (
-            <li key={i} className="flex items-start gap-2 text-sm text-gray-600 dark:text-gray-400 group">
-              <span className="text-xs text-gray-400 mt-0.5 w-4 shrink-0">{i + 1}.</span>
-              {editingIndex === i ? (
-                <div className="flex-1 flex gap-2">
-                  <input
-                    type="text"
-                    value={editDraft}
-                    onChange={(event) => setEditDraft(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') void saveEdit();
-                      if (event.key === 'Escape') {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        cancelEdit();
-                      }
-                    }}
-                    className="flex-1 px-2 py-1 border border-gray-300 rounded-md text-sm dark:bg-gray-700 dark:border-gray-600"
-                    autoFocus
-                  />
-                  <button onClick={() => void saveEdit()} disabled={!editDraft.trim()} className="btn btn-primary text-xs">Save</button>
-                  <button onClick={cancelEdit} className="btn btn-secondary text-xs">Cancel</button>
-                </div>
-              ) : (
-                <>
-                  <span className="flex-1">{item}</span>
-                  {renderItemExtra?.(item, i)}
-                  {canEdit && (
-                    <button
-                      onClick={() => {
-                        if (onOpenItemEditor) {
-                          onOpenItemEditor(i);
-                        } else {
-                          startEdit(i, item);
-                        }
-                      }}
-                      className="opacity-0 group-hover:opacity-100 p-0.5 text-blue-400 hover:text-blue-600 transition-opacity"
-                      title={onOpenItemEditor ? 'Edit details' : 'Edit'}
-                    >
-                      <Pencil size={12} />
-                    </button>
-                  )}
-                  {canRemove && (
-                    <button
-                      onClick={() => remove(i)}
-                      className="opacity-0 group-hover:opacity-100 p-0.5 text-red-400 hover:text-red-600 transition-opacity"
-                      title="Remove"
-                    >
-                      <Trash2 size={12} />
-                    </button>
-                  )}
-                </>
-              )}
-            </li>
-          ))}
-        </ol>
-      ) : (
-        <p className="text-xs text-gray-400 dark:text-gray-500 italic ml-1">
-          No {title.toLowerCase()} defined yet
-        </p>
-      )}
-
-      {editing && (
-        <div className="flex gap-2 mt-2">
-          <input
-            type="text"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') add();
-              if (e.key === 'Escape') {
-                e.preventDefault();
-                e.stopPropagation();
-                setEditing(false);
-                setDraft('');
-              }
-            }}
-            placeholder={placeholder}
-            className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600"
-            autoFocus
-          />
-          <button onClick={add} disabled={!draft.trim()} className="btn btn-primary text-xs">Add</button>
-          <button onClick={() => { setEditing(false); setDraft(''); }} className="btn btn-secondary text-xs">Done</button>
-        </div>
-      )}
-    </div>
-  );
-}
-
 type StructuredObjectEntity =
   | BusinessRule
   | ApiContract
@@ -458,15 +277,6 @@ const STRUCTURED_ENTITY_BY_FIELD: Record<StructuredCollectionField, SpecStructur
   observability_requirements: 'observability_requirement',
   decisions: 'decision',
 };
-
-function normalizeTextEntity(item: unknown): { id: string; text: string; status: string } {
-  const record = item && typeof item === 'object' ? item as Record<string, unknown> : {};
-  if (typeof record.id !== 'string' || !record.id.trim()
-    || typeof record.text !== 'string' || !record.text.trim()) {
-    throw new Error('incompatible_spec_requirement: stored requirement requires id and text');
-  }
-  return { id: record.id, text: record.text, status: String(record.status || 'active') };
-}
 
 function stableEntityPayload(item: StructuredObjectEntity): Record<string, unknown> {
   return JSON.parse(JSON.stringify(item)) as Record<string, unknown>;
@@ -1910,96 +1720,16 @@ export function SpecModal({
     return result.spec_version;
   };
 
-  const syncTextEntityList = async (
-    entityType: Extract<SpecStructuredEntityType, 'functional_requirement' | 'acceptance_criterion'>,
-    currentItems: unknown[] | null,
-    nextTexts: string[],
+  const saveTextRequirement = async (
+    entityType: 'functional_requirement' | 'acceptance_criterion',
+    id: string | null,
+    draft: TextRequirementDraft,
   ) => {
     if (!spec) return;
-    try {
-      let version: number | null = spec.version;
-      const currentEntries = (currentItems || [])
-        .map(normalizeTextEntity)
-        .filter((item) => item.status === 'active');
-
-      const nextCounts = new Map<string, number>();
-      for (const text of nextTexts.map((item) => item.trim()).filter(Boolean)) {
-        nextCounts.set(text, (nextCounts.get(text) || 0) + 1);
-      }
-
-      const keptCounts = new Map<string, number>();
-      const entriesToRevoke: typeof currentEntries = [];
-      for (const entry of currentEntries) {
-        const allowed = nextCounts.get(entry.text) || 0;
-        const seen = keptCounts.get(entry.text) || 0;
-        if (seen < allowed) {
-          keptCounts.set(entry.text, seen + 1);
-          continue;
-        }
-        entriesToRevoke.push(entry);
-      }
-      entriesToRevoke.sort((a, b) => {
-        const ai = Number(a.id);
-        const bi = Number(b.id);
-        return Number.isInteger(ai) && Number.isInteger(bi) ? bi - ai : 0;
-      });
-      for (const entry of entriesToRevoke) {
-        version = await applyImpactAwareOperation(entityType, entry.id, 'revoke', version);
-      }
-
-      const currentCounts = new Map<string, number>();
-      for (const entry of currentEntries) {
-        currentCounts.set(entry.text, (currentCounts.get(entry.text) || 0) + 1);
-      }
-      const createdCounts = new Map<string, number>();
-      for (const text of nextTexts.map((item) => item.trim()).filter(Boolean)) {
-        const existing = currentCounts.get(text) || 0;
-        const created = createdCounts.get(text) || 0;
-        if (created < existing) {
-          createdCounts.set(text, created + 1);
-          continue;
-        }
-        const result = await api.createSpecEntity(specId, entityType, { text }, version);
-        if (!result.success) throw new Error(result.error_message || 'Structured create failed');
-        version = result.spec_version;
-        createdCounts.set(text, created + 1);
-      }
-
-      await reloadSpecAfterStructuredEdit();
-    } catch (error) {
-      if ((error as Error).message !== 'Operation cancelled') {
-        toast.error((error as Error).message || 'Failed to update');
-      }
-    }
-  };
-
-  const updateTextEntityAtIndex = async (
-    entityType: Extract<SpecStructuredEntityType, 'functional_requirement' | 'acceptance_criterion'>,
-    currentItems: unknown[] | null,
-    index: number,
-    text: string,
-  ) => {
-    if (!spec) return;
-    const entry = (currentItems || [])
-      .map(normalizeTextEntity)
-      .filter((item) => item.status === 'active')[index];
-    if (!entry) return;
-    const result = await api.updateSpecEntity(specId, entityType, entry.id, { text }, spec.version);
-    if (!result.success) throw new Error(result.error_message || 'Structured update failed');
-    await reloadSpecAfterStructuredEdit();
-  };
-
-  const updateStructuredEntityAtIndex = async (
-    entityType: SpecStructuredEntityType,
-    items: StructuredObjectEntity[] | null,
-    index: number,
-    payload: Record<string, unknown>,
-  ) => {
-    if (!spec) return;
-    const entry = (items || []).filter((item) => ((item as any).status || 'active') === 'active')[index] as any;
-    if (!entry?.id) return;
-    const result = await api.updateSpecEntity(specId, entityType, entry.id, payload, spec.version);
-    if (!result.success) throw new Error(result.error_message || 'Structured update failed');
+    const result = id
+      ? await api.updateSpecEntity(specId, entityType, id, { ...draft }, spec.version)
+      : await api.createSpecEntity(specId, entityType, { ...draft }, spec.version);
+    if (!result.success) throw new Error(result.error_message || 'Could not save requirement');
     await reloadSpecAfterStructuredEdit();
   };
 
@@ -2217,10 +1947,6 @@ export function SpecModal({
     nextStatuses.includes('validated')
     || specValidationSubmissionRequired
   );
-  const openDetailsStructuredEditor = (tab: ModalTab, mode: 'add' | 'edit', entityId?: string) => {
-    setDetailsStructuredEditor({ tab, mode, entityId, token: Date.now() });
-    setActiveTab(tab);
-  };
   const clearDetailsStructuredEditor = () => setDetailsStructuredEditor(null);
 
   const unansweredQA = spec.qa_items?.filter((q) => !q.answered_at).length || 0;
@@ -2245,6 +1971,7 @@ export function SpecModal({
       }]
       : []),
     { id: 'frs', label: 'Functional', icon: <Circle size={14} />, count: spec.functional_requirements?.length || 0 },
+    { id: 'acs', label: 'AC', icon: <Target size={14} />, count: spec.acceptance_criteria?.length || 0 },
     { id: 'criterion-verification', label: 'Criterion verification', icon: <Target size={14} /> },
     { id: 'tests', label: 'Tests', icon: <FlaskConical size={14} />, count: spec.test_scenarios?.length || 0 },
     { id: 'rules', label: 'Business', icon: <Scale size={14} />, count: spec.business_rules?.length || 0 },
@@ -2260,7 +1987,7 @@ export function SpecModal({
     { id: 'contracts', label: 'Contracts', icon: <FileCode size={14} />, count: spec.api_contracts?.length || 0 },
     { id: 'irs', label: 'Integration', icon: <Network size={14} />, count: spec.integration_requirements?.length || 0, permission: 'spec.integration_requirements.read' },
     { id: 'ors', label: 'Observability', icon: <Gauge size={14} />, count: spec.observability_requirements?.length || 0, permission: 'spec.observability_requirements.read' },
-    { id: 'trs', label: 'TRs', icon: <Settings size={14} />, count: spec.technical_requirements?.length || 0 },
+    { id: 'trs', label: 'Technical', icon: <Settings size={14} />, count: spec.technical_requirements?.length || 0 },
     { id: 'decisions', label: 'Decisions', icon: <GitBranch size={14} />, count: spec.decisions?.length || 0 },
     { id: 'resources', label: 'Resources', icon: <BookOpen size={14} /> },
     { id: 'qa', label: 'Q&A', icon: <MessageCircleQuestion size={14} />, count: spec.qa_items?.length || 0, highlight: unansweredQA > 0 },
@@ -2272,8 +1999,8 @@ export function SpecModal({
     { id: 'activity', label: 'Activity', icon: <History size={14} /> },
   ];
   const tabs = allTabs.filter((tab) => !tab.permission || perms.has(tab.permission));
-  const requirementSections: ModalTab[] = ['frs', 'rules', 'irs', 'ors', 'contracts', 'decisions'];
-  const verificationSections: ModalTab[] = ['tests', 'criterion-verification'];
+  const requirementSections: ModalTab[] = ['frs', 'rules', 'irs', 'ors', 'trs', 'contracts', 'decisions'];
+  const verificationSections: ModalTab[] = ['tests', 'acs', 'criterion-verification'];
   const requirementTabs = requirementSections.flatMap(id => tabs.filter(tab => tab.id === id));
   const verificationTabs = verificationSections.flatMap(id => tabs.filter(tab => tab.id === id));
   const primaryTab: ModalTab = requirementSections.includes(activeTab) ? 'requirements'
@@ -2483,38 +2210,6 @@ export function SpecModal({
                   placeholder="No context"
                 />
               </div>
-              <EditableRequirementsList
-                title="Technical Requirements"
-                icon={<Settings size={14} />}
-                items={(spec.technical_requirements || [])
-                  .filter((tr) => (tr.status || 'active') === 'active')
-                  .map((tr) => tr.text)}
-                placeholder="Add a technical constraint..."
-                canAdd={canStructured('technical_requirement', 'create')}
-                canEdit={canStructured('technical_requirement', 'update')}
-                canRemove={canStructured('technical_requirement', 'revoke')}
-                onAddItem={() => openDetailsStructuredEditor('trs', 'add')}
-                onOpenItemEditor={(index) => {
-                  const item = (spec.technical_requirements || [])
-                    .filter((tr) => (tr.status || 'active') === 'active')[index] as TechnicalRequirement | undefined;
-                  if (item) openDetailsStructuredEditor('trs', 'edit', item.id);
-                }}
-                onEditItem={async (index, text) => {
-                  const existingTRs = (spec.technical_requirements || []).filter((tr) => (tr.status || 'active') === 'active') as TechnicalRequirement[];
-                  await updateStructuredEntityAtIndex('technical_requirement', existingTRs as any, index, { text });
-                }}
-                onUpdate={async (items) => {
-                  const existingTRs = (spec.technical_requirements || []).filter((tr) => (tr.status || 'active') === 'active') as TechnicalRequirement[];
-                  const byText = new Map(existingTRs.map((tr) => [tr.text, tr]));
-                  const nextTRs = items.map((text) => byText.get(text) || {
-                    id: `tr_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-                    text,
-                    linked_task_ids: null,
-                  });
-                  await syncStructuredCollection('technical_requirements', existingTRs, nextTRs);
-                }}
-              />
-
               {spec.labels && spec.labels.length > 0 && (
                 <div className="flex flex-wrap gap-1">
                   {spec.labels.map((label, i) => (
@@ -2543,45 +2238,23 @@ export function SpecModal({
             </div>
           )}
 
-          {activeTab === 'frs' && <div className="space-y-5">
-              <EditableRequirementsList
-                title="Functional Requirements"
-                icon={<Circle size={14} />}
-                items={((spec.functional_requirements || []) as unknown[])
-                  .map(normalizeTextEntity)
-                  .filter((item) => item.status === 'active')
-                  .map((item) => item.text)}
-                placeholder="Add a functional requirement..."
-                canAdd={canStructured('functional_requirement', 'create')}
-                canEdit={canStructured('functional_requirement', 'update')}
-                canRemove={canStructured('functional_requirement', 'revoke')}
-                onEditItem={async (index, text) => {
-                  await updateTextEntityAtIndex('functional_requirement', spec.functional_requirements as unknown[] | null, index, text);
-                }}
-                onUpdate={async (items) => {
-                  await syncTextEntityList('functional_requirement', spec.functional_requirements as unknown[] | null, items);
-                }}
-              />
-          </div>}
-          {activeTab === 'criterion-verification' && <div className="space-y-5">
-              <EditableRequirementsList
-                title="Acceptance Criteria"
-                icon={<Target size={14} />}
-                items={((spec.acceptance_criteria || []) as unknown[])
-                  .map(normalizeTextEntity)
-                  .filter((item) => item.status === 'active')
-                  .map((item) => item.text)}
-                placeholder="Add an acceptance criterion..."
-                canAdd={canStructured('acceptance_criterion', 'create')}
-                canEdit={canStructured('acceptance_criterion', 'update')}
-                canRemove={canStructured('acceptance_criterion', 'revoke')}
-                onEditItem={async (index, text) => {
-                  await updateTextEntityAtIndex('acceptance_criterion', spec.acceptance_criteria as unknown[] | null, index, text);
-                }}
-                onUpdate={async (items) => {
-                  await syncTextEntityList('acceptance_criterion', spec.acceptance_criteria as unknown[] | null, items);
-                }}
-              />
+          {(activeTab === 'frs' || activeTab === 'acs') && (() => {
+            const type = activeTab === 'frs' ? 'functional_requirement' : 'acceptance_criterion';
+            return <TextRequirementsTab
+              key={`${spec.id}:${spec.version}:${type}:${canStructured(type, 'create')}:${canStructured(type, 'update')}:${canStructured(type, 'revoke')}`}
+              kind={activeTab === 'frs' ? 'FR' : 'AC'}
+              items={(activeTab === 'frs' ? spec.functional_requirements : spec.acceptance_criteria) || []}
+              canCreate={canStructured(type, 'create')}
+              canEdit={canStructured(type, 'update')}
+              canRevoke={canStructured(type, 'revoke')}
+              onSave={(id, draft) => saveTextRequirement(type, id, draft)}
+              onRevoke={async id => {
+                await applyImpactAwareOperation(type, id, 'revoke', spec.version);
+                await reloadSpecAfterStructuredEdit();
+              }}
+            />;
+          })()}
+          {activeTab === 'criterion-verification' && <div className="space-y-6">
               {perms.has('spec.entity.read') && <CriterionVerificationPanel
                 key={`${spec.id}:${spec.version}:${spec.status}:${Boolean(spec.archived)}:${canStructured('acceptance_criterion', 'update')}`}
                 specId={spec.id}
