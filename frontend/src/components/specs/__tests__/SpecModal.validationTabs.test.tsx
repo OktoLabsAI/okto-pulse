@@ -467,21 +467,17 @@ describe('SpecModal validation navigation', () => {
     );
   });
 
-  it('loads decomposition history lazily for an evaluation-only reader', async () => {
+  it('does not offer an empty Validation tab to an evaluation-only reader', async () => {
     permissionMock.allowAll = false;
     permissionMock.allowed = new Set(['spec.entity.read', 'spec.evaluations.read']);
     renderSpec('draft');
     await screen.findByText(baseSpec.title);
     expect(apiMock.listSpecEvaluations).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('tab', { name: 'Validation' }));
-    await screen.findByText(/No current evaluation/);
-    expect(apiMock.listSpecEvaluations).toHaveBeenCalledExactlyOnceWith(baseSpec.id, expect.any(AbortSignal));
+    expect(screen.queryByRole('tab', { name: 'Validation' })).not.toBeInTheDocument();
     expect(apiMock.getCurrentSpecValidation).not.toHaveBeenCalled();
   });
 
-  it('does not borrow validation read authority for decomposition history', async () => {
-    permissionMock.allowAll = false;
-    permissionMock.allowed = new Set(['spec.entity.read', 'spec.validation.read']);
+  it('omits decomposition evaluations and their request even with full permissions', async () => {
     renderSpec('draft');
     await screen.findByText(baseSpec.title);
     fireEvent.click(screen.getByRole('tab', { name: 'Validation' }));

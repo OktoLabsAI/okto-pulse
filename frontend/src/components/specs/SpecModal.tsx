@@ -106,7 +106,6 @@ import { ArchitectureClassificationsPanel } from './ArchitectureClassificationsP
 import { ObservabilityRequirementsTab } from './ObservabilityRequirementsTab';
 import { KGValidationTab } from './KGValidationTab';
 import { SpecValidationPanel } from './SpecValidationPanel';
-import { SpecEvaluationHistory } from './SpecEvaluationHistory';
 import {
   isAllowedTransitionActionable,
   policyTransitionRejectionMessage,
@@ -1193,7 +1192,6 @@ export function SpecModal({
   const canReadChecklist = perms.has('spec.checklist.read');
   const canExecuteChecklist = perms.has('spec.checklist.execute');
   const canReadSpecValidation = perms.has('spec.validation.read');
-  const canReadSpecEvaluations = perms.has('spec.evaluations.read');
   const canReadDependencies = perms.has('spec.entity.read');
   const canReadCoverage = ['board.read', 'spec.entity.read', 'card.entity.read', 'spec.tests.read',
     'spec.integration_requirements.read', 'spec.observability_requirements.read'].every(flag => perms.has(flag));
@@ -1395,8 +1393,7 @@ export function SpecModal({
       canReadQuality
       || canReadPolicyCompliance
       || canReadChecklist
-      || canReadSpecValidation
-      || canReadSpecEvaluations;
+      || canReadSpecValidation;
     if (
       activeTab === 'validation' &&
       !validationAvailable
@@ -1409,7 +1406,6 @@ export function SpecModal({
     canReadPolicyCompliance,
     canReadQuality,
     canReadSpecValidation,
-    canReadSpecEvaluations,
   ]);
 
   useEffect(() => {
@@ -1951,8 +1947,7 @@ export function SpecModal({
     canReadQuality
     || canReadPolicyCompliance
     || canReadChecklist
-    || canReadSpecValidation
-    || canReadSpecEvaluations;
+    || canReadSpecValidation;
   const allTabs: { id: ModalTab; label: string; icon: React.ReactNode; count?: number; highlight?: boolean; permission?: string }[] = [
     { id: 'details', label: 'Details', icon: <FileText size={14} /> },
     ...((canReadCoverage || canReadCodeTraceability) ? [{ id: 'coverage' as ModalTab, label: 'Coverage', icon: <GitBranch size={14} /> }] : []),
@@ -2695,9 +2690,6 @@ export function SpecModal({
             </div>
           )}
           {activeTab === 'validation' && spec && (
-            <>
-            <SpecEvaluationHistory key={`${spec.id}:${spec.edition}:${canReadSpecEvaluations}`} specId={spec.id}
-              edition={spec.edition} version={spec.version} canRead={canReadSpecEvaluations} />
             <SpecValidationPanel
               anchorTexts={specAnchorTexts}
               boardId={spec.board_id}
@@ -2730,7 +2722,6 @@ export function SpecModal({
               onSubmitValidation={() =>
                 void handleMoveSpec('validated' as SpecStatus)}
             />
-            </>
           )}
           {activeTab === 'kg' && spec && (
             <KGValidationTab boardId={spec.board_id} specId={specId} />
