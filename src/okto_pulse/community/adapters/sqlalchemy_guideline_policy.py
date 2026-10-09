@@ -1182,6 +1182,7 @@ class CommunitySqlAlchemyGuidelinePolicy:
         entity_type: PolicyEntityType,
         subject_id: str,
         expected_from_status: str,
+        lock: bool = True,
     ) -> PolicyTransitionSnapshot:
         """Delegate one transaction-bound gate snapshot to Community authority."""
 
@@ -1196,6 +1197,7 @@ class CommunitySqlAlchemyGuidelinePolicy:
             entity_type=entity_type,
             subject_id=subject_id,
             expected_from_status=expected_from_status,
+            lock=lock,
         )
 
     async def get_revision_result_by_idempotency(

@@ -1553,6 +1553,7 @@ class CommunitySqlAlchemySemanticGuidelineAssessment:
         subject_id: str,
         subject_edition: int,
         lock: bool = True,
+        persist: bool = True,
     ) -> tuple[
         tuple[BoardGuidelineBinding, ...],
         tuple[GuidelineRevision, ...],
@@ -1601,6 +1602,10 @@ class CommunitySqlAlchemySemanticGuidelineAssessment:
             board_id=board_id,
             lock=lock,
         )
+        if not persist:
+            # Preview the candidate set without pinning an edition on GET.
+            # A mutation recomputes and persists it under the Board mutex.
+            return bindings, revisions
         scope = SemanticGuidelineValidationScopeRow(
             board_id=board_id,
             subject_type=entity_type.value,
@@ -1631,6 +1636,7 @@ class CommunitySqlAlchemySemanticGuidelineAssessment:
         subject_id: str,
         subject_edition: int | None,
         lock: bool,
+        persist: bool = True,
     ) -> tuple[
         tuple[BoardGuidelineBinding, ...],
         tuple[GuidelineRevision, ...],
@@ -1654,6 +1660,7 @@ class CommunitySqlAlchemySemanticGuidelineAssessment:
             subject_id=subject_id,
             subject_edition=subject_edition,
             lock=lock,
+            persist=persist,
         )
 
     async def semantic_current_fences(
@@ -3211,22 +3218,25 @@ class CommunitySqlAlchemySemanticGuidelineAssessment:
         entity_type: PolicyEntityType,
         subject_id: str,
         expected_from_status: str,
+        lock: bool = True,
     ) -> PolicyTransitionSnapshot:
         """Resolve the authoritative semantic-v2 gate fence in one UoW.
 
         This path intentionally never consults the retired predicate/rule
-        evaluator.  The board is serialized before subject, binding, receipt,
+        evaluator. In mutation mode the board is serialized before subject, binding, receipt,
         waiver, and skip authority is read so the resulting decision cannot
-        mix evidence from different transaction fences.
+        mix evidence from different transaction fences. Read-only previews use
+        the existing edition scope, or a non-persisted candidate if not yet pinned.
         """
 
-        await lock_policy_board(self._session, board_id=board_id)
+        if lock:
+            await lock_policy_board(self._session, board_id=board_id)
         expected_status = str(expected_from_status).strip().lower()
         subject = await self.resolve_policy_subject_snapshot(
             board_id=board_id,
             entity_type=entity_type,
             subject_id=subject_id,
-            lock=True,
+            lock=lock,
         )
         if subject is None:
             return PolicyTransitionSnapshot(
@@ -3253,7 +3263,8 @@ class CommunitySqlAlchemySemanticGuidelineAssessment:
             entity_type=entity_type,
             subject_id=subject_id,
             subject_edition=subject.subject.subject_edition,
-            lock=True,
+            lock=lock,
+            persist=lock,
         )
         from okto_pulse.core.domain.guideline_semantic_findings_v2 import project_semantic_metric_findings_v2
         from okto_pulse.community.adapters.sqlalchemy_semantic_guideline_v2 import CommunitySqlAlchemySemanticGuidelineAssessmentV2
@@ -3277,29 +3288,25 @@ class CommunitySqlAlchemySemanticGuidelineAssessment:
             current = native_semantic_assessment_snapshot(
                 subject=subject, binding=binding, revision=revision,
             )
-            receipt_row = (
-                await self._session.execute(
-                    select(SemanticGuidelineAssessmentV2Row)
-                    .where(
-                        SemanticGuidelineAssessmentV2Row.board_id
-                        == board_id,
-                        SemanticGuidelineAssessmentV2Row.subject_type
-                        == entity_type.value,
-                        SemanticGuidelineAssessmentV2Row.subject_id
-                        == subject_id,
-                        SemanticGuidelineAssessmentV2Row.binding_id
-                        == binding.binding_id,
-                        SemanticGuidelineAssessmentV2Row.validation_edition
-                        == subject.subject.subject_edition,
-                    )
-                    .order_by(
-                        SemanticGuidelineAssessmentV2Row.recorded_at.desc(),
-                        SemanticGuidelineAssessmentV2Row.receipt_id.desc(),
-                    )
-                    .limit(1)
-                    .with_for_update()
+            receipt_statement = (
+                select(SemanticGuidelineAssessmentV2Row)
+                .where(
+                    SemanticGuidelineAssessmentV2Row.board_id == board_id,
+                    SemanticGuidelineAssessmentV2Row.subject_type == entity_type.value,
+                    SemanticGuidelineAssessmentV2Row.subject_id == subject_id,
+                    SemanticGuidelineAssessmentV2Row.binding_id == binding.binding_id,
+                    SemanticGuidelineAssessmentV2Row.validation_edition
+                    == subject.subject.subject_edition,
                 )
-            ).scalar_one_or_none()
+                .order_by(
+                    SemanticGuidelineAssessmentV2Row.recorded_at.desc(),
+                    SemanticGuidelineAssessmentV2Row.receipt_id.desc(),
+                )
+                .limit(1)
+            )
+            if lock:
+                receipt_statement = receipt_statement.with_for_update()
+            receipt_row = (await self._session.execute(receipt_statement)).scalar_one_or_none()
             receipt = (
                 None
                 if receipt_row is None
@@ -3316,27 +3323,18 @@ class CommunitySqlAlchemySemanticGuidelineAssessment:
             )
             waiver_rows = ()
             if receipt is not None:
-                waiver_rows = tuple(
-                    (
-                        await self._session.execute(
-                            select(SemanticGuidelineWaiverRow)
-                            .where(
-                                SemanticGuidelineWaiverRow.board_id
-                                == board_id,
-                                SemanticGuidelineWaiverRow.receipt_id
-                                == receipt.receipt_id,
-                                SemanticGuidelineWaiverRow.binding_id
-                                == binding.binding_id,
-                            )
-                            .order_by(
-                                SemanticGuidelineWaiverRow.waiver_id.asc()
-                            )
-                            .with_for_update()
-                        )
+                waiver_statement = (
+                    select(SemanticGuidelineWaiverRow)
+                    .where(
+                        SemanticGuidelineWaiverRow.board_id == board_id,
+                        SemanticGuidelineWaiverRow.receipt_id == receipt.receipt_id,
+                        SemanticGuidelineWaiverRow.binding_id == binding.binding_id,
                     )
-                    .scalars()
-                    .all()
+                    .order_by(SemanticGuidelineWaiverRow.waiver_id.asc())
                 )
+                if lock:
+                    waiver_statement = waiver_statement.with_for_update()
+                waiver_rows = tuple((await self._session.execute(waiver_statement)).scalars().all())
             waivers = tuple(_waiver_from_row(row) for row in waiver_rows)
             skip = await self.get_active_semantic_skip(
                 board_id=board_id,

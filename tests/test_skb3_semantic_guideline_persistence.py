@@ -1091,6 +1091,54 @@ async def test_native_assessment_uses_active_authority_with_unlinked_heads(
 
 
 @pytest.mark.asyncio
+async def test_transition_preview_reads_during_writer_without_relaxing_enforcement(
+    tmp_path, semantic_relational_application_adapter,
+):
+    from sqlalchemy import event
+    from sqlalchemy.exc import OperationalError
+
+    engine = _sqlite_engine(tmp_path / "preview-concurrent-writer.db")
+    factory = build_community_session_factory(engine)
+    await initialize_current_schema(engine, current_schema_contract())
+    try:
+        async with factory() as session, session.begin():
+            board_id, ideation_id, _, _ = await _seed_semantic_authority(session, metric_count=1)
+            ideation = await session.get(Ideation, ideation_id)
+            ideation.status = "evaluating"
+        args = dict(board_id=board_id, entity_type="ideation", subject_id=ideation_id,
+                    from_status="evaluating", to_status="done")
+        async with engine.connect() as writer:
+            await writer.execute(text("UPDATE boards SET id=id WHERE id=:id"), {"id": board_id})
+            statements = []
+            def capture(_conn, _cursor, statement, _parameters, _context, _many):
+                statements.append(statement)
+            event.listen(engine.sync_engine, "before_cursor_execute", capture)
+            try:
+                async with factory() as reader:
+                    await reader.execute(text("PRAGMA busy_timeout=1"))
+                    await reader.execute(select(Board.id).where(Board.id == board_id))
+                    preview = await GuidelineService(reader).preview_policy_transition(**args)
+                    assert preview.allowed is False
+                    assert preview.reason_codes == (PolicyTransitionReasonCode.POLICY_COMPLIANCE_RECEIPT_MISSING,)
+                    assert not any(s.lstrip().upper().startswith(("UPDATE", "INSERT", "DELETE")) for s in statements)
+                    await reader.rollback()
+                async with factory() as mutation:
+                    await mutation.execute(text("PRAGMA busy_timeout=1"))
+                    with pytest.raises(OperationalError, match="database is locked"):
+                        await GuidelineService(mutation).enforce_policy_transition(**args)
+                    await mutation.rollback()
+                assert any(s.startswith("UPDATE boards") for s in statements)
+            finally:
+                event.remove(engine.sync_engine, "before_cursor_execute", capture)
+                await writer.rollback()
+        async with factory() as session:
+            with pytest.raises(PolicyTransitionRejected):
+                await GuidelineService(session).enforce_policy_transition(**args)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_semantic_transition_runtime_is_authoritative_end_to_end(
     tmp_path,
     semantic_relational_application_adapter,
