@@ -6,20 +6,25 @@ import { DeliveryDisclosure, deliveryButton, deliveryError, deliverySection } fr
 type Scope = { boardId: string; cardId: string; specId: string; edition: number };
 
 export function CardLedgerPanel(props: Scope) {
-  const [edition, setEdition] = useState(props.edition);
+  const [edition, setEdition] = useState(Math.max(1, props.edition - 1));
   return <section aria-label="Delivery record history" className={deliverySection}>
     <h4 className="text-sm font-semibold text-gray-800 dark:text-gray-100">Delivery record history</h4>
+    <p className="font-medium">Edition {props.edition} · Current</p>
+    <LedgerPage key={`current:${props.boardId}:${props.cardId}:${props.specId}:${props.edition}`} {...props} />
+    {props.edition > 1 && <DeliveryDisclosure title="Previous versions" badge={props.edition - 1}>
+    <p>Consult records from earlier editions. They do not establish current delivery evidence.</p>
     <label className="block max-w-md space-y-2 font-medium">
-      <span className="flex items-center justify-between gap-3"><span>History edition</span><span className="rounded bg-sky-100 px-2 py-0.5 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300">Edition {edition}{edition === props.edition ? ' · Current' : ''}</span></span>
-      <input className="block w-full cursor-pointer accent-sky-500 disabled:cursor-default disabled:opacity-50" aria-label="History edition" aria-valuetext={`Edition ${edition}${edition === props.edition ? ', current' : ''}`} type="range" min={1} max={props.edition} step={1} value={edition} disabled={props.edition === 1}
-        onChange={event => { const value = Number(event.target.value); if (Number.isInteger(value) && value >= 1 && value <= props.edition) setEdition(value); }} />
-      <span className="flex justify-between text-[10px] font-normal text-gray-500 dark:text-gray-400"><span>1</span><span>{props.edition === 1 ? 'Only edition' : props.edition}</span></span>
+      <span className="flex items-center justify-between gap-3"><span>History edition</span><span className="rounded bg-sky-100 px-2 py-0.5 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300">Edition {edition}</span></span>
+      <input className="block w-full cursor-pointer accent-sky-500 disabled:cursor-default disabled:opacity-50" aria-label="History edition" aria-valuetext={`Edition ${edition}, previous`} type="range" min={1} max={props.edition - 1} step={1} value={edition} disabled={props.edition === 2}
+        onChange={event => { const value = Number(event.target.value); if (Number.isInteger(value) && value >= 1 && value < props.edition) setEdition(value); }} />
+      <span className="flex justify-between text-[10px] font-normal text-gray-500 dark:text-gray-400"><span>1</span><span>{props.edition === 2 ? 'Only previous edition' : props.edition - 1}</span></span>
     </label>
-    <LedgerPage key={`${props.boardId}:${props.cardId}:${props.specId}:${edition}`} {...props} edition={edition} />
+    <LedgerPage key={`previous:${props.boardId}:${props.cardId}:${props.specId}:${edition}`} {...props} edition={edition} historical />
+    </DeliveryDisclosure>}
   </section>;
 }
 
-function LedgerPage({ boardId, cardId, specId, edition }: Scope) {
+function LedgerPage({ boardId, cardId, specId, edition, historical = false }: Scope & { historical?: boolean }) {
   const api = useDashboardApi();
   const [page, setPage] = useState<CardLedgerPage | null>(null);
   const [detail, setDetail] = useState<CardLedgerPage['items'][number] | null>(null);
@@ -46,7 +51,7 @@ function LedgerPage({ boardId, cardId, specId, edition }: Scope) {
     }
   }
   return <>
-    <button type="button" className={deliveryButton} disabled={busy} onClick={() => read()}>Browse delivery records</button>
+    <button type="button" className={deliveryButton} disabled={busy} onClick={() => read()}>{historical ? 'Browse previous delivery records' : 'Browse delivery records'}</button>
     {error && <p role="alert" className={deliveryError}>{error}</p>}
     {page && <>
       <p>{page.total} records in edition {page.edition}. {page.historical ? 'Previous edition.' : 'Current edition.'} Historical declarations do not establish current proof or completion.</p>

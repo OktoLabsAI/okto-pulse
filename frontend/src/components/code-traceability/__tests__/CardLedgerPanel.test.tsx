@@ -11,13 +11,16 @@ beforeEach(() => { vi.resetAllMocks(); api.getCardDeliveryLedger.mockResolvedVal
 afterEach(cleanup);
 
 it('limits the edition slider to whole existing editions and shows the selection', () => {
-  render(<CardLedgerPanel {...props} />);
+  render(<CardLedgerPanel {...props} edition={3} />);
+  expect(screen.getByRole('slider')).not.toBeVisible();
+  expect(screen.getByText('Previous versions').closest('details')).not.toHaveAttribute('open');
+  fireEvent.click(screen.getByText('Previous versions'));
   const slider = screen.getByRole('slider', { name: 'History edition' });
   expect(slider).toHaveAttribute('min', '1');
   expect(slider).toHaveAttribute('max', '2');
   expect(slider).toHaveAttribute('step', '1');
   expect(slider).toHaveValue('2');
-  expect(screen.getByText('Edition 2 · Current')).toBeInTheDocument();
+  expect(screen.getByText('Edition 3 · Current')).toBeInTheDocument();
   fireEvent.change(slider, { target: { value: '1' } });
   expect(screen.getByText('Edition 1')).toBeInTheDocument();
   expect(api.getCardDeliveryLedger).not.toHaveBeenCalled();
@@ -25,8 +28,8 @@ it('limits the edition slider to whole existing editions and shows the selection
 
 it('keeps a single edition selected without offering an unavailable range', () => {
   render(<CardLedgerPanel {...props} edition={1} />);
-  expect(screen.getByRole('slider', { name: 'History edition' })).toBeDisabled();
-  expect(screen.getByRole('slider', { name: 'History edition' })).toHaveValue('1');
+  expect(screen.queryByRole('slider')).not.toBeInTheDocument();
+  expect(screen.queryByText('Previous versions')).not.toBeInTheDocument();
   expect(screen.getByText('Edition 1 · Current')).toBeInTheDocument();
 });
 
@@ -53,17 +56,33 @@ it('pages mixed records and reads original detail without presenting it as curre
 it('changes edition by cancelling pending reads and clearing the old scope', async () => {
   let finish!: (value: unknown) => void;
   api.getCardDeliveryLedger.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
-  render(<CardLedgerPanel {...props} />);
-  fireEvent.click(screen.getByText('Browse delivery records'));
+  render(<CardLedgerPanel {...props} edition={3} />);
+  fireEvent.click(screen.getByText('Previous versions'));
+  fireEvent.click(screen.getByText('Browse previous delivery records'));
   const signal = api.getCardDeliveryLedger.mock.calls[0][5];
   fireEvent.change(screen.getByLabelText('History edition'), { target: { value: '1' } });
   expect(signal.aborted).toBe(true);
   await act(async () => finish(page));
   expect(screen.queryByText('Original implementation')).not.toBeInTheDocument();
   api.getCardDeliveryLedger.mockResolvedValueOnce({ ...page, edition: 1, historical: true });
-  fireEvent.click(screen.getByText('Browse delivery records'));
+  fireEvent.click(screen.getByText('Browse previous delivery records'));
   await screen.findByText(/Previous edition/);
   expect(api.getCardDeliveryLedger.mock.calls[1][3]).toBe(1);
+});
+
+it('keeps the current edition visible while consulting previous versions', async () => {
+  render(<CardLedgerPanel {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Browse delivery records' }));
+  await screen.findByText('Original implementation', { selector: 'summary span' });
+  fireEvent.click(screen.getByText('Previous versions'));
+  expect(screen.getByRole('slider')).toBeDisabled();
+  api.getCardDeliveryLedger.mockResolvedValueOnce({ ...page, edition: 1, historical: true, items: [{ ...row, id: 'older', summary: 'Previous evidence' }] });
+  fireEvent.click(screen.getByRole('button', { name: 'Browse previous delivery records' }));
+  expect(await screen.findByText('Previous evidence', { selector: 'summary span' })).toBeVisible();
+  expect(screen.getByText('Original implementation', { selector: 'summary span' })).toBeVisible();
+  fireEvent.click(screen.getByText('Previous versions'));
+  expect(screen.getByText('Previous evidence', { selector: 'summary span' })).not.toBeVisible();
+  expect(screen.getByText('Original implementation', { selector: 'summary span' })).toBeVisible();
 });
 
 it('clears prior results after denial and refuses a foreign scope response', async () => {
