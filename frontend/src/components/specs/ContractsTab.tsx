@@ -3,7 +3,7 @@
  */
 
 import { useMemo, useState } from 'react';
-import { Plus, Trash2, ChevronDown, ChevronUp, FileCode, Pencil, Link, Unlink, CheckCircle, XCircle } from 'lucide-react';
+import { Plus, Trash2, ChevronDown, ChevronUp, FileCode, Pencil, Link, Unlink } from 'lucide-react';
 import type { Spec, ApiContract, CardSummaryForSpec } from '@/types';
 
 interface ContractsTabProps {
@@ -346,39 +346,11 @@ export function ContractsTab({
             )}
           </div>
           {/* Progress bar */}
-          <div className="h-2 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden mb-2">
+          <div role="progressbar" aria-label="Contract Task Coverage" aria-valuenow={coverage.pct} aria-valuemin={0} aria-valuemax={100} className="h-2 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden">
             <div
               className={`h-full transition-all duration-500 rounded-full ${coverage.covered === coverage.total && coverage.total > 0 ? 'bg-green-500' : 'bg-amber-500'}`}
               style={{ width: `${coverage.pct}%` }}
             />
-          </div>
-          {/* Contract list with coverage */}
-          <div className="space-y-1 max-h-48 overflow-y-auto">
-            {contracts.map((contract) => {
-              const taskCount = contract.linked_task_ids?.length ?? 0;
-              const linked = taskCount > 0;
-              const methodColor = METHOD_COLORS[contract.method || ''] || 'bg-gray-500 text-white';
-              return (
-                <div key={contract.id} className="flex items-center gap-2 text-xs">
-                  {linked ? (
-                    <CheckCircle className="w-3.5 h-3.5 text-green-500 shrink-0" />
-                  ) : (
-                    <XCircle className="w-3.5 h-3.5 text-gray-300 dark:text-gray-600 shrink-0" />
-                  )}
-                  <span className={`text-[9px] px-1 py-0.5 rounded font-mono font-bold shrink-0 ${methodColor}`}>
-                    {contract.contract_type === 'http' ? contract.method : contract.contract_type}
-                  </span>
-                  <span className={`flex-1 font-mono truncate ${linked ? 'text-gray-700 dark:text-gray-300' : 'text-gray-400 dark:text-gray-500'}`}>
-                    {contract.path}
-                  </span>
-                  {linked && (
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300 shrink-0">
-                      {taskCount} task{taskCount !== 1 ? 's' : ''}
-                    </span>
-                  )}
-                </div>
-              );
-            })}
           </div>
         </div>
       )}

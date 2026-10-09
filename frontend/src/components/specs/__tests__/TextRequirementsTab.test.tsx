@@ -43,10 +43,26 @@ describe('structured FR and AC cards', () => {
   it('renders existing content without inventing a title or offering unauthorized actions', () => {
     const value = props({ items: [{ id: 'fr-a', text: 'Existing content' }, { id: 'fr-old', text: 'Revoked', status: 'revoked' as const }], canCreate: false, canEdit: false, canRevoke: false });
     render(<TextRequirementsTab {...value} />);
+    expect(screen.queryByText('Existing content')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Title not defined/ }));
     expect(screen.getByText('Existing content')).toBeInTheDocument();
-    expect(screen.getByText('Title not defined')).toBeInTheDocument();
+    expect(screen.getByText(/Title not defined/)).toBeInTheDocument();
     expect(screen.queryByText('Revoked')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Edit|Revoke|Add/ })).not.toBeInTheDocument();
     expect(value.onSave).not.toHaveBeenCalled();
+  });
+  it('uses compact expandable rows and task-link coverage like Integration', () => {
+    render(<TextRequirementsTab {...props({ items: [{ ...rows[0], linked_task_ids: ['task-one'] }, rows[1], { id: 'revoked', text: 'Old', status: 'revoked' as const }] })} />);
+    expect(screen.getByRole('progressbar', { name: 'FR task links' })).toHaveAttribute('aria-valuenow', '50');
+    expect(screen.getByText('FR Task Coverage (1/2)')).toBeInTheDocument();
+    expect(screen.queryByText('Same content')).not.toBeInTheDocument();
+    const first = screen.getByRole('button', { name: /First title/ });
+    fireEvent.click(first);
+    expect(first).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText('Linked Tasks:')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Second title/ }));
+    expect(first).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText('Linked Tasks:')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add Functional Requirement' })).toBeInTheDocument();
   });
 });

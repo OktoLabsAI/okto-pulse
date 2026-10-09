@@ -15,6 +15,15 @@ const spec = (contracts: ApiContract[] = []): Spec => ({
 } as unknown as Spec);
 
 describe('current API contracts', () => {
+  it.each([0, 1, 2])('summarizes task coverage without a duplicate contract list (%s linked)', linked => {
+    const current = [0, 1].map(index => contract({ id: `c-${index}`, path: `/endpoint-${index}`, linked_task_ids: index < linked ? ['task'] : [] }));
+    render(<ContractsTab spec={spec([...current, contract({ id: 'old', status: 'revoked' })])} onUpdate={vi.fn()} />);
+    expect(screen.getByText(`Contract Task Coverage (${linked}/2)`)).toBeInTheDocument();
+    expect(screen.getByRole('progressbar', { name: 'Contract Task Coverage' })).toHaveAttribute('aria-valuenow', String(linked * 50));
+    expect(screen.getAllByText('/endpoint-0')).toHaveLength(1);
+    expect(screen.getAllByText('/endpoint-1')).toHaveLength(1);
+    expect(screen.queryByText('/orders')).not.toBeInTheDocument();
+  });
   it('authors HTTP with exact requirement IDs and no legacy methods', () => {
     const onUpdate = vi.fn();
     render(<ContractsTab spec={spec()} onUpdate={onUpdate} />);
