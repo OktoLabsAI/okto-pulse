@@ -22,6 +22,10 @@ def read_spec_coverage_graph(reader, scope):
     for kind in sorted({kind for kind, _ in expected}):
         refs = sorted(ref for typ, ref in expected if typ == kind)
         rows = _rows(reader.execute(f'MATCH (n:{kind}) WHERE n.source_artifact_ref IN $refs '
+            # Supersession preserves historical nodes with the same source ref.
+            # Only the current head participates in this coverage observation;
+            # two current heads still fail the identity check below.
+            "AND (n.superseded_by IS NULL OR n.superseded_by = '') "
             f'AND {tpl.active_read_filter_clause("n")} '
             'RETURN n.id, n.source_artifact_ref ORDER BY n.id LIMIT $bound',
             {'refs': refs, 'bound': len(refs) + 1}))

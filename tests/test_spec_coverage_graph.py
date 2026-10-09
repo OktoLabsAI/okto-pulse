@@ -56,6 +56,28 @@ def test_duplicate_current_identity_fails_instead_of_selecting_an_arbitrary_node
     assert str(rejected.value.__cause__) == 'spec_coverage_ambiguous_projection'
 
 
+def test_superseded_identity_is_history_not_duplicate_current_coverage(real_store):
+    store, database, _, _ = real_store
+    board = native.BOARD_ID
+    root = ('Entity', 'spec:revised')
+    child = ('Criterion', 'spec:revised:ac:one')
+    store.create_node(board, root[0], 'revised-root', native._attrs('Root', root[1], 'revision'))
+    for identity in ('old-criterion', 'current-criterion'):
+        store.create_node(board, child[0], identity, native._attrs(identity, child[1], 'revision'))
+    store.mark_superseded(board, child[0], 'old-criterion',
+        superseded_by='current-criterion', superseded_at='2026-10-09T10:55:33Z',
+        revocation_reason='semantic change on NC-8 reuse (MKG-D trail)')
+    store.create_edge(board, 'belongs_to', 'old-criterion', 'revised-root',
+        {'rule_id': 'historical-edge', 'layer': 'deterministic', 'created_by': 'worker_layer1'},
+        from_type='Criterion', to_type='Entity')
+    before = database.transactions
+    result = store.read_spec_coverage_graph(board, SpecCoverageGraphScope((root, child), ()))
+    assert set(result.nodes) == {root, child}
+    assert result.relations == ()  # Historical endpoints cannot leak into coverage.
+    assert database.transactions == before
+    assert store.find_node_types(board, 'old-criterion') == ('Criterion',)
+
+
 def test_routed_read_attaches_immutable_route_generation():
     generation = ['first']
     class Resolver:
