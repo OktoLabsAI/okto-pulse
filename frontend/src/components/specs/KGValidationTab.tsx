@@ -2,10 +2,8 @@
  * KGValidationTab — displays the KG nodes/edges derived from a spec,
  * grouped by node type, with validation status counts.
  *
- * Data source: `kgApi.getSubgraph(boardId, { limit: 500 })` filtered by
- * `source_artifact_ref === "spec:{specId}"`. This is a best-effort view —
- * specs whose derived graph exceeds 500 nodes will be truncated. We surface
- * a notice when that happens and link to the full KG view as a follow-up.
+ * Reads both graph layers, following board pagination before selecting the
+ * Spec root and its derived artifact references. Working data is not promoted.
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -36,7 +34,6 @@ export function KGValidationTab({ boardId, specId }: Props) {
   const [edges, setEdges] = useState<KGEdge[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [truncated, setTruncated] = useState(false);
   const [selected, setSelected] = useState<KGNode | null>(null);
 
   const artifactRef = `spec:${specId}`;
@@ -45,21 +42,37 @@ export function KGValidationTab({ boardId, specId }: Props) {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    kgApi
-      .getSubgraph(boardId, { limit: SUBGRAPH_PAGE_SIZE })
-      .then((resp) => {
+    setSelected(null);
+    async function load() {
+      const allNodes = new Map<string, KGNode>();
+      const allEdges = new Map<string, KGEdge>();
+      const seen = new Set<string>();
+      let cursor: string | undefined;
+      do {
+        const resp = await kgApi.getSubgraph(boardId, {
+          limit: SUBGRAPH_PAGE_SIZE, graph_layer: 'all', ...(cursor ? { cursor } : {}),
+        });
         if (cancelled) return;
-        const mine = (resp.nodes ?? []).filter(
-          (n) => n.source_artifact_ref === artifactRef,
+        if (resp.metadata?.edge_read_status === 'failed' || resp.metadata?.edge_read_status === 'partial_failure') {
+          throw new Error('Knowledge Graph relations could not be fully loaded. Reload to try again.');
+        }
+        for (const node of resp.nodes ?? []) allNodes.set(node.id, node);
+        for (const edge of resp.edges ?? []) allEdges.set(edge.id, edge);
+        cursor = resp.next_cursor || undefined;
+        if (cursor && seen.has(cursor)) throw new Error('Knowledge Graph pagination did not advance. Reload to try again.');
+        if (cursor) seen.add(cursor);
+      } while (cursor);
+        const mine = [...allNodes.values()].filter((n) =>
+          !n.superseded_by && (n.source_artifact_ref === artifactRef || n.source_artifact_ref?.startsWith(`${artifactRef}:`)),
         );
         const myIds = new Set(mine.map((n) => n.id));
-        const myEdges = (resp.edges ?? []).filter(
+        const myEdges = [...allEdges.values()].filter(
           (e) => myIds.has(e.source) || myIds.has(e.target),
         );
         setNodes(mine);
         setEdges(myEdges);
-        setTruncated(resp.next_cursor !== null);
-      })
+    }
+    load()
       .catch((err) => {
         if (!cancelled) setError(err?.message ?? 'Failed to load KG subgraph');
       })
@@ -129,8 +142,7 @@ export function KGValidationTab({ boardId, specId }: Props) {
     return (
       <div className="p-6 text-sm text-gray-500 dark:text-gray-400" data-testid="kg-validation-empty">
         <p>
-          No Knowledge Graph data for this spec yet. Once the consolidation
-          worker processes the spec, derived nodes + edges will appear here.
+          No current Knowledge Graph nodes were found for this Spec in the working or canonical layer.
         </p>
       </div>
     );
@@ -138,12 +150,9 @@ export function KGValidationTab({ boardId, specId }: Props) {
 
   return (
     <div className="p-6 space-y-6" data-testid="kg-validation-tab">
-      {truncated && (
-        <div className="rounded border border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-950/40 px-3 py-2 text-xs text-amber-900 dark:text-amber-100">
-          Showing the first {SUBGRAPH_PAGE_SIZE} nodes in the board. Some entries
-          may be missing from this view.
-        </div>
-      )}
+      <p className="text-xs text-gray-500 dark:text-gray-400">
+        Current derived nodes across working and canonical layers. Working nodes are provisional.
+      </p>
 
       <div className="grid grid-cols-4 gap-3">
         <Metric label="Nodes derived" value={nodes.length} />
