@@ -12,7 +12,7 @@ import {
 import { SpecCoveragePanel } from './SpecCoveragePanel';
 import { MissingLinkNotice } from '@/components/shared/MissingLinkNotice';
 import { TextRequirementsTab, type TextRequirementDraft } from './TextRequirementsTab';
-import { CriterionVerificationPanel } from './CriterionVerificationPanel';
+import { CriterionVerificationDetails } from './CriterionVerificationPanel';
 import { RequirementVerificationPanel } from './RequirementVerificationPanel';
 import { ScenarioVerificationMethodEditor } from './ScenarioVerificationMethodEditor';
 import { VerificationReportDetails } from './VerificationReportDetails';
@@ -169,7 +169,6 @@ type ModalTab =
   | 'details'
   | 'frs'
   | 'acs'
-  | 'criterion-verification'
   | 'requirements'
   | 'tests-verifications'
   | 'evidence-matrix'
@@ -1970,7 +1969,6 @@ export function SpecModal({
       : []),
     { id: 'frs', label: 'Functional', icon: <Circle size={14} />, count: spec.functional_requirements?.length || 0 },
     { id: 'acs', label: 'AC', icon: <Target size={14} />, count: spec.acceptance_criteria?.length || 0 },
-    { id: 'criterion-verification', label: 'Criterion verification', icon: <Target size={14} /> },
     { id: 'tests', label: 'Tests', icon: <FlaskConical size={14} />, count: spec.test_scenarios?.length || 0 },
     { id: 'rules', label: 'Business', icon: <Scale size={14} />, count: spec.business_rules?.length || 0 },
     ...(canReadDependencies
@@ -1998,7 +1996,7 @@ export function SpecModal({
   ];
   const tabs = allTabs.filter((tab) => !tab.permission || perms.has(tab.permission));
   const requirementSections: ModalTab[] = ['frs', 'rules', 'irs', 'ors', 'trs', 'contracts', 'decisions'];
-  const verificationSections: ModalTab[] = ['tests', 'acs', 'criterion-verification'];
+  const verificationSections: ModalTab[] = ['tests', 'acs'];
   const requirementTabs = requirementSections.flatMap(id => tabs.filter(tab => tab.id === id));
   const verificationTabs = verificationSections.flatMap(id => tabs.filter(tab => tab.id === id));
   const primaryTab: ModalTab = requirementSections.includes(activeTab) ? 'requirements'
@@ -2225,6 +2223,26 @@ export function SpecModal({
               canCreate={canStructured(type, 'create')}
               canEdit={canStructured(type, 'update')}
               canRevoke={canStructured(type, 'revoke')}
+              renderDetails={activeTab === 'acs' && perms.has('spec.entity.read') ? item => <>
+                <CriterionVerificationDetails
+                  specId={spec.id} version={spec.version} value={item}
+                  options={verificationRequirementOptions(spec, canReadIR, canReadOR)}
+                  canEdit={!spec.archived && spec.status === 'draft'
+                    && hasPermissionWithState(perms.has, 'spec.structured_entity.acceptance_criterion.update', 'spec', spec.status)}
+                  onSaved={async () => { await reloadSpecAfterStructuredEdit(); }}
+                />
+                {perms.has('spec.tests.read') && <section aria-label="Verification scenarios" className="space-y-2 border-t border-gray-200 pt-3 dark:border-gray-700">
+                  <div className="flex items-center justify-between gap-2"><h4 className="font-semibold">How to verify</h4>
+                    <button type="button" className="text-blue-600 hover:underline dark:text-blue-400" onClick={() => setActiveTab('tests')}>Manage scenarios</button></div>
+                  {(spec.test_scenarios || []).filter(scenario => scenario.linked_criteria?.includes(item.id)).map(scenario => <div key={scenario.id} className="rounded-lg bg-gray-50 p-2 dark:bg-gray-900/40">
+                    <p className="font-medium">{scenario.title}</p>
+                    <p>Method: {scenario.verification_method || 'Not defined'}</p>
+                    <p className="whitespace-pre-wrap">Expected observation: {scenario.then}</p>
+                  </div>)}
+                  {!(spec.test_scenarios || []).some(scenario => scenario.linked_criteria?.includes(item.id)) && <p>No scenario linked. Define how this condition will be observed in Tests.</p>}
+                  <p className="text-gray-500">Execution evidence and current verification results are available in Coverage → Implementation.</p>
+                </section>}
+              </> : undefined}
               onSave={(id, draft) => saveTextRequirement(type, id, draft)}
               onRevoke={async id => {
                 await applyImpactAwareOperation(type, id, 'revoke', spec.version);
@@ -2232,17 +2250,7 @@ export function SpecModal({
               }}
             />;
           })()}
-          {activeTab === 'criterion-verification' && <div className="space-y-6">
-              {perms.has('spec.entity.read') && <CriterionVerificationPanel
-                key={`${spec.id}:${spec.version}:${spec.status}:${Boolean(spec.archived)}:${canStructured('acceptance_criterion', 'update')}`}
-                specId={spec.id}
-                version={spec.version}
-                criteria={(spec.acceptance_criteria || []) as unknown[]}
-                options={verificationRequirementOptions(spec, canReadIR, canReadOR)}
-                canEdit={!spec.archived && spec.status === 'draft'
-                  && hasPermissionWithState(perms.has, 'spec.structured_entity.acceptance_criterion.update', 'spec', spec.status)}
-                onSaved={async () => { await reloadSpecAfterStructuredEdit(); }}
-              />}
+          {activeTab === 'acs' && <div className="mt-6">
               <RequirementVerificationPanel
                 key={JSON.stringify([spec.board_id, spec.id, spec.version, spec.edition, spec.status, spec.archived, perms.has('spec.entity.read'), canReadIR, canReadOR,
                   ...(['functional_requirement', 'technical_requirement', 'integration_requirement', 'observability_requirement', 'business_rule'] as const).map(type => canStructured(type, 'update'))])}

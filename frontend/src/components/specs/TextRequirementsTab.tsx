@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { CheckCircle, ChevronDown, ChevronUp, FileText, Pencil, Plus, Trash2, XCircle } from 'lucide-react';
 import type { SpecTextRequirement } from '@/types';
 
@@ -9,12 +10,13 @@ interface Props {
   canCreate: boolean; canEdit: boolean; canRevoke: boolean;
   onSave: (id: string | null, draft: TextRequirementDraft) => Promise<void>;
   onRevoke: (id: string) => Promise<void>;
+  renderDetails?: (item: SpecTextRequirement) => ReactNode;
 }
 const button = 'inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg border border-gray-300 px-3 text-xs font-medium hover:bg-gray-100 disabled:opacity-50 dark:border-gray-600 dark:hover:bg-gray-700';
 const input = 'mt-1 block w-full rounded-lg border border-gray-300 bg-white p-2 text-sm dark:border-gray-600 dark:bg-gray-900';
 
 /** Edits stable entities directly; text equality never determines identity. */
-export function TextRequirementsTab({ kind, items, canCreate, canEdit, canRevoke, onSave, onRevoke }: Props) {
+export function TextRequirementsTab({ kind, items, canCreate, canEdit, canRevoke, onSave, onRevoke, renderDetails }: Props) {
   const [editor, setEditor] = useState<{ id: string | null; draft: TextRequirementDraft } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -74,6 +76,7 @@ export function TextRequirementsTab({ kind, items, canCreate, canEdit, canRevoke
           </header>
           {expanded && <div id={`requirement-details-${item.id}`} className="px-3 py-2 space-y-2 text-xs text-gray-600 dark:text-gray-400">
             <p className="text-xs text-gray-600 dark:text-gray-400 whitespace-pre-wrap break-words">{item.text}</p>
+            {renderDetails?.(item)}
             {taskCount > 0 && <div className="flex flex-wrap gap-1"><span className="text-[10px] text-gray-400 mr-1">Linked Tasks:</span>{item.linked_task_ids!.map(id => <span key={id} title={id} className="text-[10px] px-1.5 py-0.5 rounded bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-300">{id.slice(0, 8)}</span>)}</div>}
             <details className="text-xs text-gray-500 dark:text-gray-400"><summary className="cursor-pointer">Reference</summary><code className="mt-1 block break-all">{item.id}</code></details>
           </div>}

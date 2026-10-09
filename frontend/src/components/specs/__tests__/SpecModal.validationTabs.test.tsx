@@ -243,7 +243,9 @@ function blockedPolicyDecision() {
 
 async function openCriteria() {
   fireEvent.click(await screen.findByRole('tab', { name: 'Tests & Verifications' }));
-  fireEvent.click(screen.getByRole('tab', { name: 'Criterion verification' }));
+  fireEvent.click(screen.getByRole('tab', { name: /^AC(?:\s|$)/ }));
+  const row = screen.queryByRole('article');
+  if (row) fireEvent.click(within(row).getAllByRole('button')[0]);
 }
 
 describe('SpecModal validation navigation', () => {
@@ -266,8 +268,8 @@ describe('SpecModal validation navigation', () => {
     expect(screen.getByRole('region', { name: 'Acceptance criteria' })).toBeInTheDocument();
     expect(screen.queryByRole('region', { name: 'Criterion verification' })).not.toBeInTheDocument();
     await openCriteria();
-    expect(screen.queryByRole('region', { name: 'Acceptance criteria' })).not.toBeInTheDocument();
-    expect(screen.getByRole('region', { name: 'Criterion verification' })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Acceptance criteria' })).toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Criterion verification' })).not.toBeInTheDocument();
     expect(screen.queryByText('Functional requirements')).not.toBeInTheDocument();
   });
   it.each(['draft', 'review', 'approved', 'validated', 'in_progress', 'done'] as SpecStatus[])(
@@ -326,13 +328,46 @@ describe('SpecModal validation navigation', () => {
     await waitFor(() => expect(apiMock.getSpec).toHaveBeenCalledTimes(2));
   });
 
+  it('shows the assigned method and expected observation inside the AC without another criterion list', async () => {
+    apiMock.getSpec.mockResolvedValue({ ...baseSpec,
+      acceptance_criteria: [{ id: 'ac-plan', title: 'Public boundary', text: 'No private imports' }],
+      test_scenarios: [
+        { id: 'ts-plan', title: 'Inspect imports', linked_criteria: ['ac-plan'], verification_method: 'inspection', then: 'Only public ports' },
+        { id: 'ts-other', title: 'Unrelated scenario', linked_criteria: ['ac-other'], verification_method: 'automated_test', then: 'Other outcome' },
+      ],
+    });
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    await openCriteria();
+    expect(screen.getAllByRole('article')).toHaveLength(1);
+    expect(screen.getByText('Method: inspection')).toBeInTheDocument();
+    expect(screen.getByText('Expected observation: Only public ports')).toBeInTheDocument();
+    expect(screen.queryByText('Unrelated scenario')).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Criterion verification' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Manage scenarios' }));
+    expect(within(screen.getByRole('tablist', { name: 'Tests and verifications sections' })).getByRole('tab', { name: /^Tests(?:\s|$)/ })).toHaveAttribute('aria-selected', 'true');
+    expect(apiMock.updateSpecEntity).not.toHaveBeenCalled();
+  });
+
+  it('does not reveal scenario methods without test read permission', async () => {
+    permissionMock.allowAll = false;
+    permissionMock.allowed = new Set(['spec.entity.read']);
+    apiMock.getSpec.mockResolvedValue({ ...baseSpec,
+      acceptance_criteria: [{ id: 'ac-plan', text: 'Condition' }],
+      test_scenarios: [{ id: 'ts-plan', title: 'Restricted scenario', linked_criteria: ['ac-plan'], verification_method: 'inspection', then: 'Restricted observation' }],
+    });
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    await openCriteria();
+    expect(screen.queryByRole('region', { name: 'Verification scenarios' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Restricted observation')).not.toBeInTheDocument();
+  });
+
   it.each(['review', 'approved', 'validated', 'in_progress', 'done'] as SpecStatus[])('keeps criterion qualification read-only in %s', async status => {
     apiMock.getSpec.mockResolvedValue({ ...baseSpec, status,
       acceptance_criteria: [{ id: 'ac-plan', text: 'Five attempts block access' }],
     });
     render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
     await openCriteria();
-      await screen.findByRole('region', { name: 'Criterion verification' });
+      await screen.findByRole('region', { name: 'AC verification' });
     expect(screen.queryByRole('button', { name: 'Edit verification ac-plan' })).not.toBeInTheDocument();
   });
 
@@ -343,7 +378,7 @@ describe('SpecModal validation navigation', () => {
       apiMock.getSpec.mockResolvedValue({ ...baseSpec, acceptance_criteria: [{ id: 'ac-plan', text: 'Condition' }] });
       render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
       await openCriteria();
-      await screen.findByRole('region', { name: 'Criterion verification' });
+      await screen.findByRole('region', { name: 'AC verification' });
       expect(screen.queryByRole('button', { name: 'Edit verification ac-plan' })).not.toBeInTheDocument();
     },
   );
@@ -352,7 +387,7 @@ describe('SpecModal validation navigation', () => {
     apiMock.getSpec.mockResolvedValue({ ...baseSpec, archived: true, acceptance_criteria: [{ id: 'ac-plan', text: 'Condition' }] });
     render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
     await openCriteria();
-      await screen.findByRole('region', { name: 'Criterion verification' });
+      await screen.findByRole('region', { name: 'AC verification' });
     expect(screen.queryByRole('button', { name: 'Edit verification ac-plan' })).not.toBeInTheDocument();
   });
 

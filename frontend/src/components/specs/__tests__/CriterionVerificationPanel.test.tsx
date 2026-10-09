@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { CriterionVerificationPanel, type VerificationRequirementOption } from '../CriterionVerificationPanel';
+import { CriterionVerificationDetails, type VerificationRequirementOption } from '../CriterionVerificationPanel';
 
 import { verificationRequirementOptions } from '../criterionVerificationOptions';
 
@@ -12,7 +12,7 @@ const options: VerificationRequirementOption[] = [
 ];
 const criterion = { id: 'ac_one', text: 'Five failed attempts block access', status: 'active' };
 const onSaved = vi.fn();
-function props(extra = {}) { return { specId: 'spec-one', version: 8, criteria: [criterion], options, canEdit: true, onSaved, ...extra }; }
+function props(extra = {}) { return { specId: 'spec-one', version: 8, value: criterion, options, canEdit: true, onSaved, ...extra }; }
 function edit() { fireEvent.click(screen.getByRole('button', { name: 'Edit verification ac_one' })); }
 function add(type: string, id: string) {
   fireEvent.change(screen.getByLabelText('Requirement to link'), { target: { value: JSON.stringify([type, id]) } });
@@ -26,7 +26,7 @@ describe('criterion verification authoring', () => {
     onSaved.mockResolvedValue(undefined);
   });
   it('sends one versioned patch with typed many-to-many links and explicit aspects', async () => {
-    render(<CriterionVerificationPanel {...props()} />);
+    render(<CriterionVerificationDetails {...props()} />);
     expect(api.updateSpecEntity).not.toHaveBeenCalled();
     edit();
     expect(screen.getByLabelText('Verification profile')).toHaveValue('');
@@ -44,8 +44,7 @@ describe('criterion verification authoring', () => {
     }, 8);
   });
   it('preserves an unavailable existing link when editing only the profile', async () => {
-    render(<CriterionVerificationPanel {...props({ criteria: [{ ...criterion, requirement_links: [{ requirement_type: 'integration_requirement', requirement_id: 'ir_hidden', aspect: 'Timeout' }] }] })} />);
-    fireEvent.click(screen.getByRole('button', { name: /AC 1.*Five failed/ }));
+    render(<CriterionVerificationDetails {...props({ value: { ...criterion, requirement_links: [{ requirement_type: 'integration_requirement', requirement_id: 'ir_hidden', aspect: 'Timeout' }] } })} />);
     expect(screen.getByText(/Requirement unavailable.*ir_hidden/)).toBeInTheDocument();
     edit();
     fireEvent.change(screen.getByLabelText('Verification profile'), { target: { value: 'integration' } });
@@ -54,41 +53,36 @@ describe('criterion verification authoring', () => {
     expect(api.updateSpecEntity.mock.calls[0][3].requirement_links).toEqual([{ requirement_type: 'integration_requirement', requirement_id: 'ir_hidden', aspect: 'Timeout' }]);
   });
   it('allows incomplete draft metadata without inventing a default', async () => {
-    render(<CriterionVerificationPanel {...props()} />); edit();
+    render(<CriterionVerificationDetails {...props()} />); edit();
     fireEvent.click(screen.getByRole('button', { name: 'Save verification plan' }));
     await waitFor(() => expect(onSaved).toHaveBeenCalledOnce());
     expect(api.updateSpecEntity.mock.calls[0][3]).toEqual({ verification_profile: null, requirement_links: [] });
   });
   it('shows read-only metadata without edit permission', () => {
-    render(<CriterionVerificationPanel {...props({ canEdit: false, criteria: [{ ...criterion, verification_profile: 'functional', requirement_links: [{ requirement_type: 'business_rule', requirement_id: 'br_one' }] }] })} />);
-    expect(screen.queryByText(/Five-attempt policy.*br_one/)).not.toBeInTheDocument();
-    const expand = screen.getByRole('button', { name: /AC 1.*Five failed/ });
-    expect(expand).toHaveAttribute('aria-expanded', 'false');
-    fireEvent.click(expand);
-    expect(expand).toHaveAttribute('aria-expanded', 'true');
+    render(<CriterionVerificationDetails {...props({ canEdit: false, value: { ...criterion, verification_profile: 'functional', requirement_links: [{ requirement_type: 'business_rule', requirement_id: 'br_one' }] } })} />);
     expect(screen.getByText(/Five-attempt policy.*br_one/)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Edit verification/ })).not.toBeInTheDocument();
     expect(api.updateSpecEntity).not.toHaveBeenCalled();
   });
   it('removes the editor when permission is lost', () => {
-    const view = render(<CriterionVerificationPanel {...props()} />); edit();
-    view.rerender(<CriterionVerificationPanel {...props({ canEdit: false })} />);
+    const view = render(<CriterionVerificationDetails {...props()} />); edit();
+    view.rerender(<CriterionVerificationDetails {...props({ canEdit: false })} />);
     expect(screen.queryByLabelText('Verification profile')).not.toBeInTheDocument();
   });
   it('avoids duplicate or ambiguous target choices', () => {
-    render(<CriterionVerificationPanel {...props({ options: [...options, options[1]] })} />); edit();
+    render(<CriterionVerificationDetails {...props({ options: [...options, options[1]] })} />); edit();
     expect(screen.queryByRole('option', { name: /Five-attempt/ })).not.toBeInTheDocument();
     add('functional_requirement', 'fr_one');
     expect(screen.queryByRole('option', { name: /Lock after/ })).not.toBeInTheDocument();
   });
   it.each(['legacy text', { text: 'No ID' }, { ...criterion, verification_profile: 'unknown' }, { ...criterion, requirement_links: [{ requirement_type: 'functional_requirement', requirement_id: 'fr_one', verified: true }] }])('does not silently rewrite unsupported or legacy metadata', value => {
-    render(<CriterionVerificationPanel {...props({ criteria: [value] })} />);
+    render(<CriterionVerificationDetails {...props({ value })} />);
     expect(screen.queryByRole('button', { name: /Edit verification/ })).not.toBeInTheDocument();
     expect(api.updateSpecEntity).not.toHaveBeenCalled();
   });
   it('keeps edits after a refused write and does not reload', async () => {
     api.updateSpecEntity.mockResolvedValue({ success: false, error_message: 'Spec version conflict' });
-    render(<CriterionVerificationPanel {...props()} />); edit();
+    render(<CriterionVerificationDetails {...props()} />); edit();
     add('business_rule', 'br_one');
     fireEvent.click(screen.getByRole('button', { name: 'Save verification plan' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Spec version conflict');
@@ -97,7 +91,7 @@ describe('criterion verification authoring', () => {
   });
   it('reload failure after success cannot submit the write again', async () => {
     onSaved.mockRejectedValueOnce(new Error('network'));
-    render(<CriterionVerificationPanel {...props()} />); edit();
+    render(<CriterionVerificationDetails {...props()} />); edit();
     fireEvent.click(screen.getByRole('button', { name: 'Save verification plan' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Saved. Refresh failed');
     fireEvent.click(screen.getByRole('button', { name: 'Reload saved criterion' }));
@@ -107,7 +101,7 @@ describe('criterion verification authoring', () => {
   it('suppresses double-click writes and old-context reloads', async () => {
     let finish!: (value: unknown) => void;
     api.updateSpecEntity.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
-    const view = render(<CriterionVerificationPanel {...props()} />); edit();
+    const view = render(<CriterionVerificationDetails {...props()} />); edit();
     const save = screen.getByRole('button', { name: 'Save verification plan' });
     fireEvent.click(save); fireEvent.click(save);
     view.unmount();
@@ -116,9 +110,9 @@ describe('criterion verification authoring', () => {
     expect(onSaved).not.toHaveBeenCalled();
   });
   it('discards the old draft when the Spec version changes', () => {
-    const view = render(<CriterionVerificationPanel {...props()} />); edit();
+    const view = render(<CriterionVerificationDetails {...props()} />); edit();
     add('functional_requirement', 'fr_one');
-    view.rerender(<CriterionVerificationPanel {...props({ version: 9 })} />);
+    view.rerender(<CriterionVerificationDetails {...props({ version: 9 })} />);
     expect(screen.queryByLabelText('Covered aspect 1')).not.toBeInTheDocument();
   });
   it('filters restricted, inactive and legacy requirement choices', () => {
