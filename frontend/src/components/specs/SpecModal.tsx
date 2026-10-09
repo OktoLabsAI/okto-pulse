@@ -2839,7 +2839,7 @@ export function SpecModal({
                         <button
                           key={card.id}
                           type="button"
-                          onClick={() => modalStack.push({ type: 'card', id: card.id })}
+                          onClick={() => modalStack.push({ type: 'card', id: card.id, boardId: spec.board_id })}
                           className="flex w-full items-center justify-between gap-3 rounded bg-gray-50 px-2 py-1.5 text-left hover:bg-blue-50 dark:bg-gray-700/50 dark:hover:bg-blue-950/20"
                         >
                           {content}

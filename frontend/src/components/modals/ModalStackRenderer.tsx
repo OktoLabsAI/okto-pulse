@@ -46,6 +46,13 @@ export function ModalStackRenderer({ boardId: currentBoardId }: Props) {
   // Discovery can open an artifact from an accessible board other than the active one.
   const boardId = top?.boardId ?? currentBoardId;
 
+  // Every card reference must initialize the store consumed by CardModal.
+  // Callers that only push a stack entry (e.g. Spec references) otherwise
+  // render a closed modal or reopen the previously selected card.
+  useEffect(() => {
+    if (top?.type === 'card') openCardInStore(top.id);
+  }, [boardId, top?.type, top?.id, openCardInStore]);
+
   useEffect(() => {
     if (top?.type !== 'story') return;
     let active = true;

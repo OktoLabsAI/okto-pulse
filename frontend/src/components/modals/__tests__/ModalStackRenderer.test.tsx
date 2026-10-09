@@ -6,6 +6,7 @@ import { RefinementEvidenceMatrixNavigation } from '@/components/refinements/Ref
 import { ModalStackRenderer } from '../ModalStackRenderer';
 
 const specModalSpy = vi.hoisted(() => vi.fn());
+const cardStore = vi.hoisted(() => ({ openCardModal: vi.fn(), closeCardModal: vi.fn() }));
 
 function OldLinkProbe() {
   const { push, stack } = useModalStack();
@@ -44,10 +45,7 @@ vi.mock('@/services/api', () => ({
   useDashboardApi: () => ({ listTopics: vi.fn().mockResolvedValue([]) }),
 }));
 vi.mock('@/store/dashboard', () => ({
-  useDashboardStore: (selector: (state: Record<string, unknown>) => unknown) => selector({
-    openCardModal: vi.fn(),
-    closeCardModal: vi.fn(),
-  }),
+  useDashboardStore: (selector: (state: Record<string, unknown>) => unknown) => selector(cardStore),
 }));
 
 function spec(id: string, title: string): SpecSummary {
@@ -80,6 +78,29 @@ function activateFocusedButtonWithEnter(button: HTMLButtonElement) {
 }
 
 describe('ModalStackRenderer Spec tab routing', () => {
+  it('opens the exact referenced card and resynchronizes Back without caller store writes', () => {
+    function Navigation() {
+      const { push } = useModalStack();
+      return <>
+        <button onClick={() => push({ type: 'spec', id: 'source' })}>Spec</button>
+        <button onClick={() => push({ type: 'card', id: 'card-a' })}>First card</button>
+        <button onClick={() => push({ type: 'card', id: 'card-b' })}>Second card</button>
+      </>;
+    }
+    cardStore.openCardModal.mockClear();
+    cardStore.closeCardModal.mockClear();
+    render(<ModalStackProvider><Navigation /><ModalStackRenderer boardId="board-1" /></ModalStackProvider>);
+    fireEvent.click(screen.getByText('Spec'));
+    fireEvent.click(screen.getByText('First card'));
+    expect(cardStore.openCardModal).toHaveBeenLastCalledWith('card-a');
+    fireEvent.click(screen.getByText('Second card'));
+    expect(cardStore.openCardModal).toHaveBeenLastCalledWith('card-b');
+    fireEvent.click(screen.getByTestId('modal-stack-back'));
+    expect(cardStore.openCardModal).toHaveBeenLastCalledWith('card-a');
+    fireEvent.click(screen.getByTestId('modal-stack-back'));
+    expect(cardStore.closeCardModal).toHaveBeenCalled();
+    expect(specModalSpy).toHaveBeenLastCalledWith(expect.objectContaining({ specId: 'source' }));
+  });
   it('keeps a Discovery board across nested modals and Back without changing the active board', () => {
     function Navigation() {
       const { push } = useModalStack();
