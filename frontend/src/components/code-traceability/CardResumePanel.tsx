@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { useDashboardApi } from '@/services/api';
 import { CardLedgerPanel } from './CardLedgerPanel';
-import { DeliveryDisclosure, deliveryButton, deliveryError, deliveryNotice, deliverySection } from './deliveryPresentation';
+import { DeliveryDisclosure, deliveryButton, deliveryError, deliveryNotice } from './deliveryPresentation';
+import { PulseLoader } from '@/components/shared/PulseLoader';
 import type { CardDeliveryResume } from '@/types/delivery-evidence';
 
 export function CardResumePanel({ boardId, cardId, specId, edition }: {
@@ -31,10 +32,10 @@ export function CardResumePanel({ boardId, cardId, specId, edition }: {
     }
   }
   return <section aria-label="Accumulated delivery context" className="space-y-3">
-    <div className={deliverySection}>
-    <h4 className="text-sm font-semibold text-gray-800 dark:text-gray-100">Recovery context</h4>
+    <DeliveryDisclosure title="Read accumulated delivery context" onOpen={() => { if (!data) void read(); }}>
     <p>Retrieve saved work, evidence and pending verification before resuming.</p>
-    <button type="button" className={deliveryButton} disabled={busy} onClick={read}>Read accumulated delivery context</button>
+    {busy && <PulseLoader size="sm" label="Loading recovery context…" />}
+    {(data || error) && <button type="button" className={deliveryButton} disabled={busy} onClick={read}>{error ? 'Retry delivery context' : 'Refresh delivery context'}</button>}
     {error && <p role="alert" className={deliveryError}>{error}</p>}
     {data && <>
       <p className="font-medium text-gray-800 dark:text-gray-200">{data.title} · Edition {data.edition} · {data.status}</p>
@@ -75,7 +76,7 @@ export function CardResumePanel({ boardId, cardId, specId, edition }: {
       <ul>{data.targets.items.map(target => <li key={target.id}>{target.relative_path || target.id} · {target.source_ref} · Target revision {target.revision}</li>)}</ul>
       {(data.response_truncated || data.obligations.truncated || data.implementation_proofs.truncated || data.tests.truncated || data.targets.truncated || data.accumulated_impact.detail_omitted || data.verification_plan?.truncated || data.verification_plan?.test_cards_truncated) && <p>This context is shortened. Use the scoped detail reads and Spec rollup before relying on omitted facts.</p>}
     </>}
-    </div>
+    </DeliveryDisclosure>
     <CardLedgerPanel key={`${boardId}:${cardId}:${specId}:${edition}`} boardId={boardId} cardId={cardId} specId={specId} edition={edition} />
   </section>;
 }

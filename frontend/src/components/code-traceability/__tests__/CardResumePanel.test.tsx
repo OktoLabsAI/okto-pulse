@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { CardResumePanel } from '../CardResumePanel';
 
 const api = vi.hoisted(() => ({ getCardDeliveryResume: vi.fn() }));
@@ -40,7 +40,7 @@ it('clears old data on refresh failure instead of treating it as empty success',
   fireEvent.click(screen.getByText('Read accumulated delivery context'));
   await screen.findByText(/Latest checkpoint by author-A/);
   api.getCardDeliveryResume.mockRejectedValueOnce(new Error('Permission denied'));
-  fireEvent.click(screen.getByText('Read accumulated delivery context'));
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh delivery context' }));
   await screen.findByRole('alert');
   expect(screen.queryByText(/Latest checkpoint by author-A/)).not.toBeInTheDocument();
 });
@@ -70,8 +70,23 @@ it('rejects another edition and cancels pending requests after unmount', async (
   expect(screen.queryByText(/Latest checkpoint by author-A/)).not.toBeInTheDocument();
   let finish!: (value: unknown) => void;
   api.getCardDeliveryResume.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
-  fireEvent.click(screen.getByText('Read accumulated delivery context'));
+  fireEvent.click(screen.getByRole('button', { name: 'Retry delivery context' }));
   const signal = api.getCardDeliveryResume.mock.calls[1][3];
   view.unmount(); expect(signal.aborted).toBe(true);
   await act(async () => finish(result));
+});
+
+it('loads on expansion, collapses the content and reopens without a duplicate read', async () => {
+  render(<CardResumePanel {...props} />);
+  const summary = screen.getByText('Read accumulated delivery context').closest('summary')!;
+  expect(summary.closest('details')).not.toHaveAttribute('open');
+  expect(api.getCardDeliveryResume).not.toHaveBeenCalled();
+  fireEvent.click(summary);
+  const checkpoint = await screen.findByText(/Latest checkpoint by author-A/);
+  expect(checkpoint).toBeVisible();
+  fireEvent.click(summary);
+  expect(checkpoint).not.toBeVisible();
+  fireEvent.click(summary);
+  await waitFor(() => expect(checkpoint).toBeVisible());
+  expect(api.getCardDeliveryResume).toHaveBeenCalledOnce();
 });
