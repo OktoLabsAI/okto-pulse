@@ -122,8 +122,6 @@ import { MarkdownContent } from '@/components/shared/MarkdownContent';
 import { CancellationDetails, CancellationReasonDialog } from '@/components/shared/CancellationReasonDialog';
 import { IdeationModal } from '@/components/ideations/IdeationModal';
 import { RefinementModal } from '@/components/refinements/RefinementModal';
-import { EditableField } from '@/components/shared/EditableField';
-import { ValidationGateOverride } from '@/components/shared/ValidationGateOverride';
 import { ActivityHistoryList } from '@/components/shared/ActivityHistoryList';
 import { SpecEditionLabel } from './SpecEditionLabel';
 import { ArchitectureTab } from '@/components/architecture';
@@ -1965,7 +1963,7 @@ export function SpecModal({
     ...(showProjectStructure
       ? [{
         id: 'project-structure' as ModalTab,
-        label: 'Project structure',
+        label: 'Project Structure',
         icon: <FolderTree size={14} />,
         count: spec.project_structure?.filter((node) => node.status === 'active').length || undefined,
       }]
@@ -2009,6 +2007,8 @@ export function SpecModal({
   primaryTabs.splice(1, 0,
     { id: 'requirements', label: 'Requirements & Decisions', icon: <FileText size={14} /> },
     { id: 'tests-verifications', label: 'Tests & Verifications', icon: <FlaskConical size={14} /> });
+  const primaryOrder: ModalTab[] = ['details', 'coverage', 'project-structure', 'evidence-matrix', 'resources', 'requirements', 'tests-verifications', 'qa', 'dependencies', 'references', 'kg', 'validation', 'activity'];
+  primaryTabs.sort((a, b) => primaryOrder.indexOf(a.id) - primaryOrder.indexOf(b.id));
   const subTabs = primaryTab === 'requirements' ? requirementTabs : primaryTab === 'tests-verifications' ? verificationTabs : [];
 
 
@@ -2186,29 +2186,11 @@ export function SpecModal({
               )}
               <div>
                 <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1">Description</h4>
-                <EditableField
-                  value={spec.description || ''}
-                  onSave={async (val) => {
-                    const updated = await api.updateSpec(specId, { description: val });
-                    setSpec(updated);
-                  }}
-                  multiline
-                  renderView={(v) => <MarkdownContent content={v} />}
-                  placeholder="No description"
-                />
+                <MarkdownContent content={spec.description || 'No description'} />
               </div>
               <div>
                 <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1">Context</h4>
-                <EditableField
-                  value={spec.context || ''}
-                  onSave={async (val) => {
-                    const updated = await api.updateSpec(specId, { context: val });
-                    setSpec(updated);
-                  }}
-                  multiline
-                  renderView={(v) => <MarkdownContent content={v} />}
-                  placeholder="No context"
-                />
+                <MarkdownContent content={spec.context || 'No context'} />
               </div>
               {spec.labels && spec.labels.length > 0 && (
                 <div className="flex flex-wrap gap-1">
@@ -2218,22 +2200,18 @@ export function SpecModal({
                 </div>
               )}
 
-              {/* Validation Gate Override */}
-              <ValidationGateOverride
-                title="Task Validation Gate"
-                description="Controls whether cards derived from this spec must pass Task Validation. These settings do not change the Spec Validation Gate."
-                requireValue={spec.require_task_validation ?? null}
-                minConfidence={spec.validation_min_confidence ?? null}
-                minCompleteness={spec.validation_min_completeness ?? null}
-                maxDrift={spec.validation_max_drift ?? null}
-                parentLabel="Board default"
-                onUpdate={async (patch) => {
-                  try {
-                    const updated = await api.updateSpec(specId, patch);
-                    setSpec(updated);
-                  } catch { toast.error('Failed to update validation gate'); }
-                }}
-              />
+              <section aria-label="Task Validation Gate" className="space-y-2">
+                <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300">Task Validation Gate</h4>
+                <p className="text-xs text-gray-500">Controls whether cards derived from this spec must pass Task Validation. These settings do not change the Spec Validation Gate.</p>
+                <dl className="grid grid-cols-2 gap-3 text-xs">
+                  {[
+                    ['Validation', spec.require_task_validation == null ? 'Board default' : spec.require_task_validation ? 'Required' : 'Disabled'],
+                    ['Minimum confidence', spec.validation_min_confidence ?? 'Board default'],
+                    ['Minimum completeness', spec.validation_min_completeness ?? 'Board default'],
+                    ['Maximum drift', spec.validation_max_drift ?? 'Board default'],
+                  ].map(([label, value]) => <div key={label}><dt className="text-gray-500">{label}</dt><dd className="mt-1 text-gray-700 dark:text-gray-300">{value}</dd></div>)}
+                </dl>
+              </section>
 
             </div>
           )}

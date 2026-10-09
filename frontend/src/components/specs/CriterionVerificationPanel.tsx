@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
+import { ChevronDown, ChevronUp, Pencil } from 'lucide-react';
 import { useDashboardApi } from '@/services/api';
-import { verificationBadge, verificationButton, verificationCard, verificationInput, requirementTypeLabels } from './verificationPresentation';
+import { verificationButton, verificationCard, verificationInput, requirementTypeLabels } from './verificationPresentation';
 
 export type VerificationProfile = 'functional' | 'integration' | 'technical' | 'operational';
 export type VerificationRequirementType = 'functional_requirement' | 'technical_requirement' | 'integration_requirement' | 'observability_requirement' | 'business_rule';
@@ -123,6 +124,7 @@ export function CriterionVerificationPanel({ specId, version, criteria, options,
   options: VerificationRequirementOption[]; canEdit: boolean; onSaved: () => Promise<void>;
 }) {
   const [openId, setOpenId] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   const parsed = criteria.map(editableCriterion).filter((row): row is Criterion => row !== null);
   const rows = parsed.filter(row => parsed.filter(item => item.id === row.id).length === 1);
   const currentCount = criteria.filter(value => !value || typeof value !== 'object' || !('status' in value) || value.status == null || value.status === 'active').length;
@@ -131,16 +133,20 @@ export function CriterionVerificationPanel({ specId, version, criteria, options,
     <h4 className="text-sm font-medium">Criterion verification</h4>
     <p className="text-xs text-slate-400">Define each criterion’s profile and requirement links. Planning completeness and evidence are evaluated separately.</p>
     {currentCount > rows.length && <p role="status">{currentCount - rows.length} criterion(s) have legacy or unsupported identity/metadata and require review.</p>}
-    {rows.map((criterion, index) => <article key={criterion.id} className={verificationCard} aria-label={criterion.title || `Criterion ${index + 1}`}>
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0 flex-1"><span className="text-xs font-medium text-gray-500">AC {index + 1}</span><h5 className="mt-1 font-semibold">{criterion.title || 'Acceptance criterion'}</h5></div>
-        <span className={verificationBadge}>{criterion.verification_profile || 'Profile not defined'}</span>
+    {rows.map((criterion, index) => <article key={criterion.id} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden" aria-label={criterion.title || `Criterion ${index + 1}`}>
+      <header className="flex items-center gap-2 px-3 py-2 bg-gray-50 dark:bg-gray-700/50">
+        <button type="button" aria-expanded={expandedId === criterion.id} aria-controls={`criterion-details-${criterion.id}`} onClick={() => { setExpandedId(expandedId === criterion.id ? null : criterion.id); setOpenId(null); }} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300 font-medium">AC {index + 1}</span>
+          <span className="text-sm font-medium text-gray-900 dark:text-white truncate flex-1" title={criterion.title || criterion.text}>{criterion.title || criterion.text}</span>
+          <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">{criterion.verification_profile || 'Profile not defined'}</span>
+          <span className="shrink-0 text-[10px] text-gray-500">{(criterion.requirement_links || []).length} links</span>
+          {expandedId === criterion.id ? <ChevronUp size={14} className="shrink-0 text-gray-400" /> : <ChevronDown size={14} className="shrink-0 text-gray-400" />}
+        </button>
+        {canEdit && <button type="button" className="p-0.5 text-gray-400 hover:text-blue-500" aria-label={`Edit verification ${criterion.id}`} onClick={() => { setExpandedId(criterion.id); setOpenId(openId === criterion.id ? null : criterion.id); }}><Pencil size={12} /></button>}
       </header>
-      <p className="whitespace-pre-wrap break-words text-gray-600 dark:text-gray-300">{criterion.text}</p>
-      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-gray-100 pt-3 dark:border-gray-700">
-        <span className="text-xs font-medium">{(criterion.requirement_links || []).length} requirement link(s)</span>
-        {canEdit && <button className={verificationButton} type="button" aria-expanded={openId === criterion.id} aria-label={`Edit verification ${criterion.id}`} onClick={() => setOpenId(openId === criterion.id ? null : criterion.id)}>{openId === criterion.id ? 'Close editor' : 'Edit verification'}</button>}
-      </div>
+      {expandedId === criterion.id && <div id={`criterion-details-${criterion.id}`} className="px-3 py-2 space-y-2 text-xs text-gray-600 dark:text-gray-400">
+      <p className="whitespace-pre-wrap break-words">{criterion.text}</p>
+      <p className="font-medium">{(criterion.requirement_links || []).length} requirement link(s)</p>
       {(openId !== criterion.id || !canEdit) && <div className="grid gap-2 sm:grid-cols-2">{(criterion.requirement_links || []).map(link => <div key={identity(link.requirement_type, link.requirement_id)} className="space-y-2 rounded-lg bg-gray-50 p-3 dark:bg-gray-900/40">
         <span className="text-xs font-medium text-blue-600 dark:text-blue-400">{requirementTypeLabels[link.requirement_type]}</span>
         <p className="break-words text-sm">{unambiguousOptions.find(item => identity(item.type, item.id) === identity(link.requirement_type, link.requirement_id))?.title || 'Requirement unavailable'} · {link.requirement_id}</p>
@@ -148,6 +154,7 @@ export function CriterionVerificationPanel({ specId, version, criteria, options,
       </div>)}</div>}
       {canEdit && openId === criterion.id && <CriterionEditor key={`${specId}:${version}:${criterion.id}`} specId={specId} version={version} criterion={criterion} options={unambiguousOptions} onSaved={onSaved} />}
       <details className="text-xs text-gray-500"><summary className="cursor-pointer">Criterion reference</summary><code className="block break-all pt-1">{criterion.id}</code></details>
+      </div>}
     </article>)}
     {!rows.length && <p className="text-xs text-slate-400">No current criteria with supported metadata and stable IDs. Legacy criteria keep their history; use the existing criterion editor to materialize their IDs.</p>}
   </section>;

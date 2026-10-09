@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { ChevronDown, ChevronUp, Pencil } from 'lucide-react';
 import { useDashboardApi } from '@/services/api';
 import { verificationBadge, verificationButton, verificationCard, verificationInput, requirementTypeLabels } from './verificationPresentation';
 import type { RequirementVerification, RequirementVerificationResponse, RequirementVerificationRow, VerificationInheritanceSelection, VerificationProfile, VerificationRequirementType } from '@/types/requirement-verification';
@@ -175,6 +176,7 @@ export function RequirementVerificationPanel(props: PanelProps) {
 function RequirementVerificationContent({ scope, canRead, canReadPlanning = false, canEdit, options, criteria, onSaved }: PanelProps) {
   const api = useDashboardApi();
   const [open, setOpen] = useState(false);
+  const [expandedRow, setExpandedRow] = useState<string | null>(null);
   const [offset, setOffset] = useState(0);
   const [refresh, setRefresh] = useState(0);
   const [editor, setEditor] = useState<RequirementVerificationRow | null>(null);
@@ -240,8 +242,17 @@ function RequirementVerificationContent({ scope, canRead, canReadPlanning = fals
             : <p role="alert">The complete obligation population is unavailable; readiness is unknown.</p>}
           <p className="text-xs">Includes acceptance criteria, API contracts, decisions and Cards without requirement links. This planning inventory does not change the adopted delivery contract or grant credit.</p>
         </div>}
-        {current.data.items.map(row => <div key={keyOf(row.requirement_type, row.requirement_id)} className={verificationCard}>
-          <header className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0 flex-1"><span className="text-xs font-medium text-blue-600 dark:text-blue-400">{requirementTypeLabels[row.requirement_type]}</span><h5 className="mt-1 font-semibold break-words">{row.title}</h5></div><span className={verificationBadge}>{row.verification?.mode || 'Not qualified'}</span></header>
+        {current.data.items.map(row => <div key={keyOf(row.requirement_type, row.requirement_id)} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+          <header className="flex items-center gap-2 px-3 py-2 bg-gray-50 dark:bg-gray-700/50">
+            <button type="button" aria-expanded={expandedRow === row.requirement_id} aria-controls={`qualification-${row.requirement_type}-${row.requirement_id}`} onClick={() => setExpandedRow(expandedRow === row.requirement_id ? null : row.requirement_id)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300">{requirementTypeLabels[row.requirement_type]}</span>
+              <h5 className="min-w-0 flex-1 truncate text-sm font-medium text-gray-900 dark:text-white" title={row.title}>{row.title}</h5>
+              <span className="shrink-0 text-[10px] text-gray-500">{row.verification?.mode || 'Not qualified'}</span>
+              {expandedRow === row.requirement_id ? <ChevronUp size={14} className="shrink-0 text-gray-400" /> : <ChevronDown size={14} className="shrink-0 text-gray-400" />}
+            </button>
+            {canEdit(row.requirement_type) && <button type="button" aria-label={`Edit qualification ${row.requirement_id}`} onClick={() => setEditor(row)} className="p-0.5 text-gray-400 hover:text-blue-500"><Pencil size={12} /></button>}
+          </header>
+          <div id={`qualification-${row.requirement_type}-${row.requirement_id}`} hidden={expandedRow !== row.requirement_id} className="px-3 py-2 space-y-2 text-xs text-gray-600 dark:text-gray-400">
           <dl className="grid gap-3 rounded-lg bg-gray-50 p-3 sm:grid-cols-2 dark:bg-gray-900/40"><div><dt className="text-xs text-gray-500">Required profiles</dt><dd className="mt-1">{row.verification?.required_profiles.join(', ') || 'Profiles not defined'}</dd></div><div><dt className="text-xs text-gray-500">Requirement reference</dt><dd className="mt-1 break-all font-mono text-xs">{row.requirement_id}</dd></div></dl>
           {canReadPlanning && row.contribution_blockers?.map(code => <p key={code} className="text-amber-400">{blockerLabels[code] || 'Review the declared implementation scope.'}</p>)}
           {canReadPlanning && row.implementation_contributions?.map(contribution => <div key={contribution.card_id} className="text-xs">
@@ -264,7 +275,7 @@ function RequirementVerificationContent({ scope, canRead, canReadPlanning = fals
             {canReadPlanning && path.scenarios_truncated && <p>Additional scenarios are omitted from this summary; planning considers all {path.scenario_count} scenarios.</p>}
           </div>)}
           {(row.paths_has_more || row.blockers_truncated) && <p>Additional paths or issues are not shown in this summary.</p>}
-          {canEdit(row.requirement_type) && <button className={verificationButton} type="button" onClick={() => setEditor(row)}>Edit qualification {row.requirement_id}</button>}
+          </div>
         </div>)}
         {offset > 0 && <button className={verificationButton} type="button" onClick={() => { setOffset(0); setEditor(null); }}>First requirements</button>}
         {current.data.next_offset != null && <button className={verificationButton} type="button" onClick={() => { setOffset(current.data!.next_offset!); setEditor(null); }}>Next requirements</button>}

@@ -24,6 +24,13 @@ describe('structured FR and AC cards', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(value.onSave).toHaveBeenCalledWith(null, { title: 'Observable result', text: 'Given an invalid request, no write occurs.' }));
   });
+  it('shows AC titles in compact rows and expands the independently stored content', () => {
+    render(<TextRequirementsTab {...props({ kind: 'AC' as const })} />);
+    expect(screen.queryByText('Same content')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /First title/ }));
+    expect(screen.getByText('Same content')).toBeInTheDocument();
+    expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+  });
   it('keeps a refused draft and suppresses concurrent writes', async () => {
     let reject!: (error: Error) => void;
     const value = props({ onSave: vi.fn(() => new Promise<void>((_, fail) => { reject = fail; })) });
@@ -57,7 +64,9 @@ describe('structured FR and AC cards', () => {
     expect(screen.getByText('FR Task Coverage (1/2)')).toBeInTheDocument();
     expect(screen.queryByText('Same content')).not.toBeInTheDocument();
     const first = screen.getByRole('button', { name: /First title/ });
+    expect(first).toHaveTextContent('fr-a');
     fireEvent.click(first);
+    expect(screen.getByText('Same content')).toHaveClass('text-xs');
     expect(first).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByText('Linked Tasks:')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /Second title/ }));

@@ -254,7 +254,7 @@ describe('SpecModal Activity tab', () => {
     expect(screen.getByText('Verification method: inspection')).toBeInTheDocument();
   });
 
-  it('identifies the Details override as the Task Validation Gate for descendant cards', async () => {
+  it('shows Details and its Task Validation Gate as read-only information', async () => {
     render(
       <SpecModal
         specId={spec.id}
@@ -265,16 +265,16 @@ describe('SpecModal Activity tab', () => {
     );
 
     await screen.findByText(spec.title);
-    const gate = screen.getByTestId('validation-gate-override');
+    const gate = screen.getByRole('region', { name: 'Task Validation Gate' });
     expect(gate).toHaveTextContent('Task Validation Gate');
     expect(gate).toHaveTextContent('cards derived from this spec');
     expect(gate).toHaveTextContent('do not change the Spec Validation Gate');
-    expect(validationGateOverrideSpy).toHaveBeenCalledWith(
-      expect.objectContaining({
-        title: 'Task Validation Gate',
-        description: expect.stringContaining('cards derived from this spec'),
-      }),
-    );
+    expect(validationGateOverrideSpy).not.toHaveBeenCalled();
+    const details = screen.getByRole('tabpanel', { name: 'Details' });
+    expect(within(details).queryByRole('textbox')).not.toBeInTheDocument();
+    expect(within(details).queryByRole('button')).not.toBeInTheDocument();
+    expect(within(details).queryByRole('combobox')).not.toBeInTheDocument();
+    expect(apiMock.updateSpec).not.toHaveBeenCalled();
   });
 
   it('loads and expands the shared Before/After history renderer', async () => {
@@ -357,14 +357,14 @@ describe('SpecModal Activity tab', () => {
       within(tabList).getAllByRole('tab').map((tab) => tab.textContent),
     ).toEqual([
       'Details',
+      'Coverage',
+      'Project Structure',
+      'Code Evidence Matrix',
+      'Resources',
       'Requirements & Decisions',
       'Tests & Verifications',
-      'Coverage',
-      'Code Evidence Matrix',
-      'Project structure',
-      'Dependencies',
-      'Resources',
       'Q&A',
+      'Dependencies',
       'References',
       'KG Graph',
       'Validation',

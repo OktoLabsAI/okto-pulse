@@ -45,6 +45,7 @@ describe('criterion verification authoring', () => {
   });
   it('preserves an unavailable existing link when editing only the profile', async () => {
     render(<CriterionVerificationPanel {...props({ criteria: [{ ...criterion, requirement_links: [{ requirement_type: 'integration_requirement', requirement_id: 'ir_hidden', aspect: 'Timeout' }] }] })} />);
+    fireEvent.click(screen.getByRole('button', { name: /AC 1.*Five failed/ }));
     expect(screen.getByText(/Requirement unavailable.*ir_hidden/)).toBeInTheDocument();
     edit();
     fireEvent.change(screen.getByLabelText('Verification profile'), { target: { value: 'integration' } });
@@ -60,6 +61,11 @@ describe('criterion verification authoring', () => {
   });
   it('shows read-only metadata without edit permission', () => {
     render(<CriterionVerificationPanel {...props({ canEdit: false, criteria: [{ ...criterion, verification_profile: 'functional', requirement_links: [{ requirement_type: 'business_rule', requirement_id: 'br_one' }] }] })} />);
+    expect(screen.queryByText(/Five-attempt policy.*br_one/)).not.toBeInTheDocument();
+    const expand = screen.getByRole('button', { name: /AC 1.*Five failed/ });
+    expect(expand).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(expand);
+    expect(expand).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByText(/Five-attempt policy.*br_one/)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Edit verification/ })).not.toBeInTheDocument();
     expect(api.updateSpecEntity).not.toHaveBeenCalled();

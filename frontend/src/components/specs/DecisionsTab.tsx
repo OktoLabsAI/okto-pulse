@@ -284,10 +284,7 @@ export function DecisionsTab({
   return (
     <div className="space-y-4">
       {/* Legacy banner — decisions inline em Description ficam visíveis, mas esta aba é canônica */}
-      <div className="rounded-md border border-indigo-200 dark:border-indigo-700 bg-indigo-50/60 dark:bg-indigo-900/10 px-3 py-2 text-xs text-indigo-700 dark:text-indigo-300">
-        Decisions estruturadas têm cobertura de tasks e validação semântica.
-        Listagem inline em Description é legado — use esta aba para gerenciamento.
-      </div>
+
 
       {/* Coverage summary — active-only */}
       {activeTotal > 0 && (
