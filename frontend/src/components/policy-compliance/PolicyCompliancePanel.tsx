@@ -498,12 +498,14 @@ function EvidenceRefs({
 
 function AssessmentCard({
   assessment,
+  historical = false,
   activeSkip,
   canManageSkips,
   onCreateSkip,
   onRevokeSkip,
 }: {
   assessment: SemanticAssessmentDetail;
+  historical?: boolean;
   activeSkip: SemanticSkipDetail | null;
   canManageSkips: boolean;
   onCreateSkip: (assessment: SemanticAssessmentDetail) => void;
@@ -529,7 +531,7 @@ function AssessmentCard({
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <CurrentnessBadge currentness={assessment.currentness} />
+          {historical ? <span className="rounded-full bg-surface-200 px-2 py-0.5 text-[10px] font-semibold uppercase text-surface-700 dark:bg-surface-700 dark:text-surface-200">Previous</span> : <CurrentnessBadge currentness={assessment.currentness} />}
           <span
             className={
               assessment.state === 'passed'
@@ -547,7 +549,7 @@ function AssessmentCard({
         </div>
       </header>
 
-      {assessment.currentness === 'stale' && (
+      {!historical && assessment.currentness === 'stale' && (
         <div
           role="alert"
           className="mt-3 rounded-lg border border-amber-300 bg-white/70 p-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-surface-950/30 dark:text-amber-200"
@@ -561,10 +563,9 @@ function AssessmentCard({
       )}
 
       <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <div data-testid="semantic-confidence-score" className="text-center">
-          <p className="text-xs text-surface-500 dark:text-surface-400">Confidence</p>
-          <p className="text-xl font-semibold">{assessment.confidence} / 100</p>
-        </div>
+        <MetricScoreRing label="Confidence" value={assessment.confidence}
+          direction="higher-is-better" testId="semantic-confidence-score"
+          unavailableThresholdLabel="Threshold not recorded in this assessment" />
         {assessment.metric_results.map((metric) => (
           <MetricScoreRing
             key={metric.metric_result_id}
@@ -2292,7 +2293,7 @@ export function PolicyCompliancePanel({
                     />
                     </summary>
                     <div className="border-t border-surface-200 p-3 dark:border-surface-700">
-                      <AssessmentCard assessment={assessment} activeSkip={null}
+                      <AssessmentCard assessment={assessment} historical activeSkip={null}
                         canManageSkips={false} onCreateSkip={() => {}} onRevokeSkip={() => {}} />
                     </div>
                     </details>

@@ -793,7 +793,7 @@ describe('PolicyCompliancePanel semantic guideline contract', () => {
     const cards = await screen.findAllByTestId('semantic-assessment-card');
     expect(cards).toHaveLength(2);
     expect(within(cards[0]).getByTestId('semantic-confidence-score'))
-      .toHaveTextContent('93 / 100');
+      .toHaveTextContent('93/100');
     expect(
       within(cards[0]).getByRole('img', {
         name: /architecture\.segregation score 88 out of 100.*minimum 75.*threshold met/i,
@@ -1418,7 +1418,10 @@ describe('guideline compliance summary', () => {
     expect(priorCard).not.toBeVisible();
     fireEvent.click(previousContent.querySelector('summary')!);
     expect(priorCard).toBeVisible();
-    expect(within(priorCard).getByTestId('semantic-confidence-score')).toHaveTextContent('92 / 100');
+    expect(within(priorCard).getByTestId('semantic-confidence-score')).toHaveClass('rounded-full');
+    expect(within(priorCard).getByTestId('semantic-confidence-score')).toHaveAccessibleName('Confidence score 92 out of 100, higher is better, Threshold not recorded in this assessment');
+    expect(within(priorCard).queryByRole('alert')).not.toBeInTheDocument();
+    expect(within(priorCard).getByText('Previous', {exact: true})).toBeVisible();
     const priorMetric = previous.metric_results[0];
     fireEvent.click(within(priorCard).getByText(`${priorMetric.metric_code}: rationale, evidence and pinpoints`));
     expect(within(priorCard).getByText(priorMetric.rationale)).toBeVisible();

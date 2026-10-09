@@ -17,6 +17,8 @@ export interface MetricScoreRingProps {
   max?: number;
   direction: MetricScoreDirection;
   threshold?: number | null;
+  /** Historical projections may omit the threshold; never infer it from current policy. */
+  unavailableThresholdLabel?: string;
   /**
    * Optional presentational tone for metrics without a threshold or semantic
    * status. A configured threshold always determines the ring tone.
@@ -68,6 +70,7 @@ export function MetricScoreRing({
   max = 100,
   direction,
   threshold,
+  unavailableThresholdLabel,
   tone,
   status,
   testId = 'metric-score-ring',
@@ -97,7 +100,7 @@ export function MetricScoreRing({
     : 'Lower is better';
   const thresholdLabel = hasThreshold
     ? `${direction === 'higher-is-better' ? 'Minimum' : 'Maximum'} ${formatScore(threshold)}`
-    : 'No threshold configured';
+    : unavailableThresholdLabel ?? 'No threshold configured';
   const resultContext = hasThreshold ? 'threshold' : 'status';
   const resultLabel = resolvedStatus === 'met'
     ? `, ${resultContext} met`
