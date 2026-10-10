@@ -10468,7 +10468,7 @@ class DeliveryEvidenceRecordRow(Base):
         ),
         CheckConstraint("edition >= 1", name="ck_delivery_evidence_edition"),
         CheckConstraint(
-            "kind IN ('waiver', 'revoke')",
+            "kind IN ('waiver', 'revoke', 'decision_review')",
             name="ck_delivery_evidence_kind",
         ),
         Index("ix_delivery_evidence_scope", "board_id", "spec_id", "edition"),

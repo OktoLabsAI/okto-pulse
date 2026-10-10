@@ -76,6 +76,14 @@ class CommunityDeliveryEvidenceStore:
         self.inventory = inventory if inventory is not None else default_delivery_inventory_policy()
         self._locked = False
 
+    async def decision_reviews(self, query, *, actor_id):
+        from okto_pulse.community.adapters.sqlalchemy_decision_reviews import CommunityDecisionReviews
+        return await CommunityDecisionReviews(self).read(query, actor_id=actor_id)
+
+    async def record_decision_reviews(self, command, *, actor_id, actor_kind):
+        from okto_pulse.community.adapters.sqlalchemy_decision_reviews import CommunityDecisionReviews
+        return await CommunityDecisionReviews(self).record(command, actor_id=actor_id, actor_kind=actor_kind)
+
     async def _execution_plan(self, spec):
         execution_contract(spec)
         cards = list((await self.session.scalars(select(Card).where(
@@ -1349,7 +1357,7 @@ class CommunityDeliveryEvidenceStore:
                 )
         return waivers
 
-    async def load_rollup_snapshot(self, board_id, spec_id):
+    async def load_rollup_snapshot(self, board_id, spec_id, *, include_reviews=True):
         """Aggregate the card-ledger snapshots of a spec into one snapshot.
 
         Returns ``(DeliveryEvidenceSnapshot, per_card)`` where per_card carries
@@ -1416,6 +1424,12 @@ class CommunityDeliveryEvidenceStore:
             CardRecord.spec_edition == scope.edition, CardRecord.id.in_(identities),
         ))).all())
         snapshot = self._with_effective_context(snapshot, plan, records, spec)
+        if include_reviews and snapshot.effective_context and any(
+            row.decision_plan and row.decision_plan.complete and row.decision_plan.verification.inspection
+            for row in snapshot.effective_context.inventory.rows
+        ):
+            from okto_pulse.community.adapters.sqlalchemy_decision_reviews import CommunityDecisionReviews
+            snapshot = await CommunityDecisionReviews(self).attach(spec, snapshot)
         # Test evidence belongs to other Cards; calculate only after assembling
         # the complete selected and authenticated Spec population.
         for row in per_card:

@@ -13,6 +13,8 @@ from __future__ import annotations
 from okto_pulse.core.models.delivery_evidence import card_delivery_command, DeliveryBatchEntryError, DeliveryEvidenceInput, DeliveryEvidenceCommand, DeliveryEvidenceReadQuery
 from okto_pulse.core.models.delivery_report import CardDeliveryRecordInput, DeliveryReportRejected
 from okto_pulse.core.application.use_cases.delivery_evidence import GetDeliveryEvidenceUseCase, RecordCardDeliveryEvidenceUseCase, RecordDeliveryEvidenceUseCase
+from okto_pulse.core.application.use_cases.decision_review import GetDecisionReviewsUseCase, RecordDecisionReviewsUseCase
+from okto_pulse.core.models.decision_review import DecisionReviewInput, DecisionReviewCommand, DecisionReviewQuery
 
 import base64
 from dataclasses import fields, is_dataclass
@@ -454,6 +456,11 @@ def _native(value: object, *, cursor_binding: str | None = None) -> object:
 def _http_error(exc: Exception) -> HTTPException:
     if isinstance(exc, DeliveryReportRejected):
         return HTTPException(status_code=409, detail=exc.to_error_dict())
+    if isinstance(exc, ValueError) and str(exc).startswith(("decision_review_", "decision_inspection_")):
+        code = str(exc).split(":", 1)[0]
+        return HTTPException(status_code=409 if code.endswith("_conflict") else 422,
+            detail={"code": code, "message": str(exc), "details": {},
+                    "remediation": [{"action": "review_decision_verification", "tool": "okto_pulse_get_decision_reviews"}]})
     if isinstance(exc, ValueError) and str(exc).startswith("delivery_"):
         code = str(exc).split(":", 1)[0]
         return HTTPException(status_code=409 if code.endswith("_conflict") else 404 if code.endswith("_not_found") else 422, detail={"code": code, "message": str(exc), "details": exc.details() if isinstance(exc, DeliveryBatchEntryError) else {}, "remediation": [{"action": "review_delivery_evidence", "tool": "okto_pulse_get_delivery_evidence"}]})
@@ -1239,6 +1246,22 @@ async def record_delivery_evidence(board_id: str, spec_id: str, body: DeliveryEv
     """Spec-scoped exceptions: waivers and their revocations (human-only)."""
     command = DeliveryEvidenceCommand(board_id=board_id, spec_id=spec_id, **body.model_dump())
     return await _execute(RecordDeliveryEvidenceUseCase(), command, board_id=board_id, principal=principal, uow=uow)
+
+
+@router.get("/{board_id}/specs/{spec_id}/decision-reviews")
+async def get_decision_reviews(board_id: str, spec_id: str, response: Response,
+    principal: Principal = Depends(require_principal), uow: PulseUnitOfWork = Depends(get_unit_of_work)) -> object:
+    response.headers["Cache-Control"] = "no-store"
+    return await _execute(GetDecisionReviewsUseCase(), DecisionReviewQuery(board_id=board_id, spec_id=spec_id),
+        board_id=board_id, principal=principal, uow=uow)
+
+
+@router.post("/{board_id}/specs/{spec_id}/decision-reviews")
+async def record_decision_reviews(board_id: str, spec_id: str, body: DecisionReviewInput,
+    principal: Principal = Depends(require_principal), uow: PulseUnitOfWork = Depends(get_unit_of_work)) -> object:
+    return await _execute(RecordDecisionReviewsUseCase(),
+        DecisionReviewCommand(board_id=board_id, spec_id=spec_id, **body.model_dump()),
+        board_id=board_id, principal=principal, uow=uow)
 
 
 @router.post("/{board_id}/cards/{card_id}/specs/{spec_id}/delivery-evidence")
