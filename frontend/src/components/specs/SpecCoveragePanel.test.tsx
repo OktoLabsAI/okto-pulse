@@ -28,6 +28,18 @@ function page(title: string, next: string | null = null): SpecCoverageResponse {
 }
 beforeEach(() => { vi.clearAllMocks(); api.getSpecCoverage.mockResolvedValue(base); });
 
+it('displays inherited BR planning coverage without granting implementation or verification credit', async () => {
+  api.getSpecCoverage.mockResolvedValue({ ...base,
+    structure: { ...base.structure, summary: { ...base.structure.summary,
+      fr_covered: 1, brs_linked: 1, brs_total: 1 } },
+  });
+  render(<SpecCoveragePanel boardId="board" specId="spec" revision="1" onOpenSection={vi.fn()} />);
+  expect(await screen.findByText('100%')).toBeInTheDocument();
+  expect(screen.getAllByText('0%')).toHaveLength(2);
+  fireEvent.click(screen.getByRole('tab', { name: 'Planning' }));
+  expect(screen.getByRole('progressbar', { name: 'Rules → Cards' })).toHaveAttribute('aria-valuenow', '1');
+});
+
 it('shows the shared pulse animation while coverage is pending and removes it when loaded', async () => {
   let finish!: (value: SpecCoverageResponse) => void;
   api.getSpecCoverage.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
