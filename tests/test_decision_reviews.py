@@ -192,6 +192,30 @@ async def test_comment_or_technical_version_preserves_base_but_new_edition_does_
 
 
 @pytest.mark.asyncio
+async def test_narrow_inspection_survives_unrelated_edit_but_not_its_observed_requirement(reviews):
+    from copy import deepcopy
+    session, store = reviews
+    spec = await session.get(Spec, 'spec')
+    before = deepcopy(spec.decisions)
+    spec.functional_requirements = [{'id': 'bounded', 'text': 'A bounded local exercise'},
+                                    {'id': 'other', 'text': 'Other requirement'}]
+    decisions = deepcopy(before)
+    decisions[0]['verification']['inspection']['scope_refs'] = [{'kind': 'obligation', 'id': 'fr:bounded'}]
+    spec.decisions = decisions
+    session.add(SpecHistory(spec_id='spec', action='updated', actor_type='user', actor_id='owner',
+        actor_name='Owner', version=2, changes=[{'field': 'decisions', 'old': before, 'new': decisions}]))
+    await session.flush()
+    await record(store, await command(store))
+    spec.functional_requirements = [spec.functional_requirements[0], {'id': 'other', 'text': 'Changed outside the scope'}]
+    spec.description = 'An unrelated description edit'
+    await session.flush()
+    assert (await store.decision_reviews(QUERY, actor_id='reviewer'))['decisions'][0]['status'] == 'verified'
+    spec.functional_requirements = [{'id': 'bounded', 'text': 'The observed condition changed'}, spec.functional_requirements[1]]
+    await session.flush()
+    assert (await store.decision_reviews(QUERY, actor_id='reviewer'))['decisions'][0]['status'] == 'inspection_pending'
+
+
+@pytest.mark.asyncio
 async def test_atomic_batch_and_changed_idempotency_payload(reviews):
     session, store = reviews
     cmd = await command(store)

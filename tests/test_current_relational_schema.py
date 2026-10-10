@@ -43,6 +43,30 @@ def snapshot(path):
 
 
 @pytest.mark.asyncio
+async def test_database_without_native_decision_review_kind_is_refused_unchanged(tmp_path, contract):
+    path = tmp_path / 'before-decision-review.db'
+    url = f'sqlite+aiosqlite:///{path}'
+    engine = create_async_engine(url)
+    try:
+        await initialize_current_schema(engine, contract)
+    finally:
+        await engine.dispose()
+    with closing(sqlite3.connect(path)) as connection:
+        ddl = connection.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='delivery_evidence_records'").fetchone()[0]
+        assert "'decision_review'" in ddl
+        indexes = [row[0] for row in connection.execute("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='delivery_evidence_records' AND sql IS NOT NULL")]
+        connection.execute('DROP TABLE delivery_evidence_records')
+        connection.execute(ddl.replace(", 'decision_review'", ''))
+        for index in indexes:
+            connection.execute(index)
+        connection.commit()
+    before = snapshot(path)
+    with pytest.raises(StorageFormatError):
+        require_current_database_file(url, contract)
+    assert snapshot(path) == before
+
+
+@pytest.mark.asyncio
 async def test_fresh_schema_restart_preserves_data_and_identity(tmp_path, contract):
     path = tmp_path / "pulse.db"
     url = f"sqlite+aiosqlite:///{path}"
