@@ -53,6 +53,11 @@ function buildTooltip(evidence: TestScenarioEvidence | null): string {
   if (evidence.execution_attestation) {
     parts.push(`attestation: v${evidence.execution_attestation.schema_version}`);
     parts.push(`run: ${evidence.execution_attestation.run_id}`);
+    const basis = evidence.execution_attestation.execution_basis;
+    if (basis) {
+      parts.push(`runner: ${basis.runner_ref}`, `source: ${basis.source_ref}`, `revision: ${basis.revision}`);
+      parts.push(`tests: ${basis.test_ids.join(', ')}`);
+    }
     parts.push(
       `product runtime: ${evidence.execution_attestation.product_runtime_exercised ? 'exercised' : 'NOT exercised'}`,
     );
@@ -150,7 +155,8 @@ export function EvidenceBadge({ scenario }: EvidenceBadgeProps) {
   // Re-executable contract: reflect the real class + replayability when set.
   if (hasEvidence && evidenceClass) {
     const replayable = REPLAYABLE_CLASSES.has(evidenceClass);
-    const label = CLASS_LABELS[evidenceClass] ?? evidenceClass;
+    const label = evidence?.execution_attestation?.execution_basis
+      ? 'External test run' : CLASS_LABELS[evidenceClass] ?? evidenceClass;
     const Icon = replayable ? RotateCw : FileText;
     const className = replayable
       ? 'inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/50'

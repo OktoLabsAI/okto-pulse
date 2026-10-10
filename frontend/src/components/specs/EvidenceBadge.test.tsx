@@ -245,6 +245,25 @@ describe('EvidenceBadge — re-executable evidence contract (spec 9e0bf979)', ()
     expect(tooltip).toContain('installation receipt: attached');
   });
 
+  test('external run exposes runner, exact revision and tests', () => {
+    render(<EvidenceBadge scenario={makeScenario({ status: 'passed', evidence: {
+      evidence_class: 'mcp_replay_manifest', manifest_ref: 'external.json', execution_receipt: 'receipt',
+      execution_attestation: {
+        schema_version: 2, run_id: 'run', executed_at: '2026-10-10T00:00:00Z', scenario_id: 'ts',
+        scenario_sha256: 'sha256:abc', outcome: 'passed', product_runtime_exercised: true,
+        manifest_sha256: 'sha256:abc', assertions: [], attestation_sha256: 'sha256:abc',
+        provenance: { producer: 'community', producer_version: '0.4.0', adapter: 'runner', environment: 'local' },
+        execution_basis: { runner_ref: 'capacity', source_ref: 'source', revision: 'a'.repeat(40),
+          test_ids: ['tests/test_domain.py::Cases.test_capacity'] },
+      },
+    } })} />);
+    const badge = screen.getByTestId('evidence-badge-class');
+    expect(badge).toHaveTextContent('External test run');
+    expect(badge.title).toContain(`revision: ${'a'.repeat(40)}`);
+    expect(badge.title).toContain('runner: capacity');
+    expect(badge.title).toContain('Cases.test_capacity');
+  });
+
   test('caller-authored V2 fields without installation receipt stay unverified', () => {
     render(
       <EvidenceBadge

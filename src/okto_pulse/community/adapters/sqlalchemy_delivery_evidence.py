@@ -377,6 +377,14 @@ class CommunityDeliveryEvidenceStore:
                         if receipt is None or executed_at < receipt.observed_at:
                             valid = False
                             break
+                        basis = (evidence.get("execution_attestation") or {}).get("execution_basis")
+                        if basis is not None and (
+                            basis.get("source_ref") != receipt.source_ref
+                            or basis.get("revision") != receipt.declared_revision
+                            or receipt.declared_dirty is not False
+                        ):
+                            valid = False
+                            break
                     if not valid:
                         break
             except (KeyError, TypeError, ValueError):

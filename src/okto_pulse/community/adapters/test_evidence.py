@@ -1463,6 +1463,12 @@ async def run_inline_replay_and_build_evidence_v2(
         decoded = inline_replay
     else:
         raise CommunityTestEvidenceError("evidence_v2.inline_replay_object_required")
+    if isinstance(decoded, Mapping) and "runner_ref" in decoded:
+        from .external_test_runner import execute_external_request
+        return await execute_external_request(dict(decoded), ledger=ledger,
+            scope=dict(board_id=board_id, spec_id=spec_id, scenario_id=scenario_id,
+                       scenario_sha256=scenario_sha256),
+            status=status, actor_id=actor_id, environment=environment)
     normalized_manifest = build_inline_replay_manifest(
         decoded,
         board_id=board_id,
@@ -1503,6 +1509,7 @@ async def _execute_validated_manifest_and_build_evidence_v2(
     executor: RuntimeExecutor,
     ledger: CommunityEvidenceLedger,
     environment: str,
+    execution_basis: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Execute already-validated bytes and append an authenticated receipt."""
 
@@ -1528,6 +1535,10 @@ async def _execute_validated_manifest_and_build_evidence_v2(
         observation=observed,
         environment=environment,
     )
+    if execution_basis is not None:
+        evidence["execution_attestation"]["execution_basis"] = dict(execution_basis)
+        evidence["execution_attestation"]["attestation_sha256"] = compute_execution_attestation_sha256(
+            evidence["execution_attestation"], manifest_ref=canonical_ref)
     # Validate executor facts before creating an immutable record. A temporary
     # opaque value satisfies only CORE's structural receipt check.
     provisional = {**evidence, "execution_receipt": "pending-server-receipt"}
@@ -1602,16 +1613,19 @@ def verify_community_evidence_v2(
         if manifest_sha256(manifest) != attestation.get("manifest_sha256"):
             reasons.append("evidence_v2.manifest_content_hash_mismatch")
         try:
-            validate_replay_manifest(
-                _decode_manifest_json(
-                    manifest,
-                    source=str(normalized["manifest_ref"]),
-                ),
+            decoded_manifest = _decode_manifest_json(manifest, source=str(normalized["manifest_ref"]))
+            from .external_test_runner import SCHEMA, validate_external_manifest
+            external = decoded_manifest.get("schema_version") == SCHEMA
+            validator = validate_external_manifest if external else validate_replay_manifest
+            validator(
+                decoded_manifest,
                 board_id=board_id,
                 spec_id=spec_id,
                 scenario_id=scenario_id,
                 scenario_sha256=scenario_sha256,
             )
+            if decoded_manifest.get("execution_basis") != attestation.get("execution_basis"):
+                reasons.append("evidence_v2.execution_basis_mismatch")
         except CommunityTestEvidenceError as exc:
             reasons.append(str(exc))
     reasons.extend(

@@ -1343,6 +1343,19 @@ def main():
     )
     sub_serve.set_defaults(func=cmd_serve)
 
+    # Local, explicit authorization to execute external project tests.
+    runner = subparsers.add_parser("test-runner", help="Register a scoped local unittest runner")
+    runner.add_argument("name")
+    runner.add_argument("--workspace", required=True)
+    runner.add_argument("--source-ref", required=True)
+    runner.add_argument("--board-id", required=True)
+    runner.add_argument("--spec-id", required=True)
+    runner.add_argument("--scenario-id", required=True)
+    runner.add_argument("--test", action="append", required=True,
+                        help="Tracked file.py::TestCase.test_method (repeatable)")
+    runner.add_argument("--timeout", type=int, default=60)
+    runner.set_defaults(func=cmd_test_runner)
+
     # status
     sub_status = subparsers.add_parser(
         "status", help="Show service status and DB metrics"
@@ -1526,6 +1539,22 @@ def main():
             file=sys.stderr,
         )
         sys.exit(2)
+
+
+def cmd_test_runner(args):
+    from okto_pulse.community.config import CommunitySettings
+    from okto_pulse.community.adapters.external_test_runner import register_profile
+    try:
+        path = register_profile(root=Path(CommunitySettings().data_dir) / "test-runners",
+            name=args.name, workspace=args.workspace, source_ref=args.source_ref,
+            board_id=args.board_id, spec_id=args.spec_id, scenario_id=args.scenario_id,
+            test_ids=args.test, timeout_seconds=args.timeout)
+    except (OSError, ValueError) as exc:
+        print(f"Cannot register test runner: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+    print(f"Registered local execution authority: {path}")
+    print("Tests execute as the Pulse OS user. Only register trusted project code.")
+    print('Execute via scenario evidence with replay={"runner_ref":"' + args.name + '","revision":"<full Git commit>"}.')
 
 
 if __name__ == "__main__":

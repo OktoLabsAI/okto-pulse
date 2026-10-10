@@ -1534,6 +1534,7 @@ export interface TestEvidenceProvenanceV2 {
 }
 
 export interface TestExecutionAttestationV2 {
+  execution_basis?: { source_ref: string; revision: string; runner_ref: string; test_ids: string[] } | null;
   schema_version: 2;
   run_id: string;
   executed_at: string;
