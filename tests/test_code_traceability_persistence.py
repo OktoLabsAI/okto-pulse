@@ -933,8 +933,10 @@ def test_resolution_snapshot_is_unique_under_real_sqlite_race(
     asyncio.run(exercise())
 
 
+@pytest.mark.parametrize("other_card", [False, True])
 def test_evidence_racing_a_newer_preflight_fails_closed_without_busy_error(
     tmp_path: Path,
+    other_card: bool,
 ) -> None:
     async def exercise() -> None:
         database_path = tmp_path / "code-traceability-evidence-head-race.sqlite3"
@@ -955,6 +957,7 @@ def test_evidence_racing_a_newer_preflight_fails_closed_without_busy_error(
         request_2 = replace(
             request,
             id="request-new-head",
+            subject_id="card-2" if other_card else request.subject_id,
             expected_head_generation=1,
             expected_predecessor_receipt_id=receipt.id,
             challenge_token_hash=_E,
@@ -969,6 +972,7 @@ def test_evidence_racing_a_newer_preflight_fails_closed_without_busy_error(
         receipt_2 = replace(
             receipt,
             id="receipt-new-head",
+            subject_id=request_2.subject_id,
             request_id=request_2.id,
             generation=2,
             predecessor_receipt_id=receipt.id,
@@ -1097,6 +1101,14 @@ def test_evidence_racing_a_newer_preflight_fails_closed_without_busy_error(
             )
             assert int(evidence_count or 0) == 0
             assert current_head == head_2
+            # The stale head CAS above still fails even for identical source.
+            # Preserved read currentness never relaxes the write-head fence.
+            store = CommunityRelationalApplicationAdapter().code_traceability(session)
+            with pytest.raises(CodeTraceabilityRevisionConflict):
+                await store._lock_current_receipt(
+                    board_id="board-1", source_ref=receipt.source_ref,
+                    receipt_id=receipt.id, expected_head_revision=2,
+                )
         await engine.dispose()
 
     asyncio.run(exercise())
