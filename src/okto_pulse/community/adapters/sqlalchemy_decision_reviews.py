@@ -13,7 +13,7 @@ from okto_pulse.core.domain.decision_review import (
 from okto_pulse.core.domain.delivery_evidence import DeliveryScope, evaluate_delivery_coverage
 from okto_pulse.core.domain.delivery_inventory import delivery_digest
 from okto_pulse.core.models.decision_review import DecisionReviewCommand
-from okto_pulse.core.services.reviewer_separation import evaluate_decision_reviewer_separation, resolve_reviewer_separation_mode
+from okto_pulse.core.ports.reviewer_policy import evaluate_decision_reviewer_separation, resolve_reviewer_separation_mode
 
 
 class CommunityDecisionReviews:

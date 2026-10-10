@@ -1185,6 +1185,7 @@ export interface BusinessRule {
 export type DecisionStatus = 'active' | 'superseded' | 'revoked';
 
 export interface Decision {
+  verification?: import('./decision-reviews').DecisionVerification | null;
   id: string;
   title: string;
   rationale: string;

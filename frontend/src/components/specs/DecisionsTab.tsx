@@ -4,7 +4,7 @@
  * Ideação #10 Fase 3: paridade end-to-end com TR/BR/Contract.
  * Mirrors RulesTab pattern — form to add/edit, expandable rows with badge
  * colored by status (active/superseded/revoked), link-to-task picker,
- * spec-level skip_decisions_coverage toggle.
+ * explicit verification planning and current, attributable inspections.
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -15,6 +15,11 @@ import type { Decision, DecisionStatus, Spec } from '@/types';
 import { CognitivePendingBadge } from '@/components/knowledge/CognitivePendingBadge';
 import { useCognitivePendingBadges } from '@/hooks/useCognitivePendingBadges';
 import { DecisionImpactPanel } from './DecisionImpactPanel';
+import { useDashboardApi } from '@/services/api';
+import { PulseLoader } from '@/components/shared/PulseLoader';
+import type { DecisionReviewProjection, DecisionVerification } from '@/types/decision-reviews';
+import { DecisionVerificationEditor, decisionObligationOptions } from './DecisionVerificationEditor';
+import { DecisionReviewSection, decisionStatusLabel } from './DecisionReviewSection';
 
 interface DecisionsTabProps {
   spec: Spec;
@@ -27,6 +32,7 @@ interface DecisionsTabProps {
   canEdit?: boolean;
   canDelete?: boolean;
   canLinkTask?: boolean;
+  canReview?: boolean;
   focusEditId?: string | null;
   focusCreateToken?: number | null;
   onFocusHandled?: () => void;
@@ -41,7 +47,6 @@ const STATUS_COLORS: Record<DecisionStatus, string> = {
 export function DecisionsTab({
   spec,
   onUpdate,
-  onSpecUpdate,
   specCards = [],
   onLinkTask,
   onUnlinkTask,
@@ -49,10 +54,16 @@ export function DecisionsTab({
   canEdit = true,
   canDelete = true,
   canLinkTask = true,
+  canReview = false,
   focusEditId = null,
   focusCreateToken = null,
   onFocusHandled,
 }: DecisionsTabProps) {
+  const api = useDashboardApi();
+  const [reviewData, setReviewData] = useState<DecisionReviewProjection | null>(null);
+  const [reviewError, setReviewError] = useState('');
+  const [reviewRefresh, setReviewRefresh] = useState(0);
+  const [formVerification, setFormVerification] = useState<DecisionVerification | null>(null);
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -68,6 +79,16 @@ export function DecisionsTab({
   const [formNotes, setFormNotes] = useState('');
 
   const decisions = spec.decisions || [];
+  useEffect(() => {
+    const controller = new AbortController();
+    setReviewData(null); setReviewError('');
+    if (spec.board_id && decisions.length) {
+      api.getDecisionReviews(spec.board_id, spec.id, controller.signal).then(value => {
+        if (!controller.signal.aborted) setReviewData(value);
+      }).catch(e => { if (!controller.signal.aborted) setReviewError(e instanceof Error ? e.message : 'Decision verification could not be loaded.'); });
+    }
+    return () => controller.abort();
+  }, [api, spec.board_id, spec.id, spec.version, spec.edition, spec.decisions, reviewRefresh]);
   const frs = spec.functional_requirements || [];
   // Canonical source_ref shape per board_source_store.py + cognitive_badge_resolver.py
   // is `decision:<spec_id>:<decision_id>` — keep the UI in lockstep so badges
@@ -89,6 +110,7 @@ export function DecisionsTab({
     setFormSupersedesId('');
     setFormLinkedFRs([]);
     setFormNotes('');
+    setFormVerification(null);
   };
 
   const parseAlternatives = (raw: string): string[] | null => {
@@ -111,6 +133,7 @@ export function DecisionsTab({
       linked_task_ids: null,
       status: 'active',
       notes: formNotes.trim() || null,
+      verification: formVerification,
     };
     // Auto-superseding: if new.supersedes references an existing active decision,
     // flip that one's status to 'superseded' to keep the chain coherent.
@@ -134,6 +157,7 @@ export function DecisionsTab({
     setFormSupersedesId(d.supersedes_decision_id || '');
     setFormLinkedFRs(d.linked_requirements || []);
     setFormNotes(d.notes || '');
+    setFormVerification(d.verification || null);
   };
 
   useEffect(() => {
@@ -166,6 +190,7 @@ export function DecisionsTab({
             supersedes_decision_id: formSupersedesId || null,
             linked_requirements: formLinkedFRs.length > 0 ? formLinkedFRs : null,
             notes: formNotes.trim() || null,
+            verification: formVerification,
           }
         : d
     ));
@@ -187,12 +212,13 @@ export function DecisionsTab({
     [decisions, editingId]
   );
 
-  const isFormValid = formTitle.trim() && formRationale.trim();
+  const isFormValid = formTitle.trim() && formRationale.trim() && (!formVerification?.inspection ||
+    (formVerification.inspection.condition.trim() && formVerification.inspection.scope_refs.length > 0));
 
   const activeDecisions = decisions.filter((d) => d.status === 'active');
   const activeTotal = activeDecisions.length;
-  const activeLinked = activeDecisions.filter((d) => (d.linked_task_ids?.length ?? 0) > 0).length;
-  const coveragePct = activeTotal === 0 ? 100 : Math.round((activeLinked / activeTotal) * 100);
+  const verified = reviewData?.decisions.filter(d => d.status === 'verified').length ?? 0;
+  const coveragePct = activeTotal === 0 ? 0 : Math.round((verified / activeTotal) * 100);
 
   const renderForm = (onSubmit: () => void, submitLabel: string, onCancel: () => void) => (
     <div className="border border-indigo-200 dark:border-indigo-700 rounded-lg p-3 space-y-2 bg-indigo-50/50 dark:bg-indigo-900/10">
@@ -272,6 +298,7 @@ export function DecisionsTab({
           </div>
         </div>
       )}
+      <DecisionVerificationEditor spec={spec} value={formVerification} onChange={setFormVerification} />
       <div className="flex justify-end gap-2">
         <button onClick={onCancel} className="btn btn-secondary text-xs">Cancel</button>
         <button onClick={onSubmit} disabled={!isFormValid} className="btn btn-primary text-xs">
@@ -291,54 +318,32 @@ export function DecisionsTab({
         <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-3">
           <div className="flex items-center justify-between mb-2">
             <h4 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">
-              Active Decision Coverage ({activeLinked}/{activeTotal})
+              Decision adherence ({reviewData?.complete ? verified : '—'}/{activeTotal})
             </h4>
             <span
               className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
-                coveragePct === 100
+                reviewData?.complete && coveragePct === 100
                   ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
                   : 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
               }`}
             >
-              {coveragePct}% covered
+              {reviewData?.complete ? `${coveragePct}% verified` : 'Incomplete / unavailable'}
             </span>
           </div>
-          <div className="h-2 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden">
+          {reviewData?.complete && <div role="progressbar" aria-label="Decision adherence" aria-valuemin={0} aria-valuemax={100} aria-valuenow={coveragePct} className="h-2 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden">
             <div
               className={`h-full transition-all duration-500 rounded-full ${
                 coveragePct === 100 ? 'bg-green-500' : 'bg-amber-500'
               }`}
               style={{ width: `${coveragePct}%` }}
             />
-          </div>
+          </div>}
         </div>
       )}
 
-      {/* Skip toggle — spec level */}
-      {onSpecUpdate && (
-        <div className="flex items-center justify-between px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-700/20">
-          <div>
-            <span className="text-xs font-medium text-gray-700 dark:text-gray-300">Skip decisions coverage</span>
-            <p className="text-[10px] text-gray-400">
-              Allow submit_spec_validation without requiring each active Decision to be linked to a task
-            </p>
-          </div>
-          <button
-            onClick={() =>
-              onSpecUpdate({ skip_decisions_coverage: !(spec as any).skip_decisions_coverage })
-            }
-            className={`relative w-10 h-5 rounded-full transition-colors ${
-              (spec as any).skip_decisions_coverage ? 'bg-amber-500' : 'bg-gray-300 dark:bg-gray-600'
-            }`}
-          >
-            <span
-              className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
-                (spec as any).skip_decisions_coverage ? 'translate-x-5' : ''
-              }`}
-            />
-          </button>
-        </div>
-      )}
+      {activeTotal > 0 && !reviewData && !reviewError && <PulseLoader label="Loading decision verification…" size="sm" />}
+      {reviewError && <p role="alert" className="text-sm text-red-600">{reviewError}</p>}
+      {activeTotal > 0 && <button type="button" className="btn btn-secondary text-xs" onClick={() => setReviewRefresh(v => v + 1)}>Refresh verification</button>}
 
       {/* Empty state */}
       {decisions.length === 0 && !adding && (
@@ -366,13 +371,14 @@ export function DecisionsTab({
 
         const linkedTasksCount = d.linked_task_ids?.length ?? 0;
         const isActive = d.status === 'active';
-        const needsLinkage = isActive && linkedTasksCount === 0;
 
         return (
           <div key={d.id} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
             <div
               className="flex items-center gap-2 px-3 py-2 cursor-pointer bg-gray-50 dark:bg-gray-700/50"
               onClick={() => setExpandedId(isExpanded ? null : d.id)}
+              role="button" tabIndex={0} aria-expanded={isExpanded}
+              onKeyDown={e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setExpandedId(isExpanded ? null : d.id); } }}
             >
               <GitBranch size={14} className="text-indigo-500 shrink-0" />
               <span className="text-sm font-medium text-gray-900 dark:text-white truncate flex-1">
@@ -385,27 +391,14 @@ export function DecisionsTab({
                 badge={decisionBadges[`decision:${spec.id}:${d.id}`]}
                 compact
               />
+              {isActive && <span className="rounded bg-indigo-50 px-2 py-0.5 text-xs text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300">{decisionStatusLabel(reviewData?.decisions.find(row => row.decision_id === d.id)?.status || 'planning_pending')}</span>}
 
               {(d.linked_requirements?.length ?? 0) > 0 && (
                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">
                   {d.linked_requirements!.length} FR
                 </span>
               )}
-              {linkedTasksCount > 0 ? (
-                <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300">
-                  {linkedTasksCount} task{linkedTasksCount !== 1 ? 's' : ''}
-                </span>
-              ) : (
-                <span
-                  className={`text-[10px] px-1.5 py-0.5 rounded ${
-                    needsLinkage
-                      ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
-                      : 'bg-gray-100 text-gray-400 dark:bg-gray-700 dark:text-gray-500'
-                  }`}
-                >
-                  0 tasks
-                </span>
-              )}
+              {linkedTasksCount > 0 && <span className="rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-600 dark:bg-gray-700 dark:text-gray-300">{linkedTasksCount} contextual task links</span>}
               <button
                 onClick={(e) => { e.stopPropagation(); handleEdit(d); }}
                 disabled={!canEdit}
@@ -433,6 +426,18 @@ export function DecisionsTab({
 
             {isExpanded && (
               <div className="px-3 py-2 space-y-2 text-sm">
+                <div className="space-y-1">
+                  <h4 className="font-medium">Verification plan</h4>
+                  {!d.verification && <p className="text-amber-700 dark:text-amber-400">Select verification obligations or an inspection condition before validation.</p>}
+                  {!!d.verification?.obligation_refs.length && <ul className="list-inside list-disc">{d.verification.obligation_refs.map(ref => <li key={ref}>{decisionObligationOptions(spec).find(o => o.ref === ref)?.label || ref}</li>)}</ul>}
+                  {d.verification?.inspection && <p>{d.verification.inspection.condition}</p>}
+                  {!!d.verification?.obligation_refs.length && d.verification.inspection && <p className="text-xs text-gray-500">Obligation evidence and inspection are both required.</p>}
+                </div>
+                {reviewData && <DecisionReviewSection key={`${spec.id}:${spec.edition}:${d.id}`} data={reviewData} decisionId={d.id}
+                  canReview={canReview && isActive && !['done', 'cancelled'].includes(spec.status)} onSubmit={async body => {
+                    await api.recordDecisionReviews(spec.board_id!, spec.id, body);
+                    setReviewRefresh(v => v + 1);
+                  }} />}
                 <div>
                   <span className="text-[10px] font-semibold text-gray-500 uppercase">Rationale</span>
                   <p className="text-xs text-gray-600 dark:text-gray-400 mt-0.5">{d.rationale}</p>

@@ -2560,6 +2560,9 @@ export function SpecModal({
               canEdit={canStructured('decision', 'update')}
               canDelete={canStructured('decision', 'revoke')}
               canLinkTask={canStructured('decision', 'link_task')}
+              canReview={!perms.isLoading && !perms.error && perms.has('spec.validation.submit')
+                && perms.has('spec.entity.read') && perms.has('code_traceability.evidence.read')
+                && perms.has(`spec.interact_in.${spec.status}`)}
               focusEditId={detailsStructuredEditor?.tab === 'decisions' && detailsStructuredEditor.mode === 'edit' ? detailsStructuredEditor.entityId || null : null}
               focusCreateToken={detailsStructuredEditor?.tab === 'decisions' && detailsStructuredEditor.mode === 'add' ? detailsStructuredEditor.token : null}
               onFocusHandled={clearDetailsStructuredEditor}

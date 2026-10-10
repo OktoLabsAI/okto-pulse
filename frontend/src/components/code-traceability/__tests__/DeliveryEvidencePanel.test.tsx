@@ -35,6 +35,21 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
+it('shows Decision adherence without implementation credit and links to its single review form', async () => {
+  const data = projection();
+  data.rows = [{ ...data.rows[0], obligation: { title: 'Only the mock', binding: { obligation_ref: 'decision:d', semantic_sha256: 'd'.repeat(64) } },
+    implementation_ids: [], test_ids: [], implementation_satisfied: true, test_satisfied: false,
+    decision_verification_status: 'inspection_pending', decision_review_ids: [] }];
+  api.getDeliveryEvidence.mockResolvedValue(data);
+  const onOpenDecisions = vi.fn();
+  render(<DeliveryEvidencePanel boardId="b" specId="s" onOpenDecisions={onOpenDecisions} />);
+  expect(await screen.findByText('Not applicable')).toBeInTheDocument();
+  fireEvent.click(screen.getByText('Only the mock'));
+  expect(screen.queryByText('No admitted implementation evidence.')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Review in Decisions' }));
+  expect(onOpenDecisions).toHaveBeenCalledOnce();
+});
+
 it('expands only the selected obligation proofs, with implementation and verification separated', async () => {
   const data = projection();
   data.rows[1].implementation_ids = ['other'];

@@ -13,7 +13,7 @@ const dimensions: [string, string, string, CoverageSection][] = [
   ['Rules → Cards', 'brs_linked', 'brs_total', 'rules'],
   ['API contracts → Cards', 'contracts_linked', 'contracts_total', 'contracts'],
   ['Technical requirements → Cards', 'trs_linked', 'trs_total', 'trs'],
-  ['Decisions → Cards', 'decisions_linked', 'decisions_total', 'decisions'],
+  ['Decision verification plans', 'decisions_planned', 'decisions_total', 'decisions'],
   ['Integration requirements → Cards', 'irs_linked', 'irs_total', 'irs'],
   ['Observability requirements → Cards', 'ors_linked', 'ors_total', 'ors'],
 ];
@@ -123,6 +123,7 @@ export function SpecCoveragePanel({ boardId, specId, revision, canCorrect = [], 
       items={availableViews.map(([id, label]) => ({ id, label }))} value={activeView} onValueChange={setView} />
     {canReadImplementation && <AccessibleTabPanel idBase={tabId} tabId="implementation" value={activeView}>
       <DeliveryEvidencePanel boardId={boardId} specId={specId} revision={revision}
+        onOpenDecisions={() => onOpenSection('decisions')}
         skipDeliveryEvidence={skipDeliveryEvidence} onSkipDeliveryEvidenceChange={onSkipDeliveryEvidenceChange} />
     </AccessibleTabPanel>}
     {activeView !== 'implementation' && loading && <PulseLoader label="Loading coverage…" size="sm" className="py-6" />}
@@ -130,9 +131,11 @@ export function SpecCoveragePanel({ boardId, specId, revision, canCorrect = [], 
     {canReadSummary && data && activeView !== 'implementation' && <>
       <p className="text-xs text-gray-500 dark:text-gray-400">Edition {data.edition} · Informational view — this does not approve a gate.</p>
       <AccessibleTabPanel idBase={tabId} tabId="overview" value={activeView} className="space-y-4">
-        <div className="grid gap-3 sm:grid-cols-3">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <Meter label="Planning coverage" value={planningValue} description="Applicable link dimensions fully covered. Empty dimensions are excluded." />
           <Meter label="Implementation proof" value={implementationValue} description="Obligations with admitted implementation proof." />
+          <Meter label="Decision adherence" value={proofAvailable ? ratio(data.delivery.counts.decisions_verified, data.delivery.counts.decisions) : null}
+            description="Current obligation evidence and inspections required by Decisions." />
           <Meter label="Verification proof" value={verificationValue} description="Obligations with admitted verification proof." />
         </div>
         <section aria-label="Next steps" className="rounded-xl border border-gray-200 p-4 dark:border-gray-700">

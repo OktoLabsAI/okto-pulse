@@ -83,8 +83,8 @@ interface SpecAnalytics {
   trs_coverage?: number;
   trs_uncovered_indices?: number[];
   decisions?: any[];
-  decisions_coverage?: number;
-  decisions_uncovered_ids?: string[];
+  decisions_planning?: number;
+  decisions_pending_ids?: string[];
   integration_requirements?: any[];
   observability_requirements?: any[];
   coverage_summary?: {
@@ -490,17 +490,17 @@ function SpecDetailView({ data }: { data: SpecAnalytics }) {
           <div className="relative">
             <KpiMiniWithHelp
               label="Decisions"
-              value={`${(data.decisions || []).length} (${data.decisions_coverage ?? 0}%)`}
+              value={`${(data.decisions || []).length} (${data.decisions_planning ?? 0}%)`}
               icon={<Scale className="w-4 h-4 text-indigo-500" />}
               help={{
                 description: 'Decision coverage shows active decisions linked to implementation or test tasks.',
                 targetId: 'analytics-decisions-detail',
               }}
             />
-            {(data.decisions_uncovered_ids?.length ?? 0) > 0 && (
+            {(data.decisions_pending_ids?.length ?? 0) > 0 && (
               <span
                 className="absolute top-1 right-1 px-1 py-0.5 rounded text-[8px] font-bold bg-red-500 text-white"
-                title={`${data.decisions_uncovered_ids?.length} uncovered`}
+                title={`${data.decisions_pending_ids?.length} uncovered`}
               >
                 !
               </span>
@@ -708,12 +708,13 @@ function SpecDetailView({ data }: { data: SpecAnalytics }) {
           {(data.decisions || []).length > 0 && (
             <Card id="analytics-decisions-detail">
               <SectionTitle>
-                Decisions Coverage ({((data.decisions || []).length - (data.decisions_uncovered_ids?.length ?? 0))}/{(data.decisions || []).length})
+                Decision verification planning ({((data.decisions || []).filter((d: any) => d.status === 'active').length - (data.decisions_pending_ids?.length ?? 0))}/{(data.decisions || []).filter((d: any) => d.status === 'active').length})
               </SectionTitle>
               <div className="space-y-1.5 max-h-64 overflow-y-auto">
                 {(data.decisions || []).map((dec: any) => {
                   const decId = typeof dec === 'object' ? dec?.id : null;
-                  const covered = decId && !(data.decisions_uncovered_ids ?? []).includes(decId);
+                  const covered = decId && dec?.status === 'active' && Array.isArray(data.decisions_pending_ids)
+                    && !data.decisions_pending_ids.includes(decId);
                   const title = typeof dec === 'object' ? (dec?.title || dec?.id || 'Decision') : String(dec);
                   const status = typeof dec === 'object' ? dec?.status : null;
                   const isSoftDeleted = status === 'revoked' || status === 'superseded';
@@ -735,7 +736,7 @@ function SpecDetailView({ data }: { data: SpecAnalytics }) {
                         )}
                         {!covered && !isSoftDeleted && (
                           <span className="px-1 py-0.5 rounded text-[9px] bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300">
-                            orphan
+                            plan pending
                           </span>
                         )}
                       </div>

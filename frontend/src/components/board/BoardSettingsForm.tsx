@@ -469,14 +469,6 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
             activeColor="amber"
           />
         </SettingRow>
-        <SettingRow label="Skip decisions coverage" description="Bypass active Decision to Task linkage for all specs.">
-          <SettingsToggle
-            checked={settings.skip_decisions_coverage_global}
-            onChange={() => onChange({ skip_decisions_coverage_global: !settings.skip_decisions_coverage_global })}
-            ariaLabel="Skip decisions coverage"
-            activeColor="amber"
-          />
-        </SettingRow>
         <SettingRow label="Missing reference closeout" description="Advisory reports unresolved declared references. Blocking requires correction before completion. Optional associations and graph projection delays do not block. Only an authenticated human can change this policy.">
           <select
             aria-label="Missing reference closeout"

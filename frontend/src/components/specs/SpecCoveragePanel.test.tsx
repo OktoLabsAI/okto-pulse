@@ -16,11 +16,11 @@ const base: SpecCoverageResponse = {
     complete_for_scope: true, summary: { ac_covered: 1, ac_total: 1, fr_covered: 0, fr_total: 1,
       scenarios_linked: 1, scenarios_total: 1, brs_linked: 0, brs_total: 0,
       contracts_linked: 0, contracts_total: 0, trs_linked: 0, trs_total: 0,
-      decisions_linked: 0, decisions_total: 0, irs_linked: 0, irs_total: 0,
+      decisions_planned: 0, decisions_total: 0, irs_linked: 0, irs_total: 0,
       ors_linked: 0, ors_total: 0 }, graph: { state: 'observed', complete_for_scope: false,
       expected_nodes: 3, observed_nodes: 2, missing_nodes: 1, missing_relations: 1 } },
   delivery: { state: 'available', authority: 'evaluate_delivery_coverage', complete_for_scope: true,
-    counts: { obligations: 2, implementation_proven: 0, verification_proven: 0, observed_obligations: 2 },
+    counts: { obligations: 2, implementation_proven: 0, verification_proven: 0, observed_obligations: 2, decisions: 0, decisions_verified: 0 },
     blockers: [], rejected_record_refs: [], interpretation: 'informational' }, items: [], next_cursor: null,
 };
 function page(title: string, next: string | null = null): SpecCoverageResponse {
@@ -90,7 +90,7 @@ it('keeps restricted proof unknown rather than zero', async () => {
   api.getSpecCoverage.mockResolvedValue({ ...base, delivery: { ...base.delivery, state: 'restricted',
     counts: { obligations: null, implementation_proven: null, verification_proven: null, observed_obligations: null } } });
   render(<SpecCoveragePanel boardId="board" specId="spec" revision="1" onOpenSection={vi.fn()} />);
-  expect(await screen.findAllByText('Unavailable')).toHaveLength(2);
+  expect(await screen.findAllByText('Unavailable')).toHaveLength(3);
   expect(screen.queryByText('0%')).not.toBeInTheDocument();
 });
 
@@ -158,6 +158,6 @@ it('does not derive scores from partial counts', async () => {
     delivery: { ...base.delivery, complete_for_scope: false },
   });
   render(<SpecCoveragePanel boardId="board" specId="spec" revision="1" onOpenSection={vi.fn()} />);
-  expect(await screen.findAllByText('Unavailable')).toHaveLength(3);
+  expect(await screen.findAllByText('Unavailable')).toHaveLength(4);
   expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
 });

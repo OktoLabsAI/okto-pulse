@@ -5,6 +5,7 @@ import { PulseLoader } from '@/components/shared/PulseLoader';
 import { useDashboardApi } from '@/services/api';
 import { ObligationRefText } from './obligationPresentation';
 import type { DeliveryEvidenceProjection } from '@/types/delivery-evidence';
+import { decisionStatusLabel } from '@/components/specs/DecisionReviewSection';
 
 interface Props {
   boardId: string;
@@ -12,6 +13,7 @@ interface Props {
   revision?: string;
   skipDeliveryEvidence?: boolean;
   onSkipDeliveryEvidenceChange?: (value: boolean) => void;
+  onOpenDecisions?: () => void;
 }
 
 function ObligationEvidenceDetails({ data, row }: {
@@ -63,7 +65,7 @@ function ObligationEvidenceDetails({ data, row }: {
 // (mockup sm_5ebd7063). Read-only by design: recording is card-scoped
 // (task DoD) and waivers are rollup-level, human-only — this surface only
 // presents the aggregated verdict, never mutates it.
-export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryEvidence = false, onSkipDeliveryEvidenceChange }: Props) {
+export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryEvidence = false, onSkipDeliveryEvidenceChange, onOpenDecisions }: Props) {
   const api = useDashboardApi();
   const [data, setData] = useState<DeliveryEvidenceProjection | null>(null);
   const [gateMode, setGateMode] = useState<'advisory' | 'blocking' | null>(null);
@@ -83,11 +85,13 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
   }, [api, boardId, specId, revision, reload]);
 
   const missingImplementation = data?.rows.filter(row => !row.implementation_satisfied).length ?? 0;
-  const missingTest = data?.rows.filter(row => !row.test_satisfied).length ?? 0;
+  const missingTest = data?.rows.filter(row => !row.test_satisfied && !row.decision_verification_status).length ?? 0;
+  const pendingDecisions = data?.rows.filter(row => row.decision_verification_status && !row.test_satisfied).length ?? 0;
   const summary = !data ? '' : data.allowed
     ? `All ${data.rows.length} obligations satisfied (proof or authorized waiver)`
     : [missingImplementation ? `implementation missing on ${missingImplementation}` : '',
-       missingTest ? `test coverage missing on ${missingTest}` : '']
+       missingTest ? `test coverage missing on ${missingTest}` : '',
+       pendingDecisions ? `${pendingDecisions} decision verification(s) pending` : '']
       .filter(Boolean).join(' · ') + ' obligation' + ((missingImplementation + missingTest) === 1 ? '' : 's');
 
   return <section className="space-y-5" aria-label="Implementation and verification">
@@ -160,26 +164,30 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
                 const ref = row.obligation.binding.obligation_ref;
                 const waivedImpl = row.implementation_waiver_ids.length > 0;
                 const waivedTest = row.test_waiver_ids.length > 0;
+                const decision = !!row.decision_verification_status;
                 return <tr key={ref}>
                   <td className="min-w-0 py-1.5 pr-4 text-gray-700 dark:text-gray-200">
                     <details className="group py-2">
                     <summary className="cursor-pointer rounded font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">{row.obligation.title}</summary>
                     <div className="mt-3 space-y-3 rounded-lg bg-gray-50 p-3 text-xs dark:bg-gray-800/50">
                     <ObligationRefText value={ref} />
-                    {row.required_card_ids && <p className="text-xs">{row.required_card_ids.length} planned implementation Card(s)</p>}
+                    {!decision && row.required_card_ids && <p className="text-xs">{row.required_card_ids.length} planned implementation Card(s)</p>}
                     {Boolean(row.missing_card_ids?.length) && <p className="text-xs text-amber-600 dark:text-amber-400">Pending implementation Cards: {row.missing_card_ids!.slice(0, 20).join(', ')}{row.missing_card_ids!.length > 20 ? ' (additional Cards omitted)' : ''}</p>}
                     {row.missing_criteria?.slice(0, 20).map(([implementation, criterion]) => <p key={JSON.stringify([implementation, criterion])} className="text-xs text-amber-600 dark:text-amber-400">Implementation {implementation}: missing verification of {criterion}</p>)}
                     {(row.missing_criteria?.length ?? 0) > 20 && <p className="text-xs">Additional criterion gaps are omitted from this summary.</p>}
                     <p className="break-all text-gray-500">Semantic revision: {row.obligation.binding.semantic_sha256}</p>
-                    <ObligationEvidenceDetails data={data} row={row} />
+                    {decision ? <div className="space-y-2"><p>{decisionStatusLabel(row.decision_verification_status!)}</p>
+                      <p>Adherence reuses selected obligation evidence and any required inspection. No separate implementation Card is required.</p>
+                      {onOpenDecisions && <button type="button" className="btn btn-secondary text-xs" onClick={onOpenDecisions}>Review in Decisions</button>}
+                    </div> : <ObligationEvidenceDetails data={data} row={row} />}
                     </div>
                     </details>
                   </td>
-                  <td className="px-2 text-green-600 dark:text-green-400" title={waivedImpl ? 'Explicitly waived — human authorization' : row.implementation_satisfied ? 'Accepted proof recorded' : 'No accepted proof'}>
-                    {waivedImpl ? <span className="text-xs text-amber-600 dark:text-amber-400">Waived</span> : row.implementation_satisfied ? '✓' : <span className="text-amber-500">◌</span>}
+                  <td className="px-2 text-green-600 dark:text-green-400" title={decision ? 'Decisions do not require their own implementation' : waivedImpl ? 'Explicitly waived — human authorization' : row.implementation_satisfied ? 'Accepted proof recorded' : 'No accepted proof'}>
+                    {decision ? <span className="text-xs text-gray-500">Not applicable</span> : waivedImpl ? <span className="text-xs text-amber-600 dark:text-amber-400">Waived</span> : row.implementation_satisfied ? '✓' : <span className="text-amber-500">◌</span>}
                   </td>
                   <td className="px-2 text-green-600 dark:text-green-400" title={waivedTest ? 'Explicitly waived — human authorization' : row.test_satisfied ? 'Current passing evidence for this obligation' : 'Missing / stale'}>
-                    {waivedTest ? <span className="text-xs text-amber-600 dark:text-amber-400">Waived</span> : row.test_satisfied ? '✓' : <span className="text-amber-500">◌</span>}
+                    {decision ? <span className="text-xs">{decisionStatusLabel(row.decision_verification_status!)}</span> : waivedTest ? <span className="text-xs text-amber-600 dark:text-amber-400">Waived</span> : row.test_satisfied ? '✓' : <span className="text-amber-500">◌</span>}
                   </td>
                 </tr>;
               })}

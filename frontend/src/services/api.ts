@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import type { DecisionReviewInput, DecisionReviewProjection } from '@/types/decision-reviews';
 import type { ArchitectureCandidatesResponse } from '@/types/architecture-candidates';
 import type { ArchitectureClassificationsResponse, ArchitectureReviewState, ArchitectureClassificationBatch, ArchitectureClassificationReceipt } from '@/types/architecture-classifications';
 import type { RequirementVerificationResponse, VerificationRequirementType } from '@/types/requirement-verification';
@@ -545,6 +546,14 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
 
     async getDeliveryEvidence(boardId: string, specId: string, signal?: AbortSignal): Promise<DeliveryEvidenceProjection> {
       return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/delivery-evidence`, { signal });
+    },
+
+    async getDecisionReviews(boardId: string, specId: string, signal?: AbortSignal): Promise<DecisionReviewProjection> {
+      return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/decision-reviews`, { signal });
+    },
+
+    async recordDecisionReviews(boardId: string, specId: string, body: DecisionReviewInput): Promise<{ id: string; replayed: boolean }> {
+      return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/decision-reviews`, { method: 'POST', body: JSON.stringify(body) });
     },
 
     async recordDeliveryEvidence(boardId: string, specId: string, body: DeliveryEvidenceInput): Promise<{ id: string; replayed: boolean }> {

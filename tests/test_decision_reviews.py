@@ -87,6 +87,41 @@ async def test_native_scope_review_satisfies_without_cards_and_replays(reviews):
 
 
 @pytest.mark.asyncio
+async def test_native_review_agrees_with_coverage_and_does_not_add_implementation_credit(reviews):
+    from datetime import datetime, timezone, timedelta
+    from okto_pulse.core.ports.spec_coverage_query import SpecCoverageQuery, SpecCoverageSnapshot
+    from okto_pulse.core.services.spec_coverage_query import project_spec_coverage
+    from okto_pulse.core.ports.analytics_foundation import AnalyticsFoundationQuery, AnalyticsUtcWindow
+    from okto_pulse.core.services.coverage_traceability_read_model import build_coverage_traceability_projection
+    session, store = reviews
+    spec = await session.get(Spec, 'spec')
+    now = datetime.now(timezone.utc)
+    read = SpecCoverageQuery('board', 'spec', 'reviewer')
+    async def coverage():
+        snapshot = await store.load_snapshot(DeliveryScope('board', 'spec', 1))
+        return project_spec_coverage(read, SpecCoverageSnapshot(snapshot.scope, 'reviewer',
+            'native-source', now, spec, (), True, snapshot)), evaluate_delivery_coverage(snapshot)
+    before, _ = await coverage()
+    receipt = await record(store, await command(store))
+    after, evaluation = await coverage()
+    # Empty executable inventory remains incomplete, even after its Decision is inspected.
+    assert after['delivery']['counts']['decisions_verified'] is None
+    assert before['delivery']['counts']['decisions_verified'] is None
+    assert after['delivery']['counts']['implementation_proven'] is before['delivery']['counts']['implementation_proven'] is None
+    row = next(r for r in after['items'] if r.get('obligation_ref') == 'decision:choice')
+    assert row['implementation'] == 'not_applicable'
+    assert row['decision_verification_status'] == 'verified'
+    query = AnalyticsFoundationQuery(board_id='board', actor_scope_ref='reviewer',
+        window=AnalyticsUtcWindow(now - timedelta(days=1), now + timedelta(seconds=1)), as_of=now)
+    effective = next(row for row in evaluation.rows if row.obligation.binding.obligation_ref == 'decision:choice')
+    projection = build_coverage_traceability_projection(query=query, as_of=now,
+        specs=[spec], cards=[], decision_delivery={'spec': {'choice': effective}})
+    decision = next(g for g in projection.coverage if g.obligation_type.value == 'decision').rows[0]
+    assert decision.covered and decision.evidence == ()
+    assert decision.decision_proof_refs == (receipt['id'],)
+
+
+@pytest.mark.asyncio
 async def test_conflicting_result_is_not_hidden_until_explicit_reconciliation(reviews):
     _, store = reviews
     a = await record(store, await command(store))
@@ -220,3 +255,12 @@ async def test_native_obligations_and_inspection_are_and_without_extra_card(ledg
     assert after['allowed'], after['blockers']
     assert next(r for r in after['rows'] if r['decision_verification_status'])['decision_verification_status'] == 'verified'
     assert len(after['per_card']) == 2  # Existing implementation + Test Card only.
+    from datetime import datetime, timezone
+    from okto_pulse.core.ports.spec_coverage_query import SpecCoverageQuery, SpecCoverageSnapshot
+    from okto_pulse.core.services.spec_coverage_query import project_spec_coverage
+    snapshot = await store.load_snapshot(DeliveryScope(query.board_id, query.spec_id, 1))
+    coverage = project_spec_coverage(SpecCoverageQuery(query.board_id, query.spec_id, 'reviewer'),
+        SpecCoverageSnapshot(snapshot.scope, 'reviewer', 'native', datetime.now(timezone.utc), spec, (), True, snapshot))
+    assert coverage['delivery']['counts']['decisions_verified'] == 1
+    assert coverage['delivery']['counts']['decisions'] == 1
+    assert coverage['delivery']['counts']['implementation_proven'] == coverage['delivery']['counts']['obligations']

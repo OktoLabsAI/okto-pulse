@@ -44,6 +44,8 @@ export interface DeliveryEvidenceProjection {
     implementation_ids: string[]; test_ids: string[];
     implementation_waiver_ids: string[]; test_waiver_ids: string[];
     implementation_satisfied: boolean; test_satisfied: boolean;
+    decision_verification_status?: string | null;
+    decision_review_ids?: string[];
     required_card_ids?: string[];
     missing_card_ids?: string[];
     missing_criteria?: Array<[string, string]>;

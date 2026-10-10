@@ -1,9 +1,10 @@
 export type CoverageSection = 'tests' | 'rules' | 'contracts' | 'trs' | 'decisions' | 'irs' | 'ors';
 export type CoverageQuery = { limit?: number; cursor?: string | null; timeout_ms?: number };
-export type ProofStatus = 'unknown' | 'proven' | 'partial' | 'missing' | 'satisfied_with_waiver';
+export type ProofStatus = 'unknown' | 'proven' | 'partial' | 'missing' | 'satisfied_with_waiver' | 'not_applicable';
 export type CoverageItem = {
   kind: 'delivery'; obligation_ref: string; semantic_sha256: string; title: string;
   implementation: ProofStatus; verification: ProofStatus;
+  decision_verification_status: string | null; decision_review_refs: string[];
   implementation_record_refs: string[]; verification_record_refs: string[];
   implementation_waiver_refs: string[]; verification_waiver_refs: string[];
   required_card_refs: string[]; missing_card_refs: string[]; missing_criteria: string[][];
@@ -29,7 +30,8 @@ export interface SpecCoverageResponse {
       missing_relations: number | null; truncated?: boolean; comparison_scope?: string | null; interpretation?: string | null } };
   delivery: { state: 'available' | 'restricted' | 'unavailable'; authority: 'evaluate_delivery_coverage';
     complete_for_scope: boolean; counts: { obligations: number | null; implementation_proven: number | null;
-      verification_proven: number | null; observed_obligations: number | null }; blockers: string[];
+      verification_proven: number | null; observed_obligations: number | null;
+      decisions: number | null; decisions_verified: number | null }; blockers: string[];
     rejected_record_refs: string[]; interpretation: string };
   items: CoverageItem[]; next_cursor: string | null;
 }
