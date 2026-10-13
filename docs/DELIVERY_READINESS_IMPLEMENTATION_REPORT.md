@@ -18,7 +18,7 @@ Historical evidence must not be rewritten. Gates and diagnostics must share fact
 | Phase | Required work | Status |
 |---|---|---|
 | P00 | Fixar a base e construir regressões | COMPLETE (expected RED) |
-| P01 | Contratos e modelo factual compartilhado | PENDING |
+| P01 | Contratos e modelo factual compartilhado | COMPLETE |
 | P02 | Inventário, aplicabilidade e métricas | PENDING |
 | P03 | Resultados de verificação e bases | PENDING |
 | P04 | Diagnóstico e ações | PENDING |
@@ -108,3 +108,19 @@ Commands executed from workspace (each prefixed with rtk proxy):
 - npm run test -- src/components/code-traceability/__tests__/DeliveryReadinessDoD.test.tsx (Community/frontend): 1 FAILED, expected RED; U05 shows accepted proof but 1 of 1 unproven.
 
 P00 completed: intended failures reproduced, not waived or xfailed. These cases remain unresolved feature tests until their implementation phases. P01 is next; P02-P11 and the remainder of the 96-case matrix remain PENDING/NOT_RUN. No product code changed in this milestone.
+
+## P01 verification checkpoint — 2026-10-13
+
+Added Core domain/delivery_assessment.py (closed reason/state vocabulary and frozen phase/unit/completeness results) and models/delivery_readiness.py (closed response DTOs, count equations, bounded issues/actions, versioned pinpoints, explicit nulls). Shared coverage now takes a lifecycle requirement independently of authentic proof. The deprecated maturity projection reuses that evaluator without manufacturing Done facts or its own implementation sufficiency check. Default gate behavior is preserved. New REST/MCP/UI consumers are not yet connected.
+
+Validation commands (rtk proxy prefix):
+- python -X utf8 PULSE_REFACTOR/.validation-v040/run_readiness_tests.py core -q tests/test_delivery_readiness_contracts.py tests/test_delivery_completeness.py tests/test_effective_delivery_coverage.py tests/test_delivery_evidence_domain.py --tb=short --show-capture=no: 131 PASSED in 10.95s.
+- python -X utf8 PULSE_REFACTOR/.validation-v040/run_readiness_tests.py community -q tests/test_delivery_evidence_integration.py tests/test_technical_report_delivery.py tests/test_native_operational_partial_failure.py --tb=short --show-capture=no: 41 PASSED in 80.10s.
+- Both runs proved isolated installed/source parity (853 Core / 320 Community) and fresh process imports from both local src trees.
+- Ruff found one unused CardStatus import after predicate extraction; cleanup and final architecture audit pending.
+
+P00 regression failures are intentionally still open until P03/P06/P08. Passing compatibility suites do not resolve those defects. Final wheel, broad suites, performance and rendered UI checks remain required.
+
+P01 encerrado: ruff sem findings apos remover import nao utilizado; a auditoria oficial de fonte (audit_readiness.py, 2026-10-13) passou com 8.840 linhas de propriedade, zero findings, READMEs exatos e os oito budgets em ZERO. Paridade isolada final 853/320. Nenhuma alteracao de comportamento apos os 131+41 testes, apenas remocao de import nao utilizado. Auditoria explicita dos wheels finais permanece no P11.
+
+Arquivos funcionais P01 (Core): domain/delivery_assessment.py, models/delivery_readiness.py, domain/delivery_evidence.py, domain/effective_delivery_coverage.py, domain/delivery_completeness.py; testes test_delivery_readiness_contracts.py. READMEs pareados regenerados pela projecao oficial. Esta fase entrega tipos e predicados compartilhados; agregacao/utilizacao desses tipos, fatos negativos completos, diagnostico e superficies seguem P02-P11. Proximo: P02, com testes de agregacao escritos e ainda NOT_RUN.
