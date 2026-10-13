@@ -542,6 +542,9 @@ class CommunityDeliveryEvidenceStore:
                     "created_at": r.created_at.isoformat(),
                     "revoked": r.id in revoked,
                     "payload": r.payload,
+                    **({"disposition": r.payload.get("disposition") or "risk_accepted",
+                        "legacy_disposition_unspecified": r.payload.get("disposition") is None}
+                       if r.kind == "waiver" else {}),
                 }
                 for r in records
             ],
@@ -557,7 +560,10 @@ class CommunityDeliveryEvidenceStore:
             command.board_id, command.spec_id, command.expected_edition
         )
         await self.lock_scope(scope)
-        request_digest = self.inventory.payload_digest(command.model_dump())
+        # Omitted disposition retains the exact historical request fingerprint.
+        # Never rewrite an old record to distinguish N/A from accepted risk.
+        omitted = {"disposition"} if command.disposition is None else set()
+        request_digest = self.inventory.payload_digest(command.model_dump(exclude=omitted))
         replay = (
             await self.session.scalars(
                 select(Record).where(
@@ -586,7 +592,7 @@ class CommunityDeliveryEvidenceStore:
         if any(ref not in inventory for ref in command.obligation_refs):
             raise ValueError("delivery_obligation_not_found")
         payload = command.model_dump(
-            exclude={
+            exclude=omitted | {
                 "board_id",
                 "spec_id",
                 "idempotency_key",
@@ -1353,6 +1359,7 @@ class CommunityDeliveryEvidenceStore:
                         actor_id=record.actor_id,
                         authorization_receipt_id=record.id,
                         current_authorized=True,
+                        disposition=record.payload.get("disposition"),
                     )
                 )
         return waivers

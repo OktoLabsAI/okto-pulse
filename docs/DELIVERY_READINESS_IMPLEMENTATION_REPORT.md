@@ -19,7 +19,7 @@ Historical evidence must not be rewritten. Gates and diagnostics must share fact
 |---|---|---|
 | P00 | Fixar a base e construir regressões | COMPLETE (expected RED) |
 | P01 | Contratos e modelo factual compartilhado | COMPLETE |
-| P02 | Inventário, aplicabilidade e métricas | PENDING |
+| P02 | Inventário, aplicabilidade e métricas | IN_PROGRESS |
 | P03 | Resultados de verificação e bases | PENDING |
 | P04 | Diagnóstico e ações | PENDING |
 | P05 | Adapter, snapshot e paginação | PENDING |
@@ -124,3 +124,20 @@ P00 regression failures are intentionally still open until P03/P06/P08. Passing 
 P01 encerrado: ruff sem findings apos remover import nao utilizado; a auditoria oficial de fonte (audit_readiness.py, 2026-10-13) passou com 8.840 linhas de propriedade, zero findings, READMEs exatos e os oito budgets em ZERO. Paridade isolada final 853/320. Nenhuma alteracao de comportamento apos os 131+41 testes, apenas remocao de import nao utilizado. Auditoria explicita dos wheels finais permanece no P11.
 
 Arquivos funcionais P01 (Core): domain/delivery_assessment.py, models/delivery_readiness.py, domain/delivery_evidence.py, domain/effective_delivery_coverage.py, domain/delivery_completeness.py; testes test_delivery_readiness_contracts.py. READMEs pareados regenerados pela projecao oficial. Esta fase entrega tipos e predicados compartilhados; agregacao/utilizacao desses tipos, fatos negativos completos, diagnostico e superficies seguem P02-P11. Proximo: P02, com testes de agregacao escritos e ainda NOT_RUN.
+
+## P02 in progress — 2026-10-13
+
+Pure aggregation now counts unique canonical obligations, or assigned scenarios for Test cards; Test implementation is structurally N/A. Counts use floor division, preserve unknown denominators and keep waivers applicable without proof credit. Contradictory duplicate units produce unknown instead of selecting the first result. Native human waivers accept optional disposition; omission retains the original request fingerprint and unchanged payload. Projections expose legacy_disposition_unspecified. Shared waiver authority validates exact phase, scope, digest and current authorization. Proof later satisfied makes an old risk waiver unused.
+
+Validation (rtk proxy prefix):
+- First pure aggregation run: 62 PASSED (metrics, contracts and legacy completeness).
+- Expanded Core run exposed order-dependent partial counts for conflicting duplicates: 1 FAILED / 156 PASSED. Corrected by treating conflicting duplicate units as unknown.
+- python -X utf8 PULSE_REFACTOR/.validation-v040/run_readiness_tests.py core -q tests/test_delivery_readiness_metrics.py tests/test_delivery_readiness_contracts.py tests/test_delivery_completeness.py tests/test_effective_delivery_coverage.py tests/test_delivery_evidence_domain.py --tb=short --show-capture=no: 157 PASSED in 13.60s.
+- python -X utf8 PULSE_REFACTOR/.validation-v040/run_readiness_tests.py community -q tests/test_delivery_readiness_waivers.py tests/test_delivery_evidence_integration.py --tb=short --show-capture=no: 41 PASSED in 87.23s. This includes actual SQLite waiver persistence, exact old-format replay, read-only history and changed-disposition conflict.
+- Both prove 853/320 byte parity and paired source imports. Focused ruff checks passed. Counts overlap prior runs; they are not a total of distinct tests.
+
+P02 NOT COMPLETE: connect normalized factual evaluation to per-unit assessments, including bounded/inherited contributions, fallback, Decisions and complete scenario population. Current metric tests prove aggregation on controlled assessed units; they do not claim that runtime readiness or the complete M01-M24 matrix is delivered. The native fact loader, diagnostics, REST/MCP and frontend remain pending. Source closure rerun is live; record its terminal result before claiming it for these changes. No production reinstall/deploy.
+
+Resume: start from current WIP and this ledger, not from P00. P01 commits are Core 0b896202 / Community cb2fff93, pushed. P03 may proceed alongside P02 per the plan after P01: source matching must compare verification_report.sources to every implementation receipt source/revision; positive native report fixtures currently use unrelated generic repo:component and must be corrected to authentic expected bases, retaining negative cases. Required complementary scenarios and unbound failures are still the P00 RED reproductions. G07 and U05 remain RED until P06/P08.
+
+Auditoria P02 parcial terminou com sucesso: 8.841 linhas de propriedade, zero findings, READMEs exatos, oito budgets ZERO (audit_readiness.py). Nao ha processos de teste/auditoria desta rodada pendentes. Este checkpoint preserva trabalho testado; P02 continua IN_PROGRESS, com as lacunas e proximo passo descritos acima.
