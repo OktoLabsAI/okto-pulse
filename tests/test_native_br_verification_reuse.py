@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import select, update
 
 import test_delivery_evidence_integration as delivery
-from verification_report_fixtures import report
+from verification_report_fixtures import report, bind_report_sources
 from okto_pulse.community.adapters.sqlalchemy_models import Card, Spec
 from okto_pulse.community.adapters.test_evidence import (
     CommunityEvidenceLedger, CommunityTestVerificationReportIssuer, CommunityTestEvidenceWriteVerifier,
@@ -50,6 +50,7 @@ async def test_blocking_condition_reuses_one_test_card_and_authenticated_run(led
         board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID,
         scenario=scenario, acceptance_criteria=criteria)
     value = report("demonstration")
+    await bind_report_sources(session, value)
     value["observed_at"] = datetime.now(timezone.utc).isoformat()
     value["result"] = "passed"
     value["observations"] = [{

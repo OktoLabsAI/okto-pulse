@@ -19,7 +19,7 @@ from okto_pulse.core.services.test_scenario_lifecycle import compute_test_scenar
 
 import test_delivery_evidence_integration as delivery
 from test_delivery_reused_impact import register_report_adapters
-from verification_report_fixtures import report
+from verification_report_fixtures import report, bind_report_sources
 
 ledger = delivery.ledger
 
@@ -57,6 +57,7 @@ async def test_signed_specialized_report_delivers_technical_requirement_and_fail
     issuer = CommunityTestVerificationReportIssuer(ledger=evidence_ledger)
     register_test_evidence_write_verifier(CommunityTestEvidenceWriteVerifier(ledger=evidence_ledger))
     value = report(method)
+    await bind_report_sources(session, value)
     value["observations"][0]["criterion_id"] = criterion["id"]
     digest = compute_test_scenario_semantic_sha256(board_id=board, spec_id=identity,
         scenario=scenario, acceptance_criteria=[criterion])

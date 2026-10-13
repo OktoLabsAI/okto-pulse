@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import pytest
 from sqlalchemy import update
 import test_delivery_evidence_integration as delivery
-from verification_report_fixtures import report
+from verification_report_fixtures import report, bind_report_sources
 from okto_pulse.community.adapters.sqlalchemy_models import Spec, Card
 from okto_pulse.community.adapters.test_evidence import CommunityEvidenceLedger, CommunityTestVerificationReportIssuer, CommunityTestEvidenceWriteVerifier
 from okto_pulse.core.ports.test_evidence import TestVerificationReportRequest as Request, register_test_evidence_write_verifier
@@ -28,6 +28,7 @@ async def test_mixed_authenticated_report_current_credit(ledger, tmp_path, metho
     digest = compute_test_scenario_semantic_sha256(board_id=delivery.BOARD_ID,
         spec_id=delivery.SPEC_ID, scenario=scenario, acceptance_criteria=criteria)
     value = report(method)
+    await bind_report_sources(session, value)
     value["observed_at"] = datetime.now(timezone.utc).isoformat()
     value["result"] = "failed"
     first = value["observations"][0]

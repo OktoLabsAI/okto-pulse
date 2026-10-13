@@ -99,6 +99,18 @@ async def test_specialized_report_must_observe_delivered_base(ledger, tmp_path, 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("ledger", ["native_schema"], indirect=True)
+@pytest.mark.parametrize("method", ["inspection", "static_analysis", "demonstration"])
+async def test_V12_specialized_report_on_exact_delivered_base_is_accepted(ledger, tmp_path, method):
+    session, store, refs, implementation, scenarios = await prepare_reports(
+        ledger, tmp_path, method, ["passed"])
+    await delivery.record(store, delivery.command("test", scenario_id=scenarios[0]["id"],
+        obligation_refs=refs, implementation_ids=[implementation["id"]]))
+    await session.commit()
+    assert (await store.projection(delivery.BOARD_ID, delivery.SPEC_ID))["allowed"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ledger", ["native_schema"], indirect=True)
 @pytest.mark.parametrize("bind_failure", [True, False], ids=["V01-V05", "V03"])
 async def test_complementary_failure_cannot_be_hidden_by_pass_or_missing_binding(ledger, tmp_path, bind_failure):
     session, store, refs, implementation, scenarios = await prepare_reports(

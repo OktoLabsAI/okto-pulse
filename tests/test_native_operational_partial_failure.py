@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import update
 
 import test_delivery_evidence_integration as delivery
-from verification_report_fixtures import report
+from verification_report_fixtures import report, bind_report_sources
 from okto_pulse.community.adapters.sqlalchemy_models import Spec
 from okto_pulse.community.adapters.relational_application import CommunityRelationalApplicationAdapter
 from okto_pulse.community.adapters.test_evidence import (
@@ -42,6 +42,7 @@ async def test_operational_partial_failure_never_becomes_coverage(ledger, tmp_pa
     digest = compute_test_scenario_semantic_sha256(board_id=delivery.BOARD_ID,
         spec_id=delivery.SPEC_ID, scenario=scenario, acceptance_criteria=criteria)
     value = report("demonstration")
+    await bind_report_sources(session, value)
     value["observed_at"] = datetime.now(timezone.utc).isoformat()
     value["result"] = "failed"
     first = value["observations"][0]

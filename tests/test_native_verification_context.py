@@ -245,7 +245,7 @@ async def add_authenticated_partial_coverage(db, store, tmp_path):
     )
     from okto_pulse.core.ports.test_evidence import TestVerificationReportRequest, register_test_evidence_write_verifier
     from okto_pulse.core.services.test_scenario_lifecycle import compute_test_scenario_semantic_sha256
-    from verification_report_fixtures import report
+    from verification_report_fixtures import report, bind_report_sources
     import test_delivery_evidence_integration as evidence
 
     now = datetime.now(timezone.utc)
@@ -282,6 +282,7 @@ async def add_authenticated_partial_coverage(db, store, tmp_path):
     digest = compute_test_scenario_semantic_sha256(
         board_id="board", spec_id="spec", scenario=scenarios[0], acceptance_criteria=spec.acceptance_criteria)
     value = report("demonstration")
+    await bind_report_sources(db, value)
     value["observed_at"] = datetime.now(timezone.utc).isoformat()
     value["result"] = "passed"
     value["observations"] = [{

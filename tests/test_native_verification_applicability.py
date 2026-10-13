@@ -7,7 +7,7 @@ from sqlalchemy import select, update
 
 import test_delivery_evidence_integration as delivery
 from test_native_delivery_currentness import advance_source
-from verification_report_fixtures import report
+from verification_report_fixtures import report, bind_report_sources
 from okto_pulse.community.adapters.sqlalchemy_models import Spec, CardDeliveryEvidenceRecordRow as Record
 from okto_pulse.community.adapters.test_evidence import (
     CommunityEvidenceLedger, CommunityTestVerificationReportIssuer, CommunityTestEvidenceWriteVerifier,
@@ -35,6 +35,7 @@ async def test_commit_b_requires_applicable_scope_despite_recent_receipt_in_same
 
     async def issue(digest, revision):
         value = report()
+        await bind_report_sources(session, value)
         value["observed_at"] = datetime.now(timezone.utc).isoformat()
         value["sources"][0]["revision"] = revision
         value["observations"][0]["criterion_id"] = "ac-about"

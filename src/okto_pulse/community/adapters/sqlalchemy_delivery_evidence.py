@@ -42,7 +42,9 @@ from okto_pulse.core.domain.delivery_evidence import (
 )
 from okto_pulse.core.domain.enums import CardType, CardStatus, TestScenarioStatus
 from okto_pulse.core.domain.execution_contract import execution_contract
-from okto_pulse.core.domain.verification_report import parse_verification_report, verification_report_passing_criteria
+from okto_pulse.core.domain.verification_report import (
+    parse_verification_report, verification_report_passing_criteria, verification_report_source_issue,
+)
 from okto_pulse.core.domain.effective_delivery_coverage import (
     EffectiveDeliveryContext, ScopedTestFact, read_scoped_implementation, implementation_scope_current,
 )
@@ -353,6 +355,8 @@ class CommunityDeliveryEvidenceStore:
         if valid and payload.get("implementation_ids"):
             binding_scope_fields = ("board_id", "spec_id", "spec_edition")
             try:
+                report = (parse_verification_report(evidence["verification_report"])
+                          if evidence.get("evidence_class") == "verification_report" else None)
                 executed_at = datetime.fromisoformat(
                     (evidence["verification_report"]["observed_at"]
                      if evidence.get("evidence_class") == "verification_report"
@@ -383,6 +387,12 @@ class CommunityDeliveryEvidenceStore:
                         execution = await self.session.get(Execution, execution_id)
                         receipt = await self.session.get(Receipt, execution.result_investigation_receipt_id) if execution else None
                         if receipt is None or executed_at < receipt.observed_at:
+                            valid = False
+                            break
+                        if report is not None and (
+                            receipt.declared_dirty is not False
+                            or verification_report_source_issue(report, ((receipt.source_ref, receipt.declared_revision),))
+                        ):
                             valid = False
                             break
                         basis = (evidence.get("execution_attestation") or {}).get("execution_basis")
