@@ -720,7 +720,13 @@ class CommunityDeliveryEvidenceStore:
             if selected is not None and record.id not in selected:
                 continue
             if record.id in revoked:
-                reject(record, 'delivery_record_revoked')
+                # Retain relevant current bindings for stale-proof diagnosis;
+                # a malformed/foreign payload cannot disclose another scope.
+                try:
+                    bindings = tuple(DeliveryBinding(**b) for b in record.payload.get('bindings', ()))
+                except (AttributeError, KeyError, TypeError, ValueError):
+                    bindings = ()
+                reject(record, 'delivery_record_revoked', bindings)
                 continue
             if not isinstance(record.payload, dict):
                 reject(record, 'delivery_record_payload_invalid')
@@ -759,7 +765,11 @@ class CommunityDeliveryEvidenceStore:
                 if issues:
                     reject(record, tuple(sorted(issues)), bindings)
             elif record.kind == "test":
-                runs = native_runs.get(record.payload.get('scenario_id'), ())
+                scenario_id = record.payload.get('scenario_id')
+                if not isinstance(scenario_id, str) or not scenario_id:
+                    reject(record, 'delivery_test_payload_invalid', bindings)
+                    continue
+                runs = native_runs.get(scenario_id, ())
                 if len(runs) != 1:
                     reject(record, 'delivery_scenario_unresolved' if not runs else 'delivery_scenario_ambiguous', bindings)
                     continue
@@ -781,6 +791,7 @@ class CommunityDeliveryEvidenceStore:
             tuple(tests),
             complete=selection_valid,
             rejected_records=tuple(rejected_records),
+            facts_complete=selection_valid,
         )
         return self._with_effective_context(snapshot, plan, records, spec, card, native_verification=native_verification)
 
@@ -900,10 +911,16 @@ class CommunityDeliveryEvidenceStore:
     async def _selection_summary(self, scope):
         records = await self._card_records(scope)
         revoked = {row.payload.get("record_id") for row in records
-                   if row.kind == "revoke" and row.actor_kind in {"human", "user"}}
+                   if row.kind == "revoke" and row.actor_kind in {"human", "user"}
+                   and isinstance(row.payload, dict)}
         selectable = [row for row in records if row.kind != "revoke" and row.id not in revoked]
+
+        def summary(row):
+            value = row.payload.get('justification') if isinstance(row.payload, dict) else None
+            return value[:160] if isinstance(value, str) else ''
+
         return dict(total=len(selectable), truncated=len(selectable) > 200,
-            records=[dict(id=row.id, kind=row.kind, summary=row.payload.get("justification", "")[:160])
+            records=[dict(id=row.id, kind=row.kind, summary=summary(row))
                      for row in selectable[-200:]])
 
     def _impact_claims(self, records):
@@ -1452,12 +1469,14 @@ class CommunityDeliveryEvidenceStore:
         obligations = self._planned_obligations(spec, plan)
         implementations, tests, per_card, rejected_records = [], [], [], []
         complete = True
+        facts_complete = True
         for card in await self._linked_cards(board_id, spec_id):
             card_scope = CardDeliveryScope(
                 board_id, card.id, spec_id, int(spec.edition)
             )
             snapshot = await self.load_card_snapshot(card_scope, plan=plan, native_verification=native_verification)
             complete = complete and snapshot.complete is True
+            facts_complete = facts_complete and snapshot.facts_complete is True
             implementations.extend(snapshot.implementations)
             tests.extend(snapshot.tests)
             rejected_records.extend(snapshot.rejected_records)
@@ -1501,6 +1520,7 @@ class CommunityDeliveryEvidenceStore:
             tuple(waivers),
             complete=complete,
             rejected_records=tuple(rejected_records),
+            facts_complete=facts_complete,
         )
         identities = [item.id for item in (*implementations, *tests)]
         records = list((await self.session.scalars(select(CardRecord).where(
