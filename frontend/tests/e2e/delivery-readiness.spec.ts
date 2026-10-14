@@ -349,6 +349,34 @@ test('P08/U01/U04/U09: native board and Delivery show separate accessible metric
   await accessibility();
   await compact.evaluate(element => element.scrollIntoView({ block: 'center', inline: 'center' }));
   await compact.screenshot({ path: test.info().outputPath('readiness-compact-error.png') });
+  // Test Cards with no implementation use the whole available metric width.
+  summaryError = false;
+  card.card_type = 'test'; current.scope.card_type = 'test';
+  current.implementation = { ...metric(0, 0), status: 'not_applicable', percent: null };
+  current.verification = { ...metric(75, 6), unit: 'scenario' };
+  current.delivery_state = 'verification_pending';
+  // Changing the fixture's Card type requires a fresh modal/permission context.
+  await page.reload();
+  await page.getByRole('button', { name: 'Tasks', exact: true }).click();
+  await expect(compact.getByText('Implementation', { exact: true })).toHaveCount(0);
+  await expect(compact.getByText('N/A', { exact: true })).toHaveCount(0);
+  await expect(compact.getByRole('progressbar')).toHaveCount(1);
+  const verificationTrack = compact.getByRole('progressbar', { name: 'Verification' }).locator('..');
+  expect((await verificationTrack.boundingBox())!.width).toBeCloseTo((await compact.boundingBox())!.width, 0);
+  expect((await compact.boundingBox())!.height).toBe(height);
+  await compact.screenshot({ path: test.info().outputPath('readiness-test-cover.png') });
+  await expect(page.getByText('Board refreshed!', { exact: true })).toHaveCount(0, { timeout: 6000 });
+  await compact.getByRole('button', { name: 'Open delivery details' }).click();
+  await expect(page.getByRole('tab', { name: 'Delivery', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('heading', { name: 'Delivery readiness', exact: true })).toBeVisible();
+  await expect(panel.getByRole('progressbar')).toHaveCount(1);
+  await expect(panel.getByText('Implementation', { exact: true })).toHaveCount(0);
+  const grid = panel.locator('.grid').filter({ has: page.getByRole('progressbar', { name: 'Verification' }) });
+  const fullTrack = panel.getByRole('progressbar', { name: 'Verification' }).locator('..');
+  expect((await fullTrack.boundingBox())!.width).toBeCloseTo((await grid.boundingBox())!.width, 0);
+  await panel.scrollIntoViewIfNeeded();
+  await panel.screenshot({ path: test.info().outputPath('readiness-test-delivery.png'), animations: 'disabled' });
+  await accessibility();
   expect(writes).toEqual([]);
   expect(errors).toEqual([]);
 });

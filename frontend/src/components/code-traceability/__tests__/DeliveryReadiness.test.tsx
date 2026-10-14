@@ -57,16 +57,37 @@ it('U04: Done remains historical when current qualification diverges', () => {
   expect(screen.getByRole('progressbar', { name: 'Verification' })).toHaveAttribute('aria-valuenow', '75');
 });
 
-it('Test Card shows N/A implementation and scenario counts with failure text even when Done', () => {
+it('Test Card shows verification alone and scenario counts with failure text even when Done', () => {
   const value = readiness(); value.scope.card_type = 'test'; value.lifecycle.stored_status = 'done';
   value.implementation = { ...metric(100, 8), status: 'not_applicable', percent: null, total: 0, applicable: 0, satisfied: 0, unresolved: 0, counts_by_state: emptyCounts };
   value.verification.unit = 'scenario'; value.verification.counts_by_state.failed = 2;
   value.verification.counts_by_state.missing = 0; value.delivery_state = 'verification_failed';
   render(<DeliveryReadinessView value={value} />);
   expect(screen.queryByRole('progressbar', { name: 'Implementation' })).not.toBeInTheDocument();
+  expect(screen.queryByText('Implementation', { exact: true })).not.toBeInTheDocument();
   expect(screen.getByRole('progressbar', { name: 'Verification' })).toHaveAttribute('aria-valuetext', '75%, 6 of 8 applicable scenarios');
   expect(screen.getByText('Execution complete · failures found')).toBeVisible();
   expect(screen.getByText('Failed or conflicting evidence')).toBeVisible();
+});
+
+it.each([true, false])('Test Card without implementation gives verification the full grid (compact=%s)', compact => {
+  const value = readiness(); value.scope.card_type = 'test';
+  value.implementation = { ...metric(0, 0), status: 'not_applicable', percent: null };
+  render(<DeliveryReadinessView value={value} compact={compact} />);
+  expect(screen.queryByText('Implementation', { exact: true })).not.toBeInTheDocument();
+  expect(screen.queryByText('N/A', { exact: true })).not.toBeInTheDocument();
+  const bar = screen.getByRole('progressbar', { name: 'Verification' });
+  expect(screen.getAllByRole('progressbar')).toHaveLength(1);
+  expect(bar.closest('.grid')).toHaveClass('grid-cols-1');
+  expect(bar).toHaveAttribute('aria-valuenow', '75');
+});
+
+it('Unknown implementation on a Test Card is not silently treated as non-applicable', () => {
+  const value = readiness(); value.scope.card_type = 'test';
+  value.implementation = { ...value.implementation, status: 'unknown', percent: null };
+  render(<DeliveryReadinessView value={value} compact />);
+  expect(screen.getByText('Implementation', { exact: true })).toBeVisible();
+  expect(screen.getByRole('progressbar', { name: 'Verification' }).closest('.grid')).toHaveClass('grid-cols-2');
 });
 
 it.each(['loading', 'error', 'unknown', 'incompatible'] as const)('U03/U10: %s never displays cached or invented percentages', state => {

@@ -45,6 +45,7 @@ export function DeliveryReadinessView({ value, loading, error, compact = false, 
   compact?: boolean; onInspect?: () => void; onRefresh?: () => void;
 }) {
   const current = !loading && !error && isDeliveryReadiness(value) ? value : undefined;
+  const verificationOnly = current?.scope.card_type === 'test' && current.implementation.status === 'not_applicable';
   const incompatible = !loading && !error && value != null && !current;
   const historical = current?.summary.message_code === 'historical_completion_diverged';
   const title = current ? historical ? 'Historical completion · current qualification pending'
@@ -55,8 +56,8 @@ export function DeliveryReadinessView({ value, loading, error, compact = false, 
     : current?.delivery_state === 'delivered' || current?.delivery_state === 'delivered_with_exceptions' ? 'View evidence' : 'What is missing?';
   if (compact) return <section aria-label="Delivery readiness" aria-busy={loading || undefined}
     className="relative mt-2 min-w-0 rounded-md py-1" title={title || (loading ? 'Loading delivery readiness' : 'Current readiness is unavailable. Open Delivery to retry.')}>
-    <div className="grid grid-cols-2 gap-3">
-      <Metric label="Implementation" value={current?.implementation} loading={loading} compact />
+    <div className={`grid ${verificationOnly ? 'grid-cols-1' : 'grid-cols-2'} gap-3`}>
+      {!verificationOnly && <Metric label="Implementation" value={current?.implementation} loading={loading} compact />}
       <Metric label="Verification" value={current?.verification} loading={loading} compact />
     </div>
     {onInspect && <button type="button" aria-label="Open delivery details" title="Open delivery details"
@@ -67,8 +68,8 @@ export function DeliveryReadinessView({ value, loading, error, compact = false, 
     className="min-w-0 rounded-lg border border-gray-200 dark:border-gray-700 space-y-3 p-4 text-sm">
     <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-semibold text-gray-800 dark:text-gray-100">Delivery readiness</h3>
       {current && <span className="text-xs text-gray-500 dark:text-gray-400">Status: {current.lifecycle.stored_status.replace(/_/g, ' ')}</span>}</div>
-    <div className="grid grid-cols-2 gap-4 py-2" title={explanation}>
-      <Metric label="Implementation" value={current?.implementation} loading={loading} compact={false} />
+    <div className={`grid ${verificationOnly ? 'grid-cols-1' : 'grid-cols-2'} gap-4 py-2`} title={explanation}>
+      {!verificationOnly && <Metric label="Implementation" value={current?.implementation} loading={loading} compact={false} />}
       <Metric label="Verification" value={current?.verification} loading={loading} compact={false} />
     </div>
     <div className="space-y-3">
