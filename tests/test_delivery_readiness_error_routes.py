@@ -16,7 +16,7 @@ from okto_pulse.core.mcp import server
 from okto_pulse.core.mcp.code_traceability_tools import _error_outcome
 from okto_pulse.core.models.schemas import CardMove, SpecMove
 from okto_pulse.core.ports.delivery_readiness import ReadinessReadError
-from okto_pulse.core.services.delivery_evidence import DeliveryGateBlocked
+from okto_pulse.core.application.delivery_errors import DeliveryGateBlocked
 
 ledger = delivery.ledger
 

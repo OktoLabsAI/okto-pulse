@@ -33,7 +33,7 @@ from okto_pulse.core.inbound.policy_transition_error import (
     project_policy_transition_rejection,
 )
 from okto_pulse.core.services.resource_gate import ResourceGateError
-from okto_pulse.core.services.delivery_evidence import DeliveryGateBlocked
+from okto_pulse.core.application.delivery_errors import DeliveryGateBlocked
 from okto_pulse.core.domain.human_validation_cycle import (
     LifecycleTransitionConflictError,
     SubjectEditRequiresDraftError,

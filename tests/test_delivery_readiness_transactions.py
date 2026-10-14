@@ -16,7 +16,8 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     CardDeliveryEvidenceRecordRow, DomainEventRow,
 )
 from okto_pulse.core.services.delivery_readiness import EvaluatedDeliveryReadiness
-from okto_pulse.core.services.delivery_evidence import DeliveryGateBlocked, require_spec_delivery
+from okto_pulse.core.application.delivery_errors import DeliveryGateBlocked
+from okto_pulse.core.services.delivery_evidence import require_spec_delivery
 
 ledger = delivery.ledger
 pytestmark = [pytest.mark.asyncio, pytest.mark.parametrize('ledger', ['native_schema'], indirect=True)]

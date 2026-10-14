@@ -56,6 +56,8 @@ _CROSS_EDITION_CONTRACT_EXPECTATION: tuple[str, ...] = (
     "okto_pulse.core.inbound.architecture_classification.CLASSIFICATION_REQUEST_ERRORS",
     "okto_pulse.core.inbound.architecture_classification.ClassificationErrorProjection",
     "okto_pulse.core.inbound.architecture_classification.classification_error",
+    "okto_pulse.core.inbound.delivery_readiness_error.READINESS_ERRORS",
+    "okto_pulse.core.inbound.delivery_readiness_error.project_readiness_error",
     "okto_pulse.core.inbound.enum_error_envelope",
     "okto_pulse.core.inbound.guideline_policy_cursor.policy_cursor_codec_from_settings",
     "okto_pulse.core.inbound.guideline_policy_error.guideline_policy_http_status",

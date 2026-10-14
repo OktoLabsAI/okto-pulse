@@ -24,7 +24,7 @@ Historical evidence must not be rewritten. Gates and diagnostics must share fact
 | P04 | Diagnóstico e ações | IN_PROGRESS |
 | P05 | Adapter, snapshot e paginação | IN_PROGRESS |
 | P06 | Gates, transições e autorização de override | IN_PROGRESS |
-| P07 | REST/MCP e erros | PENDING |
+| P07 | REST/MCP e erros | IN_PROGRESS (contract tests passed; prerequisite acceptance reconciliation pending) |
 | P08 | Mostradores e face do card | PENDING |
 | P09 | Painel de pendências e atualização cruzada | PENDING |
 | P10 | Documentação, compatibilidade e pacote | PENDING |
@@ -712,3 +712,29 @@ Resume priorities:
 2. RESTORE_EVALUATION guidance still invokes get_delivery_evidence without explicit view=readiness. Wire the correct view/current scope and update action-contract tests.
 3. Finish P07 acceptance and remaining P02-P06 evidence reconciliation, then P08-P11 in the agreed plan. No full-plan completion is claimed.
 No production install/restart/reset, data mutation, deployment or release. Generated .playwright-cli/ and output/ artifacts remain local and excluded from commits.
+
+
+## P07 public error boundaries and actionable readiness queries - 2026-10-14
+
+Starting pushed pair: Core 164dd0d6 / Community 60065aa9. The previous goal turn made progress: it committed/pushed the implementation and captured the failing architecture audit, preserving the concrete resume point.
+
+Resolved the checkpoint regression. DeliveryGateBlocked is now defined in application/delivery_errors.py as a public transport-neutral application result; Community adapters and Core transports consume that contract instead of importing the private delivery service. The service still raises the same typed error and its compact envelope is unchanged. The shared readiness error projector is declared by its two exact public symbols in the Core manifest and matching Community contract expectation. No service-internal namespace was made public, no adapter bridge was added and no budget or architectural rule was relaxed. Tests assert that delivery_store remains private.
+
+RESTORE_EVALUATION actions now explicitly request view=readiness and preserve the current Spec/Card scope in both factual diagnostics and native lifecycle guidance. Regression tests parse the emitted queries through the actual closed query contract and verify unavailable Spec/Card context guidance without proof penalties. Moved two pre-existing module imports to the import sections to resolve the E402 findings recorded in the previous checkpoint.
+
+Validation (paired isolated environment, no production installation changes):
+- Installed/source byte parity: 861 Core / 323 Community files; fresh paired source imports.
+- Core lifecycle/diagnostics/native diagnostics/routing/errors/gates/catalog: 159 passed in 17.20s.
+- Community surfaces/error routes/transactions/real closeout: 23 passed in 45.45s.
+- First architecture retry correctly refused a Core/Community manifest mismatch before audit. Updated the matching Community expectation, preserving this guard.
+- Final Core public manifest/errors/diagnostics/lifecycle/catalog drift: 97 passed in 13.72s.
+- Final Community adapter provenance/import boundary/surfaces/error routes: 44 passed in 61.60s.
+- Ruff passed all changed Python files in both repositories; git diff --check passed.
+- Final official paired source closure: 8960 ownership rows, zero findings, all eight budgets ZERO. Exact README projections regenerated and validated. All test/audit handles terminal. This does not substitute for P11 final wheel acceptance.
+
+P07 requirement evidence:
+- P07.1: closed DeliveryEvidenceReadQuery, existing use-case dispatch and existing MCP registry tool; routing tests and prior progress/ledger/resume regression suites remain green. No new tool registered.
+- P07.2: native-schema REST/MCP tests cover Spec, normal/Test Card, null preservation, current authorization, detail queries, pagination and stale snapshot rejection. Invalid/exclusive and unknown readiness inputs reject explicitly.
+- P07.3: compact mutation envelopes preserve assessed facts and supply a fresh readiness query without treating the assessment fingerprint as a read cursor snapshot. Native REST/MCP error route parity and actual closeout/transaction tests passed.
+- P07.4: action references and argument fields validate against the live tool registry and reference docs; catalog byte drift gate passes. Restore actions now route to readiness explicitly.
+P07 implementation/contract evidence is established; keep phase IN_PROGRESS until the required P02-P06 named-case acceptance reconciliation is complete. Resume that reconciliation against the normative matrix, then P08-P11 in order. No frontend modification, production restart/reset, data mutation, deployment or release in this checkpoint. Browser artifacts remain local.

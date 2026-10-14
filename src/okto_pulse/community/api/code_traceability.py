@@ -17,7 +17,7 @@ from okto_pulse.core.application.use_cases.decision_review import GetDecisionRev
 from okto_pulse.core.models.decision_review import DecisionReviewInput, DecisionReviewCommand, DecisionReviewQuery
 from okto_pulse.core.inbound.delivery_readiness_error import READINESS_ERRORS, project_readiness_error
 from okto_pulse.core.ports.delivery_readiness import ReadinessAccessDenied, ReadinessReadError
-from okto_pulse.core.services.delivery_evidence import DeliveryGateBlocked
+from okto_pulse.core.application.delivery_errors import DeliveryGateBlocked
 
 import base64
 from dataclasses import fields, is_dataclass
