@@ -2,8 +2,9 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 import { CardDeliveryDoDPanel } from '../CardDeliveryDoDPanel';
 import type { DeliveryEvidenceProjection } from '@/types/delivery-evidence';
+import { readiness } from './readinessFixture';
 
-const api = vi.hoisted(() => ({ getDeliveryEvidence: vi.fn(), getBoard: vi.fn() }));
+const api = vi.hoisted(() => ({ getDeliveryEvidence: vi.fn(), getBoard: vi.fn(), getDeliveryReadiness: vi.fn() }));
 vi.mock('@/services/api', () => ({ useDashboardApi: () => api }));
 afterEach(cleanup);
 
@@ -24,6 +25,7 @@ it('U05: pre-Done accepted proof agrees across the row, counter and blocking not
       obligations: [{ ref: 'fr:ports', title: 'Use public ports', implementation_satisfied: false }] }],
   };
   api.getDeliveryEvidence.mockResolvedValue(value);
+  api.getDeliveryReadiness.mockResolvedValue(readiness('task'));
   api.getBoard.mockResolvedValue({ id: 'b', settings: { delivery_evidence_gate: 'blocking' } });
   render(<CardDeliveryDoDPanel boardId="b" card={{ id: 'task', card_type: 'normal', spec_id: 's' }} />);
   expect(await screen.findByText('✓ Implementation')).toBeInTheDocument();

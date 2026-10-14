@@ -193,7 +193,7 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
         </p>
       </div>}
 
-      {!isTest && gateMode === 'blocking' && mine && !mine.satisfied && obligations.length > 0 && (
+      {!isTest && gateMode === 'blocking' && unproven.length > 0 && (
         <div className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 p-3 dark:border-red-900/70 dark:bg-red-950/25" data-testid="dod-blocked-banner">
           <span className="mt-0.5 text-sm text-red-500">⚠</span>
           <div className="text-xs text-red-700 dark:text-red-300">

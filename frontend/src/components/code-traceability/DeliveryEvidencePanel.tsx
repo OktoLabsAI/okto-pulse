@@ -1,4 +1,6 @@
 import { resolveDeliveryGateMode } from '@/components/board/deliveryGateSettings';
+import { DeliveryReadinessView } from './DeliveryReadinessView';
+import { useDeliveryReadiness } from './useDeliveryReadiness';
 import { useEffect, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { PulseLoader } from '@/components/shared/PulseLoader';
@@ -233,5 +235,3 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
     </>}
   </section>;
 }
-import { DeliveryReadinessView } from './DeliveryReadinessView';
-import { useDeliveryReadiness } from './useDeliveryReadiness';

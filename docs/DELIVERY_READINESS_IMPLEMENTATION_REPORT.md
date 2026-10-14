@@ -25,7 +25,7 @@ Historical evidence must not be rewritten. Gates and diagnostics must share fact
 | P05 | Adapter, snapshot e paginação | IN_PROGRESS |
 | P06 | Gates, transições e autorização de override | IN_PROGRESS |
 | P07 | REST/MCP e erros | IN_PROGRESS (contract tests passed; prerequisite acceptance reconciliation pending) |
-| P08 | Mostradores e face do card | PENDING |
+| P08 | Mostradores e face do card | IMPLEMENTED (focused tests and visual checks passed; full acceptance P11) |
 | P09 | Painel de pendências e atualização cruzada | PENDING |
 | P10 | Documentação, compatibilidade e pacote | PENDING |
 | P11 | Verificação integrada e relatório final | PENDING |
@@ -790,3 +790,25 @@ Exact resume point:
 2. Validate the new REST summary with native-schema authorization/no-store/scope tests; run focused frontend tests, TypeScript and isolated visual checks, then architecture closure with all eight budgets ZERO.
 3. Finish P08 and continue P09-P11 from the agreed plan, including actionable navigation/refresh, final named-case reconciliation and packaged validation. Existing legacy backend delivery_completeness remains as required by the plan.
 4. No production reinstall/restart/reset, data mutation or release was performed. Generated .playwright-cli/ and output/ captures/logs remain local, outside the implementation commits.
+
+## P08 frontend integration and executable UI evidence - 2026-10-14
+
+Starting pair: Core d3fc073f / Community a746e4c0. The previous turn made progress by committing and pushing the requested in-progress checkpoint. Resumed from those authoritative trees without restarting prior milestones.
+
+P08 implementation now compiles. Removed the obsolete UI weighted-score component/hook and their tests; the deprecated backend delivery_completeness contract is retained. Official Card/Spec consumers use backend delivery_readiness, with distinct blue implementation and green verification bars. New tests cover normal/Bug/Test covers and Delivery, Spec-specific metrics, closure pending at 100/100, historical Done divergence, N/A, waivers, failure indicators, unavailable/incompatible data, current authorization, shared per-Spec reads and stale-response cancellation.
+
+The U05 regression found a remaining real defect: the DoD count was zero while its banner still relied on legacy mine.satisfied and claimed rejection. The banner now uses the same pending implementation set as the rows/counter. No native transition gate, permission or proof rule changed.
+
+The native REST summary tests initially compared dedicated Card snapshot IDs with the batch Spec snapshot. Inspection confirmed that dedicated reads include their scoped native lifecycle assessment in the hash, whereas board projections deliberately reuse the Spec batch. Tests now assert actual metric/scope equivalence, Spec snapshot identity and one shared snapshot across all board rows; they do not pretend independently scoped gate assessments have identical hashes.
+
+Validation:
+- TypeScript tsc -b: passed after replacing the unsupported replaceAll and obsolete test props.
+- Focused frontend run: 74 passed / U05 failed; after correcting the banner, DoD + CardDeliveryDoDPanel: 29 passed (including the previously failing U05). Together the five focused files cover 75 passing cases.
+- Community native REST/MCP surface suite including summary/no-store/current permission denial/SELECT-only checks: 14 passed in 36.63s. Installed/source parity 861 Core / 323 Community files.
+- Browser test delivery-readiness.spec.ts: passed (Chromium). Real app board/modal with all API requests intercepted; no database access. First run exposed incomplete fixture permissions, correctly hiding Delivery; adding all existing projection-read permissions enabled it without changing product authority.
+- Inspected actual screenshots: compact cover 100/75 and 8/8 versus 6/8, expanded light mode panels, dark mobile stacked panels at 390px. Separate bar bounds, no component overflow, keyboard refresh and reduced-motion setting verified. No claim of manual screen-reader acceptance.
+- Targeted ESLint on all new readiness components/hooks/types/tests: passed. Full lint ratchet remains FAILED: react-refresh/only-export-components has 34 warnings against budget 32 (315 total warnings, zero errors). Diagnostics point to existing exports outside the new readiness files; no budget was raised. Resolve this final integration check in P11.
+- Ruff for changed Python files and git diff --check passed.
+- Official source closure: 8964 ownership rows, zero findings, all eight budgets ZERO; README projections regenerated. Final wheel acceptance remains P11.
+
+P08 implementation has focused and visual evidence; the full U09 accessibility/state matrix and global lint acceptance remain explicit final checks. P09 next: native direct Delivery navigation, actionable diagnostics/detail pagination/copy with truthful limits, and cross-scope invalidation. P10/P11 remain required. No production install/restart/reset, mutation or release. Generated browser output stays local.

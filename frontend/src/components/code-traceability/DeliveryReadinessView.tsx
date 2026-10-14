@@ -49,7 +49,7 @@ export function DeliveryReadinessView({ value, loading, error, compact = false, 
   return <section aria-label="Delivery readiness" aria-busy={loading || undefined}
     className={`min-w-0 space-y-3 rounded-lg border border-gray-200 dark:border-gray-700 ${compact ? 'mt-2 min-h-[148px] bg-gray-50/70 p-2 text-[10px] dark:bg-gray-900/40' : 'p-4 text-sm'}`}>
     {!compact && <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-semibold text-gray-800 dark:text-gray-100">Delivery readiness</h3>
-      {current && <span className="text-xs text-gray-500 dark:text-gray-400">Status: {current.lifecycle.stored_status.replaceAll('_', ' ')}</span>}</div>}
+      {current && <span className="text-xs text-gray-500 dark:text-gray-400">Status: {current.lifecycle.stored_status.replace(/_/g, ' ')}</span>}</div>}
     <div className={compact ? 'space-y-3' : 'grid gap-4 sm:grid-cols-2'} title={explanation}>
       <Metric label="Implementation" value={current?.implementation} loading={loading} compact={compact} />
       <Metric label="Verification" value={current?.verification} loading={loading} compact={compact} />

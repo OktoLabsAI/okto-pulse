@@ -153,3 +153,56 @@ async def test_readiness_rest_query_rejects_unknown_fields(ledger, monkeypatch):
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=rest), base_url='http://test') as client:
         response = await client.get(url(), params={'view': 'readiness', 'verified': 'true'})
     assert response.status_code == 422 and response.json()['detail']['code'] == 'readiness_query_invalid'
+
+
+async def test_P08_board_summary_matches_authorized_native_details_without_writes(ledger, monkeypatch):
+    session, store, _ = ledger
+    rest, tool, uow = await surfaces(session, monkeypatch)
+    implementation = await delivery.record(store, delivery.command())
+    await delivery.record(store, delivery.command('test', implementation_ids=[implementation['id']]))
+    await session.commit()
+    with statements(session.bind) as sql:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=rest), base_url='http://test') as client:
+            response = await client.get(url().replace('/delivery-evidence', '/delivery-readiness-summary'))
+    assert response.status_code == 200, response.text
+    assert response.headers['cache-control'] == 'no-store'
+    summary = response.json()
+    assert summary['contract_version'] == 'delivery-readiness/v1'
+    assert summary['metrics_version'] == 2
+    contexts = [summary['delivery_readiness'], *[row['delivery_readiness'] for row in summary['cards']]]
+    assert {row['card_id'] for row in summary['cards']} == {'task', 'test'}
+    for context in contexts:
+        result = await tool.fn(board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID,
+            view='readiness', **({'card_id': context['scope']['card_id']} if context['scope']['card_id'] else {}))
+        assert not result.is_error, result
+        for field in ('scope', 'implementation', 'verification', 'proof_complete'):
+            assert context[field] == result.payload[field]
+        # A dedicated Card read also assesses that Card's native lifecycle gates.
+        # Its snapshot includes that scoped gate assessment; board projections
+        # intentionally share the Spec batch and do not run N Card gate queries.
+        if context['scope']['card_id'] is None:
+            assert context['snapshot_id'] == result.payload['snapshot_id']
+        assert context['snapshot_id'] == summary['delivery_readiness']['snapshot_id']
+    test_context = next(row['delivery_readiness'] for row in summary['cards'] if row['card_id'] == 'test')
+    assert test_context['implementation']['percent'] is None
+    assert all(statement.lstrip().upper().startswith(('SELECT', 'PRAGMA DATA_VERSION', 'BEGIN')) for statement in sql)
+    assert not session.new and not session.dirty and not session.deleted
+    uow.commit.assert_not_awaited()
+
+
+@pytest.mark.parametrize('permission', ['evidence', 'card'])
+async def test_P08_summary_reauthorizes_current_access(ledger, monkeypatch, permission):
+    session, _, _ = ledger
+    rest, _, uow = await surfaces(session, monkeypatch)
+    flags = registered_permission_flags()
+    if permission == 'evidence':
+        flags['code_traceability']['evidence']['read'] = False
+    else:
+        flags['card']['entity']['read'] = False
+    await session.execute(update(AgentBoard).where(AgentBoard.agent_id == ACTOR.actor_id).values(permission_overrides=flags))
+    await session.commit()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=rest), base_url='http://test') as client:
+        response = await client.get(url().replace('/delivery-evidence', '/delivery-readiness-summary'))
+    assert response.status_code == 403, response.text
+    assert response.json()['detail']['code'] == 'readiness_permission_denied'
+    uow.commit.assert_not_awaited()
