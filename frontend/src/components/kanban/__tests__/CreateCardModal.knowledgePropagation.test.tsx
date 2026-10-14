@@ -172,11 +172,52 @@ beforeEach(() => {
 });
 
 describe('CreateCardModal selective Knowledge integration', () => {
+  it.each(['Task', 'Test'] as const)('plans a %s in Draft with execution disabled', async (type) => {
+    apiMock.listSpecs.mockImplementation((_boardId: string, status: string) =>
+      Promise.resolve(status === 'draft' ? [{ ...specSummary, status: 'draft' }] : []));
+    apiMock.getSpec.mockResolvedValue({
+      ...specWithKnowledge, status: 'draft',
+      test_scenarios: [{ id: 'ts-plan', title: 'Planned scenario' }],
+    });
+    render(<CreateCardModal boardId="board-1" initialStatus="started" onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: type }));
+    await screen.findByRole('option', { name: 'Selective propagation spec (draft)' });
+    fireEvent.change(specSelect(), { target: { value: 'spec-1' } });
+    await screen.findByRole('checkbox', { name: 'Select Stable root knowledge' });
+    const status = screen.getByText('Status').parentElement!.querySelector('select')!;
+    expect(status).toHaveValue('not_started');
+    expect(within(status).getAllByRole('option')).toHaveLength(1);
+    if (type === 'Test') {
+      fireEvent.click(await screen.findByRole('checkbox', { name: 'Planned scenario' }));
+    }
+    fireEvent.change(screen.getByPlaceholderText('E.g.: Implement feature X'), {
+      target: { value: 'Plan before approval' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Create Card' }));
+    await waitFor(() => expect(apiMock.createCard).toHaveBeenCalledTimes(1));
+    expect(apiMock.createCard).toHaveBeenCalledWith('board-1', expect.objectContaining({
+      spec_id: 'spec-1', status: 'not_started',
+      ...(type === 'Test' ? { card_type: 'test', test_scenario_ids: ['ts-plan'] } : {}),
+    }));
+  });
+
+  it('clears the Draft parent when switching from planned work to Bug', async () => {
+    apiMock.listSpecs.mockImplementation((_boardId: string, status: string) =>
+      Promise.resolve(status === 'draft' ? [{ ...specSummary, status: 'draft' }] : []));
+    render(<CreateCardModal boardId="board-1" initialStatus="not_started" onClose={vi.fn()} />);
+    await screen.findByRole('option', { name: 'Selective propagation spec (draft)' });
+    fireEvent.change(specSelect(), { target: { value: 'spec-1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Bug' }));
+    await waitFor(() => expect(specSelect()).toHaveValue(''));
+    expect(screen.queryByRole('option', { name: 'Selective propagation spec (draft)' })).not.toBeInTheDocument();
+    expect(apiMock.createCard).not.toHaveBeenCalled();
+  });
+
   it('keeps Done Specs for bug/regression work and clears the parent on switching to normal work', async () => {
     apiMock.listSpecs.mockImplementation((_boardId: string, status: string) =>
       Promise.resolve(status === 'done' ? [{ ...specSummary, status: 'done' }] : []));
     render(<CreateCardModal boardId="board-1" initialStatus="not_started" onClose={vi.fn()} />);
-    await waitFor(() => expect(apiMock.listSpecs).toHaveBeenCalledTimes(4));
+    await waitFor(() => expect(apiMock.listSpecs).toHaveBeenCalledTimes(5));
     expect(screen.queryByRole('option', { name: /Selective propagation spec/ })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Test' }));
     expect(await screen.findByRole('option', { name: 'Selective propagation spec (done)' })).toBeInTheDocument();
@@ -239,7 +280,7 @@ describe('CreateCardModal selective Knowledge integration', () => {
       <CreateCardModal boardId="board-1" initialStatus="not_started" onClose={onClose} />,
     );
 
-    await waitFor(() => expect(apiMock.listSpecs).toHaveBeenCalledTimes(4));
+    await waitFor(() => expect(apiMock.listSpecs).toHaveBeenCalledTimes(5));
     await chooseSpec();
 
     const knowledge = screen.getByRole('checkbox', {

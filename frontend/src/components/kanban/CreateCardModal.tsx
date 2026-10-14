@@ -66,6 +66,7 @@ export function CreateCardModal({ boardId, initialStatus, onClose }: CreateCardM
   // Spec selection
   const [specs, setSpecs] = useState<SpecSummary[]>([]);
   const [selectedSpecId, setSelectedSpecId] = useState('');
+  const isDraftSpec = specs.some((spec) => spec.id === selectedSpecId && spec.status === 'draft');
   const [specKnowledge, setSpecKnowledge] = useState<KnowledgePropagationCandidate[]>([]);
   const [knowledgeLoading, setKnowledgeLoading] = useState(false);
   const [knowledgeError, setKnowledgeError] = useState<string | null>(null);
@@ -109,10 +110,17 @@ export function CreateCardModal({ boardId, initialStatus, onClose }: CreateCardM
   useEffect(() => {
     // Switching from post-delivery Bug/Test work must not retain a hidden Done
     // parent for a normal task. The backend revalidates under its write fence.
-    if (cardType === 'normal' && specs.some((spec) => spec.id === selectedSpecId && spec.status === 'done')) {
+    if (specs.some((spec) => spec.id === selectedSpecId && (
+      (cardType === 'normal' && spec.status === 'done')
+      || (cardType === 'bug' && spec.status === 'draft')
+    ))) {
       setSelectedSpecId('');
     }
   }, [cardType, specs, selectedSpecId]);
+
+  useEffect(() => {
+    if (isDraftSpec) setStatus('not_started');
+  }, [isDraftSpec]);
 
   const tasksForSpec = useMemo(() => {
     if (!selectedSpecId) return allBoardCards;
@@ -130,14 +138,15 @@ export function CreateCardModal({ boardId, initialStatus, onClose }: CreateCardM
   }, [boardId, canReadBoardAgents]);
 
   useEffect(() => {
-    // Load specs that accept card creation (approved + validated + in_progress for tasks, + done for bugs)
+    // Draft admits planned tasks/tests; each type retains its later-state rules.
     Promise.all([
+      api.listSpecs(boardId, 'draft'),
       api.listSpecs(boardId, 'approved'),
       api.listSpecs(boardId, 'validated'),
       api.listSpecs(boardId, 'in_progress'),
       api.listSpecs(boardId, 'done'),
-    ]).then(([approved, validated, inProgress, done]) => {
-      setSpecs([...approved, ...validated, ...inProgress, ...done]);
+    ]).then(([draft, approved, validated, inProgress, done]) => {
+      setSpecs([...draft, ...approved, ...validated, ...inProgress, ...done]);
     }).catch(() => {});
   }, [boardId]);
 
@@ -252,7 +261,7 @@ export function CreateCardModal({ boardId, initialStatus, onClose }: CreateCardM
     const request = {
         title: title.trim(),
         description: description.trim() || undefined,
-        status,
+        status: isDraftSpec ? 'not_started' : status,
         priority: priority !== 'none' ? priority : undefined,
         assignee_id: assigneeId || undefined,
         labels: labels ? labels.split(',').map((l) => l.trim()).filter(Boolean) : undefined,
@@ -421,8 +430,8 @@ export function CreateCardModal({ boardId, initialStatus, onClose }: CreateCardM
                   .filter((s) => cardType === 'bug'
                     ? ['approved', 'in_progress', 'done'].includes(s.status)
                     : cardType === 'test'
-                    ? ['approved', 'validated', 'in_progress', 'done'].includes(s.status)
-                    : ['approved', 'in_progress'].includes(s.status))
+                    ? ['draft', 'approved', 'validated', 'in_progress', 'done'].includes(s.status)
+                    : ['draft', 'approved', 'in_progress'].includes(s.status))
                   .map((s) => (
                   <option key={s.id} value={s.id}>{s.title} ({s.status})</option>
                 ))}
@@ -642,7 +651,7 @@ export function CreateCardModal({ boardId, initialStatus, onClose }: CreateCardM
                   onChange={(e) => setStatus(e.target.value as CardStatus)}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg dark:bg-gray-700 dark:border-gray-600"
                 >
-                  {CREATABLE_CARD_STATUSES.map((s) => (
+                  {CREATABLE_CARD_STATUSES.filter((s) => !isDraftSpec || s === 'not_started').map((s) => (
                     <option key={s} value={s}>{STATUS_LABELS[s]}</option>
                   ))}
                 </select>
