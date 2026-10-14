@@ -1,0 +1,202 @@
+- generic [ref=f40e3]:
+  - banner [ref=f40e4]:
+    - generic [ref=f40e5]:
+      - generic [ref=f40e6]:
+        - button "Hide sidebar" [ref=f40e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f40e12]
+        - generic [ref=f40e13]: / My Board
+      - generic [ref=f40e14]:
+        - button "Refresh board" [ref=f40e15] [cursor=pointer]
+        - button [ref=f40e22] [cursor=pointer]
+  - generic [ref=f40e26]:
+    - complementary [ref=f40e27]:
+      - generic [ref=f40e28]:
+        - generic [ref=f40e30]:
+          - heading "Boards" [level=2] [ref=f40e31]
+          - button "New board" [ref=f40e32] [cursor=pointer]
+        - navigation [ref=f40e34]:
+          - generic [ref=f40e35]:
+            - heading "My Boards" [level=3] [ref=f40e36]
+            - list [ref=f40e37]:
+              - listitem [ref=f40e38]:
+                - button "My Board" [ref=f40e39] [cursor=pointer]
+    - main [ref=f40e46]:
+      - group "Board views" [ref=f40e47]:
+        - button "Stories" [ref=f40e48] [cursor=pointer]
+        - button "Ideations" [ref=f40e52] [cursor=pointer]
+        - button "Refinements" [ref=f40e55] [cursor=pointer]
+        - button "Specs" [pressed] [ref=f40e60] [cursor=pointer]
+        - button "Tasks" [ref=f40e65] [cursor=pointer]
+      - generic [ref=f40e1934]:
+        - generic [ref=f40e1935]:
+          - generic [ref=f40e1936]:
+            - heading "Specifications" [level=2] [ref=f40e1937]
+            - generic [ref=f40e1938]: (1 of 1)
+          - generic [ref=f40e1939]:
+            - textbox "Search specs…" [ref=f40e1941]
+            - group "View mode" [ref=f40e1942]:
+              - button "List view" [pressed] [ref=f40e1943] [cursor=pointer]
+              - button "Grid view" [ref=f40e1945] [cursor=pointer]
+            - generic [ref=f40e1951]: Group specs
+            - combobox "Group specs" [ref=f40e1957]:
+              - option "None"
+              - option "Ideation"
+              - option "Refinement"
+              - option "Parents" [selected]
+            - button "New Spec" [ref=f40e1958] [cursor=pointer]
+        - generic [ref=f40e1960]:
+          - button "All" [ref=f40e1961] [cursor=pointer]
+          - button "Draft" [ref=f40e1962] [cursor=pointer]
+          - button "Review" [ref=f40e1963] [cursor=pointer]
+          - button "Approved" [ref=f40e1964] [cursor=pointer]
+          - button "Validated" [ref=f40e1965] [cursor=pointer]
+          - button "In Progress" [ref=f40e1966] [cursor=pointer]
+          - button "Done" [ref=f40e1967] [cursor=pointer]
+          - button "Show archived" [ref=f40e1968] [cursor=pointer]
+        - generic [ref=f40e1971]:
+          - generic [ref=f40e1972] [cursor=pointer]:
+            - 'heading "Refinement: Reserva de salas — consistência das reservas e contratos hexagonais" [level=3] [ref=f40e1979]'
+            - generic [ref=f40e1980]: (1)
+          - generic [ref=f40e1984] [cursor=pointer]:
+            - generic [ref=f40e1985]:
+              - generic [ref=f40e1986]:
+                - generic [ref=f40e1987]: In Progress
+                - generic "Edition 4" [ref=f40e1991]
+              - heading "Reserva de salas — consistência das reservas e contratos hexagonais" [level=3] [ref=f40e1992]
+              - paragraph [ref=f40e1993]: "Especificação conceitual H01–H04: consultar, criar, alterar e cancelar reservas próprias com consistência, idempotência, histórico e arquitetura hexagonal. Exercício de testes do Pulse; nenhuma implementação real solicitada."
+              - 'generic "Requirement lint: 0 (0–360) · Edition 4" [ref=f40e1995]':
+                - generic [ref=f40e1996]: Requirement lint
+                - strong [ref=f40e1997]: "0"
+              - generic [ref=f40e1998]:
+                - generic [ref=f40e1999]: mock
+                - generic [ref=f40e2000]: reserva-de-salas
+                - generic [ref=f40e2001]: teste-sdlc
+            - generic [ref=f40e2002]:
+              - button "Open lineage graph" [ref=f40e2003]
+              - button "Archive tree" [ref=f40e2008]
+        - generic [ref=f40e2014]:
+          - status [ref=f40e2015]: Showing 1–1 of 1 matching. 1 overall. Page 1 of 1.
+          - generic [ref=f40e2016]:
+            - generic [ref=f40e2017]:
+              - generic [ref=f40e2018]: Items per page
+              - combobox "Items per page" [ref=f40e2019]:
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+            - navigation "Specifications pagination" [ref=f40e2020]:
+              - generic [ref=f40e2021]:
+                - button "Previous page" [disabled] [ref=f40e2022]: Previous
+                - button "Page 1" [disabled] [ref=f40e2023]: "1"
+                - button "Next page" [disabled] [ref=f40e2024]: Next
+        - dialog [ref=f40e2027]:
+          - generic [ref=f40e2028]:
+            - generic [ref=f40e2029]:
+              - generic [ref=f40e2030]: In Progress
+              - heading "Reserva de salas — consistência das reservas e contratos hexagonais" [level=2] [ref=f40e2034]
+              - generic "Edition 4" [ref=f40e2035]
+            - generic [ref=f40e2036]:
+              - button "Open lineage graph" [ref=f40e2037] [cursor=pointer]
+              - button "Export report" [ref=f40e2042] [cursor=pointer]
+              - button "Refresh" [ref=f40e2046] [cursor=pointer]
+              - button "Expand" [ref=f40e2052] [cursor=pointer]
+              - button "Close spec" [ref=f40e2058] [cursor=pointer]
+          - generic [ref=f40e2062]:
+            - generic [ref=f40e2063]: "Move to:"
+            - button "Validated" [ref=f40e2064] [cursor=pointer]
+            - button "Draft" [ref=f40e2067] [cursor=pointer]
+            - button "Cancelled" [ref=f40e2070] [cursor=pointer]
+          - generic [ref=f40e2073]:
+            - generic [ref=f40e2074]: "From:"
+            - button "Reserva de salas — teste do SDLC v24" [ref=f40e2075] [cursor=pointer]:
+              - text: Reserva de salas — teste do SDLC
+              - generic [ref=f40e2078]: v24
+            - button "Reserva de salas — consistência das reservas e contratos hexagonais v39" [ref=f40e2081] [cursor=pointer]:
+              - text: Reserva de salas — consistência das reservas e contratos hexagonais
+              - generic [ref=f40e2086]: v39
+          - generic [ref=f40e2088]:
+            - tablist "Spec sections" [ref=f40e2089]:
+              - tab "Details" [ref=f40e2090] [cursor=pointer]
+              - tab "Coverage" [active] [selected] [ref=f40e2095] [cursor=pointer]
+              - tab "Code Evidence Matrix" [ref=f40e2101] [cursor=pointer]
+              - tab "Resources" [ref=f40e2105] [cursor=pointer]
+              - tab "Requirements & Decisions" [ref=f40e2109] [cursor=pointer]
+              - tab "Tests & Verifications" [ref=f40e2114] [cursor=pointer]
+              - tab "Q&A 9" [ref=f40e2118] [cursor=pointer]:
+                - generic [ref=f40e2122]: Q&A
+                - generic [ref=f40e2123]: "9"
+              - tab "Dependencies" [ref=f40e2124] [cursor=pointer]
+              - tab "References 27" [ref=f40e2130] [cursor=pointer]:
+                - generic [ref=f40e2134]: References
+                - generic [ref=f40e2135]: "27"
+              - tab "KG Graph" [ref=f40e2136] [cursor=pointer]
+              - tab "Validation" [ref=f40e2143] [cursor=pointer]
+              - tab "Activity" [ref=f40e2148] [cursor=pointer]
+            - button "Scroll Spec sections right" [ref=f40e2154] [cursor=pointer]
+          - tabpanel "Coverage" [ref=f40e2392]:
+            - tabpanel [ref=f40e2159]:
+              - region "Spec coverage" [ref=f40e2393]:
+                - generic [ref=f40e2394]:
+                  - generic [ref=f40e2395]:
+                    - heading "Coverage" [level=3] [ref=f40e2396]
+                    - paragraph [ref=f40e2397]: Find planning gaps and track proof of delivery.
+                  - button "Reload coverage" [ref=f40e2398] [cursor=pointer]
+                - tablist "Coverage views" [ref=f40e2400]:
+                  - tab "Overview" [selected] [ref=f40e2401] [cursor=pointer]
+                  - tab "Planning" [ref=f40e2403] [cursor=pointer]
+                  - tab "Implementation" [ref=f40e2405] [cursor=pointer]
+                - paragraph [ref=f40e2407]: Edition 4 · Informational view — this does not approve a gate.
+                - tabpanel "Overview" [ref=f40e2408]:
+                  - generic [ref=f40e2409]:
+                    - generic [ref=f40e2410]:
+                      - paragraph [ref=f40e2411]: Planning coverage
+                      - paragraph [ref=f40e2412]: 100%
+                      - progressbar "Planning coverage" [ref=f40e2413]
+                      - paragraph [ref=f40e2415]: 9 of 9
+                      - paragraph [ref=f40e2416]: Applicable link dimensions fully covered. Empty dimensions are excluded.
+                    - generic [ref=f40e2417]:
+                      - paragraph [ref=f40e2418]: Implementation proof
+                      - paragraph [ref=f40e2419]: 0%
+                      - progressbar "Implementation proof" [ref=f40e2420]
+                      - paragraph [ref=f40e2421]: 0 of 79
+                      - paragraph [ref=f40e2422]: Obligations with admitted implementation proof.
+                    - generic [ref=f40e2423]:
+                      - paragraph [ref=f40e2424]: Verification proof
+                      - paragraph [ref=f40e2425]: 0%
+                      - progressbar "Verification proof" [ref=f40e2426]
+                      - paragraph [ref=f40e2427]: 0 of 79
+                      - paragraph [ref=f40e2428]: Obligations with admitted verification proof.
+                  - region "Next steps" [ref=f40e2429]:
+                    - heading "Next steps" [level=4] [ref=f40e2430]
+                    - list [ref=f40e2431]:
+                      - listitem [ref=f40e2432]: All applicable planning dimensions are covered.
+                      - listitem [ref=f40e2433]:
+                        - generic [ref=f40e2434]: 79 of 79 obligations without implementation proof.
+                        - button "Review implementation" [ref=f40e2435] [cursor=pointer]
+                      - listitem [ref=f40e2436]:
+                        - generic [ref=f40e2437]: 79 of 79 obligations without verification proof.
+                        - button "Review verification" [ref=f40e2438] [cursor=pointer]
+                  - paragraph [ref=f40e2439]: Planning links are not delivery proof. Waivers do not count as proven work.
+                - group [ref=f40e2440]:
+                  - generic "Technical diagnostics" [ref=f40e2441] [cursor=pointer]
+          - generic [ref=f40e2387]:
+            - button "Delete spec" [ref=f40e2388] [cursor=pointer]
+            - button "Close" [ref=f40e2390] [cursor=pointer]
+  - 'status "Cognitive pipeline working: 1 running, 0 pending" [ref=f40e2442]':
+    - generic [ref=f40e1380]: 1 running
+  - status [ref=f40e1381]:
+    - generic [ref=f40e1382]:
+      - generic [ref=f40e1383]: Consolidation in progress
+      - generic [ref=f40e1384]: 88%
+    - generic [ref=f40e1386]:
+      - generic [ref=f40e1387]:
+        - generic [ref=f40e1388]: Pending
+        - generic [ref=f40e1389]: "0"
+      - generic [ref=f40e1390]:
+        - generic [ref=f40e1391]: Running
+        - generic [ref=f40e1392]: "1"
+      - generic [ref=f40e1393]:
+        - generic [ref=f40e1394]: Processed
+        - generic [ref=f40e1395]: "7"
+      - generic [ref=f40e1396]:
+        - generic [ref=f40e1397]: Paused
+        - generic [ref=f40e1398]: "0"

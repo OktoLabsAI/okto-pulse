@@ -1,0 +1,122 @@
+- generic [ref=e2]:
+  - generic [ref=e60]:
+    - generic [ref=e61]:
+      - generic [ref=e62]:
+        - heading "Metrics opt-in" [level=2] [ref=e63]
+        - paragraph [ref=e64]: "Current setting: Off"
+      - button "Close metrics settings" [ref=e65] [cursor=pointer]
+    - generic [ref=e69]:
+      - generic [ref=e70]: Okto Pulse starts with metrics off. You can turn on anonymous hourly aggregates here.
+      - generic [ref=e71]:
+        - generic [ref=e72]:
+          - generic [ref=e73]: Send metrics
+          - generic [ref=e74]: "Off"
+        - switch "Change metrics sharing" [ref=e75] [cursor=pointer]
+      - generic [ref=e77]:
+        - generic [ref=e78]: Metrics scope
+        - generic [ref=e79]: All eligible anonymous aggregate metrics are included when sending is on.
+      - generic [ref=e80]:
+        - generic [ref=e81]: Anonymous metrics included
+        - generic [ref=e83]:
+          - generic [ref=e88]:
+            - generic [ref=e89]: Telemetry schema 1.1.0 reviewed
+            - generic [ref=e90]: Only the documented anonymous aggregate fields are eligible for upload.
+          - generic [ref=e95]:
+            - generic [ref=e96]: Privacy terms reviewed
+            - generic [ref=e97]: Metrics sharing is optional and can be turned off from this panel.
+          - generic [ref=e102]:
+            - generic [ref=e103]: Hourly aggregates only
+            - generic [ref=e104]: Events are summarized before upload; raw local event files stay on this machine.
+          - generic [ref=e109]:
+            - generic [ref=e110]: Product aggregates reviewed
+            - generic [ref=e111]: Feature usage, flow origins, completion counts, and work item totals are sent only as counts.
+          - generic [ref=e116]:
+            - generic [ref=e117]: No PII or project content
+            - generic [ref=e118]: Titles, descriptions, board IDs, paths, emails, and payload bodies are not sent.
+          - generic [ref=e123]:
+            - generic [ref=e124]: User control retained
+            - generic [ref=e125]: You can turn metrics off at any time.
+      - generic [ref=e126]:
+        - generic [ref=e127]:
+          - generic [ref=e128]: Schema
+          - generic [ref=e129]: 1.1.0
+        - generic [ref=e130]:
+          - generic [ref=e131]: Consent status
+          - generic [ref=e132]: current
+      - generic [ref=e133]:
+        - button "Refresh" [ref=e134] [cursor=pointer]
+        - button "Not now" [ref=e138] [cursor=pointer]
+  - generic [ref=e31]:
+    - banner [ref=e32]:
+      - generic [ref=e33]:
+        - generic [ref=e34]:
+          - button "Hide sidebar" [ref=e35] [cursor=pointer]
+          - img "Okto Pulse" [ref=e40]
+          - generic [ref=e139]: / My Board
+        - generic [ref=e140]:
+          - button "Refresh board" [ref=e141] [cursor=pointer]
+          - button [ref=e148] [cursor=pointer]
+    - generic [ref=e41]:
+      - complementary [ref=e42]:
+        - generic [ref=e43]:
+          - generic [ref=e45]:
+            - heading "Boards" [level=2] [ref=e46]
+            - button "New board" [ref=e47] [cursor=pointer]
+          - navigation [ref=e49]:
+            - generic [ref=e50]:
+              - heading "My Boards" [level=3] [ref=e51]
+              - list [ref=e152]:
+                - listitem [ref=e153]:
+                  - button "My Board" [ref=e154] [cursor=pointer]
+      - main [ref=e54]:
+        - group "Board views" [ref=e161]:
+          - button "Stories" [pressed] [ref=e162] [cursor=pointer]
+          - button "Ideations" [ref=e166] [cursor=pointer]
+          - button "Refinements" [ref=e169] [cursor=pointer]
+          - button "Specs" [ref=e174] [cursor=pointer]
+          - button "Tasks" [ref=e179] [cursor=pointer]
+        - generic [ref=e186]:
+          - generic [ref=e187]:
+            - generic [ref=e188]:
+              - heading "Stories" [level=2] [ref=e189]
+              - generic [ref=e190]: (0 of 0)
+            - generic [ref=e191]:
+              - textbox "Search stories..." [ref=e193]
+              - group "View mode" [ref=e194]:
+                - button "List view" [pressed] [ref=e195] [cursor=pointer]
+                - button "Grid view" [ref=e197] [cursor=pointer]
+              - button "New Story" [ref=e203] [cursor=pointer]
+          - generic [ref=e205]:
+            - button "All" [ref=e206] [cursor=pointer]
+            - button "Draft" [ref=e207] [cursor=pointer]
+            - button "Triage" [ref=e208] [cursor=pointer]
+            - button "Ready" [ref=e209] [cursor=pointer]
+            - button "Converted" [ref=e210] [cursor=pointer]
+            - button "Show archived" [ref=e211] [cursor=pointer]
+          - generic [ref=e212]:
+            - complementary [ref=e213]:
+              - generic [ref=e214]:
+                - generic [ref=e215]: Topics
+                - button "New Topic" [ref=e220] [cursor=pointer]
+              - button "All topics 0" [ref=e223] [cursor=pointer]:
+                - generic [ref=e224]: All topics
+                - generic [ref=e225]: "0"
+            - generic [ref=e226]:
+              - generic [ref=e228]:
+                - paragraph [ref=e233]: No topics yet
+                - button "New Topic" [ref=e234] [cursor=pointer]
+              - generic [ref=e236]:
+                - status [ref=e237]:
+                  - text: No stories match the active filters.
+                  - generic [ref=e238]: 0 overall.
+                - generic [ref=e239]:
+                  - generic [ref=e240]:
+                    - generic [ref=e241]: Items per page
+                    - combobox "Items per page" [ref=e242]:
+                      - option "25" [selected]
+                      - option "50"
+                      - option "100"
+                  - navigation "Stories pagination" [ref=e243]:
+                    - generic [ref=e244]:
+                      - button "Previous page" [disabled] [ref=e245]: Previous
+                      - button "Next page" [disabled] [ref=e246]: Next

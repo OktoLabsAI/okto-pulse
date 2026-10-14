@@ -1,0 +1,177 @@
+- generic [ref=f3e3]:
+  - banner [ref=f3e4]:
+    - generic [ref=f3e5]:
+      - generic [ref=f3e6]:
+        - button "Hide sidebar" [ref=f3e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f3e12]
+        - generic [ref=f3e31]: / My Board
+      - generic [ref=f3e32]:
+        - button "Refresh board" [ref=f3e33] [cursor=pointer]
+        - button [ref=f3e40] [cursor=pointer]
+  - generic [ref=f3e13]:
+    - complementary [ref=f3e14]:
+      - generic [ref=f3e15]:
+        - generic [ref=f3e17]:
+          - heading "Boards" [level=2] [ref=f3e18]
+          - button "New board" [ref=f3e19] [cursor=pointer]
+        - navigation [ref=f3e21]:
+          - generic [ref=f3e22]:
+            - heading "My Boards" [level=3] [ref=f3e23]
+            - list [ref=f3e44]:
+              - listitem [ref=f3e45]:
+                - button "My Board" [ref=f3e46] [cursor=pointer]
+    - main [ref=f3e26]:
+      - group "Board views" [ref=f3e53]:
+        - button "Stories" [ref=f3e54] [cursor=pointer]
+        - button "Ideations" [ref=f3e58] [cursor=pointer]
+        - button "Refinements" [ref=f3e61] [cursor=pointer]
+        - button "Specs" [pressed] [ref=f3e66] [cursor=pointer]
+        - button "Tasks" [ref=f3e71] [cursor=pointer]
+      - generic [ref=f3e169]:
+        - generic [ref=f3e170]:
+          - generic [ref=f3e171]:
+            - heading "Specifications" [level=2] [ref=f3e172]
+            - generic [ref=f3e173]: (1 of 1)
+          - generic [ref=f3e174]:
+            - textbox "Search specs…" [ref=f3e176]
+            - group "View mode" [ref=f3e177]:
+              - button "List view" [pressed] [ref=f3e178] [cursor=pointer]
+              - button "Grid view" [ref=f3e180] [cursor=pointer]
+            - generic [ref=f3e186]: Group specs
+            - combobox "Group specs" [ref=f3e192]:
+              - option "None"
+              - option "Ideation"
+              - option "Refinement"
+              - option "Parents" [selected]
+            - button "New Spec" [ref=f3e193] [cursor=pointer]
+        - generic [ref=f3e195]:
+          - button "All" [ref=f3e196] [cursor=pointer]
+          - button "Draft" [ref=f3e197] [cursor=pointer]
+          - button "Review" [ref=f3e198] [cursor=pointer]
+          - button "Approved" [ref=f3e199] [cursor=pointer]
+          - button "Validated" [ref=f3e200] [cursor=pointer]
+          - button "In Progress" [ref=f3e201] [cursor=pointer]
+          - button "Done" [ref=f3e202] [cursor=pointer]
+          - button "Show archived" [ref=f3e203] [cursor=pointer]
+        - generic [ref=f3e209] [cursor=pointer]:
+          - generic [ref=f3e210]:
+            - generic [ref=f3e211]:
+              - generic [ref=f3e212]: Draft
+              - generic "Edition 1" [ref=f3e216]
+            - heading "Readiness gate - isolated UI check" [level=3] [ref=f3e217]
+            - paragraph [ref=f3e218]: Mock scope for override permission validation only.
+            - 'generic "Requirement lint: no current result · Edition 1; 0 previous results" [ref=f3e220]':
+              - generic [ref=f3e221]: Requirement lint
+              - strong [ref=f3e222]: Not assessed
+          - generic [ref=f3e223]:
+            - button "Open lineage graph" [ref=f3e224]
+            - button "Archive tree" [ref=f3e229]
+        - generic [ref=f3e235]:
+          - status [ref=f3e236]: Showing 1–1 of 1 matching. 1 overall. Page 1 of 1.
+          - generic [ref=f3e237]:
+            - generic [ref=f3e238]:
+              - generic [ref=f3e239]: Items per page
+              - combobox "Items per page" [ref=f3e240]:
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+            - navigation "Specifications pagination" [ref=f3e241]:
+              - generic [ref=f3e242]:
+                - button "Previous page" [disabled] [ref=f3e243]: Previous
+                - button "Page 1" [disabled] [ref=f3e244]: "1"
+                - button "Next page" [disabled] [ref=f3e245]: Next
+        - dialog [ref=f3e247]:
+          - generic [ref=f3e248]:
+            - generic [ref=f3e249]:
+              - generic [ref=f3e250]: Draft
+              - heading "Readiness gate - isolated UI check" [level=2] [ref=f3e254]
+              - generic "Edition 1" [ref=f3e255]
+            - generic [ref=f3e256]:
+              - button "Open lineage graph" [ref=f3e257] [cursor=pointer]
+              - button "Export report" [ref=f3e262] [cursor=pointer]
+              - button "Refresh" [ref=f3e266] [cursor=pointer]
+              - button "Expand" [ref=f3e272] [cursor=pointer]
+              - button "Close spec" [ref=f3e278] [cursor=pointer]
+          - generic [ref=f3e282]:
+            - generic [ref=f3e283]: "Move to:"
+            - button "Review" [ref=f3e284] [cursor=pointer]
+            - button "Cancelled" [ref=f3e287] [cursor=pointer]
+          - generic [ref=f3e291]:
+            - tablist "Spec sections" [ref=f3e292]:
+              - tab "Details" [ref=f3e293] [cursor=pointer]
+              - tab "Coverage" [selected] [ref=f3e298] [cursor=pointer]
+              - tab "Project Structure" [ref=f3e304] [cursor=pointer]
+              - tab "Code Evidence Matrix" [ref=f3e311] [cursor=pointer]
+              - tab "Resources" [ref=f3e315] [cursor=pointer]
+              - tab "Requirements & Decisions" [ref=f3e319] [cursor=pointer]
+              - tab "Tests & Verifications" [ref=f3e324] [cursor=pointer]
+              - tab "Q&A" [ref=f3e328] [cursor=pointer]
+              - tab "Dependencies" [ref=f3e333] [cursor=pointer]
+              - tab "References" [ref=f3e339] [cursor=pointer]
+              - tab "KG Graph" [ref=f3e344] [cursor=pointer]
+              - tab "Validation" [ref=f3e351] [cursor=pointer]
+              - tab "Activity" [ref=f3e356] [cursor=pointer]
+            - button "Scroll Spec sections right" [ref=f3e362] [cursor=pointer]
+          - tabpanel "Coverage" [ref=f3e397]:
+            - tabpanel [ref=f3e367]:
+              - region "Spec coverage" [ref=f3e398]:
+                - generic [ref=f3e400]:
+                  - heading "Coverage" [level=3] [ref=f3e401]
+                  - paragraph [ref=f3e402]: Find planning gaps and track proof of delivery.
+                - tablist "Coverage views" [ref=f3e405]:
+                  - tab "Overview" [ref=f3e406] [cursor=pointer]
+                  - tab "Planning" [ref=f3e408] [cursor=pointer]
+                  - tab "Implementation" [active] [selected] [ref=f3e410] [cursor=pointer]
+                - tabpanel "Implementation" [ref=f3e444]:
+                  - region "Implementation and verification" [ref=f3e445]:
+                    - paragraph [ref=f3e446]: Track implementation and verification for each obligation. Expand an item to inspect its evidence.
+                    - generic [ref=f3e447]:
+                      - generic [ref=f3e448]:
+                        - generic [ref=f3e449]: Blocked
+                        - status [ref=f3e450]: implementation missing on 1 · test coverage missing on 1 obligations · Edition 1
+                      - generic [ref=f3e451]:
+                        - generic [ref=f3e452]: "Gate: Blocking (Board)"
+                        - button "Refresh delivery rollup" [ref=f3e453] [cursor=pointer]: Refresh
+                    - generic [ref=f3e459]:
+                      - generic [ref=f3e460]:
+                        - text: Skip delivery evidence requirement
+                        - paragraph [ref=f3e461]: Allow moving spec to Done without complete delivery proof — the coverage verdict stays visible. Waivers (per obligation) remain human-only.
+                      - switch "Skip delivery evidence requirement" [ref=f3e462] [cursor=pointer]
+                    - generic [ref=f3e464]:
+                      - heading "Coverage by obligation" [level=3] [ref=f3e465]
+                      - table [ref=f3e467]:
+                        - rowgroup [ref=f3e468]:
+                          - row [ref=f3e469]:
+                            - columnheader "Obligation" [ref=f3e470]
+                            - columnheader "Implementation" [ref=f3e471]
+                            - columnheader "Verification" [ref=f3e472]
+                        - rowgroup [ref=f3e473]:
+                          - row [ref=f3e474]:
+                            - cell [ref=f3e475]:
+                              - group [ref=f3e476]:
+                                - generic "Readiness gate - isolated UI check" [ref=f3e477] [cursor=pointer]
+                            - cell "◌" [ref=f3e478]
+                            - cell "◌" [ref=f3e479]
+                    - paragraph [ref=f3e480]: Waivers are recorded at rollup level and require human authorization. Proof is recorded on each task or test card.
+          - generic [ref=f3e393]:
+            - button "Delete spec" [ref=f3e394] [cursor=pointer]
+            - button "Close" [ref=f3e396] [cursor=pointer]
+  - 'status "Cognitive pipeline working: 0 running, 1 pending" [ref=f3e139]':
+    - generic [ref=f3e150]: processing · 1 pending
+  - status [ref=f3e151]:
+    - generic [ref=f3e152]:
+      - generic [ref=f3e153]: Consolidation in progress
+      - generic [ref=f3e154]: 0%
+    - generic [ref=f3e156]:
+      - generic [ref=f3e157]:
+        - generic [ref=f3e158]: Pending
+        - generic [ref=f3e159]: "1"
+      - generic [ref=f3e160]:
+        - generic [ref=f3e161]: Running
+        - generic [ref=f3e162]: "0"
+      - generic [ref=f3e163]:
+        - generic [ref=f3e164]: Processed
+        - generic [ref=f3e165]: "0"
+      - generic [ref=f3e166]:
+        - generic [ref=f3e167]: Paused
+        - generic [ref=f3e168]: "0"

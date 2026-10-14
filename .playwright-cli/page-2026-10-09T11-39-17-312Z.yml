@@ -1,0 +1,119 @@
+- generic [ref=f19e3]:
+  - banner [ref=f19e4]:
+    - generic [ref=f19e5]:
+      - generic [ref=f19e6]:
+        - button "Hide sidebar" [ref=f19e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f19e12]
+        - generic [ref=f19e31]: / My Board
+      - generic [ref=f19e32]:
+        - button "Refresh board" [ref=f19e33] [cursor=pointer]
+        - button [ref=f19e40] [cursor=pointer]
+  - generic [ref=f19e13]:
+    - complementary [ref=f19e14]:
+      - generic [ref=f19e15]:
+        - generic [ref=f19e17]:
+          - heading "Boards" [level=2] [ref=f19e18]
+          - button "New board" [ref=f19e19] [cursor=pointer]
+        - navigation [ref=f19e21]:
+          - generic [ref=f19e22]:
+            - heading "My Boards" [level=3] [ref=f19e23]
+            - list [ref=f19e44]:
+              - listitem [ref=f19e45]:
+                - button "My Board" [ref=f19e46] [cursor=pointer]
+    - main [ref=f19e26]:
+      - group "Board views" [ref=f19e53]:
+        - button "Stories" [pressed] [ref=f19e54] [cursor=pointer]
+        - button "Ideations" [ref=f19e58] [cursor=pointer]
+        - button "Refinements" [ref=f19e61] [cursor=pointer]
+        - button "Specs" [ref=f19e66] [cursor=pointer]
+        - button "Tasks" [ref=f19e71] [cursor=pointer]
+      - generic [ref=f19e78]:
+        - generic [ref=f19e79]:
+          - generic [ref=f19e80]:
+            - heading "Stories" [level=2] [ref=f19e81]
+            - generic [ref=f19e82]: (4 of 4)
+          - generic [ref=f19e83]:
+            - textbox "Search stories..." [ref=f19e85]
+            - group "View mode" [ref=f19e86]:
+              - button "List view" [pressed] [ref=f19e87] [cursor=pointer]
+              - button "Grid view" [ref=f19e89] [cursor=pointer]
+            - button "New Story" [ref=f19e95] [cursor=pointer]
+        - generic [ref=f19e97]:
+          - button "All" [ref=f19e98] [cursor=pointer]
+          - button "Draft" [ref=f19e99] [cursor=pointer]
+          - button "Triage" [ref=f19e100] [cursor=pointer]
+          - button "Ready" [ref=f19e101] [cursor=pointer]
+          - button "Converted" [ref=f19e102] [cursor=pointer]
+          - button "Show archived" [ref=f19e103] [cursor=pointer]
+        - generic [ref=f19e104]:
+          - complementary [ref=f19e105]:
+            - generic [ref=f19e106]:
+              - generic [ref=f19e107]: Topics
+              - button "New Topic" [ref=f19e112] [cursor=pointer]
+            - generic [ref=f19e114]:
+              - button "All topics 4" [ref=f19e115] [cursor=pointer]:
+                - generic [ref=f19e116]: All topics
+                - generic [ref=f19e117]: "4"
+              - generic [ref=f19e118]:
+                - button "Teste SDLC — Reserva de salas 4" [ref=f19e119] [cursor=pointer]:
+                  - generic [ref=f19e120]: Teste SDLC — Reserva de salas
+                  - generic [ref=f19e121]: "4"
+                - 'button "Topic actions: Teste SDLC — Reserva de salas" [ref=f19e122] [cursor=pointer]'
+          - generic [ref=f19e127]:
+            - generic [ref=f19e128]:
+              - generic [ref=f19e131] [cursor=pointer]:
+                - generic [ref=f19e132]:
+                  - generic [ref=f19e133]: Converted
+                  - generic [ref=f19e134]: Teste SDLC — Reserva de salas
+                - heading "H02 — Reservar uma sala" [level=3] [ref=f19e135]
+                - paragraph [ref=f19e136]: "História fictícia para teste conjunto do SDLC. Como pessoa que organiza reuniões, quero reservar uma sala disponível para minha reunião e receber uma confirmação, para garantir o espaço e ter clareza sobre o local e o horário. Pontos para explorar no mockup e na ideação: Explorar…"
+                - generic [ref=f19e137]:
+                  - generic [ref=f19e138]: "As: Pessoa que organiza reuniões"
+                  - generic [ref=f19e139]: "Want: reservar uma sala disponível para minha reunião e receber uma confirmação"
+                  - generic [ref=f19e140]: "So: garantir o espaço e ter clareza sobre o local e o horário"
+              - generic [ref=f19e149] [cursor=pointer]:
+                - generic [ref=f19e150]:
+                  - generic [ref=f19e151]: Converted
+                  - generic [ref=f19e152]: Teste SDLC — Reserva de salas
+                - heading "H03 — Consultar e alterar minhas reservas" [level=3] [ref=f19e153]
+                - paragraph [ref=f19e154]: História fictícia para teste conjunto do SDLC. Como pessoa que organiza reuniões, quero consultar minhas reservas futuras e alterar sala ou horário, para adaptar a reunião a mudanças de agenda sem perder a reserva original quando a alteração falhar. Pontos para explorar no mockup…
+                - generic [ref=f19e155]:
+                  - generic [ref=f19e156]: "As: Pessoa que organiza reuniões"
+                  - generic [ref=f19e157]: "Want: consultar minhas reservas futuras e alterar sala ou horário"
+                  - generic [ref=f19e158]: "So: adaptar a reunião a mudanças de agenda sem perder a reserva original quando a alteração falhar"
+              - generic [ref=f19e166] [cursor=pointer]:
+                - generic [ref=f19e167]:
+                  - generic [ref=f19e168]:
+                    - generic [ref=f19e169]: Converted
+                    - generic [ref=f19e170]: Teste SDLC — Reserva de salas
+                  - heading "H01 — Consultar salas disponíveis" [level=3] [ref=f19e171]
+                  - paragraph [ref=f19e172]: História fictícia para teste conjunto do SDLC. Como pessoa que organiza reuniões, quero consultar salas disponíveis para uma data, intervalo de horário e quantidade de participantes, para encontrar um espaço adequado sem tentar reservar salas ocupadas. Pontos para explorar no moc…
+                  - generic [ref=f19e173]:
+                    - generic [ref=f19e174]: "As: Pessoa que organiza reuniões"
+                    - generic [ref=f19e175]: "Want: consultar salas disponíveis para uma data, intervalo de horário e quantidade de participantes"
+                    - generic [ref=f19e176]: "So: encontrar um espaço adequado sem tentar reservar salas ocupadas"
+                - generic [ref=f19e177]: 1 mockups
+              - generic [ref=f19e186] [cursor=pointer]:
+                - generic [ref=f19e187]:
+                  - generic [ref=f19e188]: Converted
+                  - generic [ref=f19e189]: Teste SDLC — Reserva de salas
+                - heading "H04 — Cancelar uma reserva" [level=3] [ref=f19e190]
+                - paragraph [ref=f19e191]: "História fictícia para teste conjunto do SDLC. Como pessoa que organiza reuniões, quero cancelar uma reserva minha que não será mais utilizada, para liberar a sala para outras pessoas e evitar ocupação desnecessária. Pontos para explorar no mockup e na ideação: Explorar identific…"
+                - generic [ref=f19e192]:
+                  - generic [ref=f19e193]: "As: Pessoa que organiza reuniões"
+                  - generic [ref=f19e194]: "Want: cancelar uma reserva minha que não será mais utilizada"
+                  - generic [ref=f19e195]: "So: liberar a sala para outras pessoas e evitar ocupação desnecessária"
+            - generic [ref=f19e202]:
+              - status [ref=f19e203]: Showing 1–4 of 4 matching. 4 overall. Page 1 of 1.
+              - generic [ref=f19e204]:
+                - generic [ref=f19e205]:
+                  - generic [ref=f19e206]: Items per page
+                  - combobox "Items per page" [ref=f19e207]:
+                    - option "25" [selected]
+                    - option "50"
+                    - option "100"
+                - navigation "Stories pagination" [ref=f19e208]:
+                  - generic [ref=f19e209]:
+                    - button "Previous page" [disabled] [ref=f19e210]: Previous
+                    - button "Page 1" [disabled] [ref=f19e211]: "1"
+                    - button "Next page" [disabled] [ref=f19e212]: Next

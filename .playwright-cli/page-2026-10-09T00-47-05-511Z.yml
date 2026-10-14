@@ -1,0 +1,378 @@
+- generic [ref=f11e3]:
+  - banner [ref=f11e4]:
+    - generic [ref=f11e5]:
+      - generic [ref=f11e6]:
+        - button "Hide sidebar" [ref=f11e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f11e12]
+        - generic [ref=f11e31]: / My Board
+      - generic [ref=f11e32]:
+        - button "Refresh board" [ref=f11e33] [cursor=pointer]
+        - button [ref=f11e40] [cursor=pointer]
+  - generic [ref=f11e13]:
+    - complementary [ref=f11e14]:
+      - generic [ref=f11e15]:
+        - generic [ref=f11e17]:
+          - heading "Boards" [level=2] [ref=f11e18]
+          - button "New board" [ref=f11e19] [cursor=pointer]
+        - navigation [ref=f11e21]:
+          - generic [ref=f11e22]:
+            - heading "My Boards" [level=3] [ref=f11e23]
+            - list [ref=f11e44]:
+              - listitem [ref=f11e45]:
+                - button "My Board" [ref=f11e46] [cursor=pointer]
+    - main [ref=f11e26]:
+      - group "Board views" [ref=f11e53]:
+        - button "Stories" [ref=f11e54] [cursor=pointer]
+        - button "Ideations" [ref=f11e58] [cursor=pointer]
+        - button "Refinements" [ref=f11e61] [cursor=pointer]
+        - button "Specs" [pressed] [ref=f11e66] [cursor=pointer]
+        - button "Tasks" [ref=f11e71] [cursor=pointer]
+      - generic [ref=f11e213]:
+        - generic [ref=f11e214]:
+          - generic [ref=f11e215]:
+            - heading "Specifications" [level=2] [ref=f11e216]
+            - generic [ref=f11e217]: (1 of 1)
+          - generic [ref=f11e218]:
+            - textbox "Search specs…" [ref=f11e220]
+            - group "View mode" [ref=f11e221]:
+              - button "List view" [pressed] [ref=f11e222] [cursor=pointer]
+              - button "Grid view" [ref=f11e224] [cursor=pointer]
+            - generic [ref=f11e230]: Group specs
+            - combobox "Group specs" [ref=f11e236]:
+              - option "None"
+              - option "Ideation"
+              - option "Refinement"
+              - option "Parents" [selected]
+            - button "New Spec" [ref=f11e237] [cursor=pointer]
+        - generic [ref=f11e239]:
+          - button "All" [ref=f11e240] [cursor=pointer]
+          - button "Draft" [ref=f11e241] [cursor=pointer]
+          - button "Review" [ref=f11e242] [cursor=pointer]
+          - button "Approved" [ref=f11e243] [cursor=pointer]
+          - button "Validated" [ref=f11e244] [cursor=pointer]
+          - button "In Progress" [ref=f11e245] [cursor=pointer]
+          - button "Done" [ref=f11e246] [cursor=pointer]
+          - button "Show archived" [ref=f11e247] [cursor=pointer]
+        - generic [ref=f11e250]:
+          - generic [ref=f11e251] [cursor=pointer]:
+            - 'heading "Refinement: Reserva de salas — consistência das reservas e contratos hexagonais" [level=3] [ref=f11e258]'
+            - generic [ref=f11e259]: (1)
+          - generic [ref=f11e263] [cursor=pointer]:
+            - generic [ref=f11e264]:
+              - generic [ref=f11e265]:
+                - generic [ref=f11e266]: Draft
+                - generic "Edition 1" [ref=f11e270]
+              - heading "Reserva de salas — consistência das reservas e contratos hexagonais" [level=3] [ref=f11e271]
+              - paragraph [ref=f11e272]: "Especificação conceitual H01–H04: consultar, criar, alterar e cancelar reservas próprias com consistência, idempotência, histórico e arquitetura hexagonal. Exercício de testes do Pulse; nenhuma implementação real solicitada."
+              - 'generic "Requirement lint: no current result · Edition 1; 0 previous results" [ref=f11e274]':
+                - generic [ref=f11e275]: Requirement lint
+                - strong [ref=f11e276]: Not assessed
+              - generic [ref=f11e277]:
+                - generic [ref=f11e278]: mock
+                - generic [ref=f11e279]: reserva-de-salas
+                - generic [ref=f11e280]: teste-sdlc
+            - generic [ref=f11e281]:
+              - button "Open lineage graph" [ref=f11e282]
+              - button "Archive tree" [ref=f11e287]
+        - generic [ref=f11e293]:
+          - status [ref=f11e294]: Showing 1–1 of 1 matching. 1 overall. Page 1 of 1.
+          - generic [ref=f11e295]:
+            - generic [ref=f11e296]:
+              - generic [ref=f11e297]: Items per page
+              - combobox "Items per page" [ref=f11e298]:
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+            - navigation "Specifications pagination" [ref=f11e299]:
+              - generic [ref=f11e300]:
+                - button "Previous page" [disabled] [ref=f11e301]: Previous
+                - button "Page 1" [disabled] [ref=f11e302]: "1"
+                - button "Next page" [disabled] [ref=f11e303]: Next
+        - dialog [ref=f11e305]:
+          - generic [ref=f11e306]:
+            - generic [ref=f11e307]:
+              - generic [ref=f11e308]: Draft
+              - heading "Reserva de salas — consistência das reservas e contratos hexagonais" [level=2] [ref=f11e312]
+              - generic "Edition 1" [ref=f11e313]
+            - generic [ref=f11e314]:
+              - button "Open lineage graph" [ref=f11e315] [cursor=pointer]
+              - button "Export report" [ref=f11e320] [cursor=pointer]
+              - button "Refresh" [ref=f11e324] [cursor=pointer]
+              - button "Expand" [ref=f11e330] [cursor=pointer]
+              - button "Close spec" [ref=f11e336] [cursor=pointer]
+          - generic [ref=f11e340]:
+            - generic [ref=f11e341]: "Move to:"
+            - button "Review" [ref=f11e342] [cursor=pointer]
+            - button "Cancelled" [ref=f11e345] [cursor=pointer]
+          - generic [ref=f11e348]:
+            - generic [ref=f11e349]: "From:"
+            - button "Reserva de salas — teste do SDLC v24" [ref=f11e350] [cursor=pointer]:
+              - text: Reserva de salas — teste do SDLC
+              - generic [ref=f11e353]: v24
+            - button "Reserva de salas — consistência das reservas e contratos hexagonais v39" [ref=f11e356] [cursor=pointer]:
+              - text: Reserva de salas — consistência das reservas e contratos hexagonais
+              - generic [ref=f11e361]: v39
+          - generic [ref=f11e363]:
+            - tablist "Spec sections" [ref=f11e364]:
+              - tab "Details" [selected] [ref=f11e365] [cursor=pointer]
+              - tab "Requirements & Decisions" [ref=f11e370] [cursor=pointer]
+              - tab "Tests & Verifications" [ref=f11e375] [cursor=pointer]
+              - tab "Coverage" [ref=f11e379] [cursor=pointer]
+              - tab "Code Evidence Matrix" [ref=f11e385] [cursor=pointer]
+              - tab "Project structure" [ref=f11e389] [cursor=pointer]
+              - tab "Dependencies" [ref=f11e396] [cursor=pointer]
+              - tab "Resources" [ref=f11e402] [cursor=pointer]
+              - tab "Q&A 9" [ref=f11e406] [cursor=pointer]:
+                - generic [ref=f11e410]: Q&A
+                - generic [ref=f11e411]: "9"
+              - tab "References" [ref=f11e412] [cursor=pointer]
+              - tab "KG Graph" [ref=f11e417] [cursor=pointer]
+              - tab "Validation" [ref=f11e424] [cursor=pointer]
+              - tab "Activity" [ref=f11e429] [cursor=pointer]
+            - button "Scroll Spec sections right" [ref=f11e435] [cursor=pointer]
+          - tabpanel "Details" [ref=f11e439]:
+            - tabpanel [ref=f11e440]:
+              - generic [ref=f11e441]:
+                - generic [ref=f11e442]:
+                  - heading "Description" [level=4] [ref=f11e443]
+                  - paragraph [ref=f11e446] [cursor=pointer]: "Especificação conceitual H01–H04: consultar, criar, alterar e cancelar reservas próprias com consistência, idempotência, histórico e arquitetura hexagonal. Exercício de testes do Pulse; nenhuma implementação real solicitada."
+                - generic [ref=f11e450]:
+                  - heading "Context" [level=4] [ref=f11e451]
+                  - generic [ref=f11e453] [cursor=pointer]:
+                    - heading "Refinement Description" [level=2] [ref=f11e454]
+                    - paragraph [ref=f11e455]: "Cenário fictício H01–H04 para exercitar o SDLC do Pulse: arquitetura hexagonal v5, contratos estruturados, quatro mockups e36 cenários planejados. Workspace/baseline e bibliotecas não são exigidos nesta rodada conceitual, conforme orientação do usuário e RDL; Code Evidence com dispensa delimitada. Não representa implementação real das reservas."
+                    - heading "In Scope" [level=2] [ref=f11e456]
+                    - list [ref=f11e457]:
+                      - listitem [ref=f11e458]: H01–H04 e histórico próprio, conforme seis Q&A herdadas da ideação Done v24.
+                      - listitem [ref=f11e459]: Calendário/capacidade/ownership e intervalo semiaberto decididos nas Q&A herdadas; detalhamento verificável na análise.
+                      - listitem [ref=f11e460]: Transação local, CAS/idempotência e rollback — Q&A b160044a-0e0b-4ef6-9e41-3be485b9a6c2 e d35e3622-8a0a-4db0-b138-84c9cca08950; RDL resolvido.
+                      - listitem [ref=f11e461]: Arquitetura hexagonal e contratos estruturados c76e3595-fda1-4ed3-9c99-f94d615078a6; seis operações externas e portas públicas.
+                      - listitem [ref=f11e462]: Mockups H01–H04 sob DS v1; planejamento de testes domínio,contrato,integração,HTTP e frontend.
+                      - listitem [ref=f11e463]: Investigação documental, Q&A/RDL e teste das superfícies do Pulse; delimitação conceitual e dispensa de Code Evidence registradas.
+                    - heading "Out of Scope" [level=2] [ref=f11e464]
+                    - list [ref=f11e465]:
+                      - listitem [ref=f11e466]: Calendários externos,e-mail/SMS/push,recorrência,catálogo administrável,feriados especiais e override de administrador — escopo herdado.
+                      - listitem [ref=f11e467]: Múltiplos hosts,arquivo SQLite em rede,escritores externos,segundo backend de banco ou microserviços.
+                      - listitem [ref=f11e468]: Cadastro/reset de conta e IdP externo; contas de teste provisionadas por mecanismo a fixar na Spec.
+                      - listitem [ref=f11e469]: Implementar o aplicativo,modificar o Pulse/corrigir achados,criar Spec/Cards ou registrar testes inexistentes neste pedido.
+                      - listitem [ref=f11e470]: Aprovar/completar refinamento,canonizar decisões no KG ou alterar policies,skips,waivers e limiares.
+                    - heading "Analysis" [level=2] [ref=f11e471]
+                    - heading "Objetivo da revisão" [level=2] [ref=f11e472]
+                    - paragraph [ref=f11e473]: "Blueprint de H01–H04 para avaliar na plataforma, sem implementar o aplicativo e sem aprovação automática. Base: ideação b172b07a-3a1a-40e6-8744-d6a31d8cbda1, edição1/v24, Done. As seis Q&A herdadas continuam válidas e com autoria preservada. Três Q&A técnicas acrescentadas e respondidas pelo Codex sob delegação. Todas as escolhas técnicas abaixo são conhecimento novo desta iniciativa, ainda não decisões canônicas do KG."
+                    - heading "Fontes examinadas e limites" [level=2] [ref=f11e474]
+                    - list [ref=f11e475]:
+                      - listitem [ref=f11e476]: Contexto completo da ideação/refinamento, nove Q&A, guideline hexagonal v1.1.0/binding revisão2 e Design System Reserva de Salas v1.
+                      - listitem [ref=f11e477]: "KG: decisões similares, contradições e aprendizados de bugs retornaram zero itens; não há âncora para alternativas nem Spec/Card para related_context. Saúde do grafo observada healthy, saúde geral at_risk: retorno vazio não prova ausência absoluta de conhecimento. Nenhuma recuperação, alteração de policy ou canonização executada. Nenhuma menção não lida ao agente."
+                      - listitem [ref=f11e478]:
+                        - text: "Pesquisa primária:"
+                        - link "SQLite Transactions" [ref=f11e479]:
+                          - /url: https://www.sqlite.org/lang_transaction.html
+                        - text: ","
+                        - link "PostgreSQL Range Types" [ref=f11e480]:
+                          - /url: https://www.postgresql.org/docs/current/rangetypes.html
+                        - text: ","
+                        - link "WAI APG Modal Dialog" [ref=f11e481]:
+                          - /url: https://www.w3.org/WAI/ARIA/apg/patterns/dialog-modal/
+                        - text: ","
+                        - link "OWASP Session Management" [ref=f11e482]:
+                          - /url: https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html
+                        - text: . Síntese e limites em KB c3888a6d-9436-4b6b-9a96-74f7e66ce987. Fontes apoiam desenho; não são prova do aplicativo.
+                      - listitem [ref=f11e483]: "Código/workspace: cenário fictício para testar o Pulse, conforme orientação expressa do usuário em 08/10/2026. Não é necessário criar ou investigar um repositório de reservas nesta rodada. Dispensa delimitada de Code Evidence: code-traceability-waiver_917286c76c7640d98d0167bf7608ae98 (conceptual_board). Não houve inspeção AS-IS nem prova de ausência de implementação. O código do Pulse não representa o aplicativo. Qualquer futura execução real exige nova definição de workspace/baseline e revisão da aplicabilidade."
+                      - listitem [ref=f11e484]: "Artefatos herdados foram revistos na cópia do refinamento, sem editar o parent Done. Mockup H01 preserva sua origem; arquitetura preserva vínculo com desenho da ideação. Glossário herdado contém frase superada sobre fuso: prevalecem Q&A que fixam America/Sao_Paulo, não a KB advisory."
+                      - listitem [ref=f11e485]: Inspeção da interface Pulse confirmou quatro mockups com DS/evidência e anotações, incluindo preview desktop H01 e móvel H04; arquitetura v2 foi lida via MCP e exibida após Refresh. Depois, v3 completou contrato de histórico. Essa inspeção verifica persistência/apresentação, não interação real das telas estáticas.
+                    - heading "Regras consolidadas e invariantes" [level=2] [ref=f11e486]
+                    - paragraph [ref=f11e487]: Equipe interna autenticada; catálogo de teste pré-cadastrado. Somente responsável pode listar histórico e mudar/cancelar a própria reserva antes do início. Sem override administrativo. Sessão inválida falha fechado; ID alheio e inexistente têm not_found sem vazamento. Owner nunca vem do navegador. Busca expõe salas disponíveis, capacidade e recursos, sem nome/agenda de terceiros.
+                    - paragraph [ref=f11e488]: "Calendário: seg–sex08h–18h em America/Sao_Paulo, sem feriados especiais. Intervalo inteiro no mesmo dia; início alinhado a :00/:30, estritamente futuro; duração30min–4h, múltiplo30min; data de início até hoje+30 dias corridos no fuso local. Precisão de segundos/micros deve ser zero nos horários de entrada. Datas com offset incoerente com o fuso são inválidas; não adivinhar horários ambíguos/inexistentes. Conversão/validação temporal fica no domínio usando tipos apropriados, com Clock injetado e configuração explícita de fuso. Persistir instantes UTC e exibir fuso de negócio."
+                    - paragraph [ref=f11e489]: "Sobreposição: a.start < b.end && b.start < a.end para reservas confirmed da mesma sala. [09h,10h) e [10h,11h) coexistem. participants inteiro positivo e <= capacidade; sala deve existir/estar disponível no catálogo. Busca não bloqueia sala nem promete sucesso futuro."
+                    - paragraph [ref=f11e490]: "Estados persistidos: confirmed e cancelled. A apresentação “em andamento/finalizada” deriva de now/start/end, sem scheduler necessário. Mudança/cancelamento só em confirmed com now < início original; alteração também valida o novo início. cancel mantém registro e libera disponibilidade. Sem desfazer cancelamento neste ciclo; uma nova reserva é nova intenção."
+                    - heading "Desenho e contratos" [level=2] [ref=f11e491]
+                    - paragraph [ref=f11e492]: "Architecture Design c76e3595-fda1-4ed3-9c99-f94d615078a6 v5:9 entidades lógicas,13 interfaces,2 diagramas. Um backend; diagramas não propõem microserviços. Dependências estáticas: HTTP/sessão/SQLite/relógio/composição consomem portas públicas; aplicação conhece domínio e Protocols; domínio não conhece SQL, framework, filesystem ou clientes. Proibir reach-in em privados e duplicação de negócio em adaptadores; composição externa injeta concretos. Tabelas/DTOs de transporte ficam no mecanismo; não retornam ORM para domínio."
+                    - paragraph [ref=f11e493]: "Operações externas: GET disponibilidade, POST criar, GET minhas reservas paginado, PUT alterar, POST cancelar e GET histórico da própria reserva paginado. Schemas e erros estão nas interfaces estruturadas. Alteração substitui os dados editáveis por completo e exige expected_version; path/body ID devem concordar. Sessão identifica o principal. Resultado confirmado retorna reservation_id, room_id, período, participantes, status, versão e ações permitidas; UI renderiza estado atual sem inferir autoridade. HTTP201 primeira criação,200 replay/alteração/cancelamento;401 sessão;404 inexistente/alheia;422 entrada;409 conflito de reserva/versão/chave/estado;503 indisponibilidade. Logs usam request_id e código público, sem stacktrace/SQL/segredos na resposta."
+                    - paragraph [ref=f11e494]: "Listas: default20,max100,cursor opaco. Minhas reservas ordena start_at desc e ID como desempate, filtra exclusivamente o ator. Histórico ordena versão asc e carrega eventos paginados. UI diferencia “sem reservas” de falha de leitura. Dados de sala no DTO podem ser hidratados do catálogo; o desenho final da Spec deve explicitar DTO público completo, sem exigir consulta ao banco no frontend."
+                    - heading "Consistência, idempotência e recuperação" [level=2] [ref=f11e495]
+                    - paragraph [ref=f11e496]: "RDL rdl_584db3da72464f20b58e73daff1f1aff e Q&A b160044a-0e0b-4ef6-9e41-3be485b9a6c2: SQLite local foi escolhido frente a PostgreSQL por operação proporcional ao cenário; escrita serializada e um host são restrições assumidas, não promessa de escala. Documentação mostra uma escrita por vez e que BEGIN IMMEDIATE pode falhar ocupado. Inferência de desenho: adquirir escrita antes de ler conflitos e manter toda mutação na mesma transação elimina a janela consulta/gravacao desde que todos os escritores usem a porta. Isso precisa de teste real com conexões independentes."
+                    - paragraph [ref=f11e497]: "Sequência de comando:"
+                    - list [ref=f11e498]:
+                      - listitem [ref=f11e499]: Adaptador valida formato e sessão; entrega principal imutável, nunca owner_id.
+                      - listitem [ref=f11e500]: Abrir unidade de trabalho de escrita antes de ler estado/replay/conflitos.
+                      - listitem [ref=f11e501]: "Procurar recibo por ator/operação/chave. Mesma carga: retornar resultado confirmado com replayed=true, sem nova regra temporal impedir replay de um comando já concluído; UI reconsulta estado atual se necessário. Carga diferente: idempotency_conflict."
+                      - listitem [ref=f11e502]: Sem recibo, ler Clock após adquirir transação, reserva/versão/catálogo/conflitos; validar domínio. Excluir a própria reserva na alteração. Revalidar autorização, estado e início original antes de qualquer escrita.
+                      - listitem [ref=f11e503]: Gravar reserva nova/alterada/cancelada, incremento de versão, evento de histórico e recibo de sucesso na mesma transação.
+                      - listitem [ref=f11e504]: Confirmar e só então responder sucesso. Qualquer erro antes do commit encerra com rollback. Sem transação longa para interação humana, chamada externa ou montagem de tela.
+                    - paragraph [ref=f11e505]: "RDL rdl_d2fe0a30a7864fcb868c26824bd3516e: chave UUID por intenção; fingerprint canônico inclui operação, ID alvo, valores normalizados e expected_version. Mesmo ator/chave/carga recebe mesmo resultado confirmado; nova intenção usa nova chave. UNIQUE do escopo no banco. Recibos não expiram neste ciclo; não adicionar limpeza automática. Histórico tem evento_id,ator,operação,instante UTC,versão,before/after; nenhum evento extra no replay. Reserva e recibo só podem existir conjuntamente após commit."
+                    - paragraph [ref=f11e506]: "SQLITE_BUSY: orçamento de espera limitado a2s por tentativa, sem loop infinito; ao esgotar retorna unavailable recuperável, sem gravar sucesso. Timeout/perda de resposta após commit: cliente conserva chave/carga e oferece repetir a mesma solicitação. Reinício do servidor não pode perder recibo já confirmado. Falha de alteração nunca apaga/libera primeiro a reserva original. Logs e métricas distinguem conflito de negócio, versão, replay, indisponibilidade e latência; não inferir uso/performance sem ensaio. Um segundo host, arquivo compartilhado ou escrita externa invalida o desenho assumido e exige nova decisão."
+                    - heading "Segurança e interface" [level=2] [ref=f11e507]
+                    - paragraph [ref=f11e508]: "Q&A e3e60e3d-6d73-4dfa-a73a-9b3d391289da / RDL rdl_9a1dfcc9f4354d6091fb0d702a69021f: sessão local, contas de teste provisionadas, nenhum fluxo de cadastro/reset/admin neste escopo. Adaptador usa biblioteca consolidada; nunca criptografia/sessão caseira. HTTPS usa cookie Secure,HttpOnly,SameSite e proteção CSRF nos comandos. Identidade e permissão são revalidadas no servidor inclusive para replay; não aceitar sessão expirada nem usar chave como credencial. Exceção HTTP local de desenvolvimento precisa ficar explícita na Spec, sem enfraquecer configuração distribuída."
+                    - paragraph [ref=f11e509]: "Mockups: H01 sm_2efd72fc;H02 sm_e2a1d7f6;H03 sm_43701026;H04 sm_b23e7c41. Todos referenciam DS82da965a-6e0f-4ee0-a20b-f2cd04c44ff9/v1 e usam tokens correspondentes. Formulários preservam dados, mensagens explicam próxima ação e fuso permanece visível. Sucesso,erro,vazio,carregamento,conflito e resultado incerto têm tratamentos distintos. Datas e nomes exibidos são fixtures, não disponibilidade real. Anúncio acessível de resultados e foco de modal são requisitos de implementação/teste, não propriedades comprovadas do HTML estático."
+                    - heading "Matriz de cenários para promover à Spec e Test Cards" [level=2] [ref=f11e510]
+                    - paragraph [ref=f11e511]: Cenários abaixo são planejamento, NÃO resultados executados. Rótulos são locais ao texto, não IDs normativos; criar entidades formais e links estáveis na Spec. Usar relógio controlado=08/10/2026 12h America/Sao_Paulo, salas Ipê(cap6)/Aurora(cap10), usuários A/B; bases isoladas, sem dados reais.
+                    - list [ref=f11e512]:
+                      - listitem [ref=f11e513]: "H01: 09/10,09h–10h,4 pessoas => somente salas com capacidade suficiente e sem sobreposição."
+                      - listitem [ref=f11e514]: Capacidade:1 e capacidade exata aceitos;0,negativo,fracionário e capacidade+1 recusados.
+                      - listitem [ref=f11e515]: Intervalos adjacentes aceitos; interseção parcial,contenção e igualdade recusadas na mesma sala.
+                      - listitem [ref=f11e516]: Mesmos horários em salas diferentes aceitos.
+                      - listitem [ref=f11e517]: Duração30min e4h aceitas;0,negativa,29min,4h30 e múltiplo inválido recusados.
+                      - listitem [ref=f11e518]: Início09:15,segundos/micros não zero e offset inconsistente recusados.
+                      - listitem [ref=f11e519]: Seg08h e sexta até18h aceitos quando futuros;07h30,fim18h30,fim em outro dia e final de semana recusados.
+                      - listitem [ref=f11e520]: Início=now e passado recusados; próximo slot futuro aceito.
+                      - listitem [ref=f11e521]: Dia local+30 aceito se útil;dia+31 recusado; usar fixture que isole calendário do limite.
+                      - listitem [ref=f11e522]: Busca sem resultado retorna vazio; falha de storage retorna erro, nunca vazio.
+                      - listitem [ref=f11e523]: "H02: criar válido => uma confirmed,versão1,um histórico e um recibo."
+                      - listitem [ref=f11e524]: Duas conexões concorrentes/mesma sala e intervalo, chaves distintas => uma confirmação e uma recusa após revalidação; nenhuma sobreposição.
+                      - listitem [ref=f11e525]: Chave/carga iguais, sequencial e concorrente => mesmo reservation_id e um evento.
+                      - listitem [ref=f11e526]: Mesma chave/carga diferente => idempotency_conflict, nenhuma segunda reserva.
+                      - listitem [ref=f11e527]: Mesmo valor de chave usado por outro ator não revela nem reutiliza recibo alheio.
+                      - listitem [ref=f11e528]: "H03: alteração válida incrementa versão, atualiza reserva e acrescenta um evento before/after."
+                      - listitem [ref=f11e529]: Alteração para horário ocupado => original intacta,sem evento/recibo de sucesso parcial.
+                      - listitem [ref=f11e530]: Duas alterações com a mesma expected_version => apenas uma aceita; outra version_conflict.
+                      - listitem [ref=f11e531]: Alteração contra cancelamento concorrente => serialização e CAS; nunca ressuscitar cancelled.
+                      - listitem [ref=f11e532]: "H04: cancelamento futuro => cancelled,um evento,horário disponível,registro/histórico mantidos."
+                      - listitem [ref=f11e533]: Cancelar exatamente no início/depois => reservation_locked; fake Clock lido depois de adquirir a transação.
+                      - listitem [ref=f11e534]: Replay exato de cancelamento => resultado original sem segundo evento; nova intenção para cancelled => locked.
+                      - listitem [ref=f11e535]: Falha injetada após salvar reserva e antes de histórico/recibo/commit => rollback integral, incluindo alteração.
+                      - listitem [ref=f11e536]: Resposta perdida após commit e reinício => replay recupera confirmação sem duplicação.
+                      - listitem [ref=f11e537]: Busy além do limite =>503,sem alteração parcial,entrada preservada e tentativa explícita.
+                      - listitem [ref=f11e538]: A tenta ler/alterar/cancelar/histórico de B =>404; lista/availability não vazam B. Entrada owner_id rejeitada.
+                      - listitem [ref=f11e539]: Sem sessão, sessão expirada ou logout =>401; sem mutação; CSRF inválido bloqueia comando. Validar também replay.
+                      - listitem [ref=f11e540]: Paginação de lista/histórico não duplica nem mistura usuários; cursor inválido falha claramente, limites1/100/101 verificados.
+                      - listitem [ref=f11e541]: "Frontend H01: teclado,labels,erro associado,estado loading/vazio/erro/resultados e filtros preservados; fuso e capacidade visíveis."
+                      - listitem [ref=f11e542]: "Frontend H02: duplo clique bloqueado visualmente; confirmacao/sucesso/conflito/retry incerto usam textos corretos e mesma chave quando apropriado."
+                      - listitem [ref=f11e543]: "Frontend H03: ações derivadas do servidor,erro preserva formulário/original,conflito de versão pede reload; não sobrescrever silenciosamente."
+                      - listitem [ref=f11e544]: "Frontend H04: foco inicial em Manter,Tab/Shift+Tab contidos,Escape não muta,retorno de foco,confirmação exata,erro mantém contexto,sucesso anunciado."
+                      - listitem [ref=f11e545]: Frontend transversal:320px e desktop,zoom200%,sem rolagem horizontal no fluxo principal,contraste e nome acessível; leitor de tela/manual onde automação não prova.
+                      - listitem [ref=f11e546]: "Fronteira hexagonal: domínio/aplicação importáveis e testáveis sem framework/SQL/HTTP/filesystem; teste de imports e dependências bloqueia mecanismo e reach-in privado."
+                      - listitem [ref=f11e547]: "Contratos: adaptador real e fake cumprem mesmas pós-condições de rollback/CAS/replay; erros concretos não atravessam porta."
+                      - listitem [ref=f11e548]: "Histórico: eventos ordenados e imutáveis; payload não contém cookie/senha/identidade de terceiros; estado temporal finalizada não precisa de scheduler."
+                    - paragraph [ref=f11e549]: "Camadas: unitários do domínio com Clock/principal/fakes; contrato de portas; integração com SQLite real/conexões separadas/falhas controladas; testes HTTP de autorização/schema; frontend de componentes e E2E dos quatro fluxos. Critérios de passagem são asserts observáveis acima, não porcentagem arbitrária. Cobertura de fronteira merece gate específico, não exceção temporária. Medições de latência podem ser coletadas, mas nenhum SLO numérico foi aprovado."
+                    - heading "Dependências e handoff concreto" [level=2] [ref=f11e550]
+                    - paragraph [ref=f11e551]: "Ordem para futura Spec conceitual: preservar a delimitação de teste do Pulse; formalizar FR/TR/BR/AC/contratos/decisões/cenários com IDs; implementar domínio/portas e provas unitárias; adaptadores/composição+contratos/integração; UI H01–H04+frontend/E2E; evidência de entrega e avaliação independente. Não criar Cards nem implementar durante este pedido. Reutilizar origens reais dos mockups/arquitetura ao derivar, não copiar HTML sem linhagem. RDL atual: atomic: rdl_584db3da72464f20b58e73daff1f1aff replay: rdl_d2fe0a30a7864fcb868c26824bd3516e auth: rdl_9a1dfcc9f4354d6091fb0d702a69021f source: rdl_4e8a6f33a6984a43a933b79fd4ed8dd1 stack: rdl_8dbf26fca8b34875814e1126c66d7bb9 Cinco heads resolvidos. Os sucessores do RDL de workspace e bibliotecas registram a delimitação expressa do usuário: exercício conceitual do Pulse, sem implantação real nesta rodada. Workspace, baseline e versões serão definidos somente se houver decisão futura de implementar; nenhuma investigação ou prova foi fabricada."
+                    - heading "Policy, verificabilidade e avaliação" [level=2] [ref=f11e552]
+                    - paragraph [ref=f11e553]: "Guideline hexagonal advisory,confiança83; métrica conformidade somente Spec/Card,limiar configurado85. Rubrica textual ainda menciona80; registrar divergência para proprietário harmonizar, sem alterar policy. O desenho demonstra separação proposta; não atribuir nota de conformidade a código inexistente. Design System advisory passou no vínculo dos quatro mockups; não equivale a auditoria de acessibilidade. Resource Gate sem recurso bloqueante ausente. Code Evidence tem dispensa explícita e limitada ao refinamento conceitual (conceptual_board), após orientação do usuário; nenhuma policy global, skip de Quality ou prova de entrega foi alterada. Quality de ambiguidade só pode ser gravado em Approved; deixar NOT ASSESSED é correto em Review, não criar resultado artificial para testar. Avaliador revisa contratos,cenários e diferimentos; antes de Done deve registrar Quality Current<=3 na edição correta e reconsultar gates. Closeout cognitivo: ainda não aplicável em Review. Promover decisões novas à futura Spec antes de consolidar no KG. A ideação e seu histórico não foram reescritos."
+                    - heading "Achados do teste da plataforma" [level=2] [ref=f11e554]
+                    - paragraph [ref=f11e555]: "Registro histórico: KB dee3d0f4-d421-43e6-bda5-36a0436050a0 documenta a divergência antiga de boundaries entre dry-run e gravação do Pulse. O defeito foi corrigido; o teste ao vivo na arquitetura v4 confirmou nove entidades/18 itens, gravação/leitura e rejeição dos tipos inválidos, preservando os snapshots. Essa KB permanece evidência histórica, não descrição de defeito vigente. A arquitetura atual v5 incorpora a revisão dos contratos da iniciativa. Estes resultados verificam o Pulse, não a execução do aplicativo de reservas."
+                    - heading "Resolução da revisão — edição 3" [level=2] [ref=f11e556]
+                    - paragraph [ref=f11e557]: "Pedido do usuário: resolver as pendências, priorizando teste do Pulse em cenário fictício. Arquitetura v5 mantém nove entidades,13 interfaces,dois diagramas e35 elementos. As portas internas não têm http_status; o adaptador HTTP faz a tradução dos códigos de negócio. ReservationUnitOfWork especifica begin_read/begin_write, get/get_room/conflicts/search_rooms/list_owned, get_receipt/read_history, save/append_history/put_receipt e commit/rollback, com entradas e saídas estruturadas. get_receipt é isolado por ator/operação/chave; histórico e reservas próprias por ator. CAS, rollback e replay preservam as regras já decididas. Resultados da aplicação são discriminados por operação; snapshots de histórico têm campos explícitos. JSON Schema documenta valores, sem impor biblioteca ou transporte ao domínio. Verificação desta rodada: dry-run da arquitetura sem issues ou warnings e leitura após gravação; preservação dos IDs, diagramas e boundaries. Cenários36 anteriores permanecem planejamento. No futuro teste de contratos, incluir serialização sem HTTP nas portas, consulta de recibo ausente/existente, isolamento por ator, leitura paginada do histórico e rejeição de operação/payload incompatíveis. Workspace e bibliotecas deixam de ser pendências desta rodada por escopo explícito; RDL possui sucessores, mantendo as decisões anteriores no histórico. Não há código de reservas entregue, benchmark ou teste funcional de reservas executado."
+                    - heading "Decisions" [level=2] [ref=f11e558]
+                    - list [ref=f11e559]:
+                      - listitem [ref=f11e560]: "Conhecimento novo herdado: equipe interna autenticada e America/Sao_Paulo; respostas humanas preservadas nas Q&A 5da13883-a955-4300-8ed8-6134ea6a6b12 e011ad434-20d4-4bc3-b88f-6c76704a3b53."
+                      - listitem [ref=f11e561]: "Conhecimento novo herdado: ownership,standalone,expediente e limites de tempo; Q&A a9c36178-66c1-42cd-b0da-635400613c63,e043ce80-737f-4058-85cb-92ee696f13ee,e49bb5a4-028c-4a19-b148-0b42df50718d,e76536ac-7255-43ca-b6f2-3a09c0c0b5bf; sem reabrir intenção."
+                      - listitem [ref=f11e562]: "Conhecimento novo: Decisão técnica proposta pelo Codex sob delegação para saturar este cenário: SQLite em disco local, um backend e transações curtas. ReservationUnitOfWork inicia BEGIN IMMEDIATE antes de consultar conflitos; domínio decide sobreposição usando inícioA < fimB && inícioB < fimA. Na mesma transação: autenticação/ownership já identificados, revalidar estado, tempo, versão e capacidade; gravar reserva, histórico e recibo idempotente; confirmar tudo ou rollback. Todos os escritores usam esta porta, sem alteração direta do arquivo nem arquivo compartilhado em rede. Busca é indicativa; somente o comando confirma disponibilidade. SQLITE_BUSY vira indisponibilidade recuperável, nunca sucesso nem conflito de negócio. PostgreSQL é alternativa pesquisada, não segundo backend neste ciclo. Alternativas: SQLite local com transação de escrita antes da leitura versus PostgreSQL com exclusão por intervalo. Fonte: Q&A b160044a-0e0b-4ef6-9e41-3be485b9a6c2; RDL rdl_584db3da72464f20b58e73daff1f1aff. Nenhum node_id prévio encontrado no KG."
+                      - listitem [ref=f11e563]: "Conhecimento novo: Usar chave UUID por intenção de comando, escopo ator autenticado + operação + chave, e fingerprint canônico dos campos do comando incluindo ID e expected_version. Mesma chave/carga repete o resultado confirmado sem novo histórico; carga distinta retorna idempotency_conflict. Alterar/cancelar exige expected_version; versão diferente retorna version_conflict e requer recarregar, nunca sobrescrever. Recibos duram enquanto existir o histórico do cenário, sem expiração neste ciclo. Autenticar novamente antes de replay; chave não concede acesso. Falha antes de commit não deixa recibo de sucesso. Timeout após commit é resolvido repetindo exatamente a mesma chave/carga. Falha determinística sem commit permite nova tentativa após recarregar com uma nova intenção. UI não muda chave automaticamente ao repetir resultado incerto. Alternativas: Chave idempotente por ator/operação e versão esperada versus Somente desabilitar botão durante envio. Fonte: Q&A d35e3622-8a0a-4db0-b138-84c9cca08950; RDL rdl_d2fe0a30a7864fcb868c26824bd3516e. Nenhum node_id prévio encontrado no KG."
+                      - listitem [ref=f11e564]: "Conhecimento novo: Sessão local validada pelo adaptador IdentityProvider; principal imutável entregue ao caso de uso, nunca owner_id aceito do cliente. Contas de teste pré-cadastradas; provisionamento seguro e biblioteca de autenticação ficam como escolha de implementação na Spec, sem algoritmo criptográfico próprio. Sessão expirada retorna unauthorized sem comando. Para ID alheio ou inexistente responder not_found sem dados de terceiros. Listagem filtra ator e retorna ações permitidas, backend sempre revalida. Cookie HttpOnly, Secure em implantação HTTPS, SameSite e proteção CSRF em comandos; host local de desenvolvimento explicitamente separado. Logout invalida sessão. Histórico visível somente ao responsável; logs não contêm segredo/cookie. Sem cadastro, reset de senha ou painel administrativo neste ciclo. Alternativas: Sessão local e usuário derivado no servidor versus Enviar owner_id escolhido pelo navegador. Fonte: Q&A e3e60e3d-6d73-4dfa-a73a-9b3d391289da; RDL rdl_9a1dfcc9f4354d6091fb0d702a69021f. Nenhum node_id prévio encontrado no KG."
+                      - listitem [ref=f11e565]: "Aplicação da guideline existente d7a98040-0209-4fd3-a915-32ba40c99905 v1.1.0 e DS82da965a-6e0f-4ee0-a20b-f2cd04c44ff9 v1: separação por portas e composição externa, em vez de domínio dependente de infraestrutura; quatro mockups substituem esboços sem vínculo de DS. Proposta de arquitetura, não conformidade de código."
+                      - listitem [ref=f11e566]: "Delimitação expressa do usuário: testar o Pulse mediante iniciativa fictícia. RDL workspace rdl_4e8a6f33a6984a43a933b79fd4ed8dd1 e bibliotecas rdl_8dbf26fca8b34875814e1126c66d7bb9 resolvidos por não aplicabilidade nesta rodada; implementação real futura exige reavaliar ambos. Dispensa de Code Evidence code-traceability-waiver_917286c76c7640d98d0167bf7608ae98, sem evidência fabricada."
+                      - listitem [ref=f11e567]: "Correção da arquitetura v5 sob pedido do usuário: erros internos independentes de HTTP; portas de recibos/histórico e resultados tipados. Não altera regras de negócio; substitui contratos incompletos da v4, cujos snapshots permanecem históricos."
+                    - heading "Parent Ideation Context" [level=2] [ref=f11e568]
+                    - list [ref=f11e569]:
+                      - listitem [ref=f11e570]: "Title: Reserva de salas — teste do SDLC"
+                      - listitem [ref=f11e571]: "Version: 24"
+                    - heading "Description" [level=3] [ref=f11e572]
+                    - heading "Escopo consolidado após Q&A — 2026-10-08" [level=2] [ref=f11e573]
+                    - paragraph [ref=f11e574]: O usuário delegou expressamente ao Codex responder às perguntas e realizar a avaliação. As duas respostas humanas foram preservadas; quatro perguntas restantes foram respondidas pelo Codex com autoria explícita. Todas as Q&A estão respondidas.
+                    - paragraph [ref=f11e575]: "Cenário: equipe interna autenticada, consulta de salas por data/intervalo/capacidade, criação, consulta das próprias reservas, alteração e cancelamento antes do início. Segunda a sexta, 08h–18h, America/Sao_Paulo, sem feriados especiais. Duração de 30 minutos a 4 horas, em blocos de 30 minutos; início futuro alinhado a :00/:30, até 30 dias corridos à frente. Intervalos [início,fim). Conflito não pode gerar dupla reserva nem destruir a reserva original em uma alteração. Cancelamento preserva histórico. Sem calendário externo, notificações externas, recorrência ou administração de salas neste ciclo; catálogo de teste pré-cadastrado."
+                    - paragraph [ref=f11e576]: "Critérios observáveis: busca respeita capacidade/expediente; conflito concorrente nunca produz sobreposição confirmada; usuário não altera reservas alheias; falha de alteração preserva a original; cancelamento libera disponibilidade; repetição da mesma solicitação não duplica reserva; interface distingue vazio/erro/carregamento/sucesso e informa fuso."
+                    - paragraph [ref=f11e577]: "Ajustes dos mockups H01–H04 e detalhamento do diagrama hexagonal são explicitamente destinados à elaboração da Spec, antes da sua aprovação: a presente ideação aprova intenção/limites, não certifica os esboços atuais nem código. Estratégia de persistência/concorrência, contratos por operação e composição serão decididos nessa elaboração, sob a guideline existente; não há necessidade de fornecedor externo. A divergência 80 textual/85 configurado permanece registrada, sem alteração da policy. A métrica é somente Spec/Card."
+                    - heading "Registro histórico da revisão anterior — superado quanto às perguntas pendentes" [level=2] [ref=f11e578]
+                    - paragraph [ref=f11e579]: Ideação do cenário fictício de reserva de salas, derivada das histórias H01–H04 para testar conjuntamente o SDLC do Pulse v0.4.0. Abrange consulta de disponibilidade, reserva, alteração e cancelamento. O mockup H01 e a arquitetura são propostas para discussão, não implementação comprovada.
+                    - heading "Intenção já confirmada pelo usuário" [level=2] [ref=f11e580]
+                    - list [ref=f11e581]:
+                      - listitem [ref=f11e582]: "Público: equipe interna autenticada (Q&A 821c38a4-5641-4a85-8188-54c4063b042f)."
+                      - listitem [ref=f11e583]: Expediente único no fuso de São Paulo (Q&A e3e456a9-5bbc-410a-8841-1856370e82f5); dias e horários exatos ainda pendentes.
+                    - heading "Reavaliação de prontidão — 2026-10-08" [level=2] [ref=f11e584]
+                    - paragraph [ref=f11e585]: "Base examinada: edição 1, versão 13; guideline Arquitetura hexagonal v1.1.0, binding revisão 2; Design System Reserva de Salas v1."
+                    - paragraph [ref=f11e586]: "Conclusão: manter Draft até esclarecer as decisões abertas. Esta revisão qualitativa não é uma avaliação formal de escopo nem um recibo de Quality. evaluate_ideation e a avaliação formal de ambiguidade pertencem ao estado evaluating; não avançar estados apenas para gravar notas."
+                    - heading "Configuração efetiva" [level=3] [ref=f11e587]
+                    - list [ref=f11e588]:
+                      - listitem [ref=f11e589]: "Guideline hexagonal: advisory, confiança mínima 83. Métrica conformidade aplicável somente a Spec e Card, limiar configurado 85/100. A rubrica menciona 80: divergência textual a harmonizar pelo proprietário; não alterar policy automaticamente nem aplicar essa métrica à Ideation."
+                      - listitem [ref=f11e590]: "Design System: advisory, identidade 82da965a-6e0f-4ee0-a20b-f2cd04c44ff9, versão 1."
+                      - listitem [ref=f11e591]: Gate de ambiguidade da Ideation habilitado, máximo 3/5. Na etapa própria, exige resultado Current da edição; não é substituído pela métrica hexagonal.
+                      - listitem [ref=f11e592]: As etapas futuras exigem validações e provas de entrega conforme o Board; os skips globais de cobertura estão desativados.
+                    - heading "Achados nos artefatos" [level=3] [ref=f11e593]
+                    - list [ref=f11e594]:
+                      - listitem [ref=f11e595]: "Arquitetura 14390c9b-7360-4653-9f23-89efee5cce92: a separação Portal/Gestão/Registro é um esboço útil, mas ainda não explicita domínio, casos de uso, portas públicas, adaptadores, composição e direção das dependências. Completar essa representação antes de alegar conformidade da Spec. Não há evidência de violação em código, pois não há implementação examinada."
+                      - listitem [ref=f11e596]: "Mockup story_mockup_81f69bd3953e7023: criado antes do Design System, sem referência/evidência de consumo. Usa primária indigo em vez de #1D4ED8, raios e tamanhos diferentes e não exibe o fuso confirmado. Adaptar tokens, foco/acessibilidade e contexto de horário; não basta anexar o ID do Design System. Carregamento, vazio e erro já estão representados estaticamente; isso não comprova interação funcional."
+                      - listitem [ref=f11e597]: KB Glossário ainda diz que o fuso não foi escolhido. Q&A é a decisão mais recente; atualizar a referência de apoio em etapa de ajuste, sem usá-la para redefinir intenção.
+                      - listitem [ref=f11e598]: "Resource Gate retornou sem recursos bloqueantes ausentes: uma arquitetura, um mockup e duas KBs. Presença não comprova qualidade ou aderência."
+                    - heading "Decisões ainda necessárias" [level=3] [ref=f11e599]
+                    - list [ref=f11e600]:
+                      - listitem [ref=f11e601]: "Quem pode alterar/cancelar: Q&A a25b8d13-df2b-481b-b864-3263e1e58035."
+                      - listitem [ref=f11e602]: "Aplicação independente ou integrações: Q&A e807bebe-dbf4-4110-9eb3-e5ea731f2463."
+                      - listitem [ref=f11e603]: "Dias/horários do expediente: Q&A 427e63eb-1b1c-44af-94fa-bac18d4568a0."
+                      - listitem [ref=f11e604]: "Política de duração/antecedência: Q&A 94a9a2da-8077-49b1-b6bd-9b1eb5ed0da9. As opções novas são propostas, não decisões aprovadas. Depois das respostas, consolidar intenção, ajustar os artefatos e submeter à revisão."
+                    - heading "Consulta de conhecimento e limite operacional" [level=3] [ref=f11e605]
+                    - paragraph [ref=f11e606]: "Triade KG executada: decisões similares, descoberta global e aprendizados de bugs retornaram zero resultados. Isso não prova inexistência de conhecimento: KG Health marcou at_risk, métricas indisponíveis e 8 eventos de projeção de policy em DLQ. Fonte relacional foi usada para guideline/binding; nenhuma recuperação, exclusão ou alteração de gate executada. Closeout cognitivo: not_applicable nesta revisão de prontidão; nenhuma decisão técnica nova foi aprovada para canonização."
+                    - heading "Problem Statement" [level=3] [ref=f11e607]
+                    - paragraph [ref=f11e608]: Pessoas da equipe interna precisam consultar disponibilidade e criar, alterar ou cancelar suas próprias reservas sem dupla ocupação de salas e sem perder uma reserva válida quando uma alteração falhar. O primeiro ciclo cobre quatro histórias H01–H04, com catálogo de salas pré-cadastrado, expediente e política temporal definidos na Q&A.
+                    - heading "Proposed Approach" [level=3] [ref=f11e609]
+                    - paragraph [ref=f11e610]: "Aplicação independente com interface de busca e gestão de reservas. Casos de uso separados para consultar, reservar, alterar e cancelar; domínio concentra calendário, capacidade, autorização sobre a própria reserva e invariantes de conflito. Portas públicas isolam persistência, identidade e relógio; adaptadores concretos e composição ficam fora do domínio. Confirmação transacional e idempotência devem ser detalhadas e testadas na Spec, sem escolher banco/stack nesta ideação. Aplicar Design System Reserva de Salas v1 aos mockups antes da aprovação da Spec, incluindo estados e acessibilidade. Testes previstos: domínio sem infraestrutura, contrato/integração para adaptadores e concorrência, frontend para quatro fluxos e falhas. Ajustes técnicos explicitamente diferidos à Spec não mudam as decisões de negócio consolidadas."
+                    - heading "Scope Assessment" [level=3] [ref=f11e611]
+                    - list [ref=f11e612]:
+                      - listitem [ref=f11e613]: "Domains: 2/5"
+                      - listitem [ref=f11e614]: "Ambiguity: 2/5"
+                      - listitem [ref=f11e615]: "Dependencies: 1/5"
+                      - listitem [ref=f11e616]: "Complexity: medium"
+                    - heading "Q&A Decisions" [level=3] [ref=f11e617]
+                    - paragraph [ref=f11e618]:
+                      - strong [ref=f11e619]: "Q:"
+                      - text: Qual público e controle de acesso devemos considerar no cenário de reserva de salas?
+                      - strong [ref=f11e620]: "A:"
+                      - text: opt_0
+                    - paragraph [ref=f11e621]:
+                      - strong [ref=f11e622]: "Q:"
+                      - text: Qual regra de horário deve orientar a disponibilidade das salas?
+                      - strong [ref=f11e623]: "A:"
+                      - text: opt_0
+                    - paragraph [ref=f11e624]:
+                      - strong [ref=f11e625]: "Q:"
+                      - text: Quem poderá alterar e cancelar reservas?
+                      - strong [ref=f11e626]: "A:"
+                      - text: "Decisão do Codex sob autorização explícita do usuário nesta sessão para responder às Q&A do cenário fictício: somente o responsável pode alterar ou cancelar sua reserva, antes do início. Reservas iniciadas/passadas são somente leitura. Não haverá intervenção administrativa neste ciclo. A lista pessoal não expõe reservas de outras pessoas; a busca mostra disponibilidade sem dados do responsável alheio."
+                    - paragraph [ref=f11e627]:
+                      - strong [ref=f11e628]: "Q:"
+                      - text: Para a primeira versão do cenário, qual limite de integração é desejado?
+                      - strong [ref=f11e629]: "A:"
+                      - text: "Decisão do Codex sob autorização explícita do usuário: aplicação independente, sem sincronização com calendários, e-mail, SMS ou push neste ciclo. Confirmação e erros aparecem na própria interface. Autenticação interna por capacidade local atrás de porta pública; sem dependência de provedor externo obrigatória. Catálogo de salas previamente cadastrado para o teste; administração do catálogo e recorrência de reservas ficam fora do escopo."
+                    - paragraph [ref=f11e630]:
+                      - strong [ref=f11e631]: "Q:"
+                      - text: Você definiu expediente único no fuso de São Paulo. Qual calendário devemos usar no primeiro ciclo? Se houver exceções ou feriados, descreva no comentário.
+                      - strong [ref=f11e632]: "A:"
+                      - text: "Decisão do Codex sob autorização explícita do usuário: segunda a sexta, 08:00–18:00 em America/Sao_Paulo, sem exceções de feriados neste cenário. Todo intervalo deve caber no mesmo dia de expediente. Horários são exibidos com o fuso. Intervalos são [início,fim), permitindo reservas consecutivas sem sobreposição."
+                    - paragraph [ref=f11e633]:
+                      - strong [ref=f11e634]: "Q:"
+                      - text: Qual política de duração e antecedência deve limitar as reservas neste primeiro ciclo? As alternativas são propostas para aprovação; use o comentário para definir outros limites.
+                      - strong [ref=f11e635]: "A:"
+                      - text: "Decisão do Codex sob autorização explícita do usuário: duração de 30 minutos a 4 horas, em múltiplos de 30 minutos; início alinhado a :00/:30, estritamente futuro e no máximo 30 dias corridos à frente pela data local. O intervalo inteiro deve caber no expediente. Alterar exige revalidar capacidade e disponibilidade atomicamente; em conflito, manter a reserva original. Cancelar libera a sala e mantém o registro histórico, sem exclusão física. Repetir a mesma solicitação não deve criar reservas duplicadas."
+                    - heading "Saturação autoral da Spec — edição1" [level=2] [ref=f11e636]
+                    - paragraph [ref=f11e637]: "Esta Spec descreve um aplicativo fictício para testar autoria, rastreabilidade e gates do Pulse. Requisitos são comportamento proposto, cenários são planejamento, sem execução nem implementação comprovada. Preservar Q&A e decisões herdadas. A ausência de workspace foi resolvida por delimitação conceitual no refinamento; nenhuma dispensa adicional ou skip global foi criado aqui. Project Structure: not applicable Edition reviewed: 1. Escopo desta rodada: elaborar artefatos de SDLC dentro do Pulse, sem entrega de arquivos, módulos ou deploy do aplicativo de reservas. Componentes lógicos estão na arquitetura; não inventar árvore de repositório. Reavaliar antes de qualquer decisão de implementar de fato. Fixtures planejadas: Clock=2026-10-08T12:00:00-03:00; salas Ipê(cap6)/Aurora(cap10); atores A/B; bases isoladas. Cenários de limite usam relógio específico quando necessário para isolar a condição. Fora do escopo: calendários/notificações externos, recorrência, administração, cadastro/reset, multi-host, banco alternativo, implementação real e testes de reservas executados. Os endpoints/portas adotados são os13 contratos da arquitetura derivada v1 (refinamento v5). Limitação observada do Pulse: get_spec_context(full) falha com checklist_validation_binding_snapshot_missing ainda em Draft. Leituras diretas utilizadas para autoria e verificação; não avançar nem declarar avaliação formal completa enquanto o contexto consolidado estiver indisponível."
+                    - heading "Checkpoint de saturação — 08/10/2026" [level=2] [ref=f11e638]
+                    - paragraph [ref=f11e639]: "Conteúdo estruturado:8 FR,6 TR,31 AC,8 BR,6 contratos HTTP,13 IR,2 OR,5 decisões e51 cenários (36 do refinamento+13 de contrato+2 de observabilidade). Todos os31 AC possuem cenário vinculado; oito FR têm regras vinculadas. Consulta requirement-verification:37/37 requisitos qualificados,zero issues,criteria_resolution_complete=true,method_plan_complete=true. Classificação arquitetural:13/13 Current,zero pendentes. Resource Gate sem recursos faltantes. Isso verifica autoria/vínculos, não adequação semântica automática ou implementação. Todos os cenários continuam Draft/não executados. Cards de implementação/Test Cards e alocação das79 obrigações pertencem à etapa posterior, ainda não realizada. Nenhum skip foi alterado. Contexto completo segue indisponível por checklist_validation_binding_snapshot_missing; não há avaliação formal nem promoção desta Spec. Diagnóstico de leitura deve ser resolvido antes dessas operações. KG consultado para spec:2372d8a2-68c8-57f4-a609-d809c92d55c6: contexto contém as decisões/alternativas do refinamento; consulta de contradições retornou zero pares. IDs observados: SQLite decision_d1373804e584d6fc02b9dc5d; sessão decision_318f1c49075a1f8b43db1785; replay decision_d755ddce62df3f143c618ba1; escopo conceitual decision_d8349dfa0ed698f15bdfdf14. Resultado limitado à consulta, não prova ausência absoluta. Consolidação cognitiva não aplicável enquanto a Spec está em Draft."
+                - generic [ref=f11e643]:
+                  - generic [ref=f11e644]: mock
+                  - generic [ref=f11e645]: reserva-de-salas
+                  - generic [ref=f11e646]: teste-sdlc
+                - generic [ref=f11e647]:
+                  - heading "Task Validation Gate" [level=4] [ref=f11e652]
+                  - paragraph [ref=f11e653]: Controls whether cards derived from this spec must pass Task Validation. These settings do not change the Spec Validation Gate.
+                  - generic [ref=f11e654]:
+                    - button "Inherit" [ref=f11e655] [cursor=pointer]
+                    - button "Required" [ref=f11e656] [cursor=pointer]
+                    - button "Disabled" [ref=f11e657] [cursor=pointer]
+                  - generic [ref=f11e658]:
+                    - generic [ref=f11e659]: "Resolved:"
+                    - generic [ref=f11e660]: Inherited from Board default
+                  - generic [ref=f11e661]:
+                    - paragraph [ref=f11e662]: Override thresholds independently (leave empty to inherit from board default)
+                    - generic [ref=f11e663]:
+                      - generic [ref=f11e664]:
+                        - text: Min Confidence
+                        - spinbutton "Min Confidence" [ref=f11e665]
+                      - generic [ref=f11e666]:
+                        - text: Min Completeness
+                        - spinbutton "Min Completeness" [ref=f11e667]
+                      - generic [ref=f11e668]:
+                        - text: Max Drift
+                        - spinbutton "Max Drift" [ref=f11e669]
+                    - paragraph [ref=f11e670]: Thresholds remain configured independently of the gate requirement.
+          - generic [ref=f11e671]:
+            - button "Delete spec" [ref=f11e672] [cursor=pointer]
+            - button "Close" [ref=f11e674] [cursor=pointer]

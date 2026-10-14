@@ -1,0 +1,484 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]:
+        - button "Hide sidebar" [ref=e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=e12]
+        - generic [ref=e357]: / My Board
+      - generic [ref=e358]:
+        - button "Refresh board" [ref=e359] [cursor=pointer]
+        - button [ref=e366] [cursor=pointer]
+  - article [ref=e3931]:
+    - generic [ref=e3932]:
+      - status [ref=e3937]:
+        - generic [ref=e3938]: "Success:"
+        - generic [ref=e3939]: Board refreshed!
+      - button "Dismiss notification" [ref=e3940] [cursor=pointer]
+  - generic [ref=e13]:
+    - complementary [ref=e14]:
+      - generic [ref=e15]:
+        - generic [ref=e17]:
+          - heading "Boards" [level=2] [ref=e18]
+          - button "New board" [ref=e19] [cursor=pointer]
+        - navigation [ref=e21]:
+          - generic [ref=e22]:
+            - heading "My Boards" [level=3] [ref=e23]
+            - list [ref=e370]:
+              - listitem [ref=e371]:
+                - button "My Board" [ref=e372] [cursor=pointer]
+    - main [ref=e26]:
+      - group "Board views" [ref=e379]:
+        - button "Stories" [ref=e380] [cursor=pointer]
+        - button "Ideations" [ref=e384] [cursor=pointer]
+        - button "Refinements" [ref=e387] [cursor=pointer]
+        - button "Specs" [ref=e392] [cursor=pointer]
+        - button "Tasks" [pressed] [ref=e397] [cursor=pointer]
+      - generic [ref=e3131]:
+        - generic [ref=e3132]:
+          - textbox "Search cards…" [ref=e3134]
+          - button "Unlinked" [ref=e3137] [cursor=pointer]
+          - button "Filter specs..." [ref=e3139] [cursor=pointer]
+          - button "Show archived" [ref=e3143] [cursor=pointer]
+        - generic [ref=e3144]:
+          - generic [ref=e3145]:
+            - generic [ref=e3146]:
+              - generic [ref=e3148]:
+                - generic [ref=e3149]:
+                  - generic [ref=e3150]:
+                    - heading "Not Started" [level=3] [ref=e3151]
+                    - generic "2 total cards" [ref=e3152]: "2"
+                  - generic [ref=e3153]:
+                    - button "1 task cards" [pressed] [ref=e3154] [cursor=pointer]:
+                      - generic [ref=e3155]: Task
+                      - generic [ref=e3160]: "1"
+                    - button "1 test cards" [pressed] [ref=e3161] [cursor=pointer]:
+                      - generic [ref=e3162]: Test
+                      - generic [ref=e3166]: "1"
+                    - button "0 bug cards" [pressed] [ref=e3167] [cursor=pointer]:
+                      - generic [ref=e3168]: Bug
+                      - generic [ref=e3179]: "0"
+                - button "Add card to Not Started" [ref=e3180] [cursor=pointer]
+              - generic [ref=e3182]:
+                - 'button "H01 — Consultar itens spec list_items(items) retorna cópia da lista na ordem original; lista vazia retorna []. Não altera items. Implementar somente esta função em shopping.py, sem I/O; registrar provas reais. Nenhum percentual narrado constitui evidência. mock completude Delivery readiness C: Codex A: Codex" [ref=e3183]':
+                  - generic [ref=e3184]:
+                    - generic "Move card" [ref=e3185]
+                    - generic [ref=e3193] [cursor=pointer]:
+                      - generic [ref=e3194]:
+                        - heading "H01 — Consultar itens" [level=4] [ref=e3195]
+                        - generic "Linked to a spec" [ref=e3196]: spec
+                      - paragraph [ref=e3200]: list_items(items) retorna cópia da lista na ordem original; lista vazia retorna []. Não altera items. Implementar somente esta função em shopping.py, sem I/O; registrar provas reais. Nenhum percentual narrado constitui evidência.
+                      - generic [ref=e3201]:
+                        - generic [ref=e3202]: mock
+                        - generic [ref=e3203]: completude
+                      - region "Delivery readiness" [ref=e3204]:
+                        - generic [ref=e3205]:
+                          - generic [ref=e3206]:
+                            - generic [ref=e3207]: Implementation
+                            - strong [ref=e3209]: 0%
+                            - generic [ref=e3210]:
+                              - progressbar "Implementation"
+                          - generic [ref=e3211]:
+                            - generic [ref=e3212]: Verification
+                            - strong [ref=e3214]: 0%
+                            - generic [ref=e3215]:
+                              - progressbar "Verification"
+                        - button "Open delivery details" [ref=e3216]
+                      - generic [ref=e3218]:
+                        - 'generic "Creator: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=e3219]': "C: Codex"
+                        - 'generic "Assignee: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=e3220]': "A: Codex"
+                - 'button "test T01 — Verificar Consultar itens spec Executar os cenários vinculados usando unittest em test_shopping.py, com dados isolados. Admitir o relatório do runner autenticado e associar a prova atual da implementação, sem fabricar resultados. mock completude Delivery readiness 2 scenarios linked C: Codex A: Codex" [ref=e3221]':
+                  - generic [ref=e3222]:
+                    - generic "Move card" [ref=e3223]
+                    - generic [ref=e3231] [cursor=pointer]:
+                      - generic [ref=e3232]:
+                        - generic [ref=e3233]: test
+                        - heading "T01 — Verificar Consultar itens" [level=4] [ref=e3236]
+                        - generic "Linked to a spec" [ref=e3237]: spec
+                      - paragraph [ref=e3241]: Executar os cenários vinculados usando unittest em test_shopping.py, com dados isolados. Admitir o relatório do runner autenticado e associar a prova atual da implementação, sem fabricar resultados.
+                      - generic [ref=e3242]:
+                        - generic [ref=e3243]: mock
+                        - generic [ref=e3244]: completude
+                      - region "Delivery readiness" [ref=e3245]:
+                        - generic [ref=e3247]:
+                          - generic [ref=e3248]: Verification
+                          - strong [ref=e3250]: 0%
+                          - generic [ref=e3251]:
+                            - progressbar "Verification"
+                        - button "Open delivery details" [ref=e3252]
+                      - generic [ref=e3253]: 2 scenarios linked
+                      - generic [ref=e3258]:
+                        - 'generic "Creator: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=e3259]': "C: Codex"
+                        - 'generic "Assignee: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=e3260]': "A: Codex"
+            - generic [ref=e3261]:
+              - generic [ref=e3263]:
+                - generic [ref=e3264]:
+                  - generic [ref=e3265]:
+                    - heading "Started" [level=3] [ref=e3266]
+                    - generic "0 total cards" [ref=e3267]: "0"
+                  - generic [ref=e3268]:
+                    - button "0 task cards" [pressed] [ref=e3269] [cursor=pointer]:
+                      - generic [ref=e3270]: Task
+                      - generic [ref=e3275]: "0"
+                    - button "0 test cards" [pressed] [ref=e3276] [cursor=pointer]:
+                      - generic [ref=e3277]: Test
+                      - generic [ref=e3281]: "0"
+                    - button "0 bug cards" [pressed] [ref=e3282] [cursor=pointer]:
+                      - generic [ref=e3283]: Bug
+                      - generic [ref=e3294]: "0"
+                - button "Add card to Started" [ref=e3295] [cursor=pointer]
+              - generic [ref=e3297]: No cards
+            - generic [ref=e3299]:
+              - generic [ref=e3302]:
+                - generic [ref=e3303]:
+                  - heading "In Progress" [level=3] [ref=e3304]
+                  - generic "4 total cards" [ref=e3305]: "4"
+                - generic [ref=e3306]:
+                  - button "2 task cards" [pressed] [ref=e3307] [cursor=pointer]:
+                    - generic [ref=e3308]: Task
+                    - generic [ref=e3313]: "2"
+                  - button "2 test cards" [pressed] [ref=e3314] [cursor=pointer]:
+                    - generic [ref=e3315]: Test
+                    - generic [ref=e3319]: "2"
+                  - button "0 bug cards" [pressed] [ref=e3320] [cursor=pointer]:
+                    - generic [ref=e3321]: Bug
+                    - generic [ref=e3332]: "0"
+              - generic [ref=e3333]:
+                - 'button "H02 — Adicionar item spec add_item(items, name) aplica strip ao nome, anexa item com id=max(ids,default=0)+1 e purchased=false, retornando nova lista. Nome vazio após strip gera ValueError(\"name_required\") sem alterar a entrada. Implementar somente esta função em shopping.py, sem I/O; registrar provas reais. Nenhum percentual narrado constitui evidência. mock completude Delivery readiness C: Codex A: Codex" [ref=e3334]':
+                  - generic [ref=e3335]:
+                    - generic "Move card" [ref=e3336]
+                    - generic [ref=e3344] [cursor=pointer]:
+                      - generic [ref=e3345]:
+                        - heading "H02 — Adicionar item" [level=4] [ref=e3346]
+                        - generic "Linked to a spec" [ref=e3347]: spec
+                      - paragraph [ref=e3351]: add_item(items, name) aplica strip ao nome, anexa item com id=max(ids,default=0)+1 e purchased=false, retornando nova lista. Nome vazio após strip gera ValueError("name_required") sem alterar a entrada. Implementar somente esta função em shopping.py, sem I/O; registrar provas reais. Nenhum percentual narrado constitui evidência.
+                      - generic [ref=e3352]:
+                        - generic [ref=e3353]: mock
+                        - generic [ref=e3354]: completude
+                      - region "Delivery readiness" [ref=e3355]:
+                        - generic [ref=e3356]:
+                          - generic [ref=e3357]:
+                            - generic [ref=e3358]: Implementation
+                            - strong [ref=e3360]: 25%
+                            - progressbar "Implementation" [ref=e3944]
+                          - generic [ref=e3363]:
+                            - generic [ref=e3364]: Verification
+                            - strong [ref=e3366]: 0%
+                            - generic [ref=e3367]:
+                              - progressbar "Verification"
+                        - button "Open delivery details" [ref=e3368]
+                      - generic [ref=e3370]:
+                        - 'generic "Creator: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=e3371]': "C: Codex"
+                        - 'generic "Assignee: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=e3372]': "A: Codex"
+                - 'button "test T02 — Verificar Adicionar item spec Executar os cenários vinculados usando unittest em test_shopping.py, com dados isolados. Admitir o relatório do runner autenticado e associar a prova atual da implementação, sem fabricar resultados. mock completude Delivery readiness 2 scenarios linked C: Codex A: Codex" [ref=e3373]':
+                  - generic [ref=e3374]:
+                    - generic "Move card" [ref=e3375]
+                    - generic [ref=e3383] [cursor=pointer]:
+                      - generic [ref=e3384]:
+                        - generic [ref=e3385]: test
+                        - heading "T02 — Verificar Adicionar item" [level=4] [ref=e3388]
+                        - generic "Linked to a spec" [ref=e3389]: spec
+                      - paragraph [ref=e3393]: Executar os cenários vinculados usando unittest em test_shopping.py, com dados isolados. Admitir o relatório do runner autenticado e associar a prova atual da implementação, sem fabricar resultados.
+                      - generic [ref=e3394]:
+                        - generic [ref=e3395]: mock
+                        - generic [ref=e3396]: completude
+                      - region "Delivery readiness" [ref=e3397]:
+                        - generic [ref=e3399]:
+                          - generic [ref=e3400]: Verification
+                          - strong [ref=e3402]: 0%
+                          - generic [ref=e3403]:
+                            - progressbar "Verification"
+                        - button "Open delivery details" [ref=e3404]
+                      - generic [ref=e3405]: 2 scenarios linked
+                      - generic [ref=e3410]:
+                        - 'generic "Creator: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=e3411]': "C: Codex"
+                        - 'generic "Assignee: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=e3412]': "A: Codex"
+                - 'button "H03 — Marcar compra spec set_purchased(items,id,value) retorna nova lista com purchased=value no id existente; preserva ordem, nomes e demais itens. Chamadas true e false são idempotentes. Id ausente gera ValueError(\"item_not_found\"). Implementar somente esta função em shopping.py, sem I/O; registrar provas reais. Nenhum percentual narrado constitui evidência. mock completude Delivery readiness C: Codex A: Codex" [ref=e3413]':
+                  - generic [ref=e3414]:
+                    - generic "Move card" [ref=e3415]
+                    - generic [ref=e3423] [cursor=pointer]:
+                      - generic [ref=e3424]:
+                        - heading "H03 — Marcar compra" [level=4] [ref=e3425]
+                        - generic "Linked to a spec" [ref=e3426]: spec
+                      - paragraph [ref=e3430]: set_purchased(items,id,value) retorna nova lista com purchased=value no id existente; preserva ordem, nomes e demais itens. Chamadas true e false são idempotentes. Id ausente gera ValueError("item_not_found"). Implementar somente esta função em shopping.py, sem I/O; registrar provas reais. Nenhum percentual narrado constitui evidência.
+                      - generic [ref=e3431]:
+                        - generic [ref=e3432]: mock
+                        - generic [ref=e3433]: completude
+                      - region "Delivery readiness" [ref=e3434]:
+                        - generic [ref=e3435]:
+                          - generic [ref=e3436]:
+                            - generic [ref=e3437]: Implementation
+                            - strong [ref=e3439]: 100%
+                            - progressbar "Implementation" [ref=e3945]
+                          - generic [ref=e3442]:
+                            - generic [ref=e3443]: Verification
+                            - strong [ref=e3445]: 0%
+                            - generic [ref=e3446]:
+                              - progressbar "Verification"
+                        - button "Open delivery details" [ref=e3447]
+                      - generic [ref=e3449]:
+                        - 'generic "Creator: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=e3450]': "C: Codex"
+                        - 'generic "Assignee: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=e3451]': "A: Codex"
+                - 'button "test T03 — Verificar Marcar compra spec Executar os cenários vinculados usando unittest em test_shopping.py, com dados isolados. Admitir o relatório do runner autenticado e associar a prova atual da implementação, sem fabricar resultados. mock completude Delivery readiness 2 scenarios linked C: Codex A: Codex" [ref=e3452]':
+                  - generic [ref=e3453]:
+                    - generic "Move card" [ref=e3454]
+                    - generic [ref=e3462] [cursor=pointer]:
+                      - generic [ref=e3463]:
+                        - generic [ref=e3464]: test
+                        - heading "T03 — Verificar Marcar compra" [level=4] [ref=e3467]
+                        - generic "Linked to a spec" [ref=e3468]: spec
+                      - paragraph [ref=e3472]: Executar os cenários vinculados usando unittest em test_shopping.py, com dados isolados. Admitir o relatório do runner autenticado e associar a prova atual da implementação, sem fabricar resultados.
+                      - generic [ref=e3473]:
+                        - generic [ref=e3474]: mock
+                        - generic [ref=e3475]: completude
+                      - region "Delivery readiness" [ref=e3476]:
+                        - generic [ref=e3478]:
+                          - generic [ref=e3479]: Verification
+                          - strong [ref=e3481]: 0%
+                          - generic [ref=e3482]:
+                            - progressbar "Verification"
+                        - button "Open delivery details" [ref=e3483]
+                      - generic [ref=e3484]: 2 scenarios linked
+                      - generic [ref=e3489]:
+                        - 'generic "Creator: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=e3490]': "C: Codex"
+                        - 'generic "Assignee: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=e3491]': "A: Codex"
+            - generic [ref=e3492]:
+              - generic [ref=e3495]:
+                - generic [ref=e3496]:
+                  - heading "Validation" [level=3] [ref=e3497]
+                  - generic "0 total cards" [ref=e3498]: "0"
+                - generic [ref=e3499]:
+                  - button "0 task cards" [pressed] [ref=e3500] [cursor=pointer]:
+                    - generic [ref=e3501]: Task
+                    - generic [ref=e3506]: "0"
+                  - button "0 test cards" [pressed] [ref=e3507] [cursor=pointer]:
+                    - generic [ref=e3508]: Test
+                    - generic [ref=e3512]: "0"
+                  - button "0 bug cards" [pressed] [ref=e3513] [cursor=pointer]:
+                    - generic [ref=e3514]: Bug
+                    - generic [ref=e3525]: "0"
+              - generic [ref=e3526]: No cards
+            - generic [ref=e3528]:
+              - generic [ref=e3531]:
+                - generic [ref=e3532]:
+                  - heading "Rejected" [level=3] [ref=e3533]
+                  - generic "0 total cards" [ref=e3534]: "0"
+                - generic [ref=e3535]:
+                  - button "0 task cards" [pressed] [ref=e3536] [cursor=pointer]:
+                    - generic [ref=e3537]: Task
+                    - generic [ref=e3542]: "0"
+                  - button "0 bug cards" [pressed] [ref=e3543] [cursor=pointer]:
+                    - generic [ref=e3544]: Bug
+                    - generic [ref=e3555]: "0"
+              - generic [ref=e3556]: No cards requiring rework
+            - generic [ref=e3558]:
+              - generic [ref=e3561]:
+                - generic [ref=e3562]:
+                  - heading "On Hold" [level=3] [ref=e3563]
+                  - generic "0 total cards" [ref=e3564]: "0"
+                - generic [ref=e3565]:
+                  - button "0 task cards" [pressed] [ref=e3566] [cursor=pointer]:
+                    - generic [ref=e3567]: Task
+                    - generic [ref=e3572]: "0"
+                  - button "0 test cards" [pressed] [ref=e3573] [cursor=pointer]:
+                    - generic [ref=e3574]: Test
+                    - generic [ref=e3578]: "0"
+                  - button "0 bug cards" [pressed] [ref=e3579] [cursor=pointer]:
+                    - generic [ref=e3580]: Bug
+                    - generic [ref=e3591]: "0"
+              - generic [ref=e3592]: No cards
+            - generic [ref=e3594]:
+              - generic [ref=e3597]:
+                - generic [ref=e3598]:
+                  - heading "Done" [level=3] [ref=e3599]
+                  - generic "6 total cards" [ref=e3600]: "6"
+                - generic [ref=e3601]:
+                  - button "3 task cards" [pressed] [ref=e3602] [cursor=pointer]:
+                    - generic [ref=e3603]: Task
+                    - generic [ref=e3608]: "3"
+                  - button "3 test cards" [pressed] [ref=e3609] [cursor=pointer]:
+                    - generic [ref=e3610]: Test
+                    - generic [ref=e3614]: "3"
+                  - button "0 bug cards" [pressed] [ref=e3615] [cursor=pointer]:
+                    - generic [ref=e3616]: Bug
+                    - generic [ref=e3627]: "0"
+              - generic [ref=e3628]:
+                - 'button "test T04 — Verificar Filtrar pendências spec Executar os cenários vinculados usando unittest em test_shopping.py, com dados isolados. Admitir o relatório do runner autenticado e associar a prova atual da implementação, sem fabricar resultados. mock completude Delivery readiness 2 scenarios linked 100% complete 0% drift C: Codex A: Codex" [ref=e3629]':
+                  - generic [ref=e3630]:
+                    - generic "Move card" [ref=e3631]
+                    - generic [ref=e3639] [cursor=pointer]:
+                      - generic [ref=e3640]:
+                        - generic [ref=e3641]: test
+                        - heading "T04 — Verificar Filtrar pendências" [level=4] [ref=e3644]
+                        - generic "Linked to a spec" [ref=e3645]: spec
+                      - paragraph [ref=e3649]: Executar os cenários vinculados usando unittest em test_shopping.py, com dados isolados. Admitir o relatório do runner autenticado e associar a prova atual da implementação, sem fabricar resultados.
+                      - generic [ref=e3650]:
+                        - generic [ref=e3651]: mock
+                        - generic [ref=e3652]: completude
+                      - region "Delivery readiness" [ref=e3653]:
+                        - generic [ref=e3655]:
+                          - generic [ref=e3656]: Verification
+                          - strong [ref=e3658]: 100%
+                          - progressbar "Verification" [ref=e3946]
+                        - button "Open delivery details" [ref=e3661]
+                      - generic [ref=e3662]: 2 scenarios linked
+                      - generic [ref=e3666]:
+                        - 'generic "Completeness: 100%" [ref=e3667]': 100% complete
+                        - 'generic "Drift: 0%" [ref=e3668]': 0% drift
+                      - generic [ref=e3670]:
+                        - 'generic "Creator: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=e3671]': "C: Codex"
+                        - 'generic "Assignee: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=e3672]': "A: Codex"
+                - 'button "H04 — Filtrar pendências spec filter_items(items,pending_only) retorna nova lista: se true seleciona purchased=false; se false inclui todos. Preserva ordem e não modifica items; nenhum pendente retorna []. Implementar somente esta função em shopping.py, sem I/O; registrar provas reais. Nenhum percentual narrado constitui evidência. mock completude Delivery readiness 100% complete 0% drift C: Codex A: Codex" [ref=e3673]':
+                  - generic [ref=e3674]:
+                    - generic "Move card" [ref=e3675]
+                    - generic [ref=e3683] [cursor=pointer]:
+                      - generic [ref=e3684]:
+                        - heading "H04 — Filtrar pendências" [level=4] [ref=e3685]
+                        - generic "Linked to a spec" [ref=e3686]: spec
+                      - paragraph [ref=e3690]: "filter_items(items,pending_only) retorna nova lista: se true seleciona purchased=false; se false inclui todos. Preserva ordem e não modifica items; nenhum pendente retorna []. Implementar somente esta função em shopping.py, sem I/O; registrar provas reais. Nenhum percentual narrado constitui evidência."
+                      - generic [ref=e3691]:
+                        - generic [ref=e3692]: mock
+                        - generic [ref=e3693]: completude
+                      - region "Delivery readiness" [ref=e3694]:
+                        - generic [ref=e3695]:
+                          - generic [ref=e3696]:
+                            - generic [ref=e3697]: Implementation
+                            - strong [ref=e3699]: 100%
+                            - progressbar "Implementation" [ref=e3947]
+                          - generic [ref=e3702]:
+                            - generic [ref=e3703]: Verification
+                            - strong [ref=e3705]: 100%
+                            - progressbar "Verification" [ref=e3948]
+                        - button "Open delivery details" [ref=e3708]
+                      - generic [ref=e3709]:
+                        - 'generic "Completeness: 100%" [ref=e3710]': 100% complete
+                        - 'generic "Drift: 0%" [ref=e3711]': 0% drift
+                      - generic [ref=e3713]:
+                        - 'generic "Creator: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=e3714]': "C: Codex"
+                        - 'generic "Assignee: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=e3715]': "A: Codex"
+                - 'button "test [TEST] E2E H01 — Normalizar rótulo spec normalizar_rotulo(texto: str) retorna texto.strip().upper(); vazio após strip gera ValueError(\"rotulo_obrigatorio\"). Nenhum I/O. Implementar e executar os dois cenários vinculados em test_estoque.py via unittest autenticado. FR fr_e2e_01; BR br_dad34bbd; ACs ac_e2e_01_1 e ac_e2e_01_2. Python padrão, entradas isoladas, sem I/O/rede/persistência; sem contrato externo. Evidências observadas no commit real, sem percentual autodeclarado como prova. mock e2e completude Delivery readiness 2 scenarios linked 100% complete 0% drift C: Codex A: Codex" [ref=e3716]':
+                  - generic [ref=e3717]:
+                    - generic "Move card" [ref=e3718]
+                    - generic [ref=e3726] [cursor=pointer]:
+                      - generic [ref=e3727]:
+                        - generic [ref=e3728]: test
+                        - heading "[TEST] E2E H01 — Normalizar rótulo" [level=4] [ref=e3731]
+                        - generic "Linked to a spec" [ref=e3732]: spec
+                      - paragraph [ref=e3736]: "normalizar_rotulo(texto: str) retorna texto.strip().upper(); vazio após strip gera ValueError(\"rotulo_obrigatorio\"). Nenhum I/O. Implementar e executar os dois cenários vinculados em test_estoque.py via unittest autenticado. FR fr_e2e_01; BR br_dad34bbd; ACs ac_e2e_01_1 e ac_e2e_01_2. Python padrão, entradas isoladas, sem I/O/rede/persistência; sem contrato externo. Evidências observadas no commit real, sem percentual autodeclarado como prova."
+                      - generic [ref=e3737]:
+                        - generic [ref=e3738]: mock
+                        - generic [ref=e3739]: e2e
+                        - generic [ref=e3740]: completude
+                      - region "Delivery readiness" [ref=e3741]:
+                        - generic [ref=e3743]:
+                          - generic [ref=e3744]: Verification
+                          - strong [ref=e3746]: 100%
+                          - progressbar "Verification" [ref=e3949]
+                        - button "Open delivery details" [ref=e3749]
+                      - generic [ref=e3750]: 2 scenarios linked
+                      - generic [ref=e3754]:
+                        - 'generic "Completeness: 100%" [ref=e3755]': 100% complete
+                        - 'generic "Drift: 0%" [ref=e3756]': 0% drift
+                      - generic [ref=e3758]:
+                        - 'generic "Creator: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=e3759]': "C: Codex"
+                        - 'generic "Assignee: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=e3760]': "A: Codex"
+                - 'button "test [TEST] E2E H02 — Somar quantidades spec somar_quantidades(quantidades: list[int]) retorna a soma dos inteiros não negativos; lista vazia retorna 0. Qualquer negativo gera ValueError(\"quantidade_negativa\"). Não modifica a lista. Implementar e executar os dois cenários vinculados em test_estoque.py via unittest autenticado. FR fr_e2e_02; BR br_98e79906; ACs ac_e2e_02_1 e ac_e2e_02_2. Python padrão, entradas isoladas, sem I/O/rede/persistência; sem contrato externo. Evidências observadas no commit real, sem percentual autodeclarado como prova. mock e2e completude Delivery readiness 2 scenarios linked 100% complete 0% drift C: Codex A: Codex" [ref=e3761]':
+                  - generic [ref=e3762]:
+                    - generic "Move card" [ref=e3763]
+                    - generic [ref=e3771] [cursor=pointer]:
+                      - generic [ref=e3772]:
+                        - generic [ref=e3773]: test
+                        - heading "[TEST] E2E H02 — Somar quantidades" [level=4] [ref=e3776]
+                        - generic "Linked to a spec" [ref=e3777]: spec
+                      - paragraph [ref=e3781]: "somar_quantidades(quantidades: list[int]) retorna a soma dos inteiros não negativos; lista vazia retorna 0. Qualquer negativo gera ValueError(\"quantidade_negativa\"). Não modifica a lista. Implementar e executar os dois cenários vinculados em test_estoque.py via unittest autenticado. FR fr_e2e_02; BR br_98e79906; ACs ac_e2e_02_1 e ac_e2e_02_2. Python padrão, entradas isoladas, sem I/O/rede/persistência; sem contrato externo. Evidências observadas no commit real, sem percentual autodeclarado como prova."
+                      - generic [ref=e3782]:
+                        - generic [ref=e3783]: mock
+                        - generic [ref=e3784]: e2e
+                        - generic [ref=e3785]: completude
+                      - region "Delivery readiness" [ref=e3786]:
+                        - generic [ref=e3788]:
+                          - generic [ref=e3789]: Verification
+                          - strong [ref=e3791]: 100%
+                          - progressbar "Verification" [ref=e3950]
+                        - button "Open delivery details" [ref=e3794]
+                      - generic [ref=e3795]: 2 scenarios linked
+                      - generic [ref=e3799]:
+                        - 'generic "Completeness: 100%" [ref=e3800]': 100% complete
+                        - 'generic "Drift: 0%" [ref=e3801]': 0% drift
+                      - generic [ref=e3803]:
+                        - 'generic "Creator: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=e3804]': "C: Codex"
+                        - 'generic "Assignee: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=e3805]': "A: Codex"
+                - 'button "E2E H01 — Normalizar rótulo spec normalizar_rotulo(texto: str) retorna texto.strip().upper(); vazio após strip gera ValueError(\"rotulo_obrigatorio\"). Nenhum I/O. Implementar a função em estoque.py. FR fr_e2e_01; BR br_dad34bbd; ACs ac_e2e_01_1 e ac_e2e_01_2. Python padrão, entradas isoladas, sem I/O/rede/persistência; sem contrato externo. Evidências observadas no commit real, sem percentual autodeclarado como prova. mock e2e completude Delivery readiness 100% complete 0% drift C: Codex A: Codex" [ref=e3806]':
+                  - generic [ref=e3807]:
+                    - generic "Move card" [ref=e3808]
+                    - generic [ref=e3816] [cursor=pointer]:
+                      - generic [ref=e3817]:
+                        - heading "E2E H01 — Normalizar rótulo" [level=4] [ref=e3818]
+                        - generic "Linked to a spec" [ref=e3819]: spec
+                      - paragraph [ref=e3823]: "normalizar_rotulo(texto: str) retorna texto.strip().upper(); vazio após strip gera ValueError(\"rotulo_obrigatorio\"). Nenhum I/O. Implementar a função em estoque.py. FR fr_e2e_01; BR br_dad34bbd; ACs ac_e2e_01_1 e ac_e2e_01_2. Python padrão, entradas isoladas, sem I/O/rede/persistência; sem contrato externo. Evidências observadas no commit real, sem percentual autodeclarado como prova."
+                      - generic [ref=e3824]:
+                        - generic [ref=e3825]: mock
+                        - generic [ref=e3826]: e2e
+                        - generic [ref=e3827]: completude
+                      - region "Delivery readiness" [ref=e3828]:
+                        - generic [ref=e3829]:
+                          - generic [ref=e3830]:
+                            - generic [ref=e3831]: Implementation
+                            - strong [ref=e3833]: 100%
+                            - progressbar "Implementation" [ref=e3951]
+                          - generic [ref=e3836]:
+                            - generic [ref=e3837]: Verification
+                            - strong [ref=e3839]: 100%
+                            - progressbar "Verification" [ref=e3952]
+                        - button "Open delivery details" [ref=e3842]
+                      - generic [ref=e3843]:
+                        - 'generic "Completeness: 100%" [ref=e3844]': 100% complete
+                        - 'generic "Drift: 0%" [ref=e3845]': 0% drift
+                      - generic [ref=e3847]:
+                        - 'generic "Creator: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=e3848]': "C: Codex"
+                        - 'generic "Assignee: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=e3849]': "A: Codex"
+                - 'button "E2E H02 — Somar quantidades spec somar_quantidades(quantidades: list[int]) retorna a soma dos inteiros não negativos; lista vazia retorna 0. Qualquer negativo gera ValueError(\"quantidade_negativa\"). Não modifica a lista. Implementar a função em estoque.py. FR fr_e2e_02; BR br_98e79906; ACs ac_e2e_02_1 e ac_e2e_02_2. Python padrão, entradas isoladas, sem I/O/rede/persistência; sem contrato externo. Evidências observadas no commit real, sem percentual autodeclarado como prova. mock e2e completude Delivery readiness 100% complete 0% drift C: Codex A: Codex" [ref=e3850]':
+                  - generic [ref=e3851]:
+                    - generic "Move card" [ref=e3852]
+                    - generic [ref=e3860] [cursor=pointer]:
+                      - generic [ref=e3861]:
+                        - heading "E2E H02 — Somar quantidades" [level=4] [ref=e3862]
+                        - generic "Linked to a spec" [ref=e3863]: spec
+                      - paragraph [ref=e3867]: "somar_quantidades(quantidades: list[int]) retorna a soma dos inteiros não negativos; lista vazia retorna 0. Qualquer negativo gera ValueError(\"quantidade_negativa\"). Não modifica a lista. Implementar a função em estoque.py. FR fr_e2e_02; BR br_98e79906; ACs ac_e2e_02_1 e ac_e2e_02_2. Python padrão, entradas isoladas, sem I/O/rede/persistência; sem contrato externo. Evidências observadas no commit real, sem percentual autodeclarado como prova."
+                      - generic [ref=e3868]:
+                        - generic [ref=e3869]: mock
+                        - generic [ref=e3870]: e2e
+                        - generic [ref=e3871]: completude
+                      - region "Delivery readiness" [ref=e3872]:
+                        - generic [ref=e3873]:
+                          - generic [ref=e3874]:
+                            - generic [ref=e3875]: Implementation
+                            - strong [ref=e3877]: 100%
+                            - progressbar "Implementation" [ref=e3953]
+                          - generic [ref=e3880]:
+                            - generic [ref=e3881]: Verification
+                            - strong [ref=e3883]: 100%
+                            - progressbar "Verification" [ref=e3954]
+                        - button "Open delivery details" [ref=e3886]
+                      - generic [ref=e3887]:
+                        - 'generic "Completeness: 100%" [ref=e3888]': 100% complete
+                        - 'generic "Drift: 0%" [ref=e3889]': 0% drift
+                      - generic [ref=e3891]:
+                        - 'generic "Creator: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=e3892]': "C: Codex"
+                        - 'generic "Assignee: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=e3893]': "A: Codex"
+            - generic [ref=e3894]:
+              - generic [ref=e3897]:
+                - generic [ref=e3898]:
+                  - heading "Cancelled" [level=3] [ref=e3899]
+                  - generic "0 total cards" [ref=e3900]: "0"
+                - generic [ref=e3901]:
+                  - button "0 task cards" [pressed] [ref=e3902] [cursor=pointer]:
+                    - generic [ref=e3903]: Task
+                    - generic [ref=e3908]: "0"
+                  - button "0 test cards" [pressed] [ref=e3909] [cursor=pointer]:
+                    - generic [ref=e3910]: Test
+                    - generic [ref=e3914]: "0"
+                  - button "0 bug cards" [pressed] [ref=e3915] [cursor=pointer]:
+                    - generic [ref=e3916]: Bug
+                    - generic [ref=e3927]: "0"
+              - generic [ref=e3928]: No cards
+          - status [ref=e3930]

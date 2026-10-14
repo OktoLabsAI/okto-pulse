@@ -1,0 +1,200 @@
+- generic [ref=f2e3]:
+  - banner [ref=f2e4]:
+    - generic [ref=f2e5]:
+      - generic [ref=f2e6]:
+        - button "Hide sidebar" [ref=f2e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f2e12]
+        - generic [ref=f2e38]: / My Board
+      - generic [ref=f2e39]:
+        - button "Refresh board" [ref=f2e40] [cursor=pointer]
+        - button [ref=f2e47] [cursor=pointer]
+  - generic [ref=f2e13]:
+    - complementary [ref=f2e14]:
+      - generic [ref=f2e15]:
+        - generic [ref=f2e17]:
+          - heading "Boards" [level=2] [ref=f2e18]
+          - button "New board" [ref=f2e19] [cursor=pointer]
+        - navigation [ref=f2e21]:
+          - generic [ref=f2e22]:
+            - heading "My Boards" [level=3] [ref=f2e23]
+            - list [ref=f2e24]:
+              - listitem [ref=f2e25]:
+                - button "My Board" [ref=f2e26] [cursor=pointer]
+    - main [ref=f2e33]:
+      - group "Board views" [ref=f2e51]:
+        - button "Stories" [ref=f2e52] [cursor=pointer]
+        - button "Ideations" [ref=f2e56] [cursor=pointer]
+        - button "Refinements" [ref=f2e59] [cursor=pointer]
+        - button "Specs" [pressed] [ref=f2e64] [cursor=pointer]
+        - button "Tasks" [ref=f2e69] [cursor=pointer]
+      - generic [ref=f2e167]:
+        - generic [ref=f2e168]:
+          - generic [ref=f2e169]:
+            - heading "Specifications" [level=2] [ref=f2e170]
+            - generic [ref=f2e171]: (1 of 1)
+          - generic [ref=f2e172]:
+            - textbox "Search specs…" [ref=f2e174]
+            - group "View mode" [ref=f2e175]:
+              - button "List view" [pressed] [ref=f2e176] [cursor=pointer]
+              - button "Grid view" [ref=f2e178] [cursor=pointer]
+            - generic [ref=f2e184]: Group specs
+            - combobox "Group specs" [ref=f2e190]:
+              - option "None"
+              - option "Ideation"
+              - option "Refinement"
+              - option "Parents" [selected]
+            - button "New Spec" [ref=f2e191] [cursor=pointer]
+        - generic [ref=f2e193]:
+          - button "All" [ref=f2e194] [cursor=pointer]
+          - button "Draft" [ref=f2e195] [cursor=pointer]
+          - button "Review" [ref=f2e196] [cursor=pointer]
+          - button "Approved" [ref=f2e197] [cursor=pointer]
+          - button "Validated" [ref=f2e198] [cursor=pointer]
+          - button "In Progress" [ref=f2e199] [cursor=pointer]
+          - button "Done" [ref=f2e200] [cursor=pointer]
+          - button "Show archived" [ref=f2e201] [cursor=pointer]
+        - generic [ref=f2e207] [cursor=pointer]:
+          - generic [ref=f2e208]:
+            - generic [ref=f2e209]:
+              - generic [ref=f2e210]: Draft
+              - generic "Edition 1" [ref=f2e214]
+            - heading "DV acceptance - isolated mock scope" [level=3] [ref=f2e215]
+            - paragraph [ref=f2e216]: This new native acceptance fixture documents only the local UI exercise; no production deployment is included.
+            - 'generic "Requirement lint: no current result · Edition 1; 0 previous results" [ref=f2e218]':
+              - generic [ref=f2e219]: Requirement lint
+              - strong [ref=f2e220]: Not assessed
+          - generic [ref=f2e221]:
+            - button "Open lineage graph" [ref=f2e222]
+            - button "Archive tree" [ref=f2e227]
+        - generic [ref=f2e233]:
+          - status [ref=f2e234]: Showing 1–1 of 1 matching. 1 overall. Page 1 of 1.
+          - generic [ref=f2e235]:
+            - generic [ref=f2e236]:
+              - generic [ref=f2e237]: Items per page
+              - combobox "Items per page" [ref=f2e238]:
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+            - navigation "Specifications pagination" [ref=f2e239]:
+              - generic [ref=f2e240]:
+                - button "Previous page" [disabled] [ref=f2e241]: Previous
+                - button "Page 1" [disabled] [ref=f2e242]: "1"
+                - button "Next page" [disabled] [ref=f2e243]: Next
+        - dialog [ref=f2e245]:
+          - generic [ref=f2e246]:
+            - generic [ref=f2e247]:
+              - generic [ref=f2e248]: Draft
+              - heading "DV acceptance - isolated mock scope" [level=2] [ref=f2e252]
+              - generic "Edition 1" [ref=f2e253]
+            - generic [ref=f2e254]:
+              - button "Open lineage graph" [ref=f2e255] [cursor=pointer]
+              - button "Export report" [ref=f2e260] [cursor=pointer]
+              - button "Refresh" [ref=f2e264] [cursor=pointer]
+              - button "Expand" [ref=f2e270] [cursor=pointer]
+              - button "Close spec" [ref=f2e276] [cursor=pointer]
+          - generic [ref=f2e280]:
+            - generic [ref=f2e281]: "Move to:"
+            - button "Review" [ref=f2e282] [cursor=pointer]
+            - button "Cancelled" [ref=f2e285] [cursor=pointer]
+          - generic [ref=f2e289]:
+            - tablist "Spec sections" [ref=f2e290]:
+              - tab "Details" [ref=f2e291] [cursor=pointer]
+              - tab "Coverage" [ref=f2e296] [cursor=pointer]
+              - tab "Project Structure" [ref=f2e302] [cursor=pointer]
+              - tab "Code Evidence Matrix" [ref=f2e309] [cursor=pointer]
+              - tab "Resources" [ref=f2e313] [cursor=pointer]
+              - tab "Requirements & Decisions" [selected] [ref=f2e317] [cursor=pointer]
+              - tab "Tests & Verifications" [ref=f2e322] [cursor=pointer]
+              - tab "Q&A" [ref=f2e326] [cursor=pointer]
+              - tab "Dependencies" [ref=f2e331] [cursor=pointer]
+              - tab "References" [ref=f2e337] [cursor=pointer]
+              - tab "KG Graph" [ref=f2e342] [cursor=pointer]
+              - tab "Validation" [ref=f2e349] [cursor=pointer]
+              - tab "Activity" [ref=f2e354] [cursor=pointer]
+            - button "Scroll Spec sections left" [ref=f2e395] [cursor=pointer]
+            - button "Scroll Spec sections right" [ref=f2e360] [cursor=pointer]
+          - tabpanel "Requirements & Decisions" [ref=f2e398]:
+            - generic [ref=f2e399]:
+              - tablist "Requirements and decisions sections" [ref=f2e400]:
+                - tab "Functional" [ref=f2e401] [cursor=pointer]
+                - tab "Business" [ref=f2e405] [cursor=pointer]
+                - tab "Integration" [ref=f2e411] [cursor=pointer]
+                - tab "Observability" [ref=f2e418] [cursor=pointer]
+                - tab "Technical" [ref=f2e423] [cursor=pointer]
+                - tab "Contracts" [ref=f2e428] [cursor=pointer]
+                - tab "Decisions 1" [selected] [ref=f2e435] [cursor=pointer]:
+                  - generic [ref=f2e440]: Decisions
+                  - generic [ref=f2e441]: "1"
+              - button "Scroll Requirements and decisions sections left" [ref=f2e455] [cursor=pointer]
+              - button "Scroll Requirements and decisions sections right" [ref=f2e442] [cursor=pointer]
+            - tabpanel "Decisions 1" [ref=f2e458]:
+              - generic [ref=f2e459]:
+                - generic [ref=f2e461]:
+                  - heading "Decision adherence (—/1)" [level=4] [ref=f2e462]
+                  - generic [ref=f2e463]: Incomplete / unavailable
+                - button "Refresh verification" [ref=f2e464] [cursor=pointer]
+                - generic [ref=f2e465]:
+                  - button "Local mock exercise only active Verified" [expanded] [ref=f2e466] [cursor=pointer]:
+                    - generic [ref=f2e471]: Local mock exercise only
+                    - generic [ref=f2e472]: active
+                    - generic [ref=f2e473]: Verified
+                    - button "Edit" [ref=f2e474]
+                    - button "Revoke (soft-delete)" [ref=f2e478]
+                  - generic [ref=f2e488]:
+                    - generic [ref=f2e489]:
+                      - heading "Verification plan" [level=4] [ref=f2e490]
+                      - paragraph [ref=f2e491]: The specification description limits this exercise to the local UI and excludes production deployment.
+                    - region "Decision verification" [ref=f2e492]:
+                      - heading "Verified" [level=4] [ref=f2e493]
+                      - paragraph [ref=f2e494]: The specification description limits this exercise to the local UI and excludes production deployment.
+                      - group [ref=f2e495]:
+                        - generic "Observed scope" [ref=f2e496] [cursor=pointer]
+                      - group [ref=f2e497]:
+                        - generic "Record inspection" [ref=f2e498] [cursor=pointer]
+                        - option "Inconclusive" [selected]
+                        - option "Passed"
+                        - option "Failed"
+                        - option "Unavailable"
+                        - option "Aborted"
+                      - group [ref=f2e499]:
+                        - generic "Observations in this edition (1)" [ref=f2e500] [cursor=pointer]
+                        - group [ref=f2e506]:
+                          - generic "Passed · local-user · 10/10/2026, 08:29:32" [active] [ref=f2e507] [cursor=pointer]
+                          - generic [ref=f2e508]:
+                            - generic [ref=f2e509]:
+                              - term [ref=f2e510]: Expected
+                              - definition [ref=f2e511]: The specification description limits this exercise to the local UI and excludes production deployment.
+                            - generic [ref=f2e512]:
+                              - term [ref=f2e513]: Observed
+                              - definition [ref=f2e514]: "Read the current Spec description in this isolated instance: it explicitly limits the exercise to the local UI and says no production deployment is included. This observation covers that documented boundary only."
+                            - generic [ref=f2e515]:
+                              - term [ref=f2e516]: Sources
+                              - definition [ref=f2e517]:
+                                - paragraph [ref=f2e518]: spec:a9e1b1e1-2246-4f39-af5c-fe70b7de06af · edition:1 · 42503d4e5f8e
+                    - generic [ref=f2e501]:
+                      - text: Rationale
+                      - paragraph [ref=f2e502]: Keep the acceptance exercise bounded to the isolated local instance.
+                    - button "Show impact" [ref=f2e504] [cursor=pointer]
+                - button "Add Decision" [ref=f2e484] [cursor=pointer]
+          - generic [ref=f2e391]:
+            - button "Delete spec" [ref=f2e392] [cursor=pointer]
+            - button "Close" [ref=f2e394] [cursor=pointer]
+  - 'status "Cognitive pipeline working: 0 running, 1 pending" [ref=f2e137]':
+    - generic [ref=f2e148]: processing · 1 pending
+  - status [ref=f2e149]:
+    - generic [ref=f2e150]:
+      - generic [ref=f2e151]: Consolidation in progress
+      - generic [ref=f2e152]: 0%
+    - generic [ref=f2e154]:
+      - generic [ref=f2e155]:
+        - generic [ref=f2e156]: Pending
+        - generic [ref=f2e157]: "1"
+      - generic [ref=f2e158]:
+        - generic [ref=f2e159]: Running
+        - generic [ref=f2e160]: "0"
+      - generic [ref=f2e161]:
+        - generic [ref=f2e162]: Processed
+        - generic [ref=f2e163]: "0"
+      - generic [ref=f2e164]:
+        - generic [ref=f2e165]: Paused
+        - generic [ref=f2e166]: "0"

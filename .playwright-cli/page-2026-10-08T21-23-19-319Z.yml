@@ -1,0 +1,47 @@
+- main [ref=f1e3]:
+  - region "Spec coverage" [ref=f1e4]:
+    - generic [ref=f1e5]:
+      - generic [ref=f1e6]:
+        - heading "Coverage" [level=3] [ref=f1e7]
+        - paragraph [ref=f1e8]: Find planning gaps and track proof of delivery.
+      - button "Reload coverage" [ref=f1e9] [cursor=pointer]
+    - navigation "Coverage views" [ref=f1e10]:
+      - button "Overview" [ref=f1e11] [cursor=pointer]
+      - button "Planning" [ref=f1e12] [cursor=pointer]
+      - button "Implementation" [ref=f1e13] [cursor=pointer]
+      - button "Verification" [ref=f1e14] [cursor=pointer]
+    - paragraph [ref=f1e15]: Edition 1 · Informational view — this does not approve a gate.
+    - generic [ref=f1e16]:
+      - generic [ref=f1e17]:
+        - paragraph [ref=f1e18]: Planning coverage
+        - paragraph [ref=f1e19]: 22%
+        - progressbar "Planning coverage" [ref=f1e20]
+        - paragraph [ref=f1e21]: 2 of 9
+        - paragraph [ref=f1e22]: Applicable link dimensions fully covered. Empty dimensions are excluded.
+      - generic [ref=f1e23]:
+        - paragraph [ref=f1e24]: Implementation proof
+        - paragraph [ref=f1e25]: 0%
+        - progressbar "Implementation proof" [ref=f1e26]
+        - paragraph [ref=f1e27]: 0 of 37
+        - paragraph [ref=f1e28]: Obligations with admitted implementation proof.
+      - generic [ref=f1e29]:
+        - paragraph [ref=f1e30]: Verification proof
+        - paragraph [ref=f1e31]: 0%
+        - progressbar "Verification proof" [ref=f1e32]
+        - paragraph [ref=f1e33]: 0 of 37
+        - paragraph [ref=f1e34]: Obligations with admitted verification proof.
+    - region "Next steps" [ref=f1e35]:
+      - heading "Next steps" [level=4] [ref=f1e36]
+      - list [ref=f1e37]:
+        - listitem [ref=f1e38]:
+          - generic [ref=f1e39]: 7 planning dimensions have missing links.
+          - button "Review planning gaps" [ref=f1e40] [cursor=pointer]
+        - listitem [ref=f1e41]:
+          - generic [ref=f1e42]: 37 of 37 obligations without implementation proof.
+          - button "Review implementation" [ref=f1e43] [cursor=pointer]
+        - listitem [ref=f1e44]:
+          - generic [ref=f1e45]: 37 of 37 obligations without verification proof.
+          - button "Review verification" [ref=f1e46] [cursor=pointer]
+    - paragraph [ref=f1e47]: Planning links are not delivery proof. Waivers do not count as proven work.
+    - group [ref=f1e48]:
+      - generic "Technical diagnostics" [ref=f1e49] [cursor=pointer]

@@ -1,0 +1,21 @@
+- generic [ref=f13e3]:
+  - banner [ref=f13e4]:
+    - generic [ref=f13e6]:
+      - button "Hide sidebar" [ref=f13e7] [cursor=pointer]
+      - img "Okto Pulse" [ref=f13e12]
+  - generic [ref=f13e13]:
+    - complementary [ref=f13e14]:
+      - generic [ref=f13e15]:
+        - generic [ref=f13e17]:
+          - heading "Boards" [level=2] [ref=f13e18]
+          - button "New board" [disabled] [ref=f13e19]
+        - navigation [ref=f13e21]:
+          - generic [ref=f13e22]:
+            - heading "My Boards" [level=3] [ref=f13e23]
+            - generic [ref=f13e24]:
+              - text: No boards created
+              - button "Create first board" [disabled] [ref=f13e25]
+    - main [ref=f13e26]:
+      - generic [ref=f13e28]:
+        - paragraph [ref=f13e29]: Select or create a board to get started
+        - button "Create Board" [disabled] [ref=f13e30]

@@ -1,0 +1,287 @@
+- generic [ref=f31e3]:
+  - banner [ref=f31e4]:
+    - generic [ref=f31e5]:
+      - generic [ref=f31e6]:
+        - button "Hide sidebar" [ref=f31e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f31e12]
+        - generic [ref=f31e31]: / My Board
+      - generic [ref=f31e32]:
+        - button "Refresh board" [ref=f31e33] [cursor=pointer]
+        - button [ref=f31e40] [cursor=pointer]
+  - generic [ref=f31e13]:
+    - complementary [ref=f31e14]:
+      - generic [ref=f31e15]:
+        - generic [ref=f31e17]:
+          - heading "Boards" [level=2] [ref=f31e18]
+          - button "New board" [ref=f31e19] [cursor=pointer]
+        - navigation [ref=f31e21]:
+          - generic [ref=f31e22]:
+            - heading "My Boards" [level=3] [ref=f31e23]
+            - list [ref=f31e44]:
+              - listitem [ref=f31e45]:
+                - button "My Board" [ref=f31e46] [cursor=pointer]
+    - main [ref=f31e26]:
+      - group "Board views" [ref=f31e53]:
+        - button "Stories" [ref=f31e54] [cursor=pointer]
+        - button "Ideations" [ref=f31e58] [cursor=pointer]
+        - button "Refinements" [ref=f31e61] [cursor=pointer]
+        - button "Specs" [pressed] [ref=f31e66] [cursor=pointer]
+        - button "Tasks" [ref=f31e71] [cursor=pointer]
+      - generic [ref=f31e78]:
+        - generic [ref=f31e79]:
+          - generic [ref=f31e80]:
+            - heading "Specifications" [level=2] [ref=f31e81]
+            - generic [ref=f31e82]: (1 of 1)
+          - generic [ref=f31e83]:
+            - textbox "Search specs…" [ref=f31e85]
+            - group "View mode" [ref=f31e86]:
+              - button "List view" [pressed] [ref=f31e87] [cursor=pointer]
+              - button "Grid view" [ref=f31e89] [cursor=pointer]
+            - generic [ref=f31e95]: Group specs
+            - combobox "Group specs" [ref=f31e101]:
+              - option "None"
+              - option "Ideation"
+              - option "Refinement"
+              - option "Parents" [selected]
+            - button "New Spec" [ref=f31e102] [cursor=pointer]
+        - generic [ref=f31e104]:
+          - button "All" [ref=f31e105] [cursor=pointer]
+          - button "Draft" [ref=f31e106] [cursor=pointer]
+          - button "Review" [ref=f31e107] [cursor=pointer]
+          - button "Approved" [ref=f31e108] [cursor=pointer]
+          - button "Validated" [ref=f31e109] [cursor=pointer]
+          - button "In Progress" [ref=f31e110] [cursor=pointer]
+          - button "Done" [ref=f31e111] [cursor=pointer]
+          - button "Show archived" [ref=f31e112] [cursor=pointer]
+        - generic [ref=f31e115]:
+          - generic [ref=f31e116] [cursor=pointer]:
+            - 'heading "Refinement: Reserva de salas — consistência das reservas e contratos hexagonais" [level=3] [ref=f31e123]'
+            - generic [ref=f31e124]: (1)
+          - generic [ref=f31e128] [cursor=pointer]:
+            - generic [ref=f31e129]:
+              - generic [ref=f31e130]:
+                - generic [ref=f31e131]: Validated
+                - generic "Edition 2" [ref=f31e135]
+              - heading "Reserva de salas — consistência das reservas e contratos hexagonais" [level=3] [ref=f31e136]
+              - paragraph [ref=f31e137]: "Especificação conceitual H01–H04: consultar, criar, alterar e cancelar reservas próprias com consistência, idempotência, histórico e arquitetura hexagonal. Exercício de testes do Pulse; nenhuma implementação real solicitada."
+              - 'generic "Requirement lint: 0 (0–360) · Edition 2" [ref=f31e139]':
+                - generic [ref=f31e140]: Requirement lint
+                - strong [ref=f31e141]: "0"
+              - generic [ref=f31e142]:
+                - generic [ref=f31e143]: mock
+                - generic [ref=f31e144]: reserva-de-salas
+                - generic [ref=f31e145]: teste-sdlc
+            - generic [ref=f31e146]:
+              - button "Open lineage graph" [ref=f31e147]
+              - button "Archive tree" [ref=f31e152]
+        - generic [ref=f31e158]:
+          - status [ref=f31e159]: Showing 1–1 of 1 matching. 1 overall. Page 1 of 1.
+          - generic [ref=f31e160]:
+            - generic [ref=f31e161]:
+              - generic [ref=f31e162]: Items per page
+              - combobox "Items per page" [ref=f31e163]:
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+            - navigation "Specifications pagination" [ref=f31e164]:
+              - generic [ref=f31e165]:
+                - button "Previous page" [disabled] [ref=f31e166]: Previous
+                - button "Page 1" [disabled] [ref=f31e167]: "1"
+                - button "Next page" [disabled] [ref=f31e168]: Next
+        - dialog [ref=f31e170]:
+          - generic [ref=f31e171]:
+            - generic [ref=f31e172]:
+              - generic [ref=f31e173]: Validated
+              - heading "Reserva de salas — consistência das reservas e contratos hexagonais" [level=2] [ref=f31e177]
+              - generic "Edition 2" [ref=f31e178]
+            - generic [ref=f31e179]:
+              - button "Open lineage graph" [ref=f31e180] [cursor=pointer]
+              - button "Export report" [ref=f31e185] [cursor=pointer]
+              - button "Refresh" [ref=f31e189] [cursor=pointer]
+              - button "Expand" [ref=f31e195] [cursor=pointer]
+              - button "Close spec" [ref=f31e201] [cursor=pointer]
+          - generic [ref=f31e205]:
+            - generic [ref=f31e206]: "Move to:"
+            - button "Approved" [ref=f31e207] [cursor=pointer]
+            - button "Draft" [ref=f31e210] [cursor=pointer]
+            - button "Cancelled" [ref=f31e213] [cursor=pointer]
+            - button "In Progress" [disabled] [ref=f31e216]
+            - button "0 dependencies unfinished" [ref=f31e219] [cursor=pointer]
+          - generic [ref=f31e222]:
+            - generic [ref=f31e223]: "From:"
+            - button "Reserva de salas — teste do SDLC v24" [ref=f31e224] [cursor=pointer]:
+              - text: Reserva de salas — teste do SDLC
+              - generic [ref=f31e227]: v24
+            - button "Reserva de salas — consistência das reservas e contratos hexagonais v39" [ref=f31e230] [cursor=pointer]:
+              - text: Reserva de salas — consistência das reservas e contratos hexagonais
+              - generic [ref=f31e235]: v39
+          - generic [ref=f31e237]:
+            - tablist "Spec sections" [ref=f31e238]:
+              - tab "Details" [ref=f31e239] [cursor=pointer]
+              - tab "Coverage" [ref=f31e244] [cursor=pointer]
+              - tab "Code Evidence Matrix" [ref=f31e250] [cursor=pointer]
+              - tab "Resources" [ref=f31e254] [cursor=pointer]
+              - tab "Requirements & Decisions" [ref=f31e258] [cursor=pointer]
+              - tab "Tests & Verifications" [ref=f31e263] [cursor=pointer]
+              - tab "Q&A 9" [ref=f31e267] [cursor=pointer]:
+                - generic [ref=f31e271]: Q&A
+                - generic [ref=f31e272]: "9"
+              - tab "Dependencies" [ref=f31e273] [cursor=pointer]
+              - tab "References 27" [selected] [ref=f31e279] [cursor=pointer]:
+                - generic [ref=f31e283]: References
+                - generic [ref=f31e284]: "27"
+              - tab "KG Graph" [ref=f31e285] [cursor=pointer]
+              - tab "Validation" [ref=f31e292] [cursor=pointer]
+              - tab "Activity" [ref=f31e297] [cursor=pointer]
+            - button "Scroll Spec sections left" [ref=f31e303] [cursor=pointer]
+          - tabpanel "References 27" [ref=f31e457]:
+            - tabpanel [ref=f31e308]:
+              - generic [ref=f31e458]:
+                - tablist "Spec references" [ref=f31e460]:
+                  - tab "Origin" [ref=f31e461] [cursor=pointer]
+                  - tab "Derived cards 27" [selected] [ref=f31e463] [cursor=pointer]:
+                    - generic [ref=f31e464]: Derived cards
+                    - generic [ref=f31e465]: "27"
+                - tabpanel "Derived cards 27" [ref=f31e482]:
+                  - button "[TEST] Disponibilidade e capacidade not started" [active] [ref=f31e483] [cursor=pointer]:
+                    - generic [ref=f31e484]: "[TEST] Disponibilidade e capacidade"
+                    - generic [ref=f31e485]: not started
+                  - button "[TEST] Concorrência entre reservas not started" [ref=f31e486] [cursor=pointer]:
+                    - generic [ref=f31e487]: "[TEST] Concorrência entre reservas"
+                    - generic [ref=f31e488]: not started
+                  - button "[TEST] Calendário e precisão not started" [ref=f31e489] [cursor=pointer]:
+                    - generic [ref=f31e490]: "[TEST] Calendário e precisão"
+                    - generic [ref=f31e491]: not started
+                  - button "[TEST] Relógio e limites temporais not started" [ref=f31e492] [cursor=pointer]:
+                    - generic [ref=f31e493]: "[TEST] Relógio e limites temporais"
+                    - generic [ref=f31e494]: not started
+                  - button "[TEST] Confirmação e replay not started" [ref=f31e495] [cursor=pointer]:
+                    - generic [ref=f31e496]: "[TEST] Confirmação e replay"
+                    - generic [ref=f31e497]: not started
+                  - button "[TEST] Isolamento e sessão not started" [ref=f31e498] [cursor=pointer]:
+                    - generic [ref=f31e499]: "[TEST] Isolamento e sessão"
+                    - generic [ref=f31e500]: not started
+                  - button "[TEST] Alteração e CAS not started" [ref=f31e501] [cursor=pointer]:
+                    - generic [ref=f31e502]: "[TEST] Alteração e CAS"
+                    - generic [ref=f31e503]: not started
+                  - button "[TEST] Cancelamento concorrente not started" [ref=f31e504] [cursor=pointer]:
+                    - generic [ref=f31e505]: "[TEST] Cancelamento concorrente"
+                    - generic [ref=f31e506]: not started
+                  - button "[TEST] Rollback e recuperação not started" [ref=f31e507] [cursor=pointer]:
+                    - generic [ref=f31e508]: "[TEST] Rollback e recuperação"
+                    - generic [ref=f31e509]: not started
+                  - button "[TEST] Paginação e histórico not started" [ref=f31e510] [cursor=pointer]:
+                    - generic [ref=f31e511]: "[TEST] Paginação e histórico"
+                    - generic [ref=f31e512]: not started
+                  - button "[TEST] Frontend busca e confirmação not started" [ref=f31e513] [cursor=pointer]:
+                    - generic [ref=f31e514]: "[TEST] Frontend busca e confirmação"
+                    - generic [ref=f31e515]: not started
+                  - button "[TEST] Frontend gestão e cancelamento not started" [ref=f31e516] [cursor=pointer]:
+                    - generic [ref=f31e517]: "[TEST] Frontend gestão e cancelamento"
+                    - generic [ref=f31e518]: not started
+                  - button "[TEST] Acessibilidade e responsividade not started" [ref=f31e519] [cursor=pointer]:
+                    - generic [ref=f31e520]: "[TEST] Acessibilidade e responsividade"
+                    - generic [ref=f31e521]: not started
+                  - button "[TEST] Fronteiras e paridade not started" [ref=f31e522] [cursor=pointer]:
+                    - generic [ref=f31e523]: "[TEST] Fronteiras e paridade"
+                    - generic [ref=f31e524]: not started
+                  - button "[TEST] Contrato transacional not started" [ref=f31e525] [cursor=pointer]:
+                    - generic [ref=f31e526]: "[TEST] Contrato transacional"
+                    - generic [ref=f31e527]: not started
+                  - button "[TEST] Contratos de comandos not started" [ref=f31e528] [cursor=pointer]:
+                    - generic [ref=f31e529]: "[TEST] Contratos de comandos"
+                    - generic [ref=f31e530]: not started
+                  - button "[TEST] Invariantes e relógio not started" [ref=f31e531] [cursor=pointer]:
+                    - generic [ref=f31e532]: "[TEST] Invariantes e relógio"
+                    - generic [ref=f31e533]: not started
+                  - button "[TEST] Contratos de consultas not started" [ref=f31e534] [cursor=pointer]:
+                    - generic [ref=f31e535]: "[TEST] Contratos de consultas"
+                    - generic [ref=f31e536]: not started
+                  - button "[TEST] Identidade e composição not started" [ref=f31e537] [cursor=pointer]:
+                    - generic [ref=f31e538]: "[TEST] Identidade e composição"
+                    - generic [ref=f31e539]: not started
+                  - button "[TEST] Observabilidade segura not started" [ref=f31e540] [cursor=pointer]:
+                    - generic [ref=f31e541]: "[TEST] Observabilidade segura"
+                    - generic [ref=f31e542]: not started
+                  - button "Domínio — calendário e invariantes de reserva not started" [ref=f31e543] [cursor=pointer]:
+                    - generic [ref=f31e544]: Domínio — calendário e invariantes de reserva
+                    - generic [ref=f31e545]: not started
+                  - button "Aplicação — comandos, consultas e replay not started" [ref=f31e546] [cursor=pointer]:
+                    - generic [ref=f31e547]: Aplicação — comandos, consultas e replay
+                    - generic [ref=f31e548]: not started
+                  - button "Persistência — UoW SQLite atômica e recuperável not started" [ref=f31e549] [cursor=pointer]:
+                    - generic [ref=f31e550]: Persistência — UoW SQLite atômica e recuperável
+                    - generic [ref=f31e551]: not started
+                  - button "HTTP — sessão e seis contratos de reserva not started" [ref=f31e552] [cursor=pointer]:
+                    - generic [ref=f31e553]: HTTP — sessão e seis contratos de reserva
+                    - generic [ref=f31e554]: not started
+                  - button "Frontend — busca e confirmação H01/H02 not started" [ref=f31e555] [cursor=pointer]:
+                    - generic [ref=f31e556]: Frontend — busca e confirmação H01/H02
+                    - generic [ref=f31e557]: not started
+                  - button "Frontend — gestão e cancelamento H03/H04 not started" [ref=f31e558] [cursor=pointer]:
+                    - generic [ref=f31e559]: Frontend — gestão e cancelamento H03/H04
+                    - generic [ref=f31e560]: not started
+                  - button "Composição e observabilidade dos comandos not started" [ref=f31e561] [cursor=pointer]:
+                    - generic [ref=f31e562]: Composição e observabilidade dos comandos
+                    - generic [ref=f31e563]: not started
+          - generic [ref=f31e453]:
+            - button "Delete spec" [ref=f31e454] [cursor=pointer]
+            - button "Close" [ref=f31e456] [cursor=pointer]
+  - generic [ref=f31e565]:
+    - generic [ref=f31e566]:
+      - generic [ref=f31e567]:
+        - combobox "Card status" [ref=f31e568]:
+          - option "Not Started" [selected]
+          - option "Started"
+          - option "In Progress"
+          - option "Cancelled"
+        - generic [ref=f31e569]: TEST
+        - heading "[TEST] Disponibilidade e capacidade" [level=2] [ref=f31e572]
+      - button "Reserva de salas — consistê..." [ref=f31e573] [cursor=pointer]
+      - generic [ref=f31e577]:
+        - button "Open lineage graph" [ref=f31e578] [cursor=pointer]
+        - button "Export report" [ref=f31e583] [cursor=pointer]
+        - button "Refresh card" [ref=f31e587] [cursor=pointer]
+        - button "Expand" [ref=f31e593] [cursor=pointer]
+        - button "Close card dialog" [ref=f31e599] [cursor=pointer]
+    - generic [ref=f31e603]:
+      - tablist "Card sections" [ref=f31e604]:
+        - tab "Details" [selected] [ref=f31e605] [cursor=pointer]
+        - tab "Delivery" [ref=f31e610] [cursor=pointer]
+        - tab "Tests 3" [ref=f31e615] [cursor=pointer]:
+          - generic [ref=f31e618]: Tests
+          - generic [ref=f31e619]: "3"
+        - tab "Resources" [ref=f31e620] [cursor=pointer]
+        - tab "Q&A" [ref=f31e626] [cursor=pointer]
+        - tab "Comments" [ref=f31e631] [cursor=pointer]
+        - tab "References" [ref=f31e635] [cursor=pointer]
+        - tab "Validation" [ref=f31e640] [cursor=pointer]
+        - tab "Activity" [ref=f31e644] [cursor=pointer]
+      - button "Scroll Card sections right" [ref=f31e650] [cursor=pointer]
+    - tabpanel "Details" [ref=f31e654]:
+      - generic [ref=f31e655]:
+        - generic [ref=f31e656]:
+          - heading "Description" [level=3] [ref=f31e657]
+          - generic [ref=f31e659] [cursor=pointer]:
+            - paragraph [ref=f31e660]: Plano de verificação da aplicação fictícia. Implementar e executar os cenários vinculados e registrar resultados observados; nenhum teste foi executado nesta etapa.
+            - paragraph [ref=f31e661]: "T01 — Busca por intervalo: Salas Ipê6/Aurora10, com Ipê ocupada09h–10h em09/10 → Buscar09/10 09h–10h para4 pessoas → Somente Aurora retornada, sem dados de terceiros."
+            - paragraph [ref=f31e662]: "T02 — Limites de capacidade: Sala capacidade6 e intervalo livre → Enviar participantes1,6,0,-1,1.5,7 → 1/6 aceitos; demais invalid_input, sem escrita."
+            - paragraph [ref=f31e663]: "T10 — Vazio versus falha: Nenhuma sala livre; depois falha de leitura injetada → Consultar nos dois estados → Primeiro lista vazia;segundo unavailable, nunca vazio."
+        - generic [ref=f31e667]:
+          - heading "Assignee" [level=3] [ref=f31e668]
+          - combobox "Card assignee" [ref=f31e669]:
+            - option "None" [selected]
+            - option "Codex (creator)"
+        - generic [ref=f31e670]:
+          - heading "Priority" [level=3] [ref=f31e671]
+          - combobox "Card priority" [ref=f31e672]:
+            - option "Critical"
+            - option "Very High"
+            - option "High"
+            - option "Medium"
+            - option "Low"
+            - option "None" [selected]
+        - generic [ref=f31e673]:
+          - heading "Details" [level=3] [ref=f31e674]
+          - paragraph [ref=f31e676] [cursor=pointer]: No details
+    - button "Delete" [ref=f31e681] [cursor=pointer]

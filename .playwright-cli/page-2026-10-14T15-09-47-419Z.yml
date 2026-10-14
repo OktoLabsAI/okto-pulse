@@ -1,0 +1,536 @@
+- generic [ref=e2]:
+  - dialog [ref=e49]:
+    - generic [ref=e50]:
+      - generic [ref=e55]:
+        - heading "Terms of Use & License" [level=2] [ref=e56]
+        - paragraph [ref=e57]: Version 0.2.0 — read to the end to enable acceptance
+      - generic [ref=e59]:
+        - heading "Terms of Use & License — Okto Pulse" [level=1] [ref=e60]
+        - paragraph [ref=e61]:
+          - text: Welcome to
+          - strong [ref=e62]: Okto Pulse
+          - text: ", distributed by"
+          - strong [ref=e63]: Okto Labs
+          - text: under the
+          - strong [ref=e64]: Elastic License 2.0 (ELv2)
+          - text: with the SaaS / Branding Addendum and the additional trademark safeguards described below.
+        - paragraph [ref=e65]:
+          - text: By clicking
+          - strong [ref=e66]: "\"I have read, understood and accept\""
+          - text: at the end, you acknowledge that you have read, understood, and agreed to
+          - strong [ref=e67]: all
+          - text: of the terms in this document, including the LICENSE Addendum sections I–IV, the Trademark Policy, and the Contributor License Agreement.
+        - separator [ref=e68]
+        - heading "1. Elastic License 2.0 — Core Terms" [level=2] [ref=e69]
+        - heading "Acceptance" [level=3] [ref=e70]
+        - paragraph [ref=e71]: By using the software, you agree to all of the terms and conditions below.
+        - paragraph [ref=e72]: Copyright 2026 Okto Labs.
+        - heading "1.1 Grant of License" [level=3] [ref=e73]
+        - paragraph [ref=e74]: The licensor grants you a non-exclusive, royalty-free, worldwide, non-sublicensable, non-transferable license to use, copy, distribute, make available, and prepare derivative works of the software, in each case subject to the limitations and conditions below.
+        - heading "1.2 Limitations" [level=3] [ref=e75]
+        - paragraph [ref=e76]:
+          - text: You
+          - strong [ref=e77]: may not
+          - text: provide the software to third parties as a hosted or managed service, where the service provides users with access to any substantial set of the features or functionality of the software.
+        - paragraph [ref=e78]:
+          - text: You
+          - strong [ref=e79]: may not
+          - text: move, change, disable, or circumvent the license key functionality in the software, and you
+          - strong [ref=e80]: may not
+          - text: remove or obscure any functionality in the software that is protected by the license key.
+        - paragraph [ref=e81]:
+          - text: You
+          - strong [ref=e82]: may not
+          - text: alter, remove, or obscure any licensing, copyright, or other notices of the licensor in the software.
+        - heading "1.3 Patent License" [level=3] [ref=e83]
+        - paragraph [ref=e84]: The licensor grants you a license, under any patent claims the licensor can license, or becomes able to license, to make, have made, use, sell, offer for sale, import and have imported the software. However, this license does not cover any patent claims that you cause to be infringed by modifications or additions to the software. If you or your company make any written claim that the software infringes or contributes to infringement of any patent, your patent license for the software granted under these terms ends immediately. Your company's patent license granted under these terms also ends immediately if your company makes any written claim that the software infringes or contributes to infringement of any patent.
+        - heading "1.4 Distribution" [level=3] [ref=e85]
+        - paragraph [ref=e86]: You may not alter, remove, or obscure any licensing, copyright, or other notices of the licensor in the software. Any distribution of the software must include a copy of these terms and conditions, and anyone who receives the software from you is bound by these terms and conditions.
+        - heading "1.5 Notices" [level=3] [ref=e87]
+        - paragraph [ref=e88]: You must include a copy of these terms with any distribution of the software. If you modify the software, you must mark the modifications clearly and include the date of the modifications.
+        - heading "1.6 Termination" [level=3] [ref=e89]
+        - paragraph [ref=e90]: If you violate these terms, your licenses will terminate automatically. If the licensor notifies you of your violation, and you cease all violation of this license no later than 30 days after you receive that notice, your licenses will be reinstated retroactively. However, if you violate these terms after the reinstatement, all of your licenses will terminate permanently.
+        - heading "1.7 No Other Rights" [level=3] [ref=e91]
+        - paragraph [ref=e92]: Except as expressly stated herein, no other rights or licenses are granted, express or implied.
+        - heading "1.8 Limitation on Liability" [level=3] [ref=e93]
+        - paragraph [ref=e94]: As far as the law allows, the software comes as is, without any warranty or condition, and the licensor will not be liable to you for any damages arising out of these terms or the use or nature of the software, under any kind of legal claim.
+        - heading "1.9 Definitions" [level=3] [ref=e95]
+        - list [ref=e96]:
+          - listitem [ref=e97]:
+            - strong [ref=e98]: "\"Licensor\""
+            - text: means Okto Labs and its affiliates.
+          - listitem [ref=e99]:
+            - strong [ref=e100]: "\"Software\""
+            - text: means the software the licensor makes available under these terms, including any portions, modifications, or derivative works.
+          - listitem [ref=e101]:
+            - strong [ref=e102]: "\"You\""
+            - text: means you, individually.
+          - listitem [ref=e103]:
+            - strong [ref=e104]: "\"Your company\""
+            - text: means any legal entity, sole proprietorship, or other organization that you work for, plus all other organizations that control, are controlled by, or are under common control with that organization. The term "control" means ownership of substantially all the assets of an entity.
+          - listitem [ref=e105]:
+            - strong [ref=e106]: "\"Your licenses\""
+            - text: means the licenses granted to you in Section 1.1.
+          - listitem [ref=e107]:
+            - strong [ref=e108]: "\"Use\""
+            - text: means anything you do with the software in violation of these terms.
+        - separator [ref=e109]
+        - 'heading "2. Addendum: SaaS, Competing Service, Internal Use, and Branding" [level=2] [ref=e110]'
+        - paragraph [ref=e111]:
+          - text: This addendum clarifies and supplements Section 1.2 ("Limitations") of the Elastic License 2.0.
+          - strong [ref=e112]: In case of conflict between the body of the license and this addendum, this addendum controls.
+        - heading "I. Hosted or Managed Service — PROHIBITED uses" [level=3] [ref=e113]
+        - paragraph [ref=e114]:
+          - text: For the purposes of Section 1.2, the following constitute providing the software as a "hosted or managed service" and are
+          - strong [ref=e115]: PROHIBITED
+          - text: ":"
+        - list [ref=e116]:
+          - listitem [ref=e117]:
+            - paragraph [ref=e118]:
+              - strong [ref=e119]: (a)
+              - text: Operating a multi-tenant SaaS, platform, application, or API where end users from more than one client organization interact with the features or functionality of the software, whether directly or through a wrapper, proxy, or abstraction layer.
+          - listitem [ref=e120]:
+            - paragraph [ref=e121]:
+              - strong [ref=e122]: (b)
+              - text: Providing the software as a white-label, embedded, OEM, or rebranded offering to third parties.
+          - listitem [ref=e123]:
+            - paragraph [ref=e124]:
+              - strong [ref=e125]: (c)
+              - text: Offering the software, any derivative work of it, or any substantial portion of its features or functionality as a product, service, or platform that competes with Okto Pulse, regardless of whether the deployment is single-tenant or multi-tenant.
+          - listitem [ref=e126]:
+            - paragraph [ref=e127]:
+              - strong [ref=e128]: (d)
+              - strong [ref=e129]: Internal large-scale platform exposure
+              - text: "— operating the software as an internally hosted service that meets BOTH of the following conditions simultaneously:"
+            - list [ref=e130]:
+              - listitem [ref=e131]:
+                - strong [ref=e132]: (i)
+                - text: the software, or modules extracted, externalized, or repackaged from it, are exposed as a hosted service, API, or internal platform to users within your organization who are not directly involved in administering, developing, configuring, or using the software for the projects, teams, or products it is intended to manage;
+                - strong [ref=e133]: AND
+              - listitem [ref=e134]:
+                - strong [ref=e135]: (ii)
+                - text: the total population of such exposed users exceeds two hundred (200) individuals.
+            - paragraph [ref=e136]:
+              - text: Both conditions (i) and (ii) must be met for this prohibition to apply. Local, desktop, or workstation use of the software by any number of individuals is
+              - strong [ref=e137]: never
+              - text: restricted by this clause.
+            - paragraph [ref=e138]:
+              - text: This clause exists to prevent large organizations from extracting modules of the software and serving them at scale as an internal platform-as-a-service to their broader workforce. It is
+              - strong [ref=e139]: not
+              - text: intended to limit normal collaborative use by project teams, no matter how large the organization.
+        - heading "II. PERMITTED uses" [level=3] [ref=e140]
+        - paragraph [ref=e141]:
+          - text: The following are expressly permitted, including for
+          - strong [ref=e142]: commercial
+          - text: "purposes and including when financial consideration is exchanged:"
+        - list [ref=e143]:
+          - listitem [ref=e144]:
+            - strong [ref=e145]: (a)
+            - text: Using the software internally within your organization, without any numeric or scale restriction, to manage your own projects, teams, products, or operations.
+          - listitem [ref=e146]:
+            - strong [ref=e147]: (b)
+            - text: Hosting a single-tenant deployment of the software for yourself or for a single client organization. A single-tenant deployment may serve multiple projects, teams, departments, or business units of the same client organization within the same instance ("classic single-tenant"). Each distinct client organization must receive its own dedicated instance.
+          - listitem [ref=e148]:
+            - strong [ref=e149]: (c)
+            - text: Providing consulting, integration, customization, deployment, or managed operations services using the software, including charging fees for such services,
+            - strong [ref=e150]: provided that
+            - text: ":"
+            - list [ref=e151]:
+              - listitem [ref=e152]:
+                - strong [ref=e153]: (i)
+                - text: each client deployment is single-tenant as defined in (b);
+              - listitem [ref=e154]:
+                - strong [ref=e155]: (ii)
+                - text: the branding and attribution requirements in Section III are fully honored in every deployment;
+              - listitem [ref=e156]:
+                - strong [ref=e157]: (iii)
+                - text: the offering does not constitute a competing service under Section I(c) and does not exceed the thresholds of Section I(d).
+          - listitem [ref=e158]:
+            - strong [ref=e159]: (d)
+            - text: Integrating the software's MCP tools with AI agents for your own use or your organization's use.
+          - listitem [ref=e160]:
+            - strong [ref=e161]: (e)
+            - text: Modifying the software for personal or internal organizational use, including for commercial purposes, subject to Sections I and III.
+        - heading "III. Branding and Attribution — REQUIRED preservation" [level=3] [ref=e162]
+        - paragraph [ref=e163]:
+          - text: You
+          - strong [ref=e164]: may not
+          - text: "alter, remove, obscure, hide, replace, minimize, or otherwise diminish the visibility of any of the following in any distribution, deployment, or derivative work of the software:"
+        - list [ref=e165]:
+          - listitem [ref=e166]:
+            - strong [ref=e167]: (a)
+            - text: The "Okto Labs" name and logo.
+          - listitem [ref=e168]:
+            - strong [ref=e169]: (b)
+            - text: The "Okto Pulse" name and logo.
+          - listitem [ref=e170]:
+            - strong [ref=e171]: (c)
+            - text: Copyright and licensing notices identifying Okto Labs as the licensor.
+        - paragraph [ref=e172]:
+          - text: These elements
+          - strong [ref=e173]: MUST
+          - text: "remain visible to end users in:"
+        - list [ref=e174]:
+          - listitem [ref=e175]:
+            - strong [ref=e176]: (a) The web user interface
+            - text: ", including but not limited to: login and authentication screens; primary navigation and application chrome; the application footer; settings, admin, and operations consoles; any \"About\", \"Help\", or \"Powered by\" surface."
+          - listitem [ref=e177]:
+            - strong [ref=e178]: (b) The command-line interface (CLI)
+            - text: ", including but not limited to: the output of"
+            - code [ref=e179]: "`--version`"
+            - text: and equivalent commands; help and usage screens; any startup banner, splash, or login output.
+        - paragraph [ref=e180]:
+          - text: You
+          - strong [ref=e181]: MAY
+          - text: add your own branding, logos, or attributions alongside the required Okto Labs and Okto Pulse marks, but you
+          - strong [ref=e182]: may NOT
+          - text: replace, substitute, or visually subordinate them in a way that misrepresents the origin of the software.
+        - heading "IV. Clarifications" [level=3] [ref=e183]
+        - paragraph [ref=e184]:
+          - text: If you are unsure whether your intended use constitutes a competing service under Section I(c), an internal large-scale platform exposure under Section I(d), or otherwise requires a commercial license, contact the licensor at
+          - strong [ref=e185]:
+            - link "dev@oktolabs.ai" [ref=e186] [cursor=pointer]:
+              - /url: mailto:dev@oktolabs.ai
+          - text: for clarification or to negotiate a commercial agreement.
+        - separator [ref=e187]
+        - heading "3. Trademark Policy" [level=2] [ref=e188]
+        - paragraph [ref=e189]: This policy governs the use of Okto Labs and Okto Pulse names, logos, and related marks. It complements (and never overrides) the attribution obligations set forth in Section 2.III above.
+        - heading "3.1 Trademarks" [level=3] [ref=e190]
+        - paragraph [ref=e191]:
+          - text: The following are trademarks of
+          - strong [ref=e192]: Okto Labs
+          - text: ":"
+        - list [ref=e193]:
+          - listitem [ref=e194]:
+            - strong [ref=e195]: Okto Labs
+            - text: — the company name and brand
+          - listitem [ref=e196]:
+            - strong [ref=e197]: Okto Pulse
+            - text: — the product name
+          - listitem [ref=e198]:
+            - strong [ref=e199]: Okto Labs logo
+            - text: — the octopus/circuit design mark (all variants)
+          - listitem [ref=e200]:
+            - strong [ref=e201]: Okto Pulse logo
+            - text: — the product logo and all variants
+        - heading "3.2 Relationship to the LICENSE" [level=3] [ref=e202]
+        - paragraph [ref=e203]:
+          - text: Section 2.III of the LICENSE ("Branding and Attribution")
+          - strong [ref=e204]: requires
+          - text: that the Okto Labs and Okto Pulse names and logos remain visible in the web UI and CLI of every distribution, deployment, and derivative work of the software, as a notice of origin and attribution.
+        - paragraph [ref=e205]:
+          - text: Nothing in this trademark policy waives, narrows, or overrides those attribution obligations.
+          - strong [ref=e206]: In case of apparent conflict between this policy and Section 2.III of the LICENSE, the attribution obligations of the LICENSE prevail.
+        - paragraph [ref=e207]:
+          - text: This policy governs the
+          - strong [ref=e208]: use of the marks as identifiers of your own product, service, company, or domain
+          - text: — which is a separate matter from attribution.
+        - heading "3.3 Permitted Use" [level=3] [ref=e209]
+        - paragraph [ref=e210]:
+          - text: You
+          - strong [ref=e211]: may
+          - text: ":"
+        - list [ref=e212]:
+          - listitem [ref=e213]: Preserve and display the Okto Labs and Okto Pulse names and logos as required by Section 2.III of the LICENSE (this is mandatory, not optional).
+          - listitem [ref=e214]: State that your project, fork, or derivative is "based on Okto Pulse", "powered by Okto Pulse", or "compatible with Okto Pulse".
+          - listitem [ref=e215]: Describe consulting, integration, deployment, or managed-operations services using factual references such as "We host Okto Pulse for our clients", "Okto Pulse consulting and integration", or "Managed Okto Pulse deployment operated by [Your Company]".
+          - listitem [ref=e216]: Use the Okto Pulse name in factual references in documentation, articles, comparisons, conference talks, and academic work.
+          - listitem [ref=e217]: Use the names when required by the LICENSE attribution notice.
+        - heading "3.4 Prohibited Use" [level=3] [ref=e218]
+        - paragraph [ref=e219]:
+          - text: You
+          - strong [ref=e220]: may not
+          - text: "without prior written authorization:"
+        - list [ref=e221]:
+          - listitem [ref=e222]:
+            - text: Use "Okto Pulse", "Okto Labs", "Okto", or any of the logos as part of
+            - strong [ref=e223]: your own
+            - text: product name, service name, company name, or domain name (e.g.
+            - code [ref=e224]: "`oktopulse.example.com`"
+            - text: ", \"AcmePulse\", \"PulseHub\", \"Okto-Plus\")."
+          - listitem [ref=e225]: Create the impression that your product, service, company, or fork is endorsed, sponsored, certified, or affiliated with Okto Labs.
+          - listitem [ref=e226]:
+            - text: Use any of the logos, or a confusingly similar mark, as the
+            - strong [ref=e227]: primary brand
+            - text: of your product, marketing materials, app store listings, or social presence.
+          - listitem [ref=e228]: Offer a product or service under a name that combines "Okto" with "Pulse", "Labs", or similar terms.
+          - listitem [ref=e229]: Modify, distort, recolor, or recompose the logos in a way that misrepresents the marks.
+        - heading "3.5 Derivative Works and Forks" [level=3] [ref=e230]
+        - paragraph [ref=e231]: "If you create a fork or derivative work:"
+        - list [ref=e232]:
+          - listitem [ref=e233]:
+            - text: You
+            - strong [ref=e234]: must add
+            - text: your own distinct name, logo, and brand identity to identify the fork or derivative — and that name
+            - strong [ref=e235]: must not
+            - text: include "Okto", "Pulse", or any confusingly similar term (see Prohibited Use).
+          - listitem [ref=e236]:
+            - text: You
+            - strong [ref=e237]: must retain
+            - text: "the Okto Labs and Okto Pulse names and logos in the web UI and CLI as an attribution-of-origin, exactly as required by Section 2.III of the LICENSE. The required form is roughly:"
+            - strong [ref=e238]: "\"Powered by Okto Pulse — © Okto Labs\""
+            - text: ", together with the official logos."
+          - listitem [ref=e239]:
+            - text: You
+            - strong [ref=e240]: must retain
+            - text: the copyright and license notices required by the LICENSE.
+          - listitem [ref=e241]:
+            - text: You
+            - strong [ref=e242]: may
+            - text: describe your work factually as "based on Okto Pulse" or "a fork of Okto Pulse".
+        - paragraph [ref=e243]:
+          - text: "In short:"
+          - strong [ref=e244]: rename your fork, but keep the attribution.
+        - heading "3.6 Logo Usage" [level=3] [ref=e245]
+        - paragraph [ref=e246]:
+          - text: The official logo and brand assets in the source repository — including the Okto Labs and Okto Pulse logos, wordmarks, icons, and favicon under
+          - code [ref=e247]: "`frontend/src/assets/`"
+          - text: "(and any successors or variants under the same paths) — are provided for two purposes:"
+        - list [ref=e248]:
+          - listitem [ref=e249]:
+            - strong [ref=e250]: Mandatory attribution use
+            - text: under Section 2.III of the LICENSE in the web UI and CLI of distributions, deployments, and derivative works. This use is required and pre-authorized.
+          - listitem [ref=e251]:
+            - strong [ref=e252]: Factual reference use
+            - text: in documentation, articles, comparisons, and presentations about the software.
+        - paragraph [ref=e253]:
+          - text: The same assets
+          - strong [ref=e254]: may not
+          - text: be used as the primary brand of any third-party product, service, fork, marketing campaign, merchandise, or domain. They are not licensed for re-branding, white-labeling, or unrelated commercial promotion.
+        - paragraph [ref=e255]:
+          - strong [ref=e256]: Canonical asset locations
+          - text: (under
+          - code [ref=e257]: "`frontend/src/assets/`"
+          - text: "):"
+          - code [ref=e258]: "`logo-light.png`"
+          - text: ","
+          - code [ref=e259]: "`logo-dark.png`"
+          - text: ","
+          - code [ref=e260]: "`oktolabs-icon.svg`"
+          - text: ","
+          - code [ref=e261]: "`pulse-icon.svg`"
+          - text: ","
+          - code [ref=e262]: "`pulse-wordmark.svg`"
+          - text: ","
+          - code [ref=e263]: "`pulse-wordmark-light.svg`"
+          - text: ","
+          - code [ref=e264]: "`favicon.jpg`"
+          - text: .
+        - separator [ref=e265]
+        - heading "4. Telemetry & Data Privacy" [level=2] [ref=e266]
+        - paragraph [ref=e267]:
+          - text: The community edition is
+          - strong [ref=e268]: local-first
+          - text: ":"
+        - list [ref=e269]:
+          - listitem [ref=e270]:
+            - strong [ref=e271]: No telemetry
+            - text: is sent without explicit consent. Error logs and internal metrics stay only on your disk (
+            - code [ref=e272]: "`~/.okto-pulse/`"
+            - text: ).
+          - listitem [ref=e273]:
+            - text: All data (boards, ideations, refinements, specs, sprints, cards, KEs, mockups, comments, Q&A) is stored
+            - strong [ref=e274]: locally
+            - text: in SQLite and in files under
+            - code [ref=e275]: "`~/.okto-pulse/`"
+            - text: .
+          - listitem [ref=e276]: You are responsible for backups, encryption at rest, and access control on your host.
+        - separator [ref=e277]
+        - heading "5. Contributions — Contributor License Agreement (CLA)" [level=2] [ref=e278]
+        - paragraph [ref=e279]:
+          - text: By submitting a contribution (code, documentation, or other materials) to this project, you agree to the terms below. The authoritative text lives in
+          - code [ref=e280]: "`CLA.md`"
+          - text: in the source repository.
+        - heading "5.1 Definitions" [level=3] [ref=e281]
+        - list [ref=e282]:
+          - listitem [ref=e283]:
+            - strong [ref=e284]: "\"You\""
+            - text: means the individual or legal entity submitting a contribution.
+          - listitem [ref=e285]:
+            - strong [ref=e286]: "\"Contribution\""
+            - text: means any original work of authorship submitted to the project, including modifications or additions to existing work.
+          - listitem [ref=e287]:
+            - strong [ref=e288]: "\"Project\""
+            - text: means the Okto Pulse software and related repositories maintained by Okto Labs.
+        - heading "5.2 Grant of Rights" [level=3] [ref=e289]
+        - paragraph [ref=e290]: "You grant to Okto Labs a perpetual, worldwide, non-exclusive, no-charge, royalty-free, irrevocable license to:"
+        - list [ref=e291]:
+          - listitem [ref=e292]: Use, reproduce, modify, display, perform, sublicense, and distribute your Contribution as part of the Project.
+          - listitem [ref=e293]: Relicense your Contribution under any license, including proprietary licenses.
+        - heading "5.3 Ownership" [level=3] [ref=e294]
+        - paragraph [ref=e295]: You retain copyright ownership of your Contribution. This agreement does not transfer ownership — it grants a license.
+        - heading "5.4 Representations" [level=3] [ref=e296]
+        - paragraph [ref=e297]: You represent that you are legally entitled to grant the above license; that your Contribution is your original work (or you have the right to submit it); that your Contribution does not violate any third party's rights; and that, if your employer has rights to intellectual property that you create, you have received permission to make the Contribution on behalf of that employer or your employer has waived such rights.
+        - heading "5.5 No Obligation" [level=3] [ref=e298]
+        - paragraph [ref=e299]: Okto Labs is not obligated to use your Contribution. Contributions may be accepted, modified, or declined at the project maintainers' discretion.
+        - heading "5.6 How to Sign" [level=3] [ref=e300]
+        - paragraph [ref=e301]: By submitting a pull request to any Okto Pulse repository, you indicate your agreement with this CLA. No separate signature is required. If you are contributing on behalf of a company, please ensure an authorized representative agrees to these terms.
+        - separator [ref=e302]
+        - heading "6. Acceptance" [level=2] [ref=e303]
+        - paragraph [ref=e304]:
+          - text: By clicking
+          - strong [ref=e305]: "\"I have read, understood and accept\""
+          - text: "below, you confirm that:"
+        - list [ref=e306]:
+          - listitem [ref=e307]: You are at least 18 years old or have equivalent legal capacity.
+          - listitem [ref=e308]: You have read all of the terms above, including the LICENSE, the Addendum (Sections I–IV), the Trademark Policy, the data privacy notice, and the CLA.
+          - listitem [ref=e309]:
+            - text: You agree to the
+            - strong [ref=e310]: Elastic License 2.0
+            - text: with the SaaS / Branding Addendum (Sections I–IV) and to the Trademark Policy.
+          - listitem [ref=e311]: You understand that destructive actions (delete board, archive_tree, restore_tree) are irreversible without prior backup.
+          - listitem [ref=e312]:
+            - text: You will
+            - strong [ref=e313]: not
+            - text: use the software to operate a multi-tenant SaaS, competing service, internal large-scale platform exposure exceeding 200 unrelated users, white-label, or any other prohibited use listed in Section 2.I.
+          - listitem [ref=e314]:
+            - text: If you fork or derive the software, you will rename it (without "Okto"/"Pulse") and
+            - strong [ref=e315]: retain
+            - text: the Okto Labs and Okto Pulse names and logos as attribution in the web UI and CLI as required by Section 2.III of the LICENSE.
+          - listitem [ref=e316]: You acknowledge that contributions submitted to the project are governed by the CLA in Section 5.
+        - paragraph [ref=e317]:
+          - text: The full canonical texts live at
+          - code [ref=e318]: "`LICENSE`"
+          - text: ","
+          - code [ref=e319]: "`TRADEMARKS.md`"
+          - text: ", and"
+          - code [ref=e320]: "`CLA.md`"
+          - text: in the source repository. For legal questions or to negotiate a commercial license, contact
+          - strong [ref=e321]:
+            - link "dev@oktolabs.ai" [ref=e322] [cursor=pointer]:
+              - /url: mailto:dev@oktolabs.ai
+          - text: before proceeding.
+        - paragraph [ref=e323]: Copyright 2026 Okto Labs. All rights reserved.
+      - generic [ref=e324]:
+        - paragraph [ref=e325]: Scroll to the end to enable.
+        - button "I have read, understood and accept" [disabled] [ref=e326]
+  - generic:
+    - banner:
+      - generic:
+        - generic:
+          - button "Hide sidebar"
+          - generic:
+            - img "Okto Pulse"
+          - generic: / My Board
+        - generic:
+          - button "Refresh board"
+          - generic:
+            - button
+    - generic:
+      - complementary:
+        - generic:
+          - generic:
+            - generic:
+              - heading "Boards" [level=2]
+              - button "New board"
+          - navigation:
+            - generic:
+              - heading "My Boards" [level=3]
+              - list:
+                - listitem:
+                  - button "My Board"
+      - main:
+        - group "Board views":
+          - button "Stories" [pressed]
+          - button "Ideations"
+          - button "Refinements"
+          - button "Specs"
+          - button "Tasks"
+        - generic:
+          - generic:
+            - generic:
+              - generic:
+                - heading "Stories" [level=2]
+                - generic: (4 of 4)
+              - generic:
+                - generic:
+                  - textbox "Search stories..."
+                - group "View mode":
+                  - button "List view" [pressed]
+                  - button "Grid view"
+                - button "New Story"
+            - generic:
+              - button "All"
+              - button "Draft"
+              - button "Triage"
+              - button "Ready"
+              - button "Converted"
+              - button "Show archived"
+            - generic:
+              - complementary:
+                - generic:
+                  - generic: Topics
+                  - button "New Topic"
+                - generic:
+                  - button "All topics 4":
+                    - generic: All topics
+                    - generic: "4"
+                  - generic:
+                    - button "Mock — Completude dos cards 4":
+                      - generic: Mock — Completude dos cards
+                      - generic: "4"
+                    - 'button "Topic actions: Mock — Completude dos cards"'
+              - generic:
+                - generic:
+                  - generic:
+                    - generic:
+                      - generic:
+                        - generic:
+                          - generic: Converted
+                          - generic: Mock — Completude dos cards
+                        - heading "H01 — Consultar itens fictícios" [level=3]
+                        - paragraph: "Como pessoa testando o mock, quero consultar uma lista fixa e identificar quando ela está vazia, para encontrar o que está disponível sem confundir lista vazia com erro. Obrigações planejadas: listar três itens sintéticos; apresentar estado vazio. Cenário inicial: ainda sem prova…"
+                        - generic:
+                          - generic: "As: Pessoa testando a lista fictícia"
+                          - generic: "Want: consultar uma lista fixa e identificar quando ela está vazia"
+                          - generic: "So: encontrar o que está disponível sem confundir lista vazia com erro"
+                  - generic:
+                    - generic:
+                      - generic:
+                        - generic:
+                          - generic: Converted
+                          - generic: Mock — Completude dos cards
+                        - heading "H03 — Marcar e desmarcar item" [level=3]
+                        - paragraph: "Como pessoa testando o mock, quero marcar um item como comprado e desfazer a marcação, para acompanhar a lista sem perder o item original. Obrigações planejadas: marcar; desmarcar. Marco: ambas implementadas com verificação pendente, esperado 100% / 50%. Cenário planejado; nenhum…"
+                        - generic:
+                          - generic: "As: Pessoa testando a lista fictícia"
+                          - generic: "Want: marcar um item como comprado e desfazer a marcação"
+                          - generic: "So: acompanhar a lista sem perder o item original"
+                  - generic:
+                    - generic:
+                      - generic:
+                        - generic:
+                          - generic: Converted
+                          - generic: Mock — Completude dos cards
+                        - heading "H02 — Adicionar item ao mock" [level=3]
+                        - paragraph: "Como pessoa testando o mock, quero adicionar um item válido e receber uma mensagem para nome vazio, para evitar itens inválidos e verificar o que foi adicionado. Obrigações planejadas: adicionar nome válido; recusar nome vazio. Marco intermediário: apenas uma implementação compro…"
+                        - generic:
+                          - generic: "As: Pessoa testando a lista fictícia"
+                          - generic: "Want: adicionar um item válido e receber uma mensagem para nome vazio"
+                          - generic: "So: evitar itens inválidos e verificar o que foi adicionado"
+                  - generic:
+                    - generic:
+                      - generic:
+                        - generic:
+                          - generic: Converted
+                          - generic: Mock — Completude dos cards
+                        - heading "H04 — Filtrar itens pendentes" [level=3]
+                        - paragraph: "Como pessoa testando o mock, quero ver apenas itens pendentes e voltar à lista completa, para distinguir pendências dos itens já comprados. Obrigações planejadas: filtro de pendentes; restauração da lista completa. Marcos: testes autenticados antes de Done, esperado 100% / 80%; a…"
+                        - generic:
+                          - generic: "As: Pessoa testando a lista fictícia"
+                          - generic: "Want: ver apenas itens pendentes e voltar à lista completa"
+                          - generic: "So: distinguir pendências dos itens já comprados"
+                - generic:
+                  - status: Showing 1–4 of 4 matching. 4 overall. Page 1 of 1.
+                  - generic:
+                    - generic:
+                      - generic: Items per page
+                      - combobox "Items per page":
+                        - option "25" [selected]
+                        - option "50"
+                        - option "100"
+                    - navigation "Stories pagination":
+                      - generic:
+                        - button "Previous page" [disabled]: Previous
+                        - button "Page 1" [disabled]: "1"
+                        - button "Next page" [disabled]: Next

@@ -1,0 +1,365 @@
+- generic [ref=f12e3]:
+  - banner [ref=f12e4]:
+    - generic [ref=f12e5]:
+      - generic [ref=f12e6]:
+        - button "Hide sidebar" [ref=f12e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f12e12]
+        - generic [ref=f12e31]: / My Board
+      - generic [ref=f12e32]:
+        - button "Refresh board" [ref=f12e33] [cursor=pointer]
+        - button [ref=f12e40] [cursor=pointer]
+  - generic [ref=f12e13]:
+    - complementary [ref=f12e14]:
+      - generic [ref=f12e15]:
+        - generic [ref=f12e17]:
+          - heading "Boards" [level=2] [ref=f12e18]
+          - button "New board" [ref=f12e19] [cursor=pointer]
+        - navigation [ref=f12e21]:
+          - generic [ref=f12e22]:
+            - heading "My Boards" [level=3] [ref=f12e23]
+            - list [ref=f12e44]:
+              - listitem [ref=f12e45]:
+                - button "My Board" [ref=f12e46] [cursor=pointer]
+    - main [ref=f12e26]:
+      - group "Board views" [ref=f12e53]:
+        - button "Stories" [ref=f12e54] [cursor=pointer]
+        - button "Ideations" [ref=f12e58] [cursor=pointer]
+        - button "Refinements" [ref=f12e61] [cursor=pointer]
+        - button "Specs" [pressed] [ref=f12e66] [cursor=pointer]
+        - button "Tasks" [ref=f12e71] [cursor=pointer]
+      - generic [ref=f12e213]:
+        - generic [ref=f12e214]:
+          - generic [ref=f12e215]:
+            - heading "Specifications" [level=2] [ref=f12e216]
+            - generic [ref=f12e217]: (1 of 1)
+          - generic [ref=f12e218]:
+            - textbox "Search specs…" [ref=f12e220]
+            - group "View mode" [ref=f12e221]:
+              - button "List view" [pressed] [ref=f12e222] [cursor=pointer]
+              - button "Grid view" [ref=f12e224] [cursor=pointer]
+            - generic [ref=f12e230]: Group specs
+            - combobox "Group specs" [ref=f12e236]:
+              - option "None"
+              - option "Ideation"
+              - option "Refinement"
+              - option "Parents" [selected]
+            - button "New Spec" [ref=f12e237] [cursor=pointer]
+        - generic [ref=f12e239]:
+          - button "All" [ref=f12e240] [cursor=pointer]
+          - button "Draft" [ref=f12e241] [cursor=pointer]
+          - button "Review" [ref=f12e242] [cursor=pointer]
+          - button "Approved" [ref=f12e243] [cursor=pointer]
+          - button "Validated" [ref=f12e244] [cursor=pointer]
+          - button "In Progress" [ref=f12e245] [cursor=pointer]
+          - button "Done" [ref=f12e246] [cursor=pointer]
+          - button "Show archived" [ref=f12e247] [cursor=pointer]
+        - generic [ref=f12e250]:
+          - generic [ref=f12e251] [cursor=pointer]:
+            - 'heading "Refinement: Reserva de salas — consistência das reservas e contratos hexagonais" [level=3] [ref=f12e258]'
+            - generic [ref=f12e259]: (1)
+          - generic [ref=f12e263] [cursor=pointer]:
+            - generic [ref=f12e264]:
+              - generic [ref=f12e265]:
+                - generic [ref=f12e266]: Draft
+                - generic "Edition 1" [ref=f12e270]
+              - heading "Reserva de salas — consistência das reservas e contratos hexagonais" [level=3] [ref=f12e271]
+              - paragraph [ref=f12e272]: "Especificação conceitual H01–H04: consultar, criar, alterar e cancelar reservas próprias com consistência, idempotência, histórico e arquitetura hexagonal. Exercício de testes do Pulse; nenhuma implementação real solicitada."
+              - 'generic "Requirement lint: no current result · Edition 1; 0 previous results" [ref=f12e274]':
+                - generic [ref=f12e275]: Requirement lint
+                - strong [ref=f12e276]: Not assessed
+              - generic [ref=f12e277]:
+                - generic [ref=f12e278]: mock
+                - generic [ref=f12e279]: reserva-de-salas
+                - generic [ref=f12e280]: teste-sdlc
+            - generic [ref=f12e281]:
+              - button "Open lineage graph" [ref=f12e282]
+              - button "Archive tree" [ref=f12e287]
+        - generic [ref=f12e293]:
+          - status [ref=f12e294]: Showing 1–1 of 1 matching. 1 overall. Page 1 of 1.
+          - generic [ref=f12e295]:
+            - generic [ref=f12e296]:
+              - generic [ref=f12e297]: Items per page
+              - combobox "Items per page" [ref=f12e298]:
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+            - navigation "Specifications pagination" [ref=f12e299]:
+              - generic [ref=f12e300]:
+                - button "Previous page" [disabled] [ref=f12e301]: Previous
+                - button "Page 1" [disabled] [ref=f12e302]: "1"
+                - button "Next page" [disabled] [ref=f12e303]: Next
+        - dialog [ref=f12e305]:
+          - generic [ref=f12e306]:
+            - generic [ref=f12e307]:
+              - generic [ref=f12e308]: Draft
+              - heading "Reserva de salas — consistência das reservas e contratos hexagonais" [level=2] [ref=f12e312]
+              - generic "Edition 1" [ref=f12e313]
+            - generic [ref=f12e314]:
+              - button "Open lineage graph" [ref=f12e315] [cursor=pointer]
+              - button "Export report" [ref=f12e320] [cursor=pointer]
+              - button "Refresh" [ref=f12e324] [cursor=pointer]
+              - button "Expand" [ref=f12e330] [cursor=pointer]
+              - button "Close spec" [ref=f12e336] [cursor=pointer]
+          - generic [ref=f12e340]:
+            - generic [ref=f12e341]: "Move to:"
+            - button "Review" [ref=f12e342] [cursor=pointer]
+            - button "Cancelled" [ref=f12e345] [cursor=pointer]
+          - generic [ref=f12e348]:
+            - generic [ref=f12e349]: "From:"
+            - button "Reserva de salas — teste do SDLC v24" [ref=f12e350] [cursor=pointer]:
+              - text: Reserva de salas — teste do SDLC
+              - generic [ref=f12e353]: v24
+            - button "Reserva de salas — consistência das reservas e contratos hexagonais v39" [ref=f12e356] [cursor=pointer]:
+              - text: Reserva de salas — consistência das reservas e contratos hexagonais
+              - generic [ref=f12e361]: v39
+          - generic [ref=f12e363]:
+            - tablist "Spec sections" [ref=f12e364]:
+              - tab "Details" [ref=f12e365] [cursor=pointer]
+              - tab "Requirements & Decisions" [ref=f12e370] [cursor=pointer]
+              - tab "Tests & Verifications" [selected] [ref=f12e375] [cursor=pointer]
+              - tab "Coverage" [ref=f12e379] [cursor=pointer]
+              - tab "Code Evidence Matrix" [ref=f12e385] [cursor=pointer]
+              - tab "Project structure" [ref=f12e389] [cursor=pointer]
+              - tab "Dependencies" [ref=f12e396] [cursor=pointer]
+              - tab "Resources" [ref=f12e402] [cursor=pointer]
+              - tab "Q&A 9" [ref=f12e406] [cursor=pointer]:
+                - generic [ref=f12e410]: Q&A
+                - generic [ref=f12e411]: "9"
+              - tab "References" [ref=f12e412] [cursor=pointer]
+              - tab "KG Graph" [ref=f12e417] [cursor=pointer]
+              - tab "Validation" [ref=f12e424] [cursor=pointer]
+              - tab "Activity" [ref=f12e429] [cursor=pointer]
+            - button "Scroll Spec sections right" [ref=f12e435] [cursor=pointer]
+          - tabpanel "Tests & Verifications" [ref=f12e904]:
+            - tablist "Tests and verifications sections" [ref=f12e905]:
+              - tab "Tests 51" [ref=f12e906] [cursor=pointer]:
+                - generic [ref=f12e909]: Tests
+                - generic [ref=f12e910]: "51"
+              - tab "AC 31" [active] [selected] [ref=f12e911] [cursor=pointer]:
+                - generic [ref=f12e916]: AC
+                - generic [ref=f12e917]: "31"
+              - tab "Criterion verification" [ref=f12e918] [cursor=pointer]
+            - tabpanel "AC 31" [ref=f12e1676]:
+              - region "Acceptance criteria" [ref=f12e1677]:
+                - heading "Acceptance criteria" [level=3] [ref=f12e1678]
+                - article "AC 1 — Title not defined" [ref=f12e1679]:
+                  - generic [ref=f12e1680]:
+                    - button "AC AC 1 — Title not defined" [ref=f12e1681] [cursor=pointer]:
+                      - generic "ac_res_search" [ref=f12e1682]: AC
+                      - generic "AC 1 — Title not defined" [ref=f12e1683]
+                    - button "Edit ac_res_search" [ref=f12e1686] [cursor=pointer]
+                    - button "Revoke ac_res_search" [ref=f12e1690] [cursor=pointer]
+                - article "AC 2 — Title not defined" [ref=f12e1694]:
+                  - generic [ref=f12e1695]:
+                    - button "AC AC 2 — Title not defined" [ref=f12e1696] [cursor=pointer]:
+                      - generic "ac_res_calendar" [ref=f12e1697]: AC
+                      - generic "AC 2 — Title not defined" [ref=f12e1698]
+                    - button "Edit ac_res_calendar" [ref=f12e1701] [cursor=pointer]
+                    - button "Revoke ac_res_calendar" [ref=f12e1705] [cursor=pointer]
+                - article "AC 3 — Title not defined" [ref=f12e1709]:
+                  - generic [ref=f12e1710]:
+                    - button "AC AC 3 — Title not defined" [ref=f12e1711] [cursor=pointer]:
+                      - generic "ac_res_capacity" [ref=f12e1712]: AC
+                      - generic "AC 3 — Title not defined" [ref=f12e1713]
+                    - button "Edit ac_res_capacity" [ref=f12e1716] [cursor=pointer]
+                    - button "Revoke ac_res_capacity" [ref=f12e1720] [cursor=pointer]
+                - article "AC 4 — Title not defined" [ref=f12e1724]:
+                  - generic [ref=f12e1725]:
+                    - button "AC AC 4 — Title not defined" [ref=f12e1726] [cursor=pointer]:
+                      - generic "ac_res_create" [ref=f12e1727]: AC
+                      - generic "AC 4 — Title not defined" [ref=f12e1728]
+                    - button "Edit ac_res_create" [ref=f12e1731] [cursor=pointer]
+                    - button "Revoke ac_res_create" [ref=f12e1735] [cursor=pointer]
+                - article "AC 5 — Title not defined" [ref=f12e1739]:
+                  - generic [ref=f12e1740]:
+                    - button "AC AC 5 — Title not defined" [ref=f12e1741] [cursor=pointer]:
+                      - generic "ac_res_list" [ref=f12e1742]: AC
+                      - generic "AC 5 — Title not defined" [ref=f12e1743]
+                    - button "Edit ac_res_list" [ref=f12e1746] [cursor=pointer]
+                    - button "Revoke ac_res_list" [ref=f12e1750] [cursor=pointer]
+                - article "AC 6 — Title not defined" [ref=f12e1754]:
+                  - generic [ref=f12e1755]:
+                    - button "AC AC 6 — Title not defined" [ref=f12e1756] [cursor=pointer]:
+                      - generic "ac_res_change" [ref=f12e1757]: AC
+                      - generic "AC 6 — Title not defined" [ref=f12e1758]
+                    - button "Edit ac_res_change" [ref=f12e1761] [cursor=pointer]
+                    - button "Revoke ac_res_change" [ref=f12e1765] [cursor=pointer]
+                - article "AC 7 — Title not defined" [ref=f12e1769]:
+                  - generic [ref=f12e1770]:
+                    - button "AC AC 7 — Title not defined" [ref=f12e1771] [cursor=pointer]:
+                      - generic "ac_res_cancel" [ref=f12e1772]: AC
+                      - generic "AC 7 — Title not defined" [ref=f12e1773]
+                    - button "Edit ac_res_cancel" [ref=f12e1776] [cursor=pointer]
+                    - button "Revoke ac_res_cancel" [ref=f12e1780] [cursor=pointer]
+                - article "AC 8 — Title not defined" [ref=f12e1784]:
+                  - generic [ref=f12e1785]:
+                    - button "AC AC 8 — Title not defined" [ref=f12e1786] [cursor=pointer]:
+                      - generic "ac_res_history" [ref=f12e1787]: AC
+                      - generic "AC 8 — Title not defined" [ref=f12e1788]
+                    - button "Edit ac_res_history" [ref=f12e1791] [cursor=pointer]
+                    - button "Revoke ac_res_history" [ref=f12e1795] [cursor=pointer]
+                - article "AC 9 — Title not defined" [ref=f12e1799]:
+                  - generic [ref=f12e1800]:
+                    - button "AC AC 9 — Title not defined" [ref=f12e1801] [cursor=pointer]:
+                      - generic "ac_res_replay" [ref=f12e1802]: AC
+                      - generic "AC 9 — Title not defined" [ref=f12e1803]
+                    - button "Edit ac_res_replay" [ref=f12e1806] [cursor=pointer]
+                    - button "Revoke ac_res_replay" [ref=f12e1810] [cursor=pointer]
+                - article "AC 10 — Title not defined" [ref=f12e1814]:
+                  - generic [ref=f12e1815]:
+                    - button "AC AC 10 — Title not defined" [ref=f12e1816] [cursor=pointer]:
+                      - generic "ac_res_atomic" [ref=f12e1817]: AC
+                      - generic "AC 10 — Title not defined" [ref=f12e1818]
+                    - button "Edit ac_res_atomic" [ref=f12e1821] [cursor=pointer]
+                    - button "Revoke ac_res_atomic" [ref=f12e1825] [cursor=pointer]
+                - article "AC 11 — Title not defined" [ref=f12e1829]:
+                  - generic [ref=f12e1830]:
+                    - button "AC AC 11 — Title not defined" [ref=f12e1831] [cursor=pointer]:
+                      - generic "ac_res_hex" [ref=f12e1832]: AC
+                      - generic "AC 11 — Title not defined" [ref=f12e1833]
+                    - button "Edit ac_res_hex" [ref=f12e1836] [cursor=pointer]
+                    - button "Revoke ac_res_hex" [ref=f12e1840] [cursor=pointer]
+                - article "AC 12 — Title not defined" [ref=f12e1844]:
+                  - generic [ref=f12e1845]:
+                    - button "AC AC 12 — Title not defined" [ref=f12e1846] [cursor=pointer]:
+                      - generic "ac_res_security" [ref=f12e1847]: AC
+                      - generic "AC 12 — Title not defined" [ref=f12e1848]
+                    - button "Edit ac_res_security" [ref=f12e1851] [cursor=pointer]
+                    - button "Revoke ac_res_security" [ref=f12e1855] [cursor=pointer]
+                - article "AC 13 — Title not defined" [ref=f12e1859]:
+                  - generic [ref=f12e1860]:
+                    - button "AC AC 13 — Title not defined" [ref=f12e1861] [cursor=pointer]:
+                      - generic "ac_res_clock" [ref=f12e1862]: AC
+                      - generic "AC 13 — Title not defined" [ref=f12e1863]
+                    - button "Edit ac_res_clock" [ref=f12e1866] [cursor=pointer]
+                    - button "Revoke ac_res_clock" [ref=f12e1870] [cursor=pointer]
+                - article "AC 14 — Title not defined" [ref=f12e1874]:
+                  - generic [ref=f12e1875]:
+                    - button "AC AC 14 — Title not defined" [ref=f12e1876] [cursor=pointer]:
+                      - generic "ac_res_recovery" [ref=f12e1877]: AC
+                      - generic "AC 14 — Title not defined" [ref=f12e1878]
+                    - button "Edit ac_res_recovery" [ref=f12e1881] [cursor=pointer]
+                    - button "Revoke ac_res_recovery" [ref=f12e1885] [cursor=pointer]
+                - article "AC 15 — Title not defined" [ref=f12e1889]:
+                  - generic [ref=f12e1890]:
+                    - button "AC AC 15 — Title not defined" [ref=f12e1891] [cursor=pointer]:
+                      - generic "ac_res_ux" [ref=f12e1892]: AC
+                      - generic "AC 15 — Title not defined" [ref=f12e1893]
+                    - button "Edit ac_res_ux" [ref=f12e1896] [cursor=pointer]
+                    - button "Revoke ac_res_ux" [ref=f12e1900] [cursor=pointer]
+                - article "AC 16 — Title not defined" [ref=f12e1904]:
+                  - generic [ref=f12e1905]:
+                    - button "AC AC 16 — Title not defined" [ref=f12e1906] [cursor=pointer]:
+                      - generic "ac_res_a11y" [ref=f12e1907]: AC
+                      - generic "AC 16 — Title not defined" [ref=f12e1908]
+                    - button "Edit ac_res_a11y" [ref=f12e1911] [cursor=pointer]
+                    - button "Revoke ac_res_a11y" [ref=f12e1915] [cursor=pointer]
+                - article "AC 17 — Title not defined" [ref=f12e1919]:
+                  - generic [ref=f12e1920]:
+                    - button "AC AC 17 — Title not defined" [ref=f12e1921] [cursor=pointer]:
+                      - generic "ac_ir_res_storage" [ref=f12e1922]: AC
+                      - generic "AC 17 — Title not defined" [ref=f12e1923]
+                    - button "Edit ac_ir_res_storage" [ref=f12e1926] [cursor=pointer]
+                    - button "Revoke ac_ir_res_storage" [ref=f12e1930] [cursor=pointer]
+                - article "AC 18 — Title not defined" [ref=f12e1934]:
+                  - generic [ref=f12e1935]:
+                    - button "AC AC 18 — Title not defined" [ref=f12e1936] [cursor=pointer]:
+                      - generic "ac_ir_res_change" [ref=f12e1937]: AC
+                      - generic "AC 18 — Title not defined" [ref=f12e1938]
+                    - button "Edit ac_ir_res_change" [ref=f12e1941] [cursor=pointer]
+                    - button "Revoke ac_ir_res_change" [ref=f12e1945] [cursor=pointer]
+                - article "AC 19 — Title not defined" [ref=f12e1949]:
+                  - generic [ref=f12e1950]:
+                    - button "AC AC 19 — Title not defined" [ref=f12e1951] [cursor=pointer]:
+                      - generic "ac_ir_res_rules" [ref=f12e1952]: AC
+                      - generic "AC 19 — Title not defined" [ref=f12e1953]
+                    - button "Edit ac_ir_res_rules" [ref=f12e1956] [cursor=pointer]
+                    - button "Revoke ac_ir_res_rules" [ref=f12e1960] [cursor=pointer]
+                - article "AC 20 — Title not defined" [ref=f12e1964]:
+                  - generic [ref=f12e1965]:
+                    - button "AC AC 20 — Title not defined" [ref=f12e1966] [cursor=pointer]:
+                      - generic "ac_ir_res_history" [ref=f12e1967]: AC
+                      - generic "AC 20 — Title not defined" [ref=f12e1968]
+                    - button "Edit ac_ir_res_history" [ref=f12e1971] [cursor=pointer]
+                    - button "Revoke ac_ir_res_history" [ref=f12e1975] [cursor=pointer]
+                - article "AC 21 — Title not defined" [ref=f12e1979]:
+                  - generic [ref=f12e1980]:
+                    - button "AC AC 21 — Title not defined" [ref=f12e1981] [cursor=pointer]:
+                      - generic "ac_ir_res_identity_port" [ref=f12e1982]: AC
+                      - generic "AC 21 — Title not defined" [ref=f12e1983]
+                    - button "Edit ac_ir_res_identity_port" [ref=f12e1986] [cursor=pointer]
+                    - button "Revoke ac_ir_res_identity_port" [ref=f12e1990] [cursor=pointer]
+                - article "AC 22 — Title not defined" [ref=f12e1994]:
+                  - generic [ref=f12e1995]:
+                    - button "AC AC 22 — Title not defined" [ref=f12e1996] [cursor=pointer]:
+                      - generic "ac_ir_res_create" [ref=f12e1997]: AC
+                      - generic "AC 22 — Title not defined" [ref=f12e1998]
+                    - button "Edit ac_ir_res_create" [ref=f12e2001] [cursor=pointer]
+                    - button "Revoke ac_ir_res_create" [ref=f12e2005] [cursor=pointer]
+                - article "AC 23 — Title not defined" [ref=f12e2009]:
+                  - generic [ref=f12e2010]:
+                    - button "AC AC 23 — Title not defined" [ref=f12e2011] [cursor=pointer]:
+                      - generic "ac_ir_res_usecases" [ref=f12e2012]: AC
+                      - generic "AC 23 — Title not defined" [ref=f12e2013]
+                    - button "Edit ac_ir_res_usecases" [ref=f12e2016] [cursor=pointer]
+                    - button "Revoke ac_ir_res_usecases" [ref=f12e2020] [cursor=pointer]
+                - article "AC 24 — Title not defined" [ref=f12e2024]:
+                  - generic [ref=f12e2025]:
+                    - button "AC AC 24 — Title not defined" [ref=f12e2026] [cursor=pointer]:
+                      - generic "ac_ir_res_search" [ref=f12e2027]: AC
+                      - generic "AC 24 — Title not defined" [ref=f12e2028]
+                    - button "Edit ac_ir_res_search" [ref=f12e2031] [cursor=pointer]
+                    - button "Revoke ac_ir_res_search" [ref=f12e2035] [cursor=pointer]
+                - article "AC 25 — Title not defined" [ref=f12e2039]:
+                  - generic [ref=f12e2040]:
+                    - button "AC AC 25 — Title not defined" [ref=f12e2041] [cursor=pointer]:
+                      - generic "ac_ir_res_list" [ref=f12e2042]: AC
+                      - generic "AC 25 — Title not defined" [ref=f12e2043]
+                    - button "Edit ac_ir_res_list" [ref=f12e2046] [cursor=pointer]
+                    - button "Revoke ac_ir_res_list" [ref=f12e2050] [cursor=pointer]
+                - article "AC 26 — Title not defined" [ref=f12e2054]:
+                  - generic [ref=f12e2055]:
+                    - button "AC AC 26 — Title not defined" [ref=f12e2056] [cursor=pointer]:
+                      - generic "ac_ir_res_cancel" [ref=f12e2057]: AC
+                      - generic "AC 26 — Title not defined" [ref=f12e2058]
+                    - button "Edit ac_ir_res_cancel" [ref=f12e2061] [cursor=pointer]
+                    - button "Revoke ac_ir_res_cancel" [ref=f12e2065] [cursor=pointer]
+                - article "AC 27 — Title not defined" [ref=f12e2069]:
+                  - generic [ref=f12e2070]:
+                    - button "AC AC 27 — Title not defined" [ref=f12e2071] [cursor=pointer]:
+                      - generic "ac_ir_res_wiring" [ref=f12e2072]: AC
+                      - generic "AC 27 — Title not defined" [ref=f12e2073]
+                    - button "Edit ac_ir_res_wiring" [ref=f12e2076] [cursor=pointer]
+                    - button "Revoke ac_ir_res_wiring" [ref=f12e2080] [cursor=pointer]
+                - article "AC 28 — Title not defined" [ref=f12e2084]:
+                  - generic [ref=f12e2085]:
+                    - button "AC AC 28 — Title not defined" [ref=f12e2086] [cursor=pointer]:
+                      - generic "ac_ir_res_clock_port" [ref=f12e2087]: AC
+                      - generic "AC 28 — Title not defined" [ref=f12e2088]
+                    - button "Edit ac_ir_res_clock_port" [ref=f12e2091] [cursor=pointer]
+                    - button "Revoke ac_ir_res_clock_port" [ref=f12e2095] [cursor=pointer]
+                - article "AC 29 — Title not defined" [ref=f12e2099]:
+                  - generic [ref=f12e2100]:
+                    - button "AC AC 29 — Title not defined" [ref=f12e2101] [cursor=pointer]:
+                      - generic "ac_ir_res_uow" [ref=f12e2102]: AC
+                      - generic "AC 29 — Title not defined" [ref=f12e2103]
+                    - button "Edit ac_ir_res_uow" [ref=f12e2106] [cursor=pointer]
+                    - button "Revoke ac_ir_res_uow" [ref=f12e2110] [cursor=pointer]
+                - article "AC 30 — Title not defined" [ref=f12e2114]:
+                  - generic [ref=f12e2115]:
+                    - button "AC AC 30 — Title not defined" [ref=f12e2116] [cursor=pointer]:
+                      - generic "ac_res_observe_0" [ref=f12e2117]: AC
+                      - generic "AC 30 — Title not defined" [ref=f12e2118]
+                    - button "Edit ac_res_observe_0" [ref=f12e2121] [cursor=pointer]
+                    - button "Revoke ac_res_observe_0" [ref=f12e2125] [cursor=pointer]
+                - article "AC 31 — Title not defined" [ref=f12e2129]:
+                  - generic [ref=f12e2130]:
+                    - button "AC AC 31 — Title not defined" [ref=f12e2131] [cursor=pointer]:
+                      - generic "ac_res_observe_1" [ref=f12e2132]: AC
+                      - generic "AC 31 — Title not defined" [ref=f12e2133]
+                    - button "Edit ac_res_observe_1" [ref=f12e2136] [cursor=pointer]
+                    - button "Revoke ac_res_observe_1" [ref=f12e2140] [cursor=pointer]
+                - button "Add AC" [ref=f12e2144] [cursor=pointer]
+          - generic [ref=f12e671]:
+            - button "Delete spec" [ref=f12e672] [cursor=pointer]
+            - button "Close" [ref=f12e674] [cursor=pointer]

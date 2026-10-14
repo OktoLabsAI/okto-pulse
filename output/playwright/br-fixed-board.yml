@@ -1,0 +1,136 @@
+- generic [ref=f6e3]:
+  - banner [ref=f6e4]:
+    - generic [ref=f6e5]:
+      - generic [ref=f6e6]:
+        - button "Hide sidebar" [ref=f6e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f6e12]
+        - generic [ref=f6e31]: / My Board
+      - generic [ref=f6e32]:
+        - button "Refresh board" [ref=f6e33] [cursor=pointer]
+        - button [ref=f6e40] [cursor=pointer]
+  - generic [ref=f6e13]:
+    - complementary [ref=f6e14]:
+      - generic [ref=f6e15]:
+        - generic [ref=f6e17]:
+          - heading "Boards" [level=2] [ref=f6e18]
+          - button "New board" [ref=f6e19] [cursor=pointer]
+        - navigation [ref=f6e21]:
+          - generic [ref=f6e22]:
+            - heading "My Boards" [level=3] [ref=f6e23]
+            - list [ref=f6e44]:
+              - listitem [ref=f6e45]:
+                - button "My Board" [ref=f6e46] [cursor=pointer]
+    - main [ref=f6e26]:
+      - group "Board views" [ref=f6e53]:
+        - button "Stories" [pressed] [ref=f6e54] [cursor=pointer]
+        - button "Ideations" [ref=f6e58] [cursor=pointer]
+        - button "Refinements" [ref=f6e61] [cursor=pointer]
+        - button "Specs" [ref=f6e66] [cursor=pointer]
+        - button "Tasks" [ref=f6e71] [cursor=pointer]
+      - generic [ref=f6e78]:
+        - generic [ref=f6e79]:
+          - generic [ref=f6e80]:
+            - heading "Stories" [level=2] [ref=f6e81]
+            - generic [ref=f6e82]: (4 of 4)
+          - generic [ref=f6e83]:
+            - textbox "Search stories..." [ref=f6e85]
+            - group "View mode" [ref=f6e86]:
+              - button "List view" [pressed] [ref=f6e87] [cursor=pointer]
+              - button "Grid view" [ref=f6e89] [cursor=pointer]
+            - button "New Story" [ref=f6e95] [cursor=pointer]
+        - generic [ref=f6e97]:
+          - button "All" [ref=f6e98] [cursor=pointer]
+          - button "Draft" [ref=f6e99] [cursor=pointer]
+          - button "Triage" [ref=f6e100] [cursor=pointer]
+          - button "Ready" [ref=f6e101] [cursor=pointer]
+          - button "Converted" [ref=f6e102] [cursor=pointer]
+          - button "Show archived" [ref=f6e103] [cursor=pointer]
+        - generic [ref=f6e104]:
+          - complementary [ref=f6e105]:
+            - generic [ref=f6e106]:
+              - generic [ref=f6e107]: Topics
+              - button "New Topic" [ref=f6e112] [cursor=pointer]
+            - generic [ref=f6e114]:
+              - button "All topics 4" [ref=f6e115] [cursor=pointer]:
+                - generic [ref=f6e116]: All topics
+                - generic [ref=f6e117]: "4"
+              - generic [ref=f6e118]:
+                - button "Mock — Completude dos cards 4" [ref=f6e119] [cursor=pointer]:
+                  - generic [ref=f6e120]: Mock — Completude dos cards
+                  - generic [ref=f6e121]: "4"
+                - 'button "Topic actions: Mock — Completude dos cards" [ref=f6e122] [cursor=pointer]'
+          - generic [ref=f6e127]:
+            - generic [ref=f6e128]:
+              - generic [ref=f6e131] [cursor=pointer]:
+                - generic [ref=f6e132]:
+                  - generic [ref=f6e133]: Converted
+                  - generic [ref=f6e134]: Mock — Completude dos cards
+                - heading "H01 — Consultar itens fictícios" [level=3] [ref=f6e135]
+                - paragraph [ref=f6e136]: "Como pessoa testando o mock, quero consultar uma lista fixa e identificar quando ela está vazia, para encontrar o que está disponível sem confundir lista vazia com erro. Obrigações planejadas: listar três itens sintéticos; apresentar estado vazio. Cenário inicial: ainda sem prova…"
+                - generic [ref=f6e137]:
+                  - generic [ref=f6e138]: "As: Pessoa testando a lista fictícia"
+                  - generic [ref=f6e139]: "Want: consultar uma lista fixa e identificar quando ela está vazia"
+                  - generic [ref=f6e140]: "So: encontrar o que está disponível sem confundir lista vazia com erro"
+              - generic [ref=f6e149] [cursor=pointer]:
+                - generic [ref=f6e150]:
+                  - generic [ref=f6e151]: Converted
+                  - generic [ref=f6e152]: Mock — Completude dos cards
+                - heading "H03 — Marcar e desmarcar item" [level=3] [ref=f6e153]
+                - paragraph [ref=f6e154]: "Como pessoa testando o mock, quero marcar um item como comprado e desfazer a marcação, para acompanhar a lista sem perder o item original. Obrigações planejadas: marcar; desmarcar. Marco: ambas implementadas com verificação pendente, esperado 100% / 50%. Cenário planejado; nenhum…"
+                - generic [ref=f6e155]:
+                  - generic [ref=f6e156]: "As: Pessoa testando a lista fictícia"
+                  - generic [ref=f6e157]: "Want: marcar um item como comprado e desfazer a marcação"
+                  - generic [ref=f6e158]: "So: acompanhar a lista sem perder o item original"
+              - generic [ref=f6e167] [cursor=pointer]:
+                - generic [ref=f6e168]:
+                  - generic [ref=f6e169]: Converted
+                  - generic [ref=f6e170]: Mock — Completude dos cards
+                - heading "H02 — Adicionar item ao mock" [level=3] [ref=f6e171]
+                - paragraph [ref=f6e172]: "Como pessoa testando o mock, quero adicionar um item válido e receber uma mensagem para nome vazio, para evitar itens inválidos e verificar o que foi adicionado. Obrigações planejadas: adicionar nome válido; recusar nome vazio. Marco intermediário: apenas uma implementação compro…"
+                - generic [ref=f6e173]:
+                  - generic [ref=f6e174]: "As: Pessoa testando a lista fictícia"
+                  - generic [ref=f6e175]: "Want: adicionar um item válido e receber uma mensagem para nome vazio"
+                  - generic [ref=f6e176]: "So: evitar itens inválidos e verificar o que foi adicionado"
+              - generic [ref=f6e185] [cursor=pointer]:
+                - generic [ref=f6e186]:
+                  - generic [ref=f6e187]: Converted
+                  - generic [ref=f6e188]: Mock — Completude dos cards
+                - heading "H04 — Filtrar itens pendentes" [level=3] [ref=f6e189]
+                - paragraph [ref=f6e190]: "Como pessoa testando o mock, quero ver apenas itens pendentes e voltar à lista completa, para distinguir pendências dos itens já comprados. Obrigações planejadas: filtro de pendentes; restauração da lista completa. Marcos: testes autenticados antes de Done, esperado 100% / 80%; a…"
+                - generic [ref=f6e191]:
+                  - generic [ref=f6e192]: "As: Pessoa testando a lista fictícia"
+                  - generic [ref=f6e193]: "Want: ver apenas itens pendentes e voltar à lista completa"
+                  - generic [ref=f6e194]: "So: distinguir pendências dos itens já comprados"
+            - generic [ref=f6e201]:
+              - status [ref=f6e202]: Showing 1–4 of 4 matching. 4 overall. Page 1 of 1.
+              - generic [ref=f6e203]:
+                - generic [ref=f6e204]:
+                  - generic [ref=f6e205]: Items per page
+                  - combobox "Items per page" [ref=f6e206]:
+                    - option "25" [selected]
+                    - option "50"
+                    - option "100"
+                - navigation "Stories pagination" [ref=f6e207]:
+                  - generic [ref=f6e208]:
+                    - button "Previous page" [disabled] [ref=f6e209]: Previous
+                    - button "Page 1" [disabled] [ref=f6e210]: "1"
+                    - button "Next page" [disabled] [ref=f6e211]: Next
+  - 'status "Cognitive pipeline working: 0 running, 4 pending" [ref=f6e212]':
+    - generic [ref=f6e223]: processing · 4 pending
+  - status [ref=f6e224]:
+    - generic [ref=f6e225]:
+      - generic [ref=f6e226]: Consolidation in progress
+      - generic [ref=f6e227]: 20%
+    - generic [ref=f6e230]:
+      - generic [ref=f6e231]:
+        - generic [ref=f6e232]: Pending
+        - generic [ref=f6e233]: "4"
+      - generic [ref=f6e234]:
+        - generic [ref=f6e235]: Running
+        - generic [ref=f6e236]: "0"
+      - generic [ref=f6e237]:
+        - generic [ref=f6e238]: Processed
+        - generic [ref=f6e239]: "1"
+      - generic [ref=f6e240]:
+        - generic [ref=f6e241]: Paused
+        - generic [ref=f6e242]: "0"
