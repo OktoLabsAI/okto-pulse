@@ -18,6 +18,7 @@ import type {
 } from '@/types/delivery-evidence';
 
 interface Props {
+  revision?: number;
   focusDiagnosis?: boolean;
   focusRecordId?: string;
   onOpenReadinessCard?: (id: string, target?: ReadinessCardLocation) => void;
@@ -40,7 +41,7 @@ const field = 'w-full rounded border border-gray-300 bg-white p-2 text-sm dark:b
 // authenticated passing runs verifying implementations on other cards.
 // Waivers stay spec-level and human-only (BR-3): the button routes an
 // authorized human to the Spec rollup surface.
-export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest = false, canWaiver = false, canProgress = false, onChanged, onStage, onOpenTests, focusDiagnosis, focusRecordId, onOpenReadinessCard }: Props) {
+export function CardDeliveryDoDPanel({ boardId, card, revision = 0, canRecord = false, canTest = false, canWaiver = false, canProgress = false, onChanged, onStage, onOpenTests, focusDiagnosis, focusRecordId, onOpenReadinessCard }: Props) {
   const api = useDashboardApi();
   const [data, setData] = useState<DeliveryEvidenceProjection | null>(null);
   const [gateMode, setGateMode] = useState<'advisory' | 'blocking' | null>(null);
@@ -48,6 +49,9 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
   const [busy, setBusy] = useState(false);
   const [reload, setReload] = useState(0);
   const [formOpen, setFormOpen] = useState(false);
+  const [formBasis, setFormBasis] = useState<{ data: DeliveryEvidenceProjection; revision: number } | null>(null);
+  const [loadedRevision, setLoadedRevision] = useState(revision);
+  const [loading, setLoading] = useState(true);
   const [refs, setRefs] = useState<string[]>([]);
   const [contributions, setContributions] = useState<Record<string, 'partial' | 'complete'>>({});
   const [composeProofs, setComposeProofs] = useState(false);
@@ -59,16 +63,33 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
   const replayRef = useRef<{ payload: string; key: string } | null>(null);
 
   useEffect(() => {
+    setData(null); setGateMode(null); setFormOpen(false); setFormBasis(null);
+    setRefs([]); setContributions({}); setComposeProofs(false); setExecutionSets({}); setChoice(''); setTestedIds([]); setReason('');
+    replayRef.current = null;
+  }, [boardId, card.id, card.spec_id]);
+
+  useEffect(() => {
     const controller = new AbortController();
-    setData(null); setGateMode(null); setError(''); setRefs([]); setContributions({}); setComposeProofs(false); setExecutionSets({}); setChoice(''); setTestedIds([]);
+    setLoading(true); setError('');
     api.getDeliveryEvidence(boardId, card.spec_id, controller.signal).then(value => {
-      if (!controller.signal.aborted) setData(value);
-    }).catch(err => { if (!controller.signal.aborted) setError(err instanceof Error ? err.message : 'Delivery proof could not be loaded.'); });
+      if (!controller.signal.aborted) { setData(value); setLoadedRevision(revision); }
+    }).catch(err => { if (!controller.signal.aborted) setError(err instanceof Error ? err.message : 'Delivery proof could not be loaded.'); })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     api.getBoard(boardId).then(board => {
       if (!controller.signal.aborted) setGateMode(resolveDeliveryGateMode(board.settings?.delivery_evidence_gate));
     }).catch(() => { if (!controller.signal.aborted) setGateMode(null); });
     return () => controller.abort();
-  }, [api, boardId, card.id, card.spec_id, reload]);
+  }, [api, boardId, card.id, card.spec_id, reload, revision]);
+
+  const recordingData = formOpen && formBasis ? formBasis.data : data;
+  const recordingMine = recordingData?.per_card?.find(entry => entry.card_id === card.id) ?? null;
+  const basisChanged = Boolean(formOpen && formBasis && data && (
+    formBasis.revision !== revision || formBasis.data !== data
+  ));
+  const openRecordingForm = () => {
+    if (!data || loading) return;
+    setFormBasis({ data, revision: loadedRevision }); setFormOpen(true); setError('');
+  };
 
   const isTest = card.card_type === 'test';
   const mine = data?.per_card?.find(entry => entry.card_id === card.id) ?? null;
@@ -80,23 +101,26 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
     && p.contributions.some(c => c.binding.obligation_ref === ref && c.contribution === 'partial'));
   const unproven = obligations.filter(o => !o.implementation_satisfied && !proofFor(o.ref));
   const canRecordKind = isTest ? canTest : canRecord;
-  const candidates = (data?.candidates ?? []).filter(c => c.card_id === card.id && c.kind === (isTest ? 'test' : 'implementation'));
+  const candidates = (recordingData?.candidates ?? []).filter(c => c.card_id === card.id && c.kind === (isTest ? 'test' : 'implementation'));
   const selectableRefs = isTest
-    ? (data?.rows ?? []).map(row => ({ ref: row.obligation.binding.obligation_ref, title: row.obligation.title, satisfied: row.test_satisfied }))
-    : obligations.map(o => ({ ref: o.ref, title: o.title, satisfied: o.implementation_satisfied }));
-  const verifiableImpls = (data?.implementations ?? []).filter(i => i.ready_obligation_refs.length > 0 && !data?.rejected_record_ids.includes(i.id));
+    ? (recordingData?.rows ?? []).map(row => ({ ref: row.obligation.binding.obligation_ref, title: row.obligation.title, satisfied: row.test_satisfied }))
+    : (recordingMine?.obligations ?? []).map(o => ({ ref: o.ref, title: o.title, satisfied: o.implementation_satisfied }));
+  const verifiableImpls = (recordingData?.implementations ?? []).filter(i => i.ready_obligation_refs.length > 0 && !recordingData?.rejected_record_ids.includes(i.id));
+  const unavailableSelections = refs.some(ref => !selectableRefs.some(item => item.ref === ref))
+    || testedIds.some(id => !verifiableImpls.some(item => item.id === id))
+    || Boolean(choice && !candidates.some(item => `${item.card_id}:${item.id}` === choice));
   const compose = !isTest && composeProofs;
   const setsReady = refs.length > 0 && refs.every(ref => executionSets[ref]?.length
     && executionSets[ref].every(id => candidates.some(candidate => candidate.id === id)));
 
   async function submit() {
     const justification = reason.trim();
-    if (!data || busy || !justification || !refs.length) return;
+    if (!recordingData || busy || loading || basisChanged || unavailableSelections || !justification || !refs.length) return;
     const selected = candidates.find(c => `${c.card_id}:${c.id}` === choice);
     const key = crypto.randomUUID();
     const input: CardDeliveryEvidenceInput = {
-      expected_card_version: compose ? mine?.card_version ?? candidates[0]?.card_version ?? 1 : selected?.card_version ?? 1,
-      expected_spec_edition: data.edition,
+      expected_card_version: compose ? recordingMine?.card_version ?? candidates[0]?.card_version ?? 1 : selected?.card_version ?? 1,
+      expected_spec_edition: recordingData.edition,
       idempotency_key: key,
       kind: isTest ? 'test' : 'implementation',
       obligation_refs: isTest ? refs : [],
@@ -118,11 +142,11 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
       if (!isTest && (compose ? !setsReady : !selected)) throw new Error('Select the accepted execution receipts for each obligation first.');
       if (isTest && (!selected || !testedIds.length)) throw new Error('Select the authenticated run and the implementation records it observed.');
       if (onStage) {
-        if (!mine?.card_version || mine.delivery_revision === undefined || !['started', 'in_progress'].includes(mine.status)) {
+        if (!recordingMine?.card_version || recordingMine.delivery_revision === undefined || !['started', 'in_progress'].includes(recordingMine.status)) {
           throw new Error('The current execution state and delivery revision are required. Reload before preparing this report.');
         }
-        onStage({ contract_version: 'card-delivery-batch/v1', expected_card_version: mine.card_version,
-          expected_spec_edition: data.edition, expected_delivery_revision: mine.delivery_revision,
+        onStage({ contract_version: 'card-delivery-batch/v1', expected_card_version: recordingMine.card_version,
+          expected_spec_edition: recordingData.edition, expected_delivery_revision: recordingMine.delivery_revision,
           entries: [{ client_ref: 'proof', kind: isTest ? 'test' : 'implementation', obligation_refs: input.obligation_refs,
             justification: input.justification, bindings: input.bindings, execution_id: input.execution_id,
             scenario_id: input.scenario_id, implementation_ids: input.implementation_ids }] });
@@ -136,9 +160,9 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
 
   async function submitWaiver() {
     const justification = reason.trim();
-    if (!data || busy || !justification || !refs.length) return;
+    if (!recordingData || busy || loading || basisChanged || unavailableSelections || !justification || !refs.length) return;
     const input: DeliveryEvidenceInput = {
-      expected_edition: data.edition, expected_version: data.version,
+      expected_edition: recordingData.edition, expected_version: recordingData.version,
       idempotency_key: crypto.randomUUID(), kind: 'waiver',
       obligation_refs: refs, justification, phase,
     };
@@ -152,7 +176,7 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
   }
 
   return <section className="space-y-4" aria-label={isTest ? "Test verification evidence" : "Delivery evidence (Definition of Done)"}>
-    {!onStage && <DeliveryReadinessPanel boardId={boardId} specId={card.spec_id} cardId={card.id} revision={reload} focusDiagnosis={focusDiagnosis} onOpenReadinessCard={onOpenReadinessCard} />}
+    {!onStage && <DeliveryReadinessPanel boardId={boardId} specId={card.spec_id} cardId={card.id} revision={`${reload}:${revision}`} focusDiagnosis={focusDiagnosis} onOpenReadinessCard={onOpenReadinessCard} />}
     {isTest && !onStage && <div className="flex justify-end"><button type="button" disabled={!data && !error} onClick={() => setReload(value => value + 1)} className="rounded-md border border-gray-300 px-3 py-2 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800">Refresh evidence</button></div>}
     {error && <p role="alert" className="rounded-md border border-red-300 bg-red-50 p-3 text-xs text-red-700 dark:border-red-900/70 dark:bg-red-950/25 dark:text-red-300">{error}</p>}
     {!data && !error && <PulseLoader label="Loading delivery evidence…" />}
@@ -210,16 +234,27 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
 
       </>}
       <div className="flex gap-2">
-        {canRecordKind && <button type="button" onClick={() => { setFormOpen(v => !v); setError(''); }} className="rounded-md bg-gray-800 px-4 py-2 text-sm text-white dark:bg-gray-100 dark:text-gray-900" data-testid="dod-record-button">
+        {canRecordKind && <button type="button" onClick={() => { if (formOpen) setFormOpen(false); else openRecordingForm(); }} className="rounded-md bg-gray-800 px-4 py-2 text-sm text-white dark:bg-gray-100 dark:text-gray-900" data-testid="dod-record-button">
           {formOpen ? 'Close recording form' : onStage ? 'Prepare delivery evidence for report' : isTest ? 'Record test evidence' : 'Record Delivery Evidence'}
         </button>}
-        {canWaiver && !onStage && <button type="button" onClick={() => { setFormOpen(true); setError(''); }} className="rounded-md border border-gray-300 px-4 py-2 text-sm text-gray-600 dark:border-gray-700 dark:text-gray-300">
+        {canWaiver && !onStage && <button type="button" onClick={openRecordingForm} className="rounded-md border border-gray-300 px-4 py-2 text-sm text-gray-600 dark:border-gray-700 dark:text-gray-300">
           Request Waiver (human)
         </button>}
       </div>
 
       {formOpen && (canRecordKind || canWaiver) && (
         <form className="space-y-3 rounded-md border p-3" onSubmit={e => { e.preventDefault(); void (canWaiver && !canRecordKind ? submitWaiver() : submit()); }} data-testid="dod-record-form">
+          {basisChanged && <div role="alert" className="rounded border border-amber-300 p-3 text-sm">
+            <p>Delivery evidence changed. Your selections and explanation still use the original basis.</p>
+            <button type="button" disabled={loading || loadedRevision !== revision || !data} className="btn btn-secondary mt-2"
+              onClick={() => { if (data) { setFormBasis({ data, revision: loadedRevision }); replayRef.current = null; } }}>
+              Review latest evidence for this draft
+            </button>
+          </div>}
+          {unavailableSelections && <div role="alert" className="text-sm text-amber-700">
+            Some selected obligations or receipts are no longer available. Review the current choices before saving.
+            <button type="button" className="btn btn-secondary ml-2" onClick={() => { setRefs([]); setChoice(''); setTestedIds([]); setExecutionSets({}); }}>Clear selections</button>
+          </div>}
           {isTest && canRecordKind && <div className="border-b border-gray-200 pb-3 dark:border-gray-700">
             <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Connect a test result to delivery</h3>
             <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Select only the obligations and implementation this run actually checked. The passed or failed result comes from the authenticated run.</p>
@@ -293,7 +328,7 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
           <label className="block text-sm">Explanation / audit reason
             <textarea required maxLength={20000} className={`${field} mt-1`} value={reason} onChange={e => setReason(e.target.value)} placeholder={isTest ? 'Explain what this run observed for the selected obligations, including failures.' : 'Explain how this execution receipt covers the selected obligations.'} />
           </label>
-          <button type="submit" disabled={busy || !refs.length || !reason.trim() || (canRecordKind && (compose ? !setsReady : !choice || (isTest && !testedIds.length)))} className="rounded bg-cyan-700 px-3 py-2 text-sm text-white disabled:opacity-50">
+          <button type="submit" disabled={busy || loading || basisChanged || unavailableSelections || !refs.length || !reason.trim() || (canRecordKind && (compose ? !setsReady : !choice || (isTest && !testedIds.length)))} className="rounded bg-cyan-700 px-3 py-2 text-sm text-white disabled:opacity-50">
             {busy ? 'Saving…' : onStage ? 'Add evidence to report draft' : canWaiver && !canRecordKind ? 'Record waiver (spec rollup)' : 'Record delivery evidence'}
           </button>
         </form>

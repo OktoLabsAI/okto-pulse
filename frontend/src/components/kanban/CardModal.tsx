@@ -48,9 +48,14 @@ import { ScenarioTypeBadge } from '@/components/specs/ScenarioTypeBadge';
 import { EditableField } from '@/components/shared/EditableField';
 import { openLineageGraph } from '@/components/traceability';
 import {
+  hasEffectivePermission,
   hasPermissionWithState,
+  refreshBoardPermissions,
   usePermissions,
 } from '@/hooks/usePermissions';
+import { useWorkspaceRevisions } from '@/hooks/useWorkspaceRevisions';
+import { AuthenticatedFetchError } from '@/lib/authFetch';
+import { PulseLoader } from '@/components/shared/PulseLoader';
 import { SettingsToggle } from '@/components/board/BoardSettingsForm';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import {
@@ -361,6 +366,13 @@ export function CardModal({
 
   const [card, setCard] = useState<Card | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [liveRevision, setLiveRevision] = useState(0);
+  const [syncAuthorizing, setSyncAuthorizing] = useState(false);
+  const syncGeneration = useRef(0);
+  const authorizationRequired = useRef(false);
+  const refreshedRevision = useRef(0);
+  const boardIdRef = useRef(boardId);
+  boardIdRef.current = boardId;
   const [activeTab, setActiveTab] = useState<CardModalTab>('details');
   const nativeReferenceRoot = useRef<HTMLDivElement>(null);
   useNativeReferenceFocus(nativeReferenceRoot, card?.id === selectedCardId ? cardModalTarget?.focusReference : undefined,
@@ -630,6 +642,34 @@ export function CardModal({
     return ['not_started', 'started', 'in_progress', 'on_hold'].includes(card.status);
   };
 
+  const loseCardAccess = () => {
+    syncGeneration.current += 1;
+    cardLoadGenerationRef.current += 1;
+    cardDataGenerationRef.current += 1;
+    setSyncAuthorizing(false);
+    setCard(null);
+    setFullSpec(null);
+    setParentSpec(null);
+    setSpecKBsFull([]);
+    setDependencies([]);
+    setDependents([]);
+    setSeenStatus({});
+    setBoardMembers([]);
+    setSpecScenarios([]);
+    setSpecRules([]);
+    setSpecContracts([]);
+    setSpecIRs([]);
+    setSpecORs([]);
+    setSpecTRs([]);
+    setShowConclusionPrompt(false);
+    setShowCancelDialog(false);
+    resetConclusionPrompt();
+    closeCardModal();
+    onClose?.();
+  };
+  const loseCardAccessRef = useRef(loseCardAccess);
+  loseCardAccessRef.current = loseCardAccess;
+
   const loadCard = (cardId: string) => {
     const loadGeneration = ++cardLoadGenerationRef.current;
     const dataGeneration = ++cardDataGenerationRef.current;
@@ -734,8 +774,11 @@ export function CardModal({
           setTaskValidationHierarchyLoading(false);
         });
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (isCurrentLoad()) {
+          if (error instanceof AuthenticatedFetchError && [401, 403, 404].includes(error.status)) {
+            loseCardAccessRef.current(); return;
+          }
           setTaskValidationHierarchy(null);
           setTaskValidationHierarchyLoading(false);
           setTaskValidationHierarchyError(
@@ -875,8 +918,11 @@ export function CardModal({
           setTaskValidationHierarchyLoading(false);
         });
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (!isCurrentRefresh()) return;
+        if (error instanceof AuthenticatedFetchError && [401, 403, 404].includes(error.status)) {
+          loseCardAccessRef.current(); return;
+        }
         setTaskValidationHierarchy(null);
         setTaskValidationHierarchyLoading(false);
         setTaskValidationHierarchyError(
@@ -948,6 +994,7 @@ export function CardModal({
 
   useEffect(() => {
     if (selectedCardId && isOpen) {
+      if (syncAuthorizing) return;
       loadCard(selectedCardId);
     } else {
       cardLoadGenerationRef.current += 1;
@@ -1069,29 +1116,60 @@ export function CardModal({
     validationTab,
   ]);
 
-  // Auto-refresh every 10s while modal is open
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const syncState = useWorkspaceRevisions({
+    boardId: isOpen && selectedCardId ? boardId : undefined,
+    subjects: selectedCardId ? [
+      { subject_type: 'card', subject_id: selectedCardId },
+      ...(card?.id === selectedCardId && card.spec_id
+        ? [{ subject_type: 'spec' as const, subject_id: card.spec_id }] : []),
+    ] : [],
+    onAccessLost: () => loseCardAccessRef.current(),
+    onChange: async ({ initial, authorityChanged }) => {
+      if (initial) return;
+      const requestedCard = selectedCardId;
+      const generation = ++syncGeneration.current;
+      const current = () => generation === syncGeneration.current
+        && selectedCardIdRef.current === requestedCard && boardIdRef.current === boardId;
+      authorizationRequired.current ||= authorityChanged;
+      if (authorizationRequired.current) {
+        cardLoadGenerationRef.current += 1;
+        cardDataGenerationRef.current += 1;
+        // Invalidated loads cannot clear their loading flags in finally.
+        // The authorized revision below queues their replacement explicitly.
+        setIsLoading(false);
+        setTaskValidationHierarchyLoading(false);
+        setSyncAuthorizing(true);
+        try {
+          const effective = await refreshBoardPermissions(boardId);
+          if (!current()) return;
+          if (effective.board_id !== boardId || !hasEffectivePermission(effective, 'card.entity.read')) {
+            loseCardAccessRef.current(); return;
+          }
+        } catch { if (current()) loseCardAccessRef.current(); return; }
+      }
+      if (!current()) return;
+      authorizationRequired.current = false;
+      setSyncAuthorizing(false);
+      setLiveRevision(value => value + 1);
+    },
+  });
+
   useEffect(() => {
-    if (
-      selectedCardId
-      && isOpen
-      && !isLoading
-      && !taskValidationHierarchyLoading
-    ) {
-      intervalRef.current = setInterval(() => {
-        silentRefresh(selectedCardId);
-      }, 10000);
-    }
+    if (!selectedCardId || !isOpen || isLoading || taskValidationHierarchyLoading || syncAuthorizing
+      || liveRevision === refreshedRevision.current) return;
+    refreshedRevision.current = liveRevision;
+    silentRefresh(selectedCardId);
+  }, [selectedCardId, isOpen, isLoading, taskValidationHierarchyLoading, syncAuthorizing, liveRevision, silentRefresh]);
+
+  useEffect(() => {
+    authorizationRequired.current = false;
+    setSyncAuthorizing(false);
     return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
+      syncGeneration.current += 1;
+      cardLoadGenerationRef.current += 1;
+      cardDataGenerationRef.current += 1;
     };
-  }, [
-    selectedCardId,
-    isOpen,
-    isLoading,
-    silentRefresh,
-    taskValidationHierarchyLoading,
-  ]);
+  }, [boardId, selectedCardId, isOpen]);
 
   const handleRefresh = () => {
     if (selectedCardId) loadCard(selectedCardId);
@@ -1427,7 +1505,8 @@ export function CardModal({
 
   return (
     <div className="modal-overlay" onClick={handleClose}>
-      <div ref={nativeReferenceRoot} className={`modal-content ${expanded ? '!max-w-[95vw] !h-[95vh]' : ''}`} onClick={(e) => e.stopPropagation()}>
+      {syncAuthorizing && <PulseLoader label="Checking Card access…" />}
+      <div ref={nativeReferenceRoot} style={{ display: syncAuthorizing ? 'none' : undefined }} className={`modal-content ${expanded ? '!max-w-[95vw] !h-[95vh]' : ''}`} onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="modal-header">
           <div className="flex items-center gap-3 flex-1">
@@ -1463,41 +1542,14 @@ export function CardModal({
                 TEST
               </span>
             )}
-            <h2
-              className={`font-semibold text-lg whitespace-pre-wrap break-words line-clamp-3 rounded px-1 -mx-1 outline-none ${
-                canEditCardFields
-                  ? 'cursor-text hover:bg-gray-100 dark:hover:bg-gray-700 focus:ring-2 focus:ring-blue-400 focus:bg-white dark:focus:bg-gray-700'
-                  : 'cursor-default'
-              }`}
-              contentEditable={!isLoading && !!card && canEditCardFields}
-              suppressContentEditableWarning
-              onBlur={async (e) => {
-                if (!card || !canEditCardFields) return;
-                const newTitle = (e.currentTarget.textContent || '').trim();
-                if (!newTitle || newTitle === card.title) {
-                  e.currentTarget.textContent = card.title;
-                  return;
-                }
-                try {
-                  const updated = await api.updateCard(card.id, { title: newTitle });
-                  applyCardUpdate(updated);
+            <h2 className="font-semibold text-lg whitespace-pre-wrap break-words flex-1 min-w-0">
+              <EditableField value={card?.title || ''} disabled={isLoading || !card || !canEditCardFields}
+                placeholder="Card title" renderView={value => <span>{value}</span>}
+                onSave={async title => {
+                  if (!card || !title) throw new Error('Card title is required.');
+                  applyCardUpdate(await api.updateCard(card.id, { title }));
                   toast.success('Title updated');
-                } catch {
-                  e.currentTarget.textContent = card.title;
-                  toast.error('Failed to update title');
-                }
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); }
-                if (e.key === 'Escape') {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  e.currentTarget.textContent = card?.title || '';
-                  e.currentTarget.blur();
-                }
-              }}
-            >
-              {isLoading ? 'Loading...' : card?.title}
+                }} />
             </h2>
           </div>
           {parentSpec && (
@@ -1555,6 +1607,9 @@ export function CardModal({
         </div>
 
         {/* Body */}
+        {(syncState === 'offline' || syncState === 'unavailable') && <p role="status" className="px-6 py-2 text-sm text-amber-700 dark:text-amber-300">
+          Live updates are unavailable. This Card may be out of date.
+        </p>}
         {isLoading ? (
           <div className="modal-body text-center py-8 text-gray-500 dark:text-gray-400">Loading...</div>
         ) : card ? (
@@ -1833,6 +1888,7 @@ export function CardModal({
                   mount="lazy-keep"
                 >
                   <CardDeliveryDoDPanel
+                    revision={liveRevision}
                     boardId={card.board_id}
                     card={{ id: card.id, card_type: card.card_type || 'normal', spec_id: card.spec_id }}
                     canRecord={perms.has('code_traceability.target.execution_submit')}

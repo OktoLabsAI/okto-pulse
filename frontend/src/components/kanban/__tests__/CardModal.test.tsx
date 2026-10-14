@@ -12,6 +12,22 @@ import type {
   TestScenario,
 } from '@/types';
 import { AuthenticatedFetchError } from '@/lib/authFetch';
+import type { useWorkspaceRevisions } from '@/hooks/useWorkspaceRevisions';
+
+const workspace = vi.hoisted(() => ({
+  options: null as Parameters<typeof useWorkspaceRevisions>[0] | null,
+  refreshPermissions: vi.fn(),
+}));
+vi.mock('@/hooks/useWorkspaceRevisions', () => ({
+  useWorkspaceRevisions: (options: Parameters<typeof useWorkspaceRevisions>[0]) => {
+    workspace.options = options;
+    return 'current';
+  },
+}));
+
+async function externalRevision() {
+  await act(async () => workspace.options!.onChange({ subjects: workspace.options!.subjects, initial: false, authorityChanged: false }));
+}
 
 const apiMock = vi.hoisted(() => ({
   getCard: vi.fn(),
@@ -94,6 +110,7 @@ vi.mock('@/hooks/usePermissions', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/hooks/usePermissions')>();
   return {
     ...actual,
+    refreshBoardPermissions: workspace.refreshPermissions,
     usePermissions: () => ({
       preset: 'full_control',
       isLoading: false,
@@ -1349,9 +1366,7 @@ describe('CardModal', () => {
       );
 
       storeMock.updateCardInColumn.mockClear();
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(10_000);
-      });
+      await externalRevision();
       await flushMicrotasks();
 
       expect(apiMock.getCard).toHaveBeenCalledTimes(2);
@@ -1901,14 +1916,10 @@ describe('CardModal', () => {
         screen.getByRole('button', { name: 'Submit Validation (Approve)' }),
       ).toBeEnabled();
 
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(10_000);
-      });
+      await externalRevision();
       expect(apiMock.getCard).toHaveBeenCalledTimes(2);
 
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(10_000);
-      });
+      await externalRevision();
       expect(apiMock.getCard).toHaveBeenCalledTimes(3);
 
       currentRefresh.resolve(currentCard);
