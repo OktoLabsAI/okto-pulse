@@ -77,11 +77,21 @@ test('P08/U01/U04/U09: native board and Delivery show separate accessible metric
             summary: 'Capacity guard implemented in the observed revision.', text_truncated: false, obligation_refs: ['ac:capacity'], obligations_truncated: false,
             currentness: 'not_evaluated', payload: { execution_id: 'execution-capacity' } }] }
       : { board_id: 'b', spec_id: 's', edition: 1, version: 1, complete: true, allowed: false,
-        records: [{ id: 'record-capacity', payload: { card_id: 'c' } },
+        records: [{ id: 'record-capacity', kind: 'implementation', actor_id: 'fixture-author', created_at: task.created_at,
+          revoked: false, payload: { card_id: 'c', justification: 'Capacity guard implemented in the observed revision.' } },
           { id: 'waiver-capacity', kind: 'waiver', actor_id: 'fixture-reviewer', created_at: task.created_at, revoked: true,
             disposition: 'risk_accepted', payload: { justification: 'Temporary mock exception, subsequently revoked.', phase: 'test',
               bindings: [{ obligation_ref: 'ac:capacity', semantic_sha256: 'a'.repeat(64) }] } }],
-        candidates: [], implementations: [], rows: [], tests: [], rejected_record_ids: [], per_card: [] } });
+        candidates: [], implementations: [{ id: 'record-capacity', card_id: 'c', actor_id: 'fixture-author',
+          explanation: 'Capacity guard implemented in the observed revision.', bindings: [], contributions: [],
+          admitted_obligation_refs: ['ac:capacity'], ready_obligation_refs: ['ac:capacity'], executions: [{
+            execution_id: 'execution-capacity', target_id: 'target-capacity', source_ref: 'mock-source',
+            relative_path: 'capacity.py', result_revision: 'revision-1', current_accepted_execution: true,
+          }] }], rows: [{ obligation: { title: 'Capacity limit', binding: { obligation_ref: 'ac:capacity', semantic_sha256: 'a'.repeat(64) } },
+          implementation_ids: ['record-capacity'], test_ids: ['test-capacity'], implementation_waiver_ids: [], test_waiver_ids: [],
+          implementation_satisfied: true, test_satisfied: false }], tests: [{ id: 'test-capacity', card_id: 'test-card',
+          actor_id: 'fixture-verifier', scenario_id: 'capacity-boundary', result: 'failed', current_verified_run: true }],
+        rejected_record_ids: [], per_card: [] } });
     if (path.endsWith('/decision-reviews')) return route.fulfill({ json: {
       board_id: 'b', spec_id: 's', edition: 1, version: 1, review_revision: 'review-revision', complete: true,
       observation_authority: 'authenticated_reviewer_declaration', decisions: [],
@@ -226,6 +236,16 @@ test('P08/U01/U04/U09: native board and Delivery show separate accessible metric
   await expect(specDialog.getByRole('tab', { name: 'Implementation', exact: true })).toHaveAttribute('aria-selected', 'true');
   expect(await exceptionDetail.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
   await exceptionDetail.screenshot({ path: test.info().outputPath('readiness-native-exception.png') });
+  const obligation = specDialog.locator('details').filter({ has: page.locator('summary', { hasText: /^Capacity limit$/ }) });
+  await obligation.locator('summary').click();
+  await expect(obligation.getByText('Implementation author: fixture-author')).toBeVisible();
+  await expect(obligation.getByText('Verification author: fixture-verifier')).toBeVisible();
+  await expect(obligation.getByText(/capacity.py · mock-source @ revision-1/)).toBeVisible();
+  await expect(obligation.getByText('Result: failed · Current verified run')).toBeVisible();
+  expect(await obligation.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+  await page.setViewportSize({ width: 1280, height: 1000 });
+  await obligation.screenshot({ path: test.info().outputPath('readiness-proof-provenance.png') });
+  await page.setViewportSize({ width: 390, height: 844 });
   await specDialog.getByRole('button', { name: 'Close spec' }).click();
   await expect(exceptionLink).toBeFocused();
   await diagnosis.getByRole('button', { name: 'record-capacity', exact: true }).click();

@@ -50,8 +50,8 @@ export interface DeliveryEvidenceProjection {
     missing_card_ids?: string[];
     missing_criteria?: Array<[string, string]>;
   }>;
-  implementations: Array<{ id: string; card_id: string; explanation: string; bindings: Array<{ obligation_ref: string; semantic_sha256: string }>; contributions: Array<{ binding: { obligation_ref: string; semantic_sha256: string }; contribution: 'partial' | 'complete'; execution_ids: string[] }>; admitted_obligation_refs: string[]; ready_obligation_refs: string[]; executions: Array<{ execution_id: string; target_id: string; source_ref: string; relative_path: string; result_revision: string; symbol?: string | null; current_accepted_execution: boolean }> }>;
-  tests?: Array<{ id: string; card_id: string; scenario_id: string; result: string; current_verified_run?: boolean }>;
+  implementations: Array<{ id: string; card_id: string; actor_id?: string; explanation: string; bindings: Array<{ obligation_ref: string; semantic_sha256: string }>; contributions: Array<{ binding: { obligation_ref: string; semantic_sha256: string }; contribution: 'partial' | 'complete'; execution_ids: string[] }>; admitted_obligation_refs: string[]; ready_obligation_refs: string[]; executions: Array<{ execution_id: string; target_id: string; source_ref: string; relative_path: string; result_revision: string; symbol?: string | null; current_accepted_execution: boolean }> }>;
+  tests?: Array<{ id: string; card_id: string; actor_id?: string; scenario_id: string; result: string; current_verified_run?: boolean }>;
   candidates: Array<{ kind: 'implementation' | 'test'; id: string; card_id: string; card_version?: number; label: string }>;
   records: Array<{ id: string; kind: string; actor_id: string; created_at: string; revoked: boolean;
     disposition?: string; legacy_disposition_unspecified?: boolean;

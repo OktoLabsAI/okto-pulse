@@ -8,6 +8,8 @@ import { ObservabilityRequirementsTab } from '../ObservabilityRequirementsTab';
 import { TechnicalRequirementsTab } from '../TechnicalRequirementsTab';
 
 vi.mock('@/hooks/useCognitivePendingBadges', () => ({ useCognitivePendingBadges: () => ({ badges: {} }) }));
+const api = vi.hoisted(() => ({ getDecisionReviews: vi.fn() }));
+vi.mock('@/services/api', () => ({ useDashboardApi: () => api }));
 
 const currentSpec = (extra: Record<string, unknown> = {}): Spec => ({
   id: 'spec', board_id: 'board', functional_requirements: [

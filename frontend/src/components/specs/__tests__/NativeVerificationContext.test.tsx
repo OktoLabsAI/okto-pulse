@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { RequirementVerificationPanel } from '../RequirementVerificationPanel';
 import { DeliveryEvidencePanel } from '@/components/code-traceability/DeliveryEvidencePanel';
 import { CardResumePanel } from '@/components/code-traceability/CardResumePanel';
@@ -28,22 +28,41 @@ it('renders inherited responsibility, promoted IR pending work and partial authe
   </>);
   fireEvent.click(screen.getByRole('button', { name: 'Review requirement qualification' }));
   fireEvent.click(screen.getByText('Read accumulated delivery context'));
-  expect(await screen.findByText('Inherited from: fr')).toBeInTheDocument();
+  await screen.findByText('Inherited from: fr');
+  const rule = native.plan.items.find(row => row.requirement_type === 'business_rule')!;
+  fireEvent.click(screen.getByRole('heading', { name: rule.title }).closest('button')!);
+  expect(screen.getByText('Inherited from: fr')).toBeVisible();
   expect(screen.getByText('Planning does not require a passing run and does not grant delivery credit.')).toBeInTheDocument();
   for (const ir of native.promoted) {
-    expect(screen.getByText(new RegExp(ir.title + ' · ' + ir.id))).toBeInTheDocument();
+    const toggle = screen.getByRole('heading', { name: ir.title }).closest('button')!;
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(toggle);
+    const detail = document.getElementById(toggle.getAttribute('aria-controls')!)!;
+    const reference = within(detail).getByText('Requirement reference').parentElement!;
+    expect(within(reference).getByText(ir.id)).toBeVisible();
   }
   expect(await screen.findByText('Blocked')).toBeInTheDocument();
   expect(await screen.findByText(/Latest checkpoint by executor/)).toBeInTheDocument();
   expect(screen.getByText(/Progress recording is unavailable/)).toBeInTheDocument();
   expect(screen.getByText(/Workspace access and recovery are unknown/)).toBeInTheDocument();
   expect(screen.getAllByText('✓')).toHaveLength(6);
-  expect(screen.getByText('ts: passed; authentication current.')).toBeInTheDocument();
-  expect(screen.getByText('History of Test Card test-card')).toBeInTheDocument();
-  expect(screen.getByText('agent-1')).toBeInTheDocument();
-  expect(screen.getByText(/src\/file.py · source-main @ a{40} · execution/)).toBeInTheDocument();
+  const coverage = screen.getByTestId('delivery-coverage-table');
+  const functional = within(coverage).getByText('Block after five failures', { selector: 'summary' });
+  fireEvent.click(functional);
+  const proof = within(functional.closest('details')!);
+  expect(proof.getByText('Card: test-card · Scenario: ts')).toBeVisible();
+  expect(proof.getByText('Result: passed · Current verified run')).toBeVisible();
+  expect(proof.getByText('Implementation author: agent-1')).toBeVisible();
+  expect(proof.getByText('Verification author: agent-1')).toBeVisible();
+  expect(proof.getByText(/src\/file.py · source-main @ a{40} · execution/)).toBeVisible();
   for (const ir of native.promoted) {
-    expect(screen.getByText(ir.title + ': implementation pending, test pending.')).toBeInTheDocument();
+    const summary = within(coverage).getByText(ir.title, { selector: 'summary' });
+    const row = within(summary.closest('tr')!);
+    expect(row.getByTitle('No accepted proof')).toHaveTextContent('◌');
+    expect(row.getByTitle('Missing / stale')).toHaveTextContent('◌');
+    fireEvent.click(summary);
+    expect(row.getByText('No admitted implementation evidence.')).toBeVisible();
+    expect(row.getByText('No admitted verification evidence.')).toBeVisible();
   }
   expect(api.getRequirementVerification).toHaveBeenCalledTimes(1);
   expect(api.getDeliveryEvidence).toHaveBeenCalledTimes(1);

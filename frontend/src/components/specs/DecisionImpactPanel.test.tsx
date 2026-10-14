@@ -3,7 +3,7 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import { AuthenticatedFetchError } from '@/lib/authFetch';
 import type { DecisionImpactResponse } from './decisionImpactTypes';
 import type { Spec } from '@/types';
-const api = vi.hoisted(() => ({ getDecisionImpact: vi.fn() }));
+const api = vi.hoisted(() => ({ getDecisionImpact: vi.fn(), getDecisionReviews: vi.fn() }));
 vi.mock('@/services/api', () => ({ useDashboardApi: () => api }));
 vi.mock('@/hooks/useCognitivePendingBadges', () => ({ useCognitivePendingBadges: () => ({ badges: {} }) }));
 import { DecisionImpactPanel } from './DecisionImpactPanel';
@@ -28,7 +28,13 @@ function page(title: string, next: string | null = null): DecisionImpactResponse
       source_confirmed: true, graph_observed: true }] }] };
 }
 const props = { boardId: 'board', specId: 'spec', decisionId: 'decision', revision: '1', onOpenDecision: vi.fn() };
-beforeEach(() => { vi.clearAllMocks(); api.getDecisionImpact.mockResolvedValue(base); });
+beforeEach(() => {
+  vi.clearAllMocks();
+  api.getDecisionImpact.mockResolvedValue(base);
+  api.getDecisionReviews.mockResolvedValue({ board_id: 'board', spec_id: 'spec',
+    edition: 1, version: 1, review_revision: 'a'.repeat(64), complete: true,
+    observation_authority: 'authenticated_reviewer_declaration', decisions: [], history: [] });
+});
 
 it('labels KG57 shared-Card reach as potential even when its edge is observed', async () => {
   api.getDecisionImpact.mockResolvedValue(page('Other scenario'));

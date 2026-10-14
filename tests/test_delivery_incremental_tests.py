@@ -1,14 +1,16 @@
 """DEI-T25–27: signed results are durable before lifecycle delivery credit."""
 import pytest
 from copy import deepcopy
-import json
 from sqlalchemy import select, update
 
 from okto_pulse.community.adapters.sqlalchemy_models import Card, CardDeliveryEvidenceRecordRow, Spec
 from test_delivery_evidence_integration import ledger as _delivery_ledger, record, command, BOARD_ID, SPEC_ID
-from test_evidence_v2_adapter import _manifest, SCENARIO, SCENARIO_SHA256, ACTOR_ID
+from test_evidence_v2_adapter import SCENARIO, SCENARIO_SHA256, ACTOR_ID
+from okto_pulse.community.adapters import test_evidence as evidence_adapter
+from okto_pulse.community.adapters.external_test_runner import SCHEMA, validate_external_manifest
+from okto_pulse.community.adapters.sqlalchemy_models import ImplementationTargetExecutionRecordRow
 from okto_pulse.community.adapters.test_evidence import (
-    ProductExecutionObservation, run_manifest_and_build_evidence_v2, CommunityTestEvidenceWriteVerifier, CommunityEvidenceLedger,
+    ProductExecutionObservation, CommunityTestEvidenceWriteVerifier, CommunityEvidenceLedger,
 )
 from okto_pulse.core.ports.test_evidence import register_test_evidence_write_verifier
 from okto_pulse.core.models.delivery_evidence import CardDeliveryEvidenceBatchCommand
@@ -16,10 +18,17 @@ from okto_pulse.core.models.delivery_evidence import CardDeliveryEvidenceBatchCo
 ledger = _delivery_ledger
 
 
-async def signed_run(tmp_path, result="failed"):
+async def signed_run(tmp_path, session, result="failed", *, execution_id="execution"):
     # Reopen the existing installation ledger; preserve its key and old receipts.
     evidence_ledger = CommunityEvidenceLedger(evidence_root=tmp_path / "evidence")
-    (evidence_ledger.manifest_root / f"{result}.json").write_text(json.dumps(_manifest()), encoding="utf-8")
+    execution = await session.get(ImplementationTargetExecutionRecordRow, execution_id)
+    assert execution is not None
+    basis = dict(source_ref=execution.source_ref, revision=execution.result_declared_revision,
+                 runner_ref='pytest-delivery-incremental', test_ids=['tests.test_about.About.test_version'])
+    scope = dict(board_id=BOARD_ID, spec_id=SPEC_ID, scenario_id=SCENARIO['id'], scenario_sha256=SCENARIO_SHA256)
+    normalized = dict(schema_version=SCHEMA, purpose='test_scenario_evidence', **scope, execution_basis=basis)
+    validate_external_manifest(normalized, **scope)
+    manifest, canonical_ref = evidence_adapter._persist_inline_manifest(normalized, ledger=evidence_ledger)
 
     async def execute(*_):
         return ProductExecutionObservation(run_id=f"{result}-run", outcome=result,
@@ -27,10 +36,12 @@ async def signed_run(tmp_path, result="failed"):
             assertions=({"name": "about-version", "expected": "0.3.0",
                          "observed": "wrong" if result == "failed" else "0.3.0", "status": result},))
 
-    evidence = await run_manifest_and_build_evidence_v2(
-        manifest_ref=f"{result}.json", board_id=BOARD_ID, spec_id=SPEC_ID, scenario_id=SCENARIO["id"],
-        scenario_sha256=SCENARIO_SHA256, status=result, actor_id=ACTOR_ID,
-        executor=execute, ledger=evidence_ledger, environment="pytest",
+    # Sign the observed source/revision through the native issuer. A signature
+    # without an execution basis no longer qualifies a delivery association.
+    evidence = await evidence_adapter._execute_validated_manifest_and_build_evidence_v2(
+        manifest=manifest, canonical_ref=canonical_ref, normalized_manifest=normalized,
+        **scope, status=result, actor_id=ACTOR_ID,
+        executor=execute, ledger=evidence_ledger, environment="pytest", execution_basis=basis,
     )
     register_test_evidence_write_verifier(CommunityTestEvidenceWriteVerifier(ledger=evidence_ledger))
     return evidence_ledger, evidence
@@ -62,7 +73,7 @@ async def test_signed_passing_result_is_admitted_before_done_and_promotes_by_rea
 async def test_failed_signed_result_survives_successor_without_ever_receiving_credit(ledger, tmp_path):
     session, store, _ = ledger
     impl = await record(store, command())
-    _, evidence = await signed_run(tmp_path)
+    _, evidence = await signed_run(tmp_path, session)
     await session.execute(update(Card).where(Card.id == "test").values(status="in_progress"))
     await session.execute(update(Spec).values(test_scenarios=[{**SCENARIO, "status": "failed", "evidence": evidence}]))
     request = command("test", implementation_ids=[impl["id"]])
@@ -75,7 +86,7 @@ async def test_failed_signed_result_survives_successor_without_ever_receiving_cr
     assert "failed" in next(row["label"] for row in view["candidates"] if row["kind"] == "test")
     await session.execute(update(Card).where(Card.id == "test").values(status="done"))
     assert not (await store.projection(BOARD_ID, SPEC_ID))["allowed"]
-    _, success = await signed_run(tmp_path, "passed")
+    _, success = await signed_run(tmp_path, session, "passed")
     await session.execute(update(Spec).values(test_scenarios=[{**SCENARIO, "status": "passed", "evidence": success}]))
     saved = await record(store, command("test", implementation_ids=[impl["id"]], idempotency_key="successor"))
     assert await record(store, request) == {"id": failed["id"], "replayed": True}
@@ -93,7 +104,7 @@ async def test_later_failed_run_removes_passing_credit_before_new_binding(ledger
     impl = await record(store, command())
     passed = await record(store, command("test", implementation_ids=[impl["id"]]))
     assert (await store.projection(BOARD_ID, SPEC_ID))["allowed"]
-    _, evidence = await signed_run(tmp_path)
+    _, evidence = await signed_run(tmp_path, session)
     await session.execute(update(Spec).values(test_scenarios=[{**SCENARIO, "status": "failed", "evidence": evidence}]))
     view = await store.projection(BOARD_ID, SPEC_ID)
     assert not view["allowed"]
@@ -125,7 +136,7 @@ async def test_incremental_admission_remains_fail_closed(ledger, mutation):
 async def test_failed_result_uses_atomic_batch_and_same_replay_contract(ledger, tmp_path):
     session, store, _ = ledger
     impl = await record(store, command())
-    _, evidence = await signed_run(tmp_path)
+    _, evidence = await signed_run(tmp_path, session)
     await session.execute(update(Card).where(Card.id == "test").values(status="in_progress"))
     await session.execute(update(Spec).values(test_scenarios=[{**SCENARIO, "status": "failed", "evidence": evidence}]))
     await session.commit()
@@ -205,7 +216,7 @@ async def test_successor_execution_never_inherits_prior_bindings_or_test_credit(
         await record(store, command("test", implementation_ids=[second["id"]],
                                     obligation_refs=refs, idempotency_key="old-test-new-code"))
     if complete_scope:
-        _, evidence = await signed_run(tmp_path, "passed")
+        _, evidence = await signed_run(tmp_path, session, "passed", execution_id="execution-successor")
         await session.execute(update(Spec).values(test_scenarios=[
             {**SCENARIO, "status": "passed", "evidence": evidence}]))
         current_test = await record(store, command("test", implementation_ids=[second["id"]],

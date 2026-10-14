@@ -35,9 +35,9 @@ function ObligationEvidenceDetails({ data, row }: {
         return <div key={id} className="space-y-1 rounded border border-gray-200 p-2 dark:border-gray-700">
           <p className="break-all">Record: {id}</p>
           {proof ? <>
-            <p>Card: {proof.card_id}</p><p>{proof.explanation}</p>
+            <p>Card: {proof.card_id}</p><p>Implementation author: {proof.actor_id || 'Not available'}</p><p>{proof.explanation}</p>
             {proof.executions.map(execution => <p key={execution.execution_id} className="break-all">
-              {execution.relative_path} · Revision {execution.result_revision} · {execution.symbol || execution.execution_id}
+              {execution.relative_path} · {execution.source_ref} @ {execution.result_revision} · {execution.symbol || execution.execution_id}
               {' · '}{execution.current_accepted_execution ? 'Current accepted execution' : 'Not a current accepted execution'}
             </p>)}
           </> : <p>Record details unavailable in this projection.</p>}
@@ -53,6 +53,7 @@ function ObligationEvidenceDetails({ data, row }: {
         return <div key={id} className="space-y-1 rounded border border-gray-200 p-2 dark:border-gray-700">
           <p className="break-all">Record: {id}</p>
           {proof ? <><p>Card: {proof.card_id} · Scenario: {proof.scenario_id}</p>
+            <p>Verification author: {proof.actor_id || 'Not available'}</p>
             <p>Result: {proof.result} · {proof.current_verified_run ? 'Current verified run' : 'Current verification not established'}</p></>
             : <p>Record details unavailable in this projection.</p>}
         </div>;

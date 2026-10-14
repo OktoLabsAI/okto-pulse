@@ -70,13 +70,13 @@ it('expands only the selected obligation proofs, with implementation and verific
   const data = projection();
   data.rows[1].implementation_ids = ['other'];
   data.implementations = [
-    { id: 'impl', card_id: 'task-1', explanation: 'Implemented the guarded transaction', bindings: [], contributions: [],
+    { id: 'impl', card_id: 'task-1', actor_id: 'implementer', explanation: 'Implemented the guarded transaction', bindings: [], contributions: [],
       admitted_obligation_refs: [], ready_obligation_refs: [], executions: [{ execution_id: 'exec-1', target_id: 'target',
         source_ref: 'source', relative_path: 'services/reservations.py', result_revision: 'abc123', current_accepted_execution: true }] },
     { id: 'other', card_id: 'task-2', explanation: 'Unrelated proof', bindings: [], contributions: [],
       admitted_obligation_refs: [], ready_obligation_refs: [], executions: [] },
   ];
-  data.tests = [{ id: 'test', card_id: 'test-1', scenario_id: 'scenario-1', result: 'passed', current_verified_run: true }];
+  data.tests = [{ id: 'test', card_id: 'test-1', actor_id: 'verifier', scenario_id: 'scenario-1', result: 'passed', current_verified_run: true }];
   api.getDeliveryEvidence.mockResolvedValue(data);
   render(<DeliveryEvidencePanel boardId="b" specId="s" />);
   const title = await screen.findByText('Bindings live on the card ledger');
@@ -86,6 +86,9 @@ it('expands only the selected obligation proofs, with implementation and verific
   expect(title.closest('details')).toHaveAttribute('open');
   expect(screen.getByText('Implemented the guarded transaction')).toBeVisible();
   expect(screen.getByText(/services\/reservations.py/)).toBeVisible();
+  expect(screen.getByText(/source @ abc123/)).toBeVisible();
+  expect(screen.getByText('Implementation author: implementer')).toBeVisible();
+  expect(screen.getByText('Verification author: verifier')).toBeVisible();
   expect(screen.getByText(/Result: passed/)).toBeVisible();
   expect(screen.getByText('Unrelated proof')).not.toBeVisible();
   expect(api.getDeliveryEvidence).toHaveBeenCalledTimes(1);
