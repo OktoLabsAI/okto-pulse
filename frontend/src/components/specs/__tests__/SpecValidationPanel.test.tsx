@@ -320,6 +320,48 @@ describe('SpecValidationPanel lifecycle edition projection', () => {
     ).toHaveAttribute('data-state', 'needs_attention'));
   });
 
+  it('keeps unavailable planning authority distinct from a negative opinion and recovers on refresh', async () => {
+    const unavailable = {
+      state: 'unavailable', blocked_actions: ['promote_to_validated'],
+      components: [{
+        key: 'spec_validation', state: 'unavailable', mode: null, applicable: null,
+        native_result: null, result_ids: [], reason_codes: ['spec_validation_authority_invalid'],
+        message: null, next_action: null,
+      }],
+    };
+    apiMock.getValidationCycle.mockResolvedValue({ ...failedCycle, planning_readiness: unavailable });
+    renderPanel();
+    await screen.findByText('Planning readiness unavailable');
+    const summary = screen.getByTestId('spec-planning-summary');
+    expect(summary).toHaveTextContent('This does not count as approval');
+    fireEvent.click(within(summary).getByText('Review planning checks'));
+    fireEvent.click(within(summary).getByText('Spec quality'));
+    expect(within(summary).getByText('spec validation authority invalid')).toBeVisible();
+    expect(within(summary).queryByText('Required')).not.toBeInTheDocument();
+    expect(within(summary).queryByRole('button', { name: 'Review Spec quality' })).not.toBeInTheDocument();
+    // The aggregate neither invents a failed review nor removes native history.
+    expect(screen.getByTestId('validation-detail-current')).toBeVisible();
+    expect(screen.getByTestId('spec-validation-previous-toggle')).toBeVisible();
+
+    apiMock.getValidationCycle.mockResolvedValue({
+      ...failedCycle,
+      planning_readiness: {
+        state: 'blocked', blocked_actions: ['promote_to_validated'],
+        components: [{
+          ...unavailable.components[0], state: 'blocked', mode: 'blocking', applicable: true,
+          native_result: 'failed', result_ids: ['validation-2'], reason_codes: ['spec_validation_failed'],
+          next_action: 'submit_spec_validation',
+        }],
+      },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh validation cycle' }));
+    await screen.findByText('Planning needs attention');
+    expect(within(screen.getByTestId('spec-planning-summary')).getByText('Required')).toBeInTheDocument();
+    expect(within(screen.getByTestId('spec-planning-summary')).getByRole('button', {
+      name: 'Review Spec quality',
+    })).toBeInTheDocument();
+  });
+
   it('describes a legacy completed state as recorded instead of needing attention', async () => {
     apiMock.getValidationCycle.mockResolvedValue({
       ...failedCycle,
