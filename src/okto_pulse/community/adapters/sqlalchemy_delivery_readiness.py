@@ -149,7 +149,9 @@ class _BatchFacts(CommunityDeliveryEvidenceStore):
     async def _execution_proof(self, execution_id, scope, card):
         key = (execution_id, scope, card.id)
         if key not in self.proofs:
-            self.proofs[key] = await super()._execution_proof(execution_id, scope, card)
+            # Readiness paginates the complete detail after evaluation. The
+            # legacy summary cap must not discard checkpoint identities here.
+            self.proofs[key] = await super()._execution_proof(execution_id, scope, card, progress_limit=None)
         return self.proofs[key]
 
     async def _execution_plan(self, spec):

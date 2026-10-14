@@ -239,7 +239,7 @@ class CommunityDeliveryEvidenceStore:
     async def _related_get(self, model, identity):
         return await self.session.get(model, identity)
 
-    async def _execution_proof(self, execution_id, scope, card):
+    async def _execution_proof(self, execution_id, scope, card, *, progress_limit=20):
         """The original receipt/head validator, shared by single and composed proofs."""
         execution = await self._get(Execution, execution_id)
         if execution is None or execution.board_id != scope.board_id or execution.card_id != card.id:
@@ -311,8 +311,8 @@ class CommunityDeliveryEvidenceStore:
             relative_path=execution.actual_relative_path or "",
             current_accepted_execution=bool(valid) and not blocking_progress_ids,
             symbol=execution.actual_qualified_symbol,
-            blocking_progress_ids=blocking_progress_ids[:20],
-            blocking_progress_truncated=len(blocking_progress_ids) > 20,
+            blocking_progress_ids=blocking_progress_ids[:progress_limit],
+            blocking_progress_truncated=progress_limit is not None and len(blocking_progress_ids) > progress_limit,
             observed_at=receipt.observed_at if receipt else None,
             rejection_reasons=tuple(rejection_reasons),
         )

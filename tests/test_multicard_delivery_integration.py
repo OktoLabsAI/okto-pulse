@@ -9,7 +9,7 @@ from fastapi import FastAPI
 import httpx
 import pytest
 import pytest_asyncio
-from sqlalchemy import insert, select, update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from okto_pulse.community.adapters.sqlalchemy_models import Card, Spec, CardDeliveryEvidenceRecordRow
@@ -47,7 +47,7 @@ async def ledger(base_ledger):
 
 async def seed_authorization(session):
     now = datetime.now(timezone.utc)
-    _, request, receipt, _, workspace = _attestation_bundle(now, subject_id="authorization")
+    opened, request, receipt, head, workspace = _attestation_bundle(now, subject_id="authorization")
     workspace = replace(workspace, declared_revision="a" * 40)
     request = replace(request, id="request-auth", board_id=BOARD, idempotency_key="request-auth",
         challenge_token_hash="e" * 64)
@@ -60,8 +60,23 @@ async def seed_authorization(session):
             workspace_state=workspace, omission_manifest=()))
     session.add(Card(id="authorization", board_id=BOARD, spec_id=SPEC, title="Authorization",
         status="done", card_type="normal", created_by="owner"))
-    await session.execute(insert(delivery.CodeInvestigationRequestRow).values(**delivery._request_row(request)))
-    await session.execute(insert(delivery.CodeInvestigationReceiptRow).values(**delivery._receipt_row(receipt)))
+    await session.flush()
+    from okto_pulse.community.adapters.sqlalchemy_code_traceability import CommunitySqlAlchemyCodeInvestigationStore
+    origin = CommunitySqlAlchemyCodeInvestigationStore(session)
+    current = await origin.get_current_head(board_id=BOARD, source_ref=receipt.source_ref)
+    if current:
+        request = replace(request, expected_head_generation=current.generation,
+            expected_predecessor_receipt_id=current.latest_receipt_id)
+        opened = replace(opened, expected_head_generation=current.generation,
+            expected_predecessor_receipt_id=current.latest_receipt_id)
+        receipt = replace(receipt, generation=current.generation + 1,
+            predecessor_receipt_id=current.latest_receipt_id)
+        head = replace(head, generation=current.generation + 1, revision=current.revision + 1)
+    await origin.create_request(replace(opened, id=request.id, board_id=BOARD,
+        idempotency_key=request.idempotency_key, challenge_token_hash=request.challenge_token_hash))
+    await origin.consume_request_append_receipt_and_advance_head(request=request, receipt=receipt,
+        head=replace(head, board_id=BOARD, current_receipt_id=receipt.id, latest_receipt_id=receipt.id),
+        expected_head_revision=current.revision if current else None)
     session.add(delivery.ImplementationTargetRow(id="target-auth", board_id=BOARD, card_id="authorization",
         source_ref=receipt.source_ref, selector_kind="file", relative_path_hint="src/auth.py", role="modify",
         intent="Enforce authorization", required=True, source_spec_version=1, lifecycle_status="active",

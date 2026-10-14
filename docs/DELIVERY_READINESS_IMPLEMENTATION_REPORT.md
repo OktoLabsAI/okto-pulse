@@ -738,3 +738,33 @@ P07 requirement evidence:
 - P07.3: compact mutation envelopes preserve assessed facts and supply a fresh readiness query without treating the assessment fingerprint as a read cursor snapshot. Native REST/MCP error route parity and actual closeout/transaction tests passed.
 - P07.4: action references and argument fields validate against the live tool registry and reference docs; catalog byte drift gate passes. Restore actions now route to readiness explicitly.
 P07 implementation/contract evidence is established; keep phase IN_PROGRESS until the required P02-P06 named-case acceptance reconciliation is complete. Resume that reconciliation against the normative matrix, then P08-P11 in order. No frontend modification, production restart/reset, data mutation, deployment or release in this checkpoint. Browser artifacts remain local.
+
+
+## M15/R01/R02/V22/V24 acceptance gaps and native provenance - 2026-10-14
+
+Starting pushed pair: Core 1a7bedaa / Community bcd5bf8c. Previous goal turn made verified progress by restoring all eight ZERO budgets and correcting public readiness recovery queries.
+
+Reconciled targeted P02-P07 acceptance against actual tests and found two concrete information gaps, without changing scoring, authority or gate semantics:
+- M15: canonical FR-to-BR allocation/proof already worked, but readiness omitted the qualified contribution path. ReadinessFact now exposes paired source_obligation_ref/source_scope_sha256 with the destination obligation, contribution digest and Card. Closed validation rejects incomplete provenance. Diagnostics consume the existing canonical contribution sources, never create another Card, test or allocation.
+- R02: material checkpoints already invalidated proof correctly, but readiness omitted their record IDs. Observed facts/evidence/pinpoints now identify the actual checkpoint and affected Target/execution. The Community batch reader retains the complete internal checkpoint identity set for detail pagination. Existing legacy reads keep their 20-entry summary cap; the native invalidation predicate is shared and unchanged.
+- New native-schema V22/V24 tests prove that an independent Target/source-head advance and an expired investigation observed with a later read clock do not remove valid historical delivery proof or rewrite records.
+- New R01/R02 tests distinguish narrative-only notes from material changes, preserve payloads, verify SELECT-only reads and recover all 25 checkpoint IDs beyond the legacy summary cap.
+
+Reproduction and fixture investigation:
+- Initial acceptance run: V22/V24 passed; M15 stopped at code_investigation_receipt_request_invalid because the old multi-Card fixture inserted receipts directly. Updated its seed to use the actual request-consumption/receipt-append/head-CAS adapter. An intermediate retry detected a real existing source head; fixture now supplies its observed generation/predecessor/revision. No database constraint was relaxed.
+- Once the fixture was valid, M15 failed specifically because the derivation path was missing.
+- R02 failed specifically because the checkpoint/Target pair was absent from observed diagnostic facts.
+- Both regressions pass after the targeted changes. The broader existing multi-Card suite passes with the native fixture writer.
+
+Validation:
+- Paired installed/source byte parity: 861 Core / 323 Community files in isolated environment.
+- First Core diagnostics/contracts/paging/access: 90 passed in 10.32s.
+- Community new acceptance + existing multi-Card integration: 18 passed in 54.18s.
+- Community new progress readiness + REST/MCP surfaces + existing progress-currentness: 21 passed in 55.79s.
+- Final Core contracts/native diagnostics/paging/access/shared evaluation: 117 passed in 13.43s.
+- Ruff and git diff --check passed both repositories.
+- Official paired source closure: 8962 ownership rows, zero findings, all eight budgets ZERO; exact README projections regenerated and validated. All handles terminal. Final wheel acceptance is still P11.
+
+Evidence mapping added by this checkpoint: M15 -> test_delivery_readiness_acceptance.py::test_M15_inherited_business_rule_preserves_path_and_reuses_actual_proof; V22/V24 -> its currentness test; R01/R02/S07 -> test_delivery_readiness_progress.py; R02 domain detail -> test_delivery_readiness_native_diagnostics.py; M15 closed shape -> test_delivery_readiness_contracts.py. The initial matrix NOT_RUN list is not a claim that these cases remain unexecuted; these concrete results supersede it for the identified backend assertions only. UI rendering remains unimplemented.
+
+Resume with P08: summarized board projection, shared client/types and two distinct readiness bars. P02-P07 implementation has focused acceptance evidence; retain the remaining full named-case reconciliation, integrated regressions and performance verification in P11 as the plan requires, rather than making additional pre-UI audits a new milestone. Do not mark the full plan complete. No frontend build/production install/restart/reset, data mutation, deployment or release in this checkpoint. Browser artifacts remain local.
