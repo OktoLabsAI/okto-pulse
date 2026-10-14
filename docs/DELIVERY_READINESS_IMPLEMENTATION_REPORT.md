@@ -21,7 +21,7 @@ Historical evidence must not be rewritten. Gates and diagnostics must share fact
 | P01 | Contratos e modelo factual compartilhado | COMPLETE |
 | P02 | Inventário, aplicabilidade e métricas | IN_PROGRESS |
 | P03 | Resultados de verificação e bases | IN_PROGRESS |
-| P04 | Diagnóstico e ações | PENDING |
+| P04 | Diagnóstico e ações | IN_PROGRESS |
 | P05 | Adapter, snapshot e paginação | PENDING |
 | P06 | Gates, transições e autorização de override | PENDING |
 | P07 | REST/MCP e erros | PENDING |
@@ -274,3 +274,16 @@ Validation (all Python commands prefixed rtk proxy, via PULSE_REFACTOR/.validati
 - Ruff passed. Official source closure: 8,863 ownership rows, zero findings, exact paired README projections, all eight budgets ZERO. Explicit final wheel closure remains P11. All test/audit processes are terminal; counts overlap and must not be summed as distinct requirements. No production reinstall, data change, deploy or release.
 
 Resume: factual producers now exist for Spec/normal/bug obligations and Test scenarios. Do not reimplement these or restart P00. P02/P03 remain IN_PROGRESS for the complete named-case audit and residual typed-rejection coverage; full delivery state/gate/diagnostic assertions are not yet proved. Reconcile the M01-M24/V01-V24 evidence against the plan (especially exact native invalidation causes and Decision dependency detail), then implement P04's finite 26-reason/14-action registry, grouping and dependency DAG from these shared assessments. P05-P11, G07 override authority, U05 DoD rendering, batch consistency/cursors/byte limits, all REST/MCP/UI consumers and final 96-case/15-invariant/performance/wheel verification remain mandatory. No completion claim for the full goal.
+
+## User-requested checkpoint: P04 diagnostic draft — 2026-10-13
+
+Official paired source closure: 8,871 ownership rows, zero findings, eight architecture budgets ZERO, exact regenerated README projections. Final wheel closure remains P11.
+
+User requested commit and push of pending work. Previous pushed pair: Core 088c23bb / Community d2777122.
+Preserved the new, not-yet-integrated Core domain module delivery_diagnostics.py: closed 26-reason/14-action registry, immutable cause/action data, deterministic grouping and dependency graph draft. It does not execute actions, change authority, update metrics or expose a new API. This is a work-in-progress checkpoint, not completion of P04 or the plan.
+
+Validation: Ruff passed for the new module. Source import and registry structure check passed (26 reasons / 14 actions). Existing readiness contract and metric regression suites passed: 50 tests in 9.21s, using run_readiness_tests.py with isolated installed/source byte parity (855 Core / 321 Community Python files). These regressions do not establish correctness of the new diagnostic graph; dedicated diagnostic tests remain pending. No frontend or production installation was changed.
+
+Resume here: review and test the draft before integrating it. Cover canonical grouping, source/base identity, deterministic ordering, permission-aware availability, missing/null arguments, shared actions across dependencies, exact cycles and downstream impacts, bounded graph expansion, and the three-action limit. Validate the registered tool names against the native MCP registry. Connect the shared factual assessment to causes, evidence, expected/observed facts and pinpoints without a second evaluator. Review intrinsic-state validation and dependency indexing/performance. P02/P03 remain IN_PROGRESS; P04 is now IN_PROGRESS; P05-P11 and all previously documented acceptance gaps remain mandatory.
+
+Generated local browser captures and test logs under Community .playwright-cli/ and output/ remain local, outside the source checkpoint. No data reset, release, deployment or runtime restart was performed.
