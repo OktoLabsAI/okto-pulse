@@ -26,7 +26,7 @@ it.each(['normal', 'bug', 'test'] as const)('U01: %s cover and Delivery share ba
   const verification = screen.getAllByRole('progressbar', { name: 'Verification' });
   implementation.forEach((bar, i) => {
     expect(bar).toHaveAttribute('aria-valuenow', '100');
-    expect(bar).toHaveAttribute('aria-valuetext', '100% · 8/8 applicable obligations');
+    expect(bar).toHaveAttribute('aria-valuetext', '100%, 8 of 8 applicable obligations');
     expect(verification[i]).toHaveAttribute('aria-valuenow', '75');
     expect(bar.parentElement).not.toBe(verification[i].parentElement);
     expect(bar).toHaveStyle({ width: '100%' }); expect(verification[i]).toHaveStyle({ width: '75%' });
@@ -64,7 +64,7 @@ it('Test Card shows N/A implementation and scenario counts with failure text eve
   value.verification.counts_by_state.missing = 0; value.delivery_state = 'verification_failed';
   render(<DeliveryReadinessView value={value} />);
   expect(screen.queryByRole('progressbar', { name: 'Implementation' })).not.toBeInTheDocument();
-  expect(screen.getByRole('progressbar', { name: 'Verification' })).toHaveAttribute('aria-valuetext', '75% · 6/8 applicable scenarios');
+  expect(screen.getByRole('progressbar', { name: 'Verification' })).toHaveAttribute('aria-valuetext', '75%, 6 of 8 applicable scenarios');
   expect(screen.getByText('Execution complete · failures found')).toBeVisible();
   expect(screen.getByText('Failed or conflicting evidence')).toBeVisible();
 });

@@ -11,6 +11,12 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Added
 
+- Separate implementation and verification bars on normal, Bug and Test Cards
+  and Specs, with current proof counters and native lifecycle status. The
+  expandable readiness diagnosis links to exact evidence, explains missing work
+  and prioritizes reuse of existing proof. Reads use a consistent, authorized
+  batch snapshot with bounded REST/MCP pages and no writes.
+
 - KG Health now exposes the board's historical graph-recovery status and
   a guarded control to stop a live legacy backfill. Stopping affects only live
   `historical_backfill` queue rows and preserves graph data already committed
@@ -70,6 +76,12 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   in the report panel while the audited operation is in flight.
 
 ### Changed
+
+- Official UI consumers use `delivery_readiness` (`delivery-readiness/v1`,
+  `metrics_version=2`). The deprecated `delivery_completeness` maturity contract
+  remains available to existing consumers and is never translated into the new
+  verification percentage. An incompatible backend produces an explicit
+  unavailable state; historical evidence is not rewritten.
 
 - Grafx read-only execution now uses its bounded autocommit door for single statements and its
   identity-revalidated lexical transaction door for paired same-snapshot reads, avoiding repeated

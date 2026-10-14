@@ -16,6 +16,8 @@ function Metric({ label, value, loading, compact }: { label: string; value?: Rea
   const text = loading ? 'Loading…' : known ? `${value.percent}%` : value?.status === 'not_applicable' ? 'Not applicable' : 'Unable to evaluate';
   const count = known ? `${value.satisfied}/${value.applicable}` : null;
   const detail = `${text}${count ? ` · ${count} applicable ${unit}` : ''}`;
+  // Read the count as words; the visual slash/separator is not spoken context.
+  const accessibleValue = `${text}${known ? `, ${value.satisfied} of ${value.applicable} applicable ${unit}` : ''}`;
   const failure = !!value && (value.counts_by_state.failed > 0 || value.counts_by_state.conflict > 0);
   return <div className={`min-w-0 ${compact ? 'grid h-[62px] grid-rows-[24px_10px_28px]' : 'space-y-1.5 rounded-lg bg-gray-50 p-4 dark:bg-gray-900/60'}`}>
     <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-2 gap-y-1">
@@ -25,7 +27,7 @@ function Metric({ label, value, loading, compact }: { label: string; value?: Rea
     {loading ? <div aria-hidden="true" className="h-2.5 rounded-full bg-gray-200 motion-safe:animate-pulse dark:bg-gray-700" />
       : known ? <div className="h-2.5 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
         <div role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={value.percent!}
-          aria-valuetext={detail} className={`h-full rounded-full motion-safe:transition-[width] ${label === 'Implementation' ? 'bg-sky-500' : 'bg-emerald-500'}`}
+          aria-valuetext={accessibleValue} className={`h-full rounded-full motion-safe:transition-[width] ${label === 'Implementation' ? 'bg-sky-500' : 'bg-emerald-500'}`}
           style={{ width: `${value.percent}%` }} />
       </div> : compact ? <span role="status" className="sr-only">{detail}</span> : <p role="status" className="text-gray-500 dark:text-gray-400">{value?.status === 'not_applicable' ? 'No applicable work in this phase.' : 'Current proof could not be evaluated.'}</p>}
     {!loading && value && <div className={`flex flex-wrap gap-x-2 text-gray-500 dark:text-gray-400 ${compact ? 'row-start-3 content-start pt-1' : ''}`}>

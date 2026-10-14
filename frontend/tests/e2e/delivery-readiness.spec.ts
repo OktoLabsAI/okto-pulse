@@ -143,7 +143,7 @@ test('P08/U01/U04/U09: native board and Delivery show separate accessible metric
   const implementation = cover.getByRole('progressbar', { name: 'Implementation' });
   const verification = cover.getByRole('progressbar', { name: 'Verification' });
   await expect(implementation).toHaveAttribute('aria-valuenow', '100');
-  await expect(verification).toHaveAttribute('aria-valuetext', '75% · 6/8 applicable obligations');
+  await expect(verification).toHaveAttribute('aria-valuetext', '75%, 6 of 8 applicable obligations');
   const blue = await implementation.boundingBox(), green = await verification.boundingBox();
   expect(blue!.y + blue!.height).toBeLessThan(green!.y);
   expect(await cover.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);

@@ -33,22 +33,25 @@ test('installed SPA shows accepted native proof without granting missing IR cove
   const metrics = modal.getByRole('region', { name: 'Delivery readiness', exact: true });
   await expect(metrics.getByRole('progressbar', { name: 'Implementation' })).toHaveAttribute('aria-valuenow', '42');
   await expect(metrics.getByRole('progressbar', { name: 'Verification' })).toHaveAttribute('aria-valuenow', '42');
+  for (const label of ['Implementation', 'Verification']) {
+    await expect(metrics.getByRole('progressbar', { name: label })).toHaveAttribute('aria-valuetext', '42%, 3 of 7 applicable obligations');
+  }
   // U09: inspect the browser accessibility tree consumed by assistive
   // technology, not only the presence of ARIA attributes in the DOM.
   const accessibility = await page.context().newCDPSession(page);
   await accessibility.send('Accessibility.enable');
   const tree = await accessibility.send('Accessibility.getFullAXTree');
   const bars = tree.nodes.filter(node => !node.ignored && node.role?.value === 'progressbar');
+  await test.info().attach('installed-readiness-accessibility', {
+    body: JSON.stringify(bars, null, 2), contentType: 'application/json',
+  });
   for (const label of ['Implementation', 'Verification']) {
     const bar = bars.find(node => node.name?.value === label && node.value?.value === 42);
     expect(bar, `${label} must expose its current value to assistive technology`).toBeDefined();
     const properties = Object.fromEntries(bar!.properties!.map(property => [property.name, property.value.value]));
     expect(properties).toMatchObject({ valuemin: 0, valuemax: 100,
-      valuetext: '42% · 3/7 applicable obligations' });
+      valuetext: '42%, 3 of 7 applicable obligations' });
   }
-  await test.info().attach('installed-readiness-accessibility', {
-    body: JSON.stringify(bars, null, 2), contentType: 'application/json',
-  });
   await accessibility.detach();
   await metrics.screenshot({ path: test.info().outputPath('installed-readiness-metrics.png') });
   await expect(modal.getByText('Blocked', { exact: true })).toBeVisible();
