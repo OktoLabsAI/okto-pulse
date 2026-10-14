@@ -1,5 +1,6 @@
 """Diagnostic details from actual native SQLite rows and signed reports."""
 from copy import deepcopy
+from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy import select
@@ -7,6 +8,7 @@ from sqlalchemy import select
 import test_delivery_evidence_integration as delivery
 from test_delivery_readiness_verification import prepare_reports
 from okto_pulse.community.adapters.sqlalchemy_models import Card, CardDeliveryEvidenceRecordRow
+from okto_pulse.community.adapters.sqlalchemy_delivery_readiness import CommunityDeliveryReadinessReader
 from okto_pulse.core.domain.delivery_assessment import assess_obligation_delivery, assess_test_delivery, aggregate_delivery_metrics
 from okto_pulse.core.models.delivery_evidence import CardDeliveryEvidenceInput
 from okto_pulse.core.services.delivery_readiness_diagnostics import (
@@ -64,3 +66,32 @@ async def test_signed_wrong_base_details_show_actual_expected_and_observed_sourc
         assert cause.origin.expected_bases != cause.origin.observed_bases
     assert all(a.kind == 'execute_verification' for a in projection.graph.actions)
     assert aggregate_delivery_metrics(assessment).verification.percent == 0
+
+
+@pytest.mark.parametrize('method', ['inspection', 'static_analysis', 'demonstration'])
+@pytest.mark.parametrize('outcome', [None, 'passed'])
+async def test_batch_procedure_becomes_external_guidance_without_executing_or_writing(ledger, tmp_path, method, outcome):
+    session, _, _, _, scenarios = await prepare_reports(ledger, tmp_path, method, [outcome], mismatch='revision')
+    before = deepcopy([(r.id, r.payload) for r in await session.scalars(select(CardDeliveryEvidenceRecordRow))])
+    await session.rollback()
+    class Clock:
+        def now(self):
+            return datetime.now(timezone.utc)
+    batch = await CommunityDeliveryReadinessReader(session.bind, clock=Clock()).load(
+        board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID, card_id='test')
+    assessment = assess_test_delivery(batch.facts, card_id='test', scenario_ids=(scenarios[0]['id'],))
+    projection = compose_delivery_diagnostics(assessment, batch.facts, procedures=batch.scenarios,
+        spec_assessment=assess_obligation_delivery(batch.facts))
+    assert projection.graph.actions
+    for action in projection.graph.actions:
+        dto = render_diagnostic_action(action)
+        assert dto.kind == 'execute_verification' and dto.state == 'ready'
+        assert dto.execution_surface == 'external_agent' and dto.pulse_tool is None
+        procedure, = dto.arguments['scenarios']
+        assert procedure == {key: scenarios[0][key] for key in ('title', 'given', 'when', 'then', 'verification_method')} | {
+            'scenario_id': scenarios[0]['id'], 'criterion_ids': scenarios[0]['linked_criteria']}
+        bases = dto.arguments['implementation_bases']
+        assert bases and all(b['revision'] == 'a' * 40 for b in bases)
+        assert all(b['execution_id'] == 'execution' for b in bases)
+    assert [(r.id, r.payload) for r in await session.scalars(select(CardDeliveryEvidenceRecordRow))] == before
+    assert not session.new and not session.dirty and not session.deleted
