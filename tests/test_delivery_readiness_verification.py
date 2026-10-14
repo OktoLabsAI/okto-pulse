@@ -11,7 +11,7 @@ from sqlalchemy import select, update
 
 import test_delivery_evidence_integration as delivery
 from okto_pulse.community.adapters.sqlalchemy_models import (
-    Card, ImplementationTargetExecutionRecordRow, Spec,
+    Card, CardDeliveryEvidenceRecordRow, ImplementationTargetExecutionRecordRow, Spec,
 )
 from okto_pulse.community.adapters.test_evidence import (
     CommunityEvidenceLedger, CommunityTestEvidenceWriteVerifier,
@@ -123,3 +123,51 @@ async def test_complementary_failure_cannot_be_hidden_by_pass_or_missing_binding
     projected = await store.projection(delivery.BOARD_ID, delivery.SPEC_ID)
     assert not projected["allowed"], "A passing complementary scenario must not mask a required failure"
     assert all(not row["test_satisfied"] for row in projected["rows"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ledger", ["native_schema"], indirect=True)
+async def test_valid_complementary_result_requires_binding_without_another_run(ledger, tmp_path):
+    session, store, refs, implementation, scenarios = await prepare_reports(
+        ledger, tmp_path, "inspection", ["passed", "passed"])
+    await delivery.record(store, delivery.command("test", idempotency_key="first-scenario",
+        scenario_id=scenarios[0]["id"], obligation_refs=refs,
+        implementation_ids=[implementation["id"]]))
+    await session.commit()
+    spec = await session.get(Spec, delivery.SPEC_ID, populate_existing=True)
+    original_receipt = spec.test_scenarios[1]["evidence"]["execution_receipt"]
+    assert not (await store.projection(delivery.BOARD_ID, delivery.SPEC_ID))["allowed"]
+    await delivery.record(store, delivery.command("test", idempotency_key="second-scenario",
+        scenario_id=scenarios[1]["id"], obligation_refs=refs,
+        implementation_ids=[implementation["id"]]))
+    await session.commit()
+    assert (await store.projection(delivery.BOARD_ID, delivery.SPEC_ID))["allowed"]
+    spec = await session.get(Spec, delivery.SPEC_ID, populate_existing=True)
+    assert spec.test_scenarios[1]["evidence"]["execution_receipt"] == original_receipt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ledger", ["native_schema"], indirect=True)
+async def test_V04_native_signed_retry_supersedes_failure_without_erasing_history(ledger, tmp_path):
+    session, store, refs, implementation, scenarios = await prepare_reports(
+        ledger, tmp_path, "inspection", ["failed"])
+    previous = await delivery.record(store, delivery.command("test", idempotency_key="failed-attempt",
+        scenario_id=scenarios[0]["id"], obligation_refs=refs,
+        implementation_ids=[implementation["id"]]))
+    await session.commit()
+    assert not (await store.projection(delivery.BOARD_ID, delivery.SPEC_ID))["allowed"]
+    # The real issuer authenticates a new outcome; Spec evidence supplies the
+    # native current pointer. Existing delivery rows are never rewritten.
+    _, _, _, replayed_implementation, _ = await prepare_reports(
+        ledger, tmp_path, "inspection", ["passed"])
+    assert replayed_implementation["id"] == implementation["id"]
+    current = await delivery.record(store, delivery.command("test", idempotency_key="passed-retry",
+        scenario_id=scenarios[0]["id"], obligation_refs=refs,
+        implementation_ids=[implementation["id"]]))
+    await session.commit()
+    projected = await store.projection(delivery.BOARD_ID, delivery.SPEC_ID)
+    assert projected["allowed"]
+    assert all(tuple(row["test_ids"]) == (current["id"],) for row in projected["rows"])
+    old = await session.get(CardDeliveryEvidenceRecordRow, previous["id"], populate_existing=True)
+    assert old.payload["test_result"] == "failed"
+    assert previous["id"] in projected["rejected_record_ids"]

@@ -42,6 +42,7 @@ from okto_pulse.core.domain.delivery_evidence import (
 )
 from okto_pulse.core.domain.enums import CardType, CardStatus, TestScenarioStatus
 from okto_pulse.core.domain.execution_contract import execution_contract
+from okto_pulse.core.domain.verification_plan import required_verification_scenarios
 from okto_pulse.core.domain.verification_report import (
     parse_verification_report, verification_report_passing_criteria, verification_report_source_issue,
 )
@@ -135,7 +136,8 @@ class CommunityDeliveryEvidenceStore:
             tests.append(ScopedTestFact(fact, tuple(scenario.get('linked_criteria') or ()),
                 scenario.get('verification_method') or '', passing))
         return replace(snapshot, complete=snapshot.complete and plan.complete,
-            effective_context=EffectiveDeliveryContext(inventory, scoped, tuple(tests), supported_test_verification_methods()))
+            effective_context=EffectiveDeliveryContext(inventory, scoped, tuple(tests), supported_test_verification_methods(),
+                required_scenarios=required_verification_scenarios(plan.qualification)))
 
     async def _get(self, model, identity):
         if identity is None:
