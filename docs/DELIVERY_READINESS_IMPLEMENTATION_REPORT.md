@@ -634,3 +634,23 @@ Validation through the paired isolated run_readiness_tests.py wrapper, with sour
 - Ruff and source closure passed: 8931 ownership rows, zero findings, all eight architecture budgets ZERO; exact README projections regenerated. All test/audit handles terminal.
 
 P06 remains IN_PROGRESS. Next inspect and compose the native critical-context read guard without its audit writer; qualify missing report/learning inputs explicitly and finish historical current qualification and real transition acceptance. Remaining P02-P05 audits and P07-P11 scope are unchanged. No frontend or production runtime/data modification.
+
+## P06 source provenance and critical-context preview - 2026-10-14
+
+Starting pushed pair: Core 1664d97a / Community fa53e7cd. Extracted evaluate_critical_context from the existing mutation wrapper: both paths use the same FullContextCriticalActionGuard and default public-port resolvers. The mutation wrapper still records its native success/denial audit; readiness calls only the read evaluator. Unavailable full context is not_evaluated without private error prose or a manufactured negative judgment. The native context fingerprint joins the snapshot identity; resolution time and latency do not.
+
+SpecService.validate_transition_source_context now contains the unchanged advancing-transition provenance/manifest rule extracted from move_spec. Readiness calls it before the other Spec completion checks. Missing context, a mismatched digest and foreign lineage produce the same native code without changing delivery proof. Test fixtures for already advancing Specs now explicitly create their native frozen source identity.
+
+Inspection of move_spec confirms that source, code-traceability, critical-context and shared completion checks cover its current read prerequisites for Done; delivery proof remains separately assessed, and the writer still reloads/rechecks under its fence. A successful Spec native preview now reports allowed with zero other blockers. This is informational, never a write authorization token. Cards still report not_evaluated when their transition report is absent. Historical Done qualification and the remaining Card report/learning paths are not claimed complete.
+
+Validation via run_readiness_tests.py with isolated installed/source parity (859 Core / 323 Community):
+- Core critical-context/lifecycle/retirement: 48 passed in 12.04s.
+- Community native critical-context/authorization/policy: 50 passed in 127.88s.
+- Core source-lineage/transition-parity/critical-context/lifecycle: 112 passed in 26.15s.
+- Initial broader Community run: 54 passed / 1 failed in 153.55s. The missing-context fixture violated the schema pairing rule by clearing only delivery_context. Corrected it to clear both context/provenance and manifest/digest with SQL NULL; schema guards and production gates were preserved.
+- Final Core command: core -q tests/test_delivery_readiness_lifecycle.py tests/test_delivery_readiness_state.py tests/test_allowed_transitions_mutation_parity_regressions.py tests/test_board_governance_critical_context_guard.py --tb=short --show-capture=no: 104 passed in 18.33s.
+- Final Community command: community -q tests/test_delivery_readiness_source_context.py tests/test_delivery_readiness_critical_context.py tests/test_delivery_readiness_authorization.py tests/test_delivery_readiness_policy.py tests/test_delivery_readiness_traceability.py --tb=short --show-capture=no: 55 passed in 137.12s.
+- Native-schema critical-context cases verify stable/changed fingerprints, disabled policy, missing context, and SELECT-only execution with no pending ORM writes. Source cases compare the actual native prerequisite and readiness, retaining I/V=100 with status unchanged.
+- Ruff and git diff --check passed. Final official paired source closure: 8932 ownership rows, zero findings, eight budgets ZERO; README projections regenerated. All handles terminal. P11 final wheel acceptance remains pending.
+
+Resume at remaining P06 Card report/learning input diagnostics and historical Done current qualification. Successful Spec preview orchestration is tested, but positive full native closeout and real transition race/rollback acceptance still require their complete evidence. Finish remaining earlier named-case/performance audits before closing the prerequisite milestones, then P07-P11 as already planned. No production reinstall/restart/reset, frontend modification, deployment or release.

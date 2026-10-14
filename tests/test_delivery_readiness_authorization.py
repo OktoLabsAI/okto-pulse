@@ -29,6 +29,20 @@ async def setup(session):
     from okto_pulse.community.adapters.relational_application import CommunityRelationalApplicationAdapter
     register_application_persistence_port(CommunitySqlAlchemyApplicationPersistence())
     register_relational_application_adapter(CommunityRelationalApplicationAdapter())
+    # These fixtures exercise an already advancing Spec, so supply the same
+    # native frozen source identity required by move_spec. Tests of absent or
+    # corrupt provenance override it explicitly after setup.
+    from okto_pulse.core.domain.code_traceability import (
+        DeliveryContext, DirectSpecDeliveryContextProvenance, build_direct_spec_source_context_manifest,
+    )
+    provenance = DirectSpecDeliveryContextProvenance(value=DeliveryContext.BROWNFIELD,
+        source_spec_id=delivery.SPEC_ID, source_spec_version=1)
+    manifest, digest = build_direct_spec_source_context_manifest(spec_id=delivery.SPEC_ID,
+        delivery_context=DeliveryContext.BROWNFIELD, provenance=provenance, subject_version=1)
+    await session.execute(update(Spec).where(Spec.id == delivery.SPEC_ID).values(
+        delivery_context='brownfield', delivery_context_provenance={
+            'value': 'brownfield', 'source_spec_id': delivery.SPEC_ID, 'source_spec_version': 1},
+        source_context_manifest=manifest, source_context_sha256=digest))
     session.add_all([
         PermissionPreset(id='readiness-base', name='Readiness base', owner_id='owner', flags=registered_permission_flags()),
         PermissionPreset(id='readiness-child', name='Readiness child', owner_id='owner',
