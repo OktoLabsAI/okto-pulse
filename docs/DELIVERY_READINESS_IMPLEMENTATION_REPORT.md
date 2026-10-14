@@ -20,7 +20,7 @@ Historical evidence must not be rewritten. Gates and diagnostics must share fact
 | P00 | Fixar a base e construir regressões | COMPLETE (expected RED) |
 | P01 | Contratos e modelo factual compartilhado | COMPLETE |
 | P02 | Inventário, aplicabilidade e métricas | IN_PROGRESS |
-| P03 | Resultados de verificação e bases | PENDING |
+| P03 | Resultados de verificação e bases | IN_PROGRESS |
 | P04 | Diagnóstico e ações | PENDING |
 | P05 | Adapter, snapshot e paginação | PENDING |
 | P06 | Gates, transições e autorização de override | PENDING |
@@ -141,3 +141,25 @@ P02 NOT COMPLETE: connect normalized factual evaluation to per-unit assessments,
 Resume: start from current WIP and this ledger, not from P00. P01 commits are Core 0b896202 / Community cb2fff93, pushed. P03 may proceed alongside P02 per the plan after P01: source matching must compare verification_report.sources to every implementation receipt source/revision; positive native report fixtures currently use unrelated generic repo:component and must be corrected to authentic expected bases, retaining negative cases. Required complementary scenarios and unbound failures are still the P00 RED reproductions. G07 and U05 remain RED until P06/P08.
 
 Auditoria P02 parcial terminou com sucesso: 8.841 linhas de propriedade, zero findings, READMEs exatos, oito budgets ZERO (audit_readiness.py). Nao ha processos de teste/auditoria desta rodada pendentes. Este checkpoint preserva trabalho testado; P02 continua IN_PROGRESS, com as lacunas e proximo passo descritos acima.
+
+## P03 base verification checkpoint — 2026-10-13
+
+P02 checkpoint pushed: Core 9d6e539d / Community 3033a0f7.
+Base correction pushed: Core 580defc7 / Community 8ea89fcb.
+P03 may proceed alongside P02 after P01, as explicitly allowed by the plan.
+
+Core now compares every expected canonical source/revision with the authenticated report through verification_report_source_issue. Missing expected identities remain unresolved; timestamps cannot make incompatible bases equivalent. Community calls this public predicate in _test, shared by admission and reads, retaining receipt, temporal, Card and scope validation. Positive fixtures name actual mock execution bases. The shared report fixture now returns deep copies, avoiding cross-test mutation of SOURCE.
+
+Commands executed (each prefixed with rtk proxy):
+
+- python -X utf8 PULSE_REFACTOR/.validation-v040/run_readiness_tests.py core -q tests/test_delivery_readiness_report_bases.py tests/test_verification_report.py tests/test_delivery_readiness_metrics.py --tb=short --show-capture=no: **66 PASSED in 7.60s**.
+- python -X utf8 PULSE_REFACTOR/.validation-v040/run_readiness_tests.py community -q tests/test_delivery_readiness_verification.py tests/test_technical_report_delivery.py tests/test_native_operational_partial_failure.py tests/test_native_br_verification_reuse.py tests/test_native_mixed_verification.py tests/test_native_verification_applicability.py tests/test_multicard_delivery_integration.py -k "not complementary_failure" --tb=short --show-capture=no: **33 PASSED / 2 DESELECTED in 78.66s**. The excluded cases are the still-open P00 complementary-failure reproductions; this is not a full P03 pass. Six source/revision regressions now pass, plus three real signed exact-base cases.
+- python -X utf8 PULSE_REFACTOR/.validation-v040/run_readiness_tests.py community -q tests/test_native_verification_context.py --tb=short --show-capture=no: **1 PASSED in 15.48s**, including native qualified BR/IR, persisted proof and REST/MCP/resume parity. Its optional browser branch was **not enabled**.
+- Focused ruff passed. Paired byte parity: 853 Core / 320 Community; fresh local source imports.
+- Official source closure passed: **8,841 ownership rows, zero findings, exact README projections, all eight budgets ZERO**. Explicit final wheel audit remains P11.
+
+P03 remains **IN_PROGRESS**: required complementary scenarios/unbound negative results, retry/conflict normalization, diagnostic reasons for rejected facts and the full V01–V24 matrix are incomplete. P02 remains IN_PROGRESS. No readiness endpoint or UI is published; P04–P11 remain pending. No test/audit process from this checkpoint remains live.
+
+Resume from these commits. Reuse domain/verification_plan.py and SpecExecutionPlan: all authored scenarios linked to required active criteria count. Normalize required scenario heads and all native outcomes, including missing Delivery bindings, into immutable Core facts. Extend the shared evaluator to require every applicable scenario per contribution/criterion, preserving mixed per-criterion verdicts, exact base, native retry and conflict. Do not use snapshot.tests alone as the scenario population: it contains selected ledger bindings. Project these factual results into P02 UnitPhaseAssessment; do not create artificial scenarios or Test Cards.
+
+The first shell command intended to append this checkpoint failed from quoting before touching either report; product commits/pushes succeeded. This documentation follow-up records the actual results and commit identities.
