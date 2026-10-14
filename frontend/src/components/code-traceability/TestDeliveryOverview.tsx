@@ -53,7 +53,7 @@ export function TestDeliveryOverview({ data, cardId }: { data: DeliveryEvidenceP
       </div>}
       <div className="space-y-1 border-t border-gray-100 px-4 py-3 text-xs text-gray-500 dark:border-gray-800 dark:text-gray-400">
         {outcomes.length > 20 && <p>Showing the latest 20 of {outcomes.length} recorded results in this view.</p>}
-        <p>Recording a result does not approve delivery. Coverage requires current passing evidence for the required criteria and completed cards.</p>
+        <p>Recording a result does not approve delivery. Current passing evidence verifies the required criteria on the delivered base. Closing cards is a separate workflow step.</p>
         <details><summary className="cursor-pointer font-medium">How this affects delivery</summary><p className="mt-2">Test Cards are excluded from the implementation DoD gate. Authenticated test outcomes contribute to the Spec rollup; other validation requirements still apply.</p></details>
       </div>
     </section>

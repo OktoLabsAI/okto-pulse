@@ -43,8 +43,8 @@ def test_ts24_release_harness_freezes_installed_inventory_and_provenance() -> No
     assert module.EXPECTED_GRAFX_VERSION == "0.0.7"
     assert module.GRAFX_WHEEL_ENV == "OKTO_E2E_GRAFX_WHEEL"
     assert module.GRAFX_REPO_ENV == "OKTO_E2E_GRAFX_REPO"
-    assert module.EXPECTED_MCP_TOOL_COUNT == live_tool_count == 282
-    assert module.EXPECTED_CANONICAL_TOOL_COUNT == live_canonical_count == 282
+    assert module.EXPECTED_MCP_TOOL_COUNT == live_tool_count == 284
+    assert module.EXPECTED_CANONICAL_TOOL_COUNT == live_canonical_count == 284
     assert module.EXPECTED_TOOL_ALIAS_COUNT == live_alias_count == 0
     assert module.EXPECTED_RESOURCE_COUNT == live_resource_count == 54
     resource_manifest = json.loads(
@@ -66,6 +66,8 @@ def test_ts24_release_harness_freezes_installed_inventory_and_provenance() -> No
     assert 'metadata.distribution("okto-grafx")' in module._INSTALLED_ORIGIN_PROBE
     assert 'grafx_dist.read_text("direct_url.json")' in (module._INSTALLED_ORIGIN_PROBE)
     assert "__EXPECTED_" not in module._MCP_CLIENT_PROBE
+    for tool in ("okto_pulse_get_decision_reviews", "okto_pulse_record_decision_reviews"):
+        assert f'assert "{tool}" in names' in module._MCP_CLIENT_PROBE
     for probe in (module._INSTALLED_ORIGIN_PROBE, module._MCP_CLIENT_PROBE):
         assert "__EXPECTED_" not in probe
         assert '"0.3.3"' not in probe
@@ -298,8 +300,8 @@ def test_fresh_wheels_install_and_serve_from_isolated_venv(tmp_path: Path) -> No
     )
     mcp_http = evidence["installed"]["mcp_http"]
     assert mcp_http["transport"] == "streamable-http-loopback"
-    assert mcp_http["tool_count"] == 282
-    assert mcp_http["canonical_tool_count"] == 282
+    assert mcp_http["tool_count"] == 284
+    assert mcp_http["canonical_tool_count"] == 284
     assert mcp_http["tool_alias_count"] == 0
     assert mcp_http["resource_count"] == 54
     assert mcp_http["ska_tool_count"] == 13

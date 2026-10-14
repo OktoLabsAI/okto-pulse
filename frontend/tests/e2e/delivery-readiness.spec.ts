@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { AxeBuilder } from '@axe-core/playwright';
 import { readiness, task, metric } from '../../src/components/code-traceability/__tests__/readinessFixture';
 
 test('P08/U01/U04/U09: native board and Delivery show separate accessible metrics', async ({ page }) => {
@@ -172,6 +173,12 @@ test('P08/U01/U04/U09: native board and Delivery show separate accessible metric
   await page.keyboard.press('Enter');
   await expect(panel.getByRole('progressbar', { name: 'Implementation' })).toHaveAttribute('aria-valuenow', '100');
   await panel.screenshot({ path: test.info().outputPath('readiness-delivery-light.png') });
+  const accessibility = async () => {
+    const result = await new AxeBuilder({ page }).include('section[aria-label="Delivery readiness"]')
+      .withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze();
+    expect(result.violations).toEqual([]);
+  };
+  await accessibility();
   await page.setViewportSize({ width: 390, height: 844 });
   await page.emulateMedia({ reducedMotion: 'reduce', colorScheme: 'dark' });
   await page.evaluate(() => document.documentElement.classList.add('dark'));
@@ -181,6 +188,12 @@ test('P08/U01/U04/U09: native board and Delivery show separate accessible metric
   const mobileGreen = await panel.getByRole('progressbar', { name: 'Verification' }).boundingBox();
   expect(mobileBlue!.y + mobileBlue!.height).toBeLessThan(mobileGreen!.y);
   await panel.screenshot({ path: test.info().outputPath('readiness-delivery-dark-mobile.png') });
+  await accessibility();
+  const accessibilityTree = await panel.ariaSnapshot();
+  for (const entry of ['heading "Delivery readiness"', 'progressbar "Implementation"',
+    'progressbar "Verification"', 'Historical completion · current qualification pending',
+    'button "What is missing?"']) expect(accessibilityTree).toContain(entry);
+  await test.info().attach('readiness-accessibility-tree', { body: accessibilityTree, contentType: 'text/plain' });
   // U06: the real diagnostic link opens the native AC row, expanded and focused.
   const reference = diagnosis.getByRole('button', { name: 'ac:capacity', exact: true });
   await reference.focus();
@@ -298,6 +311,20 @@ test('P08/U01/U04/U09: native board and Delivery show separate accessible metric
   await expect(compact.getByText('Current readiness is unavailable. Open the diagnosis to retry.')).toBeVisible();
   expect((await compact.boundingBox())!.height).toBe(height);
   expect(await compact.evaluate(element => element.scrollWidth <= element.clientWidth + 1 && element.scrollHeight <= element.clientHeight + 1)).toBe(true);
+  // Repeated refreshes temporarily stack success notifications over the Card.
+  // Observe their native dismissal before checking unobscured mobile content.
+  await expect(page.getByText('Board refreshed!', { exact: true })).toHaveCount(0, { timeout: 6000 });
+  // Each metric must remain reachable through its native scroll area.
+  for (const label of ['Implementation', 'Verification']) {
+    const metricLabel = compact.getByText(label, { exact: true });
+    await metricLabel.scrollIntoViewIfNeeded();
+    expect(await metricLabel.evaluate(element => {
+      const box = element.getBoundingClientRect();
+      const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+      return hit === element || element.contains(hit);
+    })).toBe(true);
+  }
+  await accessibility();
   await compact.evaluate(element => element.scrollIntoView({ block: 'center', inline: 'center' }));
   await compact.screenshot({ path: test.info().outputPath('readiness-compact-error.png') });
   expect(writes).toEqual([]);
