@@ -2,6 +2,8 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import toast from 'react-hot-toast';
 import { SpecModal } from '../SpecModal';
+
+vi.mock('@/hooks/useWorkspaceRevisions', () => ({ useWorkspaceRevisions: () => 'current' }));
 import { persistTestScenariosWithWriteGuard } from '../scenarioWriteGuard';
 import type { Spec, SpecHistoryEntry, TestScenario } from '@/types';
 

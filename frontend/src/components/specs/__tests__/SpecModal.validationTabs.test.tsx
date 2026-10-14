@@ -1,4 +1,5 @@
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -10,6 +11,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Spec, SpecStatus } from '@/types';
 
 import { SpecModal } from '../SpecModal';
+
+const workspaceWatch = vi.hoisted(() => ({
+  options: null as null | Parameters<typeof import('@/hooks/useWorkspaceRevisions').useWorkspaceRevisions>[0],
+}));
+vi.mock('@/hooks/useWorkspaceRevisions', () => ({
+  useWorkspaceRevisions: (options: NonNullable<typeof workspaceWatch.options>) => {
+    workspaceWatch.options = options;
+    return 'current';
+  },
+}));
 
 const apiMock = vi.hoisted(() => ({
   getSpec: vi.fn(),
@@ -29,6 +40,7 @@ const apiMock = vi.hoisted(() => ({
 const permissionMock = vi.hoisted(() => ({
   allowAll: true,
   allowed: new Set<string>(),
+  refresh: vi.fn(),
 }));
 const boardSettingsMock = vi.hoisted(() => ({
   requireSpecValidation: true,
@@ -54,6 +66,7 @@ vi.mock('@/hooks/usePermissions', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/hooks/usePermissions')>();
   return {
     ...actual,
+    refreshBoardPermissions: permissionMock.refresh,
     usePermissions: () => ({
       preset: null,
       isLoading: false,
@@ -430,6 +443,7 @@ describe('SpecModal validation navigation', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    permissionMock.refresh.mockReset();
     permissionMock.allowAll = true;
     permissionMock.allowed = new Set();
     boardSettingsMock.requireSpecValidation = true;
@@ -488,6 +502,70 @@ describe('SpecModal validation navigation', () => {
       total_variants: 0, offset: 0, limit: 25, has_more: false,
       profile: 'summary', candidates: [], issues: [], issue_counts: {}, issues_truncated: false,
     });
+  });
+
+  it('refreshes the open validation workspace after an external revision without changing tabs', async () => {
+    renderSpec('approved');
+    await screen.findByText(baseSpec.title);
+    expect(workspaceWatch.options?.boardId).toBeUndefined();
+    fireEvent.click(screen.getByRole('tab', { name: 'Validation' }));
+    await screen.findByTestId('spec-validation-current');
+    expect(workspaceWatch.options?.boardId).toBe(baseSpec.board_id);
+    const before = apiMock.getValidationCycle.mock.calls.length;
+    apiMock.getSpec.mockResolvedValue({ ...baseSpec, status: 'approved', version: baseSpec.version + 1, title: 'Updated through MCP' });
+    await act(async () => { await workspaceWatch.options!.onChange({ subjects: [{ subject_type: 'spec', subject_id: baseSpec.id }], authorityChanged: false, initial: false }); });
+    await screen.findByText('Updated through MCP');
+    expect(screen.getByRole('tab', { name: 'Validation' })).toHaveAttribute('aria-selected', 'true');
+    await waitFor(() => expect(apiMock.getValidationCycle.mock.calls.length).toBeGreaterThan(before));
+    expect(apiMock.getAllowedTransitions).toHaveBeenLastCalledWith(baseSpec.board_id, { entity_type: 'spec', entity_id: baseSpec.id });
+  });
+
+  it('removes the Spec and pending editors when the revision endpoint denies access', async () => {
+    const onClose = vi.fn();
+    apiMock.getSpec.mockResolvedValue({ ...baseSpec, status: 'approved' });
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={onClose} onChanged={vi.fn()} />);
+    await screen.findByText(baseSpec.title);
+    fireEvent.click(screen.getByRole('tab', { name: 'Validation' }));
+    act(() => workspaceWatch.options!.onAccessLost());
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(screen.queryByText(baseSpec.title)).not.toBeInTheDocument();
+  });
+
+  it('conceals protected content during authority refresh and preserves an authorized review draft', async () => {
+    let resolve!: (value: unknown) => void;
+    permissionMock.refresh.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    apiMock.getAllowedTransitions.mockResolvedValue({ allowed_transitions: [{
+      to_status: 'validated', label: 'Validated', gate: 'spec_validation', blocked_reason: null,
+      policy_compliance: false, reason_codes: [], preconditions: [], capabilities: ['validate'], effects: ['status_changed'],
+    }] });
+    renderSpec('approved');
+    await screen.findByText(baseSpec.title);
+    fireEvent.click(screen.getByRole('tab', { name: 'Validation' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Conclude planning validation' }));
+    const input = await screen.findByLabelText('Confidence justification');
+    fireEvent.change(input, { target: { value: 'An authored review that must survive reauthorization.' } });
+    let update!: Promise<void>;
+    act(() => { update = Promise.resolve(workspaceWatch.options!.onChange({ subjects: [], authorityChanged: true, initial: false })); });
+    expect(input).not.toBeVisible();
+    expect(screen.getByRole('status')).toHaveTextContent('Rechecking Board access');
+    await act(async () => {
+      resolve({ board_id: baseSpec.board_id, flags: { spec: { entity: { read: true } } } });
+      await update;
+    });
+    expect(screen.getByLabelText('Confidence justification')).toHaveValue('An authored review that must survive reauthorization.');
+    expect(screen.getByLabelText('Confidence justification')).toBeVisible();
+  });
+
+  it('removes the workspace when reverified authority denies Spec reading', async () => {
+    const onClose = vi.fn();
+    permissionMock.refresh.mockResolvedValueOnce({ board_id: baseSpec.board_id, flags: { spec: { entity: { read: false } } } });
+    apiMock.getSpec.mockResolvedValue({ ...baseSpec, status: 'approved' });
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={onClose} onChanged={vi.fn()} />);
+    await screen.findByText(baseSpec.title);
+    fireEvent.click(screen.getByRole('tab', { name: 'Validation' }));
+    await act(async () => { await workspaceWatch.options!.onChange({ subjects: [], authorityChanged: true, initial: false }); });
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(screen.queryByText(baseSpec.title)).not.toBeInTheDocument();
   });
 
   it('loads one candidate classification population only when Integration opens', async () => {

@@ -441,6 +441,7 @@ export function SubmitSpecValidationModal({
 
           {basisConflict && <section role="alert" className="space-y-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
             <p>Your draft is preserved against its original planning inputs. Review the current plan and results before accepting the new basis.</p>
+            {typeof submissionError === 'string' && <p>{submissionError}</p>}
             {pendingBasis && <>
               <p>Current plan: Edition {pendingBasis.manifest.edition}. Your scores and justifications will not be changed automatically.</p>
               <button type="button" className="btn btn-secondary" disabled={readinessLoading || submitting}
@@ -658,7 +659,7 @@ export function SubmitSpecValidationModal({
             This records your assessment for Edition {currentSpecEdition}. Promotion also requires every applicable planning gate. Earlier results remain in history.
           </p>
 
-          {submissionError && <ValidationErrorDisplay error={submissionError} />}
+          {submissionError && !basisConflict && <ValidationErrorDisplay error={submissionError} />}
           {!checklistReady && !readinessLoading && (
             <div className="rounded border border-amber-200 bg-amber-50 p-2 text-[10px] text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
               Complete the blocking checklist for this edition before submitting validation.

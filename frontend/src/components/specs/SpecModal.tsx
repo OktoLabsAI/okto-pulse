@@ -12,6 +12,7 @@ import {
 import { SpecCoveragePanel } from './SpecCoveragePanel';
 import type { ReadinessSpecTab } from '@/components/code-traceability/readinessNavigation';
 import { useNativeReferenceFocus } from '@/components/shared/useNativeReferenceFocus';
+import { useWorkspaceRevisions } from '@/hooks/useWorkspaceRevisions';
 import { MissingLinkNotice } from '@/components/shared/MissingLinkNotice';
 import { TextRequirementsTab, type TextRequirementDraft } from './TextRequirementsTab';
 import { CriterionVerificationDetails } from './CriterionVerificationPanel';
@@ -97,6 +98,8 @@ import {
 import { persistTestScenariosWithWriteGuard } from './scenarioWriteGuard';
 import {
   hasPermissionWithState,
+  hasEffectivePermission,
+  refreshBoardPermissions,
   usePermissions,
 } from '@/hooks/usePermissions';
 import { MockupsTab } from './MockupsTab';
@@ -1823,6 +1826,56 @@ export function SpecModal({
   const boardSettings = (currentBoard?.settings || {}) as BoardSettings;
   const requireSpecValidation = boardSettings.require_spec_validation ?? true;
   const [showSubmitValidationModal, setShowSubmitValidationModal] = useState(false);
+  const [permissionCheckPending, setPermissionCheckPending] = useState(false);
+  const [workspaceSyncError, setWorkspaceSyncError] = useState<string | null>(null);
+  const workspaceLoadGeneration = useRef(0);
+  const validationLive = activeTab === 'validation' || showSubmitValidationModal;
+  useEffect(() => {
+    setPermissionCheckPending(false);
+    return () => {
+      workspaceLoadGeneration.current += 1;
+      specReloadGeneration.current += 1;
+    };
+  }, [specId, validationLive]);
+  const syncState = useWorkspaceRevisions({
+    boardId: validationLive ? spec?.board_id : undefined,
+    subjects: [{ subject_type: 'spec', subject_id: specId }],
+    onAccessLost: () => {
+      workspaceLoadGeneration.current += 1;
+      specReloadGeneration.current += 1;
+      setSpec(null);
+      setShowSubmitValidationModal(false);
+      onClose();
+    },
+    onChange: async ({ authorityChanged }) => {
+      if (!spec) return;
+      const generation = ++workspaceLoadGeneration.current;
+      const id = spec.id;
+      const current = () => generation === workspaceLoadGeneration.current && currentSpecId.current === id;
+      try {
+        setWorkspaceSyncError(null);
+        if (authorityChanged) {
+          setPermissionCheckPending(true);
+          const permissions = await refreshBoardPermissions(spec.board_id);
+          if (!current()) return;
+          if (permissions.board_id !== spec.board_id) throw new Error('Permission response does not match the Board.');
+          if (!hasEffectivePermission(permissions, 'spec.entity.read')) {
+            setSpec(null); setShowSubmitValidationModal(false); onClose(); return;
+          }
+        }
+        await reloadSpecSnapshot({ includeRelated: false, notifyChanged: false, showLoading: false });
+        if (!current()) return;
+        setValidationHistoryRefreshKey(value => value + 1);
+      } catch (error) {
+        if (!current()) return;
+        if (authorityChanged || (error instanceof AuthenticatedFetchError && [401, 403, 404].includes(error.status))) {
+          setSpec(null); setShowSubmitValidationModal(false); onClose();
+        } else setWorkspaceSyncError('The Spec changed, but its current data could not be loaded. Refresh to retry.');
+      } finally {
+        if (current()) setPermissionCheckPending(false);
+      }
+    },
+  });
   const specValidationSubmissionRequired = (
     policyTransitionPreview.status === 'ready'
     && policyTransitionPreview.transitions.some(
@@ -2023,7 +2076,9 @@ export function SpecModal({
 
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+      style={permissionCheckPending ? { visibility: 'hidden' } : undefined}>
+      {permissionCheckPending && <div role="status" style={{ visibility: 'visible' }} className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50 text-sm text-white">Rechecking Board access…</div>}
       <div
         role="dialog"
         ref={nativeReferenceRoot}
@@ -2715,6 +2770,10 @@ export function SpecModal({
             </div>
           )}
           {activeTab === 'validation' && spec && (
+            <>
+            {(workspaceSyncError || ['offline', 'unavailable'].includes(syncState)) && <p role="status" className="mx-4 mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200">
+              {workspaceSyncError || 'Live updates are unavailable. Displayed results may be out of date; reconnect or refresh before concluding validation.'}
+            </p>}
             <SpecValidationPanel
               onReviewPlanningComponent={key => {
                 const destinations: Record<string, ModalTab> = {
@@ -2759,6 +2818,7 @@ export function SpecModal({
               onSubmitValidation={() =>
                 void handleMoveSpec('validated' as SpecStatus)}
             />
+            </>
           )}
           {activeTab === 'kg' && spec && (
             <KGValidationTab boardId={spec.board_id} specId={specId} />
@@ -3000,8 +3060,9 @@ export function SpecModal({
       )}
 
       {/* Spec Validation Gate — submission modal (opens when board opts in and user clicks Validate) */}
-      {showSubmitValidationModal && spec && (
+      {showSubmitValidationModal && spec && perms.has('spec.validation.submit') && (
         <SubmitSpecValidationModal
+          refreshKey={validationHistoryRefreshKey}
           specId={spec.id}
           specTitle={spec.title}
           boardId={spec.board_id}

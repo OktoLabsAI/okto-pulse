@@ -11,6 +11,8 @@ import type {
 } from '@/types/spec-dependencies';
 import { SpecModal } from '../SpecModal';
 
+vi.mock('@/hooks/useWorkspaceRevisions', () => ({ useWorkspaceRevisions: () => 'current' }));
+
 const apiMock = vi.hoisted(() => ({
   getSpec: vi.fn(),
   getAllowedTransitions: vi.fn(),

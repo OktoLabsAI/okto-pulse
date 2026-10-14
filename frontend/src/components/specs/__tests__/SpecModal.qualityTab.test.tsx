@@ -5,6 +5,8 @@ import type { Spec } from '@/types';
 
 import { SpecModal } from '../SpecModal';
 
+vi.mock('@/hooks/useWorkspaceRevisions', () => ({ useWorkspaceRevisions: () => 'current' }));
+
 type QualityPanelProps = {
   subjectType: string;
   subjectId: string;

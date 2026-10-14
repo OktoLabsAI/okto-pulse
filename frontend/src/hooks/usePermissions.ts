@@ -38,6 +38,28 @@ interface CacheEntry {
 
 const cache = new Map<string, CacheEntry>();
 const pending = new Map<string, Promise<PermissionsResponse>>();
+const generations = new Map<string, number>();
+const listeners = new Map<string, Set<(error?: unknown) => void>>();
+
+/** Reauthorize after an authoritative Board revision, bypassing the TTL. */
+export async function refreshBoardPermissions(boardId: string): Promise<PermissionsResponse> {
+  generations.set(boardId, (generations.get(boardId) ?? 0) + 1);
+  const generation = generations.get(boardId);
+  cache.delete(boardId);
+  pending.delete(boardId);
+  try {
+    const result = await fetchWithCache(boardId);
+    if (generation === generations.get(boardId)) {
+      for (const listener of listeners.get(boardId) ?? []) listener();
+    }
+    return result;
+  } catch (error) {
+    if (generation === generations.get(boardId)) {
+      for (const listener of listeners.get(boardId) ?? []) listener(error);
+    }
+    throw error;
+  }
+}
 
 function getNested(obj: unknown, path: string): unknown {
   if (!obj || typeof obj !== 'object') return undefined;
@@ -61,13 +83,16 @@ async function fetchWithCache(boardId: string): Promise<PermissionsResponse> {
   const inflight = pending.get(boardId);
   if (inflight) return inflight;
 
+  const generation = generations.get(boardId) ?? 0;
   const p = getMyPermissions(boardId)
     .then((data) => {
-      cache.set(boardId, { data, fetchedAt: Date.now() });
+      if (generation === (generations.get(boardId) ?? 0)) {
+        cache.set(boardId, { data, fetchedAt: Date.now() });
+      }
       return data;
     })
     .finally(() => {
-      pending.delete(boardId);
+      if (pending.get(boardId) === p) pending.delete(boardId);
     });
   pending.set(boardId, p);
   return p;
@@ -158,31 +183,53 @@ export function usePermissions(boardId: string | null | undefined): UsePermissio
       return;
     }
 
-    const cached = cache.get(boardId);
-    if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
-      setData(cached.data);
-      setIsLoading(false);
-      return;
-    }
-
     let cancelled = false;
-    setIsLoading(true);
-    fetchWithCache(boardId)
+    let loadId = 0;
+    const load = () => {
+      const id = ++loadId;
+      const generation = generations.get(boardId) ?? 0;
+      const current = () => !cancelled && id === loadId && generation === (generations.get(boardId) ?? 0);
+      const cached = cache.get(boardId);
+      if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
+        setData(cached.data);
+        setError(null);
+        setIsLoading(false);
+        return;
+      }
+      setIsLoading(true);
+      fetchWithCache(boardId)
       .then((res) => {
-        if (!cancelled) {
+        if (current()) {
           setData(res);
+          setError(null);
           setIsLoading(false);
         }
       })
       .catch((e: unknown) => {
-        if (!cancelled) {
+        if (current()) {
           setData(null);
           setError(e instanceof Error ? e : new Error(String(e)));
           setIsLoading(false);
         }
       });
+    };
+    let boardListeners = listeners.get(boardId);
+    if (!boardListeners) { boardListeners = new Set(); listeners.set(boardId, boardListeners); }
+    const refresh = (failure?: unknown) => {
+      if (cancelled) return;
+      if (failure) {
+        loadId += 1;
+        setData(null);
+        setError(failure instanceof Error ? failure : new Error(String(failure)));
+        setIsLoading(false);
+      } else load();
+    };
+    boardListeners.add(refresh);
+    load();
     return () => {
       cancelled = true;
+      boardListeners.delete(refresh);
+      if (boardListeners.size === 0) listeners.delete(boardId);
     };
   }, [boardId]);
 
@@ -200,6 +247,8 @@ export function usePermissions(boardId: string | null | undefined): UsePermissio
     isLoading,
     error,
     ownerReviewRequired: activeData?.owner_review_required ?? false,
-    has: (flag: string) => hasEffectivePermission(activeData, flag),
+    has: (flag: string) => boardId && (generations.get(boardId) ?? 0) > 0 && !activeData
+      ? false
+      : hasEffectivePermission(activeData, flag),
   };
 }
