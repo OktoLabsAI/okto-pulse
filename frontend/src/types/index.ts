@@ -886,6 +886,22 @@ export interface SpecPlanningManifest {
   authority_revision: number;
 }
 
+export interface WorkspaceSubjectRef {
+  subject_type: 'spec' | 'card';
+  subject_id: string;
+}
+
+export interface WorkspaceRevisionToken {
+  incarnation: string;
+  revision: number;
+}
+
+export interface WorkspaceRevisions {
+  board_id: string;
+  authority: WorkspaceRevisionToken;
+  subjects: (WorkspaceSubjectRef & { token: WorkspaceRevisionToken | null })[];
+}
+
 export interface SpecPlanningReadiness {
   state: 'ready' | 'blocked' | 'unavailable';
   blocked_actions: string[];

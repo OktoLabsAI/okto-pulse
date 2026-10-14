@@ -31,6 +31,8 @@ import type {
   SpecDependencyPage,
 } from '@/types/spec-dependencies';
 import type {
+  WorkspaceSubjectRef,
+  WorkspaceRevisions,
   Board,
   BoardSummary,
   BoardShare,
@@ -625,6 +627,16 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
         params.set('subject_version', String(currentVersion));
         return readProjection();
       }
+    },
+
+    async getWorkspaceRevisions(
+      boardId: string,
+      subjects: WorkspaceSubjectRef[],
+      signal?: AbortSignal,
+    ): Promise<WorkspaceRevisions> {
+      return apiClient.fetchJson<WorkspaceRevisions>('/workspace-revisions/query', {
+        method: 'POST', body: JSON.stringify({ board_id: boardId, subjects }), signal,
+      });
     },
 
     async getValidationCycle(

@@ -444,6 +444,185 @@ async def test_cycle_exposes_current_manifest_and_hides_it_without_validation_re
     assert "planning_manifest" not in project_validation_cycle(hidden)
 
 
+@pytest.mark.parametrize("only_decomposition", [False, True])
+async def test_planning_read_keeps_providers_and_does_not_write(cycle_rig, monkeypatch, only_decomposition):
+    from okto_pulse.core.composition import isolated_runtime_provider_scope
+    from okto_pulse.core.runtime_context import current_runtime_values
+    from okto_pulse.core.ports.application_persistence import register_application_persistence_port
+    from okto_pulse.core.ports.relational_application import register_relational_application_adapter
+    from okto_pulse.community.adapters.sqlalchemy_application_persistence import CommunitySqlAlchemyApplicationPersistence
+    from okto_pulse.community.adapters.relational_application import CommunityRelationalApplicationAdapter
+    from okto_pulse.core.ports.relational_services import register_resource_gate_adapter_factory
+    from okto_pulse.community.adapters.sqlalchemy_resource_gate_service import CommunitySqlAlchemyResourceGateAdapter
+
+    statements = []
+    commits = []
+
+    def record(_conn, _cursor, statement, *_args):
+        statements.append(statement.lstrip().split()[0].upper())
+
+    def committed(_conn):
+        commits.append(True)
+
+    reader = CommunitySqlAlchemyValidationCycleReader(cycle_rig.factory)
+    arguments = dict(subject_type=AssessmentSubjectType.SPEC, subject_id="spec-cycle-00",
+                     actor_id="owner", realm_scope=RealmScope.local(),
+                     include_previous=False, offset=0, limit=25)
+    before = await reader.get_validation_cycle(**arguments)
+    original_permissions = sqlalchemy_validation_cycle._quality_actor_permissions
+    if only_decomposition:
+        _permit_only(monkeypatch, "spec.entity.read", "spec.evaluations.read")
+        with pytest.raises(ValidationCycleReadAccessDenied):
+            await reader.get_validation_cycle(**arguments)
+    with isolated_runtime_provider_scope():
+        register_application_persistence_port(CommunitySqlAlchemyApplicationPersistence())
+        register_relational_application_adapter(CommunityRelationalApplicationAdapter())
+        register_resource_gate_adapter_factory(CommunitySqlAlchemyResourceGateAdapter)
+        registry = current_runtime_values()
+        providers = registry.snapshot()
+        event.listen(cycle_rig.engine.sync_engine, "before_cursor_execute", record)
+        event.listen(cycle_rig.engine.sync_engine, "commit", committed)
+        try:
+            result = await reader.get_validation_cycle(**arguments, include_planning=True)
+        finally:
+            event.remove(cycle_rig.engine.sync_engine, "before_cursor_execute", record)
+            event.remove(cycle_rig.engine.sync_engine, "commit", committed)
+        assert current_runtime_values() is registry
+        assert all(registry.resolve(key) is value for key, value in providers.items())
+        # Native read observability may allocate its bounded sample buffer;
+        # composing the read must never install or replace runtime providers.
+        added = set(registry.snapshot()) - set(providers)
+        assert all(key.startswith("observability.samples.") for key in added)
+    components = {item.key: item for item in result.planning_readiness.components}
+    assert components["spec_validation"].native_result == (None if only_decomposition else "missing")
+    if only_decomposition:
+        assert result.visible_sections == ()
+        assert result.planning_manifest is None
+        assert "current_result" not in project_validation_cycle(result)
+    assert components["decomposition"].state == "blocked"
+    assert components["decision_verification"].native_result == "not_applicable"
+    assert components["task_requirement_links"].state != "unavailable"
+    assert not commits
+    assert not set(statements) & {"INSERT", "UPDATE", "DELETE", "REPLACE", "CREATE", "ALTER", "DROP"}
+    monkeypatch.setattr(sqlalchemy_validation_cycle, "_quality_actor_permissions", original_permissions)
+    after = await reader.get_validation_cycle(**arguments)
+    assert before == after
+    if not only_decomposition:
+        assert result.planning_manifest == before.planning_manifest
+
+
+async def test_workspace_metadata_is_bounded_and_tracks_card_changes_without_spec_version(cycle_rig):
+    from sqlalchemy import text
+    from okto_pulse.core.domain.workspace_revisions import WorkspaceRevisionsQuery
+    from okto_pulse.community.adapters.sqlalchemy_models import Card
+
+    async with cycle_rig.factory() as session:
+        session.add(Card(id="workspace-card", board_id=BOARD_ID, spec_id="spec-cycle-00",
+                         title="Before", created_by="owner"))
+        await session.commit()
+    reader = CommunitySqlAlchemyValidationCycleReader(cycle_rig.factory)
+    subjects = [{"subject_type": "spec", "subject_id": f"spec-cycle-{index:02d}"} for index in range(49)]
+    subjects.append({"subject_type": "card", "subject_id": "workspace-card"})
+    query = WorkspaceRevisionsQuery(board_id=BOARD_ID, subjects=subjects)
+    async def read(query):
+        return await reader.get_workspace_revisions(query, actor_id="owner", realm_scope=RealmScope.local())
+    before, statements = await _count_selects(cycle_rig.engine, read(query))
+    _, one_statements = await _count_selects(cycle_rig.engine, read(query.model_copy(update={"subjects": query.subjects[:1]})))
+    assert len(statements) == len(one_statements) == 2  # Permissions isolated by cycle_rig.
+    assert all("description" not in sql.lower() and "evaluations" not in sql.lower() for sql in statements)
+    async with cycle_rig.factory() as session:
+        await session.execute(text("UPDATE cards SET title='After' WHERE id='workspace-card'"))
+        await session.commit()
+    after = await read(query)
+    assert after.subjects[0].token.revision > before.subjects[0].token.revision
+    assert after.subjects[-1].token.revision > before.subjects[-1].token.revision
+    assert after.subjects[1:-1] == before.subjects[1:-1]
+    async with cycle_rig.factory() as session:
+        assert (await session.get(Spec, "spec-cycle-00")).version == 1
+        await session.execute(text("DELETE FROM cards WHERE id='workspace-card'"))
+        await session.commit()
+    deleted = await read(query)
+    assert deleted.subjects[-1].token is None
+
+
+async def test_workspace_metadata_reauthorizes_and_hides_foreign_subjects(cycle_rig, monkeypatch):
+    from okto_pulse.core.domain.workspace_revisions import WorkspaceRevisionsQuery
+
+    reader = CommunitySqlAlchemyValidationCycleReader(cycle_rig.factory)
+    query = WorkspaceRevisionsQuery(board_id=BOARD_ID, subjects=[
+        {"subject_type": "spec", "subject_id": "spec-cycle-00"},
+        {"subject_type": "spec", "subject_id": "missing-or-other-board"},
+    ])
+    result = await reader.get_workspace_revisions(query, actor_id="owner", realm_scope=RealmScope.local())
+    assert result.subjects[0].token is not None and result.subjects[1].token is None
+    _permit_only(monkeypatch, "spec.validation.read")
+    with pytest.raises(ValidationCycleReadAccessDenied):
+        await reader.get_workspace_revisions(query, actor_id="owner", realm_scope=RealmScope.local())
+    _permit_only(monkeypatch, "spec.entity.read")
+    async with cycle_rig.factory() as session:
+        board = await session.get(Board, BOARD_ID)
+        board.realm_id = "another-realm"
+        await session.commit()
+    with pytest.raises(ValidationCycleSubjectNotFound):
+        await reader.get_workspace_revisions(query, actor_id="owner", realm_scope=RealmScope.local())
+
+
+async def test_workspace_authority_and_subject_tokens_share_a_snapshot(cycle_rig, monkeypatch):
+    from sqlalchemy import text
+    from okto_pulse.core.domain.workspace_revisions import WorkspaceRevisionsQuery
+
+    async with cycle_rig.engine.connect() as connection:
+        await connection.exec_driver_sql("PRAGMA journal_mode=WAL")
+    query = WorkspaceRevisionsQuery(board_id=BOARD_ID, subjects=[
+        {"subject_type": "spec", "subject_id": "spec-cycle-00"},
+    ])
+    reader = CommunitySqlAlchemyValidationCycleReader(cycle_rig.factory)
+    async def read():
+        return await reader.get_workspace_revisions(query, actor_id="owner", realm_scope=RealmScope.local())
+    before = await read()
+    reached, release = asyncio.Event(), asyncio.Event()
+    original = sqlalchemy_validation_cycle._quality_actor_permissions
+    async def hold(*args, **kwargs):
+        result = await original(*args, **kwargs)
+        reached.set()
+        await release.wait()
+        return result
+    monkeypatch.setattr(sqlalchemy_validation_cycle, "_quality_actor_permissions", hold)
+    pending = asyncio.create_task(read())
+    await asyncio.wait_for(reached.wait(), 5)
+    try:
+        async with cycle_rig.factory() as session:
+            await session.execute(text("UPDATE specs SET title='Changed concurrently' WHERE id='spec-cycle-00'"))
+            await session.execute(text("UPDATE boards SET settings='{}' WHERE id=:id"), {"id": BOARD_ID})
+            await session.commit()
+    finally:
+        release.set()
+    during = await asyncio.wait_for(pending, 5)
+    assert during == before
+    monkeypatch.setattr(sqlalchemy_validation_cycle, "_quality_actor_permissions", original)
+    after = await read()
+    assert after.subjects[0].token.revision > before.subjects[0].token.revision
+    assert after.authority.revision > before.authority.revision
+
+
+async def test_workspace_missing_revision_fails_closed(cycle_rig):
+    from sqlalchemy import text
+    from okto_pulse.core.domain.workspace_revisions import WorkspaceRevisionsQuery
+    from okto_pulse.core.ports.validation_cycle import WorkspaceRevisionsUnavailable
+
+    async with cycle_rig.engine.begin() as connection:
+        # Deliberate damaged-store fixture; normal runtime guards forbid this.
+        await connection.execute(text("DROP TRIGGER validation_revision_no_delete"))
+        await connection.execute(text("DELETE FROM validation_source_revisions WHERE scope_kind='spec' AND scope_id='spec-cycle-00'"))
+    query = WorkspaceRevisionsQuery(board_id=BOARD_ID, subjects=[
+        {"subject_type": "spec", "subject_id": "spec-cycle-00"},
+    ])
+    with pytest.raises(WorkspaceRevisionsUnavailable):
+        await CommunitySqlAlchemyValidationCycleReader(cycle_rig.factory).get_workspace_revisions(
+            query, actor_id="owner", realm_scope=RealmScope.local(),
+        )
+
+
 @pytest.mark.parametrize("foreign_realm", [False, True])
 async def test_single_and_batch_cycle_enforce_requested_board_and_realm(cycle_rig, foreign_realm):
     # The fixture grants all read permissions: scope must be checked separately.

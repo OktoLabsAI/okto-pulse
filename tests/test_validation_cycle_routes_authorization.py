@@ -46,6 +46,16 @@ class _Reader:
         assert self.summary is not None
         return self.summary
 
+    async def get_workspace_revisions(self, query, **kwargs):
+        from okto_pulse.core.domain.workspace_revisions import WorkspaceRevisions
+        self.workspace_query = query
+        self.workspace_actor = kwargs
+        if self.cycle_error is not None:
+            raise self.cycle_error
+        return WorkspaceRevisions(board_id=query.board_id,
+            authority={"incarnation": "a" * 32, "revision": 1},
+            subjects=[{**item.model_dump(), "token": None} for item in query.subjects])
+
     async def get_result_technical_audit(
         self,
         *,
@@ -81,6 +91,30 @@ def _client(reader: _Reader) -> TestClient:
     app.dependency_overrides[require_user] = lambda: "partial-reader"
     app.dependency_overrides[validation_cycles._reader] = lambda: reader
     return TestClient(app, raise_server_exceptions=False)
+
+
+def test_workspace_metadata_route_keeps_actor_server_owned_and_payload_small():
+    reader = _Reader()
+    payload = {"board_id": "board", "subjects": [{"subject_type": "card", "subject_id": "card"}]}
+    response = _client(reader).post("/api/v1/workspace-revisions/query", json=payload)
+    assert response.status_code == 200, response.text
+    assert reader.workspace_actor["actor_id"] == "partial-reader"
+    assert response.json()["subjects"] == [{"subject_type": "card", "subject_id": "card", "token": None}]
+    rejected = _client(reader).post("/api/v1/workspace-revisions/query", json={**payload, "actor_id": "owner"})
+    assert rejected.status_code == 422
+
+
+@pytest.mark.parametrize("exception,status_code", [
+    (ValidationCycleReadAccessDenied(), 403),
+    (validation_cycles.WorkspaceRevisionsUnavailable(), 503),
+    (validation_cycles.ValidationCycleSubjectNotFound(), 404),
+])
+def test_workspace_metadata_route_never_treats_missing_authority_as_unchanged(exception, status_code):
+    response = _client(_Reader(cycle_error=exception)).post("/api/v1/workspace-revisions/query", json={
+        "board_id": "board", "subjects": [{"subject_type": "spec", "subject_id": "spec"}],
+    })
+    assert response.status_code == status_code
+    assert "subjects" not in response.json()
 
 
 def _partial_summary(

@@ -27,6 +27,9 @@ from sqlalchemy.orm import joinedload
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
     ActivityLog,
+    Board,
+    Card,
+    ValidationSourceRevisionRow,
     ChecklistExecutionHeadRow,
     ChecklistItemResultRow,
     ChecklistReceiptRow,
@@ -52,10 +55,14 @@ from okto_pulse.community.adapters.sqlalchemy_quality_assessment import (
     _quality_actor_permissions,
 )
 from okto_pulse.core.models.schemas import SpecValidationResponse
+from okto_pulse.core.application.service_catalog import build_application_service_catalog
 from okto_pulse.core.domain.spec_validation import require_spec_validation_edition
 from okto_pulse.core.domain.quality_assessment import (
     AssessmentKind,
     AssessmentSubjectType,
+)
+from okto_pulse.core.domain.workspace_revisions import (
+    WorkspaceRevision, WorkspaceRevisionToken, WorkspaceRevisions, WorkspaceRevisionsQuery,
 )
 from okto_pulse.core.domain.human_validation_cycle import is_current_edition
 from okto_pulse.core.domain.realm import LOCAL_REALM_ID, RealmScope
@@ -76,6 +83,7 @@ from okto_pulse.core.ports.validation_cycle import (
     ValidationCycleReadAccessDenied,
     ValidationCycleResultNotFound,
     ValidationCycleSubjectNotFound,
+    WorkspaceRevisionsUnavailable,
 )
 from okto_pulse.core.services.ska_observability import (
     observe_validation_cycle_summary_selects,
@@ -1407,6 +1415,7 @@ class CommunitySqlAlchemyValidationCycleReader:
         subject_id: str,
         actor_id: str,
         board_id: str | None = None,
+        allow_planning: bool = False,
     ) -> tuple[object, _ValidationCycleAccess]:
         model = _SUBJECT_MODEL[subject_type]
         subject = (
@@ -1448,9 +1457,59 @@ class CommunitySqlAlchemyValidationCycleReader:
                 if permissions.has(f"{subject_type.value}.quality.read")
                 else ()
             )
-        if not visible_sections:
+        if not visible_sections and not (allow_planning and subject_type is AssessmentSubjectType.SPEC):
             raise ValidationCycleReadAccessDenied()
         return subject, _ValidationCycleAccess(permissions, visible_sections)
+
+    async def get_workspace_revisions(
+        self, query: WorkspaceRevisionsQuery, *, actor_id: str, realm_scope: RealmScope,
+    ) -> WorkspaceRevisions:
+        self._require_local(realm_scope)
+        async with self._session_factory() as session:
+            await begin_community_consistent_read(session)
+            revision = ValidationSourceRevisionRow
+            authority = (await session.execute(
+                select(Board.id, revision.incarnation, revision.revision)
+                .outerjoin(revision, (revision.scope_kind == "board") & (revision.scope_id == Board.id))
+                .where(Board.id == query.board_id, Board.realm_id == realm_scope.realm_id)
+            )).one_or_none()
+            if authority is None:
+                raise ValidationCycleSubjectNotFound()
+            permissions, access_level = await _quality_actor_permissions(
+                session, actor_id=actor_id, board_id=query.board_id,
+            )
+            if permissions is None or access_level is None or any(
+                not permissions.has(f"{item.subject_type}.entity.read") for item in query.subjects
+            ):
+                raise ValidationCycleReadAccessDenied()
+            if authority.incarnation is None or authority.revision is None:
+                raise WorkspaceRevisionsUnavailable()
+            selects = []
+            for kind, model in (("spec", Spec), ("card", Card)):
+                ids = [item.subject_id for item in query.subjects if item.subject_type == kind]
+                if ids:
+                    selects.append(select(
+                        literal(kind).label("subject_type"), model.id.label("subject_id"),
+                        revision.incarnation, revision.revision,
+                    ).outerjoin(revision, (revision.scope_kind == kind) & (revision.scope_id == model.id))
+                      .where(model.board_id == query.board_id, model.id.in_(ids)))
+            # One bounded column projection regardless of the number of cards/specs.
+            rows = (await session.execute(union_all(*selects))).all()
+            tokens = {}
+            for row in rows:
+                if row.incarnation is None or row.revision is None:
+                    raise WorkspaceRevisionsUnavailable()
+                tokens[row.subject_type, row.subject_id] = WorkspaceRevisionToken(
+                    incarnation=row.incarnation, revision=row.revision,
+                )
+            return WorkspaceRevisions(
+                board_id=query.board_id,
+                authority=WorkspaceRevisionToken(incarnation=authority.incarnation, revision=authority.revision),
+                subjects=tuple(WorkspaceRevision(
+                    subject_type=item.subject_type, subject_id=item.subject_id,
+                    token=tokens.get((item.subject_type, item.subject_id)),
+                ) for item in query.subjects),
+            )
 
     async def get_validation_cycle(
         self,
@@ -1467,6 +1526,7 @@ class CommunitySqlAlchemyValidationCycleReader:
     ) -> ValidationCycleSummary:
         self._require_local(realm_scope)
         async with self._session_factory() as session:
+            session.info["realm_scope"] = realm_scope
             await begin_community_consistent_read(session)
             counter, connection, listener = await _count_session_selects(session)
             outcome = "error"
@@ -1477,6 +1537,7 @@ class CommunitySqlAlchemyValidationCycleReader:
                     subject_id=subject_id,
                     actor_id=actor_id,
                     board_id=board_id,
+                    allow_planning=include_planning,
                 )
                 if subject_type is AssessmentSubjectType.SPEC:
                     result = await self._spec_cycle(
@@ -2001,18 +2062,14 @@ class CommunitySqlAlchemyValidationCycleReader:
         any_started = any(item.status not in {"not_started", "off"} for item in checks)
         planning = None
         if include_planning:
-            from okto_pulse.core.runtime_context import current_runtime_values, runtime_value_scope
-            from .sqlalchemy_unit_of_work import CommunityUnitOfWork
-
-            # Bind services to this physical snapshot without replacing the
-            # caller's application-persistence registry or starting another transaction.
-            with runtime_value_scope(current_runtime_values(create=True).copy()):
-                uow = CommunityUnitOfWork(session)
-                native_spec = await uow.services.specs.get_spec(subject.id)
-                native_board = await uow.services.boards.get_board(subject.board_id)
-                planning = await uow.services.specs.get_planning_readiness(
-                    native_spec, native_board, can_read=access.has, can_act=access.has,
-                )
+            # The public catalog binds native judgments to this read snapshot.
+            # It does not create a UoW, register providers or own this transaction.
+            services = build_application_service_catalog(session)
+            native_spec = await services.specs.get_spec(subject.id)
+            native_board = await services.boards.get_board(subject.board_id)
+            planning = await services.specs.get_planning_readiness(
+                native_spec, native_board, can_read=access.has, can_act=access.has,
+            )
         manifest = None
         if validation_visible:
             manifest, = await CommunitySpecPlanningManifest(session, RealmScope.local()).read_many(

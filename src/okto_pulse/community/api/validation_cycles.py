@@ -20,6 +20,7 @@ from okto_pulse.core.application.use_cases.validation_cycle import (
 )
 from okto_pulse.core.domain.quality_assessment import AssessmentSubjectType
 from okto_pulse.core.domain.spec_planning import SpecPlanningManifest
+from okto_pulse.core.domain.workspace_revisions import WorkspaceRevisions, WorkspaceRevisionsQuery
 from okto_pulse.core.ports.spec_planning_manifest import SpecPlanningManifestUnavailable
 from okto_pulse.core.domain.validation_cycle import (
     ValidationCycleResultType,
@@ -34,6 +35,7 @@ from okto_pulse.core.ports.validation_cycle import (
     ValidationCycleReadAccessDenied,
     ValidationCycleResultNotFound,
     ValidationCycleSubjectNotFound,
+    WorkspaceRevisionsUnavailable,
 )
 
 
@@ -150,7 +152,7 @@ def _http_error(
     *,
     subject_type: AssessmentSubjectType,
 ) -> HTTPException:
-    if isinstance(exc, SpecPlanningManifestUnavailable):
+    if isinstance(exc, (SpecPlanningManifestUnavailable, WorkspaceRevisionsUnavailable)):
         return HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={"error_code": exc.code, "retryable": False},
@@ -179,6 +181,22 @@ def _http_error(
             detail={"error_code": str(exc), "retryable": False},
         )
     raise exc
+
+
+@router.post("/workspace-revisions/query", response_model=WorkspaceRevisions)
+async def get_workspace_revisions(
+    query: WorkspaceRevisionsQuery,
+    user_id: str = Depends(require_user),
+    reader: CommunitySqlAlchemyValidationCycleReader = Depends(_reader),
+) -> WorkspaceRevisions:
+    try:
+        return await ValidationCycleReadUseCases(reader=reader).get_workspace_revisions(
+            query, actor=RESTAdapterContract.actor(user_id),
+        )
+    except ValidationCycleSubjectNotFound as exc:
+        raise HTTPException(status_code=404, detail={"error_code": "board_not_found", "retryable": False}) from exc
+    except Exception as exc:
+        raise _http_error(exc, subject_type=AssessmentSubjectType.SPEC) from exc
 
 
 async def _cycle(

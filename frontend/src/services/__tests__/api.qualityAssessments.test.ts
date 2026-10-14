@@ -212,6 +212,21 @@ describe('quality assessment REST client', () => {
     );
   });
 
+  it('reads bounded workspace tokens with cancellation, without loading gates', async () => {
+    const { result } = renderHook(() => useDashboardApi());
+    const controller = new AbortController();
+    const subjects = [{ subject_type: 'spec' as const, subject_id: 'spec-1' }];
+    const response = {
+      board_id: 'board-1', authority: { incarnation: 'a'.repeat(32), revision: 2 },
+      subjects: [{ ...subjects[0], token: { incarnation: 'b'.repeat(32), revision: 4 } }],
+    };
+    mockApiClient.fetchJson.mockResolvedValueOnce(response);
+    expect(await result.current.getWorkspaceRevisions('board-1', subjects, controller.signal)).toEqual(response);
+    expect(mockApiClient.fetchJson).toHaveBeenCalledWith('/workspace-revisions/query', {
+      method: 'POST', body: JSON.stringify({ board_id: 'board-1', subjects }), signal: controller.signal,
+    });
+  });
+
   it('submits only the canonical Spec validation and checklist lifecycle fields', async () => {
     const { result } = renderHook(() => useDashboardApi());
     const validation = {
