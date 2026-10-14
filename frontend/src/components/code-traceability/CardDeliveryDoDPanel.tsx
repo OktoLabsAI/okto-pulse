@@ -7,7 +7,8 @@ import { DeliveryNetImpactPanel } from './DeliveryNetImpactPanel';
 import { TestDeliveryOverview } from './TestDeliveryOverview';
 import { PulseLoader } from '@/components/shared/PulseLoader';
 import { DeliveryDisclosure } from './deliveryPresentation';
-import { DeliveryCompletenessView } from './DeliveryCompletenessView';
+import { DeliveryReadinessView } from './DeliveryReadinessView';
+import { useDeliveryReadiness } from './useDeliveryReadiness';
 import type {
   CardDeliveryEvidenceInput,
   CardDeliveryBatchDraft,
@@ -42,6 +43,7 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [reload, setReload] = useState(0);
+  const readiness = useDeliveryReadiness(boardId, card.spec_id, card.id, reload, !onStage);
   const [formOpen, setFormOpen] = useState(false);
   const [refs, setRefs] = useState<string[]>([]);
   const [contributions, setContributions] = useState<Record<string, 'partial' | 'complete'>>({});
@@ -73,7 +75,7 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
   const proofFor = (ref: string) => acceptedProofs.find(p => p.ready_obligation_refs.includes(ref));
   const partialFor = (ref: string) => acceptedProofs.some(p => p.admitted_obligation_refs.includes(ref)
     && p.contributions.some(c => c.binding.obligation_ref === ref && c.contribution === 'partial'));
-  const unproven = obligations.filter(o => !o.implementation_satisfied);
+  const unproven = obligations.filter(o => !o.implementation_satisfied && !proofFor(o.ref));
   const canRecordKind = isTest ? canTest : canRecord;
   const candidates = (data?.candidates ?? []).filter(c => c.card_id === card.id && c.kind === (isTest ? 'test' : 'implementation'));
   const selectableRefs = isTest
@@ -147,11 +149,11 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
   }
 
   return <section className="space-y-4" aria-label={isTest ? "Test verification evidence" : "Delivery evidence (Definition of Done)"}>
+    {!onStage && <DeliveryReadinessView {...readiness} onRefresh={() => setReload(value => value + 1)} />}
     {isTest && !onStage && <div className="flex justify-end"><button type="button" disabled={!data && !error} onClick={() => setReload(value => value + 1)} className="rounded-md border border-gray-300 px-3 py-2 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800">Refresh evidence</button></div>}
     {error && <p role="alert" className="rounded-md border border-red-300 bg-red-50 p-3 text-xs text-red-700 dark:border-red-900/70 dark:bg-red-950/25 dark:text-red-300">{error}</p>}
     {!data && !error && <PulseLoader label="Loading delivery evidence…" />}
     {data && <>
-      {card.card_type === 'normal' && !onStage && <DeliveryCompletenessView value={mine?.delivery_completeness} />}
       {isTest && !onStage && <TestDeliveryOverview data={data} cardId={card.id} />}
       {mine && !isTest && <CardProgressPanel key={`${boardId}:${card.id}:${data.edition}:${canProgress}`} boardId={boardId} specId={card.spec_id} edition={data.edition} card={mine} canWrite={canProgress} onStage={onStage} onSaved={() => { setReload(v => v + 1); onChanged?.(); }} />}
       {!onStage && <>

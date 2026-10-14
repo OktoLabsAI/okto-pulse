@@ -548,6 +548,16 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/delivery-evidence`, { signal });
     },
 
+    async getDeliveryReadiness(boardId: string, specId: string, cardId?: string, signal?: AbortSignal): Promise<DeliveryReadiness> {
+      const query = new URLSearchParams({ view: 'readiness' });
+      if (cardId) query.set('card_id', cardId);
+      return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/delivery-evidence?${query}`, { signal });
+    },
+
+    async getDeliveryReadinessSummary(boardId: string, specId: string, signal?: AbortSignal): Promise<DeliveryReadinessBoardSummary> {
+      return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/delivery-readiness-summary`, { signal });
+    },
+
     async getDecisionReviews(boardId: string, specId: string, signal?: AbortSignal): Promise<DecisionReviewProjection> {
       return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/decision-reviews`, { signal });
     },
@@ -3019,3 +3029,4 @@ export function useDashboardApi() {
   // Compliance guidelines request loop).
   return useMemo(() => createDashboardApi(apiClient), [apiClient]);
 }
+import type { DeliveryReadiness, DeliveryReadinessBoardSummary } from '@/types/delivery-readiness';

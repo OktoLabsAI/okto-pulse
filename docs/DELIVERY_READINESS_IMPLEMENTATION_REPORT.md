@@ -768,3 +768,25 @@ Validation:
 Evidence mapping added by this checkpoint: M15 -> test_delivery_readiness_acceptance.py::test_M15_inherited_business_rule_preserves_path_and_reuses_actual_proof; V22/V24 -> its currentness test; R01/R02/S07 -> test_delivery_readiness_progress.py; R02 domain detail -> test_delivery_readiness_native_diagnostics.py; M15 closed shape -> test_delivery_readiness_contracts.py. The initial matrix NOT_RUN list is not a claim that these cases remain unexecuted; these concrete results supersede it for the identified backend assertions only. UI rendering remains unimplemented.
 
 Resume with P08: summarized board projection, shared client/types and two distinct readiness bars. P02-P07 implementation has focused acceptance evidence; retain the remaining full named-case reconciliation, integrated regressions and performance verification in P11 as the plan requires, rather than making additional pre-UI audits a new milestone. Do not mark the full plan complete. No frontend build/production install/restart/reset, data mutation, deployment or release in this checkpoint. Browser artifacts remain local.
+
+## P08 work-in-progress checkpoint requested by user - 2026-10-14
+
+User requested commit and push of all current work. Starting pushed pair: Core 13162f8c / Community 4ca38c8a. This checkpoint preserves the implementation in progress; it is not P08 acceptance or completion of the plan.
+
+Changes preserved:
+- Core: authorized Spec-wide board summary with one read batch and shared evaluation, closed summary DTOs, application use case, and regression tests. Persisted Done facts from the same authorized batch remain distinct from proof qualification and transition authority.
+- Community: REST summary endpoint, typed readiness clients, scope-checked hooks, and separate implementation/verification bars connected to normal/Bug/Test cards and Card/Spec delivery panels.
+- DoD pending counter now recognizes the same ready implementation proof used by its requirement row.
+
+Validation observed on this checkpoint:
+- Fresh isolated installation/source byte parity: 861 Core / 323 Community Python files. Production installation was not changed.
+- Core board summary, state and shared-evaluation suites: 76 passed in 9.48s.
+- git diff --check passed in both repositories.
+- TypeScript build FAILED with four diagnostics: DeliveryCompleteness.test.tsx lines 21, 34 and 48 still pass removed KanbanCard deliveryCompleteness prop; DeliveryReadinessView.tsx line 52 uses String.replaceAll outside the configured target library.
+- No frontend acceptance, visual verification, new REST integration acceptance or architecture closure result is claimed for these changes. The last zero-budget closure belongs to the prior checkpoint.
+
+Exact resume point:
+1. Replace obsolete UI score tests with readiness contract/view/hook tests; resolve the replaceAll target incompatibility and organize imports currently appended to api.ts and DeliveryEvidencePanel.tsx.
+2. Validate the new REST summary with native-schema authorization/no-store/scope tests; run focused frontend tests, TypeScript and isolated visual checks, then architecture closure with all eight budgets ZERO.
+3. Finish P08 and continue P09-P11 from the agreed plan, including actionable navigation/refresh, final named-case reconciliation and packaged validation. Existing legacy backend delivery_completeness remains as required by the plan.
+4. No production reinstall/restart/reset, data mutation or release was performed. Generated .playwright-cli/ and output/ captures/logs remain local, outside the implementation commits.

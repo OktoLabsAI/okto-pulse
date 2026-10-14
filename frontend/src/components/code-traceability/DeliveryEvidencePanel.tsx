@@ -71,6 +71,7 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
   const [gateMode, setGateMode] = useState<'advisory' | 'blocking' | null>(null);
   const [error, setError] = useState('');
   const [reload, setReload] = useState(0);
+  const readiness = useDeliveryReadiness(boardId, specId, undefined, `${revision ?? ''}:${reload}`);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -95,6 +96,7 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
       .filter(Boolean).join(' · ') + ' obligation' + ((missingImplementation + missingTest) === 1 ? '' : 's');
 
   return <section className="space-y-5" aria-label="Implementation and verification">
+    <DeliveryReadinessView {...readiness} onRefresh={() => setReload(value => value + 1)} />
     <p className="text-sm text-gray-500 dark:text-gray-400">Track implementation and verification for each obligation. Expand an item to inspect its evidence.</p>
     <div className="flex flex-wrap items-center justify-between gap-4">
       <div className="flex min-w-0 items-center gap-2">
@@ -231,3 +233,5 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
     </>}
   </section>;
 }
+import { DeliveryReadinessView } from './DeliveryReadinessView';
+import { useDeliveryReadiness } from './useDeliveryReadiness';

@@ -10,7 +10,7 @@ invoke only those governance operations.
 """
 
 from __future__ import annotations
-from okto_pulse.core.models.delivery_evidence import card_delivery_command, DeliveryBatchEntryError, DeliveryEvidenceInput, DeliveryEvidenceCommand, DeliveryEvidenceReadQuery
+from okto_pulse.core.models.delivery_evidence import card_delivery_command, DeliveryBatchEntryError, DeliveryEvidenceInput, DeliveryEvidenceCommand, DeliveryEvidenceReadQuery, DeliveryEvidenceQuery
 from okto_pulse.core.models.delivery_report import CardDeliveryRecordInput, DeliveryReportRejected
 from okto_pulse.core.application.use_cases.delivery_evidence import GetDeliveryEvidenceUseCase, RecordCardDeliveryEvidenceUseCase, RecordDeliveryEvidenceUseCase
 from okto_pulse.core.application.use_cases.decision_review import GetDecisionReviewsUseCase, RecordDecisionReviewsUseCase
@@ -1233,6 +1233,16 @@ async def get_code_traceability_projection(
         principal=principal,
         uow=uow,
     )
+
+
+@router.get("/{board_id}/specs/{spec_id}/delivery-readiness-summary")
+async def get_delivery_readiness_summary(board_id: str, spec_id: str, response: Response,
+    principal: Principal = Depends(require_principal), uow: PulseUnitOfWork = Depends(get_unit_of_work)):
+    from okto_pulse.core.application.use_cases.delivery_evidence import GetDeliveryReadinessBoardSummaryUseCase
+    response.headers['Cache-Control'] = 'no-store'
+    return await _execute(GetDeliveryReadinessBoardSummaryUseCase(),
+        DeliveryEvidenceQuery(board_id=board_id, spec_id=spec_id),
+        board_id=board_id, principal=principal, uow=uow)
 
 
 @router.get("/{board_id}/specs/{spec_id}/delivery-evidence")
