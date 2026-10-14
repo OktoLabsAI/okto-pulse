@@ -3342,6 +3342,20 @@ export interface SpecValidation {
   lifecycle_state?: 'current' | 'previous' | null;
 }
 
+export interface SpecDecompositionInput {
+  breakdown_completeness: number;
+  breakdown_justification: string;
+  granularity: number;
+  granularity_justification: string;
+  dependency_coherence: number;
+  dependency_justification: string;
+  test_coverage_quality: number;
+  test_coverage_justification: string;
+  overall_score: number;
+  overall_justification: string;
+  recommendation: 'approve' | 'request_changes' | 'reject';
+}
+
 export interface SpecValidationSubmitPayload {
   expected_validation_edition: number;
   expected_spec_version: number;
@@ -3358,15 +3372,18 @@ export interface SpecValidationSubmitPayload {
   ambiguity_justification: string;
   pinpoints: SpecValidationPinpointInput[];
   recommendation: 'approve' | 'reject';
+  decomposition?: SpecDecompositionInput;
 }
 
 export interface SpecValidationSubmitResponse {
   validation_id: string;
   validation_edition: number;
   is_current: boolean;
-  spec_status?: string | null;
-  outcome?: 'success' | 'failed' | null;
-  threshold_violations?: string[] | null;
+  spec_status: 'approved' | 'validated';
+  outcome: 'success' | 'failed';
+  planning_result: 'ready' | 'blocked';
+  decomposition_ids: string[];
+  planning_blockers: string[];
 }
 
 export interface SpecValidationList {

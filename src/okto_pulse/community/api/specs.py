@@ -2559,14 +2559,7 @@ async def delete_spec_question(
 # ---- Spec Validation Gate Endpoints ----
 
 
-class SpecValidationAcceptedResponse(BaseModel):
-    """Minimal human-facing acknowledgement; audit data lives elsewhere."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    validation_id: str
-    validation_edition: int
-    is_current: bool
+from okto_pulse.core.models.schemas import SpecValidationConclusionResponse
 
 
 class SpecValidationListResponse(BaseModel):
@@ -2601,7 +2594,7 @@ class CurrentSpecValidationResponse(BaseModel):
 
 @router.post(
     "/specs/{spec_id}/validation",
-    response_model=SpecValidationAcceptedResponse,
+    response_model=SpecValidationConclusionResponse,
     status_code=status.HTTP_201_CREATED,
 )
 async def submit_spec_validation(
@@ -2615,7 +2608,8 @@ async def submit_spec_validation(
     Runs deterministic coverage gates as pre-requisite. If they pass, computes
     outcome from thresholds + recommendation: failed if any threshold violated
     or recommendation=reject; success only if all thresholds OK and approve.
-    On success, atomically promotes spec.status to validated.
+    Promotion also requires the Current decomposition judgment. Both native
+    assessments retain their own results, including a valid negative opinion.
     """
     # Thin REST adapter (spec #09): the field-shape validation moved into the
     # command, get_spec/not-found and the coverage-gate errors are surfaced as
@@ -2659,9 +2653,8 @@ async def submit_spec_validation(
             e, not_found_detail="Spec not found"
         ) from e
     return {
-        "validation_id": result.payload["validation_id"],
-        "validation_edition": result.payload["validation_edition"],
-        "is_current": result.payload["is_current"],
+        key: result.payload[key]
+        for key in SpecValidationConclusionResponse.model_fields
     }
 
 

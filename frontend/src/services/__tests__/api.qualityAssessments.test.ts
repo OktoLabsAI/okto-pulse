@@ -203,6 +203,19 @@ describe('quality assessment REST client', () => {
       ambiguity_justification: 'Only one reasonable interpretation remains.',
       pinpoints: [],
       recommendation: 'approve' as const,
+      decomposition: {
+        breakdown_completeness: 90,
+        breakdown_justification: 'Each obligation has an explicit owner.',
+        granularity: 90,
+        granularity_justification: 'Tasks have bounded deliverables.',
+        dependency_coherence: 90,
+        dependency_justification: 'The dependency ordering is coherent.',
+        test_coverage_quality: 90,
+        test_coverage_justification: 'Tests exercise the acceptance outcomes.',
+        overall_score: 90,
+        overall_justification: 'The decomposition has been reviewed.',
+        recommendation: 'reject' as const,
+      },
     };
     const checklistStart = {
       spec_edition: 3,
@@ -221,7 +234,13 @@ describe('quality assessment REST client', () => {
       }],
     };
 
-    await result.current.submitSpecValidation('spec-1', validation);
+    const receipt = {
+      validation_id: 'validation-1', validation_edition: 3, is_current: true,
+      outcome: 'success', spec_status: 'approved', planning_result: 'blocked',
+      decomposition_ids: ['review-1'], planning_blockers: ['decomposition_rejected'],
+    };
+    mockApiClient.fetchJson.mockResolvedValueOnce(receipt);
+    expect(await result.current.submitSpecValidation('spec-1', validation)).toEqual(receipt);
     await result.current.startChecklistExecution(
       'board-1',
       'spec-1',
