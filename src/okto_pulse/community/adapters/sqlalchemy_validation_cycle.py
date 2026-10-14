@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from .sqlalchemy_spec_planning_manifest import CommunitySpecPlanningManifest
+from .sqlalchemy_unit_of_work import begin_community_consistent_read
+
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -1457,6 +1460,7 @@ class CommunitySqlAlchemyValidationCycleReader:
     ) -> ValidationCycleSummary:
         self._require_local(realm_scope)
         async with self._session_factory() as session:
+            await begin_community_consistent_read(session)
             counter, connection, listener = await _count_session_selects(session)
             outcome = "error"
             try:
@@ -1517,6 +1521,7 @@ class CommunitySqlAlchemyValidationCycleReader:
             raise ValueError("validation_cycle_batch_subject_duplicate")
 
         async with self._session_factory() as session:
+            await begin_community_consistent_read(session)
             counter, connection, listener = await _count_session_selects(session)
             outcome = "error"
             try:
@@ -1692,6 +1697,18 @@ class CommunitySqlAlchemyValidationCycleReader:
             spec_rows,
             access_by_spec=spec_access,
         )
+        planning_manifests = {}
+        manifest_reader = CommunitySpecPlanningManifest(session, RealmScope.local())
+        for board_id in {str(subject.board_id) for subject in spec_rows}:
+            spec_ids = tuple(
+                str(subject.id) for subject in spec_rows
+                if str(subject.board_id) == board_id
+                and spec_access[str(subject.id)].can(ValidationCycleResultType.SPEC_VALIDATION)
+            )
+            if spec_ids:
+                planning_manifests.update((item.spec_id, item) for item in await manifest_reader.read_many(
+                    board_id=board_id, spec_ids=spec_ids,
+                ))
 
         results: list[ValidationCycleSummary] = []
         for ref in refs:
@@ -1768,6 +1785,7 @@ class CommunitySqlAlchemyValidationCycleReader:
                             actions if subject_status == "approved" else ()
                         ),
                         visible_sections=access.visible_sections,
+                        planning_manifest=planning_manifests.get(ref.subject_id),
                     )
                 )
                 continue
@@ -1962,6 +1980,11 @@ class CommunitySqlAlchemyValidationCycleReader:
         )
         status = _value(subject.status)
         any_started = any(item.status not in {"not_started", "off"} for item in checks)
+        manifest = None
+        if validation_visible:
+            manifest, = await CommunitySpecPlanningManifest(session, RealmScope.local()).read_many(
+                board_id=str(subject.board_id), spec_ids=(str(subject.id),),
+            )
         return ValidationCycleSummary(
             subject_type=AssessmentSubjectType.SPEC,
             subject_id=subject.id,
@@ -2001,6 +2024,7 @@ class CommunitySqlAlchemyValidationCycleReader:
             checks=checks,
             remaining_actions=actions if status == "approved" else (),
             visible_sections=access.visible_sections,
+            planning_manifest=manifest,
         )
 
     async def _batch_spec_checks(

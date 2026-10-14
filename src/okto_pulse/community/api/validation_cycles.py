@@ -19,6 +19,8 @@ from okto_pulse.core.application.use_cases.validation_cycle import (
     ValidationCycleReadUseCases,
 )
 from okto_pulse.core.domain.quality_assessment import AssessmentSubjectType
+from okto_pulse.core.domain.spec_planning import SpecPlanningManifest
+from okto_pulse.core.ports.spec_planning_manifest import SpecPlanningManifestUnavailable
 from okto_pulse.core.domain.validation_cycle import (
     ValidationCycleResultType,
     ValidationCycleState,
@@ -74,6 +76,7 @@ class SpecValidationCycleResponse(_ClosedResponseModel):
     previous_result_count: int | None = Field(default=None, ge=0)
     previous_results: list[ValidationCycleResultResponse] | None = None
     submission_fence: ValidationSubmissionFenceResponse | None = None
+    planning_manifest: SpecPlanningManifest | None = None
     checks: list[ValidationCycleCheckResponse]
     remaining_actions: list[str]
 
@@ -128,6 +131,11 @@ def _http_error(
     *,
     subject_type: AssessmentSubjectType,
 ) -> HTTPException:
+    if isinstance(exc, SpecPlanningManifestUnavailable):
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error_code": exc.code, "retryable": False},
+        )
     if isinstance(exc, ValidationCycleReadAccessDenied):
         return HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

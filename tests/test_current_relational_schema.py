@@ -144,6 +144,9 @@ async def test_fresh_schema_restart_preserves_data_and_identity(tmp_path, contra
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mutation", [
     "DROP TABLE spec_validation_operation_receipts",
+    "DROP TABLE validation_source_revisions",
+    "DROP TRIGGER validation_revision_cards_update",
+    "DROP TRIGGER validation_revision_monotonic",
     "PRAGMA user_version=399",
     "PRAGMA application_id=0",
     "ALTER TABLE cards ADD COLUMN sprint_id TEXT",

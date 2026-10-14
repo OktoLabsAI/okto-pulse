@@ -42,6 +42,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
 from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
     CommunitySemanticSession,
 )
+from okto_pulse.community.adapters.sqlite_validation_revisions import install_validation_revision_triggers
 from okto_pulse.community.adapters.sqlalchemy_quality_assessment import (
     CommunitySqlAlchemyQualityAssessmentPreflightReader,
 )
@@ -256,6 +257,7 @@ async def cycle_rig(tmp_path, monkeypatch):
     )
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
+        await connection.run_sync(lambda connection: install_validation_revision_triggers(connection, Base.metadata))
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
@@ -410,11 +412,74 @@ async def test_batch_of_fifty_is_summary_only_and_has_constant_select_budget(
 
     assert len(one_result) == 1
     assert len(fifty_result) == 50
-    assert len(fifty_selects) == len(one_selects) == 6
+    assert len(fifty_selects) == len(one_selects) == 7
+    assert sum("validation_source_revisions" in statement for statement in fifty_selects) == 1
+    assert all(item.planning_manifest is not None for item in fifty_result)
     assert all(item.previous_results == () for item in fifty_result)
     assert [item.subject_id for item in fifty_result] == [
         item.subject_id for item in fifty
     ]
+
+
+async def test_cycle_exposes_current_manifest_and_hides_it_without_validation_read(cycle_rig, monkeypatch):
+    reader = CommunitySqlAlchemyValidationCycleReader(cycle_rig.factory)
+    async def read():
+        return await reader.get_validation_cycle(
+            subject_type=AssessmentSubjectType.SPEC, subject_id="spec-cycle-00",
+            actor_id="owner", realm_scope=RealmScope.local(), include_previous=False, offset=0, limit=25,
+        )
+    initial = await read()
+    assert initial.planning_manifest.spec_id == initial.subject_id
+    assert initial.planning_manifest.spec_version == initial.submission_fence.expected_subject_version
+    assert project_validation_cycle(initial)["planning_manifest"] == initial.planning_manifest.model_dump(mode="json")
+    async with cycle_rig.factory() as session:
+        from sqlalchemy import text
+        await session.execute(text("UPDATE specs SET evaluations='[]' WHERE id='spec-cycle-00'"))
+        await session.commit()
+    changed = await read()
+    assert changed.planning_manifest.subject_revision > initial.planning_manifest.subject_revision
+    _permit_only(monkeypatch, "spec.entity.read", "spec.checklist.read")
+    hidden = await read()
+    assert hidden.planning_manifest is None
+    assert "planning_manifest" not in project_validation_cycle(hidden)
+
+
+async def test_cycle_manifest_shares_snapshot_with_results_during_concurrent_card_write(cycle_rig, monkeypatch):
+    from okto_pulse.community.adapters.sqlalchemy_models import Card
+
+    async with cycle_rig.engine.connect() as connection:
+        await connection.exec_driver_sql("PRAGMA journal_mode=WAL")
+    reader = CommunitySqlAlchemyValidationCycleReader(cycle_rig.factory)
+    arguments = dict(
+        subjects=(ValidationCycleSubjectRef(AssessmentSubjectType.SPEC, "spec-cycle-00"),),
+        actor_id="owner", realm_scope=RealmScope.local(),
+    )
+    before, = await reader.get_validation_cycles(**arguments)
+    reached = asyncio.Event()
+    release = asyncio.Event()
+    original = reader._batch_spec_checks
+
+    async def hold(*args, **kwargs):
+        checks = await original(*args, **kwargs)
+        reached.set()
+        await release.wait()
+        return checks
+
+    monkeypatch.setattr(reader, "_batch_spec_checks", hold)
+    pending = asyncio.create_task(reader.get_validation_cycles(**arguments))
+    await asyncio.wait_for(reached.wait(), 5)
+    try:
+        async with cycle_rig.factory() as session:
+            session.add(Card(id="concurrent-card", board_id=BOARD_ID, spec_id="spec-cycle-00",
+                             title="Added during read", created_by="owner"))
+            await session.commit()
+    finally:
+        release.set()
+    during, = await asyncio.wait_for(pending, 5)
+    assert during.planning_manifest == before.planning_manifest
+    monkeypatch.setattr(reader, "_batch_spec_checks", original)
+    after, = await reader.get_validation_cycles(**arguments)
+    assert after.planning_manifest.subject_revision > before.planning_manifest.subject_revision
 
 
 def _semantic_metric(
@@ -795,7 +860,7 @@ async def test_policy_summary_distinguishes_legacy_from_missing_frozen_scope(
         if check["result_type"] == "policy_compliance"
     )
 
-    assert len(statements) == 6
+    assert len(statements) == 7
     assert batch_policy == single_policy
     assert single_policy["status"] == "needs_attention"
     assert single_policy["summary"] == ("1 policy scope item could not be verified")
@@ -894,7 +959,7 @@ async def test_policy_summary_is_snapshot_bound_deduplicated_and_human(
         if check["result_type"] == "policy_compliance"
     )
 
-    assert len(statements) == 6
+    assert len(statements) == 7
     assert batch_policy == single_policy
     assert single_policy["status"] == "advisory"
     assert single_policy["summary"] == (

@@ -875,6 +875,17 @@ export interface QualityValidationCycleSummary
   subject_type: 'ideation' | 'refinement';
 }
 
+export interface SpecPlanningManifest {
+  board_id: string;
+  spec_id: string;
+  edition: number;
+  spec_version: number;
+  subject_incarnation: string;
+  subject_revision: number;
+  authority_incarnation: string;
+  authority_revision: number;
+}
+
 export interface SpecValidationCycleSummary
   extends ValidationCycleSummaryIdentity {
   subject_type: 'spec';
@@ -888,6 +899,8 @@ export interface SpecValidationCycleSummary
   previous_results?: ValidationCycleResultSummary[];
   /** Present only when the actor can read Spec Validation results. */
   submission_fence?: ValidationSubmissionFence;
+  /** Technical submission basis; present only with Spec Validation read access. */
+  planning_manifest?: SpecPlanningManifest;
   checks: ValidationCycleCheckSummary[];
   remaining_actions: string[];
 }

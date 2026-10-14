@@ -90,6 +90,40 @@ SUBJECT_VERSION_CONFLICT_REASON = "subject_version_conflict"
 _REPEATABLE_READ = "REPEATABLE READ"
 
 
+async def begin_community_consistent_read(session: AsyncSession) -> None:
+    """Pin one physical snapshot for a UoW or an edition-owned composite reader."""
+    marker = session.info.get(_CONSISTENT_READ_INFO_KEY)
+    if marker is not None:
+        if not session.in_transaction():
+            raise ConsistentReadContractError("consistent_read_snapshot_no_longer_active")
+        return
+    bind = session.get_bind()
+    dialect = bind.dialect.name if bind is not None else ""
+    transaction_already_active = bool(session.in_transaction())
+    if dialect == "sqlite":
+        connection = await session.connection()
+
+        def physical_transaction_active(sync_connection: Any) -> bool:
+            driver = getattr(sync_connection.connection, "driver_connection", None)
+            return bool(getattr(driver, "in_transaction", False))
+
+        if not await connection.run_sync(physical_transaction_active):
+            await connection.exec_driver_sql("BEGIN")
+        session.info[_CONSISTENT_READ_INFO_KEY] = "sqlite_deferred"
+        return
+    if dialect == "postgresql":
+        connection = (
+            await session.connection() if transaction_already_active else
+            await session.connection(execution_options={"isolation_level": _REPEATABLE_READ})
+        )
+        isolation = (await connection.get_isolation_level()).replace("_", " ").upper()
+        if isolation != _REPEATABLE_READ:
+            raise ConsistentReadContractError("consistent_read_incompatible_active_transaction")
+        session.info[_CONSISTENT_READ_INFO_KEY] = "postgresql_repeatable_read"
+        return
+    raise ConsistentReadContractError("consistent_read_dialect_unsupported")
+
+
 def _knowledge_creation_race_target(
     conflict_error: Exception,
 ) -> KnowledgeTargetKey | None:
@@ -249,6 +283,9 @@ class CommunityUnitOfWork:
         from .sqlalchemy_spec_validation_receipts import CommunitySpecValidationReceiptStore
 
         self.spec_validation_receipts = CommunitySpecValidationReceiptStore(session, self.realm_scope)
+        from .sqlalchemy_spec_planning_manifest import CommunitySpecPlanningManifest
+
+        self.spec_planning_manifest = CommunitySpecPlanningManifest(session, self.realm_scope)
 
     async def __aenter__(self) -> "CommunityUnitOfWork":
         return self
@@ -353,55 +390,7 @@ class CommunityUnitOfWork:
         ``READ COMMITTED`` is never upgraded after the fact.
         """
 
-        marker = self._session.info.get(_CONSISTENT_READ_INFO_KEY)
-        if marker is not None:
-            if not self._session.in_transaction():
-                raise ConsistentReadContractError(
-                    "consistent_read_snapshot_no_longer_active"
-                )
-            return
-
-        bind = self._session.get_bind()
-        dialect = bind.dialect.name if bind is not None else ""
-        transaction_already_active = bool(self._session.in_transaction())
-
-        if dialect == "sqlite":
-            connection = await self._session.connection()
-
-            def physical_transaction_active(sync_connection: Any) -> bool:
-                driver_connection = getattr(
-                    sync_connection.connection,
-                    "driver_connection",
-                    None,
-                )
-                return bool(getattr(driver_connection, "in_transaction", False))
-
-            physical_active = await connection.run_sync(
-                physical_transaction_active
-            )
-            if not physical_active:
-                await connection.exec_driver_sql("BEGIN")
-            self._session.info[_CONSISTENT_READ_INFO_KEY] = "sqlite_deferred"
-            return
-
-        if dialect == "postgresql":
-            if transaction_already_active:
-                connection = await self._session.connection()
-            else:
-                connection = await self._session.connection(
-                    execution_options={"isolation_level": _REPEATABLE_READ}
-                )
-            isolation = (await connection.get_isolation_level()).replace(
-                "_", " "
-            ).upper()
-            if isolation != _REPEATABLE_READ:
-                raise ConsistentReadContractError(
-                    "consistent_read_incompatible_active_transaction"
-                )
-            self._session.info[_CONSISTENT_READ_INFO_KEY] = "postgresql_repeatable_read"
-            return
-
-        raise ConsistentReadContractError("consistent_read_dialect_unsupported")
+        await begin_community_consistent_read(self._session)
 
     async def synchronize(
         self,

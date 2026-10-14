@@ -84,6 +84,10 @@ def create_current_schema_objects(connection: Any) -> None:
             connection.exec_driver_sql(f'DROP {kind.upper()} "{name}"')
         connection.exec_driver_sql(item["sql"])
 
+    from .sqlite_validation_revisions import install_validation_revision_triggers
+
+    install_validation_revision_triggers(connection, Base.metadata)
+
 
 def seed_current_schema_fences(connection: Any) -> None:
     from .sqlalchemy_models import (

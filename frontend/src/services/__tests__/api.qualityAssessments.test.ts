@@ -156,10 +156,20 @@ describe('quality assessment REST client', () => {
   it('loads the bounded human validation-cycle summary without previous results', async () => {
     const controller = new AbortController();
     const { result } = renderHook(() => useDashboardApi());
+    const cycle = {
+      subject_type: 'spec', subject_id: 'spec/1', edition: 2,
+      planning_manifest: {
+        board_id: 'board', spec_id: 'spec/1', edition: 2, spec_version: 4,
+        subject_incarnation: 'a'.repeat(32), subject_revision: 7,
+        authority_incarnation: 'b'.repeat(32), authority_revision: 3,
+      },
+    };
+    mockApiClient.fetchJson.mockResolvedValueOnce(cycle);
 
-    await result.current.getValidationCycle('spec', 'spec/1', {
+    const response = await result.current.getValidationCycle('spec', 'spec/1', {
       signal: controller.signal,
     });
+    expect(response).toEqual(cycle);
 
     expect(mockApiClient.fetchJson).toHaveBeenCalledWith(
       '/specs/spec%2F1/validation-cycle?include_previous=false&offset=0&limit=25',

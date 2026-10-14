@@ -1526,6 +1526,22 @@ class ArchitectureCandidateDecisionRow(Base):
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
 
 
+class ValidationSourceRevisionRow(Base):
+    """Bounded transactional change tokens, not evaluation/history records."""
+
+    __tablename__ = "validation_source_revisions"
+    __table_args__ = (
+        CheckConstraint("scope_kind IN ('board', 'spec', 'card')", name="ck_validation_revision_scope"),
+        CheckConstraint("revision >= 1", name="ck_validation_revision_positive"),
+        CheckConstraint("length(incarnation) = 32", name="ck_validation_revision_incarnation"),
+    )
+
+    scope_kind: Mapped[str] = mapped_column(String(16), primary_key=True)
+    scope_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    incarnation: Mapped[str] = mapped_column(String(32), nullable=False)
+    revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
 class SpecValidationOperationReceiptRow(Base):
     """One actor-scoped planning conclusion; contains references, not review bodies."""
 

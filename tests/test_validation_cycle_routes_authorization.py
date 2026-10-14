@@ -9,6 +9,8 @@ import pytest
 from okto_pulse.community.api import validation_cycles
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.core.domain.quality_assessment import AssessmentSubjectType
+from okto_pulse.core.domain.spec_planning import SpecPlanningManifest
+from okto_pulse.core.ports.spec_planning_manifest import SpecPlanningManifestUnavailable
 from okto_pulse.core.domain.validation_cycle import (
     ValidationCycleCheckSummary,
     ValidationCycleResultSummary,
@@ -125,6 +127,7 @@ def test_rest_single_omits_hidden_validation_fields_per_check_leaf(
         "previous_result_count",
         "previous_results",
         "submission_fence",
+        "planning_manifest",
     }.isdisjoint(payload)
 
 
@@ -156,6 +159,11 @@ def test_rest_single_preserves_the_authorized_validation_section() -> None:
         ),
         previous_result_count=0,
         submission_fence=ValidationSubmissionFence(2, 4, 1),
+        planning_manifest=SpecPlanningManifest(
+            board_id="board", spec_id="spec-1", edition=2, spec_version=4,
+            subject_incarnation="a" * 32, subject_revision=3,
+            authority_incarnation="b" * 32, authority_revision=1,
+        ),
         checks=(),
         visible_sections=(ValidationCycleResultType.SPEC_VALIDATION,),
     )
@@ -171,6 +179,17 @@ def test_rest_single_preserves_the_authorized_validation_section() -> None:
         "general_justification": "Authorized result."
     }
     assert payload["checks"] == []
+    assert payload["planning_manifest"] == summary.planning_manifest.model_dump(mode="json")
+
+
+def test_rest_reports_missing_revision_authority_as_unavailable():
+    response = _client(_Reader(cycle_error=SpecPlanningManifestUnavailable())).get(
+        "/api/v1/specs/spec-1/validation-cycle"
+    )
+    assert response.status_code == 503
+    assert response.json()["detail"] == {
+        "error_code": "spec_planning_manifest_unavailable", "retryable": False,
+    }
 
 
 def test_rest_audit_maps_hidden_and_missing_results_to_the_same_404() -> None:
