@@ -8,6 +8,8 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CardStatus, CardSummary } from '@/types';
 
+vi.mock('@/hooks/useWorkspaceRevisions', () => ({ useWorkspaceRevisions: () => 'current' }));
+
 const mocks = vi.hoisted(() => {
   const moveCard = vi.fn();
   const emptyColumns = {

@@ -19,7 +19,8 @@ __all__ = ['db_factory']
 
 
 @pytest.mark.asyncio
-async def test_unconfigured_checklist_returns_actionable_conflict_and_rolls_back(db_factory):
+@pytest.mark.parametrize('surface', ['rest', 'mcp'])
+async def test_unconfigured_checklist_returns_actionable_conflict_and_rolls_back(db_factory, monkeypatch, surface):
     board_id, spec_id = 'unconfigured-board', 'admission-spec'
     async with db_factory() as db:
         async with CommunityUnitOfWork(db, actor=ACTOR, realm_scope=RealmScope.local()) as uow:
@@ -49,10 +50,35 @@ async def test_unconfigured_checklist_returns_actionable_conflict_and_rolls_back
                 yield uow
 
     app.dependency_overrides[specs.get_unit_of_work] = uow_dependency
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
-        response = await client.post(f'/api/v1/specs/{spec_id}/move', json={'status': 'approved'})
-    assert response.status_code == 409, response.text
-    error = response.json()['detail']
+    if surface == 'rest':
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+            response = await client.post(f'/api/v1/specs/{spec_id}/move', json={'status': 'approved'})
+        assert response.status_code == 409, response.text
+        error = response.json()['detail']
+    else:
+        import json
+        from contextlib import asynccontextmanager
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+        from okto_pulse.core.mcp import server
+
+        # Native registered tool and transaction; identity supplied explicitly.
+        # Authenticated wire/UI qualification remains part of the U4 rehearsal.
+        monkeypatch.setattr(server, '_get_agent_ctx', AsyncMock(return_value=SimpleNamespace(
+            agent_id=USER_ID, agent_name='Admission reviewer', realm_id='local',
+            permissions=['spec.read', 'spec.update', 'spec.entity.read',
+                         'spec.move.review_to_approved', 'spec.interact_in.review'],
+        )))
+
+        @asynccontextmanager
+        async def mcp_uow(*, actor):
+            async with db_factory() as db:
+                async with CommunityUnitOfWork(db, actor=actor, realm_scope=RealmScope.local()) as uow:
+                    yield uow
+
+        monkeypatch.setattr(server, 'get_unit_of_work_factory_for_mcp', lambda: mcp_uow)
+        tool = await server.mcp.get_tool('okto_pulse_move_spec')
+        error = json.loads(await tool.fn(board_id=board_id, spec_id=spec_id, status='approved'))
     assert error['code'] == 'checklist_board_binding_missing'
     assert error['details']['blocked_transition'] == 'approved'
     assert error['details']['next_action'] == {'action': 'configure_board_checklist', 'board_id': board_id}

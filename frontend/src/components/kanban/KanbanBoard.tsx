@@ -44,9 +44,14 @@ import { SearchInput } from '@/components/shared/SearchInput';
 import { KanbanColumn, type KanbanCardFilterType } from './KanbanColumn';
 import { useCognitivePendingBadges } from '@/hooks/useCognitivePendingBadges';
 import {
+  hasEffectivePermission,
   hasPermissionWithState,
+  refreshBoardPermissions,
   usePermissions,
 } from '@/hooks/usePermissions';
+import { useWorkspaceRevisions } from '@/hooks/useWorkspaceRevisions';
+import { AuthenticatedFetchError } from '@/lib/authFetch';
+import { PulseLoader } from '@/components/shared/PulseLoader';
 import { CardModal } from './CardModal';
 import { useOptionalModalStack } from '@/contexts/ModalStackContext';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
@@ -174,6 +179,16 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
   const [columnsLoading, setColumnsLoading] = useState(false);
   const [columnsError, setColumnsError] = useState<string | null>(null);
   const [columnsReloadToken, setColumnsReloadToken] = useState(0);
+  // External invalidation refreshes data without changing the user's view.
+  const [liveRevision, setLiveRevision] = useState(0);
+  const [accessLost, setAccessLost] = useState(false);
+  const [authorizing, setAuthorizing] = useState(false);
+  const accessLostRef = useRef(false);
+  const authorizationRequired = useRef(false);
+  const readGeneration = useRef(0);
+  const syncGeneration = useRef(0);
+  const currentBoardId = useRef(boardId);
+  currentBoardId.current = boardId;
   const [viewAllStatus, setViewAllStatus] = useState<CardStatus | null>(null);
   const [columnPageView, setColumnPageView] = useState<{
     status: CardStatus;
@@ -214,6 +229,67 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
     setConclusionImpactDraft(emptyImpactEvidenceDraft());
     setConclusionGateError(null);
   };
+
+  const loseAccess = useCallback(() => {
+    accessLostRef.current = true;
+    readGeneration.current += 1;
+    syncGeneration.current += 1;
+    setAccessLost(true);
+    setAuthorizing(false);
+    useDashboardStore.getState().setColumns({} as Record<CardStatus, CardSummary[]>);
+    useDashboardStore.getState().closeCardModal();
+    setActiveCard(null);
+    setCreateCardStatus(null);
+    setConclusionPending(null);
+    setCancelPending(null);
+    resetConclusionFields();
+    setColumnPageView(null);
+    setViewAllStatus(null);
+    setSpecs([]);
+    setSpecSearchOpen(false);
+    setColumnsLoading(false);
+  }, []);
+  const syncState = useWorkspaceRevisions({
+    boardId,
+    subjects: [{ subject_type: 'card_collection', subject_id: boardId }],
+    onAccessLost: loseAccess,
+    onChange: async ({ initial, authorityChanged }) => {
+      if (initial && !accessLostRef.current) return;
+      authorizationRequired.current ||= authorityChanged || accessLostRef.current;
+      const requestedBoard = boardId;
+      const generation = ++syncGeneration.current;
+      const current = () => currentBoardId.current === requestedBoard && generation === syncGeneration.current;
+      if (authorizationRequired.current) {
+        readGeneration.current += 1;
+        setAuthorizing(true);
+        try {
+          const effective = await refreshBoardPermissions(boardId);
+          if (!current()) return;
+          if (effective.board_id !== boardId || !hasEffectivePermission(effective, 'card.entity.read')) {
+            loseAccess(); return;
+          }
+        } catch { if (current()) loseAccess(); return; }
+      }
+      if (!current()) return;
+      authorizationRequired.current = false;
+      accessLostRef.current = false;
+      setAccessLost(false);
+      setAuthorizing(false);
+      setLiveRevision(value => value + 1);
+    },
+  });
+
+  useEffect(() => {
+    accessLostRef.current = false;
+    authorizationRequired.current = false;
+    syncGeneration.current += 1;
+    setAccessLost(false);
+    setAuthorizing(false);
+    return () => {
+      syncGeneration.current += 1;
+      readGeneration.current += 1;
+    };
+  }, [boardId]);
 
   const requiresExecutionReport = (
     card: CardSummary | undefined,
@@ -325,8 +401,10 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
   // The generation belongs to this exact request closure. Abort is best-effort;
   // stale responses are still rejected by applyColumnsBatch.
   useEffect(() => {
-    if (!boardId) return undefined;
+    if (!boardId || accessLost || authorizing) return undefined;
     const controller = new AbortController();
+    const read = ++readGeneration.current;
+    const current = () => !controller.signal.aborted && read === readGeneration.current;
     const generation = beginColumnsGeneration({
       specIds: columnsQuery.specIds,
       includeUnlinked: columnsQuery.includeUnlinked,
@@ -341,9 +419,13 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
       ...columnsQuery,
       signal: controller.signal,
     }).then((response) => {
+      if (!current()) return;
       if (applyColumnsBatch(generation, response)) setColumnsLoading(false);
     }).catch((error: unknown) => {
-      if (isAbortError(error)) return;
+      if (!current() || isAbortError(error)) return;
+      if (error instanceof AuthenticatedFetchError && [401, 403, 404].includes(error.status)) {
+        loseAccess(); return;
+      }
       if (generation === useDashboardStore.getState().columnsGeneration) {
         setColumnsLoading(false);
         setColumnsError(error instanceof Error ? error.message : 'Failed to load cards');
@@ -359,13 +441,18 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
     columnsQueryKey,
     columnsReloadToken,
     refreshKey,
+    liveRevision,
+    accessLost,
+    authorizing,
+    loseAccess,
   ]);
 
   // Lookup is intentionally independent from loaded Kanban pages, so options
   // remain complete even when only the first card page is visible.
   useEffect(() => {
-    if (!boardId || !specSearchOpen) return undefined;
+    if (!boardId || !specSearchOpen || accessLost || authorizing) return undefined;
     const controller = new AbortController();
+    const read = readGeneration.current;
     void apiRef.current.lookupSpecs(boardId, {
       search: debouncedSpecSearch,
       limit: 50,
@@ -373,6 +460,7 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
       includeArchivedCards: showArchived,
       signal: controller.signal,
     }).then((response) => {
+      if (controller.signal.aborted || read !== readGeneration.current) return;
       setSpecs((previous) => {
         const merged = new Map<string, LookupOption>();
         for (const option of previous) {
@@ -382,12 +470,12 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
         return [...merged.values()];
       });
     }).catch((error: unknown) => {
-      if (!isAbortError(error)) {
+      if (!controller.signal.aborted && read === readGeneration.current && !isAbortError(error)) {
         toast.error(error instanceof Error ? error.message : 'Failed to load spec options');
       }
     });
     return () => controller.abort();
-  }, [boardId, debouncedSpecSearch, showArchived, specFilter, specSearchOpen]);
+  }, [boardId, debouncedSpecSearch, showArchived, specFilter, specSearchOpen, liveRevision, accessLost, authorizing]);
 
   const toggleSpecFilter = (id: string) => {
     setSpecFilter((prev) => {
@@ -442,11 +530,12 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
     return refs;
   }, [renderedColumns]);
   const { badges: cognitiveBadges } = useCognitivePendingBadges(
-    boardId,
-    visibleCardSourceRefs,
+    accessLost || authorizing ? '' : boardId,
+    accessLost || authorizing ? [] : visibleCardSourceRefs,
   );
   const deliveryCards = useMemo(() => CARD_STATUSES.flatMap(status => renderedColumns[status] || []), [renderedColumns]);
-  const deliveryReadiness = useBoardDeliveryReadiness(boardId, deliveryCards, permissions.has('code_traceability.evidence.read'), String(refreshKey));
+  const deliveryReadiness = useBoardDeliveryReadiness(boardId, deliveryCards,
+    !accessLost && !authorizing && permissions.has('code_traceability.evidence.read'), `${refreshKey}:${liveRevision}`);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -611,8 +700,11 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
     0,
   );
 
-  return (
-    <div className="flex h-full min-h-0 flex-col">
+  if (accessLost) return <p role="alert" className="p-4 text-sm text-red-600 dark:text-red-400">Access to this Board is no longer available.</p>;
+
+  return (<>
+    {authorizing && <PulseLoader size="sm" label="Checking Board access…" />}
+    <div className="flex h-full min-h-0 flex-col" style={{ display: authorizing ? 'none' : undefined }}>
       {/* Spec filter bar */}
       <div className="mb-3 flex shrink-0 flex-wrap items-center gap-1.5">
         <SearchInput
@@ -744,6 +836,12 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
           </button>
         </div>
       )}
+      {(syncState === 'offline' || syncState === 'unavailable') && (
+        <p role="status" className="mb-2 text-sm text-amber-700 dark:text-amber-300">
+          Live updates are unavailable. Cards may be out of date.{' '}
+          <button type="button" onClick={refreshColumns} className="underline">Refresh</button>
+        </p>
+      )}
       {columnsLoading && (
         <p role="status" aria-live="polite" className="mb-2 shrink-0 text-xs text-gray-500">
           Loading cards…
@@ -791,6 +889,8 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
                     {...sharedProps}
                     boardId={boardId}
                     query={columnsQuery}
+                    paused={columnsLoading || authorizing}
+                    onAccessLost={loseAccess}
                     initialCards={initialCards}
                     onItemsChange={handleColumnPageItems}
                     onCollapse={collapseColumnPage}
@@ -960,6 +1060,6 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
           </div>
         </div>
       )}
-    </div>
+    </div></>
   );
 }

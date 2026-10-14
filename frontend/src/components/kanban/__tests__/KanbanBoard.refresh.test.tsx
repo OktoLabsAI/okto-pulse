@@ -3,6 +3,25 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CardStatus, CardSummary, ColumnPageResponse } from '@/types';
 import { KanbanBoard } from '../KanbanBoard';
+import type { useWorkspaceRevisions } from '@/hooks/useWorkspaceRevisions';
+
+const workspace = vi.hoisted(() => ({
+  options: null as Parameters<typeof useWorkspaceRevisions>[0] | null,
+  refreshPermissions: vi.fn(),
+}));
+vi.mock('@/hooks/useWorkspaceRevisions', () => ({
+  useWorkspaceRevisions: (options: Parameters<typeof useWorkspaceRevisions>[0]) => {
+    workspace.options = options;
+    return 'current';
+  },
+}));
+vi.mock('@/hooks/usePermissions', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/hooks/usePermissions')>(),
+  refreshBoardPermissions: workspace.refreshPermissions,
+}));
+vi.mock('@/components/code-traceability/useBoardDeliveryReadiness', () => ({
+  useBoardDeliveryReadiness: () => ({}),
+}));
 
 const mocks = vi.hoisted(() => {
   const getBoardColumns = vi.fn();
@@ -41,6 +60,8 @@ const mocks = vi.hoisted(() => {
     beginColumnPage,
     applyColumnPage,
     failColumnPage,
+    setColumns: vi.fn(),
+    closeCardModal: vi.fn(),
   };
   const dashboardHook = Object.assign(
     (selector?: (state: typeof dashboardState) => unknown) => (
@@ -121,6 +142,8 @@ vi.mock('@/components/shared/CancellationReasonDialog', () => ({
 describe('KanbanBoard filtered refresh', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    workspace.options = null;
+    workspace.refreshPermissions.mockResolvedValue({ board_id: 'board-1', flags: { card: { entity: { read: true } } } });
     window.localStorage.clear();
     window.history.replaceState(null, '', '/');
     mocks.dashboardState.columnsGeneration = 0;
@@ -288,6 +311,57 @@ describe('KanbanBoard filtered refresh', () => {
 
     expect(mocks.applyColumnPage).not.toHaveBeenCalled();
     expect(screen.queryByText('Old unfiltered card')).not.toBeInTheDocument();
+  });
+
+  it('refreshes a collection change without collapsing the filtered expanded column', async () => {
+    const page = (title: string): ColumnPageResponse => ({
+      board_id: 'board-1', column: 'not_started', items: [card('new-card', title)],
+      meta: { total_filtered: 1, total_overall: 1, has_more: false, facets: { card_type: { normal: 1 } } },
+      offset: 0, limit: 25, next_offset: null,
+    });
+    mocks.getBoardColumnPage.mockResolvedValue(page('Before MCP'));
+    render(<KanbanBoard boardId="board-1" />);
+    await waitFor(() => expect(mocks.getBoardColumns).toHaveBeenCalledTimes(1));
+    await selectSpec();
+    fireEvent.click(screen.getByRole('button', { name: 'View all not_started' }));
+    await screen.findByText('Before MCP');
+    expect(workspace.options?.subjects).toEqual([{ subject_type: 'card_collection', subject_id: 'board-1' }]);
+    mocks.getBoardColumnPage.mockResolvedValue(page('Created through MCP'));
+    await act(async () => workspace.options!.onChange({
+      subjects: [{ subject_type: 'card_collection', subject_id: 'board-1' }], initial: false, authorityChanged: false,
+    }));
+    await screen.findByText('Created through MCP');
+    expect(screen.getByTestId('expanded-not_started')).toBeInTheDocument();
+    expect(mocks.getBoardColumns).toHaveBeenLastCalledWith('board-1', expect.objectContaining({ specIds: ['spec-1'] }));
+    expect(mocks.getBoardColumnPage).toHaveBeenLastCalledWith('board-1', 'not_started', 0,
+      expect.objectContaining({ specIds: ['spec-1'] }));
+  });
+
+  it('clears protected state and rejects the old batch after access is lost', async () => {
+    let resolve!: (response: unknown) => void;
+    mocks.getBoardColumns.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    render(<KanbanBoard boardId="board-1" />);
+    act(() => workspace.options!.onAccessLost());
+    await act(async () => resolve({ board_id: 'board-1', columns: mocks.emptyColumns, columns_meta: { columns: {} } }));
+    expect(screen.getByRole('alert')).toHaveTextContent('Access to this Board is no longer available');
+    expect(mocks.dashboardState.setColumns).toHaveBeenCalledWith({});
+    expect(mocks.dashboardState.closeCardModal).toHaveBeenCalled();
+    expect(mocks.applyColumnsBatch).not.toHaveBeenCalled();
+  });
+
+  it('keeps reauthorization required when another collection update races the permission read', async () => {
+    let resolve!: (response: unknown) => void;
+    workspace.refreshPermissions.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    render(<KanbanBoard boardId="board-1" />);
+    await waitFor(() => expect(mocks.getBoardColumns).toHaveBeenCalledTimes(1));
+    act(() => { void workspace.options!.onChange({ subjects: [], initial: false, authorityChanged: true }); });
+    expect(screen.getByText('Checking Board access…')).toBeVisible();
+    workspace.refreshPermissions.mockResolvedValueOnce({ board_id: 'board-1', flags: { card: { entity: { read: false } } } });
+    await act(async () => workspace.options!.onChange({ subjects: [], initial: false, authorityChanged: false }));
+    await act(async () => resolve({ board_id: 'board-1', flags: { card: { entity: { read: true } } } }));
+    expect(screen.getByRole('alert')).toHaveTextContent('Access to this Board is no longer available');
+    expect(workspace.refreshPermissions).toHaveBeenCalledTimes(2);
+    expect(mocks.getBoardColumns).toHaveBeenCalledTimes(1);
   });
 });
 
