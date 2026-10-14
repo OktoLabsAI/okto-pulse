@@ -38,6 +38,19 @@ from okto_pulse.core.domain.spec_validation import (
     SpecValidationGateNotReady,
     SpecValidationVersionConflict,
 )
+from okto_pulse.core.domain.spec_planning import SpecPlanningManifest
+
+
+def _submission_basis(*, edition=1, version=1):
+    """Synthetic basis only for these transport tests with a stubbed use case."""
+    return {
+        "idempotency_key": "transport-validation",
+        "expected_planning_manifest": SpecPlanningManifest(
+            board_id="board-1", spec_id="spec-1", edition=edition, spec_version=version,
+            subject_incarnation="a" * 32, subject_revision=1,
+            authority_incarnation="b" * 32, authority_revision=1,
+        ),
+    }
 
 
 @pytest.mark.asyncio
@@ -247,17 +260,22 @@ def test_checklist_write_requests_are_closed() -> None:
 
 
 def test_spec_validation_acknowledgement_is_exact_and_audit_free() -> None:
-    assert set(specs.SpecValidationAcceptedResponse.model_fields) == {
+    assert set(specs.SpecValidationConclusionResponse.model_fields) == {
         "validation_id",
         "validation_edition",
         "is_current",
+        "outcome",
+        "spec_status",
+        "planning_result",
+        "decomposition_ids",
+        "planning_blockers",
     }
     route = next(
         route
         for route in specs.router.routes
         if getattr(route, "path", None) == "/specs/{spec_id}/validation"
     )
-    assert route.response_model is specs.SpecValidationAcceptedResponse
+    assert route.response_model is specs.SpecValidationConclusionResponse
 
 
 @pytest.mark.parametrize(
@@ -472,6 +490,7 @@ async def test_submit_spec_validation_maps_gate_contract_like_move_spec(
         await specs.submit_spec_validation(
             spec_id="spec-1",
             data=specs.SpecValidationSubmit(
+                **_submission_basis(),
                 expected_validation_edition=1,
                 expected_spec_version=1,
                 expected_head_revision=0,
@@ -509,6 +528,11 @@ async def test_submit_spec_validation_rest_forwards_only_canonical_fields(
                 "validation_id": "validation-1",
                 "validation_edition": 1,
                 "is_current": True,
+                "outcome": "success",
+                "spec_status": "approved",
+                "planning_result": "blocked",
+                "decomposition_ids": [],
+                "planning_blockers": ["decomposition_approval_missing"],
             }
         )
 
@@ -516,6 +540,7 @@ async def test_submit_spec_validation_rest_forwards_only_canonical_fields(
     response = await specs.submit_spec_validation(
         spec_id="spec-1",
         data=specs.SpecValidationSubmit(
+            **_submission_basis(version=3),
             expected_validation_edition=1,
             expected_spec_version=3,
             expected_head_revision=0,
@@ -536,6 +561,12 @@ async def test_submit_spec_validation_rest_forwards_only_canonical_fields(
     )
 
     assert response["validation_id"] == "validation-1"
+    assert response["outcome"] == "success"
+    assert response["spec_status"] == "approved"
+    assert response["planning_result"] == "blocked"
+    assert response["planning_blockers"] == ["decomposition_approval_missing"]
+    assert observed["idempotency_key"] == "transport-validation"
+    assert observed["expected_planning_manifest"] == _submission_basis(version=3)["expected_planning_manifest"].model_dump(mode="json")
     assert "score" not in observed
     assert "summary" not in observed
     assert "completeness" not in observed
@@ -566,6 +597,7 @@ async def test_submit_spec_validation_preserves_typed_conflict_codes(
         await specs.submit_spec_validation(
             spec_id="spec-1",
             data=specs.SpecValidationSubmit(
+                **_submission_basis(edition=2, version=4),
                 expected_validation_edition=2,
                 expected_spec_version=4,
                 expected_head_revision=0,

@@ -362,6 +362,28 @@ describe('SpecValidationPanel lifecycle edition projection', () => {
     })).toBeInTheDocument();
   });
 
+  it('does not label skipped Code Evidence as Off when its native projection is unavailable', async () => {
+    apiMock.getValidationCycle.mockResolvedValue({
+      ...failedCycle,
+      planning_readiness: {
+        state: 'unavailable', blocked_actions: ['promote_to_validated'],
+        components: [{
+          key: 'code_evidence', state: 'unavailable', mode: null, applicable: null,
+          native_result: null, result_ids: [], reason_codes: ['code_traceability_projection_incomplete'],
+          message: null, next_action: null,
+        }],
+      },
+    });
+    renderPanel({ onReviewPlanningComponent: vi.fn() });
+    await screen.findByText('Planning readiness unavailable');
+    const summary = screen.getByTestId('spec-planning-summary');
+    fireEvent.click(within(summary).getByText('Review planning checks'));
+    fireEvent.click(within(summary).getByText('Code evidence'));
+    expect(within(summary).queryByText('Off')).not.toBeInTheDocument();
+    expect(within(summary).getByText('code traceability projection incomplete')).toBeVisible();
+    expect(within(summary).queryByRole('button', { name: 'Review Code evidence' })).not.toBeInTheDocument();
+  });
+
   it('describes a legacy completed state as recorded instead of needing attention', async () => {
     apiMock.getValidationCycle.mockResolvedValue({
       ...failedCycle,
