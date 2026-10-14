@@ -521,3 +521,20 @@ Validation:
 - No frontend UI modification or production runtime change. Existing lint ratchet failure remains recorded in the prior checkpoint. All test/audit handles are terminal.
 
 Resume: complete native lifecycle composition by sharing the real read-only gate evaluation, not calling move_card/move_spec in dry-run. Investigation: CardService._task_completion_gate_failures currently invokes the fenced Policy Compliance enforcement, so it cannot be blindly reused by a read. GuidelineService.preview_policy_transition already offers a non-locking native seam. move_card requires a conclusion/report and may require Bug learning input; absent transition inputs must remain not_evaluated. Spec Done checks linked normal tasks, cognitive/resource/architecture gates and Policy Compliance before a late delivery fence/reload/recheck. Preserve full G10/G11 transactional acceptance pending. Then finish remaining P02–P05 audits, P07 public REST/MCP, P08/P09 official UI consumers and frontend/browser acceptance, P10 and P11 full named-case/invariant/wheel/performance audit. Do not claim this context alone completes lifecycle diagnosis or the plan.
+
+## P06 shared native Spec completion checks — 2026-10-14
+
+Starting pushed pair: Core 38aa2e54 / Community 2d8c859b. Previous goal turn: progress. P06 remains IN_PROGRESS.
+
+Extracted SpecService.validate_completion_gates from the real move_spec path. The mutation and ListAllowedTransitionsUseCase now share AC/scenario coverage, missing semantic links, authoritative active normal-Card completion query, cognitive and resource/architecture checks. Removed the preview's independent copy (including its dependence on a possibly incomplete spec.cards relationship). The shared method preserves native mutation messages, filters, order and policy; no additional gate, override, history rewrite or changed status eligibility. Delivery and Policy Compliance stay separate, with their existing preview/fenced write paths; the late delivery fence/reload/recheck remains unchanged. Cognitive preview uses its existing read_only_preview path.
+
+Validation:
+- Six new native-database cases cover open, Done, cancelled and archived normal Cards plus open Bug/Test Cards. Preview/native shared calls agree; the authoritative query ignores a deliberately empty loaded relationship. SQL capture permits SELECT only; no pending ORM changes, status mutation or proof write.
+- First broad run: 63 passed / 4 failed in 33.37s. Three code-evidence fixtures and one AF23 preview fixture omitted current Decision verification populations/plans. Supplied explicit empty native requirement populations and a Spec-scoped inspection plan, preserving the real Decision gate; no gate mock or bypass.
+- Rerun: 67 passed in 27.54s (allowed_transitions_mutation_parity_regressions, af23_allowed_transitions, skb_b10_allowed_transition_preview, delivery_readiness_gates).
+- Native Spec REST/MCP use-case regressions: 84 passed in 42.94s (r01a_spec_crud_uow and r01a_mcp_spec_uow). Ruff and diff whitespace checks passed. Isolated installed/source parity: 858 Core / 323 Community Python files.
+- No frontend source or production runtime change. Architecture source closure result is recorded below when terminal.
+
+Resume: wire the shared native completion checks into readiness's authorized consistent snapshot/context and lifecycle diagnostics; compose Policy Compliance through its preview, never its fenced writer. Card completion still needs corresponding shared native evaluation and explicit missing report/validation/learning inputs. Preserve remaining G10/G11 real race/rollback acceptance, P02–P05 audits, P07 REST/MCP integration/catalog, P08/P09 UI/events/frontend/browser, P10 and P11 full acceptance. The new helper alone does not complete P06.5 or the plan.
+
+Final source closure: 8913 ownership rows, zero findings, all eight budgets ZERO; exact README fragments regenerated in both repositories. All test and audit handles are terminal. Production install, processes and data remain unchanged.
