@@ -373,10 +373,11 @@ export function DecisionsTab({
         const isActive = d.status === 'active';
 
         return (
-          <div key={d.id} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+          <div key={d.id} data-readiness-ref={`decision:${d.id}`} tabIndex={-1} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500">
             <div
               className="flex items-center gap-2 px-3 py-2 cursor-pointer bg-gray-50 dark:bg-gray-700/50"
               onClick={() => setExpandedId(isExpanded ? null : d.id)}
+              data-readiness-expand
               role="button" tabIndex={0} aria-expanded={isExpanded}
               onKeyDown={e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setExpandedId(isExpanded ? null : d.id); } }}
             >

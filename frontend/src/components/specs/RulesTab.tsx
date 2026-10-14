@@ -268,10 +268,11 @@ export function RulesTab({ spec, onUpdate, onSpecUpdate, canCreate = true, canEd
         }
 
         return (
-          <div key={rule.id} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+          <div key={rule.id} data-readiness-ref={`br:${rule.id}`} tabIndex={-1} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500">
             <div
               className="flex items-center gap-2 px-3 py-2 cursor-pointer bg-gray-50 dark:bg-gray-700/50"
               onClick={() => setExpandedId(isExpanded ? null : rule.id)}
+              data-readiness-expand aria-expanded={isExpanded}
             >
               <Scale size={14} className="text-indigo-500 shrink-0" />
               <span className="text-sm font-medium text-gray-900 dark:text-white truncate flex-1">{rule.title}</span>

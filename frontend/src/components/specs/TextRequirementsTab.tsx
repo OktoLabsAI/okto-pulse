@@ -62,9 +62,9 @@ export function TextRequirementsTab({ kind, items, canCreate, canEdit, canRevoke
         const expanded = expandedId === item.id;
         const taskCount = item.linked_task_ids?.length || 0;
         const label = item.title || (kind === 'AC' ? item.text : null) || `${kind} ${index + 1} — Title not defined`;
-        return <article key={item.id} aria-label={label} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+        return <article key={item.id} data-readiness-ref={`${kind.toLowerCase()}:${item.id}`} tabIndex={-1} aria-label={label} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500">
           <header className="flex items-center gap-2 px-3 py-2 bg-gray-50 dark:bg-gray-700/50">
-            <button type="button" aria-expanded={expanded} aria-controls={`requirement-details-${item.id}`} onClick={() => setExpandedId(expanded ? null : item.id)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+            <button data-readiness-expand type="button" aria-expanded={expanded} aria-controls={`requirement-details-${item.id}`} onClick={() => setExpandedId(expanded ? null : item.id)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
               {kind === 'FR' && (taskCount > 0 ? <CheckCircle size={14} className="text-green-500 shrink-0" /> : <XCircle size={14} className="text-gray-300 dark:text-gray-600 shrink-0" />)}
               <span title={item.id} className="max-w-[40%] truncate shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300 font-medium">{item.id}</span>
               <span className="text-sm font-medium text-gray-900 dark:text-white truncate flex-1" title={label}>{label}</span>

@@ -2,14 +2,18 @@ import { useEffect, useRef, useState } from 'react';
 import { useDashboardApi } from '@/services/api';
 import { isReadinessResponse, type ReadinessResponse } from '@/types/delivery-readiness';
 import { DeliveryReadinessView } from './DeliveryReadinessView';
-import { DeliveryReadinessIssues, type ReadinessDestination } from './DeliveryReadinessIssues';
+import { DeliveryReadinessIssues } from './DeliveryReadinessIssues';
+import type { ReadinessNavigator, ReadinessSpecLocation } from './readinessNavigation';
+import { useNativeReadinessNavigation } from './useNativeReadinessNavigation';
 import { useDeliveryReadiness } from './useDeliveryReadiness';
 
-export function DeliveryReadinessPanel({ boardId, specId, cardId, revision, focusDiagnosis = false, onNavigate }: {
+export function DeliveryReadinessPanel({ boardId, specId, cardId, revision, focusDiagnosis = false, onNavigate, onOpenReadinessSpec }: {
   boardId: string; specId: string; cardId?: string; revision?: string | number;
-  focusDiagnosis?: boolean; onNavigate?: (destination: ReadinessDestination) => void;
+  focusDiagnosis?: boolean; onNavigate?: ReadinessNavigator;
+  onOpenReadinessSpec?: (location: ReadinessSpecLocation) => void;
 }) {
   const api = useDashboardApi();
+  const navigation = useNativeReadinessNavigation(boardId, specId, onOpenReadinessSpec);
   const [refresh, setRefresh] = useState(0);
   const state = useDeliveryReadiness(boardId, specId, cardId, JSON.stringify([revision, refresh]));
   const initial = isReadinessResponse(state.value) ? state.value : undefined;
@@ -66,7 +70,8 @@ export function DeliveryReadinessPanel({ boardId, specId, cardId, revision, focu
         <h3 ref={heading} tabIndex={-1} className="rounded text-sm font-semibold outline-offset-4">What is missing?</h3>
         <button type="button" onClick={() => { setExpanded(false); origin.current?.focus(); }} className="rounded border px-3 py-1.5 text-xs dark:border-gray-600">Hide diagnosis</button>
       </div>
-      <DeliveryReadinessIssues value={value} onNavigate={onNavigate} onSnapshotInvalid={message => setFailure({ key, message })} />
+      {navigation.error && <p role="alert" className="text-sm text-red-700 dark:text-red-300">{navigation.error}</p>}
+      <DeliveryReadinessIssues value={value} onNavigate={onNavigate ?? navigation.navigator} onSnapshotInvalid={message => setFailure({ key, message })} />
       {value.page.has_more && <button type="button" disabled={busy} onClick={() => void more()} className="rounded border px-3 py-2 text-xs dark:border-gray-600">
         {busy ? 'Loading causes…' : 'Load more causes'}
       </button>}

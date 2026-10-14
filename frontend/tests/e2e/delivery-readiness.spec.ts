@@ -10,7 +10,8 @@ test('P08/U01/U04/U09: native board and Delivery show separate accessible metric
     created_at: task.created_at, updated_at: task.updated_at, settings: { delivery_evidence_gate: 'blocking' }, agents: [] };
   const spec = { id: 's', board_id: 'b', title: 'Readiness Spec', status: 'in_progress', version: 1, edition: 1,
     created_at: task.created_at, updated_at: task.updated_at, created_by: 'local-user',
-    functional_requirements: [], technical_requirements: [], acceptance_criteria: [], test_scenarios: [], business_rules: [],
+    functional_requirements: [], technical_requirements: [], acceptance_criteria: [{ id: 'capacity', title: 'Capacity limit',
+      text: 'Reject reservations above the room capacity.', status: 'active' }], test_scenarios: [], business_rules: [],
     api_contracts: [], integration_requirements: [], observability_requirements: [], decisions: [], labels: [],
     screen_mockups: [], architecture_designs: [], cards: [], knowledge_bases: [], qa_items: [] };
   const current = readiness(); current.lifecycle.stored_status = 'done';
@@ -33,6 +34,8 @@ test('P08/U01/U04/U09: native board and Delivery show separate accessible metric
     detail_query: { board_id: 'b', spec_id: 's', card_id: 'c', view: 'readiness', issue_id: 'capacity-check', snapshot_id: current.snapshot_id, limit: 20 },
   }];
   const specReadiness = readiness(null);
+  specReadiness.page = current.page;
+  specReadiness.issues = current.issues.map(issue => ({ ...issue, detail_query: { ...issue.detail_query, card_id: null } }));
   // Distinct global metrics ensure that the Spec never averages visible Cards.
   specReadiness.verification = metric(50, 4);
   await page.addInitScript(() => {
@@ -75,7 +78,7 @@ test('P08/U01/U04/U09: native board and Delivery show separate accessible metric
     if (/\/(agents|topics|qa|dependencies|dependents|activity)$/.test(path)) return route.fulfill({ json: [] });
     if (path === '/api/v1/me/permissions') return route.fulfill({ json: { board_id: 'b', preset_name: 'fixture', owner_review_required: false,
       flags: { code_traceability: { evidence: { read: true }, investigation: { read: true },
-        target: { read: true }, overlap: { read: true } }, card: { entity: { read: true } } } } });
+        target: { read: true }, overlap: { read: true } }, card: { entity: { read: true } }, spec: { entity: { read: true } } } } });
     return route.fulfill({ status: 404, json: { detail: 'Unmocked read blocked' } });
   });
   await page.goto('/?accept_terms=1');
@@ -117,6 +120,27 @@ test('P08/U01/U04/U09: native board and Delivery show separate accessible metric
   const mobileGreen = await panel.getByRole('progressbar', { name: 'Verification' }).boundingBox();
   expect(mobileBlue!.y + mobileBlue!.height).toBeLessThan(mobileGreen!.y);
   await panel.screenshot({ path: test.info().outputPath('readiness-delivery-dark-mobile.png') });
+  // U06: the real diagnostic link opens the native AC row, expanded and focused.
+  await diagnosis.getByText('Observe the capacity boundary on the delivered revision.').click();
+  const reference = diagnosis.getByRole('button', { name: 'ac:capacity', exact: true });
+  await reference.focus();
+  await page.keyboard.press('Enter');
+  const specDialog = page.getByRole('dialog', { name: 'Readiness Spec' });
+  const criterion = specDialog.locator('[data-readiness-ref="ac:capacity"]');
+  await expect(criterion).toBeFocused();
+  await expect(criterion.getByText('Reject reservations above the room capacity.')).toBeVisible();
+  await expect(specDialog.getByRole('tab', { name: /^AC(?:\s|$)/ })).toHaveAttribute('aria-selected', 'true');
+  await specDialog.screenshot({ path: test.info().outputPath('readiness-native-criterion.png') });
+  // The same reference inside Spec Coverage changes the native section in place.
+  await specDialog.getByRole('tab', { name: 'Coverage', exact: true }).click();
+  await specDialog.getByRole('tab', { name: 'Implementation', exact: true }).click();
+  await specDialog.getByRole('button', { name: 'What is missing?', exact: true }).click();
+  await specDialog.getByText('Observe the capacity boundary on the delivered revision.').click();
+  await specDialog.getByRole('button', { name: 'ac:capacity', exact: true }).click();
+  await expect(criterion).toBeFocused();
+  await expect(page.getByRole('dialog', { name: 'Readiness Spec' })).toHaveCount(1);
+  await specDialog.getByRole('button', { name: 'Close spec' }).click();
+  await expect(reference).toBeFocused();
   await page.keyboard.press('Escape');
   await expect(inspect).toBeFocused();
   expect(writes).toEqual([]);

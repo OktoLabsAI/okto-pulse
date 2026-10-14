@@ -10,6 +10,8 @@ import {
   useState,
 } from 'react';
 import { SpecCoveragePanel } from './SpecCoveragePanel';
+import type { ReadinessSpecTab } from '@/components/code-traceability/readinessNavigation';
+import { useNativeReferenceFocus } from '@/components/shared/useNativeReferenceFocus';
 import { MissingLinkNotice } from '@/components/shared/MissingLinkNotice';
 import { TextRequirementsTab, type TextRequirementDraft } from './TextRequirementsTab';
 import { CriterionVerificationDetails } from './CriterionVerificationPanel';
@@ -157,8 +159,9 @@ import {
 interface SpecModalProps {
   specId: string;
   boardId: string;
-  initialTab?: 'evidence-matrix' | 'project-structure';
+  initialTab?: 'evidence-matrix' | 'project-structure' | ReadinessSpecTab;
   focusProjectNodeId?: string | null;
+  focusReadinessRef?: string | null;
   onClose: () => void;
   onEscape?: () => void;
   onChanged: () => void;
@@ -420,10 +423,11 @@ function TestScenariosTab({
         const isExpanded = expandedId === scenario.id;
         const linkedCards = scenario.linked_task_ids?.length || 0;
         return (
-          <div key={scenario.id} className={`border rounded-lg overflow-hidden ${linkedCards > 0 ? 'border-gray-200 dark:border-gray-700' : 'border-amber-300 dark:border-amber-700 border-dashed'}`}>
+          <div key={scenario.id} data-readiness-ref={`scenario:${scenario.id}`} tabIndex={-1} className={`border rounded-lg overflow-hidden focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500 ${linkedCards > 0 ? 'border-gray-200 dark:border-gray-700' : 'border-amber-300 dark:border-amber-700 border-dashed'}`}>
             <div
               className={`flex items-center gap-2 px-3 py-2 cursor-pointer ${linkedCards > 0 ? 'bg-gray-50 dark:bg-gray-700/50' : 'bg-amber-50/50 dark:bg-amber-900/10'}`}
               onClick={() => setExpandedId(isExpanded ? null : scenario.id)}
+              data-readiness-expand aria-expanded={isExpanded}
             >
               <FlaskConical size={14} className={linkedCards > 0 ? 'text-violet-500 shrink-0' : 'text-amber-500 shrink-0'} />
               <span className="text-sm font-medium text-gray-900 dark:text-white truncate flex-1">{scenario.title}</span>
@@ -1165,6 +1169,7 @@ export function SpecModal({
   boardId: _boardId,
   initialTab,
   focusProjectNodeId,
+  focusReadinessRef,
   onClose,
   onEscape,
   onChanged,
@@ -1353,6 +1358,13 @@ export function SpecModal({
   const currentSpecId = useRef(specId);
   currentSpecId.current = specId;
   const [activeTab, setActiveTab] = useState<ModalTab>(initialTab ?? 'details');
+  const nativeReferenceRoot = useRef<HTMLDivElement>(null);
+  const [readinessReference, setReadinessReference] = useState(focusReadinessRef);
+  useNativeReferenceFocus(nativeReferenceRoot, readinessReference, `${specId}:${loading}:${activeTab}`);
+  useEffect(() => {
+    const origin = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    return () => { if (origin?.isConnected) origin.focus(); };
+  }, [specId]);
   const [resourceTab, setResourceTab] =
     useState<ResourceSubTab>('mockups');
   const [referenceTab, setReferenceTab] =
@@ -2005,6 +2017,7 @@ export function SpecModal({
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
       <div
         role="dialog"
+        ref={nativeReferenceRoot}
         aria-modal="true"
         aria-labelledby={`spec-${spec.id}-title`}
         className={`bg-white dark:bg-gray-800 rounded-xl shadow-xl w-full ${expanded ? 'max-w-[95vw] h-[95vh]' : 'max-w-3xl h-[90vh]'} flex flex-col`}
@@ -2291,6 +2304,7 @@ export function SpecModal({
                 }
               } : undefined}
               onOpenSection={setActiveTab}
+              onOpenReadinessSpec={location => { setReadinessReference(location.ref); setActiveTab(location.tab); }}
               canCorrect={!spec.archived && spec.status === 'draft' ? [
                 ...(hasPermissionWithState(perms.has, 'spec.tests.edit', 'spec', spec.status) ? ['tests' as const] : []),
                 ...(hasPermissionWithState(perms.has, 'spec.structured_entity.business_rule.update', 'spec', spec.status) ? ['rules' as const] : []),

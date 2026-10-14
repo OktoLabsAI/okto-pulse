@@ -21,6 +21,7 @@
 
 import { createContext, useCallback, useContext, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
+import type { ReadinessSpecTab } from '@/components/code-traceability/readinessNavigation';
 
 export type ModalStackEntry = { boardId?: string } & (
   | { type: 'card'; id: string }
@@ -28,8 +29,9 @@ export type ModalStackEntry = { boardId?: string } & (
   | {
     type: 'spec';
     id: string;
-    initialTab?: 'evidence-matrix' | 'project-structure';
+    initialTab?: 'evidence-matrix' | 'project-structure' | ReadinessSpecTab;
     focusProjectNodeId?: string | null;
+    focusReadinessRef?: string | null;
   }
   | { type: 'ideation'; id: string }
   | { type: 'refinement'; id: string }
@@ -56,7 +58,12 @@ export function ModalStackProvider({ children }: { children: ReactNode }) {
       const top = prev[prev.length - 1];
       const scopedEntry = entry.boardId === undefined && top?.boardId
         ? { ...entry, boardId: top.boardId } : entry;
-      if (top && top.type === scopedEntry.type && top.id === scopedEntry.id && top.boardId === scopedEntry.boardId) return prev;
+      if (top && top.type === scopedEntry.type && top.id === scopedEntry.id && top.boardId === scopedEntry.boardId) {
+        if (top.type === 'spec' && scopedEntry.type === 'spec' && scopedEntry.initialTab
+          && (top.initialTab !== scopedEntry.initialTab || top.focusReadinessRef !== scopedEntry.focusReadinessRef
+            || top.focusProjectNodeId !== scopedEntry.focusProjectNodeId)) return [...prev.slice(0, -1), scopedEntry];
+        return prev;
+      }
       return [...prev, scopedEntry];
     });
   }, []);

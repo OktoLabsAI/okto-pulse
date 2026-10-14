@@ -4,6 +4,7 @@ import { AuthenticatedFetchError } from '@/lib/authFetch';
 import { AccessibleTabList, AccessibleTabPanel } from '@/components/shared/AccessibleTabs';
 import { PulseLoader } from '@/components/shared/PulseLoader';
 import { DeliveryEvidencePanel } from '@/components/code-traceability/DeliveryEvidencePanel';
+import type { ReadinessSpecLocation } from '@/components/code-traceability/readinessNavigation';
 import type { CoverageSection, SpecCoverageResponse } from './specCoverageTypes';
 
 const dimensions: [string, string, string, CoverageSection][] = [
@@ -54,11 +55,12 @@ function Meter({ label, value, description }: { label: string;
 }
 
 /** Lazy contextual read. Navigation never repairs the graph or changes a gate. */
-export function SpecCoveragePanel({ boardId, specId, revision, canCorrect = [], onOpenSection, canReadSummary = true, canReadImplementation = true, skipDeliveryEvidence, onSkipDeliveryEvidenceChange }: {
+export function SpecCoveragePanel({ boardId, specId, revision, canCorrect = [], onOpenSection, canReadSummary = true, canReadImplementation = true, skipDeliveryEvidence, onSkipDeliveryEvidenceChange, onOpenReadinessSpec }: {
   boardId: string; specId: string; revision: string; canCorrect?: CoverageSection[];
   onOpenSection: (section: CoverageSection) => void;
   canReadSummary?: boolean; canReadImplementation?: boolean; skipDeliveryEvidence?: boolean;
   onSkipDeliveryEvidenceChange?: (value: boolean) => void;
+  onOpenReadinessSpec?: (location: ReadinessSpecLocation) => void;
 }) {
   const api = useDashboardApi();
   const [view, setView] = useState<CoverageView>(canReadSummary ? 'overview' : 'implementation');
@@ -123,6 +125,7 @@ export function SpecCoveragePanel({ boardId, specId, revision, canCorrect = [], 
       items={availableViews.map(([id, label]) => ({ id, label }))} value={activeView} onValueChange={setView} />
     {canReadImplementation && <AccessibleTabPanel idBase={tabId} tabId="implementation" value={activeView}>
       <DeliveryEvidencePanel boardId={boardId} specId={specId} revision={revision}
+        onOpenReadinessSpec={onOpenReadinessSpec}
         onOpenDecisions={() => onOpenSection('decisions')}
         skipDeliveryEvidence={skipDeliveryEvidence} onSkipDeliveryEvidenceChange={onSkipDeliveryEvidenceChange} />
     </AccessibleTabPanel>}

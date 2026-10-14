@@ -48,7 +48,7 @@ afterEach(cleanup);
 
 it('groups actual backend action states and shows escaped factual details without a resolve checkbox', async () => {
   const navigate = vi.fn();
-  render(<DeliveryReadinessIssues value={response()} onNavigate={navigate} onSnapshotInvalid={vi.fn()} />);
+  render(<DeliveryReadinessIssues value={response()} onNavigate={{ open: navigate }} onSnapshotInvalid={vi.fn()} />);
   expect(screen.getByRole('region', { name: 'Input, human decision, permission or availability' })).toBeVisible();
   expect(screen.queryByRole('region', { name: 'Can act now' })).not.toBeInTheDocument();
   const summary = screen.getByText('Capacity has no current verification.').closest('summary')!;

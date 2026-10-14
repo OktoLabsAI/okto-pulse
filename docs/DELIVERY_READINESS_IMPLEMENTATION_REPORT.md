@@ -850,3 +850,27 @@ Starting pair: Core d2198e0a / Community fafdb229. Saved all pending implementat
 - No production installation, restart or data mutation. Generated .playwright-cli/ and output/ captures/logs remain local and outside implementation commits.
 
 Resume: P09 remains IN_PROGRESS. Production reference navigation is still unwired; continue native Card/Spec references with exact ownership/scope and focus, then pagination/restriction/snapshot-race and accessibility/layout checks. Mutation refresh now has focused integration evidence; browser-wide acceptance remains pending. Continue P10 documentation/packaging and P11 full matrix/final validation as already recorded. The global lint ratchet issue remains open. This checkpoint does not declare final delivery.
+
+
+## P09 native reference navigation checkpoint - 2026-10-14
+
+Starting pair: Core 48ec56b6 / Community 5a648d5e. Previous goal turn made progress: the pending mutation-refresh work was tested, recorded and pushed. Continued from the actual synced working trees.
+
+Implemented in Community frontend:
+- Real diagnosis consumers now use native navigation for Cards/Tests, the current Spec, canonical FR/AC/BR/API/IR/OR/TR/Decision references and test scenarios. Pinpoints preserve entity type when constructing canonical references.
+- Native Card and Spec reads recheck permission and Board/Spec identity before navigation; late responses after scope changes are ignored. Unknown reference kinds remain text rather than nonfunctional links.
+- Native Spec rows expose exact focus anchors. Navigation expands only the marked read-only header, focuses and scrolls to the exact row within the destination modal. It does not click edit controls or select rows by free text.
+- Spec Coverage navigates to its own sections in place; cross-entity navigation reuses the existing modal stack. Changing the destination inside the same stacked Spec replaces its route without adding another layer. Closing a Spec returns focus to its connected invoking control.
+
+Validation:
+- Navigation, diagnosis, modal-stack and native FR/AC suites: 29 passed before the additional denied/moved-Spec regression. Final navigation + diagnosis run: 19 passed (includes the additional regression).
+- Existing Spec validation/dependencies and Card/Spec Delivery suites: 127 passed in 56.64s.
+- Final TypeScript build passed. Targeted ESLint on the new navigation/focus modules, diagnosis components and navigation tests passed without warnings. git diff --check passed.
+- Chromium E2E delivery-readiness.spec.ts passed in 6.0s total. Real frontend, all API reads intercepted, writes rejected. Covered keyboard navigation from Card diagnosis to the actual expanded/focused AC, dark 390px viewport, return focus on close, and navigation from Spec Coverage to its AC in place with exactly one Spec dialog. Inspected the native criterion screenshot.
+- The first new unit run exposed unawaited async act in the test harness; fixed the waits. Browser iterations corrected fixture interactions: reopening a cause after explicit refresh, including the AC count in its accessible tab name, and selecting Coverage's Implementation subtab. No assertions or native permissions were relaxed.
+- Backend source unchanged from the prior ZERO-budget closure. No production install/restart/data mutation. The isolated Vite server was explicitly stopped after validation; browser artifacts remain local.
+
+Exact continuation, P09 still IN_PROGRESS:
+1. Wire Targets and records/receipts/inspections to their actual native detail surfaces, resolving ownership from authoritative scoped data. These references currently remain text; canonical fallback card:<id> obligations also need explicit Card routing. Do not claim U06 complete yet.
+2. Finish detail pagination/restricted responses/snapshot races and U09 compact loading/error layout and N/A CTA semantics. Check focus/expanded-state behavior across background refresh as part of that existing acceptance scope.
+3. Continue P10 documentation, compatibility contract and generated frontend packaging, then P11 named-case reconciliation, integrated flows, performance/payload/read-only/final-wheel acceptance. The previously recorded global lint ratchet remains open. Full-plan delivery is not complete.

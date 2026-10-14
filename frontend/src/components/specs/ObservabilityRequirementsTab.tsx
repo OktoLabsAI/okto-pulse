@@ -306,8 +306,8 @@ export function ObservabilityRequirementsTab({
           return <div key={item.id}>{renderForm(handleSaveEdit, 'Save', () => { setEditingId(null); resetForm(); })}</div>;
         }
         return (
-          <div key={item.id} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
-            <div className="flex items-center gap-2 px-3 py-2 cursor-pointer bg-gray-50 dark:bg-gray-700/50" onClick={() => setExpandedId(expanded ? null : item.id)}>
+          <div key={item.id} data-readiness-ref={`or:${item.id}`} tabIndex={-1} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500">
+            <div data-readiness-expand aria-expanded={expanded} className="flex items-center gap-2 px-3 py-2 cursor-pointer bg-gray-50 dark:bg-gray-700/50" onClick={() => setExpandedId(expanded ? null : item.id)}>
               {taskCount > 0 ? <CheckCircle size={14} className="text-green-500 shrink-0" /> : <XCircle size={14} className="text-gray-300 dark:text-gray-600 shrink-0" />}
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 font-medium">{SIGNAL_LABELS[item.signal_type]}</span>
               <span className="text-sm font-medium text-gray-900 dark:text-white truncate flex-1">{item.title}</span>

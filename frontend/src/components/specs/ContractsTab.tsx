@@ -394,10 +394,11 @@ export function ContractsTab({
         }
 
         return (
-          <div key={contract.id} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+          <div key={contract.id} data-readiness-ref={`api:${contract.id}`} tabIndex={-1} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500">
             <div
               className="flex items-center gap-2 px-3 py-2 cursor-pointer bg-gray-50 dark:bg-gray-700/50"
               onClick={() => setExpandedId(isExpanded ? null : contract.id)}
+              data-readiness-expand aria-expanded={isExpanded}
             >
               <span className={`text-[10px] px-1.5 py-0.5 rounded font-mono font-bold shrink-0 ${methodColor}`}>
                 {contract.contract_type === 'http' ? contract.method : contract.contract_type}

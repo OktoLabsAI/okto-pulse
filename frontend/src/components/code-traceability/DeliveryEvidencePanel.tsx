@@ -1,5 +1,6 @@
 import { resolveDeliveryGateMode } from '@/components/board/deliveryGateSettings';
 import { DeliveryReadinessPanel } from './DeliveryReadinessPanel';
+import type { ReadinessSpecLocation } from './readinessNavigation';
 import { useEffect, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { PulseLoader } from '@/components/shared/PulseLoader';
@@ -15,6 +16,7 @@ interface Props {
   skipDeliveryEvidence?: boolean;
   onSkipDeliveryEvidenceChange?: (value: boolean) => void;
   onOpenDecisions?: () => void;
+  onOpenReadinessSpec?: (location: ReadinessSpecLocation) => void;
 }
 
 function ObligationEvidenceDetails({ data, row }: {
@@ -66,7 +68,7 @@ function ObligationEvidenceDetails({ data, row }: {
 // (mockup sm_5ebd7063). Read-only by design: recording is card-scoped
 // (task DoD) and waivers are rollup-level, human-only — this surface only
 // presents the aggregated verdict, never mutates it.
-export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryEvidence = false, onSkipDeliveryEvidenceChange, onOpenDecisions }: Props) {
+export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryEvidence = false, onSkipDeliveryEvidenceChange, onOpenDecisions, onOpenReadinessSpec }: Props) {
   const api = useDashboardApi();
   const [data, setData] = useState<DeliveryEvidenceProjection | null>(null);
   const [gateMode, setGateMode] = useState<'advisory' | 'blocking' | null>(null);
@@ -96,7 +98,7 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
       .filter(Boolean).join(' · ') + ' obligation' + ((missingImplementation + missingTest) === 1 ? '' : 's');
 
   return <section className="space-y-5" aria-label="Implementation and verification">
-    <DeliveryReadinessPanel boardId={boardId} specId={specId} revision={`${revision ?? ''}:${reload}`} />
+    <DeliveryReadinessPanel boardId={boardId} specId={specId} revision={`${revision ?? ''}:${reload}`} onOpenReadinessSpec={onOpenReadinessSpec} />
     <p className="text-sm text-gray-500 dark:text-gray-400">Track implementation and verification for each obligation. Expand an item to inspect its evidence.</p>
     <div className="flex flex-wrap items-center justify-between gap-4">
       <div className="flex min-w-0 items-center gap-2">

@@ -3,14 +3,15 @@ import { useDashboardApi } from '@/services/api';
 import { isReadinessDetail, type ReadinessAction, type ReadinessDetail, type ReadinessEntry,
   type ReadinessFact, type ReadinessIssue, type ReadinessPinpoint, type ReadinessResponse } from '@/types/delivery-readiness';
 import { readinessDiagnostic } from './readinessDiagnostic';
+import type { ReadinessDestination, ReadinessNavigator } from './readinessNavigation';
+export type { ReadinessDestination } from './readinessNavigation';
 
-export type ReadinessDestination = { type: 'card' | 'spec' | 'scenario' | 'obligation' | 'target' | 'record'; id: string };
-type Navigate = (destination: ReadinessDestination) => void;
+type Navigate = ReadinessNavigator;
 const button = 'rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500 dark:border-gray-600 dark:hover:bg-gray-800';
 const label = (value: string) => value.replace(/_/g, ' ');
 
 function Reference({ type, id, onNavigate }: ReadinessDestination & { onNavigate?: Navigate }) {
-  return onNavigate ? <button type="button" onClick={() => onNavigate({ type, id })}
+  return onNavigate && (!onNavigate.supports || onNavigate.supports({ type, id })) ? <button type="button" onClick={() => onNavigate.open({ type, id })}
     className="break-all text-left text-sky-700 underline underline-offset-2 dark:text-sky-300">{id}</button> : <span className="break-all">{id}</span>;
 }
 function Fact({ value }: { value: ReadinessFact }) {
@@ -21,9 +22,10 @@ function Fact({ value }: { value: ReadinessFact }) {
   </dl>;
 }
 function Pinpoint({ value, onNavigate }: { value: ReadinessPinpoint; onNavigate?: Navigate }) {
-  const type = value.target_id ? 'target' : value.kind === 'scenario' ? 'scenario' : value.entity_type === 'card' ? 'card' : 'obligation';
+  const type = value.target_id ? 'target' : value.entity_type === 'test_scenario' ? 'scenario' : value.entity_type === 'card' ? 'card' : value.entity_type === 'spec' ? 'spec' : 'obligation';
+  const id = value.target_id ?? (type === 'obligation' ? `${value.entity_type}:${value.entity_id}` : value.entity_id);
   return <div className="space-y-1 rounded border border-gray-200 p-3 text-xs dark:border-gray-700">
-    <Reference type={type} id={value.target_id ?? value.entity_id} onNavigate={onNavigate} />
+    <Reference type={type} id={id} onNavigate={onNavigate} />
     <p>{value.relative_path ?? 'No code location recorded'}{value.qualified_symbol ? ' · ' + value.qualified_symbol : ''}
       {value.line_start !== null ? ` · lines ${value.line_start}–${value.line_end}` : ''}</p>
     <p className="break-all text-gray-500 dark:text-gray-400">{value.source_ref}{value.revision ? ' @ ' + value.revision : ''}</p>

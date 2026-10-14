@@ -188,7 +188,7 @@ export function TechnicalRequirementsTab({
         const linkedTaskIds = new Set(tr.linked_task_ids || []);
         const availableCards = (specCards || []).filter(c => !linkedTaskIds.has(c.id));
         return (
-          <div key={tr.id} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+          <div key={tr.id} data-readiness-ref={`tr:${tr.id}`} tabIndex={-1} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500">
             <div className="flex items-start gap-2 px-3 py-2 group">
               <Settings size={14} className="text-gray-400 shrink-0 mt-0.5" />
               {editingTrId === tr.id ? (
