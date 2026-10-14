@@ -160,8 +160,12 @@ async def test_foreign_or_missing_scope_is_not_empty_success(ledger, scope):
 async def test_capacity_never_returns_truncated_positive_population(ledger, monkeypatch):
     session, _, _ = ledger
     monkeypatch.setattr('okto_pulse.community.adapters.sqlalchemy_delivery_readiness.MAX_CARDS', 1)
-    with pytest.raises(ReadinessReadError, match='readiness_limit_exceeded'):
-        await read(reader(session))
+    result = await read(reader(session))
+    assert result.unavailable_reason_codes == ('readiness_limit_exceeded', 'readiness_population_limit')
+    assert not result.facts.complete and result.facts.facts_complete is False
+    assert not result.cards and not result.facts.obligations
+    metrics = aggregate_delivery_metrics(assess_obligation_delivery(result.facts))
+    assert metrics.implementation.percent is metrics.verification.percent is None
 
 
 async def test_batch_preserves_native_decision_authority_and_conflict(reviews):

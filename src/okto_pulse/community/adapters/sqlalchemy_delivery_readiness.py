@@ -347,7 +347,12 @@ class CommunityDeliveryReadinessReader:
                             access = await self._access(session, actor, board_id, counts) if actor is not None else None
                             if card_id is not None and access is not None:
                                 access.require('card.entity.read')
-                            result = await self._load_transaction(session, board_id, spec_id, card_id, counts)
+                            try:
+                                result = await self._load_transaction(session, board_id, spec_id, card_id, counts)
+                            except ReadinessReadError as exc:
+                                if exc.code != 'readiness_limit_exceeded':
+                                    raise
+                                result = await self._capacity_snapshot(session, board_id, spec_id, card_id, counts, exc)
                             if access is not None:
                                 result = replace(result, access=access,
                                     snapshot_id=_digest({'facts': result.snapshot_id, 'access': access}))
@@ -362,3 +367,39 @@ class CommunityDeliveryReadinessReader:
         finally:
             logger.debug('readiness_batch_read elapsed_ms=%.3f queries=%d facts=%d',
                 (perf_counter() - started) * 1000, counts['queries'], counts['facts'])
+
+    async def _capacity_snapshot(self, session, board_id, spec_id, card_id, counts, error):
+        """Keep an authorized scope header, never the prefix of overflowing facts.
+
+        Authority has already been resolved by load. Validate a requested Card
+        separately: it may be beyond the capped batch or belong to another Spec.
+        Permission-population overflow is deliberately outside this catch path.
+        """
+        from okto_pulse.core.domain.delivery_evidence import DeliveryEvidenceSnapshot, DeliveryScope
+
+        specs = await self._rows(session, select(Spec).where(Spec.id == spec_id,
+            Spec.board_id == board_id, Spec.archived.is_(False)), 1, counts)
+        boards = await self._rows(session, select(Board).where(Board.id == board_id), 1, counts)
+        if not specs or not boards:
+            raise ReadinessReadError('readiness_scope_mismatch')
+        spec = specs[0]
+        cards = ()
+        if card_id is not None:
+            selected = await self._rows(session, select(Card).where(Card.id == card_id,
+                Card.board_id == board_id, Card.spec_id == spec_id, Card.archived.is_(False)), 1, counts)
+            if not selected:
+                raise ReadinessReadError('readiness_scope_mismatch')
+            card = selected[0]
+            # Scenario population was not loaded; do not present assignments as
+            # a complete evaluable universe even when the header contains IDs.
+            cards = (ReadinessCard(card.id, card.card_type, card.status, card.policy_version, None, card.assignee_id),)
+        facts = DeliveryEvidenceSnapshot(DeliveryScope(board_id, spec_id, spec.edition), (), facts_complete=False)
+        codes = tuple(dict.fromkeys((error.code, error.native_code or 'readiness_population_limit')))
+        identity = _digest({'contract_version': 'delivery-readiness/v1', 'fingerprint_version': FINGERPRINT_VERSION,
+            'evaluator_version': EVALUATOR_VERSION, 'scope': facts.scope, 'spec_version': spec.version,
+            'spec_status': spec.status, 'cards': cards, 'unavailable_reason_codes': codes})
+        evaluated_at = self.clock.now()
+        if evaluated_at.tzinfo is None or evaluated_at.utcoffset() is None:
+            raise ReadinessReadError('readiness_assessment_unavailable', native_code='readiness_clock_timezone_required')
+        return ReadinessSnapshot(facts, identity, evaluated_at.astimezone(timezone.utc), int(spec.version),
+            spec.status.value, cards, unavailable_reason_codes=codes)

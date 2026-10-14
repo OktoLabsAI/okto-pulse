@@ -15,7 +15,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import Agent, AgentBoard, B
 from okto_pulse.core.domain.delivery_assessment import assess_obligation_delivery, aggregate_delivery_metrics
 from okto_pulse.core.ports.delivery_readiness import ReadinessAccessDenied, ReadinessActor, ReadinessReadError
 from okto_pulse.core.ports.permission_policy import registered_permission_flags
-from okto_pulse.core.services.delivery_readiness import compose_authorized_delivery_diagnostics
+from okto_pulse.core.services.delivery_readiness import compose_authorized_delivery_diagnostics, EvaluatedDeliveryReadiness
 
 ledger = delivery.ledger
 pytestmark = [pytest.mark.asyncio, pytest.mark.parametrize('ledger', ['native_schema'], indirect=True)]
@@ -40,6 +40,53 @@ async def setup(session):
 async def read(session, *, actor=ACTOR, kind=CommunityDeliveryReadinessReader, **query):
     return await reader(session, kind=kind).load(board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID,
         actor=actor, **query)
+
+
+@pytest.mark.parametrize('card_id', [None, 'task', 'test'])
+async def test_S10_capacity_is_authorized_unknown_with_native_detail(ledger, monkeypatch, card_id):
+    session, _, _ = ledger
+    await setup(session)
+    monkeypatch.setattr('okto_pulse.community.adapters.sqlalchemy_delivery_readiness.MAX_CARDS', 1)
+    with statements(session.bind) as sql:
+        result = await read(session, card_id=card_id)
+    assert result.access.actor_id == ACTOR.actor_id
+    assert all(s.lstrip().upper().startswith(('SELECT', 'PRAGMA DATA_VERSION', 'BEGIN')) for s in sql)
+    assert not result.facts.implementations and not result.facts.tests
+    assert not result.facts.obligations and not result.scenarios
+    assert [c.id for c in result.cards] == ([card_id] if card_id else [])
+    projected = EvaluatedDeliveryReadiness(result, actor_id=ACTOR.actor_id)
+    assessment = projected.assessment(card_id)
+    metrics = aggregate_delivery_metrics(assessment)
+    assert metrics.verification.status == 'unknown' and metrics.verification.percent is None
+    assert not assessment.completeness.population_known
+    assert projected.diagnostics(card_id).graph.causes[0].native_reason_codes == result.unavailable_reason_codes
+    assert (await read(session, card_id=card_id)).snapshot_id == result.snapshot_id
+
+
+async def test_capacity_never_hides_foreign_card_or_revoked_grant(ledger, monkeypatch):
+    session, _, _ = ledger
+    await setup(session)
+    monkeypatch.setattr('okto_pulse.community.adapters.sqlalchemy_delivery_readiness.MAX_CARDS', 1)
+    with pytest.raises(ReadinessReadError, match='readiness_scope_mismatch'):
+        await read(session, card_id='foreign')
+    await session.execute(delete(AgentBoard).where(AgentBoard.agent_id == ACTOR.actor_id))
+    await session.commit()
+    with pytest.raises(ReadinessReadError, match='readiness_scope_mismatch'):
+        await read(session)
+
+
+async def test_authority_capacity_cannot_be_returned_as_authorized_unknown(ledger):
+    session, _, _ = ledger
+    await setup(session)
+    class AuthorityOverflow(CommunityDeliveryReadinessReader):
+        async def _rows(self, session, statement, limit, counts):
+            if 'permission_presets' in str(statement):
+                raise ReadinessReadError('readiness_limit_exceeded', native_code='readiness_population_limit')
+            return await super()._rows(session, statement, limit, counts)
+        async def _capacity_snapshot(self, *args):
+            pytest.fail('unresolved authority must not produce authorized unknown')
+    with pytest.raises(ReadinessReadError, match='readiness_limit_exceeded'):
+        await read(session, kind=AuthorityOverflow)
 
 
 @pytest.mark.parametrize('actor', [ACTOR, ReadinessActor('owner', 'human', 'local'),
