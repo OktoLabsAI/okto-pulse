@@ -654,3 +654,18 @@ Validation via run_readiness_tests.py with isolated installed/source parity (859
 - Ruff and git diff --check passed. Final official paired source closure: 8932 ownership rows, zero findings, eight budgets ZERO; README projections regenerated. All handles terminal. P11 final wheel acceptance remains pending.
 
 Resume at remaining P06 Card report/learning input diagnostics and historical Done current qualification. Successful Spec preview orchestration is tested, but positive full native closeout and real transition race/rollback acceptance still require their complete evidence. Finish remaining earlier named-case/performance audits before closing the prerequisite milestones, then P07-P11 as already planned. No production reinstall/restart/reset, frontend modification, deployment or release.
+
+## P06 completion input guidance - requested commit/push checkpoint, 2026-10-14
+
+User requested committing and pushing all pending Pulse work. Starting pushed pair: Core c482c610 / Community 451af14c on feature/v0.4.0. This remains an IN_PROGRESS checkpoint; no milestone or full-plan completion is claimed.
+
+Native readiness observations now identify the existing completion report inputs and, when required by the current native policy, Bug Learning and impact evidence. Diagnostics provide completion guidance for missing inputs and read guidance for unavailable native context. These observations remain not_evaluated, do not authorize a transition, do not create proof and do not reduce implementation/verification percentages. Required-input guidance is internal readiness groundwork; public REST/MCP/UI delivery remains pending.
+
+Validation:
+- Paired isolated installed/source byte parity: 859 Core / 323 Community Python files.
+- run_readiness_tests.py core -q tests/test_delivery_readiness_lifecycle.py tests/test_delivery_readiness_diagnostics.py tests/test_delivery_readiness_native_diagnostics.py tests/test_delivery_readiness_paging.py --tb=short --show-capture=no: 122 passed in 11.04s.
+- Ruff passed all four changed Python files.
+- Final official paired source closure: 8934 ownership rows, zero findings, all eight architecture budgets ZERO; README projections regenerated and validated. Test and audit handles are terminal. Final wheel acceptance remains P11.
+- The prior session handle 44224 was no longer available; the focused suite above was rerun to obtain an observable terminal result.
+
+Resume at P06 historical Done current qualification and positive full native closeout/race/rollback acceptance; then finish remaining P02-P05 evidence and P07-P11 as recorded. Historical Done handling was investigated but is not implemented in this checkpoint. No frontend change, production reinstall/restart/reset, deployment or release. Generated .playwright-cli/ and output/ browser artifacts remain local and excluded from commits.
