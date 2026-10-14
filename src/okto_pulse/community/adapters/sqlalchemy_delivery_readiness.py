@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from okto_pulse.community.adapters.delivery_verification import native_verification_population
 from okto_pulse.community.adapters.sqlalchemy_decision_reviews import CommunityDecisionReviews
 from okto_pulse.community.adapters.sqlalchemy_delivery_evidence import CommunityDeliveryEvidenceStore
+from okto_pulse.core.application.service_catalog import build_application_service_catalog
 from okto_pulse.community.adapters.sqlalchemy_models import (
     Agent, AgentBoard, Board, BoardShare, PermissionPreset, Card, Spec, SpecHistory, DeliveryEvidenceRecordRow as Record,
     CardDeliveryEvidenceRecordRow as CardRecord, ImplementationTargetExecutionRecordRow as Execution,
@@ -356,8 +357,12 @@ class CommunityDeliveryReadinessReader:
                                     raise
                                 result = await self._capacity_snapshot(session, board_id, spec_id, card_id, counts, exc)
                             if access is not None:
-                                result = replace(result, access=access,
-                                    snapshot_id=_digest({'facts': result.snapshot_id, 'access': access}))
+                                result = replace(result, access=access)
+                                native = await build_application_service_catalog(session).delivery_readiness_lifecycle.evaluate(
+                                    result, card_id=card_id)
+                                result = replace(result, native_lifecycle=native,
+                                    snapshot_id=_digest({'facts': result.snapshot_id, 'access': access,
+                                        'native_lifecycle': native}))
                     finally:
                         await connection.rollback()
                     # data_version changes on this connection after ending the

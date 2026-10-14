@@ -538,3 +538,20 @@ Validation:
 Resume: wire the shared native completion checks into readiness's authorized consistent snapshot/context and lifecycle diagnostics; compose Policy Compliance through its preview, never its fenced writer. Card completion still needs corresponding shared native evaluation and explicit missing report/validation/learning inputs. Preserve remaining G10/G11 real race/rollback acceptance, P02–P05 audits, P07 REST/MCP integration/catalog, P08/P09 UI/events/frontend/browser, P10 and P11 full acceptance. The new helper alone does not complete P06.5 or the plan.
 
 Final source closure: 8913 ownership rows, zero findings, all eight budgets ZERO; exact README fragments regenerated in both repositories. All test and audit handles are terminal. Production install, processes and data remain unchanged.
+
+## P06 native lifecycle integration - work-in-progress checkpoint, 2026-10-14
+
+User requested committing and pushing all pending Pulse work. Starting pair: Core e0ac6d5d / Community fd1a6695 on feature/v0.4.0. This checkpoint preserves incomplete work; P06 and full-plan acceptance remain IN_PROGRESS.
+
+Core now exposes typed native lifecycle observations and current completion-state permissions through its public readiness contract. The lifecycle service reads scalar Spec/Board records through public persistence and invokes the shared read-only Spec completion checks. Typed coverage/task blockers feed context and diagnostics without reducing proof scores or revealing private error text. An incomplete native check never grants final transition authority; Card completion composition remains pending. Community integrates this evaluation into the authorized read snapshot and its fingerprint.
+
+Validation:
+- Final Core regression: 172 passed in 41.36s (readiness lifecycle/state/shared evaluation/access/paging, allowed-transition parity, AF23, SKB B10 and readiness gates).
+- Official paired source closure: 8922 ownership rows, zero findings, all eight architecture budgets ZERO. Exact README projections regenerated. Isolated installed/source parity: 859 Core / 323 Community Python files.
+- Community initial run: 7 failed / 42 passed in 178.51s because test setup lacked native persistence registration; fixture registration added.
+- Latest focused Community retry: 4 failed / 1 passed / 24 deselected in 32.53s. Current unresolved cause: MissingRealmScope (realm_scope_required) in the fresh read session when native persistence is called. This checkpoint is NOT a passing integration milestone.
+- Core regression and architecture audit processes are terminal. No frontend change or production install/restart/reset.
+
+Next action: bind the fresh session's realm scope from verified access.realm_id after Board/actor authorization, following the existing Community unit-of-work behavior; retain the missing-realm guard. Then rerun focused Community authorization tests. Measure native-gate query costs and preserve query-count independence from Card count; do not blindly relax the existing 17-query assertion. Complete the full authorization/batch regression and source audit after fixes.
+
+Remaining scope stays unchanged: full native Card/Spec lifecycle composition, P06 race/rollback acceptance, earlier named-case/performance audits and P07-P11 integration/acceptance. Existing frontend lint budget failure remains open as recorded above. Generated local browser logs/screenshots (.playwright-cli/ and output/) are excluded from the checkpoint.

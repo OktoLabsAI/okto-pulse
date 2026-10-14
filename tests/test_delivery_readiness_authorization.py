@@ -11,7 +11,7 @@ from test_delivery_readiness_verification import prepare_reports
 from okto_pulse.community.adapters.relational_application import CommunityAgentAuthenticationGateway
 from okto_pulse.community.adapters.sqlalchemy_application_persistence import CommunitySqlAlchemyApplicationPersistence
 from okto_pulse.community.adapters.sqlalchemy_delivery_readiness import CommunityDeliveryReadinessReader
-from okto_pulse.community.adapters.sqlalchemy_models import Agent, AgentBoard, BoardShare, Card, PermissionPreset
+from okto_pulse.community.adapters.sqlalchemy_models import Agent, AgentBoard, BoardShare, Card, PermissionPreset, Spec
 from okto_pulse.core.domain.delivery_assessment import assess_obligation_delivery, aggregate_delivery_metrics
 from okto_pulse.core.ports.delivery_readiness import ReadinessAccessDenied, ReadinessActor, ReadinessReadError
 from okto_pulse.core.ports.permission_policy import registered_permission_flags
@@ -23,6 +23,12 @@ ACTOR = ReadinessActor('readiness-agent', 'agent', 'local', delivery.BOARD_ID)
 
 
 async def setup(session):
+    # The reader now composes real Core completion checks through native ports.
+    from okto_pulse.core.ports.application_persistence import register_application_persistence_port
+    from okto_pulse.core.ports.relational_application import register_relational_application_adapter
+    from okto_pulse.community.adapters.relational_application import CommunityRelationalApplicationAdapter
+    register_application_persistence_port(CommunitySqlAlchemyApplicationPersistence())
+    register_relational_application_adapter(CommunityRelationalApplicationAdapter())
     session.add_all([
         PermissionPreset(id='readiness-base', name='Readiness base', owner_id='owner', flags=registered_permission_flags()),
         PermissionPreset(id='readiness-child', name='Readiness child', owner_id='owner',
@@ -105,6 +111,31 @@ async def test_current_membership_and_policy_are_read_only_and_secret_free(ledge
     assert 'secret-marker' not in repr(result) and 'secret-hash' not in repr(result)
     assert 'Private agent name' not in repr(result)
     assert not session.new and not session.dirty and not session.deleted
+
+
+async def test_native_spec_gate_is_evaluated_in_authorized_snapshot_without_writes(ledger):
+    session, _, _ = ledger
+    await setup(session)
+    await session.execute(update(Spec).where(Spec.id == delivery.SPEC_ID).values(
+        acceptance_criteria=[{'id': 'uncovered', 'title': 'Private criterion text'}],
+        test_scenarios=[], skip_test_coverage=False))
+    await session.commit()
+    with statements(session.bind) as sql:
+        batch = await read(session)
+    assert ('spec', 'in_progress') in batch.access.completion_states
+    assert batch.native_lifecycle.check_status == 'blocked'
+    assert batch.native_lifecycle.blocking_codes == ('coverage_incomplete',)
+    assert all(s.lstrip().upper().startswith(('SELECT', 'PRAGMA DATA_VERSION', 'BEGIN')) for s in sql)
+    assert 'Private criterion text' not in repr(batch.native_lifecycle)
+    assert (await read(session)).snapshot_id == batch.snapshot_id
+    await session.execute(update(AgentBoard).where(AgentBoard.agent_id == ACTOR.actor_id).values(
+        permission_overrides={'spec': {'interact_in': {'in_progress': False}}}))
+    await session.commit()
+    restricted = await read(session)
+    assert restricted.facts == batch.facts
+    assert restricted.native_lifecycle.check_status == 'not_evaluated'
+    assert restricted.native_lifecycle.blocking_codes == ()
+    assert restricted.snapshot_id != batch.snapshot_id
 
 
 @pytest.mark.parametrize('failure', ['inactive', 'grant_revoked', 'realm', 'bound_board', 'unknown_kind',
