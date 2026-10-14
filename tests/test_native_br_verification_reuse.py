@@ -22,7 +22,8 @@ ledger = delivery.ledger
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("ledger", ["native_schema"], indirect=True)
-async def test_blocking_condition_reuses_one_test_card_and_authenticated_run(ledger, tmp_path):
+@pytest.mark.parametrize('allocation', ['direct', 'derived'])
+async def test_blocking_condition_reuses_one_test_card_and_authenticated_run(ledger, tmp_path, allocation):
     session, store, _ = ledger
     spec = await session.get(Spec, delivery.SPEC_ID)
     requirements = deepcopy(spec.functional_requirements)
@@ -43,6 +44,9 @@ async def test_blocking_condition_reuses_one_test_card_and_authenticated_run(led
                 "criterion_ids": ["ac-about"], "covered_aspect": "Five failures and blocking",
             }]},
     }
+    if allocation == 'derived':
+        rule['linked_task_ids'] = []
+        rule.pop('implementation_plan')
     scenario = {**delivery.SCENARIO, "verification_method": "demonstration",
                 "given": "An active account", "when": "Five incorrect passwords are submitted",
                 "then": "Login is blocked"}
@@ -85,3 +89,17 @@ async def test_blocking_condition_reuses_one_test_card_and_authenticated_run(led
     assert test_cards[0].test_scenario_ids == [scenario["id"]]
     assert len(list(native.receipt_root.glob("*.json"))) == 1
     assert (await session.get(Spec, delivery.SPEC_ID)).test_scenarios[0]["evidence"] == dict(issued.evidence)
+    from okto_pulse.core.domain.delivery_assessment import (
+        assess_obligation_delivery, assess_test_delivery, aggregate_delivery_metrics,
+    )
+    snapshot, _ = await store.load_rollup_snapshot(delivery.BOARD_ID, delivery.SPEC_ID)
+    metrics = aggregate_delivery_metrics(assess_obligation_delivery(snapshot))
+    assert metrics.implementation.percent == metrics.verification.percent == 100
+    assert metrics.verification.total == 3
+    test_metrics = aggregate_delivery_metrics(assess_test_delivery(snapshot,
+        card_id='test', scenario_ids=(scenario['id'],)))
+    assert test_metrics.verification.total == 1 and test_metrics.verification.percent == 100
+    if allocation == 'derived':
+        br = next(row for row in snapshot.effective_context.inventory.rows if row.family == 'br')
+        assert all(contribution.origin == 'inherited' for contribution in br.contributions)
+        assert all(contribution.sources for contribution in br.contributions)
