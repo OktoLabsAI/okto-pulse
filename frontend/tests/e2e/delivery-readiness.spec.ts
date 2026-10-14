@@ -150,6 +150,7 @@ test('P08/U01/U04/U09: native board and Delivery show separate accessible metric
   expect(blue!.height).toBe(6);
   const coverLabel = await cover.getByText('Implementation', { exact: true }).boundingBox();
   const coverPercent = await cover.getByText('100%', { exact: true }).boundingBox();
+  expect(await cover.getByText('100%', { exact: true }).evaluate(element => getComputedStyle(element).fontSize)).toBe('16px');
   expect(coverLabel!.y + coverLabel!.height).toBeLessThan(coverPercent!.y);
   expect(coverPercent!.y + coverPercent!.height).toBeLessThan(blue!.y);
   expect(await cover.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
@@ -182,6 +183,7 @@ test('P08/U01/U04/U09: native board and Delivery show separate accessible metric
   const deliveryGreen = await panel.getByRole('progressbar', { name: 'Verification' }).boundingBox();
   const deliveryLabel = await panel.getByText('Implementation', { exact: true }).boundingBox();
   const deliveryPercent = await panel.getByText('100%', { exact: true }).boundingBox();
+  expect(await panel.getByText('100%', { exact: true }).evaluate(element => getComputedStyle(element).fontSize)).toBe('20px');
   expect(deliveryBlue!.x + deliveryBlue!.width).toBeLessThan(deliveryGreen!.x);
   expect(deliveryBlue!.y).toBe(deliveryGreen!.y);
   expect(deliveryLabel!.y + deliveryLabel!.height).toBeLessThan(deliveryPercent!.y);

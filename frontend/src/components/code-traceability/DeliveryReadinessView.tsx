@@ -23,7 +23,7 @@ function Metric({ label, value, loading, compact }: { label: string; value?: Rea
   return <div className="min-w-0">
     <div className={`font-medium text-gray-600 dark:text-gray-300 ${compact ? 'text-[10px] leading-4' : 'text-xs leading-4'}`}>{label}</div>
     <div className={`flex items-start gap-1 ${compact ? 'mt-1 h-7' : 'mt-2 h-10'}`}>
-      <strong title={text} className={known ? `tabular-nums leading-none ${compact ? 'text-lg' : 'text-xl'} ${label === 'Implementation' ? 'text-sky-700 dark:text-sky-400' : 'text-emerald-700 dark:text-emerald-400'}` : 'text-xs font-medium leading-4 text-gray-600 dark:text-gray-300'}>{displayText}</strong>
+      <strong title={text} className={known ? `tabular-nums leading-none ${compact ? 'text-base' : 'text-xl'} ${label === 'Implementation' ? 'text-sky-700 dark:text-sky-400' : 'text-emerald-700 dark:text-emerald-400'}` : 'text-xs font-medium leading-4 text-gray-600 dark:text-gray-300'}>{displayText}</strong>
       {compact && failure && <span title="Failed or conflicting evidence" className="text-red-700 dark:text-red-300"><AlertTriangle size={12} aria-hidden="true" /><span className="sr-only">Failed or conflicting evidence</span></span>}
     </div>
     {loading ? <div aria-hidden="true" className="h-1.5 rounded-full bg-gray-200 motion-safe:animate-pulse dark:bg-gray-700" />
