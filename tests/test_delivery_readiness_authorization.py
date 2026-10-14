@@ -288,6 +288,56 @@ async def test_current_card_read_denial_is_applied_before_delivery_load(ledger):
     assert exc.value.required_permission == 'card.entity.read'
 
 
+@pytest.mark.parametrize('status', ['in_progress', 'validation'])
+async def test_native_task_validation_gate_preserves_complete_proof(ledger, status):
+    session, store, _ = ledger
+    await setup(session)
+    await session.execute(update(Card).where(Card.id == 'task').values(status='in_progress'))
+    await session.commit()
+    implementation = await delivery.record(store, delivery.command())
+    await delivery.record(store, delivery.command('test', implementation_ids=[implementation['id']]))
+    await session.execute(update(Card).where(Card.id == 'task').values(status=status))
+    await session.commit()
+    with statements(session.bind) as sql:
+        batch = await read(session, card_id='task')
+    assert all(s.lstrip().upper().startswith(('SELECT', 'PRAGMA DATA_VERSION', 'BEGIN')) for s in sql)
+    assert batch.native_lifecycle.check_status == 'blocked'
+    assert batch.native_lifecycle.blocking_codes == ('task_validation_required',)
+    context = EvaluatedDeliveryReadiness(batch, actor_id=ACTOR.actor_id).context('task')
+    assert context.implementation.percent == context.verification.percent == 100
+    assert context.delivery_gate.status == 'allowed'
+    assert context.lifecycle.qualification_is_current is False
+
+
+@pytest.mark.parametrize('case', ['empty_links', 'missing_scenario', 'ready', 'tampered'])
+async def test_native_test_card_admission_matches_readiness_without_writes(ledger, case):
+    from okto_pulse.community.adapters.sqlalchemy_models import Board
+    from okto_pulse.core.services.main import CardService
+    from okto_pulse.core.services.gate_contracts import GateContractError
+    session, _, evidence = ledger
+    await setup(session)
+    await session.execute(update(Card).where(Card.id == 'test').values(status='in_progress'))
+    if case in {'empty_links', 'missing_scenario'}:
+        await session.execute(update(Card).where(Card.id == 'test').values(
+            test_scenario_ids=[] if case == 'empty_links' else ['unresolved-scenario']))
+    else:
+        scenario = {**delivery.SCENARIO, 'status': 'ready' if case == 'ready' else 'passed',
+            'evidence': evidence if case == 'ready' else {**evidence, 'execution_receipt': 'forged'}}
+        await session.execute(update(Spec).where(Spec.id == delivery.SPEC_ID).values(test_scenarios=[scenario]))
+    await session.commit()
+    with statements(session.bind) as sql:
+        batch = await read(session, card_id='test')
+    assert all(s.lstrip().upper().startswith(('SELECT', 'PRAGMA DATA_VERSION', 'BEGIN')) for s in sql)
+    card = await session.get(Card, 'test')
+    board = await session.get(Board, delivery.BOARD_ID)
+    with pytest.raises(GateContractError) as native:
+        await CardService(session).validate_completion_admission(card, board)
+    assert batch.native_lifecycle.blocking_codes == (native.value.code,) == ('test_card_completion_blocked',)
+    assert batch.native_lifecycle.check_status == 'blocked'
+    assert card.status.value == 'in_progress'
+    assert not session.new and not session.dirty and not session.deleted
+
+
 async def test_human_permissions_match_native_user_resolution_even_when_its_created_agent_is_inactive(ledger):
     session, _, _ = ledger
     await setup(session)
@@ -302,6 +352,28 @@ async def test_human_permissions_match_native_user_resolution_even_when_its_crea
     current = await read(session, actor=ReadinessActor('shared', 'human', 'local'))
     assert current.access.allows('code_traceability.evidence.read') == native.has('code_traceability.evidence.read')
     assert not current.access.allows('spec.tests.execute') and not native.has('spec.tests.execute')
+
+
+@pytest.mark.parametrize('outcome', ['passed', 'failed'])
+async def test_authenticated_test_outcome_can_finish_execution_without_requiring_pass(ledger, tmp_path, outcome):
+    from okto_pulse.community.adapters.sqlalchemy_models import Board
+    from okto_pulse.core.services.main import CardService
+    session, _, _, _, _ = await prepare_reports(ledger, tmp_path, 'inspection', [outcome])
+    await setup(session)
+    await session.execute(update(Card).where(Card.id == 'test').values(status='in_progress'))
+    await session.commit()
+    card = await session.get(Card, 'test')
+    board = await session.get(Board, delivery.BOARD_ID)
+    with statements(session.bind) as sql:
+        await CardService(session).validate_completion_admission(card, board)
+        batch = await read(session, card_id='test')
+    assert all(s.lstrip().upper().startswith(('SELECT', 'PRAGMA DATA_VERSION', 'BEGIN')) for s in sql)
+    assert 'test_card_completion_blocked' not in batch.native_lifecycle.reason_codes
+    assert not batch.native_lifecycle.blocking_codes
+    context = EvaluatedDeliveryReadiness(batch, actor_id=ACTOR.actor_id).context('test')
+    assert context.verification.percent == (100 if outcome == 'passed' else 0)
+    assert card.status.value == 'in_progress'
+    assert not session.new and not session.dirty and not session.deleted
 
 
 async def test_share_role_changes_execution_availability_in_same_snapshot_without_changing_proof(ledger, tmp_path):

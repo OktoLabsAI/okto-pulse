@@ -598,3 +598,20 @@ Validation:
 - Ruff and git diff --check passed. Isolated installed/source parity: 859 Core / 323 Community Python files. Final audit_readiness.py: 8925 ownership rows, zero findings, all eight budgets ZERO; README projections regenerated and validated. All test/audit handles are terminal. P11 final wheel audit remains pending.
 
 Resume with remaining native Card completion checks (validation, dependencies, cognitive/resource/traceability and report/learning inputs) through shared native evaluation, plus remaining Spec source/critical-context integration; do not reintroduce Policy Compliance on Spec Done. Complete real transition races/rollback beyond the tested delivery-gate seam, outstanding P02-P05 acceptance/performance, P07 REST/MCP readiness/errors, P08/P09 UI/events/browser, P10 package/docs and P11 all named cases/invariants/final wheels. The existing frontend lint failure remains open. No frontend modification, production install/restart/reset, deployment or release.
+
+## P06 shared Card admission - requested commit/push checkpoint, 2026-10-14
+
+User requested committing and pushing all pending Pulse work. Starting pair: Core 283d99ef / Community a2bea8be on feature/v0.4.0. This is an IN_PROGRESS checkpoint, not completed P06 or full-plan acceptance.
+
+CardService.validate_completion_admission now shares the existing task-validation and authenticated Test-scenario prerequisites between move_card and readiness. Native mutation order and prerequisites are preserved; the task-validation error now uses the existing typed CardOperationError contract. Readiness also invokes the existing read-only cognitive and resource completion checks. Lifecycle blockers retain implementation/verification proof scores, redact private error text, and do not grant final transition authority when report or other inputs remain absent.
+
+Validation:
+- Core broad admission regression before the final cognitive/resource additions: 185 passed in 31.11s.
+- Final Core lifecycle, cognitive wiring, transition parity and SKB B10 preview regression: 76 passed in 26.22s.
+- Final Community command: run_readiness_tests.py community -q tests/test_delivery_readiness_authorization.py tests/test_delivery_readiness_policy.py tests/test_delivery_report.py --tb=short --show-capture=no: 55 passed / 1 failed in 158.24s.
+- Unresolved test: test_authenticated_test_outcome_can_finish_execution_without_requiring_pass[passed-native_schema], assertion at test_delivery_readiness_authorization.py:374. Native completion admission accepts the authenticated result, but readiness verification is 0 instead of the test's expected 100, with verification_association_missing. Investigate the fixture association and authoritative population before changing either the expectation or production semantics. The failed-outcome case passed. No gate was relaxed and this checkpoint is NOT a green Community milestone.
+- Ruff passed all changed Python files; git diff --check passed.
+- Paired isolated installed/source parity: 859 Core / 323 Community Python files. Final official source closure: 8926 ownership rows, zero findings, eight architecture budgets ZERO; README projections regenerated and validated. Final wheel acceptance remains P11.
+- All test/audit handles are terminal. No frontend change, production reinstall/restart/reset, deployment or release. Generated .playwright-cli/ and output/ browser artifacts remain local and are excluded from commits.
+
+Resume first at the failing authenticated passed-result test above. Then finish remaining native dependency/traceability/report/learning checks, Spec source/critical-context integration, actual transition race/rollback acceptance and the already recorded P02-P11 scope. P06 remains partial; this checkpoint introduces no new milestone or scope.

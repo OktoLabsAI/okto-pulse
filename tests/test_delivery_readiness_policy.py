@@ -8,7 +8,7 @@ import test_delivery_evidence_integration as delivery
 from test_delivery_readiness_authorization import setup, read
 from test_delivery_readiness_batch import statements
 from test_skb3_semantic_guideline_persistence import _native_guideline_binding
-from okto_pulse.community.adapters.sqlalchemy_models import Card, PermissionPreset
+from okto_pulse.community.adapters.sqlalchemy_models import Board, Card, PermissionPreset
 from okto_pulse.community.adapters.sqlalchemy_semantic_guideline_assessment import CommunitySqlAlchemySemanticGuidelineAssessment
 from okto_pulse.core.domain.quality_canonicalization import canonical_sha256
 from okto_pulse.core.domain.guideline_policy import (
@@ -24,6 +24,7 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.parametrize('ledger', ['native_sc
 async def test_native_policy_blocks_without_writes_or_score_penalty_and_redacts_details(ledger):
     session, store, _ = ledger
     await setup(session)
+    await session.execute(update(Board).where(Board.id == delivery.BOARD_ID).values(settings={'require_task_validation': False}))
     await session.execute(update(Card).where(Card.id == 'task').values(status='in_progress'))
     revision = GuidelineRevision(revision_id='readiness-policy-revision',
         guideline_id='readiness-policy', revision_number=1, semantic_version='1.0.0',
