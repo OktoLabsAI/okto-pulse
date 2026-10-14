@@ -65,6 +65,7 @@ from okto_pulse.core.ports.checklist import (
     ChecklistInputDigestConflict,
     ChecklistListQuery,
     ChecklistPersistenceError,
+    ChecklistBoardBindingMissing,
     ChecklistSpecLifecycleConflict,
     ChecklistSpecEditionConflict,
     ChecklistSpecVersionConflict,
@@ -375,7 +376,7 @@ class CommunitySqlAlchemyChecklist:
             )
         ).scalar_one_or_none()
         if head is None:
-            raise ChecklistPersistenceError("checklist_board_binding_missing")
+            raise ChecklistBoardBindingMissing()
         else:
             row = (
                 await self._session.execute(

@@ -28,10 +28,11 @@ const validationSettings: BoardSettings = {
   min_spec_assertiveness: 80, min_spec_decidability: 80, max_spec_ambiguity: 30,
 };
 
-function renderPlanningReview() {
+function renderPlanningReview(canSubmitDecomposition = false) {
   return render(<SubmitSpecValidationModal
     specId="spec-1" specTitle="Planning review" boardId="board-1" specVersion={4}
     settings={validationSettings} canReadChecklist canExecuteChecklist
+    canSubmitDecomposition={canSubmitDecomposition}
     onClose={() => {}} onSubmitted={() => {}}
   />);
 }
@@ -549,7 +550,7 @@ describe('SpecChecklistPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
 
     const submitButton = screen.getByRole('button', {
-      name: 'Submit Validation',
+      name: 'Conclude planning validation',
     });
     expect(submitButton).toBeDisabled();
 
@@ -661,7 +662,7 @@ describe('SpecChecklistPanel', () => {
     fireEvent.change(screen.getByLabelText('Pinpoint 1 excerpt'), { target: { value: 'Original requirement' } });
     fireEvent.change(screen.getByLabelText('Pinpoint 1 recommendation'), { target: { value: 'Specify capacity.' } });
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Submit Validation' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Conclude planning validation' }));
 
     await waitFor(() => expect(apiMock.submitSpecValidation).toHaveBeenCalledWith(
       'spec-1',
@@ -709,7 +710,7 @@ describe('SpecChecklistPanel', () => {
       });
     }
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
-    const submit = screen.getByRole('button', { name: 'Submit Validation' });
+    const submit = screen.getByRole('button', { name: 'Conclude planning validation' });
     fireEvent.click(submit);
     await waitFor(() => expect(apiMock.submitSpecValidation).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(submit).toBeEnabled());
@@ -726,6 +727,38 @@ describe('SpecChecklistPanel', () => {
       .not.toEqual(apiMock.submitSpecValidation.mock.calls[0][1].idempotency_key);
   });
 
+  it('includes a separately authored decomposition only when the evaluator opts in with permission', async () => {
+    apiMock.getSpecChecklistState.mockResolvedValue(currentState);
+    renderPlanningReview(true);
+    await waitFor(() => expect(screen.getByTestId('spec-validation-checklist-readiness')).toHaveTextContent('is ready'));
+    fillPlanningReview();
+    fireEvent.click(screen.getByLabelText('Include my decomposition opinion'));
+    const submit = screen.getByRole('button', { name: 'Conclude planning validation' });
+    expect(submit).toBeDisabled();
+    for (const name of ['Breakdown completeness', 'Granularity', 'Dependency coherence', 'Test coverage quality', 'Overall decomposition']) {
+      fireEvent.change(screen.getByLabelText(`${name} score`), { target: { value: '92' } });
+      fireEvent.change(screen.getByLabelText(`${name} justification`), { target: { value: `${name}: reviewed against the planned Tasks and Tests.` } });
+    }
+    fireEvent.change(screen.getByLabelText('Decomposition recommendation'), { target: { value: 'reject' } });
+    expect(submit).toBeEnabled(); // A valid negative opinion is still a recordable fact.
+    fireEvent.click(submit);
+    await waitFor(() => expect(apiMock.submitSpecValidation).toHaveBeenCalledWith('spec-1', expect.objectContaining({
+      recommendation: 'approve', decomposition: expect.objectContaining({ overall_score: 92, recommendation: 'reject' }),
+    })));
+    expect(apiMock.submitSpecValidation.mock.calls[0][1].decomposition).not.toHaveProperty('evaluator_id');
+  });
+
+  it('does not offer a decomposition contribution without its independent permission', async () => {
+    apiMock.getSpecChecklistState.mockResolvedValue(currentState);
+    renderPlanningReview();
+    await waitFor(() => expect(screen.getByTestId('spec-validation-checklist-readiness')).toHaveTextContent('is ready'));
+    expect(screen.queryByLabelText('Include my decomposition opinion')).not.toBeInTheDocument();
+    fillPlanningReview();
+    fireEvent.click(screen.getByRole('button', { name: 'Conclude planning validation' }));
+    await waitFor(() => expect(apiMock.submitSpecValidation).toHaveBeenCalled());
+    expect(apiMock.submitSpecValidation.mock.calls[0][1]).not.toHaveProperty('decomposition');
+  });
+
   it.each(['missing', 'foreign-board', 'foreign-spec'])('refuses a %s planning basis', async (shape) => {
     const cycle = await apiMock.getValidationCycle();
     apiMock.getValidationCycle.mockResolvedValue({
@@ -739,7 +772,7 @@ describe('SpecChecklistPanel', () => {
     renderPlanningReview();
     await screen.findByText('The validation cycle changed. Refresh the Spec before submitting.');
     fillPlanningReview();
-    expect(screen.getByRole('button', { name: 'Submit Validation' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Conclude planning validation' })).toBeDisabled();
     expect(apiMock.submitSpecValidation).not.toHaveBeenCalled();
   });
 
@@ -752,7 +785,7 @@ describe('SpecChecklistPanel', () => {
     const newManifest = { ...cycle.planning_manifest, subject_revision: 2 };
     apiMock.getValidationCycle.mockResolvedValue({ ...cycle, planning_manifest: newManifest });
     fireEvent.click(screen.getByRole('button', { name: 'Refresh validation readiness' }));
-    const submit = screen.getByRole('button', { name: 'Submit Validation' });
+    const submit = screen.getByRole('button', { name: 'Conclude planning validation' });
     if (dirty) {
       await screen.findByText(/Planning inputs changed while you were editing/);
       expect(screen.getByLabelText('Clarity justification')).toHaveValue(
@@ -763,6 +796,12 @@ describe('SpecChecklistPanel', () => {
       await screen.findByText(/Planning inputs changed while you were editing/);
       expect(submit).toBeDisabled();
       expect(apiMock.submitSpecValidation).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole('button', { name: 'I reviewed the current plan — use this basis' }));
+      await waitFor(() => expect(submit).toBeEnabled());
+      fireEvent.click(submit);
+      await waitFor(() => expect(apiMock.submitSpecValidation).toHaveBeenCalledWith('spec-1',
+        expect.objectContaining({ expected_planning_manifest: newManifest }),
+      ));
     } else {
       await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh validation readiness' })).toBeEnabled());
       fillPlanningReview();

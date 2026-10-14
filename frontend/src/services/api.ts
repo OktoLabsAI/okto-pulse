@@ -1335,8 +1335,20 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       return apiClient.fetchJson<Spec>(`/specs/${specId}`);
     },
 
-    async listSpecEvaluations(specId: string, signal?: AbortSignal): Promise<import('@/types').SpecEvaluationList> {
-      return apiClient.fetchJson(`/specs/${encodeURIComponent(specId)}/evaluations`, { signal });
+    async listSpecEvaluations(specId: string, options: {
+      view?: 'all' | 'current' | 'previous'; offset?: number; limit?: number; signal?: AbortSignal;
+    } = {}): Promise<import('@/types').SpecEvaluationList> {
+      const params = new URLSearchParams({ view: options.view ?? 'current',
+        offset: String(options.offset ?? 0), limit: String(options.limit ?? 25) });
+      return apiClient.fetchJson(`/specs/${encodeURIComponent(specId)}/evaluations?${params}`, { signal: options.signal });
+    },
+
+    async submitSpecEvaluation(specId: string, input: import('@/types').SpecDecompositionInput): Promise<{
+      success: boolean; evaluation: import('@/types').SpecDecompositionOpinion;
+    }> {
+      return apiClient.fetchJson(`/specs/${encodeURIComponent(specId)}/evaluations`, {
+        method: 'POST', body: JSON.stringify(input), maxRetries: 0,
+      });
     },
 
     async classifyArchitectureCandidates(boardId: string, specId: string, batch: ArchitectureClassificationBatch): Promise<ArchitectureClassificationReceipt> {

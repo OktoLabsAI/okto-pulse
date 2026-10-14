@@ -4353,18 +4353,32 @@ export interface KanbanColumn {
 }
 
 export interface SpecEvaluationList {
+  spec_id: string;
+  spec_status: SpecStatus;
   current_edition: number;
   active_count: number;
   previous_count: number;
-  evaluations: Array<{
+  total: number;
+  offset: number;
+  limit: number;
+  view: 'all' | 'current' | 'previous';
+  evaluations: SpecDecompositionOpinion[];
+}
+
+export interface SpecDecompositionOpinion {
     id: string;
     evaluator_name?: string;
     evaluator_id: string;
+    evaluator_type: 'user' | 'agent';
     spec_edition: number;
+    spec_version: number;
+    dimensions: Record<'breakdown_completeness' | 'granularity' | 'dependency_coherence' | 'test_coverage_quality', {
+      score: number;
+      justification: string;
+    }>;
     overall_score: number;
     overall_justification: string;
-    recommendation: string;
+    recommendation: SpecDecompositionInput['recommendation'];
     lifecycle_state: 'current' | 'previous';
     created_at: string;
-  }>;
 }

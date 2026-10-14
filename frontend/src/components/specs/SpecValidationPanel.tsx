@@ -45,11 +45,13 @@ import type {
 
 import { SpecChecklistPanel } from './SpecChecklistPanel';
 import { SpecPlanningSummary } from './SpecPlanningSummary';
+import { SpecDecompositionPanel } from './SpecDecompositionPanel';
 import { SpecValidationHistoryPanel } from './SpecValidationHistoryPanel';
 import { resolveSpecSemanticAnchor } from './specSemanticAnchors';
 
 type ValidationSubTab =
   | 'spec-validation'
+  | 'decomposition'
   | 'checklist'
   | 'requirement-lint'
   | 'policy-compliance';
@@ -76,6 +78,8 @@ interface SpecValidationPanelProps {
   onOpenRequirementLintHelp?: () => void;
   onSubmitValidation?: () => void;
   canSubmitValidation?: boolean;
+  canReadDecomposition?: boolean;
+  canSubmitDecomposition?: boolean;
   onReviewPlanningComponent?: (key: string) => void;
 }
 
@@ -369,6 +373,8 @@ export function SpecValidationPanel({
   onOpenRequirementLintHelp,
   onSubmitValidation,
   canSubmitValidation = false,
+  canReadDecomposition = false,
+  canSubmitDecomposition = false,
   onReviewPlanningComponent,
 }: SpecValidationPanelProps) {
   const api = useDashboardApi();
@@ -379,6 +385,7 @@ export function SpecValidationPanel({
     ...(canReadValidation
       ? [{ id: 'spec-validation' as const, label: 'Spec Validation' }]
       : []),
+    ...(canReadDecomposition ? [{ id: 'decomposition' as const, label: 'Task decomposition' }] : []),
     ...(canReadChecklist
       ? [{ id: 'checklist' as const, label: 'Checklist' }]
       : []),
@@ -389,6 +396,7 @@ export function SpecValidationPanel({
       ? [{ id: 'policy-compliance' as const, label: 'Policy Compliance' }]
       : []),
   ], [
+    canReadDecomposition,
     canReadChecklist,
     canReadPolicyCompliance,
     canReadQuality,
@@ -420,6 +428,7 @@ export function SpecValidationPanel({
   useEffect(() => {
     if (!(
       canReadChecklist
+      || canReadDecomposition
       || canReadValidation
       || canReadQuality
       || canReadPolicyCompliance
@@ -463,6 +472,7 @@ export function SpecValidationPanel({
       });
     return () => controller.abort();
   }, [
+    canReadDecomposition,
     canReadChecklist,
     canReadPolicyCompliance,
     canReadQuality,
@@ -585,7 +595,7 @@ export function SpecValidationPanel({
       <ValidationCycleHeader
         title="Validation"
         edition={specEdition}
-        description="Each section keeps one current result for this lifecycle edition and preserves earlier results as history."
+        description="One planning conclusion, with independent assessments, criteria and histories for this edition."
         icon={<FileCheck2 size={18} className="text-violet-600 dark:text-violet-300" aria-hidden="true" />}
         actions={(
           <span className="flex flex-wrap items-center gap-2">
@@ -606,7 +616,7 @@ export function SpecValidationPanel({
                 className="inline-flex min-h-9 items-center gap-1.5 rounded-lg bg-violet-600 px-3 py-2 text-xs font-semibold text-white shadow-sm hover:bg-violet-700"
               >
                 <CheckCircle2 size={14} aria-hidden="true" />
-                Submit validation
+                Conclude planning validation
               </button>
             )}
           </span>
@@ -625,6 +635,7 @@ export function SpecValidationPanel({
       <SpecPlanningSummary readiness={cycleSummary?.planning_readiness} loading={cycleLoading}
         onReview={{
           ...(canReadValidation ? { spec_validation: () => setActiveTab('spec-validation') } : {}),
+          ...(canReadDecomposition ? { decomposition: () => setActiveTab('decomposition') } : {}),
           ...(canReadChecklist ? { curated_checklist: () => setActiveTab('checklist') } : {}),
           ...(canReadQuality ? { requirement_lint: () => setActiveTab('requirement-lint') } : {}),
           ...(canReadPolicyCompliance ? { policy_compliance: () => setActiveTab('policy-compliance') } : {}),
@@ -741,6 +752,13 @@ export function SpecValidationPanel({
           </TechnicalAuditSection>
         </AccessibleTabPanel>
       )}
+
+      {canReadDecomposition && <AccessibleTabPanel idBase={tabIdPrefix} tabId="decomposition" value={activeTab} mount="lazy-keep" className="space-y-3">
+        <SpecDecompositionPanel specId={specId} edition={specEdition}
+          canSubmit={canSubmitDecomposition && ['approved', 'validated'].includes(specStatus) && !specArchived}
+          refreshKey={validationHistoryRefreshKey + workspaceReloadKey + cycleReloadKey}
+          onRecorded={() => { refreshCycle(); onAssessmentRecorded?.(); }} />
+      </AccessibleTabPanel>}
 
       {canReadChecklist && (
         <AccessibleTabPanel idBase={tabIdPrefix} tabId="checklist" value={activeTab} mount="lazy-keep" className="space-y-3">

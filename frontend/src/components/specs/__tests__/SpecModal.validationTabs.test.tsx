@@ -308,7 +308,7 @@ describe('SpecModal validation navigation', () => {
     expect(screen.getByRole('region', { name: 'Acceptance criteria' })).toBeInTheDocument();
     expect(screen.queryByRole('tab', { name: 'Criterion verification' })).not.toBeInTheDocument();
     expect(screen.queryByText('Functional requirements')).not.toBeInTheDocument();
-  });
+  }, 15_000); // This case traverses several full editors, not a latency budget.
   it.each(['draft', 'review', 'approved', 'validated', 'in_progress', 'done'] as SpecStatus[])(
     'allows requirement qualification authoring only in an unarchived authorized Draft: %s', async status => {
       apiMock.getRequirementVerification.mockResolvedValue({
@@ -504,22 +504,25 @@ describe('SpecModal validation navigation', () => {
     );
   });
 
-  it('does not offer an empty Validation tab to an evaluation-only reader', async () => {
+  it('offers decomposition within Validation to an evaluation-only reader without reading quality', async () => {
     permissionMock.allowAll = false;
     permissionMock.allowed = new Set(['spec.entity.read', 'spec.evaluations.read']);
     renderSpec('draft');
     await screen.findByText(baseSpec.title);
     expect(apiMock.listSpecEvaluations).not.toHaveBeenCalled();
-    expect(screen.queryByRole('tab', { name: 'Validation' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: 'Validation' }));
+    await screen.findByRole('tab', { name: 'Task decomposition' });
+    expect(screen.queryByRole('tab', { name: 'Spec Validation' })).not.toBeInTheDocument();
     expect(apiMock.getCurrentSpecValidation).not.toHaveBeenCalled();
   });
 
-  it('omits decomposition evaluations and their request even with full permissions', async () => {
+  it('keeps decomposition lazy inside Validation instead of restoring the isolated evaluations panel', async () => {
     renderSpec('draft');
     await screen.findByText(baseSpec.title);
     fireEvent.click(screen.getByRole('tab', { name: 'Validation' }));
     await screen.findByTestId('spec-validation-current');
     expect(screen.queryByRole('region', { name: 'Decomposition evaluations' })).not.toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Task decomposition' })).toBeInTheDocument();
     expect(apiMock.listSpecEvaluations).not.toHaveBeenCalled();
   });
 
@@ -594,7 +597,7 @@ describe('SpecModal validation navigation', () => {
     },
   );
 
-  it('presents four ordered, lazy validation subtabs', async () => {
+  it('presents the independent assessments as ordered, lazy validation subtabs', async () => {
     renderSpec('approved');
 
     await screen.findByText(baseSpec.title);
@@ -608,6 +611,7 @@ describe('SpecModal validation navigation', () => {
       name: 'Spec validation sections',
     })).getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
       'Spec Validation',
+      'Task decomposition',
       'Checklist',
       'Requirement lint',
       'Policy Compliance',
@@ -774,7 +778,7 @@ describe('SpecModal validation navigation', () => {
     );
 
     expect(
-      await screen.findByRole('heading', { name: 'Validate Spec' }),
+      await screen.findByRole('heading', { name: 'Conclude planning validation' }),
     ).toBeInTheDocument();
     await waitFor(() => {
       expect(apiMock.getSpecChecklistState).toHaveBeenCalledWith(

@@ -21,9 +21,11 @@ import type {
   SpecValidationSubmitPayload,
   SpecValidationSubmitResponse,
   SpecPlanningManifest,
+  SpecDecompositionInput,
   ValidationSubmissionFence,
 } from '@/types';
 import { ValidationErrorDisplay } from './ValidationErrorDisplay';
+import { decompositionReady, emptyDecomposition, SpecDecompositionFields } from './SpecDecompositionFields';
 
 interface SubmitSpecValidationModalProps {
   specId: string;
@@ -34,6 +36,8 @@ interface SubmitSpecValidationModalProps {
   settings: BoardSettings;
   canReadChecklist: boolean;
   canExecuteChecklist: boolean;
+  canSubmitDecomposition?: boolean;
+  refreshKey?: number;
   onClose: () => void;
   onSubmitted: (result: SpecValidationSubmitResponse) => void;
 }
@@ -135,6 +139,8 @@ export function SubmitSpecValidationModal({
   settings,
   canReadChecklist,
   canExecuteChecklist,
+  canSubmitDecomposition = false,
+  refreshKey = 0,
   onClose,
   onSubmitted,
 }: SubmitSpecValidationModalProps) {
@@ -154,6 +160,8 @@ export function SubmitSpecValidationModal({
   );
   const [pinpoints, setPinpoints] = useState<PinpointDraft[]>([]);
   const [recommendation, setRecommendation] = useState<'approve' | 'reject' | null>(null);
+  const [includeDecomposition, setIncludeDecomposition] = useState(false);
+  const [decomposition, setDecomposition] = useState<SpecDecompositionInput>(emptyDecomposition);
   const [submitting, setSubmitting] = useState(false);
   const submissionAttempt = useRef<{ body: string; key: string } | null>(null);
   const [submissionError, setSubmissionError] = useState<string | null>(null);
@@ -163,10 +171,13 @@ export function SubmitSpecValidationModal({
     useState<ValidationSubmissionFence | null>(null);
   const planningManifest = useRef<SpecPlanningManifest | null>(null);
   const draftDirty = useRef(false);
-  draftDirty.current = pinpoints.length > 0 || recommendation !== null
+  draftDirty.current = includeDecomposition || pinpoints.length > 0 || recommendation !== null
     || METRIC_DEFINITIONS.some(({ metric }) => metrics[metric].justification.length > 0
       || metrics[metric].score !== thresholds[metric]);
   const [basisConflict, setBasisConflict] = useState(false);
+  const [pendingBasis, setPendingBasis] = useState<{
+    manifest: SpecPlanningManifest; fence: ValidationSubmissionFence; checklist: ChecklistSpecState;
+  } | null>(null);
   const [readinessLoading, setReadinessLoading] = useState(true);
   const [readinessRefreshKey, setReadinessRefreshKey] = useState(0);
 
@@ -185,6 +196,7 @@ export function SubmitSpecValidationModal({
       return () => { cancelled = true; };
     }
     setReadinessLoading(true);
+    setPendingBasis(null);
     setSubmissionError(null);
     Promise.all([
       api.getSpecChecklistState(boardId, specId),
@@ -217,6 +229,7 @@ export function SubmitSpecValidationModal({
         }
         if (planningManifest.current && draftDirty.current
             && JSON.stringify(planningManifest.current) !== JSON.stringify(manifest)) {
+          setPendingBasis({ manifest, fence, checklist: resolvedChecklist });
           setBasisConflict(true);
           setSubmissionError('Planning inputs changed while you were editing. Your draft has been preserved; review the current Spec before submitting.');
           return;
@@ -250,6 +263,7 @@ export function SubmitSpecValidationModal({
     canReadChecklist,
     currentSpecEdition,
     readinessRefreshKey,
+    refreshKey,
     specId,
     specVersion,
   ]);
@@ -288,6 +302,7 @@ export function SubmitSpecValidationModal({
   const canSubmit =
     justificationsReady
     && pinpointsReady
+    && (!includeDecomposition || (canSubmitDecomposition && decompositionReady(decomposition)))
     && recommendation !== null
     && checklistReady
     && fenceReady
@@ -323,6 +338,7 @@ export function SubmitSpecValidationModal({
         detail: pinpoint.detail.trim(),
       })),
       recommendation: recommendation!,
+      ...(includeDecomposition && canSubmitDecomposition ? { decomposition } : {}),
     };
     const body = JSON.stringify({ specId, ...authored });
     if (submissionAttempt.current?.body !== body) {
@@ -338,7 +354,8 @@ export function SubmitSpecValidationModal({
           'The submitted validation was not accepted as the current edition result.',
         );
       }
-      toast.success('Spec validation recorded');
+      toast.success(result.spec_status === 'validated'
+        ? 'Planning validated' : 'Assessment recorded. Planning still needs attention.');
       onSubmitted(result);
       onClose();
     } catch (error: unknown) {
@@ -357,7 +374,7 @@ export function SubmitSpecValidationModal({
           <div>
             <h2 className="flex items-center gap-2 text-lg font-semibold text-gray-900 dark:text-white">
               <Shield size={16} aria-hidden="true" />
-              Validate Spec
+              Conclude planning validation
             </h2>
             <p className="mt-0.5 max-w-md truncate text-xs text-gray-500 dark:text-gray-400">
               {specTitle} · Edition {currentSpecEdition}
@@ -422,6 +439,20 @@ export function SubmitSpecValidationModal({
             </div>
           </section>
 
+          {basisConflict && <section role="alert" className="space-y-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+            <p>Your draft is preserved against its original planning inputs. Review the current plan and results before accepting the new basis.</p>
+            {pendingBasis && <>
+              <p>Current plan: Edition {pendingBasis.manifest.edition}. Your scores and justifications will not be changed automatically.</p>
+              <button type="button" className="btn btn-secondary" disabled={readinessLoading || submitting}
+                onClick={() => {
+                  planningManifest.current = pendingBasis.manifest;
+                  setSubmissionFence(pendingBasis.fence); setChecklistState(pendingBasis.checklist);
+                  setPendingBasis(null); setBasisConflict(false); setSubmissionError(null);
+                  submissionAttempt.current = null;
+                }}>I reviewed the current plan — use this basis</button>
+            </>}
+          </section>}
+
           <section className="space-y-3" aria-labelledby="spec-validation-metrics-title">
             <div>
               <h3 id="spec-validation-metrics-title" className="text-sm font-semibold text-gray-900 dark:text-white">
@@ -449,6 +480,16 @@ export function SubmitSpecValidationModal({
                 />
               ))}
             </div>
+          </section>
+
+          <section className="space-y-3 border-t border-gray-200 pt-4 dark:border-gray-700" aria-label="Decomposition contribution">
+            <p className="text-xs text-gray-600 dark:text-gray-300">Existing Current decomposition opinions retain their authors and are checked at conclusion. You do not need to repeat them.</p>
+            {canSubmitDecomposition && <label className="flex items-center gap-2 text-xs font-medium text-gray-800 dark:text-gray-100">
+              <input type="checkbox" checked={includeDecomposition} disabled={submitting}
+                onChange={event => setIncludeDecomposition(event.target.checked)} />
+              Include my decomposition opinion
+            </label>}
+            {includeDecomposition && canSubmitDecomposition && <SpecDecompositionFields value={decomposition} onChange={setDecomposition} disabled={submitting} />}
           </section>
 
           <section className="space-y-3 border-t border-gray-200 pt-4 dark:border-gray-700" aria-labelledby="spec-validation-pinpoints-title">
@@ -594,7 +635,7 @@ export function SubmitSpecValidationModal({
               : 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/25 dark:text-amber-200'
           }`} aria-label="Validation outcome preview">
             <p className="font-semibold">
-              Outcome preview: {outcomePasses ? 'Pass' : 'Needs attention'}
+              Spec quality preview: {outcomePasses ? 'Pass' : 'Needs attention'}
             </p>
             {violations.length > 0 && (
               <ul className="mt-1 list-inside list-disc space-y-0.5">
@@ -614,7 +655,7 @@ export function SubmitSpecValidationModal({
           </section>
 
           <p className="text-[11px] text-gray-500 dark:text-gray-400">
-            This becomes the current result for Edition {currentSpecEdition}. Earlier results remain under Previous validations.
+            This records your assessment for Edition {currentSpecEdition}. Promotion also requires every applicable planning gate. Earlier results remain in history.
           </p>
 
           {submissionError && <ValidationErrorDisplay error={submissionError} />}
@@ -641,7 +682,7 @@ export function SubmitSpecValidationModal({
             className="inline-flex items-center gap-1.5 rounded bg-violet-600 px-4 py-1.5 text-sm text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-gray-400"
           >
             <Check size={14} aria-hidden="true" />
-            {submitting ? 'Submitting…' : 'Submit Validation'}
+            {submitting ? 'Submitting…' : 'Conclude planning validation'}
           </button>
         </div>
       </div>

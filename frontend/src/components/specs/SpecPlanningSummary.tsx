@@ -10,7 +10,7 @@ const labels: Record<string, string> = {
   task_requirement_links: 'Task allocation', decision_verification: 'Decision verification plans',
   code_evidence: 'Code evidence', architecture: 'Architecture', resource_coverage: 'Resource allocation',
 };
-const humanize = (value: string) => value.replaceAll('_', ' ');
+const humanize = (value: string) => value.replace(/_/g, ' ');
 
 export function SpecPlanningSummary({ readiness, loading, onReview }: {
   readiness?: SpecPlanningReadiness;
