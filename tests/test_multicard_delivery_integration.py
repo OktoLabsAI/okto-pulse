@@ -17,7 +17,7 @@ from okto_pulse.community.adapters.sqlalchemy_delivery_evidence import Community
 from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import CommunitySemanticSession
 from okto_pulse.community.adapters.test_evidence import (
     CommunityEvidenceLedger, CommunityHttpManifestExecutor, CommunityTestEvidenceWriteVerifier,
-    run_manifest_and_build_evidence_v2,
+    _persist_inline_manifest, _execute_validated_manifest_and_build_evidence_v2, validate_replay_manifest,
 )
 from okto_pulse.core.domain.delivery_inventory import COLLECTIONS
 from okto_pulse.core.domain.realm import RealmScope
@@ -137,10 +137,26 @@ async def run_result(session, tmp_path, name, *, passed=True, response_body=None
         return response_body if response_body is not None else {"satisfied": passed}
 
     status = "passed" if passed else "failed"
-    evidence = await run_manifest_and_build_evidence_v2(manifest_ref=manifest_ref, board_id=BOARD, spec_id=SPEC,
-        scenario_id=scenario["id"], scenario_sha256=digest, status=status, actor_id="tester",
-        executor=CommunityHttpManifestExecutor(base_url="http://127.0.0.1:8100", transport=httpx.ASGITransport(app=app)),
-        ledger=evidence_ledger, environment="pytest-asgi")
+    from okto_pulse.community.adapters.external_test_runner import SCHEMA, validate_external_manifest
+    scope = dict(board_id=BOARD, spec_id=SPEC, scenario_id=scenario['id'], scenario_sha256=digest)
+    http_plan = validate_replay_manifest(manifest, **scope)
+    execution = await session.get(delivery.ImplementationTargetExecutionRecordRow, 'execution')
+    basis = dict(source_ref=execution.source_ref, revision=execution.result_declared_revision,
+                 runner_ref='pytest-http-subject', test_ids=[name])
+    normalized = dict(schema_version=SCHEMA, purpose='test_scenario_evidence', **scope, execution_basis=basis)
+    validate_external_manifest(normalized, **scope)
+    manifest_bytes, canonical_ref = _persist_inline_manifest(normalized, ledger=evidence_ledger)
+    http_executor = CommunityHttpManifestExecutor(base_url='http://127.0.0.1:8100', transport=httpx.ASGITransport(app=app))
+
+    async def execute(_manifest, _ref):
+        # This controlled HTTP subject represents the fixture's declared
+        # immutable source. Keep actual HTTP execution and native signing.
+        return await http_executor(http_plan, manifest_ref)
+
+    evidence = await _execute_validated_manifest_and_build_evidence_v2(
+        manifest=manifest_bytes, canonical_ref=canonical_ref, normalized_manifest=normalized,
+        **scope, status=status, actor_id='tester', executor=execute, ledger=evidence_ledger,
+        environment='pytest-asgi', execution_basis=basis)
     assert calls == [name] and evidence["execution_receipt"].startswith("ev2r.")
     scenario.update(status=status, evidence=evidence)
     await session.execute(update(Spec).where(Spec.id == SPEC).values(test_scenarios=scenarios))

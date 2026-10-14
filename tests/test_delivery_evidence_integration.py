@@ -109,7 +109,10 @@ async def ledger(tmp_path, request):
     now = datetime.now(timezone.utc) if native_schema else datetime(2026, 7, 14, 14, tzinfo=timezone.utc)
     observation_time = (datetime.now(timezone.utc).isoformat()
                         if native_schema and not native_bug else "2026-07-14T15:00:00Z")
-    evidence_ledger, _, evidence = await _produce(tmp_path, executed_at=observation_time)
+    open_request, consumed, receipt, head, workspace = _attestation_bundle(now, subject_id="task")
+    evidence_ledger, _, evidence = await _produce(tmp_path, executed_at=observation_time,
+        execution_basis=dict(source_ref=receipt.source_ref, revision='a' * 40,
+            runner_ref='pytest-delivery', test_ids=['tests.test_about.About.test_version']))
     register_test_evidence_write_verifier(
         CommunityTestEvidenceWriteVerifier(ledger=evidence_ledger)
     )
@@ -139,9 +142,6 @@ async def ledger(tmp_path, request):
                 {**ACCEPTANCE_CRITERIA[0], "linked_task_ids": ["task"]}
             ]
         )
-    )
-    open_request, consumed, receipt, head, workspace = _attestation_bundle(
-        now, subject_id="task"
     )
     workspace = replace(workspace, declared_revision="a" * 40)
     request = replace(consumed, board_id=BOARD_ID)

@@ -122,6 +122,7 @@ async def _produce(
     observed: str = "0.3.0",
     executed_at: str = "2026-07-14T15:00:00Z",
     ledger: CommunityEvidenceLedger | None = None,
+    execution_basis: dict | None = None,
 ):
     ledger = ledger or _ledger(tmp_path)
     path = ledger.manifest_root / "about-replay.json"
@@ -130,7 +131,8 @@ async def _produce(
 
     async def execute(manifest, manifest_ref):
         calls.append(manifest_ref)
-        assert manifest["schema_version"] == COMMUNITY_MANIFEST_SCHEMA
+        from okto_pulse.community.adapters.external_test_runner import SCHEMA
+        assert manifest["schema_version"] == (SCHEMA if execution_basis is not None else COMMUNITY_MANIFEST_SCHEMA)
         return ProductExecutionObservation(
             run_id="community-run-1",
             outcome="passed",
@@ -145,6 +147,20 @@ async def _produce(
             ),
         )
 
+    if execution_basis is not None:
+        from okto_pulse.community.adapters.external_test_runner import SCHEMA, validate_external_manifest
+        scope = dict(board_id=BOARD_ID, spec_id=SPEC_ID, scenario_id=SCENARIO_ID, scenario_sha256=SCENARIO_SHA256)
+        normalized = dict(schema_version=SCHEMA, purpose='test_scenario_evidence', **scope,
+                          execution_basis=execution_basis)
+        validate_external_manifest(normalized, **scope)
+        manifest, canonical_ref = evidence_adapter._persist_inline_manifest(normalized, ledger=ledger)
+        # Controlled executor observations pass the actual native manifest,
+        # attestation and HMAC checks; no fixture sets an authenticated flag.
+        evidence = await evidence_adapter._execute_validated_manifest_and_build_evidence_v2(
+            manifest=manifest, canonical_ref=canonical_ref, normalized_manifest=normalized,
+            **scope, status='passed', actor_id=ACTOR_ID, executor=execute, ledger=ledger,
+            environment='pytest', execution_basis=execution_basis)
+        return ledger, calls, evidence
     evidence = await run_manifest_and_build_evidence_v2(
         manifest_ref="about-replay.json",
         board_id=BOARD_ID,

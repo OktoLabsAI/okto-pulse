@@ -96,7 +96,7 @@ Full matrix and INV-01 through INV-15 remain required; an expected failing basel
 
 ## Resume
 
-Run the P00 regressions with isolated paired installation byte parity. Repair fixture problems if any; preserve assertions of the intended behavior. Record expected RED before shared factual refactoring. Follow P00–P11 dependencies and retain the complete matrix.
+Current resume point: P02/P03 IN_PROGRESS. Read the latest checkpoint at the end of this report; do not restart P00. Native current-result normalization and exact automated/report bases are implemented. Complete rejected-ledger-record reasons and the V01–V24 audit, then construct UnitPhaseAssessment from the shared evaluator. Preserve all P04–P11 requirements, the complete 96-case matrix and 15 invariants. Commands/statuses below are chronological evidence, not blanket claims of completion.
 
 ## P00 result — 2026-10-13
 
@@ -191,3 +191,29 @@ Terminal results for this checkpoint:
 - All test/audit processes from this checkpoint are terminal. Test counts overlap and must not be added as distinct coverage. Commit the paired changes and these ledgers on feature/v0.4.0; production remains untouched.
 
 Resume at P03 native current-result normalization described above, then P02 factual assessment integration. P02/P03 remain IN_PROGRESS; P04–P11 are not delivered.
+
+## P03 native current-result normalization — 2026-10-13
+
+Previous paired checkpoint is Core 08bf654c / Community a153ae13, pushed.
+
+Added Core domain/delivery_verification.py: immutable native run/source/observation facts, explicit population completeness and typed scenario findings. A run retains scope, scenario digest, receipt, evidence identity, outcome, canonical sources/revisions/digests, observation time and native rejection codes. Exact source comparison is now shared by verification reports and automated execution attestations. The shared coverage evaluator uses the native current receipt when present and explains missing positive joins without granting credit to unbound results.
+
+Community adapters/delivery_verification.py authenticates the Spec's native current evidence pointer through the existing public verifier. It includes failed, inconclusive, aborted and unavailable reports, and distinguishes a never-executed scenario from malformed/unsigned evidence. Rollup authenticates each native head once and reuses the immutable population across Card snapshots; no extra per-scenario SQL queries were added. The cached authentication also checks the current semantic digest before accepting a binding.
+
+The public projection now exposes typed scenario_findings for failed, inconclusive, unexecuted, invalid-receipt, incompatible-base and association-missing cases. An old-base failure is not called a current product failure. Applicable mixed-report criteria are preserved. Both admission and historical reads now refuse automated delivery proof with missing source/revision, rather than approving by omission. Rejected TestDeliveryFacts retain rejection_reasons. Native result fields and historical payloads are not rewritten.
+
+Implementation proof observation time is internal factual input. Its public JSON projection uses one ISO string so REST/MCP do not diverge on Z versus +00:00. This was caught by the existing actual transport comparison and corrected in Community serialization.
+
+Validation (commands prefixed with rtk proxy):
+- Core initial focused run: 153 PASSED in 9.93s.
+- python -X utf8 PULSE_REFACTOR/.validation-v040/run_readiness_tests.py core -q tests/test_delivery_verification_facts.py tests/test_delivery_readiness_scenarios.py tests/test_delivery_readiness_report_bases.py tests/test_verification_report.py tests/test_effective_delivery_coverage.py tests/test_delivery_completeness.py tests/test_delivery_card_readiness.py tests/test_delivery_test_admission.py tests/test_spec_coverage_query.py tests/test_delivery_readiness_contracts.py tests/test_delivery_readiness_metrics.py --tb=short --show-capture=no: **247 PASSED in 17.27s**.
+- Initial Community normalization suite: 84 PASSED in 119.59s. Enforcing canonical bases for automated proof then exposed 11 old multicard HTTP fixtures with no basis (11 FAILED / 76 PASSED). The fixtures now name their actual controlled source/execution revision and retain real HTTP execution plus native manifest/attestation/HMAC verification; no authentication flag is fabricated.
+- python -X utf8 PULSE_REFACTOR/.validation-v040/run_readiness_tests.py community -q tests/test_delivery_readiness_verification.py tests/test_technical_report_delivery.py tests/test_native_operational_partial_failure.py tests/test_native_br_verification_reuse.py tests/test_native_mixed_verification.py tests/test_native_verification_applicability.py tests/test_multicard_delivery_integration.py tests/test_delivery_evidence_integration.py --tb=short --show-capture=no: **87 PASSED in 148.29s** after fixture correction.
+- python -X utf8 PULSE_REFACTOR/.validation-v040/run_readiness_tests.py community -q tests/test_external_test_runner.py tests/test_native_verification_context.py tests/test_delivery_readiness_waivers.py tests/test_native_delivery_currentness.py --tb=short --show-capture=no: **32 PASSED / 1 FAILED in 53.78s**. The single failure was timestamp serialization parity between actual REST/MCP, not an evidence assertion. External test execution, tamper rejection, failed runs, scope, timeout, historical currentness and waivers passed.
+- After the serialization correction: python -X utf8 PULSE_REFACTOR/.validation-v040/run_readiness_tests.py community -q tests/test_native_verification_context.py tests/test_delivery_readiness_verification.py tests/test_delivery_readiness_waivers.py --tb=short --show-capture=no: **31 PASSED in 42.01s**, including actual REST/MCP/resume parity. Optional browser branch was not enabled.
+- Frontend: npm test -- src/components/code-traceability/__tests__/DeliveryCompleteness.test.tsx src/components/code-traceability/__tests__/DeliveryEvidencePanel.test.tsx src/components/specs/SpecCoveragePanel.test.tsx: **51 PASSED / 3 files in 5.32s**. No new UI was implemented or visually inspected in this backend checkpoint.
+- Fresh paired import/installed byte parity: **854 Core / 321 Community**. Ruff passed for all modified Python product/test files. Whitespace checks passed.
+- Final official source closure: **8,860 ownership rows; zero findings; exact paired README projections; eight budgets ZERO**. Explicit final wheel audit stays P11.
+- All processes from this checkpoint are terminal. Counts overlap and are not an aggregate of distinct requirements. No production reinstall/deployment/release.
+
+P02 and P03 remain IN_PROGRESS. P03 current native outcome/base normalization is implemented and exercised; complete the V01–V24 audit and preserve typed reasons for selected ledger records that still return None or fail before a fact is constructed (e.g. missing Card/scenario or malformed contribution payload). Then connect the shared factual evaluations/findings to P02 UnitPhaseAssessment for obligation/Card/Test/Spec scopes, keeping phase-specific unknown distinct from population/allocation completeness. Do not add another proof engine or infer a percentage from status. P04–P11, G07 override authority and U05 DoD rendering remain pending. Whole readiness endpoint, two new metric bars, full diagnostics/actions, consistent batch snapshots/cursors, performance and final artifacts are not delivered yet.
