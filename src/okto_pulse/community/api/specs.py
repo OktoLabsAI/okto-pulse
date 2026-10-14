@@ -2743,21 +2743,11 @@ async def get_current_spec_validation(
     }
 
 
-class SpecEvaluationSubmit(BaseModel):
-    """AvaliaÃ§Ã£o qualitativa de uma spec validated â€” gÃªmeo REST do MCP tool
-    ``okto_pulse_submit_spec_evaluation`` (paridade de superfÃ­cies)."""
+from okto_pulse.core.domain.spec_evaluation import SpecEvaluationInput
 
-    breakdown_completeness: int = Field(..., ge=0, le=100)
-    breakdown_justification: str = Field(..., min_length=10)
-    granularity: int = Field(..., ge=0, le=100)
-    granularity_justification: str = Field(..., min_length=10)
-    dependency_coherence: int = Field(..., ge=0, le=100)
-    dependency_justification: str = Field(..., min_length=10)
-    test_coverage_quality: int = Field(..., ge=0, le=100)
-    test_coverage_justification: str = Field(..., min_length=10)
-    overall_score: int = Field(..., ge=0, le=100)
-    overall_justification: str = Field(..., min_length=10)
-    recommendation: Literal["approve", "request_changes", "reject"]
+
+class SpecEvaluationSubmit(SpecEvaluationInput):
+    """REST shape for the shared, strictly typed decomposition review."""
 
 
 @router.post("/specs/{spec_id}/evaluations", status_code=status.HTTP_201_CREATED)
