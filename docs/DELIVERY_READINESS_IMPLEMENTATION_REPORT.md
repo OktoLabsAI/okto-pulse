@@ -615,3 +615,22 @@ Validation:
 - All test/audit handles are terminal. No frontend change, production reinstall/restart/reset, deployment or release. Generated .playwright-cli/ and output/ browser artifacts remain local and are excluded from commits.
 
 Resume first at the failing authenticated passed-result test above. Then finish remaining native dependency/traceability/report/learning checks, Spec source/critical-context integration, actual transition race/rollback acceptance and the already recorded P02-P11 scope. P06 remains partial; this checkpoint introduces no new milestone or scope.
+
+## P06 native dependencies, references and source traceability - 2026-10-14
+
+Starting pushed pair: Core 158b781a / Community f00cc1dc. Previous turn classified as progress. The failing authenticated-result test is resolved: prepare_reports authenticates the outcome but does not associate it with delivery. The test now covers both associated/unassociated passed/failed results. Native Test completion permits execution to end for both outcomes; verification credit requires a passing result AND its native association. No production proof rule was relaxed.
+
+Extracted CardService.validate_dependency_admission and validate_completion_references from move_card without changing their original position or rules. Readiness shares these native read checks. Open dependencies block advancement; Done/cancelled dependencies satisfy that prerequisite. Missing-link advisory/blocking behavior remains the existing human policy. Private titles and reference IDs do not escape via lifecycle diagnostics.
+
+Readiness now composes evaluate_code_traceability_transition(enforce=False) on admitted relational attestations. It never investigates source or executes tests. Native blocking reasons retain zero score impact; technical currentness unavailability stays not_evaluated. The stable native observation joins the snapshot basis without disclosing source details. The native evaluator now loads external target Cards in one query instead of per-Card reads; its status predicate is unchanged.
+
+Validation through the paired isolated run_readiness_tests.py wrapper, with source/install byte parity (859 Core / 323 Community):
+- Core lifecycle + Card lifecycle + transition parity: 127 passed in 26.53s.
+- Final Core lifecycle + code_traceability_gate + transition parity: 73 passed in 16.27s.
+- Core code_traceability_application + readiness gates: 45 passed in 7.82s.
+- First Community authorization/policy/native-missing-link run: 47 passed / 1 failed in 116.01s. The new cancelled-dependency fixture cancelled the actual verification Test Card, legitimately removing its verification plan. Replaced that fixture prerequisite with a separate Card; production semantics unchanged. Focused retry: 3 passed in 17.90s.
+- Final Community authorization + policy: 47 passed in 119.36s, including all four authenticated-outcome/association combinations and native dependency/reference cases.
+- New native-schema source tests: 2 passed in 17.65s. A separately created unexecuted Target yields the same native blocker in blocking mode; advisory remains non-blocking, I/V stay 100/100 for already proven obligations, snapshot changes and captured SQL contains no writes.
+- Ruff and source closure passed: 8931 ownership rows, zero findings, all eight architecture budgets ZERO; exact README projections regenerated. All test/audit handles terminal.
+
+P06 remains IN_PROGRESS. Next inspect and compose the native critical-context read guard without its audit writer; qualify missing report/learning inputs explicitly and finish historical current qualification and real transition acceptance. Remaining P02-P05 audits and P07-P11 scope are unchanged. No frontend or production runtime/data modification.

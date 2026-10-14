@@ -355,10 +355,15 @@ async def test_human_permissions_match_native_user_resolution_even_when_its_crea
 
 
 @pytest.mark.parametrize('outcome', ['passed', 'failed'])
-async def test_authenticated_test_outcome_can_finish_execution_without_requiring_pass(ledger, tmp_path, outcome):
+@pytest.mark.parametrize('associated', [False, True])
+async def test_authenticated_test_outcome_can_finish_execution_without_requiring_pass(ledger, tmp_path, outcome, associated):
     from okto_pulse.community.adapters.sqlalchemy_models import Board
     from okto_pulse.core.services.main import CardService
-    session, _, _, _, _ = await prepare_reports(ledger, tmp_path, 'inspection', [outcome])
+    session, store, refs, implementation, scenarios = await prepare_reports(ledger, tmp_path, 'inspection', [outcome])
+    if associated:
+        await delivery.record(store, delivery.command('test', scenario_id=scenarios[0]['id'],
+            obligation_refs=refs, implementation_ids=[implementation['id']]))
+        await session.commit()
     await setup(session)
     await session.execute(update(Card).where(Card.id == 'test').values(status='in_progress'))
     await session.commit()
@@ -371,8 +376,67 @@ async def test_authenticated_test_outcome_can_finish_execution_without_requiring
     assert 'test_card_completion_blocked' not in batch.native_lifecycle.reason_codes
     assert not batch.native_lifecycle.blocking_codes
     context = EvaluatedDeliveryReadiness(batch, actor_id=ACTOR.actor_id).context('test')
-    assert context.verification.percent == (100 if outcome == 'passed' else 0)
+    # Execution may finish after a failure, but verified delivery additionally
+    # requires the native association to the actual implementation being tested.
+    assert context.verification.percent == (100 if outcome == 'passed' and associated else 0)
     assert card.status.value == 'in_progress'
+    assert not session.new and not session.dirty and not session.deleted
+
+
+@pytest.mark.parametrize('dependency_status', ['in_progress', 'done', 'cancelled'])
+async def test_native_card_dependency_block_is_read_only_and_preserves_proof(ledger, dependency_status):
+    from okto_pulse.community.adapters.sqlalchemy_models import Board, CardDependency
+    from okto_pulse.core.domain.enums import CardStatus
+    from okto_pulse.core.services.main import CardService
+    from okto_pulse.core.services.card_errors import CardOperationError
+    session, store, _ = ledger
+    await setup(session)
+    implementation = await delivery.record(store, delivery.command())
+    await delivery.record(store, delivery.command('test', implementation_ids=[implementation['id']]))
+    await session.execute(update(Board).where(Board.id == delivery.BOARD_ID).values(settings={'require_task_validation': False}))
+    await session.execute(update(Card).where(Card.id == 'task').values(status='in_progress'))
+    session.add(Card(id='prerequisite', board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID,
+        title='Private prerequisite title', status=dependency_status, card_type='normal',
+        position=0, created_by='owner'))
+    session.add(CardDependency(card_id='task', depends_on_id='prerequisite'))
+    await session.commit()
+    card = await session.get(Card, 'task')
+    with statements(session.bind) as sql:
+        if dependency_status == 'in_progress':
+            with pytest.raises(CardOperationError) as caught:
+                await CardService(session).validate_dependency_admission(card, CardStatus.DONE)
+            assert caught.value.code == 'dependencies_incomplete'
+        else:
+            await CardService(session).validate_dependency_admission(card, CardStatus.DONE)
+        batch = await read(session, card_id='task')
+    assert all(s.lstrip().upper().startswith(('SELECT', 'PRAGMA DATA_VERSION', 'BEGIN')) for s in sql)
+    assert batch.native_lifecycle.blocking_codes == (('dependencies_incomplete',) if dependency_status == 'in_progress' else ())
+    context = EvaluatedDeliveryReadiness(batch, actor_id=ACTOR.actor_id).context('task')
+    assert context.implementation.percent == context.verification.percent == 100
+    assert 'Private prerequisite' not in context.model_dump_json()
+    assert card.status.value == 'in_progress'
+    assert not session.new and not session.dirty and not session.deleted
+
+
+@pytest.mark.parametrize('mode', ['advisory', 'blocking'])
+async def test_native_card_reference_gate_preserves_human_policy_and_proof(ledger, mode):
+    from okto_pulse.community.adapters.sqlalchemy_models import Board
+    session, store, _ = ledger
+    await setup(session)
+    implementation = await delivery.record(store, delivery.command())
+    await delivery.record(store, delivery.command('test', implementation_ids=[implementation['id']]))
+    await session.execute(update(Board).where(Board.id == delivery.BOARD_ID).values(
+        settings={'require_task_validation': False, 'missing_link_gate': mode}))
+    await session.execute(update(Card).where(Card.id == 'task').values(
+        status='in_progress', linked_test_task_ids=['private-missing-reference']))
+    await session.commit()
+    with statements(session.bind) as sql:
+        batch = await read(session, card_id='task')
+    assert all(s.lstrip().upper().startswith(('SELECT', 'PRAGMA DATA_VERSION', 'BEGIN')) for s in sql)
+    assert batch.native_lifecycle.blocking_codes == (('missing_links_open',) if mode == 'blocking' else ())
+    context = EvaluatedDeliveryReadiness(batch, actor_id=ACTOR.actor_id).context('task')
+    assert context.implementation.percent == context.verification.percent == 100
+    assert 'private-missing-reference' not in context.model_dump_json()
     assert not session.new and not session.dirty and not session.deleted
 
 
