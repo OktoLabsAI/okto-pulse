@@ -239,8 +239,11 @@ async def test_policy_changes_invalidate_snapshot_and_guidance_without_changing_
     assert before.access.allows('spec.tests.execute') and not after.access.allows('spec.tests.execute')
     assert aggregate_delivery_metrics(assess_obligation_delivery(before.facts)) == aggregate_delivery_metrics(assess_obligation_delivery(after.facts))
     current = compose_authorized_delivery_diagnostics(assess_obligation_delivery(after.facts), after, actor_id=ACTOR.actor_id)
-    assert old.graph.actions and all(a.state == 'forbidden' for a in current.graph.actions)
-    assert all(d.detail_state == 'restricted' for d in current.details)
+    proof_actions = [a for a in current.graph.actions if a.kind != 'restore_evaluation']
+    assert old.graph.actions and proof_actions and all(a.state == 'forbidden' for a in proof_actions)
+    assert all(a.state == 'ready' for a in current.graph.actions if a.kind == 'restore_evaluation')
+    proof_causes = {cause.id for cause in current.graph.causes if 'lifecycle' not in cause.phases}
+    assert all(d.detail_state == 'restricted' for d in current.details if d.issue_id in proof_causes)
 
 
 async def test_concurrent_grant_revocation_retries_authority_and_never_returns_old_allowed_facts(ledger):
@@ -461,7 +464,9 @@ async def test_share_role_changes_execution_availability_in_same_snapshot_withou
     before = await read(session, actor=actor)
     original = compose_authorized_delivery_diagnostics(assess_obligation_delivery(before.facts), before, actor_id='shared')
     assert before.access.allows('spec.tests.execute') and not before.access.spec_write_access
-    assert original.graph.actions and all(a.kind == 'execute_verification' and a.state == 'forbidden'
+    execution_actions = [a for a in original.graph.actions if a.kind == 'execute_verification']
+    assert execution_actions and all(a.state == 'forbidden' for a in execution_actions)
+    assert all(a.kind == 'execute_verification' or (a.kind == 'restore_evaluation' and a.state == 'ready')
         for a in original.graph.actions)
     await session.execute(update(BoardShare).where(BoardShare.id == 'readiness-share').values(permission='editor'))
     await session.commit()

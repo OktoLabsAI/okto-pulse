@@ -669,3 +669,25 @@ Validation:
 - The prior session handle 44224 was no longer available; the focused suite above was rerun to obtain an observable terminal result.
 
 Resume at P06 historical Done current qualification and positive full native closeout/race/rollback acceptance; then finish remaining P02-P05 evidence and P07-P11 as recorded. Historical Done handling was investigated but is not implemented in this checkpoint. No frontend change, production reinstall/restart/reset, deployment or release. Generated .playwright-cli/ and output/ browser artifacts remain local and excluded from commits.
+
+## P06 historical completion and real Spec closeout - 2026-10-14
+
+Starting pushed pair: Core 79568427 / Community e5356c2f. Previous goal turn classified as progress (verified changes committed/pushed). Implemented the plan section 6.1 distinction between persisted native completion and prospective transition authority. An authorized same-snapshot read validates the actual Spec/Card identity, version, edition and status, and records native Done as lifecycle history. It does not invent a Done-to-Done transition, request another report, re-evaluate an already executed closeout, or grant mutation authority. Missing read permission still denies access before scalar reads.
+
+Current qualification independently consumes the current factual assessment and delivery gate. Complete applicable proof plus observed native completion yields delivered; revoked/missing/stale/failed/unknown proof retains its current deficit and historical divergence without reopening or rewriting the entity. Normal/Bug verification can remain pending after Done. The internal completion observation is not a new public response field or a proof/score shortcut. Diagnostics no longer request completion or recovery solely because Done has no outgoing completion transition.
+
+Community native-schema evidence:
+- Historical M04/G12 cases cover Spec, normal Card and Test Card, with both agent and human viewer. Complete signed proof yields delivered; a native human revocation changes the snapshot and current qualification, preserves persisted Done and leaves read SQL SELECT-only. Revoked Board access remains denied.
+- A separate real SpecService.move_spec test composes native Community resource, knowledge, cognitive and critical-context adapters. I/V=100 and native preview allowed can actually close the Spec. Revoking proof after readiness causes the real subsequent move to reject; readiness is not a cached authorization.
+- Initial wider native run: 52 passed / 2 failed in 105.44s. Earlier input-guidance work added a legitimate read-only restore_evaluation action. Two tests assumed every action was a forbidden proof mutation. Updated assertions to keep those proof actions forbidden while separately permitting the authorized read guidance. One interim retry failed due to a test typo (phase versus phases); corrected it. No permission or gate was relaxed.
+- First real-closeout fixture omitted the knowledge propagation port and both cases failed before closure. Registered the genuine Community adapter; focused retry: 2 passed in 13.62s. No closeout gate was mocked or bypassed beyond the explicitly configured native cognitive skip policy in this fixture.
+
+Validation:
+- Isolated installed/source byte parity: 859 Core / 323 Community files.
+- Core lifecycle/state/diagnostics/native_diagnostics/paging/shared_evaluation: 194 passed in 17.93s.
+- Core readiness gates/override authorization/Card readiness/native transition parity: 76 passed in 13.09s.
+- Ruff passed changed Python files; git diff --check passed.
+- Final Community command: community -q tests/test_delivery_readiness_historical.py tests/test_delivery_readiness_closeout.py tests/test_delivery_readiness_authorization.py tests/test_delivery_readiness_policy.py tests/test_delivery_readiness_critical_context.py tests/test_delivery_readiness_source_context.py tests/test_delivery_readiness_transactions.py tests/test_adopted_delivery_report.py tests/test_delivery_report.py --tb=short --show-capture=no: 90 passed in 185.52s. Includes native report/selection/replay, real implementation Done with verification pending, late-failure/inline-execution rollback, concurrent reports, source changes across connections and full Spec closeout.
+- Final official paired source closure: 8934 ownership rows, zero findings, all eight architecture budgets ZERO; exact README projections validated. All test/audit handles terminal; final wheel acceptance remains P11.
+
+P06 historical handling and real Spec acceptance are now implemented; retain the full plan scope and audit its named cases before closing prerequisite phases. Next consolidate outstanding P02-P06 case evidence (including actual report rollback and source-fence tests), then P07 REST/MCP and P08-P11 frontend/docs/final acceptance in dependency order. No frontend/runtime install, production data mutation, deployment or release. Browser artifacts remain local.
