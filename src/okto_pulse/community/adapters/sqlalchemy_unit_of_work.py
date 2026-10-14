@@ -246,6 +246,9 @@ class CommunityUnitOfWork:
         )
 
         self.entity_exports = CommunitySqlAlchemyEntityExportReader(session)
+        from .sqlalchemy_spec_validation_receipts import CommunitySpecValidationReceiptStore
+
+        self.spec_validation_receipts = CommunitySpecValidationReceiptStore(session, self.realm_scope)
 
     async def __aenter__(self) -> "CommunityUnitOfWork":
         return self

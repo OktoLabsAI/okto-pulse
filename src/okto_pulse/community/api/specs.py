@@ -2643,6 +2643,8 @@ async def submit_spec_validation(
             status_code=status.HTTP_409_CONFLICT,
             detail=e.to_error_dict(),
         ) from e
+    except PermissionDeniedError as e:
+        raise RESTAdapterContract.http_error(e) from e
     except (
         CommandValidationError,
         EntityNotFoundError,

@@ -1526,6 +1526,31 @@ class ArchitectureCandidateDecisionRow(Base):
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
 
 
+class SpecValidationOperationReceiptRow(Base):
+    """One actor-scoped planning conclusion; contains references, not review bodies."""
+
+    __tablename__ = "spec_validation_operation_receipts"
+    __table_args__ = (
+        CheckConstraint(
+            "length(trim(idempotency_key)) BETWEEN 1 AND 128 AND length(request_digest) = 64",
+            name="ck_spec_validation_receipt_shape",
+        ),
+    )
+
+    board_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("boards.id", ondelete="CASCADE"), primary_key=True,
+    )
+    spec_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("specs.id", ondelete="CASCADE"), primary_key=True,
+    )
+    actor_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    actor_kind: Mapped[str] = mapped_column(String(16), primary_key=True)
+    idempotency_key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    result: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+
 class ProjectStructureMutationReceiptRow(Base):
     """Durable exact-replay receipt for one Project structure batch."""
 

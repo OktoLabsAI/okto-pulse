@@ -532,6 +532,7 @@ describe('SpecChecklistPanel', () => {
     fireEvent.click(submitButton);
     await waitFor(() => expect(apiMock.submitSpecValidation).toHaveBeenCalledTimes(1));
     expect(apiMock.submitSpecValidation).toHaveBeenCalledWith('spec-1', {
+      idempotency_key: expect.any(String),
       expected_validation_edition: 1,
       expected_spec_version: 4,
       expected_head_revision: 0,
@@ -641,5 +642,48 @@ describe('SpecChecklistPanel', () => {
         }],
       }),
     ));
+  });
+
+  it('keeps the operation key on retry and replaces it only when the submitted content changes', async () => {
+    apiMock.getSpecChecklistState.mockResolvedValue(currentState);
+    apiMock.submitSpecValidation.mockRejectedValue(new Error('Connection interrupted'));
+    render(
+      <SubmitSpecValidationModal
+        specId="spec-1" specTitle="Retry review" boardId="board-1" specVersion={4}
+        settings={{
+          max_scenarios_per_card: 3,
+          skip_test_coverage_global: false, skip_rules_coverage_global: false,
+          skip_trs_coverage_global: false, skip_contract_coverage_global: false,
+          skip_ir_coverage_global: false, skip_or_coverage_global: false,
+          skip_decisions_coverage_global: false,
+          require_task_validation: true, min_confidence: 80, min_completeness: 80, max_drift: 20,
+          require_spec_validation: true, min_spec_confidence: 70, min_spec_clarity: 80,
+          min_spec_assertiveness: 80, min_spec_decidability: 80, max_spec_ambiguity: 30,
+        }} canReadChecklist canExecuteChecklist
+        onClose={() => {}} onSubmitted={() => {}}
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId('spec-validation-checklist-readiness')).toHaveTextContent('is ready'));
+    for (const metric of ['Confidence', 'Clarity', 'Assertiveness', 'Decidability', 'Ambiguity']) {
+      fireEvent.change(screen.getByLabelText(`${metric} justification`), {
+        target: { value: `${metric} is supported by the inspected requirements.` },
+      });
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    const submit = screen.getByRole('button', { name: 'Submit Validation' });
+    fireEvent.click(submit);
+    await waitFor(() => expect(apiMock.submitSpecValidation).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(submit).toBeEnabled());
+    fireEvent.click(submit);
+    await waitFor(() => expect(apiMock.submitSpecValidation).toHaveBeenCalledTimes(2));
+    expect(apiMock.submitSpecValidation.mock.calls[1][1]).toEqual(apiMock.submitSpecValidation.mock.calls[0][1]);
+    await waitFor(() => expect(submit).toBeEnabled());
+    fireEvent.change(screen.getByLabelText('Clarity justification'), {
+      target: { value: 'The glossary now explains the previously ambiguous term.' },
+    });
+    fireEvent.click(submit);
+    await waitFor(() => expect(apiMock.submitSpecValidation).toHaveBeenCalledTimes(3));
+    expect(apiMock.submitSpecValidation.mock.calls[2][1].idempotency_key)
+      .not.toEqual(apiMock.submitSpecValidation.mock.calls[0][1].idempotency_key);
   });
 });

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   Check,
@@ -154,6 +154,7 @@ export function SubmitSpecValidationModal({
   const [pinpoints, setPinpoints] = useState<PinpointDraft[]>([]);
   const [recommendation, setRecommendation] = useState<'approve' | 'reject' | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const submissionAttempt = useRef<{ body: string; key: string } | null>(null);
   const [submissionError, setSubmissionError] = useState<string | null>(null);
   const [checklistState, setChecklistState] =
     useState<ChecklistSpecState | null>(null);
@@ -271,7 +272,7 @@ export function SubmitSpecValidationModal({
     if (!canSubmit || !submissionFence) return;
     setSubmitting(true);
     setSubmissionError(null);
-    const payload: SpecValidationSubmitPayload = {
+    const authored: Omit<SpecValidationSubmitPayload, 'idempotency_key'> = {
       expected_validation_edition:
         submissionFence.expected_validation_edition,
       expected_spec_version: submissionFence.expected_subject_version,
@@ -295,6 +296,13 @@ export function SubmitSpecValidationModal({
         detail: pinpoint.detail.trim(),
       })),
       recommendation: recommendation!,
+    };
+    const body = JSON.stringify({ specId, ...authored });
+    if (submissionAttempt.current?.body !== body) {
+      submissionAttempt.current = { body, key: crypto.randomUUID() };
+    }
+    const payload: SpecValidationSubmitPayload = {
+      ...authored, idempotency_key: submissionAttempt.current.key,
     };
     try {
       const result = await api.submitSpecValidation(specId, payload);

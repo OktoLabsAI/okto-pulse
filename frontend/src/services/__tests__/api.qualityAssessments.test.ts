@@ -188,6 +188,7 @@ describe('quality assessment REST client', () => {
   it('submits only the canonical Spec validation and checklist lifecycle fields', async () => {
     const { result } = renderHook(() => useDashboardApi());
     const validation = {
+      idempotency_key: 'quality-review-1',
       expected_validation_edition: 3,
       expected_spec_version: 11,
       expected_head_revision: 4,
