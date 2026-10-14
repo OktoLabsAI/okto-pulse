@@ -16,13 +16,13 @@ const TYPE_STYLES: Record<string, { label: string; className: string }> = {
   spec: { label: 'Spec', className: 'text-gray-500 dark:text-gray-400' },
 };
 
-export function obligationRefPrefix(ref: string): string {
+function obligationRefPrefix(ref: string): string {
   const idx = ref.indexOf(':');
   return idx === -1 ? '' : ref.slice(0, idx);
 }
 
 /** "fr:fr_abc" → { label: 'FR', colored } */
-export function obligationType(ref: string): { label: string; className: string } {
+function obligationType(ref: string): { label: string; className: string } {
   return TYPE_STYLES[obligationRefPrefix(ref)] ?? { label: '?', className: 'text-gray-500 dark:text-gray-400' };
 }
 

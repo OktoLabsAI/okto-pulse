@@ -874,3 +874,27 @@ Exact continuation, P09 still IN_PROGRESS:
 1. Wire Targets and records/receipts/inspections to their actual native detail surfaces, resolving ownership from authoritative scoped data. These references currently remain text; canonical fallback card:<id> obligations also need explicit Card routing. Do not claim U06 complete yet.
 2. Finish detail pagination/restricted responses/snapshot races and U09 compact loading/error layout and N/A CTA semantics. Check focus/expanded-state behavior across background refresh as part of that existing acceptance scope.
 3. Continue P10 documentation, compatibility contract and generated frontend packaging, then P11 named-case reconciliation, integrated flows, performance/payload/read-only/final-wheel acceptance. The previously recorded global lint ratchet remains open. Full-plan delivery is not complete.
+
+
+## P09 native evidence and refresh checkpoint requested by user - 2026-10-14
+
+Starting pair: Core e9cb86bc / Community 15a464f0. Saved pending implementation at the user's request; this is a continuation checkpoint, not final plan acceptance.
+
+Implemented in Community frontend:
+- Native navigation to exact Card implementation Targets, executions and delivery ledger records, plus canonical card:<id> obligations. Reads recheck Board/Spec/Card identity; ownership resolution rejects missing or ambiguous owners. Unsupported receipt/inspection/exception destinations remain text.
+- Reuse the existing Card modal and avoid duplicate stacked/store modals. Focus exact native rows and open read-only ancestor disclosures. Exact ledger record IDs are validated alongside existing scope and edition checks.
+- Preserve expanded diagnosis and keyboard focus across a same-snapshot background refresh, without retaining stale metrics. Restricted detail and subsequent permission denial clear previously visible detail.
+- Stable compact metric height across loading/known/N/A/unknown/error states, appropriate View scope/View evidence actions, and no fabricated progress bars.
+- Remove two unused exports in obligationPresentation to satisfy the existing global lint ratchet; no warning budget increased.
+
+Validation completed before this checkpoint:
+- Native navigation/diagnosis/ledger/modal-stack: 34 passed across four files.
+- CardModal and CardDeliveryDoDPanel: 107 passed across two files.
+- Readiness view/diagnosis/Kanban refresh: 21 passed across three files; final diagnosis suite after additional restricted/403 cases and synchronous expansion fix: 7 passed.
+- TypeScript build passed. Targeted ESLint passed. Global lint passed with 313 warnings, zero errors, within existing limits; the previously recorded lint blocker is resolved.
+- Final Chromium delivery-readiness E2E passed (8.0s total). Real frontend with all API reads intercepted and writes rejected: exact record/execution navigation, single modal, background expansion/focus preservation, stable compact heights and N/A semantics.
+- Native record and execution screenshots inspected. Narrow error screenshot remains partially occluded by the existing board sticky header; component overflow assertions passed, but this is not full unobscured mobile visual acceptance.
+- An additional seven-file aggregate Vitest run (session 10349, including KanbanBoard.impactEvidence) remained running without a terminal result on reinspection. Interrupted with Ctrl+C to save this requested checkpoint (exit 1 due to interruption). Do not count that run as passed; investigate/re-run it during continuation.
+- git diff --check passed. Backend source unchanged; no new backend audit or final wheel acceptance claimed. No production installation/restart/data mutation.
+
+Resume: P09 remains IN_PROGRESS. Finish native test-receipt, inspection and exception destinations with exact authorized ownership; complete pagination/snapshot/accessibility acceptance and investigate the interrupted aggregate run. Then P10 documentation/compatibility/generated frontend packaging and P11 full named-case/invariant reconciliation and final acceptance. Browser captures and local logs (.playwright-cli/ and output/) stay outside implementation commits.

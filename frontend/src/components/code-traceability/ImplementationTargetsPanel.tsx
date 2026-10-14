@@ -410,7 +410,7 @@ function TargetCard({
   const resolvedSymbol = resolution?.resolved_qualified_symbol || target.qualified_symbol;
 
   return (
-    <article className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-800/70">
+    <article data-readiness-ref={`target:${target.id}`} tabIndex={-1} className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-800/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
@@ -508,6 +508,7 @@ function TargetCard({
             return (
               <article
                 key={execution.id}
+                data-readiness-ref={`execution:${execution.id}`} tabIndex={-1}
                 className="rounded-md border border-emerald-100 bg-emerald-50/40 px-3 py-2.5 dark:border-emerald-900/70 dark:bg-emerald-950/15"
               >
                 <div className="flex flex-wrap items-start justify-between gap-2">

@@ -9,9 +9,14 @@ export type { ReadinessDestination } from './readinessNavigation';
 type Navigate = ReadinessNavigator;
 const button = 'rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500 dark:border-gray-600 dark:hover:bg-gray-800';
 const label = (value: string) => value.replace(/_/g, ' ');
+function evidenceType(kind: string): ReadinessDestination['type'] {
+  return ['record', 'execution', 'receipt', 'inspection', 'exception', 'target', 'scenario'].includes(kind)
+    ? kind as ReadinessDestination['type'] : 'unavailable';
+}
 
-function Reference({ type, id, onNavigate }: ReadinessDestination & { onNavigate?: Navigate }) {
-  return onNavigate && (!onNavigate.supports || onNavigate.supports({ type, id })) ? <button type="button" onClick={() => onNavigate.open({ type, id })}
+function Reference({ onNavigate, ...destination }: ReadinessDestination & { onNavigate?: Navigate }) {
+  const { id } = destination;
+  return onNavigate && (!onNavigate.supports || onNavigate.supports(destination)) ? <button type="button" data-readiness-focus={`reference:${destination.type}:${id}`} onClick={() => onNavigate.open(destination)}
     className="break-all text-left text-sky-700 underline underline-offset-2 dark:text-sky-300">{id}</button> : <span className="break-all">{id}</span>;
 }
 function Fact({ value }: { value: ReadinessFact }) {
@@ -25,13 +30,18 @@ function Pinpoint({ value, onNavigate }: { value: ReadinessPinpoint; onNavigate?
   const type = value.target_id ? 'target' : value.entity_type === 'test_scenario' ? 'scenario' : value.entity_type === 'card' ? 'card' : value.entity_type === 'spec' ? 'spec' : 'obligation';
   const id = value.target_id ?? (type === 'obligation' ? `${value.entity_type}:${value.entity_id}` : value.entity_id);
   return <div className="space-y-1 rounded border border-gray-200 p-3 text-xs dark:border-gray-700">
-    <Reference type={type} id={id} onNavigate={onNavigate} />
+    <Reference type={type} id={id} cardId={value.entity_type === 'card' ? value.entity_id : undefined} onNavigate={onNavigate} />
     <p>{value.relative_path ?? 'No code location recorded'}{value.qualified_symbol ? ' · ' + value.qualified_symbol : ''}
       {value.line_start !== null ? ` · lines ${value.line_start}–${value.line_end}` : ''}</p>
     <p className="break-all text-gray-500 dark:text-gray-400">{value.source_ref}{value.revision ? ' @ ' + value.revision : ''}</p>
     <p>Precision: {label(value.precision)} · Source: {label(value.origin)}</p>
     {value.revision && <p>Recorded revision; not a claim about the current file location.</p>}
-    {(value.record_id || value.execution_id || value.observation_id) && <p className="break-all">Evidence: {[value.record_id, value.execution_id, value.observation_id].filter(Boolean).join(' · ')}</p>}
+    {(value.record_id || value.execution_id || value.observation_id) && <div className="flex flex-wrap gap-2">Evidence:
+      {value.record_id && <Reference type={value.entity_type === 'test_scenario' ? 'receipt' : 'record'} id={value.record_id}
+        cardId={value.entity_type === 'card' ? value.entity_id : undefined} scenarioId={value.entity_type === 'test_scenario' ? value.entity_id : undefined} onNavigate={onNavigate} />}
+      {value.execution_id && <Reference type="execution" id={value.execution_id} cardId={value.entity_type === 'card' ? value.entity_id : undefined} onNavigate={onNavigate} />}
+      {value.observation_id && <span>{value.observation_id}</span>}
+    </div>}
   </div>;
 }
 function Action({ value, onNavigate }: { value: ReadinessAction; onNavigate?: Navigate }) {
@@ -71,11 +81,12 @@ function Entry({ entry, onNavigate }: { entry: ReadinessEntry; onNavigate?: Navi
     case 'pinpoints': return <Pinpoint value={entry.value} onNavigate={onNavigate} />;
     case 'expected': case 'observed': return <div className="space-y-2"><p className="font-medium">{label(entry.section)}</p><Fact value={entry.value} /></div>;
     case 'affected_units': return <p><Reference type={entry.value.unit === 'scenario' ? 'scenario' : 'obligation'} id={entry.value.ref} onNavigate={onNavigate} /> · edition {entry.value.spec_edition}</p>;
-    case 'evidence_refs': return <p className="break-all">{label(entry.value.kind)}: <Reference type={entry.value.kind === 'target' ? 'target' : entry.value.kind === 'scenario' ? 'scenario' : 'record'} id={entry.value.id} onNavigate={onNavigate} /> · {entry.value.source_ref} {entry.value.revision}</p>;
+    case 'evidence_refs': return <p className="break-all">{label(entry.value.kind)}: <Reference type={evidenceType(entry.value.kind)} id={entry.value.id} onNavigate={onNavigate} /> · {entry.value.source_ref} {entry.value.revision}</p>;
     case 'relations': return <p className="break-all">{label(entry.value.kind)}: {entry.value.source_id}{entry.value.target_id ? ' → ' + entry.value.target_id : ''}</p>;
   }
 }
-function Issue({ issue, onNavigate, onSnapshotInvalid }: { issue: ReadinessIssue; onNavigate?: Navigate; onSnapshotInvalid: (message: string) => void }) {
+function Issue({ issue, onNavigate, onSnapshotInvalid, expanded, onToggle }: { issue: ReadinessIssue; onNavigate?: Navigate; onSnapshotInvalid: (message: string) => void;
+  expanded?: boolean; onToggle?: (open: boolean) => void }) {
   const api = useDashboardApi();
   const [detail, setDetail] = useState<ReadinessDetail>();
   const [entries, setEntries] = useState<ReadinessEntry[]>([]);
@@ -97,21 +108,28 @@ function Issue({ issue, onNavigate, onSnapshotInvalid }: { issue: ReadinessIssue
         || value.scope.board_id !== q.board_id || value.scope.spec_id !== q.spec_id || value.scope.card_id !== q.card_id) throw new Error('Readiness detail scope or snapshot changed. Refresh the assessment.');
       if (!controller.signal.aborted) {
         setDetail(value);
-        setEntries(old => [...old, ...value.entries.filter(entry => !old.some(previous => previous.id === entry.id))]);
+        setEntries(old => value.detail_state === 'restricted' ? [] : [...old, ...value.entries.filter(entry => !old.some(previous => previous.id === entry.id))]);
       }
     } catch (e) {
       if (!controller.signal.aborted) {
         const message = e instanceof Error ? e.message : 'Details unavailable.';
         const code = e && typeof e === 'object' && 'code' in e ? String(e.code) : '';
-        if (code === 'readiness_cursor_stale' || code === 'readiness_snapshot_changed' || message.includes('snapshot changed'))
+        const status = e && typeof e === 'object' && 'status' in e ? Number(e.status) : 0;
+        if (status === 403) {
+          setEntries([]); setDetail(undefined);
+          onSnapshotInvalid('Readiness access changed. Refresh before continuing.');
+        } else if (code === 'readiness_cursor_stale' || code === 'readiness_snapshot_changed' || message.includes('snapshot changed'))
           onSnapshotInvalid('The assessment changed. Refresh before continuing.');
         else setError(message);
       }
     } finally { if (!controller.signal.aborted) setBusy(false); }
   }
-  const restricted = issue.detail_state === 'restricted';
-  return <details className="min-w-0 rounded-lg border border-gray-200 dark:border-gray-700">
-    <summary className="cursor-pointer space-y-1 p-3 text-sm">
+  const restricted = issue.detail_state === 'restricted' || detail?.detail_state === 'restricted';
+  return <details open={expanded} className="min-w-0 rounded-lg border border-gray-200 dark:border-gray-700">
+    <summary data-readiness-focus={`cause:${issue.id}`} onClick={event => {
+      // Store the intent synchronously; native toggle events may arrive after a refresh unmounts the row.
+      if (onToggle) { event.preventDefault(); onToggle(!expanded); }
+    }} className="cursor-pointer space-y-1 p-3 text-sm">
       <span className="font-medium">{issue.message}</span>
       <span className="block text-xs text-gray-500 dark:text-gray-400">{label(issue.phase)} · {issue.affected_unit_count} affected units · {label(issue.intrinsic_state)}</span>
     </summary>
@@ -131,7 +149,7 @@ function Issue({ issue, onNavigate, onSnapshotInvalid }: { issue: ReadinessIssue
       </section>)}</div>
       {issue.pinpoints.map((pinpoint, i) => <Pinpoint key={i} value={pinpoint} onNavigate={onNavigate} />)}
       {!issue.pinpoints.length && <p className="text-xs text-gray-500">No code location recorded for this cause.</p>}
-      {issue.evidence_refs.length > 0 && <p className="flex flex-wrap gap-2 text-xs">Evidence: {issue.evidence_refs.map(evidence => <Reference key={evidence.id} type="record" id={evidence.id} onNavigate={onNavigate} />)}</p>}
+      {issue.evidence_refs.length > 0 && <p className="flex flex-wrap gap-2 text-xs">Evidence: {issue.evidence_refs.map(evidence => <Reference key={evidence.id} type={evidenceType(evidence.kind)} id={evidence.id} onNavigate={onNavigate} />)}</p>}
       {issue.depends_on_issue_ids.length > 0 && <p className="break-all text-xs">Depends on causes: {issue.depends_on_issue_ids.join(', ')}</p>}
       <p className="text-xs text-gray-500">Summary references may be limited. Open all details for complete impacts, evidence and actions.</p>
       {restricted ? <p role="status">Details restricted by your current permissions.</p> : <>
@@ -140,15 +158,16 @@ function Issue({ issue, onNavigate, onSnapshotInvalid }: { issue: ReadinessIssue
           <Actions values={entries.flatMap(entry => entry.section === 'actions' ? [entry.value] : [])} onNavigate={onNavigate} />
           <p className="text-xs">{entries.length} of {detail?.page.total} detail entries loaded{detail?.page.has_more ? ' · partial' : ''}</p>
         </div>}
-        {(!detail || detail.page.has_more) && <button type="button" disabled={busy} onClick={() => void load()} className={button}>{busy ? 'Loading details…' : detail ? 'Load more details' : 'Open all details and actions'}</button>}
+        {(!detail || detail.page.has_more) && <button type="button" data-readiness-focus={`detail:${issue.id}`} disabled={busy} onClick={() => void load()} className={button}>{busy ? 'Loading details…' : detail ? 'Load more details' : 'Open all details and actions'}</button>}
       </>}
       {error && <p role="alert" className="text-xs text-red-700 dark:text-red-300">{error}</p>}
     </div>
   </details>;
 }
 
-export function DeliveryReadinessIssues({ value, onNavigate, onSnapshotInvalid }: {
+export function DeliveryReadinessIssues({ value, onNavigate, onSnapshotInvalid, expandedIssueIds, onIssueToggle }: {
   value: ReadinessResponse; onNavigate?: Navigate; onSnapshotInvalid: (message: string) => void;
+  expandedIssueIds?: string[]; onIssueToggle?: (id: string, open: boolean) => void;
 }) {
   const [copied, setCopied] = useState('');
   async function copy() {
@@ -162,7 +181,8 @@ export function DeliveryReadinessIssues({ value, onNavigate, onSnapshotInvalid }
     {copied.startsWith('Copy unavailable') && <textarea readOnly aria-label="Diagnostic text" value={readinessDiagnostic(value)} className="w-full rounded border p-2 text-xs dark:bg-gray-900" rows={8} />}
     <p className="text-xs text-gray-500 dark:text-gray-400">{value.summary.unresolved_units ?? 'Unknown'} pending units · {value.summary.root_causes} causes · {value.summary.lifecycle_pending ?? 'Unknown'} closure items. Exceptions: {value.summary.exceptions}.</p>
     <Actions values={value.next_actions} onNavigate={onNavigate} />
-    <div className="space-y-2">{value.issues.map(issue => <Issue key={value.snapshot_id + ':' + issue.id} issue={issue} onNavigate={onNavigate} onSnapshotInvalid={onSnapshotInvalid} />)}</div>
+    <div className="space-y-2">{value.issues.map(issue => <Issue key={value.snapshot_id + ':' + issue.id} issue={issue} onNavigate={onNavigate} onSnapshotInvalid={onSnapshotInvalid}
+      expanded={expandedIssueIds?.includes(issue.id)} onToggle={onIssueToggle ? open => onIssueToggle(issue.id, open) : undefined} />)}</div>
     {value.page.total === 0 && <p>No causes in this assessment. A transition still requires current authorization and gate checks.</p>}
     <p className="text-xs text-gray-500 dark:text-gray-400">{value.issues.length} of {value.page.total} causes shown{value.page.has_more || value.page.response_truncated ? ' · partial summary; more information is available' : ''}. Up to three recommended actions; all actions are available in cause details.</p>
   </div>;

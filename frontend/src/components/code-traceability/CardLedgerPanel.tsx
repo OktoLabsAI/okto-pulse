@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useDashboardApi } from '@/services/api';
 import type { CardLedgerPage } from '@/types/delivery-evidence';
 import { DeliveryDisclosure, deliveryButton, deliveryError, deliverySection } from './deliveryPresentation';
 
-type Scope = { boardId: string; cardId: string; specId: string; edition: number };
+type Scope = { boardId: string; cardId: string; specId: string; edition: number; initialRecordId?: string };
 
 export function CardLedgerPanel(props: Scope) {
   const [edition, setEdition] = useState(Math.max(1, props.edition - 1));
@@ -19,12 +19,12 @@ export function CardLedgerPanel(props: Scope) {
         onChange={event => { const value = Number(event.target.value); if (Number.isInteger(value) && value >= 1 && value < props.edition) setEdition(value); }} />
       <span className="flex justify-between text-[10px] font-normal text-gray-500 dark:text-gray-400"><span>1</span><span>{props.edition === 2 ? 'Only previous edition' : props.edition - 1}</span></span>
     </label>
-    <LedgerPage key={`previous:${props.boardId}:${props.cardId}:${props.specId}:${edition}`} {...props} edition={edition} historical />
+    <LedgerPage key={`previous:${props.boardId}:${props.cardId}:${props.specId}:${edition}`} {...props} initialRecordId={undefined} edition={edition} historical />
     </DeliveryDisclosure>}
   </section>;
 }
 
-function LedgerPage({ boardId, cardId, specId, edition, historical = false }: Scope & { historical?: boolean }) {
+function LedgerPage({ boardId, cardId, specId, edition, historical = false, initialRecordId }: Scope & { historical?: boolean }) {
   const api = useDashboardApi();
   const [page, setPage] = useState<CardLedgerPage | null>(null);
   const [detail, setDetail] = useState<CardLedgerPage['items'][number] | null>(null);
@@ -32,7 +32,7 @@ function LedgerPage({ boardId, cardId, specId, edition, historical = false }: Sc
   const [error, setError] = useState('');
   const pending = useRef<AbortController | null>(null);
   useEffect(() => () => pending.current?.abort(), []);
-  async function read(options: { cursor?: string; recordId?: string } = {}) {
+  const read = useCallback(async (options: { cursor?: string; recordId?: string } = {}) => {
     if (pending.current) return;
     const controller = new AbortController(); pending.current = controller;
     setBusy(true); setError(''); setDetail(null);
@@ -42,14 +42,22 @@ function LedgerPage({ boardId, cardId, specId, edition, historical = false }: Sc
       if (result.board_id !== boardId || result.card_id !== cardId || result.spec_id !== specId || result.edition !== edition) {
         throw new Error('History scope changed. Restart the read.');
       }
-      if (options.recordId) setDetail(result.items[0] ?? null);
+      if (options.recordId) {
+        if (result.items.length !== 1 || result.items[0].id !== options.recordId)
+          throw new Error('The referenced delivery record is unavailable in this scope.');
+        setDetail(result.items[0]);
+      }
       else setPage(result);
     } catch (err) {
       if (!controller.signal.aborted) { setPage(null); setError(err instanceof Error ? err.message : 'History unavailable.'); }
     } finally {
       if (!controller.signal.aborted) { pending.current = null; setBusy(false); }
     }
-  }
+  }, [api, boardId, cardId, specId, edition]);
+  useEffect(() => {
+    if (initialRecordId) void read({ recordId: initialRecordId });
+    return () => { pending.current?.abort(); pending.current = null; };
+  }, [initialRecordId, read]);
   return <>
     <button type="button" className={deliveryButton} disabled={busy} onClick={() => read()}>{historical ? 'Browse previous delivery records' : 'Browse delivery records'}</button>
     {error && <p role="alert" className={deliveryError}>{error}</p>}
@@ -63,7 +71,7 @@ function LedgerPage({ boardId, cardId, specId, edition, historical = false }: Sc
       {page.next_cursor && <button type="button" className={deliveryButton} disabled={busy} onClick={() => read({ cursor: page.next_cursor! })}>Older delivery records</button>}
       {!page.next_cursor && <p>End of this edition’s delivery records.</p>}
     </>}
-    {detail && <article aria-label="Delivery record detail" className={`${deliverySection} whitespace-pre-wrap break-words`}>
+    {detail && <article data-readiness-ref={`record:${detail.id}`} tabIndex={-1} aria-label="Delivery record detail" className={`${deliverySection} whitespace-pre-wrap break-words focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500`}>
       <p>{detail.kind} · {detail.actor_id} · {detail.created_at}</p><p>{detail.summary}</p>
       {detail.revoked && <p>Revoked; retained as history.</p>}
       {detail.payload?.contributions?.map(row => <p key={row.obligation_ref}>{row.obligation_ref}: declared {row.contribution}.</p>)}

@@ -43,6 +43,7 @@ export function ModalStackRenderer({ boardId: currentBoardId }: Props) {
   const closeCardInStore = useDashboardStore((s) => s.closeCardModal);
   const [storyTopics, setStoryTopics] = useState<TopicSummary[]>([]);
   const top = stack[stack.length - 1];
+  const cardTarget = top?.type === 'card' ? top.target : undefined;
   // Discovery can open an artifact from an accessible board other than the active one.
   const boardId = top?.boardId ?? currentBoardId;
 
@@ -50,8 +51,11 @@ export function ModalStackRenderer({ boardId: currentBoardId }: Props) {
   // Callers that only push a stack entry (e.g. Spec references) otherwise
   // render a closed modal or reopen the previously selected card.
   useEffect(() => {
-    if (top?.type === 'card') openCardInStore(top.id);
-  }, [boardId, top?.type, top?.id, openCardInStore]);
+    if (top?.type === 'card') {
+      if (cardTarget) openCardInStore(top.id, cardTarget);
+      else openCardInStore(top.id);
+    }
+  }, [boardId, top?.type, top?.id, cardTarget, openCardInStore]);
 
   useEffect(() => {
     if (top?.type !== 'story') return;
@@ -87,7 +91,8 @@ export function ModalStackRenderer({ boardId: currentBoardId }: Props) {
     // CardModal re-opens for that id.
     const next = stack[stack.length - 2];
     if (next && next.type === 'card') {
-      openCardInStore(next.id);
+      if (next.target) openCardInStore(next.id, next.target);
+      else openCardInStore(next.id);
     }
   };
 

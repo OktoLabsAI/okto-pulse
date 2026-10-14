@@ -3,17 +3,18 @@ import { useDashboardApi } from '@/services/api';
 import { isReadinessResponse, type ReadinessResponse } from '@/types/delivery-readiness';
 import { DeliveryReadinessView } from './DeliveryReadinessView';
 import { DeliveryReadinessIssues } from './DeliveryReadinessIssues';
-import type { ReadinessNavigator, ReadinessSpecLocation } from './readinessNavigation';
+import type { ReadinessCardLocation, ReadinessNavigator, ReadinessSpecLocation } from './readinessNavigation';
 import { useNativeReadinessNavigation } from './useNativeReadinessNavigation';
 import { useDeliveryReadiness } from './useDeliveryReadiness';
 
-export function DeliveryReadinessPanel({ boardId, specId, cardId, revision, focusDiagnosis = false, onNavigate, onOpenReadinessSpec }: {
+export function DeliveryReadinessPanel({ boardId, specId, cardId, revision, focusDiagnosis = false, onNavigate, onOpenReadinessSpec, onOpenReadinessCard }: {
   boardId: string; specId: string; cardId?: string; revision?: string | number;
   focusDiagnosis?: boolean; onNavigate?: ReadinessNavigator;
   onOpenReadinessSpec?: (location: ReadinessSpecLocation) => void;
+  onOpenReadinessCard?: (id: string, target?: ReadinessCardLocation) => void;
 }) {
   const api = useDashboardApi();
-  const navigation = useNativeReadinessNavigation(boardId, specId, onOpenReadinessSpec);
+  const navigation = useNativeReadinessNavigation(boardId, specId, onOpenReadinessSpec, onOpenReadinessCard);
   const [refresh, setRefresh] = useState(0);
   const state = useDeliveryReadiness(boardId, specId, cardId, JSON.stringify([revision, refresh]));
   const initial = isReadinessResponse(state.value) ? state.value : undefined;
@@ -22,6 +23,12 @@ export function DeliveryReadinessPanel({ boardId, specId, cardId, revision, focu
   const [extra, setExtra] = useState<{ key: string; value: ReadinessResponse }>();
   const [failure, setFailure] = useState<{ key: string; message: string }>();
   const [busy, setBusy] = useState(false);
+  const [openCauses, setOpenCauses] = useState<{ scope: string; snapshot: string; ids: string[] }>();
+  const scopeKey = JSON.stringify([boardId, specId, cardId]);
+  const root = useRef<HTMLDivElement>(null);
+  const focusPending = useRef(focusDiagnosis);
+  const focusedControl = useRef<{ scope: string; snapshot: string; key: string }>();
+  useEffect(() => { focusPending.current = focusDiagnosis; focusedControl.current = undefined; }, [scopeKey, focusDiagnosis]);
   const heading = useRef<HTMLHeadingElement>(null);
   const origin = useRef<HTMLElement | null>(null);
   const request = useRef<AbortController>();
@@ -36,10 +43,18 @@ export function DeliveryReadinessPanel({ boardId, specId, cardId, revision, focu
     ? 'Readiness diagnostic contract unavailable or incompatible.' : undefined;
   const snapshot = value?.snapshot_id;
   useEffect(() => {
-    if (expanded && snapshot && !error) heading.current?.focus();
-  }, [expanded, focusDiagnosis, snapshot, error]);
+    if (!expanded || !snapshot || error) return;
+    if (focusPending.current) {
+      heading.current?.focus(); focusPending.current = false;
+    } else if (focusedControl.current?.scope === scopeKey && focusedControl.current.snapshot === snapshot
+      && document.activeElement === document.body) {
+      Array.from(root.current?.querySelectorAll<HTMLElement>('[data-readiness-focus]') ?? [])
+        .find(element => element.dataset.readinessFocus === focusedControl.current?.key)?.focus();
+    }
+  }, [expanded, focusDiagnosis, snapshot, error, scopeKey]);
   function inspect() {
     origin.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    focusPending.current = true;
     setExpanded(true); heading.current?.focus();
   }
   async function more() {
@@ -62,16 +77,26 @@ export function DeliveryReadinessPanel({ boardId, specId, cardId, revision, focu
       if (!controller.signal.aborted && currentKey.current === expectedKey) setFailure({ key, message: e instanceof Error ? e.message : 'Readiness page unavailable. Refresh to retry.' });
     } finally { if (!controller.signal.aborted && currentKey.current === expectedKey) setBusy(false); }
   }
-  return <div className="min-w-0 space-y-4">
+  return <div ref={root} className="min-w-0 space-y-4" onFocusCapture={event => {
+    const element = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>('[data-readiness-focus]') : null;
+    focusedControl.current = element?.dataset.readinessFocus && snapshot
+      ? { scope: scopeKey, snapshot, key: element.dataset.readinessFocus } : undefined;
+  }}>
     <DeliveryReadinessView value={error || unavailable ? undefined : value} loading={state.loading} error={error || unavailable}
       onInspect={inspect} onRefresh={() => setRefresh(v => v + 1)} />
     {expanded && !state.loading && !error && !unavailable && value && <section aria-label="Delivery diagnosis" className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 ref={heading} tabIndex={-1} className="rounded text-sm font-semibold outline-offset-4">What is missing?</h3>
+        <h3 ref={heading} tabIndex={-1} className="rounded text-sm font-semibold outline-offset-4">{value.delivery_state === 'not_applicable' ? 'Scope details' : 'What is missing?'}</h3>
         <button type="button" onClick={() => { setExpanded(false); origin.current?.focus(); }} className="rounded border px-3 py-1.5 text-xs dark:border-gray-600">Hide diagnosis</button>
       </div>
       {navigation.error && <p role="alert" className="text-sm text-red-700 dark:text-red-300">{navigation.error}</p>}
-      <DeliveryReadinessIssues value={value} onNavigate={onNavigate ?? navigation.navigator} onSnapshotInvalid={message => setFailure({ key, message })} />
+      <DeliveryReadinessIssues value={value} onNavigate={onNavigate ?? navigation.navigator} onSnapshotInvalid={message => setFailure({ key, message })}
+        expandedIssueIds={openCauses?.scope === scopeKey && openCauses.snapshot === value.snapshot_id ? openCauses.ids : []}
+        onIssueToggle={(id, open) => setOpenCauses(previous => {
+          const ids = previous?.scope === scopeKey && previous.snapshot === value.snapshot_id ? previous.ids : [];
+          if (ids.includes(id) === open) return previous;
+          return { scope: scopeKey, snapshot: value.snapshot_id, ids: open ? [...ids, id] : ids.filter(item => item !== id) };
+        })} />
       {value.page.has_more && <button type="button" disabled={busy} onClick={() => void more()} className="rounded border px-3 py-2 text-xs dark:border-gray-600">
         {busy ? 'Loading causes…' : 'Load more causes'}
       </button>}

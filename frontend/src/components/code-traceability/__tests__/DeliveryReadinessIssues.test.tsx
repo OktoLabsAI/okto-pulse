@@ -46,6 +46,37 @@ function detail(): ReadinessDetail {
 beforeEach(() => { vi.clearAllMocks(); api.getDeliveryReadiness.mockResolvedValue(response()); api.getDeliveryReadinessPage.mockResolvedValue(detail()); });
 afterEach(cleanup);
 
+it('pages complete cause facts with the exact cursor and clears them when access becomes restricted', async () => {
+  const first: ReadinessDetail = { ...detail(), entries: [{ id: 'fact-1', type: 'evidence', section: 'observed', value: { text: 'Authorized native detail' } }],
+    page: { total: 2, returned: 1, has_more: true, next_cursor: 'detail-next', response_truncated: true, phase_filter: 'all' } };
+  api.getDeliveryReadinessPage.mockResolvedValueOnce(first).mockResolvedValueOnce({ ...detail(), detail_state: 'restricted', entries: [],
+    page: { total: 0, returned: 0, has_more: false, next_cursor: null, response_truncated: false, phase_filter: 'all' } });
+  render(<DeliveryReadinessIssues value={response()} onSnapshotInvalid={vi.fn()} />);
+  fireEvent.click(screen.getByText('Capacity has no current verification.').closest('summary')!);
+  fireEvent.click(screen.getByText('Open all details and actions'));
+  expect(await screen.findByText('Authorized native detail')).toBeVisible();
+  expect(screen.getByText('1 of 2 detail entries loaded · partial')).toBeVisible();
+  fireEvent.click(screen.getByText('Load more details'));
+  expect(await screen.findByText('Details restricted by your current permissions.')).toBeVisible();
+  expect(screen.queryByText('Authorized native detail')).not.toBeInTheDocument();
+  expect(screen.queryByText('Load more details')).not.toBeInTheDocument();
+  expect(api.getDeliveryReadinessPage.mock.calls[1][2]).toMatchObject({ cursor: 'detail-next', snapshot_id: 'a'.repeat(64), issue_id: 'cause-1', card_id: 'c' });
+});
+
+it('a denied subsequent detail read invalidates the panel instead of retaining prior authorized facts', async () => {
+  api.getDeliveryReadinessPage.mockResolvedValueOnce({ ...detail(), entries: [{ id: 'fact-1', type: 'evidence', section: 'observed', value: { text: 'Formerly authorized detail' } }],
+    page: { total: 2, returned: 1, has_more: true, next_cursor: 'detail-next', response_truncated: true, phase_filter: 'all' } })
+    .mockRejectedValueOnce(Object.assign(new Error('Permission denied'), { status: 403 }));
+  render(<DeliveryReadinessPanel boardId="b" specId="s" cardId="c" focusDiagnosis />);
+  fireEvent.click((await screen.findByText('Capacity has no current verification.')).closest('summary')!);
+  fireEvent.click(screen.getByText('Open all details and actions'));
+  expect(await screen.findByText('Formerly authorized detail')).toBeVisible();
+  fireEvent.click(screen.getByText('Load more details'));
+  expect(await screen.findByText('Readiness access changed. Refresh before continuing.')).toBeVisible();
+  expect(screen.queryByText('Formerly authorized detail')).not.toBeInTheDocument();
+  expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+});
+
 it('groups actual backend action states and shows escaped factual details without a resolve checkbox', async () => {
   const navigate = vi.fn();
   render(<DeliveryReadinessIssues value={response()} onNavigate={{ open: navigate }} onSnapshotInvalid={vi.fn()} />);

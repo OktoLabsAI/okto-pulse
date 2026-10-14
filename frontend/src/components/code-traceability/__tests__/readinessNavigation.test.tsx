@@ -7,7 +7,7 @@ import { TextRequirementsTab } from '@/components/specs/TextRequirementsTab';
 import { readinessSpecLocation } from '../readinessNavigation';
 import { useNativeReadinessNavigation } from '../useNativeReadinessNavigation';
 
-const api = vi.hoisted(() => ({ getCard: vi.fn(), getSpec: vi.fn() }));
+const api = vi.hoisted(() => ({ getCard: vi.fn(), getSpec: vi.fn(), getDeliveryEvidence: vi.fn(), getCodeTraceabilityProjection: vi.fn() }));
 vi.mock('@/services/api', () => ({ useDashboardApi: () => api }));
 beforeEach(() => api.getSpec.mockResolvedValue({ id: 's', board_id: 'b' }));
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
@@ -93,4 +93,37 @@ it('focuses and expands the exact native row when it arrives, without editing or
   expect(screen.getByText('Reject overbooking')).toBeVisible();
   expect(screen.getByText('Another modal')).not.toHaveFocus();
   expect(save).not.toHaveBeenCalled(); expect(revoke).not.toHaveBeenCalled();
+});
+
+it.each(['target', 'execution'] as const)('opens a scoped native %s only after checking its Card projection', async type => {
+  api.getCard.mockResolvedValue({ id: 'c', board_id: 'b', spec_id: 's', card_type: 'normal', subject_version: 3 });
+  api.getCodeTraceabilityProjection.mockResolvedValue({ subject_type: 'card', subject_id: 'c', targets: [{ id: 't' }], executions: [{ id: 'e' }] });
+  const { result } = renderHook(() => ({ nav: useNativeReadinessNavigation('b', 's'), stack: useModalStack() }), { wrapper: ModalStackProvider });
+  const id = type === 'target' ? 't' : 'e';
+  await act(async () => result.current.nav.navigator.open({ type, id, cardId: 'c' }));
+  expect(api.getCodeTraceabilityProjection).toHaveBeenCalledWith('b', 'card', 'c', 3);
+  expect(result.current.stack.stack).toEqual([{ type: 'card', id: 'c', boardId: 'b', target: {
+    tab: 'implementation-targets', focusDiagnosis: false, focusReference: `${type}:${id}`,
+  } }]);
+  api.getCodeTraceabilityProjection.mockResolvedValueOnce({ subject_type: 'card', subject_id: 'foreign', targets: [], executions: [] });
+  await act(async () => result.current.nav.navigator.open({ type, id: 'missing', cardId: 'c' }));
+  expect(result.current.nav.error).toMatch(/unavailable in this Card scope/);
+  expect(result.current.stack.stack).toHaveLength(1);
+});
+
+it('resolves record ownership from native evidence, refuses ambiguity, and handles fallback Card obligations', async () => {
+  api.getCard.mockResolvedValue({ id: 'c', board_id: 'b', spec_id: 's', card_type: 'normal' });
+  api.getDeliveryEvidence.mockResolvedValue({ board_id: 'b', spec_id: 's', records: [{ id: 'r', payload: { card_id: 'c' } }], implementations: [], tests: [] });
+  const { result } = renderHook(() => ({ nav: useNativeReadinessNavigation('b', 's'), stack: useModalStack() }), { wrapper: ModalStackProvider });
+  await act(async () => result.current.nav.navigator.open({ type: 'record', id: 'r' }));
+  expect(result.current.stack.stack).toEqual([{ type: 'card', id: 'c', boardId: 'b', target: {
+    tab: 'delivery', focusDiagnosis: false, focusReference: 'record:r', recordId: 'r',
+  } }]);
+  api.getDeliveryEvidence.mockResolvedValueOnce({ board_id: 'b', spec_id: 's', records: [{ id: 'r', payload: { card_id: 'foreign' } }],
+    implementations: [{ id: 'r', card_id: 'c' }], tests: [] });
+  await act(async () => result.current.nav.navigator.open({ type: 'record', id: 'r' }));
+  expect(result.current.nav.error).toMatch(/ambiguous/);
+  expect(api.getCard).toHaveBeenCalledTimes(1);
+  await act(async () => result.current.nav.navigator.open({ type: 'obligation', id: 'card:c' }));
+  expect(api.getCard).toHaveBeenCalledTimes(2);
 });

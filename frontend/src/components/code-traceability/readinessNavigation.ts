@@ -1,4 +1,11 @@
-export type ReadinessDestination = { type: 'card' | 'spec' | 'scenario' | 'obligation' | 'target' | 'record'; id: string };
+export type ReadinessDestination = {
+  type: 'card' | 'spec' | 'scenario' | 'obligation' | 'target' | 'record' | 'execution' | 'receipt' | 'inspection' | 'exception' | 'unavailable';
+  id: string; cardId?: string; scenarioId?: string; targetId?: string;
+};
+export interface ReadinessCardLocation {
+  tab: 'delivery' | 'implementation-targets'; focusDiagnosis: boolean;
+  focusReference?: string; recordId?: string;
+}
 export interface ReadinessNavigator {
   open: (destination: ReadinessDestination) => void;
   supports?: (destination: ReadinessDestination) => boolean;

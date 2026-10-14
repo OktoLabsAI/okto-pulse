@@ -4,6 +4,7 @@
 
 import React, { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { notifyReadinessChanged } from '@/lib/readinessEvents';
+import { useNativeReferenceFocus } from '@/components/shared/useNativeReferenceFocus';
 import { CardScenarioReferenceNotice } from './CardScenarioReferenceNotice';
 import { MissingLinkNotice } from '@/components/shared/MissingLinkNotice';
 import { DeliverySelectionEditor } from '@/components/code-traceability/DeliverySelectionEditor';
@@ -351,7 +352,7 @@ export function CardModal({
     modalOrigin.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     return () => { if (modalOrigin.current?.isConnected) modalOrigin.current.focus(); };
   }, [isOpen]);
-  const { closeCardModal, removeCardFromColumn, updateCardInColumn, cardModalTarget } = useDashboardStore();
+  const { closeCardModal, openCardModal, removeCardFromColumn, updateCardInColumn, cardModalTarget } = useDashboardStore();
   const columns = useColumns();
   const currentBoard = useCurrentBoard();
 
@@ -361,6 +362,9 @@ export function CardModal({
   const [card, setCard] = useState<Card | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<CardModalTab>('details');
+  const nativeReferenceRoot = useRef<HTMLDivElement>(null);
+  useNativeReferenceFocus(nativeReferenceRoot, card?.id === selectedCardId ? cardModalTarget?.focusReference : undefined,
+    `${selectedCardId}:${isOpen}:${isLoading}:${activeTab}`);
   const [testsTab, setTestsTab] = useState<CardTestsTab>('regression');
   const [referencesTab, setReferencesTab] =
     useState<CardReferencesTab>('lineage');
@@ -1423,7 +1427,7 @@ export function CardModal({
 
   return (
     <div className="modal-overlay" onClick={handleClose}>
-      <div className={`modal-content ${expanded ? '!max-w-[95vw] !h-[95vh]' : ''}`} onClick={(e) => e.stopPropagation()}>
+      <div ref={nativeReferenceRoot} className={`modal-content ${expanded ? '!max-w-[95vw] !h-[95vh]' : ''}`} onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="modal-header">
           <div className="flex items-center gap-3 flex-1">
@@ -1837,6 +1841,8 @@ export function CardModal({
                     canWaiver={perms.has('code_traceability.waiver.create')}
                     onOpenTests={canReadTests && card.card_type === 'test' ? () => setActiveTab('tests') : undefined}
                     focusDiagnosis={cardModalTarget?.focusDiagnosis}
+                    focusRecordId={cardModalTarget?.recordId}
+                    onOpenReadinessCard={openCardModal}
                     onChanged={() => { void loadCard(card.id); notifyReadinessChanged(); }}
                   />
                 </AccessibleTabPanel>

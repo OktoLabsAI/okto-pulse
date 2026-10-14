@@ -44,7 +44,7 @@ it('pages mixed records and reads original detail without presenting it as curre
   fireEvent.click(older.closest('summary')!);
   expect(screen.getByText('Read delivery record old')).toBeVisible();
   expect(api.getCardDeliveryLedger.mock.calls[1][4]).toEqual({ cursor: 'cursor' });
-  api.getCardDeliveryLedger.mockResolvedValueOnce({ ...page, items: [{ ...row, summary: 'Full original explanation', payload: {
+  api.getCardDeliveryLedger.mockResolvedValueOnce({ ...page, items: [{ ...row, id: 'old', summary: 'Full original explanation', payload: {
     execution_id: 'execution-A', contributions: [{ obligation_ref: 'fr', contribution: 'partial' }],
   } }] });
   fireEvent.click(screen.getByText('Read delivery record old'));
@@ -97,4 +97,17 @@ it('clears prior results after denial and refuses a foreign scope response', asy
   fireEvent.click(screen.getByText('Browse delivery records'));
   await screen.findByText('History scope changed. Restart the read.');
   expect(screen.queryByText('Original implementation')).not.toBeInTheDocument();
+});
+
+it('opens the exact linked record directly without reading older editions', async () => {
+  render(<CardLedgerPanel {...props} initialRecordId="proof" />);
+  expect(await screen.findByRole('article', { name: 'Delivery record detail' })).toHaveAttribute('data-readiness-ref', 'record:proof');
+  expect(api.getCardDeliveryLedger).toHaveBeenCalledTimes(1);
+  expect(api.getCardDeliveryLedger.mock.calls[0].slice(0, 5)).toEqual(['b', 'c', 's', 2, { recordId: 'proof' }]);
+});
+
+it('rejects an unrelated record returned by a direct detail read', async () => {
+  render(<CardLedgerPanel {...props} initialRecordId="different" />);
+  expect(await screen.findByRole('alert')).toHaveTextContent('unavailable in this scope');
+  expect(screen.queryByRole('article', { name: 'Delivery record detail' })).not.toBeInTheDocument();
 });

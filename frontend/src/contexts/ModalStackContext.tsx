@@ -21,10 +21,10 @@
 
 import { createContext, useCallback, useContext, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
-import type { ReadinessSpecTab } from '@/components/code-traceability/readinessNavigation';
+import type { ReadinessCardLocation, ReadinessSpecTab } from '@/components/code-traceability/readinessNavigation';
 
 export type ModalStackEntry = { boardId?: string } & (
-  | { type: 'card'; id: string }
+  | { type: 'card'; id: string; target?: ReadinessCardLocation }
   | { type: 'story'; id: string }
   | {
     type: 'spec';
@@ -59,6 +59,8 @@ export function ModalStackProvider({ children }: { children: ReactNode }) {
       const scopedEntry = entry.boardId === undefined && top?.boardId
         ? { ...entry, boardId: top.boardId } : entry;
       if (top && top.type === scopedEntry.type && top.id === scopedEntry.id && top.boardId === scopedEntry.boardId) {
+        if (top.type === 'card' && scopedEntry.type === 'card' && scopedEntry.target
+          && JSON.stringify(top.target) !== JSON.stringify(scopedEntry.target)) return [...prev.slice(0, -1), scopedEntry];
         if (top.type === 'spec' && scopedEntry.type === 'spec' && scopedEntry.initialTab
           && (top.initialTab !== scopedEntry.initialTab || top.focusReadinessRef !== scopedEntry.focusReadinessRef
             || top.focusProjectNodeId !== scopedEntry.focusProjectNodeId)) return [...prev.slice(0, -1), scopedEntry];

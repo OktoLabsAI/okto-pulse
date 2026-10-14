@@ -3,6 +3,8 @@ import { readiness, task, metric } from '../../src/components/code-traceability/
 
 test('P08/U01/U04/U09: native board and Delivery show separate accessible metrics', async ({ page }) => {
   const errors: string[] = [], writes: string[] = [];
+  let summaryError = false;
+  let summaryHold: Promise<void> | undefined;
   page.on('pageerror', error => errors.push(error.message));
   const card = { ...task, title: 'Readiness capacity verification with a long descriptive requirement name',
     status: 'done', screen_mockups: [], knowledge_bases: [], attachments: [], qa_items: [], comments: [], architecture_designs: [] };
@@ -29,7 +31,10 @@ test('P08/U01/U04/U09: native board and Delivery show separate accessible metric
     test_card_ids: [], test_card_count: 0, test_card_ids_truncated: false, owner: null, owner_state: 'unassigned',
     expected: [{ outcome: 'passed', revision: 'delivered-revision' }], expected_count: 1, expected_truncated: false,
     observed: [{ outcome: 'not_run', text: 'No authenticated observation for this scenario.' }], observed_count: 1, observed_truncated: false,
-    evidence_refs: [], evidence_count: 0, evidence_refs_truncated: false, pinpoints: [], pinpoint_count: 0, pinpoints_truncated: false,
+    evidence_refs: [{ kind: 'record', id: 'record-capacity', source_ref: null, revision: null }], evidence_count: 1, evidence_refs_truncated: false,
+    pinpoints: [{ kind: 'target', entity_type: 'card', entity_id: 'c', target_id: 'target-capacity', execution_id: 'execution-capacity',
+      record_id: null, observation_id: null, source_ref: 'mock-source', revision: 'revision-1', relative_path: 'capacity.py',
+      qualified_symbol: null, line_start: null, line_end: null, precision: 'target', origin: 'execution_receipt' }], pinpoint_count: 1, pinpoints_truncated: false,
     root_cause_id: 'capacity-check', depends_on_issue_ids: [], action_ids: [],
     detail_query: { board_id: 'b', spec_id: 's', card_id: 'c', view: 'readiness', issue_id: 'capacity-check', snapshot_id: current.snapshot_id, limit: 20 },
   }];
@@ -50,13 +55,32 @@ test('P08/U01/U04/U09: native board and Delivery show separate accessible metric
     if (request.method() !== 'GET') {
       writes.push(path); return route.fulfill({ status: 403, json: { detail: 'Read-only fixture' } });
     }
-    if (path.endsWith('/delivery-readiness-summary')) return route.fulfill({ json: {
+    if (path.endsWith('/delivery-readiness-summary')) {
+      if (summaryHold) await summaryHold;
+      if (summaryError) return route.fulfill({ status: 503, json: { detail: 'Summary temporarily unavailable' } });
+      return route.fulfill({ json: {
       contract_version: 'delivery-readiness/v1', metrics_version: 2, delivery_readiness: specReadiness,
       cards: [{ card_id: 'c', delivery_readiness: current }] } });
+    }
     if (path.endsWith('/delivery-evidence')) return route.fulfill({ json: url.searchParams.get('view') === 'readiness'
       ? (url.searchParams.get('card_id') ? current : specReadiness)
+      : url.searchParams.get('view') === 'ledger'
+        ? { board_id: 'b', spec_id: 's', card_id: 'c', edition: 1, current_edition: 1, historical: false, total: 1, next_cursor: null,
+          items: [{ id: 'record-capacity', kind: 'implementation', actor_id: 'fixture-author', created_at: task.created_at, revoked: false,
+            summary: 'Capacity guard implemented in the observed revision.', text_truncated: false, obligation_refs: ['ac:capacity'], obligations_truncated: false,
+            currentness: 'not_evaluated', payload: { execution_id: 'execution-capacity' } }] }
       : { board_id: 'b', spec_id: 's', edition: 1, version: 1, complete: true, allowed: false,
+        records: [{ id: 'record-capacity', payload: { card_id: 'c' } }],
         candidates: [], implementations: [], rows: [], tests: [], rejected_record_ids: [], per_card: [] } });
+    if (path.endsWith('/code-traceability-projection')) return route.fulfill({ json: {
+      subject_type: 'card', subject_id: 'c', subject_version: 1, profile: 'detail', context_scope: 'default',
+      targets: [{ id: 'target-capacity', card_id: 'c', source_ref: 'mock-source', selector_kind: 'symbol', relative_path_hint: 'capacity.py',
+        qualified_symbol: 'reserve_room', role: 'modify', required: true, lifecycle_status: 'active', revision: 1, current_resolution_id: null }],
+      executions: [{ id: 'execution-capacity', card_id: 'c', target_id: 'target-capacity', target_revision: 1,
+        result_investigation_receipt_id: 'investigation-capacity', disposition: 'touched', source_ref: 'mock-source',
+        actual_relative_path: 'capacity.py', actual_qualified_symbol: 'reserve_room', justification: 'Capacity boundary implemented.' }],
+      resolutions: [], resolution_freshness: {}, gate_readiness: { resolution_freshness: {} }, overlaps: [], waivers: [], heads: [],
+    } });
     if (path === '/api/v1/boards') return route.fulfill({ json: url.searchParams.get('view') === 'shared' ? [] : [board] });
     if (path === '/api/v1/boards/b') return route.fulfill({ json: board });
     if (path === '/api/v1/specs/s') return route.fulfill({ json: spec });
@@ -102,6 +126,13 @@ test('P08/U01/U04/U09: native board and Delivery show separate accessible metric
   await diagnosis.getByText('Observe the capacity boundary on the delivered revision.').click();
   await expect(diagnosis.getByText('Expected', { exact: true })).toBeVisible();
   await expect(diagnosis.getByText('Observed', { exact: true })).toBeVisible();
+  const causeSummary = diagnosis.locator('summary').filter({ hasText: 'Observe the capacity boundary on the delivered revision.' });
+  await causeSummary.focus();
+  const refreshed = page.waitForResponse(response => response.url().includes('view=readiness') && response.url().includes('card_id=c'));
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await refreshed;
+  await expect(causeSummary).toBeFocused();
+  await expect(diagnosis.getByText('Expected', { exact: true })).toBeVisible();
   await diagnosis.screenshot({ path: test.info().outputPath('readiness-diagnosis.png') });
   const panel = page.getByRole('region', { name: 'Delivery readiness', exact: true }).last();
   await expect(panel.getByRole('progressbar', { name: 'Verification' })).toHaveAttribute('aria-valuenow', '75');
@@ -121,7 +152,6 @@ test('P08/U01/U04/U09: native board and Delivery show separate accessible metric
   expect(mobileBlue!.y + mobileBlue!.height).toBeLessThan(mobileGreen!.y);
   await panel.screenshot({ path: test.info().outputPath('readiness-delivery-dark-mobile.png') });
   // U06: the real diagnostic link opens the native AC row, expanded and focused.
-  await diagnosis.getByText('Observe the capacity boundary on the delivered revision.').click();
   const reference = diagnosis.getByRole('button', { name: 'ac:capacity', exact: true });
   await reference.focus();
   await page.keyboard.press('Enter');
@@ -141,8 +171,58 @@ test('P08/U01/U04/U09: native board and Delivery show separate accessible metric
   await expect(page.getByRole('dialog', { name: 'Readiness Spec' })).toHaveCount(1);
   await specDialog.getByRole('button', { name: 'Close spec' }).click();
   await expect(reference).toBeFocused();
+  await diagnosis.getByRole('button', { name: 'record-capacity', exact: true }).click();
+  const record = page.getByRole('article', { name: 'Delivery record detail' });
+  await expect(record).toBeFocused();
+  await expect(record.getByText('Capacity guard implemented in the observed revision.')).toBeVisible();
+  await expect(page.locator('.modal-content')).toHaveCount(1);
+  await record.screenshot({ path: test.info().outputPath('readiness-native-record.png') });
+  await diagnosis.getByRole('button', { name: 'execution-capacity', exact: true }).click();
+  const execution = page.locator('[data-readiness-ref="execution:execution-capacity"]');
+  await expect(execution).toBeFocused();
+  await expect(execution.getByText('Capacity boundary implemented.')).toBeVisible();
+  await expect(page.locator('.modal-content')).toHaveCount(1);
+  await execution.screenshot({ path: test.info().outputPath('readiness-native-execution.png') });
   await page.keyboard.press('Escape');
   await expect(inspect).toBeFocused();
+  // U09: the compact area keeps its height in loading, N/A, unknown and network error.
+  await page.getByRole('button', { name: 'Hide sidebar', exact: true }).click();
+  await cover.scrollIntoViewIfNeeded();
+  const compact = cover.getByRole('region', { name: 'Delivery readiness', exact: true });
+  const height = (await compact.boundingBox())!.height;
+  let release!: () => void;
+  summaryHold = new Promise<void>(resolve => { release = resolve; });
+  const loadingRequest = page.waitForRequest(request => request.url().includes('/delivery-readiness-summary'));
+  await page.getByRole('button', { name: 'Refresh board', exact: true }).click();
+  await loadingRequest;
+  try {
+    await expect(compact).toHaveAttribute('aria-busy', 'true');
+    expect((await compact.boundingBox())!.height).toBe(height);
+  } finally { summaryHold = undefined; release(); }
+  await expect(compact.getByRole('progressbar', { name: 'Verification' })).toHaveAttribute('aria-valuenow', '75');
+  for (const key of ['implementation', 'verification'] as const) current[key] = {
+    ...metric(0, 0), status: 'not_applicable', percent: null, total: 0, applicable: 0, unresolved: 0,
+  };
+  current.delivery_state = 'not_applicable'; current.summary.message_code = 'not_applicable';
+  current.summary.unresolved_units = 0; current.summary.root_causes = 0;
+  await page.getByRole('button', { name: 'Refresh board', exact: true }).click();
+  await expect(compact.getByRole('button', { name: 'View scope' })).toBeVisible();
+  await expect(compact.getByRole('progressbar')).toHaveCount(0);
+  expect((await compact.boundingBox())!.height).toBe(height);
+  for (const key of ['implementation', 'verification'] as const) current[key] = {
+    ...current[key], status: 'unknown', percent: null, total: null, applicable: null, unresolved: null,
+  };
+  current.delivery_state = 'unknown';
+  await page.getByRole('button', { name: 'Refresh board', exact: true }).click();
+  await expect(compact.getByText('Unable to evaluate', { exact: true }).first()).toBeVisible();
+  expect((await compact.boundingBox())!.height).toBe(height);
+  summaryError = true;
+  await page.getByRole('button', { name: 'Refresh board', exact: true }).click();
+  await expect(compact.getByText('Current readiness is unavailable. Open the diagnosis to retry.')).toBeVisible();
+  expect((await compact.boundingBox())!.height).toBe(height);
+  expect(await compact.evaluate(element => element.scrollWidth <= element.clientWidth + 1 && element.scrollHeight <= element.clientHeight + 1)).toBe(true);
+  await compact.evaluate(element => element.scrollIntoView({ block: 'center', inline: 'center' }));
+  await compact.screenshot({ path: test.info().outputPath('readiness-compact-error.png') });
   expect(writes).toEqual([]);
   expect(errors).toEqual([]);
 });

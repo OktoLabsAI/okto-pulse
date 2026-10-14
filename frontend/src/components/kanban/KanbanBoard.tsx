@@ -48,6 +48,7 @@ import {
   usePermissions,
 } from '@/hooks/usePermissions';
 import { CardModal } from './CardModal';
+import { useOptionalModalStack } from '@/contexts/ModalStackContext';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import { CreateCardModal } from './CreateCardModal';
 import { CancellationReasonDialog } from '@/components/shared/CancellationReasonDialog';
@@ -106,6 +107,8 @@ function createDefaultCardTypeFilters(): CardTypeFiltersByStatus {
 }
 
 export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
+  const modalStack = useOptionalModalStack();
+  const stackOwnsCard = modalStack?.stack[modalStack.stack.length - 1]?.type === 'card';
   const api = useDashboardApi();
   const permissions = usePermissions(boardId);
   const apiRef = useRef(api);
@@ -818,7 +821,7 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
       </div>
 
       {/* Card Detail Modal */}
-      <CardModal boardId={boardId} onAuthoritativeStatusChange={refreshColumns} />
+      {!stackOwnsCard && <CardModal boardId={boardId} onAuthoritativeStatusChange={refreshColumns} />}
 
       {/* Create Card Modal */}
       {createCardStatus && (

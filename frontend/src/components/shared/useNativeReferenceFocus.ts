@@ -11,6 +11,12 @@ export function useNativeReferenceFocus(root: RefObject<HTMLElement>, reference:
         .find(element => element.dataset.readinessRef === reference);
       if (!row) return;
       observer.disconnect();
+      // Native evidence rows can live inside nested HTML disclosures.
+      let ancestor: HTMLElement | null = row;
+      while (ancestor && ancestor !== container) {
+        if (ancestor instanceof HTMLDetailsElement) ancestor.open = true;
+        ancestor = ancestor.parentElement;
+      }
       const expand = row.querySelector<HTMLElement>('[data-readiness-expand]');
       if (expand?.getAttribute('aria-expanded') === 'false') expand.click();
       queueMicrotask(() => {

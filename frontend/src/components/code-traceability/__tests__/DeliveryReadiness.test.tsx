@@ -87,3 +87,12 @@ it('N/A and waiver counts remain visible without adding proof credit', () => {
   expect(screen.getByText('1 waived · no proof credit')).toBeVisible();
   expect(screen.getByRole('progressbar', { name: 'Verification' })).toHaveAttribute('aria-valuenow', '75');
 });
+
+it('U09: a genuinely non-applicable scope invites inspection rather than additional work', () => {
+  const value = readiness(); value.delivery_state = 'not_applicable';
+  for (const key of ['implementation', 'verification'] as const) value[key] = { ...metric(0, 0), status: 'not_applicable', percent: null };
+  render(<DeliveryReadinessView value={value} compact onInspect={vi.fn()} />);
+  expect(screen.getByRole('button', { name: 'View scope' })).toBeVisible();
+  expect(screen.queryByRole('button', { name: 'What is missing?' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+});

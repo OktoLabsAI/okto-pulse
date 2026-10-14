@@ -123,7 +123,7 @@ interface DashboardState {
   error: string | null;
   selectedCardId: string | null;
   isCardModalOpen: boolean;
-  cardModalTarget: { tab: 'delivery'; focusDiagnosis: boolean } | null;
+  cardModalTarget: import('@/components/code-traceability/readinessNavigation').ReadinessCardLocation | null;
 
   // Actions
   setBoards: (boards: BoardSummary[]) => void;
@@ -142,7 +142,7 @@ interface DashboardState {
   
   // Card actions
   selectCard: (cardId: string | null) => void;
-  openCardModal: (cardId: string, target?: { tab: 'delivery'; focusDiagnosis: boolean }) => void;
+  openCardModal: (cardId: string, target?: import('@/components/code-traceability/readinessNavigation').ReadinessCardLocation) => void;
   closeCardModal: () => void;
   
   // Card CRUD in columns
