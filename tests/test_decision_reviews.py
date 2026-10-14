@@ -288,3 +288,10 @@ async def test_native_obligations_and_inspection_are_and_without_extra_card(ledg
     assert coverage['delivery']['counts']['decisions_verified'] == 1
     assert coverage['delivery']['counts']['decisions'] == 1
     assert coverage['delivery']['counts']['implementation_proven'] == coverage['delivery']['counts']['obligations']
+    # P05 batch reads preserve the combined proof/inspection basis, including
+    # native execution observation timestamps and reviewer separation.
+    from okto_pulse.community.adapters.sqlalchemy_delivery_readiness import CommunityDeliveryReadinessReader, CommunityReadinessClock
+    await session.commit()
+    batched = await CommunityDeliveryReadinessReader(session.bind, clock=CommunityReadinessClock()).load(
+        board_id=query.board_id, spec_id=query.spec_id)
+    assert batched.facts == snapshot

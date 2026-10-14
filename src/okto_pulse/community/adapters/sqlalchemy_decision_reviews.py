@@ -29,16 +29,24 @@ class CommunityDecisionReviews:
             raise ValueError("decision_review_history_unavailable")
         return records
 
-    async def material(self, spec, snapshot, *, actor_id=None):
+    async def _material_sources(self, spec, scope):
         board = await self.session.get(Board, spec.board_id, populate_existing=True)
-        mode, _ = resolve_reviewer_separation_mode(board)
-        records = await self.records(snapshot.scope)
+        records = await self.records(scope)
         histories = list((await self.session.scalars(select(SpecHistory).where(
             SpecHistory.spec_id == spec.id).order_by(SpecHistory.version, SpecHistory.created_at).limit(10001))).all())
-        if len(histories) > 10000:
-            raise ValueError("decision_review_authorship_unavailable")
         cards = list((await self.session.scalars(select(Card).where(Card.board_id == spec.board_id,
             Card.spec_id == spec.id, Card.archived.is_(False)).limit(5001))).all())
+        return board, records, histories, cards
+
+    async def material(self, spec, snapshot, *, actor_id=None, sources=None):
+        # Batch readers supply the same scoped rows from their read transaction.
+        # Native review validation and separation authority remain shared here.
+        board, records, histories, cards = sources if sources is not None else await self._material_sources(spec, snapshot.scope)
+        mode, _ = resolve_reviewer_separation_mode(board)
+        if len(records) > 10000:
+            raise ValueError("decision_review_history_unavailable")
+        if len(histories) > 10000:
+            raise ValueError("decision_review_authorship_unavailable")
         if len(cards) > 5000:
             raise ValueError("decision_review_scope_unavailable")
         revoked = {r.payload.get("record_id") for r in records if r.kind == "revoke"}

@@ -214,6 +214,31 @@ class CommunityDeliveryEvidenceStore:
             blocking_progress_truncated=any(proof.blocking_progress_truncated for proof in proofs) or len({identity for proof in proofs for identity in proof.blocking_progress_ids}) > 20,
         )
 
+    async def _execution_head(self, board_id, target_id):
+        return (
+            await self.session.scalars(
+                select(Execution.id)
+                .where(
+                    Execution.board_id == board_id,
+                    Execution.target_id == target_id,
+                )
+                .order_by(Execution.received_at.desc(), Execution.id.desc())
+                .limit(1)
+            )
+        ).first()
+
+    async def _receipt_revocation(self, receipt_id):
+        return (
+            await self.session.scalars(
+                select(Revocation.id).where(
+                    Revocation.receipt_id == receipt_id
+                )
+            )
+        ).first()
+
+    async def _related_get(self, model, identity):
+        return await self.session.get(model, identity)
+
     async def _execution_proof(self, execution_id, scope, card):
         """The original receipt/head validator, shared by single and composed proofs."""
         execution = await self._get(Execution, execution_id)
@@ -221,24 +246,8 @@ class CommunityDeliveryEvidenceStore:
             return None
         target = await self._get(Target, execution.target_id)
         receipt = await self._get(Receipt, execution.result_investigation_receipt_id)
-        latest = (
-            await self.session.scalars(
-                select(Execution.id)
-                .where(
-                    Execution.board_id == scope.board_id,
-                    Execution.target_id == execution.target_id,
-                )
-                .order_by(Execution.received_at.desc(), Execution.id.desc())
-                .limit(1)
-            )
-        ).first()
-        revoked = (
-            await self.session.scalars(
-                select(Revocation.id).where(
-                    Revocation.receipt_id == execution.result_investigation_receipt_id
-                )
-            )
-        ).first()
+        latest = await self._execution_head(scope.board_id, execution.target_id)
+        revoked = await self._receipt_revocation(execution.result_investigation_receipt_id)
         valid = (
             card.board_id == scope.board_id
             and card.spec_id == scope.spec_id
@@ -372,7 +381,7 @@ class CommunityDeliveryEvidenceStore:
                 executed_at = native_run.observed_at
                 observed_sources = tuple((source.source_ref, source.revision) for source in native_run.sources)
                 for implementation_id in payload["implementation_ids"]:
-                    binding_record = await self.session.get(
+                    binding_record = await self._related_get(
                         CardRecord, implementation_id
                     )
                     if (
@@ -393,8 +402,8 @@ class CommunityDeliveryEvidenceStore:
                         reasons.append('delivery_execution_set_unresolved')
                         break
                     for execution_id in execution_ids:
-                        execution = await self.session.get(Execution, execution_id)
-                        receipt = await self.session.get(Receipt, execution.result_investigation_receipt_id) if execution else None
+                        execution = await self._related_get(Execution, execution_id)
+                        receipt = await self._related_get(Receipt, execution.result_investigation_receipt_id) if execution else None
                         if receipt is None or executed_at is None or executed_at < receipt.observed_at:
                             valid = False
                             reasons.append('verification_observation_time_invalid')
@@ -685,7 +694,7 @@ class CommunityDeliveryEvidenceStore:
             ).all()
         )
 
-    async def load_card_snapshot(self, scope: CardDeliveryScope, *, plan=None, prospective_report=None, records=None, native_verification=None):
+    async def load_card_snapshot(self, scope: CardDeliveryScope, *, plan=None, prospective_report=None, records=None, native_verification=None, native_runs=None):
         card, spec, spec_scope = await self._card_scope_guard(scope)
         records = await self._card_records(scope) if records is None else records
         revoked = {
@@ -695,9 +704,10 @@ class CommunityDeliveryEvidenceStore:
         }
         plan = plan if plan is not None else await self._execution_plan(spec)
         native_verification = native_verification if native_verification is not None else native_verification_population(spec)
-        native_runs = {}
-        for run in native_verification.runs:
-            native_runs.setdefault(run.scenario_id, []).append(run)
+        if native_runs is None:
+            native_runs = {}
+            for run in native_verification.runs:
+                native_runs.setdefault(run.scenario_id, []).append(run)
         obligations = await self._snapshot_obligations(spec, card, plan=plan)
         selection_valid = True
         try:
