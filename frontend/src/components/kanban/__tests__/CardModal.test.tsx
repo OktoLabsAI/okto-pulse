@@ -2343,6 +2343,28 @@ describe('CardModal', () => {
     expect(await screen.findByText('No history yet')).toBeInTheDocument();
   });
 
+  it('refreshes activity and lifecycle authority when only the watched revision changes', async () => {
+    render(<CardModal boardId="board-1" />);
+    fireEvent.click(await screen.findByRole('tab', { name: /Activity/i }));
+    await screen.findByText('No history yet');
+    apiMock.getAllowedTransitions.mockClear();
+    apiMock.getCardActivity.mockResolvedValue([{
+      id: 'external-event', action: 'structured_entity_updated', actor_type: 'agent', actor_id: 'agent-1',
+      actor_name: 'External evaluator', created_at: '2026-10-14T23:00:00Z', summary: 'External evaluation recorded',
+      trigger: 'structured_entity_updated', details: {},
+    }]);
+    await externalRevision();
+    expect(await screen.findByText('External evaluation recorded')).toBeInTheDocument();
+    await waitFor(() => expect(apiMock.getAllowedTransitions).toHaveBeenCalled());
+    expect(screen.getByRole('tab', { name: /Activity/i })).toHaveAttribute('aria-selected', 'true');
+    fireEvent.click(screen.getByRole('tab', { name: /^Details$/ }));
+    apiMock.getCardActivity.mockClear();
+    await externalRevision();
+    expect(apiMock.getCardActivity).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('tab', { name: /Activity/i }));
+    await waitFor(() => expect(apiMock.getCardActivity).toHaveBeenCalledOnce());
+  });
+
   it.each(['assign', 'drop', 'refresh'] as const)(
     'keeps the Knowledge tab mounted and ignores Escape, backdrop, and tab changes during %s',
     async (operation) => {

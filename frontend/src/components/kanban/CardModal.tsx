@@ -829,9 +829,6 @@ export function CardModal({
       .then((data) => {
         if (!isCurrentRefresh()) return;
         const reconciled = withPreservedOpenQACount(data);
-        const subjectChanged =
-          card?.id === data.id
-          && card.updated_at !== data.updated_at;
         // Reuse the existing modal refresh cycle for external-agent writes.
         // Verification may change on another Card while this Card stays Done.
         notifyReadinessChanged();
@@ -844,9 +841,9 @@ export function CardModal({
         }
         setTaskValidationHierarchyLoading(true);
         setTaskValidationHierarchyError(null);
-        if (subjectChanged) {
-          notePolicySubjectChanged();
-        }
+        // A Spec/policy revision can change allowed actions without changing
+        // the Card's updated_at. Refresh only after an actual invalidation.
+        notePolicySubjectChanged();
         if (data.card_type === 'bug') {
           api.getBugRegressionScenarioCandidates(data.id, data.board_id)
             .then((preview) => {
@@ -947,8 +944,6 @@ export function CardModal({
   }, [
     api,
     canReadAmendmentRevisions,
-    card?.id,
-    card?.updated_at,
     isLoading,
     notePolicySubjectChanged,
     onAuthoritativeStatusChange,
@@ -1888,6 +1883,7 @@ export function CardModal({
                   mount="lazy-keep"
                 >
                   <CardDeliveryDoDPanel
+                    active={activeTab === 'delivery' && !syncAuthorizing}
                     revision={liveRevision}
                     boardId={card.board_id}
                     card={{ id: card.id, card_type: card.card_type || 'normal', spec_id: card.spec_id }}
@@ -2596,7 +2592,7 @@ export function CardModal({
                   tabId="activity"
                   value={activeTab}
                 >
-                  <ActivityTab cardId={card.id} api={api} />
+                  <ActivityTab cardId={card.id} api={api} revision={liveRevision} />
                 </AccessibleTabPanel>
               )}
             </div>
@@ -4480,17 +4476,19 @@ function ValidationsTab({
 }
 
 // Activity Tab Component
-function ActivityTab({ cardId, api }: { cardId: string; api: ReturnType<typeof useDashboardApi> }) {
+function ActivityTab({ cardId, api, revision }: { cardId: string; api: ReturnType<typeof useDashboardApi>; revision: number }) {
   const [logs, setLogs] = useState<ActivityLogEntry[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    let cancelled = false;
     setLoading(true);
     api.getCardActivity(cardId)
-      .then(setLogs)
-      .catch(() => toast.error('Failed to load activity'))
-      .finally(() => setLoading(false));
-  }, [cardId]);
+      .then(value => { if (!cancelled) setLogs(value); })
+      .catch(() => { if (!cancelled) { setLogs([]); toast.error('Failed to load activity'); } })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [api, cardId, revision]);
 
   return <ActivityLogList entries={logs} loading={loading} />;
 }

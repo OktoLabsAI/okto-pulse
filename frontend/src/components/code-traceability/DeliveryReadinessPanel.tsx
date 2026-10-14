@@ -7,16 +7,17 @@ import type { ReadinessCardLocation, ReadinessNavigator, ReadinessSpecLocation }
 import { useNativeReadinessNavigation } from './useNativeReadinessNavigation';
 import { useDeliveryReadiness } from './useDeliveryReadiness';
 
-export function DeliveryReadinessPanel({ boardId, specId, cardId, revision, focusDiagnosis = false, onNavigate, onOpenReadinessSpec, onOpenReadinessCard }: {
+export function DeliveryReadinessPanel({ boardId, specId, cardId, revision, active = true, focusDiagnosis = false, onNavigate, onOpenReadinessSpec, onOpenReadinessCard }: {
   boardId: string; specId: string; cardId?: string; revision?: string | number;
   focusDiagnosis?: boolean; onNavigate?: ReadinessNavigator;
+  active?: boolean;
   onOpenReadinessSpec?: (location: ReadinessSpecLocation) => void;
   onOpenReadinessCard?: (id: string, target?: ReadinessCardLocation) => void;
 }) {
   const api = useDashboardApi();
   const navigation = useNativeReadinessNavigation(boardId, specId, onOpenReadinessSpec, onOpenReadinessCard);
   const [refresh, setRefresh] = useState(0);
-  const state = useDeliveryReadiness(boardId, specId, cardId, JSON.stringify([revision, refresh]));
+  const state = useDeliveryReadiness(boardId, specId, cardId, JSON.stringify([revision, refresh]), active);
   const initial = isReadinessResponse(state.value) ? state.value : undefined;
   const key = JSON.stringify([boardId, specId, cardId, initial?.snapshot_id, revision, refresh, state.loading]);
   const [expanded, setExpanded] = useState(focusDiagnosis);
@@ -36,14 +37,14 @@ export function DeliveryReadinessPanel({ boardId, specId, cardId, revision, focu
   useEffect(() => {
     request.current?.abort(); setBusy(false);
     return () => request.current?.abort();
-  }, [key]);
+  }, [key, active]);
   const value = extra?.key === key ? extra.value : initial;
   const error = failure?.key === key ? failure.message : state.error;
   const unavailable = !state.loading && !state.error && state.value && !initial
     ? 'Readiness diagnostic contract unavailable or incompatible.' : undefined;
   const snapshot = value?.snapshot_id;
   useEffect(() => {
-    if (!expanded || !snapshot || error) return;
+    if (!active || !expanded || !snapshot || error) return;
     if (focusPending.current) {
       heading.current?.focus(); focusPending.current = false;
     } else if (focusedControl.current?.scope === scopeKey && focusedControl.current.snapshot === snapshot
@@ -51,14 +52,14 @@ export function DeliveryReadinessPanel({ boardId, specId, cardId, revision, focu
       Array.from(root.current?.querySelectorAll<HTMLElement>('[data-readiness-focus]') ?? [])
         .find(element => element.dataset.readinessFocus === focusedControl.current?.key)?.focus();
     }
-  }, [expanded, focusDiagnosis, snapshot, error, scopeKey]);
+  }, [active, expanded, focusDiagnosis, snapshot, error, scopeKey]);
   function inspect() {
     origin.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     focusPending.current = true;
     setExpanded(true); heading.current?.focus();
   }
   async function more() {
-    if (!value?.page.next_cursor || busy) return;
+    if (!active || !value?.page.next_cursor || busy) return;
     const controller = new AbortController(); request.current = controller;
     const expected = value, expectedKey = key;
     setBusy(true);

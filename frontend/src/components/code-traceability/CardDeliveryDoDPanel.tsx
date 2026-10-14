@@ -19,6 +19,7 @@ import type {
 } from '@/types/delivery-evidence';
 
 interface Props {
+  active?: boolean;
   revision?: number;
   focusDiagnosis?: boolean;
   focusRecordId?: string;
@@ -36,13 +37,21 @@ interface Props {
 
 const field = 'w-full rounded border border-gray-300 bg-white p-2 text-sm dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100';
 
+// Compare the form's native basis after a read, not the response object's
+// identity: simply returning to the same tab must not demand another review.
+function recordingBasis(data: DeliveryEvidenceProjection, cardId: string) {
+  const mine = data.per_card?.find(entry => entry.card_id === cardId);
+  return JSON.stringify([data.edition, data.version, mine?.card_version, mine?.delivery_revision,
+    mine?.status, mine?.obligations, data.rows, data.candidates, data.implementations, data.rejected_record_ids]);
+}
+
 // Card "Delivery" tab — the per-card DoD surface (mockup sm_c3383586).
 // Obligations derive from this card's links; implementation proof is recorded
 // HERE against this card's accepted execution receipts. Test cards record
 // authenticated passing runs verifying implementations on other cards.
 // Waivers stay spec-level and human-only (BR-3): the button routes an
 // authorized human to the Spec rollup surface.
-export function CardDeliveryDoDPanel({ boardId, card, revision = 0, canRecord = false, canTest = false, canWaiver = false, canProgress = false, onChanged, onStage, onOpenTests, focusDiagnosis, focusRecordId, onOpenReadinessCard }: Props) {
+export function CardDeliveryDoDPanel({ boardId, card, active = true, revision = 0, canRecord = false, canTest = false, canWaiver = false, canProgress = false, onChanged, onStage, onOpenTests, focusDiagnosis, focusRecordId, onOpenReadinessCard }: Props) {
   const api = useDashboardApi();
   const [data, setData] = useState<DeliveryEvidenceProjection | null>(null);
   const [gateMode, setGateMode] = useState<'advisory' | 'blocking' | null>(null);
@@ -71,6 +80,7 @@ export function CardDeliveryDoDPanel({ boardId, card, revision = 0, canRecord = 
   }, [boardId, card.id, card.spec_id]);
 
   useEffect(() => {
+    if (!active) return;
     const controller = new AbortController();
     setLoading(true); setReadFailed(false); setError('');
     api.getDeliveryEvidence(boardId, card.spec_id, controller.signal).then(value => {
@@ -90,15 +100,15 @@ export function CardDeliveryDoDPanel({ boardId, card, revision = 0, canRecord = 
       if (!controller.signal.aborted) setGateMode(resolveDeliveryGateMode(board.settings?.delivery_evidence_gate));
     }).catch(() => { if (!controller.signal.aborted) setGateMode(null); });
     return () => controller.abort();
-  }, [api, boardId, card.id, card.spec_id, reload, revision]);
+  }, [api, boardId, card.id, card.spec_id, reload, revision, active]);
 
   const recordingData = formOpen && formBasis ? formBasis.data : data;
   const recordingMine = recordingData?.per_card?.find(entry => entry.card_id === card.id) ?? null;
   const basisChanged = Boolean(formOpen && formBasis && data && (
-    formBasis.revision !== revision || formBasis.data !== data
+    formBasis.revision !== revision || recordingBasis(formBasis.data, card.id) !== recordingBasis(data, card.id)
   ));
   const openRecordingForm = () => {
-    if (!data || loading || readFailed || loadedRevision !== revision) return;
+    if (!active || !data || loading || readFailed || loadedRevision !== revision) return;
     setFormBasis({ data, revision: loadedRevision }); setFormOpen(true); setError('');
   };
 
@@ -126,7 +136,7 @@ export function CardDeliveryDoDPanel({ boardId, card, revision = 0, canRecord = 
 
   async function submit() {
     const justification = reason.trim();
-    if (!recordingData || busy || loading || readFailed || basisChanged || unavailableSelections || !justification || !refs.length) return;
+    if (!active || !recordingData || busy || loading || readFailed || basisChanged || unavailableSelections || !justification || !refs.length) return;
     const selected = candidates.find(c => `${c.card_id}:${c.id}` === choice);
     const key = crypto.randomUUID();
     const input: CardDeliveryEvidenceInput = {
@@ -171,7 +181,7 @@ export function CardDeliveryDoDPanel({ boardId, card, revision = 0, canRecord = 
 
   async function submitWaiver() {
     const justification = reason.trim();
-    if (!recordingData || busy || loading || readFailed || basisChanged || unavailableSelections || !justification || !refs.length) return;
+    if (!active || !recordingData || busy || loading || readFailed || basisChanged || unavailableSelections || !justification || !refs.length) return;
     const input: DeliveryEvidenceInput = {
       expected_edition: recordingData.edition, expected_version: recordingData.version,
       idempotency_key: crypto.randomUUID(), kind: 'waiver',
@@ -187,7 +197,7 @@ export function CardDeliveryDoDPanel({ boardId, card, revision = 0, canRecord = 
   }
 
   return <section className="space-y-4" aria-label={isTest ? "Test verification evidence" : "Delivery evidence (Definition of Done)"}>
-    {!onStage && <DeliveryReadinessPanel boardId={boardId} specId={card.spec_id} cardId={card.id} revision={`${reload}:${revision}`} focusDiagnosis={focusDiagnosis} onOpenReadinessCard={onOpenReadinessCard} />}
+    {!onStage && <DeliveryReadinessPanel boardId={boardId} specId={card.spec_id} cardId={card.id} active={active} revision={`${reload}:${revision}`} focusDiagnosis={focusDiagnosis} onOpenReadinessCard={onOpenReadinessCard} />}
     {isTest && !onStage && <div className="flex justify-end"><button type="button" disabled={!data && !error} onClick={() => setReload(value => value + 1)} className="rounded-md border border-gray-300 px-3 py-2 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800">Refresh evidence</button></div>}
     {error && <p role="alert" className="rounded-md border border-red-300 bg-red-50 p-3 text-xs text-red-700 dark:border-red-900/70 dark:bg-red-950/25 dark:text-red-300">{error}</p>}
     {readFailed && <div className="text-sm text-amber-700 dark:text-amber-300">
@@ -199,7 +209,7 @@ export function CardDeliveryDoDPanel({ boardId, card, revision = 0, canRecord = 
       {!onStage && focusRecordId && <CardLedgerPanel key={`${boardId}:${card.id}:${data.edition}:${focusRecordId}`}
         boardId={boardId} cardId={card.id} specId={card.spec_id} edition={data.edition} initialRecordId={focusRecordId} />}
       {isTest && !onStage && <TestDeliveryOverview data={data} cardId={card.id} />}
-      {mine && !isTest && <CardProgressPanel key={`${boardId}:${card.id}:${card.spec_id}:${canProgress}`} boardId={boardId} specId={card.spec_id} edition={data.edition} card={mine} canWrite={canProgress} readReady={!loading && !readFailed && loadedRevision === revision} onStage={onStage} onSaved={() => { setReload(v => v + 1); onChanged?.(); }} />}
+      {mine && !isTest && <CardProgressPanel key={`${boardId}:${card.id}:${card.spec_id}:${canProgress}`} boardId={boardId} specId={card.spec_id} edition={data.edition} card={mine} canWrite={canProgress} readReady={active && !loading && !readFailed && loadedRevision === revision} onStage={onStage} onSaved={() => { setReload(v => v + 1); onChanged?.(); }} />}
       {!onStage && <>
       {!isTest && mine?.accumulated_impact && <DeliveryNetImpactPanel value={mine.accumulated_impact} />}
       {!isTest && mine?.report_impact?.source === 'accumulated' && <p role="status" className="text-sm">
