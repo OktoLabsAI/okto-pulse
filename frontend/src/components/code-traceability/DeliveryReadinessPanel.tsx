@@ -1,0 +1,75 @@
+import { useEffect, useRef, useState } from 'react';
+import { useDashboardApi } from '@/services/api';
+import { isReadinessResponse, type ReadinessResponse } from '@/types/delivery-readiness';
+import { DeliveryReadinessView } from './DeliveryReadinessView';
+import { DeliveryReadinessIssues, type ReadinessDestination } from './DeliveryReadinessIssues';
+import { useDeliveryReadiness } from './useDeliveryReadiness';
+
+export function DeliveryReadinessPanel({ boardId, specId, cardId, revision, focusDiagnosis = false, onNavigate }: {
+  boardId: string; specId: string; cardId?: string; revision?: string | number;
+  focusDiagnosis?: boolean; onNavigate?: (destination: ReadinessDestination) => void;
+}) {
+  const api = useDashboardApi();
+  const [refresh, setRefresh] = useState(0);
+  const state = useDeliveryReadiness(boardId, specId, cardId, JSON.stringify([revision, refresh]));
+  const initial = isReadinessResponse(state.value) ? state.value : undefined;
+  const key = JSON.stringify([boardId, specId, cardId, initial?.snapshot_id, revision, refresh, state.loading]);
+  const [expanded, setExpanded] = useState(focusDiagnosis);
+  const [extra, setExtra] = useState<{ key: string; value: ReadinessResponse }>();
+  const [failure, setFailure] = useState<{ key: string; message: string }>();
+  const [busy, setBusy] = useState(false);
+  const heading = useRef<HTMLHeadingElement>(null);
+  const origin = useRef<HTMLElement | null>(null);
+  const request = useRef<AbortController>();
+  const currentKey = useRef(key); currentKey.current = key;
+  useEffect(() => {
+    request.current?.abort(); setBusy(false);
+    return () => request.current?.abort();
+  }, [key]);
+  const value = extra?.key === key ? extra.value : initial;
+  const error = failure?.key === key ? failure.message : state.error;
+  const unavailable = !state.loading && !state.error && state.value && !initial
+    ? 'Readiness diagnostic contract unavailable or incompatible.' : undefined;
+  const snapshot = value?.snapshot_id;
+  useEffect(() => {
+    if (expanded && snapshot && !error) heading.current?.focus();
+  }, [expanded, focusDiagnosis, snapshot, error]);
+  function inspect() {
+    origin.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setExpanded(true); heading.current?.focus();
+  }
+  async function more() {
+    if (!value?.page.next_cursor || busy) return;
+    const controller = new AbortController(); request.current = controller;
+    const expected = value, expectedKey = key;
+    setBusy(true);
+    try {
+      const page = await api.getDeliveryReadinessPage(boardId, specId, {
+        card_id: cardId, snapshot_id: expected.snapshot_id, cursor: expected.page.next_cursor!, limit: 20,
+      }, controller.signal);
+      if (!isReadinessResponse(page) || page.snapshot_id !== expected.snapshot_id
+        || page.scope.board_id !== boardId || page.scope.spec_id !== specId || page.scope.card_id !== (cardId ?? null))
+        throw new Error('Readiness scope or snapshot changed. Refresh the assessment.');
+      if (!controller.signal.aborted && currentKey.current === expectedKey) setExtra({ key, value: {
+        ...page, issues: [...expected.issues, ...page.issues.filter(issue => !expected.issues.some(old => old.id === issue.id))],
+        next_actions: page.next_actions,
+      } });
+    } catch (e) {
+      if (!controller.signal.aborted && currentKey.current === expectedKey) setFailure({ key, message: e instanceof Error ? e.message : 'Readiness page unavailable. Refresh to retry.' });
+    } finally { if (!controller.signal.aborted && currentKey.current === expectedKey) setBusy(false); }
+  }
+  return <div className="min-w-0 space-y-4">
+    <DeliveryReadinessView value={error || unavailable ? undefined : value} loading={state.loading} error={error || unavailable}
+      onInspect={inspect} onRefresh={() => setRefresh(v => v + 1)} />
+    {expanded && !state.loading && !error && !unavailable && value && <section aria-label="Delivery diagnosis" className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 ref={heading} tabIndex={-1} className="rounded text-sm font-semibold outline-offset-4">What is missing?</h3>
+        <button type="button" onClick={() => { setExpanded(false); origin.current?.focus(); }} className="rounded border px-3 py-1.5 text-xs dark:border-gray-600">Hide diagnosis</button>
+      </div>
+      <DeliveryReadinessIssues value={value} onNavigate={onNavigate} onSnapshotInvalid={message => setFailure({ key, message })} />
+      {value.page.has_more && <button type="button" disabled={busy} onClick={() => void more()} className="rounded border px-3 py-2 text-xs dark:border-gray-600">
+        {busy ? 'Loading causes…' : 'Load more causes'}
+      </button>}
+    </section>}
+  </div>;
+}

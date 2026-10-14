@@ -9,7 +9,11 @@ export function useDeliveryReadiness(boardId: string, specId: string, cardId?: s
   useEffect(() => {
     const changed = () => setRefresh(value => value + 1);
     window.addEventListener('pulse:delivery-evidence-changed', changed);
-    return () => window.removeEventListener('pulse:delivery-evidence-changed', changed);
+    window.addEventListener('focus', changed);
+    return () => {
+      window.removeEventListener('pulse:delivery-evidence-changed', changed);
+      window.removeEventListener('focus', changed);
+    };
   }, []);
   const key = JSON.stringify([boardId, specId, cardId, revision, refresh]);
   const [result, setResult] = useState<{ key: string; state: DeliveryReadinessState }>();

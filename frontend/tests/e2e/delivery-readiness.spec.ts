@@ -15,6 +15,23 @@ test('P08/U01/U04/U09: native board and Delivery show separate accessible metric
     screen_mockups: [], architecture_designs: [], cards: [], knowledge_bases: [], qa_items: [] };
   const current = readiness(); current.lifecycle.stored_status = 'done';
   current.summary.message_code = 'historical_completion_diverged';
+  current.page = { total: 1, returned: 1, has_more: false, next_cursor: null, response_truncated: false, phase_filter: 'all' };
+  current.issues = [{
+    id: 'capacity-check', code: 'verification_not_run', detail_state: 'available', phase: 'verification',
+    score_impact: 'verification', intrinsic_state: 'missing', blocks_proof: true, blocks_target_transition: null,
+    message_code: 'verification_not_run', message_params: {}, message: 'Observe the capacity boundary on the delivered revision.',
+    native_reason_codes: [], affected_unit_count: 1,
+    affected_units: [{ unit: 'obligation', ref: 'ac:capacity', semantic_sha256: 'a'.repeat(64), spec_edition: 1, card_id: 'c' }],
+    affected_units_truncated: false, criterion_ids: ['capacity'], criterion_count: 1, criterion_ids_truncated: false,
+    scenario_ids: ['capacity-boundary'], scenario_count: 1, scenario_ids_truncated: false,
+    implementation_card_ids: ['c'], implementation_card_count: 1, implementation_card_ids_truncated: false,
+    test_card_ids: [], test_card_count: 0, test_card_ids_truncated: false, owner: null, owner_state: 'unassigned',
+    expected: [{ outcome: 'passed', revision: 'delivered-revision' }], expected_count: 1, expected_truncated: false,
+    observed: [{ outcome: 'not_run', text: 'No authenticated observation for this scenario.' }], observed_count: 1, observed_truncated: false,
+    evidence_refs: [], evidence_count: 0, evidence_refs_truncated: false, pinpoints: [], pinpoint_count: 0, pinpoints_truncated: false,
+    root_cause_id: 'capacity-check', depends_on_issue_ids: [], action_ids: [],
+    detail_query: { board_id: 'b', spec_id: 's', card_id: 'c', view: 'readiness', issue_id: 'capacity-check', snapshot_id: current.snapshot_id, limit: 20 },
+  }];
   const specReadiness = readiness(null);
   // Distinct global metrics ensure that the Spec never averages visible Cards.
   specReadiness.verification = metric(50, 4);
@@ -73,8 +90,16 @@ test('P08/U01/U04/U09: native board and Delivery show separate accessible metric
   expect(blue!.y + blue!.height).toBeLessThan(green!.y);
   expect(await cover.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
   await cover.screenshot({ path: test.info().outputPath('readiness-cover.png') });
-  await cover.getByText(card.title, { exact: true }).click();
-  await page.getByRole('tab', { name: 'Delivery', exact: true }).click();
+  const inspect = cover.getByRole('button', { name: 'What is missing?' });
+  await inspect.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('tab', { name: 'Delivery', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('heading', { name: 'What is missing?' })).toBeFocused();
+  const diagnosis = page.getByRole('region', { name: 'Delivery diagnosis' });
+  await diagnosis.getByText('Observe the capacity boundary on the delivered revision.').click();
+  await expect(diagnosis.getByText('Expected', { exact: true })).toBeVisible();
+  await expect(diagnosis.getByText('Observed', { exact: true })).toBeVisible();
+  await diagnosis.screenshot({ path: test.info().outputPath('readiness-diagnosis.png') });
   const panel = page.getByRole('region', { name: 'Delivery readiness', exact: true }).last();
   await expect(panel.getByRole('progressbar', { name: 'Verification' })).toHaveAttribute('aria-valuenow', '75');
   await expect(panel.getByText('Status: done')).toBeVisible();
@@ -92,6 +117,8 @@ test('P08/U01/U04/U09: native board and Delivery show separate accessible metric
   const mobileGreen = await panel.getByRole('progressbar', { name: 'Verification' }).boundingBox();
   expect(mobileBlue!.y + mobileBlue!.height).toBeLessThan(mobileGreen!.y);
   await panel.screenshot({ path: test.info().outputPath('readiness-delivery-dark-mobile.png') });
+  await page.keyboard.press('Escape');
+  await expect(inspect).toBeFocused();
   expect(writes).toEqual([]);
   expect(errors).toEqual([]);
 });

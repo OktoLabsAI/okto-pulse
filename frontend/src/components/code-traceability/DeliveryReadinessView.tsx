@@ -59,7 +59,7 @@ export function DeliveryReadinessView({ value, loading, error, compact = false, 
     {!loading && !current && <p role="status" className="text-amber-800 dark:text-amber-300">{incompatible ? 'Readiness contract unavailable or incompatible. Refresh after updating the backend.' : error || 'Current readiness is unavailable. Refresh to retry.'}</p>}
     {!compact && <details className="text-xs text-gray-500 dark:text-gray-400"><summary className="cursor-pointer">How these counts work</summary><p className="mt-2">{explanation}</p></details>}
     {(onInspect || onRefresh) && <div className="flex flex-wrap gap-2">
-      {onInspect && <button type="button" onClick={onInspect} className="rounded-md border border-gray-300 px-2 py-1 font-medium hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500 dark:border-gray-600 dark:hover:bg-gray-800">{current?.delivery_state === 'delivered' ? 'View evidence' : 'What is missing?'}</button>}
+      {onInspect && <button type="button" onClick={event => { event.stopPropagation(); onInspect(); }} className="rounded-md border border-gray-300 px-2 py-1 font-medium hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500 dark:border-gray-600 dark:hover:bg-gray-800">{current?.delivery_state === 'delivered' ? 'View evidence' : 'What is missing?'}</button>}
       {onRefresh && <button type="button" onClick={onRefresh} className="rounded-md border border-gray-300 px-2 py-1 dark:border-gray-600">Refresh</button>}
     </div>}
   </section>;

@@ -344,7 +344,13 @@ export function CardModal({
   const cardDataGenerationRef = useRef(0);
   const cardStatusRef = useRef<CardStatus | null>(null);
   const isOpen = useIsCardModalOpen();
-  const { closeCardModal, removeCardFromColumn, updateCardInColumn } = useDashboardStore();
+  const modalOrigin = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (!isOpen) return;
+    modalOrigin.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    return () => { if (modalOrigin.current?.isConnected) modalOrigin.current.focus(); };
+  }, [isOpen]);
+  const { closeCardModal, removeCardFromColumn, updateCardInColumn, cardModalTarget } = useDashboardStore();
   const columns = useColumns();
   const currentBoard = useCurrentBoard();
 
@@ -946,6 +952,11 @@ export function CardModal({
       setTaskValidationHierarchyError(null);
     }
   }, [selectedCardId, isOpen, canReadAmendmentRevisions, canReadBoardAgents]);
+
+  useEffect(() => {
+    if (isOpen && card?.id === selectedCardId && canReadCodeTraceability && cardModalTarget)
+      setActiveTab(cardModalTarget.tab);
+  }, [isOpen, card?.id, selectedCardId, canReadCodeTraceability, cardModalTarget]);
 
   useEffect(() => {
     if (!card || !isOpen) {
@@ -1821,6 +1832,7 @@ export function CardModal({
                     canTest={perms.has('spec.tests.execute')}
                     canWaiver={perms.has('code_traceability.waiver.create')}
                     onOpenTests={canReadTests && card.card_type === 'test' ? () => setActiveTab('tests') : undefined}
+                    focusDiagnosis={cardModalTarget?.focusDiagnosis}
                     onChanged={() => { void loadCard(card.id); window.dispatchEvent(new Event('pulse:delivery-evidence-changed')); }}
                   />
                 </AccessibleTabPanel>

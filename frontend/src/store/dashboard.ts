@@ -123,6 +123,7 @@ interface DashboardState {
   error: string | null;
   selectedCardId: string | null;
   isCardModalOpen: boolean;
+  cardModalTarget: { tab: 'delivery'; focusDiagnosis: boolean } | null;
 
   // Actions
   setBoards: (boards: BoardSummary[]) => void;
@@ -141,7 +142,7 @@ interface DashboardState {
   
   // Card actions
   selectCard: (cardId: string | null) => void;
-  openCardModal: (cardId: string) => void;
+  openCardModal: (cardId: string, target?: { tab: 'delivery'; focusDiagnosis: boolean }) => void;
   closeCardModal: () => void;
   
   // Card CRUD in columns
@@ -178,6 +179,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   error: null,
   selectedCardId: null,
   isCardModalOpen: false,
+  cardModalTarget: null,
 
   // Setters
   setBoards: (boards) => set({ boards }),
@@ -309,8 +311,8 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
 
   // Card selection
   selectCard: (cardId) => set({ selectedCardId: cardId }),
-  openCardModal: (cardId) => set({ selectedCardId: cardId, isCardModalOpen: true }),
-  closeCardModal: () => set({ isCardModalOpen: false, selectedCardId: null }),
+  openCardModal: (cardId, target) => set({ selectedCardId: cardId, isCardModalOpen: true, cardModalTarget: target ?? null }),
+  closeCardModal: () => set({ isCardModalOpen: false, selectedCardId: null, cardModalTarget: null }),
 
   // Card CRUD
   addCardToColumn: (card) => {

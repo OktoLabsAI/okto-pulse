@@ -1,4 +1,4 @@
-import type { DeliveryReadiness, ReadinessCounts, ReadinessMetric } from '@/types/delivery-readiness';
+import type { ReadinessResponse, ReadinessCounts, ReadinessMetric } from '@/types/delivery-readiness';
 import type { CardSummary } from '@/types';
 
 export const emptyCounts: ReadinessCounts = { satisfied: 0, missing: 0, partial: 0, failed: 0,
@@ -8,7 +8,7 @@ export const metric = (percent: number, satisfied: number): ReadinessMetric => (
   not_applicable: 0, waived: 0, unresolved: 8 - satisfied, unknown: 0,
   counts_by_state: { ...emptyCounts, satisfied, missing: 8 - satisfied }, reason_codes: [], known_counts: null,
 });
-export function readiness(cardId: string | null = 'c'): DeliveryReadiness {
+export function readiness(cardId: string | null = 'c'): ReadinessResponse {
   return { contract_version: 'delivery-readiness/v1', metrics_version: 2,
     scope: { board_id: 'b', spec_id: 's', card_id: cardId, card_type: cardId ? 'normal' : null,
       spec_edition: 1, spec_version: 1, card_version: cardId ? 1 : null },
@@ -21,7 +21,9 @@ export function readiness(cardId: string | null = 'c'): DeliveryReadiness {
       other_blocker_count: null, qualification_is_current: null, reason_codes: [], context_refs: [] },
     summary: { message_code: 'verification_pending', message: 'Two obligations need verification.',
       unresolved_units: 2, root_causes: 2, lifecycle_pending: null, exceptions: 0 },
-    mutation_reauthorization_required: true };
+    mutation_reauthorization_required: true,
+    issues: [], next_actions: [],
+    page: { total: 0, returned: 0, has_more: false, next_cursor: null, response_truncated: false, phase_filter: 'all' } };
 }
 export const task: CardSummary = { id: 'c', board_id: 'b', spec_id: 's', card_type: 'normal',
   title: 'Implement capacity', status: 'in_progress', labels: [], created_at: '2026-10-09',

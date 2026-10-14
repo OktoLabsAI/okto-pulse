@@ -7,8 +7,7 @@ import { DeliveryNetImpactPanel } from './DeliveryNetImpactPanel';
 import { TestDeliveryOverview } from './TestDeliveryOverview';
 import { PulseLoader } from '@/components/shared/PulseLoader';
 import { DeliveryDisclosure } from './deliveryPresentation';
-import { DeliveryReadinessView } from './DeliveryReadinessView';
-import { useDeliveryReadiness } from './useDeliveryReadiness';
+import { DeliveryReadinessPanel } from './DeliveryReadinessPanel';
 import type {
   CardDeliveryEvidenceInput,
   CardDeliveryBatchDraft,
@@ -17,6 +16,7 @@ import type {
 } from '@/types/delivery-evidence';
 
 interface Props {
+  focusDiagnosis?: boolean;
   boardId: string;
   card: { id: string; card_type: string; spec_id: string };
   canRecord?: boolean;
@@ -36,14 +36,13 @@ const field = 'w-full rounded border border-gray-300 bg-white p-2 text-sm dark:b
 // authenticated passing runs verifying implementations on other cards.
 // Waivers stay spec-level and human-only (BR-3): the button routes an
 // authorized human to the Spec rollup surface.
-export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest = false, canWaiver = false, canProgress = false, onChanged, onStage, onOpenTests }: Props) {
+export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest = false, canWaiver = false, canProgress = false, onChanged, onStage, onOpenTests, focusDiagnosis }: Props) {
   const api = useDashboardApi();
   const [data, setData] = useState<DeliveryEvidenceProjection | null>(null);
   const [gateMode, setGateMode] = useState<'advisory' | 'blocking' | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [reload, setReload] = useState(0);
-  const readiness = useDeliveryReadiness(boardId, card.spec_id, card.id, reload, !onStage);
   const [formOpen, setFormOpen] = useState(false);
   const [refs, setRefs] = useState<string[]>([]);
   const [contributions, setContributions] = useState<Record<string, 'partial' | 'complete'>>({});
@@ -149,7 +148,7 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
   }
 
   return <section className="space-y-4" aria-label={isTest ? "Test verification evidence" : "Delivery evidence (Definition of Done)"}>
-    {!onStage && <DeliveryReadinessView {...readiness} onRefresh={() => setReload(value => value + 1)} />}
+    {!onStage && <DeliveryReadinessPanel boardId={boardId} specId={card.spec_id} cardId={card.id} revision={reload} focusDiagnosis={focusDiagnosis} />}
     {isTest && !onStage && <div className="flex justify-end"><button type="button" disabled={!data && !error} onClick={() => setReload(value => value + 1)} className="rounded-md border border-gray-300 px-3 py-2 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800">Refresh evidence</button></div>}
     {error && <p role="alert" className="rounded-md border border-red-300 bg-red-50 p-3 text-xs text-red-700 dark:border-red-900/70 dark:bg-red-950/25 dark:text-red-300">{error}</p>}
     {!data && !error && <PulseLoader label="Loading delivery evidence…" />}

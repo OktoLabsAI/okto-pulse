@@ -13,6 +13,7 @@ import type { KGCognitivePendingBadgeView } from '@/services/kg-health-api';
 import { CognitivePendingBadge } from '@/components/knowledge/CognitivePendingBadge';
 import { QABadge } from '@/components/shared/QABadge';
 import { DeliveryReadinessView, type DeliveryReadinessState } from '@/components/code-traceability/DeliveryReadinessView';
+import { useDashboardStore } from '@/store/dashboard';
 
 interface KanbanCardProps {
   deliveryReadiness?: DeliveryReadinessState;
@@ -41,6 +42,7 @@ function validationPassed(validation: NonNullable<CardSummary['validations']>[nu
 }
 
 export function KanbanCard({ card, onClick, nameMap, canDrag = true, cognitiveBadge, deliveryReadiness }: KanbanCardProps) {
+  const openCardModal = useDashboardStore(state => state.openCardModal);
   const {
     attributes,
     listeners,
@@ -189,7 +191,7 @@ export function KanbanCard({ card, onClick, nameMap, canDrag = true, cognitiveBa
           ) : null}
 
           {/* Test card: scenario count */}
-          {deliveryReadiness && <DeliveryReadinessView {...deliveryReadiness} compact />}
+          {deliveryReadiness && <DeliveryReadinessView {...deliveryReadiness} compact onInspect={() => openCardModal(card.id, { tab: 'delivery', focusDiagnosis: true })} />}
           {isTest && card.test_scenario_ids && card.test_scenario_ids.length > 0 && (
             <div className="flex gap-1 mt-1.5">
               <span className="text-[9px] px-1.5 py-0.5 rounded font-medium bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300 inline-flex items-center gap-0.5">

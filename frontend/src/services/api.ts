@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import type { DeliveryReadiness, DeliveryReadinessBoardSummary } from '@/types/delivery-readiness';
+import type { DeliveryReadiness, DeliveryReadinessBoardSummary, ReadinessQuery, ReadinessResponse, ReadinessDetail } from '@/types/delivery-readiness';
 import type { DecisionReviewInput, DecisionReviewProjection } from '@/types/decision-reviews';
 import type { ArchitectureCandidatesResponse } from '@/types/architecture-candidates';
 import type { ArchitectureClassificationsResponse, ArchitectureReviewState, ArchitectureClassificationBatch, ArchitectureClassificationReceipt } from '@/types/architecture-classifications';
@@ -557,6 +557,12 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
 
     async getDeliveryReadinessSummary(boardId: string, specId: string, signal?: AbortSignal): Promise<DeliveryReadinessBoardSummary> {
       return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/delivery-readiness-summary`, { signal });
+    },
+
+    async getDeliveryReadinessPage(boardId: string, specId: string, options: ReadinessQuery, signal?: AbortSignal): Promise<ReadinessResponse | ReadinessDetail> {
+      const query = new URLSearchParams({ view: 'readiness' });
+      for (const [key, value] of Object.entries(options)) if (value != null) query.set(key, String(value));
+      return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/delivery-evidence?${query}`, { signal });
     },
 
     async getDecisionReviews(boardId: string, specId: string, signal?: AbortSignal): Promise<DecisionReviewProjection> {

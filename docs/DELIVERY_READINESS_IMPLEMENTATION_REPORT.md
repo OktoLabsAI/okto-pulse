@@ -26,7 +26,7 @@ Historical evidence must not be rewritten. Gates and diagnostics must share fact
 | P06 | Gates, transições e autorização de override | IN_PROGRESS |
 | P07 | REST/MCP e erros | IN_PROGRESS (contract tests passed; prerequisite acceptance reconciliation pending) |
 | P08 | Mostradores e face do card | IMPLEMENTED (focused tests and visual checks passed; full acceptance P11) |
-| P09 | Painel de pendências e atualização cruzada | PENDING |
+| P09 | Painel de pendências e atualização cruzada | IN_PROGRESS (diagnosis/direct Card entry verified; native links and full invalidation pending) |
 | P10 | Documentação, compatibilidade e pacote | PENDING |
 | P11 | Verificação integrada e relatório final | PENDING |
 
@@ -812,3 +812,29 @@ Validation:
 - Official source closure: 8964 ownership rows, zero findings, all eight budgets ZERO; README projections regenerated. Final wheel acceptance remains P11.
 
 P08 implementation has focused and visual evidence; the full U09 accessibility/state matrix and global lint acceptance remain explicit final checks. P09 next: native direct Delivery navigation, actionable diagnostics/detail pagination/copy with truthful limits, and cross-scope invalidation. P10/P11 remain required. No production install/restart/reset, mutation or release. Generated browser output stays local.
+
+## P09 diagnosis UI and direct Card navigation checkpoint - 2026-10-14
+
+Continued after the P08 push (Core b0800548 / Community fe3c1aaa), without treating that milestone as full-plan completion.
+
+Implemented:
+- Typed summary/detail/page/action/issue contracts and client for the existing view=readiness API. No new backend proof engine or score formula.
+- DeliveryReadinessPanel in Card and Spec Delivery: existing metrics, collapsible diagnosis, cause pagination, snapshot/scope validation, stale-request cancellation and explicit refresh on mismatched generation.
+- DeliveryReadinessIssues: backend-state action groups, expected/observed facts, affected references, owners, revision-qualified pinpoints, dependencies, permission/input caveats and lazy paginated details. No manual resolved checkbox or automatic execution of action text.
+- Deterministic copy includes IDs/snapshot, exceptions, mutation reauthorization, actual known action arguments, missing inputs, partial-summary warning and next/detail queries.
+- What is missing? on the Card cover opens the existing modal directly at Delivery, focuses the diagnosis heading and returns focus on close. Click propagation had overwritten the requested tab; the browser regression caught it and the button now stops that propagation.
+- Detail/card reads now refresh on window focus as board summaries already did.
+
+Validation:
+- New diagnosis + readiness view/hooks + DoD tests: 27 passed. Covers backend grouping, escaped evidence text, exact detail requests, deterministic partial copy, focus, page append, snapshot mismatch hiding old metrics and aborted late details.
+- Existing CardDeliveryDoDPanel, DeliveryEvidencePanel and ModalStackRenderer suites: 57 passed in the broader run.
+- Broader CardModal run initially failed because its existing whole-store mock was being used through a new selector subscription. Reused the component's existing whole-store subscription; all 79 CardModal tests then passed in 62.18s, without changing their assertions or relaxing product permissions.
+- Final TypeScript build passed. Targeted ESLint on new diagnosis files/types/store/test passed.
+- Extended Chromium browser regression passed (4.9s total): real app with intercepted API only, direct keyboard navigation to Delivery, focused heading, expanded Expected/Observed cause, separate bars, narrow dark/reduced-motion view, Escape and focus return. Inspected resulting screenshots. Browser fixture's first close attempt used a nonexistent Close label; replaced with the supported Escape interaction.
+- Backend source unchanged since the successful 8964-row ZERO-budget audit in P08. No production installation or data mutation.
+
+P09 is IN_PROGRESS, not complete:
+1. Wire onNavigate from the real Card/Spec callers to every supported native detail (Cards/Tests, requirements/scenarios/Decisions, Targets and records), retaining exact ownership/scope and focus. The diagnosis currently renders references as text unless a callback is supplied; unit callback coverage is not proof of production navigation.
+2. Extend existing delivery-evidence-changed invalidation to all relevant successful mutations/events, including test outcome/binding, Target/selection/contribution, edition, Decision, waiver/revocation, status and policy. Current evidence-save callback and focus refresh alone do not prove U07.
+3. Finish detail pagination/restriction/snapshot races and the full accessibility/layout state matrix, including compact loading/error height consistency and N/A CTA semantics. Final global lint (34 refresh warnings / budget 32) remains unresolved as previously recorded.
+4. Then P10 documentation/compatibility/generated packaged frontend and P11 full matrix, integrated flows, payload/performance/read-only/final-wheel checks. Do not restart completed backend milestones or claim final delivery.
