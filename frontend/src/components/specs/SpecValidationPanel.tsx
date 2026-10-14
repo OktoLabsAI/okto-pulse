@@ -44,6 +44,7 @@ import type {
 } from '@/types';
 
 import { SpecChecklistPanel } from './SpecChecklistPanel';
+import { SpecPlanningSummary } from './SpecPlanningSummary';
 import { SpecValidationHistoryPanel } from './SpecValidationHistoryPanel';
 import { resolveSpecSemanticAnchor } from './specSemanticAnchors';
 
@@ -75,6 +76,7 @@ interface SpecValidationPanelProps {
   onOpenRequirementLintHelp?: () => void;
   onSubmitValidation?: () => void;
   canSubmitValidation?: boolean;
+  onReviewPlanningComponent?: (key: string) => void;
 }
 
 interface CurrentValidationCardProps {
@@ -367,6 +369,7 @@ export function SpecValidationPanel({
   onOpenRequirementLintHelp,
   onSubmitValidation,
   canSubmitValidation = false,
+  onReviewPlanningComponent,
 }: SpecValidationPanelProps) {
   const api = useDashboardApi();
   const apiRef = useRef(api);
@@ -431,6 +434,7 @@ export function SpecValidationPanel({
     setCycleError(null);
     apiRef.current.getValidationCycle('spec', specId, {
       includePrevious: false,
+      includePlanning: true,
       signal: controller.signal,
     })
       .then((summary) => {
@@ -617,6 +621,19 @@ export function SpecValidationPanel({
           Validation-cycle state could not be verified. {cycleError}
         </p>
       )}
+
+      <SpecPlanningSummary readiness={cycleSummary?.planning_readiness} loading={cycleLoading}
+        onReview={{
+          ...(canReadValidation ? { spec_validation: () => setActiveTab('spec-validation') } : {}),
+          ...(canReadChecklist ? { curated_checklist: () => setActiveTab('checklist') } : {}),
+          ...(canReadQuality ? { requirement_lint: () => setActiveTab('requirement-lint') } : {}),
+          ...(canReadPolicyCompliance ? { policy_compliance: () => setActiveTab('policy-compliance') } : {}),
+          ...Object.fromEntries(onReviewPlanningComponent ? [
+            'acceptance_coverage', 'test_card_coverage', 'business_coverage', 'technical_coverage',
+            'contract_coverage', 'integration_coverage', 'observability_coverage', 'task_requirement_links',
+            'decision_verification', 'code_evidence', 'architecture', 'resource_coverage',
+          ].map(key => [key, () => onReviewPlanningComponent(key)]) : []),
+        }} />
 
       <AccessibleTabList
         idBase={tabIdPrefix}

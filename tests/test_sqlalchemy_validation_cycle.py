@@ -501,7 +501,10 @@ async def test_planning_read_keeps_providers_and_does_not_write(cycle_rig, monke
         assert "current_result" not in project_validation_cycle(result)
     assert components["decomposition"].state == "blocked"
     assert components["decision_verification"].native_result == "not_applicable"
-    assert components["task_requirement_links"].state != "unavailable"
+    if only_decomposition:
+        assert components["task_requirement_links"].state == "unavailable"
+    else:
+        assert components["task_requirement_links"].state != "unavailable"
     assert not commits
     assert not set(statements) & {"INSERT", "UPDATE", "DELETE", "REPLACE", "CREATE", "ALTER", "DROP"}
     monkeypatch.setattr(sqlalchemy_validation_cycle, "_quality_actor_permissions", original_permissions)

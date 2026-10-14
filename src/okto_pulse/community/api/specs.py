@@ -2785,6 +2785,9 @@ async def submit_spec_evaluation(
 @router.get("/specs/{spec_id}/evaluations")
 async def list_spec_evaluations(
     spec_id: str,
+    view: Literal["all", "current", "previous"] = Query("all"),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(25, ge=1, le=100),
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
@@ -2792,10 +2795,12 @@ async def list_spec_evaluations(
     ``okto_pulse_list_spec_evaluations``."""
     try:
         result = await ListSpecEvaluationsUseCase().execute(
-            ListSpecEvaluationsCommand(spec_id),
+            ListSpecEvaluationsCommand(spec_id, view=view, offset=offset, limit=limit),
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     return result.data

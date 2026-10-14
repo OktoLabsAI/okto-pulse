@@ -2712,6 +2712,16 @@ export function SpecModal({
           )}
           {activeTab === 'validation' && spec && (
             <SpecValidationPanel
+              onReviewPlanningComponent={key => {
+                const destinations: Record<string, ModalTab> = {
+                  acceptance_coverage: 'acs', test_card_coverage: 'tests', business_coverage: 'frs',
+                  technical_coverage: 'trs', contract_coverage: 'contracts', integration_coverage: 'irs',
+                  observability_coverage: 'ors', task_requirement_links: 'coverage',
+                  decision_verification: 'decisions', code_evidence: 'evidence-matrix',
+                  architecture: 'resources', resource_coverage: 'resources',
+                };
+                if (destinations[key]) setActiveTab(destinations[key]);
+              }}
               anchorTexts={specAnchorTexts}
               boardId={spec.board_id}
               specId={specId}
