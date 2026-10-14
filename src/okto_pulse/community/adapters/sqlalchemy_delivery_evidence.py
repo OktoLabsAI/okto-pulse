@@ -26,6 +26,7 @@ from okto_pulse.core.domain.delivery_evidence import (
     DeliveryScope,
     DeliveryPhase,
     DeliveryEvidenceSnapshot,
+    DeliveryRecordRejection,
     DeliveryObligation,
     ImplementationDeliveryFact,
     ImplementationExecutionProof,
@@ -266,12 +267,29 @@ class CommunityDeliveryEvidenceStore:
             )
             is not None
         )
+        rejection_reasons = []
+        if revoked is not None:
+            rejection_reasons.append('delivery_investigation_receipt_revoked')
+        if latest != execution.id:
+            rejection_reasons.append('delivery_execution_superseded')
+        if target is None:
+            rejection_reasons.append('delivery_target_unresolved')
+        elif target.revision != execution.target_revision or target.lifecycle_status != 'active':
+            rejection_reasons.append('delivery_target_revision_changed')
+        if receipt is None:
+            rejection_reasons.append('delivery_investigation_receipt_unresolved')
+        elif receipt.declared_revision != execution.result_declared_revision or receipt.source_ref != execution.source_ref:
+            rejection_reasons.append('delivery_execution_base_mismatch')
+        if not valid and not rejection_reasons:
+            rejection_reasons.append('delivery_execution_binding_invalid')
         progress = await self._active_material_progress(scope, card.id)
         blocking_progress_ids = tuple(record.id for record, declaration in progress if progress_blocks_execution(
             declaration, target_id=execution.target_id, source_ref=execution.source_ref,
             checkpoint_received_at=record.created_at,
             execution_observed_at=receipt.observed_at if receipt else None,
         ))
+        if blocking_progress_ids:
+            rejection_reasons.append('delivery_material_progress_unresolved')
         # Receipt expiration concerns fresh source investigation, not the historical
         # existence of an accepted immutable delivery commit. Target heads and
         # explicit revocation still invalidate proof on every projection.
@@ -287,6 +305,7 @@ class CommunityDeliveryEvidenceStore:
             blocking_progress_ids=blocking_progress_ids[:20],
             blocking_progress_truncated=len(blocking_progress_ids) > 20,
             observed_at=receipt.observed_at if receipt else None,
+            rejection_reasons=tuple(rejection_reasons),
         )
 
     async def _active_material_progress(self, scope: DeliveryScope, card_id: str):
@@ -513,6 +532,7 @@ class CommunityDeliveryEvidenceStore:
             "complete": snapshot.complete,
             "blockers": list(evaluation.blockers),
             "rejected_record_ids": list(evaluation.rejected_record_ids),
+            "rejected_records": [asdict(item) for item in evaluation.rejected_records],
             "rows": [
                 {
                     **asdict(row),
@@ -671,7 +691,7 @@ class CommunityDeliveryEvidenceStore:
         revoked = {
             r.payload.get("record_id")
             for r in records
-            if r.kind == "revoke" and r.actor_kind in {"human", "user"}
+            if r.kind == "revoke" and r.actor_kind in {"human", "user"} and isinstance(r.payload, dict)
         }
         plan = plan if plan is not None else await self._execution_plan(spec)
         native_verification = native_verification if native_verification is not None else native_verification_population(spec)
@@ -686,31 +706,81 @@ class CommunityDeliveryEvidenceStore:
                 prospective_report=prospective_report)
         except ValueError:
             selected, selection_valid = set(), False
-        implementations, tests = [], []
+        implementations, tests, rejected_records = [], [], []
+        expected_bindings = {item.binding for item in obligations}
+
+        def reject(record, code, bindings=()):
+            rejected_records.append(DeliveryRecordRejection(record.id, spec_scope, card.id,
+                record.kind, tuple(binding for binding in bindings if binding in expected_bindings),
+                (code,) if isinstance(code, str) else tuple(code)))
+
         for record in records:
-            if record.id in revoked or record.kind == "revoke":
+            if record.kind not in {'implementation', 'test'}:
                 continue
             if selected is not None and record.id not in selected:
                 continue
-            bindings = tuple(
-                DeliveryBinding(**b) for b in record.payload.get("bindings", [])
-            )
+            if record.id in revoked:
+                reject(record, 'delivery_record_revoked')
+                continue
+            if not isinstance(record.payload, dict):
+                reject(record, 'delivery_record_payload_invalid')
+                continue
+            if record.payload.get('card_id') != card.id:
+                reject(record, 'delivery_record_card_scope_mismatch')
+                continue
+            try:
+                raw_bindings = record.payload.get('bindings')
+                if not isinstance(raw_bindings, list) or not 1 <= len(raw_bindings) <= 1000:
+                    raise ValueError('delivery_binding_payload_invalid')
+                bindings = tuple(DeliveryBinding(**binding) for binding in raw_bindings)
+                if len(set(bindings)) != len(bindings):
+                    raise ValueError('delivery_binding_payload_invalid')
+            except (KeyError, TypeError, ValueError, AttributeError):
+                reject(record, 'delivery_binding_payload_invalid')
+                continue
             if record.kind == "implementation":
-                fact = await self._implementation(record, spec_scope, bindings)
-                if fact is not None:
-                    implementations.append(fact)
+                try:
+                    fact = await self._implementation(record, spec_scope, bindings)
+                except (KeyError, TypeError, ValueError):
+                    reject(record, 'delivery_implementation_payload_invalid', bindings)
+                    continue
+                if fact is None:
+                    reject(record, 'delivery_implementation_context_unresolved', bindings)
+                    continue
+                try:
+                    read_scoped_implementation(fact, record.payload)
+                except (KeyError, TypeError, ValueError):
+                    reject(record, 'delivery_contribution_scope_payload_invalid', bindings)
+                    continue
+                implementations.append(fact)
+                issues = {issue for binding in bindings
+                    if (issue := implementation_binding_proof_issue(fact, binding)) is not None}
+                issues.update(code for proof in fact.executions for code in proof.rejection_reasons)
+                if issues:
+                    reject(record, tuple(sorted(issues)), bindings)
             elif record.kind == "test":
                 runs = native_runs.get(record.payload.get('scenario_id'), ())
-                fact = await self._test(record, spec_scope, bindings, spec,
-                    native_run=runs[0] if len(runs) == 1 else None)
-                if fact is not None:
-                    tests.append(fact)
+                if len(runs) != 1:
+                    reject(record, 'delivery_scenario_unresolved' if not runs else 'delivery_scenario_ambiguous', bindings)
+                    continue
+                try:
+                    fact = await self._test(record, spec_scope, bindings, spec, native_run=runs[0])
+                except (KeyError, TypeError, ValueError):
+                    reject(record, 'delivery_test_payload_invalid', bindings)
+                    continue
+                if fact is None:
+                    reject(record, 'delivery_test_context_unresolved', bindings)
+                    continue
+                tests.append(fact)
+                if not fact.current_verified_run:
+                    reject(record, fact.rejection_reasons or ('delivery_verified_test_required',), bindings)
         snapshot = DeliveryEvidenceSnapshot(
             spec_scope,
             obligations,
             tuple(implementations),
             tuple(tests),
             complete=selection_valid,
+            rejected_records=tuple(rejected_records),
         )
         return self._with_effective_context(snapshot, plan, records, spec, card, native_verification=native_verification)
 
@@ -1380,7 +1450,7 @@ class CommunityDeliveryEvidenceStore:
         plan = await self._execution_plan(spec)
         native_verification = native_verification_population(spec)
         obligations = self._planned_obligations(spec, plan)
-        implementations, tests, per_card = [], [], []
+        implementations, tests, per_card, rejected_records = [], [], [], []
         complete = True
         for card in await self._linked_cards(board_id, spec_id):
             card_scope = CardDeliveryScope(
@@ -1390,6 +1460,7 @@ class CommunityDeliveryEvidenceStore:
             complete = complete and snapshot.complete is True
             implementations.extend(snapshot.implementations)
             tests.extend(snapshot.tests)
+            rejected_records.extend(snapshot.rejected_records)
             evaluation = evaluate_delivery_coverage(snapshot)
             per_card.append(
                 {
@@ -1429,6 +1500,7 @@ class CommunityDeliveryEvidenceStore:
             tuple(tests),
             tuple(waivers),
             complete=complete,
+            rejected_records=tuple(rejected_records),
         )
         identities = [item.id for item in (*implementations, *tests)]
         records = list((await self.session.scalars(select(CardRecord).where(
