@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { DeliveryReadinessView } from '../DeliveryReadinessView';
 import { KanbanCard } from '@/components/kanban/KanbanCard';
 import { CardDeliveryDoDPanel } from '../CardDeliveryDoDPanel';
@@ -92,7 +92,21 @@ it('U09: a genuinely non-applicable scope invites inspection rather than additio
   const value = readiness(); value.delivery_state = 'not_applicable';
   for (const key of ['implementation', 'verification'] as const) value[key] = { ...metric(0, 0), status: 'not_applicable', percent: null };
   render(<DeliveryReadinessView value={value} compact onInspect={vi.fn()} />);
-  expect(screen.getByRole('button', { name: 'View scope' })).toBeVisible();
+  expect(screen.getByRole('button', { name: 'Open delivery details' })).toBeVisible();
+  expect(screen.getAllByText('N/A', { exact: true })).toHaveLength(2);
   expect(screen.queryByRole('button', { name: 'What is missing?' })).not.toBeInTheDocument();
   expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+});
+
+it('compact cover shows only metrics and opens the full diagnosis without triggering the Card', () => {
+  const inspect = vi.fn(), openCard = vi.fn();
+  render(<div onClick={openCard}><DeliveryReadinessView value={readiness()} compact onInspect={inspect} /></div>);
+  expect(screen.getByText('100%')).toBeVisible();
+  expect(screen.getByText('75%')).toBeVisible();
+  expect(screen.queryByText('8/8')).not.toBeInTheDocument();
+  expect(screen.queryByText(/pending units/)).not.toBeInTheDocument();
+  expect(screen.queryByText('What is missing?')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Open delivery details' }));
+  expect(inspect).toHaveBeenCalledOnce();
+  expect(openCard).not.toHaveBeenCalled();
 });

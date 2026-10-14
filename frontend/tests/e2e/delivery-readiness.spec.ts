@@ -154,7 +154,7 @@ test('P08/U01/U04/U09: native board and Delivery show separate accessible metric
   expect(coverPercent!.y + coverPercent!.height).toBeLessThan(blue!.y);
   expect(await cover.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
   await cover.screenshot({ path: test.info().outputPath('readiness-cover.png') });
-  const inspect = cover.getByRole('button', { name: 'What is missing?' });
+  const inspect = cover.getByRole('button', { name: 'Open delivery details' });
   await inspect.focus();
   await page.keyboard.press('Enter');
   await expect(page.getByRole('tab', { name: 'Delivery', exact: true })).toHaveAttribute('aria-selected', 'true');
@@ -296,6 +296,8 @@ test('P08/U01/U04/U09: native board and Delivery show separate accessible metric
   await cover.scrollIntoViewIfNeeded();
   const compact = cover.getByRole('region', { name: 'Delivery readiness', exact: true });
   const height = (await compact.boundingBox())!.height;
+  expect(height).toBeLessThanOrEqual(64);
+  await compact.screenshot({ path: test.info().outputPath('readiness-compact-dark.png') });
   let release!: () => void;
   summaryHold = new Promise<void>(resolve => { release = resolve; });
   const loadingRequest = page.waitForRequest(request => request.url().includes('/delivery-readiness-summary'));
@@ -312,7 +314,8 @@ test('P08/U01/U04/U09: native board and Delivery show separate accessible metric
   current.delivery_state = 'not_applicable'; current.summary.message_code = 'not_applicable';
   current.summary.unresolved_units = 0; current.summary.root_causes = 0;
   await page.getByRole('button', { name: 'Refresh board', exact: true }).click();
-  await expect(compact.getByRole('button', { name: 'View scope' })).toBeVisible();
+  await expect(compact.getByText('N/A', { exact: true })).toHaveCount(2);
+  await expect(compact.getByRole('button', { name: 'Open delivery details' })).toBeVisible();
   await expect(compact.getByRole('progressbar')).toHaveCount(0);
   expect((await compact.boundingBox())!.height).toBe(height);
   for (const key of ['implementation', 'verification'] as const) current[key] = {
@@ -320,24 +323,25 @@ test('P08/U01/U04/U09: native board and Delivery show separate accessible metric
   };
   current.delivery_state = 'unknown';
   await page.getByRole('button', { name: 'Refresh board', exact: true }).click();
-  await expect(compact.getByText('Unable to evaluate', { exact: true }).first()).toBeVisible();
+  await expect(compact.getByText('—', { exact: true })).toHaveCount(2);
   expect((await compact.boundingBox())!.height).toBe(height);
   summaryError = true;
   await page.getByRole('button', { name: 'Refresh board', exact: true }).click();
-  await expect(compact.getByText('Current readiness is unavailable. Open the diagnosis to retry.')).toBeVisible();
+  await expect(compact).toHaveAttribute('title', 'Current readiness is unavailable. Open Delivery to retry.');
+  await expect(compact.getByRole('progressbar')).toHaveCount(0);
   expect((await compact.boundingBox())!.height).toBe(height);
   expect(await compact.evaluate(element => element.scrollWidth <= element.clientWidth + 1 && element.scrollHeight <= element.clientHeight + 1)).toBe(true);
   // Repeated refreshes temporarily stack success notifications over the Card.
   // Observe their native dismissal before checking unobscured mobile content.
   await expect(page.getByText('Board refreshed!', { exact: true })).toHaveCount(0, { timeout: 6000 });
-  // Each metric must remain reachable through its native scroll area.
+  // Clicking either metric reaches the same unobtrusive Delivery shortcut.
   for (const label of ['Implementation', 'Verification']) {
     const metricLabel = compact.getByText(label, { exact: true });
     await metricLabel.scrollIntoViewIfNeeded();
     expect(await metricLabel.evaluate(element => {
       const box = element.getBoundingClientRect();
       const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
-      return hit === element || element.contains(hit);
+      return hit?.getAttribute('aria-label') === 'Open delivery details';
     })).toBe(true);
   }
   await accessibility();
