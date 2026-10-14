@@ -555,3 +555,26 @@ Validation:
 Next action: bind the fresh session's realm scope from verified access.realm_id after Board/actor authorization, following the existing Community unit-of-work behavior; retain the missing-realm guard. Then rerun focused Community authorization tests. Measure native-gate query costs and preserve query-count independence from Card count; do not blindly relax the existing 17-query assertion. Complete the full authorization/batch regression and source audit after fixes.
 
 Remaining scope stays unchanged: full native Card/Spec lifecycle composition, P06 race/rollback acceptance, earlier named-case/performance audits and P07-P11 integration/acceptance. Existing frontend lint budget failure remains open as recorded above. Generated local browser logs/screenshots (.playwright-cli/ and output/) are excluded from the checkpoint.
+
+## P06 authorized realm and native gate transaction regression - 2026-10-14
+
+Starting pushed pair: Core 1ffe1340 / Community 1522eafc. Previous turn classified as progress (checkpoint committed and pushed). P06 remains IN_PROGRESS; this closes the specific realm integration failure recorded above.
+
+Community now binds RealmScope on the dedicated read session from the realm verified by actor/Board access, before public persistence evaluates native completion. Native-schema integration exercises local and tenant realms, wrong-realm refusal, permission revocation and a real coverage gate. No missing-realm guard or authority check was relaxed.
+
+The broader retry exposed cognitive gate construction outside its existing infrastructure-error handler. Core now includes factory resolution inside that handler: unavailable configuration remains a typed CompletionInfrastructureUnavailable and readiness reports not_evaluated, without disclosing the raw infrastructure error or permitting completion. Added a regression for this construction failure.
+
+P05 instrumentation now counts actual SQL executions on the dedicated connection, including native port reads, rather than maintaining incomplete manual increments. The listener is removed in finally; no SQL or parameter content is logged. Tests compare observed SQL with the logged count. Authorized evidence-only reads remain 17 queries; coverage-gate reads use 19, independent of 2 versus 32 Cards. Permission test fixtures preserve existing read flags while revoking only native transition authority; Board overrides are complete effective flags, not partial patches.
+
+Added test_delivery_readiness_transactions.py: G10 reads actual signed complete proof (100/100), changes Target revision through its native CAS adapter or revokes a receipt in a separate committed session, and then invokes the real fenced Spec delivery gate. The gate begins with the Board write fence, reloads changed proof and rejects it; the old readiness snapshot is unchanged and cannot authorize the writer. Status, evidence rows and events remain unchanged by the rejected gate. This proves the delivery-gate transaction boundary; it does not claim all move_spec/move_card interleavings or complete P06.3.
+
+Validation executed through PULSE_REFACTOR/.validation-v040/run_readiness_tests.py (paired isolated install, both source roots and byte parity before behavior tests):
+- Core: core -q tests/test_delivery_readiness_lifecycle.py tests/test_cognitive_closeout_service_wiring.py tests/test_allowed_transitions_mutation_parity_regressions.py --tb=short --show-capture=no: 55 passed in 18.88s.
+- Community initial realm retry: 4 failed / 2 passed / 24 deselected in 29.91s; missing KG construction classification and incomplete override fixtures corrected as above.
+- Community authorization + batch: 50 passed in 165.57s before instrumentation/tenant additions; final run community -q tests/test_delivery_readiness_authorization.py tests/test_delivery_readiness_batch.py --tb=short --show-capture=no: 51 passed in 168.35s.
+- Community transaction + existing delivery_report regression: 1 failed / 17 passed in 72.91s. New Target-revision stimulus attempted raw SQL rejected by implementation_target_cas_invalid; replaced it with the native update_target adapter, preserving the trigger. All 16 existing report cases passed, including rejected-report rollback and concurrency.
+- Final transaction retry: community -q tests/test_delivery_readiness_transactions.py --tb=short --show-capture=no: 2 passed in 15.45s.
+- Ruff passed all changed Python files; git diff --check passed. Installed/source parity: 859 Core / 323 Community Python files.
+- Final audit_readiness.py: 8922 ownership rows, zero findings, all eight budgets ZERO; exact README projections valid. Final wheel acceptance remains P11. All test/audit handles are terminal.
+
+Next: finish P06.5 by reusing native Policy Compliance preview and the remaining Spec/Card completion evaluation without fenced writers in reads or duplicate delivery evaluation. Missing report/transition inputs must stay explicit. Complete actual transition race/rollback acceptance beyond the gate seam, P02-P05 outstanding named-case/performance acceptance, then P07 public REST/MCP, P08/P09 UI/events and browser tests, P10 packaging/docs and P11 full 96-case/15-invariant audit. Existing frontend lint failure remains open. No frontend edit, production install/restart/reset, deployment or release.

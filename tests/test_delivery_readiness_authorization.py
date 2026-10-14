@@ -113,25 +113,34 @@ async def test_current_membership_and_policy_are_read_only_and_secret_free(ledge
     assert not session.new and not session.dirty and not session.deleted
 
 
-async def test_native_spec_gate_is_evaluated_in_authorized_snapshot_without_writes(ledger):
+@pytest.mark.parametrize('realm_id', ['local', 'tenant-readiness'])
+async def test_native_spec_gate_is_evaluated_in_authorized_snapshot_without_writes(ledger, realm_id):
     session, _, _ = ledger
     await setup(session)
+    from okto_pulse.community.adapters.sqlalchemy_models import Board
+    await session.execute(update(Board).where(Board.id == delivery.BOARD_ID).values(realm_id=realm_id))
+    actor = replace(ACTOR, realm_id=realm_id)
     await session.execute(update(Spec).where(Spec.id == delivery.SPEC_ID).values(
         acceptance_criteria=[{'id': 'uncovered', 'title': 'Private criterion text'}],
         test_scenarios=[], skip_test_coverage=False))
     await session.commit()
     with statements(session.bind) as sql:
-        batch = await read(session)
+        batch = await read(session, actor=actor)
+    assert batch.access.realm_id == realm_id
     assert ('spec', 'in_progress') in batch.access.completion_states
     assert batch.native_lifecycle.check_status == 'blocked'
     assert batch.native_lifecycle.blocking_codes == ('coverage_incomplete',)
     assert all(s.lstrip().upper().startswith(('SELECT', 'PRAGMA DATA_VERSION', 'BEGIN')) for s in sql)
     assert 'Private criterion text' not in repr(batch.native_lifecycle)
-    assert (await read(session)).snapshot_id == batch.snapshot_id
+    assert (await read(session, actor=actor)).snapshot_id == batch.snapshot_id
+    with pytest.raises(ReadinessReadError, match='readiness_scope_mismatch'):
+        await read(session, actor=replace(actor, realm_id='wrong-realm'))
+    flags = registered_permission_flags()
+    flags['spec']['interact_in']['in_progress'] = False
     await session.execute(update(AgentBoard).where(AgentBoard.agent_id == ACTOR.actor_id).values(
-        permission_overrides={'spec': {'interact_in': {'in_progress': False}}}))
+        permission_overrides=flags))
     await session.commit()
-    restricted = await read(session)
+    restricted = await read(session, actor=actor)
     assert restricted.facts == batch.facts
     assert restricted.native_lifecycle.check_status == 'not_evaluated'
     assert restricted.native_lifecycle.blocking_codes == ()
@@ -235,9 +244,22 @@ async def test_concurrent_grant_revocation_retries_authority_and_never_returns_o
         await read(session, kind=RacingReader)
 
 
-async def test_authority_batch_query_count_is_independent_of_card_count(ledger):
+@pytest.mark.parametrize('native_gate', [False, True])
+async def test_authority_batch_query_count_is_independent_of_card_count(ledger, native_gate, caplog):
+    caplog.set_level('DEBUG', logger='okto_pulse.community.adapters.sqlalchemy_delivery_readiness')
     session, _, _ = ledger
     await setup(session)
+    if native_gate:
+        # A deterministic native gate path for both populations, without mocks.
+        await session.execute(update(Spec).where(Spec.id == delivery.SPEC_ID).values(
+            acceptance_criteria=[{'id': 'uncovered', 'title': 'Uncovered criterion'}],
+            test_scenarios=[], skip_test_coverage=False))
+    else:
+        flags = registered_permission_flags()
+        flags['spec']['interact_in']['in_progress'] = False
+        await session.execute(update(AgentBoard).where(AgentBoard.id == 'readiness-grant').values(
+            permission_overrides=flags))
+    await session.commit()
     with statements(session.bind) as first:
         await read(session)
     session.add_all([Card(id=f'extra-{i}', board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID,
@@ -245,7 +267,12 @@ async def test_authority_batch_query_count_is_independent_of_card_count(ledger):
     await session.commit()
     with statements(session.bind) as second:
         await read(session)
-    assert len(first) == len(second) == 17  # Original 13 plus Board/Agent/grant/preset batch.
+    # Native coverage check adds scalar Spec/Board reads; neither path loads per Card.
+    assert len(first) == len(second) == (19 if native_gate else 17)
+    logs = [r for r in caplog.records if r.msg.startswith('readiness_batch_read')]
+    assert len(logs) == 2
+    assert [r.args[1] for r in logs] == [len(first), len(second)]
+    assert all('secret-marker' not in r.getMessage() for r in logs)
 
 
 async def test_current_card_read_denial_is_applied_before_delivery_load(ledger):

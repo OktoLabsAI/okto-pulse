@@ -5,6 +5,7 @@ explicit deferred transaction is necessary because SQLite's legacy driver mode
 does not start a database snapshot for SELECT merely on Session.begin().
 """
 from collections import defaultdict
+from contextlib import contextmanager
 from dataclasses import asdict, is_dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum
@@ -14,7 +15,7 @@ import logging
 from time import perf_counter
 
 from pydantic import BaseModel
-from sqlalchemy import or_, select
+from sqlalchemy import event, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from okto_pulse.community.adapters.delivery_verification import native_verification_population
@@ -33,7 +34,7 @@ from okto_pulse.core.domain.delivery_evidence import (
 from okto_pulse.core.domain.delivery_progress import DeliveryProgress
 from okto_pulse.core.domain.enums import CardType
 from okto_pulse.core.domain.execution_contract import execution_contract
-from okto_pulse.core.domain.realm import LOCAL_REALM_ID
+from okto_pulse.core.domain.realm import LOCAL_REALM_ID, RealmScope
 from okto_pulse.core.ports.delivery_readiness import (
     ReadinessActor, ReadinessCard, ReadinessReadError, ReadinessScenarioProcedure, ReadinessSnapshot,
     resolve_readiness_access, resolve_delivery_gate_policy,
@@ -54,6 +55,19 @@ EVALUATOR_VERSION = 'delivery-readiness-evaluator/v1'
 class CommunityReadinessClock:
     def now(self):
         return datetime.now(timezone.utc)
+
+
+@contextmanager
+def _count_queries(connection, counts):
+    # Observe this read's connection, including queries issued by native ports.
+    # Neither SQL text nor parameters are retained or logged.
+    def count(*_args):
+        counts['queries'] += 1
+    event.listen(connection.sync_connection, 'before_cursor_execute', count)
+    try:
+        yield
+    finally:
+        event.remove(connection.sync_connection, 'before_cursor_execute', count)
 
 
 def _json_value(value):
@@ -212,7 +226,6 @@ class CommunityDeliveryReadinessReader:
         self.engine, self.clock, self.inventory = engine, clock, inventory
 
     async def _rows(self, session, statement, limit, counts):
-        counts['queries'] += 1
         rows = tuple((await session.scalars(statement.limit(limit + 1))).all())
         if len(rows) > limit:
             raise ReadinessReadError('readiness_limit_exceeded', native_code='readiness_population_limit')
@@ -252,7 +265,6 @@ class CommunityDeliveryReadinessReader:
                 raise ReadinessReadError('readiness_scope_mismatch')
             # Match the existing REST resolve_user_permissions lookup exactly:
             # user policy follows its first created Agent, otherwise defaults.
-            counts['queries'] += 1
             agent = (await session.scalars(select(Agent).where(Agent.created_by == actor.actor_id).limit(1))).first()
             counts['facts'] += int(agent is not None)
             if agent is not None:
@@ -342,34 +354,38 @@ class CommunityDeliveryReadinessReader:
         try:
             for attempt in range(2):
                 async with self.engine.connect() as connection:
-                    counts['queries'] += 3
-                    before = (await connection.exec_driver_sql('PRAGMA data_version')).scalar_one()
-                    await connection.exec_driver_sql('BEGIN')
-                    try:
-                        async with AsyncSession(bind=connection, autoflush=False, expire_on_commit=False) as session:
-                            access = await self._access(session, actor, board_id, counts) if actor is not None else None
-                            if card_id is not None and access is not None:
-                                access.require('card.entity.read')
-                            try:
-                                result = await self._load_transaction(session, board_id, spec_id, card_id, counts)
-                            except ReadinessReadError as exc:
-                                if exc.code != 'readiness_limit_exceeded':
-                                    raise
-                                result = await self._capacity_snapshot(session, board_id, spec_id, card_id, counts, exc)
-                            if access is not None:
-                                result = replace(result, access=access)
-                                native = await build_application_service_catalog(session).delivery_readiness_lifecycle.evaluate(
-                                    result, card_id=card_id)
-                                result = replace(result, native_lifecycle=native,
-                                    snapshot_id=_digest({'facts': result.snapshot_id, 'access': access,
-                                        'native_lifecycle': native}))
-                    finally:
-                        await connection.rollback()
-                    # data_version changes on this connection after ending the
-                    # snapshot if another connection committed while we read.
-                    after = (await connection.exec_driver_sql('PRAGMA data_version')).scalar_one()
-                    if before == after:
-                        return result
+                    with _count_queries(connection, counts):
+                        before = (await connection.exec_driver_sql('PRAGMA data_version')).scalar_one()
+                        await connection.exec_driver_sql('BEGIN')
+                        try:
+                            async with AsyncSession(bind=connection, autoflush=False, expire_on_commit=False) as session:
+                                access = await self._access(session, actor, board_id, counts) if actor is not None else None
+                                if access is not None:
+                                    # Native persistence uses the realm verified by Board/actor access.
+                                    session.info['realm_scope'] = (RealmScope.local() if access.realm_id == LOCAL_REALM_ID
+                                        else RealmScope.tenant(access.realm_id))
+                                if card_id is not None and access is not None:
+                                    access.require('card.entity.read')
+                                try:
+                                    result = await self._load_transaction(session, board_id, spec_id, card_id, counts)
+                                except ReadinessReadError as exc:
+                                    if exc.code != 'readiness_limit_exceeded':
+                                        raise
+                                    result = await self._capacity_snapshot(session, board_id, spec_id, card_id, counts, exc)
+                                if access is not None:
+                                    result = replace(result, access=access)
+                                    native = await build_application_service_catalog(session).delivery_readiness_lifecycle.evaluate(
+                                        result, card_id=card_id)
+                                    result = replace(result, native_lifecycle=native,
+                                        snapshot_id=_digest({'facts': result.snapshot_id, 'access': access,
+                                            'native_lifecycle': native}))
+                        finally:
+                            await connection.rollback()
+                        # data_version changes on this connection after ending the
+                        # snapshot if another connection committed while we read.
+                        after = (await connection.exec_driver_sql('PRAGMA data_version')).scalar_one()
+                        if before == after:
+                            return result
             raise ReadinessReadError('readiness_snapshot_changed')
         finally:
             logger.debug('readiness_batch_read elapsed_ms=%.3f queries=%d facts=%d',
