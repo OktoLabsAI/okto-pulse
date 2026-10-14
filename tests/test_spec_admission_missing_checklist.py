@@ -23,7 +23,7 @@ async def test_unconfigured_checklist_returns_actionable_conflict_and_rolls_back
     board_id, spec_id = 'unconfigured-board', 'admission-spec'
     async with db_factory() as db:
         async with CommunityUnitOfWork(db, actor=ACTOR, realm_scope=RealmScope.local()) as uow:
-            db.add(Board(id=board_id, name='Fresh Board without configuration', owner_id=USER_ID))
+            db.add(Board(id=board_id, name='Fresh Board without configuration', owner_id=USER_ID, realm_id='local'))
             db.add(_new_spec(id=spec_id, board_id=board_id, title='UI admission reproduction',
                              status=SpecStatus.REVIEW, created_by=USER_ID, edition=1, version=1))
             await uow.commit()

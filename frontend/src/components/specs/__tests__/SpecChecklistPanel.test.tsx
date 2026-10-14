@@ -15,6 +15,7 @@ vi.mock('@/services/api', () => ({ useDashboardApi: () => apiMock }));
 
 import { SpecChecklistPanel } from '../SpecChecklistPanel';
 import { SubmitSpecValidationModal } from '../SubmitSpecValidationModal';
+import { AuthenticatedFetchError } from '@/lib/authFetch';
 import type { BoardSettings } from '@/types';
 
 const validationSettings: BoardSettings = {
@@ -209,6 +210,78 @@ describe('SpecChecklistPanel', () => {
       is_current: true,
       spec_status: 'validated',
     });
+  });
+
+  it('preserves a complete draft on external changes and requires review before a fresh execution', async () => {
+    const props = { boardId: 'board-1', specId: 'spec-1', expectedSpecEdition: 1, expectedSpecVersion: 4 };
+    const view = render(<SpecChecklistPanel {...props} refreshKey={0} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Start checklist' }));
+    await screen.findByTestId('checklist-execution-form');
+    screen.getAllByRole('combobox').forEach(input => fireEvent.change(input, { target: { value: 'pass' } }));
+    screen.getAllByPlaceholderText('Required evidence anchor (FR/AC/section)').forEach((input, i) => {
+      fireEvent.change(input, { target: { value: `Observed FR-${i + 1}` } });
+    });
+    const changed = { ...incompleteState, subject: { ...incompleteState.subject, spec_version: 5, input_digest: 'f'.repeat(64) } };
+    apiMock.getSpecChecklistState.mockResolvedValue(changed);
+    view.rerender(<SpecChecklistPanel {...props} expectedSpecVersion={5} refreshKey={1} />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('draft is preserved');
+    expect(screen.getByDisplayValue('Observed FR-1')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Submit complete checklist' })).toBeDisabled();
+    expect(apiMock.submitChecklistExecution).not.toHaveBeenCalled();
+    apiMock.startChecklistExecution.mockResolvedValue({ execution_id: 'execution-2', spec_edition: 1, status: 'started' });
+    fireEvent.click(screen.getByRole('button', { name: 'I reviewed the current plan — keep my checklist draft' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Submit complete checklist' })).toBeEnabled());
+    expect(screen.getByDisplayValue('Observed FR-1')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Submit complete checklist' }));
+    await waitFor(() => expect(apiMock.submitChecklistExecution).toHaveBeenCalledWith('board-1', 'spec-1', expect.objectContaining({
+      expected_spec_version: 5, spec_edition: 1, execution_id: 'execution-2',
+    })));
+  });
+
+  it('does not silently transfer a draft to another edition', async () => {
+    const props = { boardId: 'board-1', specId: 'spec-1', expectedSpecEdition: 1, expectedSpecVersion: 4 };
+    const view = render(<SpecChecklistPanel {...props} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Start checklist' }));
+    await screen.findByTestId('checklist-execution-form');
+    fireEvent.change(screen.getAllByPlaceholderText('Required evidence anchor (FR/AC/section)')[0], { target: { value: 'Original edition evidence' } });
+    apiMock.getSpecChecklistState.mockResolvedValue({ ...incompleteState, subject: { ...incompleteState.subject, spec_edition: 2, spec_version: 5 } });
+    view.rerender(<SpecChecklistPanel {...props} expectedSpecEdition={2} expectedSpecVersion={5} />);
+    await screen.findByRole('alert');
+    expect(screen.getByDisplayValue('Original edition evidence')).toBeInTheDocument();
+    expect(screen.getByText(/Checklist in progress for Edition 1/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /I reviewed the current plan/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Submit complete checklist' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Discard checklist draft' }));
+    await screen.findByTestId('checklist-template-preview');
+    expect(screen.queryByDisplayValue('Original edition evidence')).not.toBeInTheDocument();
+  });
+
+  it('discards stale reads and clears protected drafts when access is revoked', async () => {
+    const props = { boardId: 'board-1', specId: 'spec-1', expectedSpecEdition: 1, expectedSpecVersion: 4 };
+    const view = render(<SpecChecklistPanel {...props} refreshKey={0} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Start checklist' }));
+    await screen.findByTestId('checklist-execution-form');
+    fireEvent.change(screen.getAllByPlaceholderText('Required evidence anchor (FR/AC/section)')[0], { target: { value: 'Protected draft' } });
+    let resolveOld!: (value: typeof incompleteState) => void;
+    apiMock.getSpecChecklistState.mockReturnValueOnce(new Promise(resolve => { resolveOld = resolve; }));
+    view.rerender(<SpecChecklistPanel {...props} refreshKey={1} />);
+    await waitFor(() => expect(apiMock.getSpecChecklistState).toHaveBeenCalledTimes(2));
+    apiMock.getSpecChecklistState.mockRejectedValueOnce(new AuthenticatedFetchError({ message: 'Access revoked', status: 403 }));
+    view.rerender(<SpecChecklistPanel {...props} refreshKey={2} />);
+    await screen.findByText(/Checklist readiness is unavailable/);
+    resolveOld(incompleteState);
+    await waitFor(() => expect(screen.queryByDisplayValue('Protected draft')).not.toBeInTheDocument());
+    expect(screen.queryByTestId('checklist-execution-form')).not.toBeInTheDocument();
+  });
+
+  it('defers external reads while the section is hidden', async () => {
+    const props = { boardId: 'board-1', specId: 'spec-1', expectedSpecEdition: 1, expectedSpecVersion: 4 };
+    const view = render(<SpecChecklistPanel {...props} active refreshKey={0} />);
+    await screen.findByTestId('checklist-template-preview');
+    view.rerender(<SpecChecklistPanel {...props} active={false} refreshKey={2} />);
+    expect(apiMock.getSpecChecklistState).toHaveBeenCalledTimes(1);
+    view.rerender(<SpecChecklistPanel {...props} active refreshKey={2} />);
+    await waitFor(() => expect(apiMock.getSpecChecklistState).toHaveBeenCalledTimes(2));
   });
 
   it('shows all immutable checklist items on a draft before execution starts', async () => {

@@ -516,6 +516,9 @@ export function SpecValidationPanel({
     cycleLoading,
   );
   const [workspaceReloadKey, setWorkspaceReloadKey] = useState(0);
+  // Hidden sections retain their last read revision; reopening consumes the latest.
+  const sectionRevisions = useRef<Partial<Record<ValidationSubTab, number>>>({});
+  sectionRevisions.current[activeTab] = validationHistoryRefreshKey + workspaceReloadKey;
   const refreshCycle = () => setCycleReloadKey((value) => value + 1);
   const refreshWorkspace = () => {
     refreshCycle();
@@ -769,7 +772,8 @@ export function SpecValidationPanel({
             <ValidationCycleStatusBadge state={checklistState} label={checklistNotRequired ? 'Not required' : undefined} />
           </div>
           <SpecChecklistPanel
-            key={`checklist:${workspaceReloadKey}`}
+            refreshKey={validationHistoryRefreshKey + workspaceReloadKey}
+            active={activeTab === 'checklist'}
             boardId={boardId}
             specId={specId}
             expectedSpecVersion={specVersion}
@@ -791,7 +795,7 @@ export function SpecValidationPanel({
             <ValidationCycleStatusBadge state={lintState} />
           </div>
           <QualityPanel
-            key={`lint:${workspaceReloadKey}`}
+            refreshKey={sectionRevisions.current['requirement-lint'] ?? 0}
             subjectType="spec"
             subjectId={specId}
             subjectVersion={specVersion}
@@ -834,7 +838,6 @@ export function SpecValidationPanel({
             </p>
           )}
           <PolicyCompliancePanel
-            key={`policy:${workspaceReloadKey}`}
             boardId={boardId}
             entityType="spec"
             subjectId={specId}
@@ -844,7 +847,7 @@ export function SpecValidationPanel({
             embedded
             transitionPreview={policyTransitionPreview}
             lifecycleSnapshot={cycleLoading ? undefined : policySnapshot}
-            refreshKey={validationHistoryRefreshKey}
+            refreshKey={sectionRevisions.current['policy-compliance'] ?? 0}
             resolveSemanticAnchor={resolveSemanticAnchor}
             onEvaluated={() => {
               refreshCycle();

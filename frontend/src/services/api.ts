@@ -1344,7 +1344,7 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
     },
 
     async submitSpecEvaluation(specId: string, input: import('@/types').SpecDecompositionInput): Promise<{
-      success: boolean; evaluation: import('@/types').SpecDecompositionOpinion;
+      success: boolean; evaluation: Omit<import('@/types').SpecDecompositionOpinion, 'lifecycle_state'>;
     }> {
       return apiClient.fetchJson(`/specs/${encodeURIComponent(specId)}/evaluations`, {
         method: 'POST', body: JSON.stringify(input), maxRetries: 0,

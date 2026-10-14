@@ -13,6 +13,7 @@ import {
 import toast from 'react-hot-toast';
 
 import { PreviousResultsSection } from '@/components/validation-cycle/ValidationCyclePrimitives';
+import { AuthenticatedFetchError } from '@/lib/authFetch';
 import { useDashboardApi } from '@/services/api';
 import type {
   ChecklistExecutionStartResult,
@@ -35,6 +36,8 @@ interface SpecChecklistPanelProps {
   showHistory?: boolean;
   /** Suppresses the repeated title inside the unified Spec workspace. */
   embedded?: boolean;
+  refreshKey?: number;
+  active?: boolean;
   onStateChange?: (state: ChecklistSpecState | null) => void;
 }
 
@@ -70,6 +73,8 @@ export function SpecChecklistPanel({
   validationStageActive = true,
   showHistory = false,
   embedded = false,
+  refreshKey = 0,
+  active = true,
   onStateChange,
 }: SpecChecklistPanelProps) {
   const api = useDashboardApi();
@@ -94,15 +99,40 @@ export function SpecChecklistPanel({
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [readError, setReadError] = useState<string | null>(null);
+  const [pendingState, setPendingState] = useState<ChecklistSpecState | null>(null);
+  const executionBasis = useRef<ChecklistSpecState | null>(null);
+  const accessGeneration = useRef(0);
+  const readGeneration = useRef(0);
+  const scope = `${boardId}:${specId}`;
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
+  const writeScope = `${scope}:${expectedSpecVersion}:${expectedSpecEdition}:${canRead}:${canExecute}`;
+  const writeScopeRef = useRef(writeScope);
+  writeScopeRef.current = writeScope;
+  const basisKey = (value: ChecklistSpecState) => JSON.stringify([
+    value.subject, value.binding, value.current_receipt?.id ?? null,
+  ]);
 
   const loadState = useCallback(async () => {
+    const generation = ++readGeneration.current;
+    const requestedScope = `${boardId}:${specId}`;
+    const current = () => generation === readGeneration.current && scopeRef.current === requestedScope;
     if (!canRead) {
+      accessGeneration.current += 1;
       setState(null);
+      setTemplate(null);
+      setExecution(null);
+      executionBasis.current = null;
+      setDrafts({});
+      setHistory(null);
+      setPendingState(null);
       onStateChangeRef.current?.(null);
       setLoading(false);
       return;
     }
     setLoading(true);
+    setReadError(null);
     try {
       if (!Number.isInteger(expectedSpecEdition) || expectedSpecEdition < 1) {
         throw new Error('A positive validation edition is required.');
@@ -111,6 +141,7 @@ export function SpecChecklistPanel({
         apiRef.current.getSpecChecklistState(boardId, specId),
         apiRef.current.listChecklistTemplates(),
       ]);
+      if (!current()) return;
       if (
         resolvedState.subject.board_id !== boardId
         || resolvedState.subject.spec_id !== specId
@@ -131,15 +162,32 @@ export function SpecChecklistPanel({
           (item) =>
             item.version === resolvedState.binding.template_version_id,
         ) ?? null;
+      if (executionBasis.current) {
+        setPendingState(basisKey(executionBasis.current) !== basisKey(resolvedState) ? resolvedState : null);
+        onStateChangeRef.current?.(resolvedState);
+        return;
+      }
       setState(resolvedState);
       setTemplate(resolvedTemplate);
       onStateChangeRef.current?.(resolvedState);
     } catch (error: any) {
-      setState(null);
+      if (!current()) return;
+      const accessLost = error instanceof AuthenticatedFetchError && [401, 403, 404].includes(error.status);
+      if (!executionBasis.current || accessLost) setState(null);
+      if (accessLost) {
+        accessGeneration.current += 1;
+        executionBasis.current = null;
+        setExecution(null);
+        setDrafts({});
+        setTemplate(null);
+        setHistory(null);
+        setPendingState(null);
+      }
+      setReadError(error?.message || 'Failed to load the curated checklist');
       onStateChangeRef.current?.(null);
       toast.error(error?.message || 'Failed to load the curated checklist');
     } finally {
-      setLoading(false);
+      if (current()) setLoading(false);
     }
   }, [
     boardId,
@@ -149,13 +197,16 @@ export function SpecChecklistPanel({
   ]);
 
   useEffect(() => {
-    void loadState();
-  }, [loadState]);
+    if (active || !canRead) void loadState();
+    return () => { readGeneration.current += 1; };
+  }, [loadState, active, refreshKey, expectedSpecVersion]);
 
   useEffect(() => {
     setExecution(null);
+    executionBasis.current = null;
     setDrafts({});
-  }, [boardId, expectedSpecEdition, specId]);
+    setPendingState(null);
+  }, [boardId, specId]);
 
   useEffect(() => {
     setHistory(null);
@@ -166,9 +217,9 @@ export function SpecChecklistPanel({
   }, [boardId, expectedSpecEdition, showHistory, specId]);
 
   useEffect(() => {
-    const shouldLoad = showHistory && historyExpanded;
+    const shouldLoad = active && showHistory && historyExpanded;
     if (!canRead || !shouldLoad) return undefined;
-    const loadKey = [boardId, specId, expectedSpecEdition, offset, limit, historyRefreshKey].join(':');
+    const loadKey = [boardId, specId, expectedSpecEdition, offset, limit, historyRefreshKey, refreshKey].join(':');
     if (historyLoadKeyRef.current === loadKey) return undefined;
     let cancelled = false;
     setHistoryLoading(true);
@@ -203,10 +254,12 @@ export function SpecChecklistPanel({
     return () => { cancelled = true; };
   }, [
     boardId,
+    active,
     canRead,
     expectedSpecEdition,
     historyExpanded,
     historyRefreshKey,
+    refreshKey,
     limit,
     offset,
     showHistory,
@@ -219,14 +272,19 @@ export function SpecChecklistPanel({
     await loadState();
   }, [loadState]);
 
-  const start = async () => {
+  const start = async (reviewedState?: ChecklistSpecState) => {
+    const basis = reviewedState ?? state;
     if (
-      !state
-      || state.binding.mode === 'off'
+      !basis
+      || basis.binding.mode === 'off'
       || !validationStageActive
       || !canExecute
       || starting
     ) return;
+    const requestedScope = writeScope;
+    const requestedAccess = accessGeneration.current;
+    const requestedVersion = expectedSpecVersion;
+    const requestedEdition = expectedSpecEdition;
     setStarting(true);
     try {
       const started = await apiRef.current.startChecklistExecution(
@@ -235,14 +293,19 @@ export function SpecChecklistPanel({
         {
           spec_edition: expectedSpecEdition,
           expected_spec_version: expectedSpecVersion,
-          binding_version: state.binding.version,
+          binding_version: basis.binding.version,
         },
       );
-      if (started.spec_edition !== expectedSpecEdition) {
+      if (writeScopeRef.current !== requestedScope || accessGeneration.current !== requestedAccess) return;
+      if (started.spec_edition !== requestedEdition || basis.subject.spec_version !== requestedVersion) {
         throw new Error('The checklist execution does not match this subject edition.');
       }
       setExecution(started);
-      setDrafts(
+      executionBasis.current = basis;
+      setState(basis);
+      setPendingState(null);
+      setReadError(null);
+      if (!reviewedState) setDrafts(
         Object.fromEntries(
           (template?.items ?? []).map((item) => [
             item.item_id,
@@ -251,6 +314,7 @@ export function SpecChecklistPanel({
         ),
       );
     } catch (error: any) {
+      if (writeScopeRef.current !== requestedScope || accessGeneration.current !== requestedAccess) return;
       toast.error(error?.message || 'Failed to start checklist execution');
       await loadState();
     } finally {
@@ -289,10 +353,14 @@ export function SpecChecklistPanel({
   const submit = async () => {
     if (
       !state || !execution || !template || !allItemsComplete || submitting
+      || pendingState || readError || loading || starting
       || !canExecute || !validationStageActive
       || execution.spec_edition !== expectedSpecEdition
+      || executionBasis.current?.subject.spec_version !== expectedSpecVersion
     ) return;
     setSubmitting(true);
+    const requestedScope = writeScope;
+    const requestedAccess = accessGeneration.current;
     try {
       const results: ChecklistItemResult[] = template.items.map((item) => {
         const draft = drafts[item.item_id];
@@ -313,11 +381,14 @@ export function SpecChecklistPanel({
           item_results: results,
         },
       );
+      if (writeScopeRef.current !== requestedScope || accessGeneration.current !== requestedAccess) return;
       toast.success('Checklist result recorded');
       setExecution(null);
+      executionBasis.current = null;
       setDrafts({});
       await refreshAfterMutation();
     } catch (error: any) {
+      if (writeScopeRef.current !== requestedScope || accessGeneration.current !== requestedAccess) return;
       toast.error(error?.message || 'Failed to submit checklist');
       await loadState();
     } finally {
@@ -333,7 +404,7 @@ export function SpecChecklistPanel({
     );
   }
 
-  if (loading && !state) {
+  if ((loading && !state) || (state && (state.subject.board_id !== boardId || state.subject.spec_id !== specId))) {
     return (
       <section className="flex items-center gap-2 rounded-lg border border-gray-200 p-4 text-xs text-gray-500 dark:border-gray-700 dark:text-gray-400">
         <Loader2 size={13} className="animate-spin" />
@@ -346,6 +417,7 @@ export function SpecChecklistPanel({
     return (
       <section className="rounded-lg border border-red-200 bg-red-50 p-4 text-xs text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300">
         Checklist readiness is unavailable. Validation remains fail-closed.
+        <button type="button" className="btn btn-secondary mt-2 text-xs" onClick={() => void loadState()}>Retry checklist refresh</button>
       </section>
     );
   }
@@ -377,6 +449,17 @@ export function SpecChecklistPanel({
       className="space-y-4 rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900/40"
       data-testid="spec-checklist-panel"
     >
+      {(readError || pendingState) && <div role="alert" className="space-y-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200">
+        <p>{readError || 'Planning inputs changed. Your checklist draft is preserved; review the current Spec before recording a result.'}</p>
+        {readError && <button type="button" className="btn btn-secondary text-xs" onClick={() => void loadState()}>Retry checklist refresh</button>}
+        {pendingState && !readError && pendingState.subject.spec_edition === execution?.spec_edition
+          && pendingState.binding.template_version_id === template.version
+          && canExecute && validationStageActive && <button type="button" className="btn btn-secondary text-xs" disabled={loading || starting || submitting}
+            onClick={() => void start(pendingState)}>I reviewed the current plan — keep my checklist draft</button>}
+        {execution && <button type="button" className="btn btn-secondary text-xs" disabled={starting || submitting} onClick={() => {
+          executionBasis.current = null; setExecution(null); setDrafts({}); setPendingState(null); void loadState();
+        }}>Discard checklist draft</button>}
+      </div>}
       {!embedded && (
       <div className="flex items-start justify-between gap-3">
         <div>
@@ -577,7 +660,7 @@ export function SpecChecklistPanel({
       {execution && (
         <div className="space-y-3" data-testid="checklist-execution-form">
           <div className="rounded bg-violet-50 px-3 py-2 text-[10px] text-violet-700 dark:bg-violet-900/20 dark:text-violet-200">
-            {`Checklist in progress for Edition ${lifecycleEdition}. Submit all 10 ordered results together.`}
+            {`Checklist in progress for Edition ${execution.spec_edition}. Submit all 10 ordered results together.`}
           </div>
           {template.items.map((item, index) => {
             const draft = drafts[item.item_id] ?? {
@@ -665,7 +748,10 @@ export function SpecChecklistPanel({
             <button
               type="button"
               onClick={() => void submit()}
-              disabled={!allItemsComplete || submitting || !canExecute || !validationStageActive}
+              disabled={!allItemsComplete || submitting || starting || loading || Boolean(pendingState || readError)
+                || execution.spec_edition !== expectedSpecEdition
+                || executionBasis.current?.subject.spec_version !== expectedSpecVersion
+                || !canExecute || !validationStageActive}
               className="inline-flex items-center gap-1.5 rounded bg-violet-600 px-3 py-2 text-xs font-medium text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-gray-400"
             >
               {submitting ? (
