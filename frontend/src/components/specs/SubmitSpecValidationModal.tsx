@@ -20,6 +20,7 @@ import type {
   SpecValidationPinpointInput,
   SpecValidationSubmitPayload,
   SpecValidationSubmitResponse,
+  SpecPlanningManifest,
   ValidationSubmissionFence,
 } from '@/types';
 import { ValidationErrorDisplay } from './ValidationErrorDisplay';
@@ -160,6 +161,12 @@ export function SubmitSpecValidationModal({
     useState<ChecklistSpecState | null>(null);
   const [submissionFence, setSubmissionFence] =
     useState<ValidationSubmissionFence | null>(null);
+  const planningManifest = useRef<SpecPlanningManifest | null>(null);
+  const draftDirty = useRef(false);
+  draftDirty.current = pinpoints.length > 0 || recommendation !== null
+    || METRIC_DEFINITIONS.some(({ metric }) => metrics[metric].justification.length > 0
+      || metrics[metric].score !== thresholds[metric]);
+  const [basisConflict, setBasisConflict] = useState(false);
   const [readinessLoading, setReadinessLoading] = useState(true);
   const [readinessRefreshKey, setReadinessRefreshKey] = useState(0);
 
@@ -170,6 +177,7 @@ export function SubmitSpecValidationModal({
     if (!canReadChecklist) {
       setChecklistState(null);
       setSubmissionFence(null);
+      planningManifest.current = null;
       setReadinessLoading(false);
       setSubmissionError(
         'Validation readiness cannot be verified with the current permissions.',
@@ -187,12 +195,18 @@ export function SubmitSpecValidationModal({
         const fence = cycle.subject_type === 'spec'
           ? cycle.submission_fence
           : undefined;
+        const manifest = cycle.subject_type === 'spec' ? cycle.planning_manifest : undefined;
         if (
           cycle.subject_type !== 'spec'
           || cycle.subject_id !== specId
           || cycle.edition !== currentSpecEdition
           || !cycle.visible_sections.includes('spec_validation')
           || !fence
+          || !manifest
+          || manifest.board_id !== boardId
+          || manifest.spec_id !== specId
+          || manifest.edition !== currentSpecEdition
+          || manifest.spec_version !== specVersion
           || fence.expected_validation_edition
             !== currentSpecEdition
           || fence.expected_subject_version !== specVersion
@@ -201,13 +215,25 @@ export function SubmitSpecValidationModal({
             'The validation cycle changed. Refresh the Spec before submitting.',
           );
         }
+        if (planningManifest.current && draftDirty.current
+            && JSON.stringify(planningManifest.current) !== JSON.stringify(manifest)) {
+          setBasisConflict(true);
+          setSubmissionError('Planning inputs changed while you were editing. Your draft has been preserved; review the current Spec before submitting.');
+          return;
+        }
         setChecklistState(resolvedChecklist);
         setSubmissionFence(fence);
+        planningManifest.current = manifest;
+        setBasisConflict(false);
       })
       .catch((error: unknown) => {
         if (cancelled) return;
         setChecklistState(null);
-        setSubmissionFence(null);
+        setBasisConflict(true);
+        if (!draftDirty.current) {
+          setSubmissionFence(null);
+          planningManifest.current = null;
+        }
         setSubmissionError(
           error instanceof Error
             ? error.message
@@ -238,7 +264,7 @@ export function SubmitSpecValidationModal({
         && checklistState.gate.allowed
       )
     );
-  const fenceReady = submissionFence !== null;
+  const fenceReady = submissionFence !== null && planningManifest.current !== null && !basisConflict;
   const justificationsReady = METRIC_DEFINITIONS.every(
     ({ metric }) => metrics[metric].justification.trim().length
       >= MIN_JUSTIFICATION_LENGTH,
@@ -269,10 +295,11 @@ export function SubmitSpecValidationModal({
     && !submitting;
 
   const handleSubmit = async () => {
-    if (!canSubmit || !submissionFence) return;
+    if (!canSubmit || !submissionFence || !planningManifest.current) return;
     setSubmitting(true);
     setSubmissionError(null);
     const authored: Omit<SpecValidationSubmitPayload, 'idempotency_key'> = {
+      expected_planning_manifest: planningManifest.current,
       expected_validation_edition:
         submissionFence.expected_validation_edition,
       expected_spec_version: submissionFence.expected_subject_version,

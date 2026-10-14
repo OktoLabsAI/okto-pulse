@@ -15,6 +15,35 @@ vi.mock('@/services/api', () => ({ useDashboardApi: () => apiMock }));
 
 import { SpecChecklistPanel } from '../SpecChecklistPanel';
 import { SubmitSpecValidationModal } from '../SubmitSpecValidationModal';
+import type { BoardSettings } from '@/types';
+
+const validationSettings: BoardSettings = {
+  max_scenarios_per_card: 3,
+  skip_test_coverage_global: false, skip_rules_coverage_global: false,
+  skip_trs_coverage_global: false, skip_contract_coverage_global: false,
+  skip_ir_coverage_global: false, skip_or_coverage_global: false,
+  skip_decisions_coverage_global: false,
+  require_task_validation: true, min_confidence: 80, min_completeness: 80, max_drift: 20,
+  require_spec_validation: true, min_spec_confidence: 70, min_spec_clarity: 80,
+  min_spec_assertiveness: 80, min_spec_decidability: 80, max_spec_ambiguity: 30,
+};
+
+function renderPlanningReview() {
+  return render(<SubmitSpecValidationModal
+    specId="spec-1" specTitle="Planning review" boardId="board-1" specVersion={4}
+    settings={validationSettings} canReadChecklist canExecuteChecklist
+    onClose={() => {}} onSubmitted={() => {}}
+  />);
+}
+
+function fillPlanningReview() {
+  for (const metric of ['Confidence', 'Clarity', 'Assertiveness', 'Decidability', 'Ambiguity']) {
+    fireEvent.change(screen.getByLabelText(`${metric} justification`), {
+      target: { value: `${metric} is supported by the inspected requirements.` },
+    });
+  }
+  fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+}
 
 const itemIds = [
   'chk_scope_boundaries',
@@ -152,6 +181,11 @@ describe('SpecChecklistPanel', () => {
       subject_id: 'spec-1',
       edition: 1,
       subject_status: 'approved',
+      planning_manifest: {
+        board_id: 'board-1', spec_id: 'spec-1', edition: 1, spec_version: 4,
+        subject_incarnation: 'a'.repeat(32), subject_revision: 1,
+        authority_incarnation: 'b'.repeat(32), authority_revision: 1,
+      },
       visible_sections: [
         'spec_validation',
         'curated_checklist',
@@ -533,6 +567,11 @@ describe('SpecChecklistPanel', () => {
     await waitFor(() => expect(apiMock.submitSpecValidation).toHaveBeenCalledTimes(1));
     expect(apiMock.submitSpecValidation).toHaveBeenCalledWith('spec-1', {
       idempotency_key: expect.any(String),
+      expected_planning_manifest: {
+        board_id: 'board-1', spec_id: 'spec-1', edition: 1, spec_version: 4,
+        subject_incarnation: 'a'.repeat(32), subject_revision: 1,
+        authority_incarnation: 'b'.repeat(32), authority_revision: 1,
+      },
       expected_validation_edition: 1,
       expected_spec_version: 4,
       expected_head_revision: 0,
@@ -685,5 +724,53 @@ describe('SpecChecklistPanel', () => {
     await waitFor(() => expect(apiMock.submitSpecValidation).toHaveBeenCalledTimes(3));
     expect(apiMock.submitSpecValidation.mock.calls[2][1].idempotency_key)
       .not.toEqual(apiMock.submitSpecValidation.mock.calls[0][1].idempotency_key);
+  });
+
+  it.each(['missing', 'foreign-board', 'foreign-spec'])('refuses a %s planning basis', async (shape) => {
+    const cycle = await apiMock.getValidationCycle();
+    apiMock.getValidationCycle.mockResolvedValue({
+      ...cycle,
+      planning_manifest: shape === 'missing' ? undefined : {
+        ...cycle.planning_manifest,
+        ...(shape === 'foreign-board' ? { board_id: 'other-board' } : { spec_id: 'other-spec' }),
+      },
+    });
+    apiMock.getSpecChecklistState.mockResolvedValue(currentState);
+    renderPlanningReview();
+    await screen.findByText('The validation cycle changed. Refresh the Spec before submitting.');
+    fillPlanningReview();
+    expect(screen.getByRole('button', { name: 'Submit Validation' })).toBeDisabled();
+    expect(apiMock.submitSpecValidation).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('refreshes the basis only if the draft is clean (dirty=%s)', async (dirty) => {
+    const cycle = await apiMock.getValidationCycle();
+    apiMock.getSpecChecklistState.mockResolvedValue(currentState);
+    renderPlanningReview();
+    await waitFor(() => expect(screen.getByTestId('spec-validation-checklist-readiness')).toHaveTextContent('is ready'));
+    if (dirty) fillPlanningReview();
+    const newManifest = { ...cycle.planning_manifest, subject_revision: 2 };
+    apiMock.getValidationCycle.mockResolvedValue({ ...cycle, planning_manifest: newManifest });
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh validation readiness' }));
+    const submit = screen.getByRole('button', { name: 'Submit Validation' });
+    if (dirty) {
+      await screen.findByText(/Planning inputs changed while you were editing/);
+      expect(screen.getByLabelText('Clarity justification')).toHaveValue(
+        'Clarity is supported by the inspected requirements.',
+      );
+      expect(submit).toBeDisabled();
+      fireEvent.click(screen.getByRole('button', { name: 'Refresh validation readiness' }));
+      await screen.findByText(/Planning inputs changed while you were editing/);
+      expect(submit).toBeDisabled();
+      expect(apiMock.submitSpecValidation).not.toHaveBeenCalled();
+    } else {
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh validation readiness' })).toBeEnabled());
+      fillPlanningReview();
+      await waitFor(() => expect(submit).toBeEnabled());
+      fireEvent.click(submit);
+      await waitFor(() => expect(apiMock.submitSpecValidation).toHaveBeenCalledWith('spec-1',
+        expect.objectContaining({ expected_planning_manifest: newManifest }),
+      ));
+    }
   });
 });

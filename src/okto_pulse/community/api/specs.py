@@ -1,6 +1,7 @@
 """Spec API endpoints."""
 
 from collections.abc import Awaitable, Callable
+from okto_pulse.core.ports.spec_planning_manifest import SpecPlanningManifestUnavailable
 from datetime import datetime
 from typing import Any, Literal
 
@@ -2638,6 +2639,8 @@ async def submit_spec_validation(
         ) from e
     except PolicyTransitionRejected as e:
         raise RESTAdapterContract.http_error(e) from e
+    except SpecPlanningManifestUnavailable as e:
+        raise HTTPException(status_code=503, detail=e.to_error_dict()) from e
     except SpecValidationConflictError as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

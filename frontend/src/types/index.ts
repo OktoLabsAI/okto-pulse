@@ -3370,6 +3370,7 @@ export interface SpecDecompositionInput {
 }
 
 export interface SpecValidationSubmitPayload {
+  expected_planning_manifest: SpecPlanningManifest;
   idempotency_key: string;
   expected_validation_edition: number;
   expected_spec_version: number;

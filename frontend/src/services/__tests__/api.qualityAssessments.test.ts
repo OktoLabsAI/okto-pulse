@@ -199,6 +199,11 @@ describe('quality assessment REST client', () => {
     const { result } = renderHook(() => useDashboardApi());
     const validation = {
       idempotency_key: 'quality-review-1',
+      expected_planning_manifest: {
+        board_id: 'board-1', spec_id: 'spec-1', edition: 3, spec_version: 11,
+        subject_incarnation: 'a'.repeat(32), subject_revision: 1,
+        authority_incarnation: 'b'.repeat(32), authority_revision: 1,
+      },
       expected_validation_edition: 3,
       expected_spec_version: 11,
       expected_head_revision: 4,

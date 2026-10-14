@@ -444,6 +444,29 @@ async def test_cycle_exposes_current_manifest_and_hides_it_without_validation_re
     assert "planning_manifest" not in project_validation_cycle(hidden)
 
 
+@pytest.mark.parametrize("foreign_realm", [False, True])
+async def test_single_and_batch_cycle_enforce_requested_board_and_realm(cycle_rig, foreign_realm):
+    # The fixture grants all read permissions: scope must be checked separately.
+    reader = CommunitySqlAlchemyValidationCycleReader(cycle_rig.factory)
+    if foreign_realm:
+        async with cycle_rig.factory() as session:
+            board = await session.get(Board, BOARD_ID)
+            board.realm_id = "other-realm"
+            await session.commit()
+    requested_board = BOARD_ID if foreign_realm else "different-board"
+    with pytest.raises(ValidationCycleSubjectNotFound):
+        await reader.get_validation_cycle(
+            subject_type=AssessmentSubjectType.SPEC, subject_id="spec-cycle-00",
+            actor_id="owner", realm_scope=RealmScope.local(), board_id=requested_board,
+            include_previous=False, offset=0, limit=25,
+        )
+    with pytest.raises(ValidationCycleSubjectNotFound):
+        await reader.get_validation_cycles(
+            subjects=(ValidationCycleSubjectRef(AssessmentSubjectType.SPEC, "spec-cycle-00"),),
+            actor_id="owner", realm_scope=RealmScope.local(), board_id=requested_board,
+        )
+
+
 async def test_cycle_manifest_shares_snapshot_with_results_during_concurrent_card_write(cycle_rig, monkeypatch):
     from okto_pulse.community.adapters.sqlalchemy_models import Card
 

@@ -1406,6 +1406,7 @@ class CommunitySqlAlchemyValidationCycleReader:
         subject_type: AssessmentSubjectType,
         subject_id: str,
         actor_id: str,
+        board_id: str | None = None,
     ) -> tuple[object, _ValidationCycleAccess]:
         model = _SUBJECT_MODEL[subject_type]
         subject = (
@@ -1415,7 +1416,11 @@ class CommunitySqlAlchemyValidationCycleReader:
                 .where(model.id == subject_id)
             )
         ).scalar_one_or_none()
-        if subject is None:
+        if (
+            subject is None
+            or subject.board.realm_id != LOCAL_REALM_ID
+            or (board_id is not None and subject.board_id != board_id)
+        ):
             raise ValidationCycleSubjectNotFound()
         permissions, access_level = await _quality_actor_permissions(
             session,
@@ -1457,6 +1462,7 @@ class CommunitySqlAlchemyValidationCycleReader:
         limit: int,
         actor_id: str,
         realm_scope: RealmScope,
+        board_id: str | None = None,
     ) -> ValidationCycleSummary:
         self._require_local(realm_scope)
         async with self._session_factory() as session:
@@ -1469,6 +1475,7 @@ class CommunitySqlAlchemyValidationCycleReader:
                     subject_type=subject_type,
                     subject_id=subject_id,
                     actor_id=actor_id,
+                    board_id=board_id,
                 )
                 if subject_type is AssessmentSubjectType.SPEC:
                     result = await self._spec_cycle(
@@ -1505,6 +1512,7 @@ class CommunitySqlAlchemyValidationCycleReader:
         subjects: tuple[ValidationCycleSubjectRef, ...],
         actor_id: str,
         realm_scope: RealmScope,
+        board_id: str | None = None,
     ) -> tuple[ValidationCycleSummary, ...]:
         """Return bounded current-edition summaries with set-based reads.
 
@@ -1529,6 +1537,7 @@ class CommunitySqlAlchemyValidationCycleReader:
                     session,
                     refs=refs,
                     actor_id=actor_id,
+                    board_id=board_id,
                 )
                 outcome = "success"
                 return result
@@ -1552,6 +1561,7 @@ class CommunitySqlAlchemyValidationCycleReader:
         *,
         refs: tuple[ValidationCycleSubjectRef, ...],
         actor_id: str,
+        board_id: str | None = None,
     ) -> tuple[ValidationCycleSummary, ...]:
         loaded: dict[tuple[AssessmentSubjectType, str], object] = {}
         for subject_type, model in _SUBJECT_MODEL.items():
@@ -1576,6 +1586,12 @@ class CommunitySqlAlchemyValidationCycleReader:
             )
 
         if len(loaded) != len(refs):
+            raise ValidationCycleSubjectNotFound()
+        if any(
+            subject.board.realm_id != LOCAL_REALM_ID
+            or (board_id is not None and subject.board_id != board_id)
+            for subject in loaded.values()
+        ):
             raise ValidationCycleSubjectNotFound()
 
         permission_cache: dict[str, object] = {}
