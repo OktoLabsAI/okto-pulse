@@ -35,7 +35,7 @@ from okto_pulse.core.domain.execution_contract import execution_contract
 from okto_pulse.core.domain.realm import LOCAL_REALM_ID
 from okto_pulse.core.ports.delivery_readiness import (
     ReadinessActor, ReadinessCard, ReadinessReadError, ReadinessScenarioProcedure, ReadinessSnapshot,
-    resolve_readiness_access,
+    resolve_readiness_access, resolve_delivery_gate_policy,
 )
 from okto_pulse.core.ports.permission_policy import (
     PermissionPresetLineageNode, board_membership_allows_read, resolve_agent_permission_facts,
@@ -329,7 +329,9 @@ class CommunityDeliveryReadinessReader:
         return ReadinessSnapshot(facts, identity, evaluated_at.astimezone(timezone.utc), int(spec.version), spec.status.value,
             tuple(ReadinessCard(c.id, c.card_type, c.status, c.policy_version,
                 tuple(c.test_scenario_ids) if c.test_scenario_ids is not None else None, c.assignee_id)
-                for c in rows[Card] if not c.archived), scenarios)
+                for c in rows[Card] if not c.archived), scenarios,
+            delivery_gate_mode=resolve_delivery_gate_policy(rows[Board][0].settings),
+            skip_delivery_evidence=spec.skip_delivery_evidence is True)
 
     async def load(self, *, board_id, spec_id, card_id=None, actor=None):
         # Actor-less reads are internal fact-loader compatibility only. Public
@@ -397,9 +399,13 @@ class CommunityDeliveryReadinessReader:
         codes = tuple(dict.fromkeys((error.code, error.native_code or 'readiness_population_limit')))
         identity = _digest({'contract_version': 'delivery-readiness/v1', 'fingerprint_version': FINGERPRINT_VERSION,
             'evaluator_version': EVALUATOR_VERSION, 'scope': facts.scope, 'spec_version': spec.version,
-            'spec_status': spec.status, 'cards': cards, 'unavailable_reason_codes': codes})
+            'spec_status': spec.status, 'cards': cards, 'unavailable_reason_codes': codes,
+            'delivery_gate_mode': resolve_delivery_gate_policy(boards[0].settings),
+            'skip_delivery_evidence': spec.skip_delivery_evidence is True})
         evaluated_at = self.clock.now()
         if evaluated_at.tzinfo is None or evaluated_at.utcoffset() is None:
             raise ReadinessReadError('readiness_assessment_unavailable', native_code='readiness_clock_timezone_required')
         return ReadinessSnapshot(facts, identity, evaluated_at.astimezone(timezone.utc), int(spec.version),
-            spec.status.value, cards, unavailable_reason_codes=codes)
+            spec.status.value, cards, unavailable_reason_codes=codes,
+            delivery_gate_mode=resolve_delivery_gate_policy(boards[0].settings),
+            skip_delivery_evidence=spec.skip_delivery_evidence is True)

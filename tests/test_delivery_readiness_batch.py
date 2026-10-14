@@ -11,7 +11,7 @@ import test_delivery_evidence_integration as delivery
 import test_decision_reviews as decisions
 from test_delivery_readiness_verification import prepare_reports
 from okto_pulse.community.adapters.sqlalchemy_delivery_readiness import CommunityDeliveryReadinessReader
-from okto_pulse.community.adapters.sqlalchemy_models import Card, Spec
+from okto_pulse.community.adapters.sqlalchemy_models import Board, Card, Spec
 from okto_pulse.community.adapters.sqlalchemy_code_traceability import CommunitySqlAlchemyCodeTraceabilityStore
 from okto_pulse.core.domain.delivery_assessment import assess_obligation_delivery, aggregate_delivery_metrics
 from okto_pulse.core.domain.enums import CardType
@@ -105,6 +105,29 @@ async def test_snapshot_identity_excludes_clock_and_changes_with_native_inputs(l
     assert not changed.facts.implementations[0].executions[0].current_accepted_execution
     expected, _ = await store.load_rollup_snapshot(delivery.BOARD_ID, delivery.SPEC_ID)
     assert changed.facts == expected
+
+
+@native
+@pytest.mark.parametrize('capacity', [False, True])
+async def test_policy_and_spec_override_are_snapshot_facts_and_change_identity(ledger, monkeypatch, capacity):
+    session, _, _ = ledger
+    if capacity:
+        monkeypatch.setattr('okto_pulse.community.adapters.sqlalchemy_delivery_readiness.MAX_CARDS', 1)
+    value = reader(session)
+    before = await read(value)
+    assert before.delivery_gate_mode == 'blocking' and not before.skip_delivery_evidence
+    await session.execute(update(Board).where(Board.id == delivery.BOARD_ID)
+        .values(settings={'delivery_evidence_gate': 'advisory'}))
+    await session.commit()
+    policy = await read(value)
+    assert policy.delivery_gate_mode == 'advisory' and not policy.skip_delivery_evidence
+    assert policy.snapshot_id != before.snapshot_id
+    await session.execute(update(Spec).where(Spec.id == delivery.SPEC_ID).values(skip_delivery_evidence=True))
+    await session.commit()
+    override = await read(value)
+    assert override.delivery_gate_mode == 'advisory' and override.skip_delivery_evidence
+    assert override.snapshot_id != policy.snapshot_id
+    assert override.facts == policy.facts == before.facts
 
 
 @native
