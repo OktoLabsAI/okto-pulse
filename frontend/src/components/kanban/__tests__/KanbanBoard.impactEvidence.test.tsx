@@ -73,14 +73,18 @@ const permissionState = vi.hoisted(() => ({
   denied: new Set<string>(),
 }));
 
-vi.mock('@/services/api', () => ({
-  useDashboardApi: () => ({
+vi.mock('@/services/api', () => {
+  // Match the native hook's stable client identity. A fresh object on each
+  // render restarts readiness effects and prevents the DnD assertions running.
+  const api = {
     getBoardColumns: vi.fn().mockResolvedValue({ columns: mocks.dashboardState.columns }),
     getBoardColumnPage: vi.fn(),
     lookupSpecs: vi.fn().mockResolvedValue([]),
     moveCard: mocks.moveCard,
-  }),
-}));
+    getDeliveryReadinessSummary: vi.fn().mockRejectedValue(new Error('Readiness unavailable in this DnD fixture')),
+  };
+  return { useDashboardApi: () => api };
+});
 
 vi.mock('@/store/dashboard', () => ({
   useDashboardStore: mocks.dashboardHook,

@@ -10,7 +10,7 @@ export interface ReadinessNavigator {
   open: (destination: ReadinessDestination) => void;
   supports?: (destination: ReadinessDestination) => boolean;
 }
-export type ReadinessSpecTab = 'details' | 'frs' | 'acs' | 'rules' | 'contracts' | 'irs' | 'ors' | 'trs' | 'decisions' | 'tests';
+export type ReadinessSpecTab = 'details' | 'coverage' | 'frs' | 'acs' | 'rules' | 'contracts' | 'irs' | 'ors' | 'trs' | 'decisions' | 'tests';
 export interface ReadinessSpecLocation { tab: ReadinessSpecTab; ref: string | null }
 
 const sections: Record<string, ReadinessSpecTab> = {
@@ -22,6 +22,9 @@ export function readinessSpecLocation(destination: ReadinessDestination, specId:
   if (!destination.id) return null;
   if (destination.type === 'spec') return destination.id === specId ? { tab: 'details', ref: null } : null;
   if (destination.type === 'scenario') return { tab: 'tests', ref: `scenario:${destination.id}` };
+  if (destination.type === 'inspection') return { tab: 'decisions', ref: `inspection:${destination.id}` };
+  if (destination.type === 'receipt') return { tab: 'tests', ref: `receipt:${destination.id}` };
+  if (destination.type === 'exception') return { tab: 'coverage', ref: `exception:${destination.id}` };
   if (destination.type !== 'obligation') return null;
   const separator = destination.id.indexOf(':');
   if (separator < 1 || separator === destination.id.length - 1) return null;

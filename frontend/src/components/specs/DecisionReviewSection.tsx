@@ -7,6 +7,31 @@ export const decisionStatusLabel = (status: string) => ({
   failed: 'Failed', inconclusive: 'Inconclusive', unavailable: 'Unavailable', revoked: 'Revoked', aborted: 'Aborted',
 }[status] || 'Verification pending');
 
+/** A review is a batch: retain every observation instead of guessing one Decision. */
+export function DecisionInspectionDetails({ data, recordId }: { data: DecisionReviewProjection; recordId: string }) {
+  const records = data.history.filter(record => record.id === recordId);
+  if (records.length !== 1) return <p role="alert">The referenced inspection is unavailable in this Spec scope.</p>;
+  const record = records[0];
+  return <article data-readiness-ref={`inspection:${record.id}`} tabIndex={-1} aria-label="Decision inspection record"
+    className="space-y-3 rounded-lg border border-gray-200 p-3 text-sm dark:border-gray-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500">
+    <h3 className="font-semibold">Decision inspection</h3>
+    <p className="break-all">{record.id} · Edition {record.edition}{record.edition !== data.edition ? ' · Previous version' : ''}{record.revoked ? ' · Revoked' : ''}</p>
+    <p className="break-words">{record.actor_id} · {record.actor_kind} · {new Date(record.created_at).toLocaleString()}</p>
+    <p className="text-xs text-gray-500 dark:text-gray-400">Authenticated reviewer observation. This historical record does not establish current verification by itself.</p>
+    {record.observations.map(observation => <details key={observation.decision_id} className="rounded-lg border border-gray-200 dark:border-gray-700">
+      <summary className="cursor-pointer break-words px-3 py-2 font-medium">{observation.decision_id} · {decisionStatusLabel(observation.result)}</summary>
+      <dl className="space-y-2 border-t border-gray-200 p-3 dark:border-gray-700">
+        <div><dt className="font-medium">Expected</dt><dd className="whitespace-pre-wrap break-words">{observation.expected}</dd></div>
+        <div><dt className="font-medium">Observed</dt><dd className="whitespace-pre-wrap break-words">{observation.observed}</dd></div>
+        <div><dt className="font-medium">Scope fingerprint</dt><dd className="break-all font-mono text-xs">{observation.expected_scope_sha256}</dd></div>
+        <div><dt className="font-medium">Sources</dt><dd>{observation.sources.map(source => <p key={source.reference} className="break-all">{source.reference} · {source.revision} · {source.sha256}</p>)}</dd></div>
+        {observation.reconciles.length > 0 && <div><dt className="font-medium">Reconciles</dt><dd className="break-all">{observation.reconciles.join(', ')}</dd></div>}
+        {observation.separation.warning && <p className="text-amber-700 dark:text-amber-400">Reviewer separation warning was recorded.</p>}
+      </dl>
+    </details>)}
+  </article>;
+}
+
 export function DecisionReviewSection({ data, decisionId, canReview, onSubmit }: {
   data: DecisionReviewProjection; decisionId: string; canReview: boolean;
   onSubmit: (body: DecisionReviewInput) => Promise<void>;

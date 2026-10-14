@@ -81,6 +81,27 @@ export function useNativeReadinessNavigation(boardId: string, specId: string,
         if (generation.current !== request) return;
         if (spec.id !== specId || spec.board_id !== boardId)
           throw new Error('The referenced Spec no longer belongs to this Board. Refresh the diagnosis.');
+        if (destination.type === 'receipt') {
+          // The native read exposes the opaque submitted receipt, not a ledger record ID.
+          // Compare it exactly; never decode it or substitute a newer scenario result.
+          const scenarios = (spec.test_scenarios ?? []).filter(scenario => scenario.evidence?.execution_receipt === destination.id);
+          if (scenarios.length !== 1 || (destination.scenarioId && scenarios[0].id !== destination.scenarioId))
+            throw new Error('The referenced test receipt is unavailable or ambiguous in the current Spec. Refresh the diagnosis.');
+        }
+        if (destination.type === 'inspection') {
+          const reviews = await api.getDecisionReviews(boardId, specId);
+          if (generation.current !== request) return;
+          if (reviews.board_id !== boardId || reviews.spec_id !== specId
+            || reviews.history.filter(record => record.id === destination.id).length !== 1)
+            throw new Error('The referenced inspection is unavailable in this Spec scope.');
+        }
+        if (destination.type === 'exception') {
+          const evidence = await api.getDeliveryEvidence(boardId, specId);
+          if (generation.current !== request) return;
+          const records = evidence.records.filter(record => record.id === destination.id);
+          if (evidence.board_id !== boardId || evidence.spec_id !== specId || records.length !== 1 || records[0].kind !== 'waiver')
+            throw new Error('The referenced delivery exception is unavailable in this Spec scope.');
+        }
         if (openSpec) openSpec(location);
         else stack?.push({ type: 'spec', id: specId, boardId, initialTab: location.tab, focusReadinessRef: location.ref });
       } catch (failure) {

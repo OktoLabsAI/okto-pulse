@@ -7,7 +7,7 @@ import { TextRequirementsTab } from '@/components/specs/TextRequirementsTab';
 import { readinessSpecLocation } from '../readinessNavigation';
 import { useNativeReadinessNavigation } from '../useNativeReadinessNavigation';
 
-const api = vi.hoisted(() => ({ getCard: vi.fn(), getSpec: vi.fn(), getDeliveryEvidence: vi.fn(), getCodeTraceabilityProjection: vi.fn() }));
+const api = vi.hoisted(() => ({ getCard: vi.fn(), getSpec: vi.fn(), getDeliveryEvidence: vi.fn(), getCodeTraceabilityProjection: vi.fn(), getDecisionReviews: vi.fn() }));
 vi.mock('@/services/api', () => ({ useDashboardApi: () => api }));
 beforeEach(() => api.getSpec.mockResolvedValue({ id: 's', board_id: 'b' }));
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
@@ -74,6 +74,80 @@ it('does not navigate a Spec after an ownership change or a denied native read',
   await act(async () => result.current.navigator.open({ type: 'scenario', id: 'scenario-1' }));
   expect(result.current.error).toBe('Permission denied');
   expect(open).not.toHaveBeenCalled();
+});
+
+it('opens the exact native inspection batch, preserving prior editions and all its Decisions', async () => {
+  const open = vi.fn();
+  api.getDecisionReviews.mockResolvedValue({ board_id: 'b', spec_id: 's', edition: 2,
+    history: [{ id: 'review', edition: 1, observations: [{ decision_id: 'a' }, { decision_id: 'b' }] }] });
+  const { result } = renderHook(() => useNativeReadinessNavigation('b', 's', open));
+  expect(result.current.navigator.supports!({ type: 'inspection', id: 'review' })).toBe(true);
+  await act(async () => result.current.navigator.open({ type: 'inspection', id: 'review' }));
+  expect(open).toHaveBeenCalledWith({ tab: 'decisions', ref: 'inspection:review' });
+  expect(api.getDecisionReviews).toHaveBeenCalledWith('b', 's');
+});
+
+it.each(['foreign', 'missing', 'ambiguous', 'denied'])('refuses %s inspection navigation', async kind => {
+  const open = vi.fn();
+  if (kind === 'denied') api.getDecisionReviews.mockRejectedValueOnce(new Error('Permission denied'));
+  else api.getDecisionReviews.mockResolvedValueOnce({ board_id: kind === 'foreign' ? 'other' : 'b', spec_id: 's',
+    history: kind === 'missing' ? [] : kind === 'ambiguous' ? [{ id: 'review' }, { id: 'review' }] : [{ id: 'review' }] });
+  const { result } = renderHook(() => useNativeReadinessNavigation('b', 's', open));
+  await act(async () => result.current.navigator.open({ type: 'inspection', id: 'review' }));
+  expect(open).not.toHaveBeenCalled();
+  expect(result.current.error).toMatch(/unavailable|denied/);
+});
+
+it('ignores an inspection read completed after the diagnosis scope changes', async () => {
+  const open = vi.fn();
+  let finish!: (data: object) => void;
+  api.getDecisionReviews.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+  const { result, rerender } = renderHook(({ spec }) => useNativeReadinessNavigation('b', spec, open), { initialProps: { spec: 's' } });
+  act(() => { result.current.navigator.open({ type: 'inspection', id: 'review' }); });
+  await waitFor(() => expect(api.getDecisionReviews).toHaveBeenCalled());
+  rerender({ spec: 'new' });
+  await act(async () => finish({ board_id: 'b', spec_id: 's', history: [{ id: 'review' }] }));
+  expect(open).not.toHaveBeenCalled();
+});
+
+it('opens a test receipt only by exact opaque identity on the native scenario', async () => {
+  const open = vi.fn();
+  api.getSpec.mockResolvedValueOnce({ id: 's', board_id: 'b', test_scenarios: [{ id: 'scenario', evidence: { execution_receipt: 'opaque.receipt' } }] });
+  const { result } = renderHook(() => useNativeReadinessNavigation('b', 's', open));
+  await act(async () => result.current.navigator.open({ type: 'receipt', id: 'opaque.receipt', scenarioId: 'scenario' }));
+  expect(open).toHaveBeenCalledWith({ tab: 'tests', ref: 'receipt:opaque.receipt' });
+  expect(api.getDeliveryEvidence).not.toHaveBeenCalled();
+});
+
+it('opens a Spec-owned exception in Coverage, never in a guessed Card ledger', async () => {
+  const open = vi.fn();
+  api.getDeliveryEvidence.mockResolvedValueOnce({ board_id: 'b', spec_id: 's', records: [{ id: 'waiver', kind: 'waiver' }] });
+  const { result } = renderHook(() => useNativeReadinessNavigation('b', 's', open));
+  await act(async () => result.current.navigator.open({ type: 'exception', id: 'waiver' }));
+  expect(open).toHaveBeenCalledWith({ tab: 'coverage', ref: 'exception:waiver' });
+  expect(api.getCard).not.toHaveBeenCalled();
+});
+
+it.each(['foreign', 'missing', 'wrong-kind', 'ambiguous', 'denied'])('refuses %s exception navigation', async kind => {
+  const open = vi.fn();
+  if (kind === 'denied') api.getDeliveryEvidence.mockRejectedValueOnce(new Error('Permission denied'));
+  else api.getDeliveryEvidence.mockResolvedValueOnce({ board_id: kind === 'foreign' ? 'other' : 'b', spec_id: 's',
+    records: kind === 'missing' ? [] : kind === 'ambiguous' ? [{ id: 'waiver', kind: 'waiver' }, { id: 'waiver', kind: 'waiver' }]
+      : [{ id: 'waiver', kind: kind === 'wrong-kind' ? 'implementation' : 'waiver' }] });
+  const { result } = renderHook(() => useNativeReadinessNavigation('b', 's', open));
+  await act(async () => result.current.navigator.open({ type: 'exception', id: 'waiver' }));
+  expect(open).not.toHaveBeenCalled();
+  expect(result.current.error).toMatch(/unavailable|denied/);
+});
+
+it.each(['replaced', 'wrong-scenario', 'ambiguous'])('does not substitute %s evidence for a receipt', async kind => {
+  const open = vi.fn();
+  const scenario = { id: 'scenario', evidence: { execution_receipt: kind === 'replaced' ? 'new-receipt' : 'receipt' } };
+  api.getSpec.mockResolvedValueOnce({ id: 's', board_id: 'b', test_scenarios: kind === 'ambiguous' ? [scenario, { ...scenario, id: 'second' }] : [scenario] });
+  const { result } = renderHook(() => useNativeReadinessNavigation('b', 's', open));
+  await act(async () => result.current.navigator.open({ type: 'receipt', id: 'receipt', scenarioId: kind === 'wrong-scenario' ? 'foreign' : 'scenario' }));
+  expect(open).not.toHaveBeenCalled();
+  expect(result.current.error).toMatch(/unavailable or ambiguous/);
 });
 
 it('focuses and expands the exact native row when it arrives, without editing or touching another modal', async () => {

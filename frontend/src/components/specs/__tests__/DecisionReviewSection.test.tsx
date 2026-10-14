@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { DecisionReviewSection } from '../DecisionReviewSection';
+import { DecisionInspectionDetails, DecisionReviewSection } from '../DecisionReviewSection';
 import type { DecisionReviewProjection } from '@/types/decision-reviews';
 
 afterEach(cleanup);
@@ -12,6 +12,25 @@ const data: DecisionReviewProjection = { board_id: 'b', spec_id: 's', edition: 1
     separation: { mode: 'warn', allowed: true, warning: true, conflicts: ['decision_author'] } }], history: [] };
 
 describe('Decision inspection', () => {
+  it('shows every observation of the exact historical batch without claiming current verification', () => {
+    const observation = { decision_id: 'choice', expected_scope_sha256: 'c'.repeat(64), observed: '<script>bounded mock</script>',
+      expected: 'Old condition', result: 'failed' as const, sources: [source], reconciles: ['earlier'], separation: { warning: true, conflicts: [] } };
+    const history = [{ id: 'review', edition: 1, actor_id: 'person', actor_kind: 'human', created_at: '2026-10-10T12:00:00Z',
+      revoked: true, observations: [observation, { ...observation, decision_id: 'second', observed: 'Second observation' }] }];
+    const { container, rerender } = render(<DecisionInspectionDetails data={{ ...data, edition: 2, history }} recordId="review" />);
+    expect(screen.getByRole('article')).toHaveAttribute('data-readiness-ref', 'inspection:review');
+    expect(screen.getByText(/Previous version.*Revoked/)).toBeInTheDocument();
+    expect(screen.getByText('choice · Failed')).toBeInTheDocument();
+    expect(screen.getByText('second · Failed')).toBeInTheDocument();
+    expect(screen.getByText('<script>bounded mock</script>')).toBeInTheDocument();
+    expect(container.querySelector('script')).toBeNull();
+    expect(screen.getByText(/does not establish current verification/)).toBeInTheDocument();
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+    rerender(<DecisionInspectionDetails data={{ ...data, history }} recordId="missing" />);
+    expect(screen.getByRole('alert')).toHaveTextContent('unavailable');
+    expect(screen.queryByText('Second observation')).not.toBeInTheDocument();
+  });
+
   it('requires a real observation and explicit reconciliation, submitting the exact server base', async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined);
     render(<DecisionReviewSection data={data} decisionId="choice" canReview onSubmit={onSubmit} />);

@@ -13,7 +13,11 @@ test('P08/U01/U04/U09: native board and Delivery show separate accessible metric
   const spec = { id: 's', board_id: 'b', title: 'Readiness Spec', status: 'in_progress', version: 1, edition: 1,
     created_at: task.created_at, updated_at: task.updated_at, created_by: 'local-user',
     functional_requirements: [], technical_requirements: [], acceptance_criteria: [{ id: 'capacity', title: 'Capacity limit',
-      text: 'Reject reservations above the room capacity.', status: 'active' }], test_scenarios: [], business_rules: [],
+      text: 'Reject reservations above the room capacity.', status: 'active' }], test_scenarios: [{ id: 'capacity-boundary', title: 'Capacity boundary',
+      scenario_type: 'unit', verification_method: 'automated_test', status: 'failed', given: 'A full room', when: 'An extra reservation arrives',
+      then: 'The reservation is rejected', notes: null, linked_criteria: ['capacity'], linked_task_ids: [], evidence: {
+        execution_receipt: 'receipt-capacity', evidence_class: 'run_log', test_run_id: 'fixture-run', output_snippet: 'Expected rejection; observed acceptance.',
+      } }], business_rules: [],
     api_contracts: [], integration_requirements: [], observability_requirements: [], decisions: [], labels: [],
     screen_mockups: [], architecture_designs: [], cards: [], knowledge_bases: [], qa_items: [] };
   const current = readiness(); current.lifecycle.stored_status = 'done';
@@ -31,7 +35,10 @@ test('P08/U01/U04/U09: native board and Delivery show separate accessible metric
     test_card_ids: [], test_card_count: 0, test_card_ids_truncated: false, owner: null, owner_state: 'unassigned',
     expected: [{ outcome: 'passed', revision: 'delivered-revision' }], expected_count: 1, expected_truncated: false,
     observed: [{ outcome: 'not_run', text: 'No authenticated observation for this scenario.' }], observed_count: 1, observed_truncated: false,
-    evidence_refs: [{ kind: 'record', id: 'record-capacity', source_ref: null, revision: null }], evidence_count: 1, evidence_refs_truncated: false,
+    evidence_refs: [{ kind: 'record', id: 'record-capacity', source_ref: null, revision: null },
+      { kind: 'inspection', id: 'review-capacity', source_ref: null, revision: null },
+      { kind: 'receipt', id: 'receipt-capacity', source_ref: null, revision: null },
+      { kind: 'exception', id: 'waiver-capacity', source_ref: null, revision: null }], evidence_count: 4, evidence_refs_truncated: false,
     pinpoints: [{ kind: 'target', entity_type: 'card', entity_id: 'c', target_id: 'target-capacity', execution_id: 'execution-capacity',
       record_id: null, observation_id: null, source_ref: 'mock-source', revision: 'revision-1', relative_path: 'capacity.py',
       qualified_symbol: null, line_start: null, line_end: null, precision: 'target', origin: 'execution_receipt' }], pinpoint_count: 1, pinpoints_truncated: false,
@@ -70,8 +77,21 @@ test('P08/U01/U04/U09: native board and Delivery show separate accessible metric
             summary: 'Capacity guard implemented in the observed revision.', text_truncated: false, obligation_refs: ['ac:capacity'], obligations_truncated: false,
             currentness: 'not_evaluated', payload: { execution_id: 'execution-capacity' } }] }
       : { board_id: 'b', spec_id: 's', edition: 1, version: 1, complete: true, allowed: false,
-        records: [{ id: 'record-capacity', payload: { card_id: 'c' } }],
+        records: [{ id: 'record-capacity', payload: { card_id: 'c' } },
+          { id: 'waiver-capacity', kind: 'waiver', actor_id: 'fixture-reviewer', created_at: task.created_at, revoked: true,
+            disposition: 'risk_accepted', payload: { justification: 'Temporary mock exception, subsequently revoked.', phase: 'test',
+              bindings: [{ obligation_ref: 'ac:capacity', semantic_sha256: 'a'.repeat(64) }] } }],
         candidates: [], implementations: [], rows: [], tests: [], rejected_record_ids: [], per_card: [] } });
+    if (path.endsWith('/decision-reviews')) return route.fulfill({ json: {
+      board_id: 'b', spec_id: 's', edition: 1, version: 1, review_revision: 'review-revision', complete: true,
+      observation_authority: 'authenticated_reviewer_declaration', decisions: [],
+      history: [{ id: 'review-capacity', edition: 1, actor_id: 'fixture-reviewer', actor_kind: 'human',
+        created_at: task.created_at, revoked: false, observations: ['capacity-scope', 'mock-only'].map(decision_id => ({
+          decision_id, expected_scope_sha256: 'd'.repeat(64), result: 'passed', expected: 'Only the agreed mock scope.',
+          observed: `Inspected ${decision_id} against the versioned manifest.`, sources: [{ reference: 'spec:s', revision: 'edition:1', sha256: 'e'.repeat(64) }],
+          reconciles: [], separation: { warning: false, conflicts: [] },
+        })) }],
+    } });
     if (path.endsWith('/code-traceability-projection')) return route.fulfill({ json: {
       subject_type: 'card', subject_id: 'c', subject_version: 1, profile: 'detail', context_scope: 'default',
       targets: [{ id: 'target-capacity', card_id: 'c', source_ref: 'mock-source', selector_kind: 'symbol', relative_path_hint: 'capacity.py',
@@ -171,6 +191,43 @@ test('P08/U01/U04/U09: native board and Delivery show separate accessible metric
   await expect(page.getByRole('dialog', { name: 'Readiness Spec' })).toHaveCount(1);
   await specDialog.getByRole('button', { name: 'Close spec' }).click();
   await expect(reference).toBeFocused();
+  const inspectionLink = diagnosis.getByRole('button', { name: 'review-capacity', exact: true });
+  await inspectionLink.focus();
+  await page.keyboard.press('Enter');
+  const inspectionRecord = specDialog.getByRole('article', { name: 'Decision inspection record' });
+  await expect(inspectionRecord).toBeFocused();
+  await inspectionRecord.getByText('capacity-scope · Passed', { exact: true }).click();
+  await inspectionRecord.getByText('mock-only · Passed', { exact: true }).click();
+  await expect(inspectionRecord.getByText('Inspected capacity-scope against the versioned manifest.')).toBeVisible();
+  await expect(inspectionRecord.getByText('Inspected mock-only against the versioned manifest.')).toBeVisible();
+  expect(await inspectionRecord.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+  await page.setViewportSize({ width: 1280, height: 1200 });
+  await inspectionRecord.scrollIntoViewIfNeeded();
+  await inspectionRecord.screenshot({ path: test.info().outputPath('readiness-native-inspection.png') });
+  await specDialog.getByRole('button', { name: 'Close spec' }).click();
+  await expect(inspectionLink).toBeFocused();
+  await page.setViewportSize({ width: 390, height: 844 });
+  const receiptLink = diagnosis.getByRole('button', { name: 'receipt-capacity', exact: true });
+  await receiptLink.focus();
+  await page.keyboard.press('Enter');
+  const receiptDetail = specDialog.getByRole('article', { name: 'Test receipt detail' });
+  await expect(receiptDetail).toBeFocused();
+  await expect(receiptDetail.getByText('Expected rejection; observed acceptance.')).toBeVisible();
+  expect(await receiptDetail.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+  await receiptDetail.screenshot({ path: test.info().outputPath('readiness-native-test-receipt.png') });
+  await specDialog.getByRole('button', { name: 'Close spec' }).click();
+  await expect(receiptLink).toBeFocused();
+  const exceptionLink = diagnosis.getByRole('button', { name: 'waiver-capacity', exact: true });
+  await exceptionLink.focus();
+  await page.keyboard.press('Enter');
+  const exceptionDetail = specDialog.getByRole('article', { name: 'Delivery exception detail' });
+  await expect(exceptionDetail).toBeFocused();
+  await expect(exceptionDetail.getByText('Delivery exception · Revoked')).toBeVisible();
+  await expect(specDialog.getByRole('tab', { name: 'Implementation', exact: true })).toHaveAttribute('aria-selected', 'true');
+  expect(await exceptionDetail.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+  await exceptionDetail.screenshot({ path: test.info().outputPath('readiness-native-exception.png') });
+  await specDialog.getByRole('button', { name: 'Close spec' }).click();
+  await expect(exceptionLink).toBeFocused();
   await diagnosis.getByRole('button', { name: 'record-capacity', exact: true }).click();
   const record = page.getByRole('article', { name: 'Delivery record detail' });
   await expect(record).toBeFocused();

@@ -26,7 +26,7 @@ Historical evidence must not be rewritten. Gates and diagnostics must share fact
 | P06 | Gates, transições e autorização de override | IN_PROGRESS |
 | P07 | REST/MCP e erros | IN_PROGRESS (contract tests passed; prerequisite acceptance reconciliation pending) |
 | P08 | Mostradores e face do card | IMPLEMENTED (focused tests and visual checks passed; full acceptance P11) |
-| P09 | Painel de pendências e atualização cruzada | IN_PROGRESS (diagnosis/direct Card entry verified; native links and full invalidation pending) |
+| P09 | Painel de pendências e atualização cruzada | IMPLEMENTED (native links, invalidation and focused browser tests passed; full acceptance P11) |
 | P10 | Documentação, compatibilidade e pacote | PENDING |
 | P11 | Verificação integrada e relatório final | PENDING |
 
@@ -898,3 +898,28 @@ Validation completed before this checkpoint:
 - git diff --check passed. Backend source unchanged; no new backend audit or final wheel acceptance claimed. No production installation/restart/data mutation.
 
 Resume: P09 remains IN_PROGRESS. Finish native test-receipt, inspection and exception destinations with exact authorized ownership; complete pagination/snapshot/accessibility acceptance and investigate the interrupted aggregate run. Then P10 documentation/compatibility/generated frontend packaging and P11 full named-case/invariant reconciliation and final acceptance. Browser captures and local logs (.playwright-cli/ and output/) stay outside implementation commits.
+
+## P09 remaining native evidence destinations and regression closure - 2026-10-14
+
+Starting pair: Core 7d3ee815 / Community 8b03cb6c. The prior goal turn made progress by committing/pushing the pending native Target/record work and its evidence.
+
+Implemented:
+- Native inspection navigation opens the exact Decision-review batch in Decisions, showing all observations, author, edition, revocation, sources and reconciliation. Multi-Decision batches are not reduced to an arbitrary first Decision.
+- Native test receipt navigation compares the opaque receipt exactly against the authorized Spec scenario evidence. It never decodes the receipt, guesses a ledger ID, or substitutes a newer run. The native Tests detail exposes recorded output/attestation or the existing external report; changed, missing or ambiguous pointers are rejected.
+- Spec-owned delivery exceptions open Coverage > Implementation, with exact record, actor, justification, phase, disposition, recorded bindings and revocation. They are explicitly not proof and never routed to a Card ledger. Missing historical disposition is not silently reclassified by this display.
+- Native reads retain Board/Spec ownership checks, late-response invalidation and existing authorization. In-place exception navigation refreshes evidence, so the displayed revocation is reread.
+- Additional detail-page tests cover append/deduplication and exact native references, plus invalidation on changed snapshot, scope or issue.
+- Resolved the interrupted seven-file run: KanbanBoard.impactEvidence used a fresh API mock on each render, unlike the memoized production hook. Stabilized the mock and supplied a rejected readiness read; preserved every DnD assertion. The same aggregate run then passed all 61 tests in 11.75s.
+
+Validation:
+- Inspection/navigation/Spec validation: 90 passed across three files (61.27s).
+- Receipt/navigation/inspection/Spec activity: 59 passed across four files (22.03s).
+- Exception/navigation/DeliveryEvidence: 60 passed across three files (4.99s).
+- Coverage/DeliveryEvidence/Decision badge regressions: final 46 passed across three files (6.05s). Initial run exposed a fixture missing Board/Spec identity; added those native contract fields, without changing its assertions.
+- Final diagnosis-detail suite: 11 passed (3.65s), including all added pagination-race tests.
+- Final TypeScript build passed. Global lint passed at 313 warnings / zero errors within unchanged limits; targeted final ESLint passed. git diff --check passed.
+- Final Chromium E2E passed (17.1s total, test 15.3s): keyboard navigation to all native evidence kinds, exact focused objects, return focus, single modal, compact states, background refresh, dark 390px viewport, and no writes. All API requests were intercepted; no production database was used.
+- Inspected screenshots of the complete multi-Decision batch, exact test receipt and revoked exception. The earlier compact-error sticky-header capture limitation remains a final U09 visual review item, not proof of full screen-reader acceptance. Native evidence screenshots are unobscured after adapting capture dimensions.
+- No backend source change, production install/restart, data mutation or release. Isolated Vite stopped; captures remain local.
+
+P09 implementation is established with focused and real-frontend evidence. Proceed to P10 documentation, explicit deprecated-contract compatibility and packaged frontend. P11 must still reconcile every named case/invariant, verify full cross-surface mutation flows, accessibility/state coverage, performance/payload/read-only behavior and final wheels. Do not declare the entire plan delivered from the focused UI checks.

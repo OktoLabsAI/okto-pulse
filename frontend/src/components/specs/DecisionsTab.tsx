@@ -19,7 +19,7 @@ import { useDashboardApi } from '@/services/api';
 import { PulseLoader } from '@/components/shared/PulseLoader';
 import type { DecisionReviewProjection, DecisionVerification } from '@/types/decision-reviews';
 import { DecisionVerificationEditor, decisionObligationOptions } from './DecisionVerificationEditor';
-import { DecisionReviewSection, decisionStatusLabel } from './DecisionReviewSection';
+import { DecisionInspectionDetails, DecisionReviewSection, decisionStatusLabel } from './DecisionReviewSection';
 
 interface DecisionsTabProps {
   spec: Spec;
@@ -34,6 +34,7 @@ interface DecisionsTabProps {
   canLinkTask?: boolean;
   canReview?: boolean;
   focusEditId?: string | null;
+  focusInspectionId?: string | null;
   focusCreateToken?: number | null;
   onFocusHandled?: () => void;
 }
@@ -56,6 +57,7 @@ export function DecisionsTab({
   canLinkTask = true,
   canReview = false,
   focusEditId = null,
+  focusInspectionId = null,
   focusCreateToken = null,
   onFocusHandled,
 }: DecisionsTabProps) {
@@ -82,13 +84,15 @@ export function DecisionsTab({
   useEffect(() => {
     const controller = new AbortController();
     setReviewData(null); setReviewError('');
-    if (spec.board_id && decisions.length) {
+    if (spec.board_id && (decisions.length || focusInspectionId)) {
       api.getDecisionReviews(spec.board_id, spec.id, controller.signal).then(value => {
+        if (value.board_id !== spec.board_id || value.spec_id !== spec.id)
+          throw new Error('Decision inspection scope changed. Refresh the Spec.');
         if (!controller.signal.aborted) setReviewData(value);
       }).catch(e => { if (!controller.signal.aborted) setReviewError(e instanceof Error ? e.message : 'Decision verification could not be loaded.'); });
     }
     return () => controller.abort();
-  }, [api, spec.board_id, spec.id, spec.version, spec.edition, spec.decisions, reviewRefresh]);
+  }, [api, spec.board_id, spec.id, spec.version, spec.edition, spec.decisions, reviewRefresh, focusInspectionId]);
   const frs = spec.functional_requirements || [];
   // Canonical source_ref shape per board_source_store.py + cognitive_badge_resolver.py
   // is `decision:<spec_id>:<decision_id>` — keep the UI in lockstep so badges
@@ -341,7 +345,7 @@ export function DecisionsTab({
         </div>
       )}
 
-      {activeTotal > 0 && !reviewData && !reviewError && <PulseLoader label="Loading decision verification…" size="sm" />}
+      {(activeTotal > 0 || focusInspectionId) && !reviewData && !reviewError && <PulseLoader label="Loading decision verification…" size="sm" />}
       {reviewError && <p role="alert" className="text-sm text-red-600">{reviewError}</p>}
       {activeTotal > 0 && <button type="button" className="btn btn-secondary text-xs" onClick={() => setReviewRefresh(v => v + 1)}>Refresh verification</button>}
 
@@ -355,6 +359,9 @@ export function DecisionsTab({
           </p>
         </div>
       )}
+
+      {focusInspectionId && reviewData?.board_id === spec.board_id && reviewData?.spec_id === spec.id
+        && <DecisionInspectionDetails data={reviewData} recordId={focusInspectionId} />}
 
       {/* Decisions list */}
       {decisions.map((d) => {

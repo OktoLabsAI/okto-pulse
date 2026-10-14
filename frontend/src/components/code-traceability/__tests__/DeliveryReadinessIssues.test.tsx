@@ -46,6 +46,42 @@ function detail(): ReadinessDetail {
 beforeEach(() => { vi.clearAllMocks(); api.getDeliveryReadiness.mockResolvedValue(response()); api.getDeliveryReadinessPage.mockResolvedValue(detail()); });
 afterEach(cleanup);
 
+it('P09 appends complete detail pages once without losing their native references', async () => {
+  const first = { id: 'first', type: 'evidence' as const, section: 'evidence_refs' as const,
+    value: { kind: 'receipt', id: 'receipt-one', source_ref: null, revision: null } };
+  const second = { ...first, id: 'second', value: { ...first.value, kind: 'inspection', id: 'review-two' } };
+  api.getDeliveryReadinessPage.mockResolvedValueOnce({ ...detail(), entries: [first],
+    page: { ...detail().page, total: 2, has_more: true, next_cursor: 'next', response_truncated: true } })
+    .mockResolvedValueOnce({ ...detail(), entries: [first, second], page: { ...detail().page, total: 2, returned: 2 } });
+  const navigate = vi.fn();
+  render(<DeliveryReadinessIssues value={response()} onNavigate={{ open: navigate }} onSnapshotInvalid={vi.fn()} />);
+  fireEvent.click(screen.getByText('Capacity has no current verification.').closest('summary')!);
+  fireEvent.click(screen.getByText('Open all details and actions'));
+  await screen.findByRole('button', { name: 'receipt-one' });
+  fireEvent.click(screen.getByText('Load more details'));
+  fireEvent.click(await screen.findByRole('button', { name: 'review-two' }));
+  expect(screen.getAllByRole('button', { name: 'receipt-one' })).toHaveLength(1);
+  expect(navigate).toHaveBeenCalledWith({ type: 'inspection', id: 'review-two' });
+  expect(screen.getByText('2 of 2 detail entries loaded')).toBeVisible();
+  expect(screen.queryByText('Load more details')).not.toBeInTheDocument();
+});
+
+it.each(['snapshot', 'scope', 'issue'])('U08 rejects changed %s on a subsequent detail page', async change => {
+  const first = { ...detail(), entries: [{ id: 'first', type: 'evidence', section: 'observed', value: { text: 'First generation fact' } }],
+    page: { ...detail().page, total: 2, has_more: true, next_cursor: 'next' } };
+  const changed = { ...detail(), ...(change === 'snapshot' ? { snapshot_id: 'b'.repeat(64) }
+    : change === 'scope' ? { scope: { ...detail().scope, card_id: 'other' } } : { issue_id: 'other' }) };
+  api.getDeliveryReadinessPage.mockResolvedValueOnce(first).mockResolvedValueOnce(changed);
+  render(<DeliveryReadinessPanel boardId="b" specId="s" cardId="c" focusDiagnosis />);
+  fireEvent.click((await screen.findByText('Capacity has no current verification.')).closest('summary')!);
+  fireEvent.click(screen.getByText('Open all details and actions'));
+  await screen.findByText('First generation fact');
+  fireEvent.click(screen.getByText('Load more details'));
+  expect(await screen.findByText('The assessment changed. Refresh before continuing.')).toBeVisible();
+  expect(screen.queryByText('First generation fact')).not.toBeInTheDocument();
+  expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+});
+
 it('pages complete cause facts with the exact cursor and clears them when access becomes restricted', async () => {
   const first: ReadinessDetail = { ...detail(), entries: [{ id: 'fact-1', type: 'evidence', section: 'observed', value: { text: 'Authorized native detail' } }],
     page: { total: 2, returned: 1, has_more: true, next_cursor: 'detail-next', response_truncated: true, phase_filter: 'all' } };

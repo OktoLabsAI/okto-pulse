@@ -55,15 +55,17 @@ function Meter({ label, value, description }: { label: string;
 }
 
 /** Lazy contextual read. Navigation never repairs the graph or changes a gate. */
-export function SpecCoveragePanel({ boardId, specId, revision, canCorrect = [], onOpenSection, canReadSummary = true, canReadImplementation = true, skipDeliveryEvidence, onSkipDeliveryEvidenceChange, onOpenReadinessSpec }: {
+export function SpecCoveragePanel({ boardId, specId, revision, canCorrect = [], onOpenSection, canReadSummary = true, canReadImplementation = true, skipDeliveryEvidence, onSkipDeliveryEvidenceChange, onOpenReadinessSpec, focusExceptionId }: {
   boardId: string; specId: string; revision: string; canCorrect?: CoverageSection[];
   onOpenSection: (section: CoverageSection) => void;
   canReadSummary?: boolean; canReadImplementation?: boolean; skipDeliveryEvidence?: boolean;
   onSkipDeliveryEvidenceChange?: (value: boolean) => void;
   onOpenReadinessSpec?: (location: ReadinessSpecLocation) => void;
+  focusExceptionId?: string | null;
 }) {
   const api = useDashboardApi();
   const [view, setView] = useState<CoverageView>(canReadSummary ? 'overview' : 'implementation');
+  useEffect(() => { if (focusExceptionId && canReadImplementation) setView('implementation'); }, [focusExceptionId, canReadImplementation]);
   const [data, setData] = useState<SpecCoverageResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -125,6 +127,7 @@ export function SpecCoveragePanel({ boardId, specId, revision, canCorrect = [], 
       items={availableViews.map(([id, label]) => ({ id, label }))} value={activeView} onValueChange={setView} />
     {canReadImplementation && <AccessibleTabPanel idBase={tabId} tabId="implementation" value={activeView}>
       <DeliveryEvidencePanel boardId={boardId} specId={specId} revision={revision}
+        focusExceptionId={focusExceptionId}
         onOpenReadinessSpec={onOpenReadinessSpec}
         onOpenDecisions={() => onOpenSection('decisions')}
         skipDeliveryEvidence={skipDeliveryEvidence} onSkipDeliveryEvidenceChange={onSkipDeliveryEvidenceChange} />

@@ -4,7 +4,7 @@ import { AuthenticatedFetchError } from '@/lib/authFetch';
 import type { SpecCoverageResponse } from './specCoverageTypes';
 const api = vi.hoisted(() => ({ getSpecCoverage: vi.fn() }));
 vi.mock('@/services/api', () => ({ useDashboardApi: () => api }));
-vi.mock('@/components/code-traceability/DeliveryEvidencePanel', () => ({ DeliveryEvidencePanel: () => <div>Unified implementation checks</div> }));
+vi.mock('@/components/code-traceability/DeliveryEvidencePanel', () => ({ DeliveryEvidencePanel: ({ focusExceptionId }: { focusExceptionId?: string }) => <div>Unified implementation checks{focusExceptionId && <span>Exception: {focusExceptionId}</span>}</div> }));
 import { SpecCoveragePanel } from './SpecCoveragePanel';
 
 const base: SpecCoverageResponse = {
@@ -27,6 +27,14 @@ function page(title: string, next: string | null = null): SpecCoverageResponse {
   return { ...base, next_cursor: next, items: [{ kind: 'structure_node', node_type: 'spec', subject_ref: title, observation: 'observed' }] };
 }
 beforeEach(() => { vi.clearAllMocks(); api.getSpecCoverage.mockResolvedValue(base); });
+
+it('opens the native implementation subtab for an exact exception and retains read authority', async () => {
+  const view = render(<SpecCoveragePanel boardId="board" specId="spec" revision="1" focusExceptionId="waiver" onOpenSection={vi.fn()} />);
+  await waitFor(() => expect(screen.getByRole('tab', { name: 'Implementation' })).toHaveAttribute('aria-selected', 'true'));
+  expect(screen.getByText('Exception: waiver')).toBeVisible();
+  view.rerender(<SpecCoveragePanel boardId="board" specId="spec" revision="1" focusExceptionId="waiver" onOpenSection={vi.fn()} canReadImplementation={false} />);
+  expect(screen.queryByText('Exception: waiver')).not.toBeInTheDocument();
+});
 
 it('displays inherited BR planning coverage without granting implementation or verification credit', async () => {
   api.getSpecCoverage.mockResolvedValue({ ...base,

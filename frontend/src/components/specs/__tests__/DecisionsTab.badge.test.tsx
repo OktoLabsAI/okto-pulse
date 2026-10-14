@@ -18,7 +18,7 @@ import * as kgHealthApi from '@/services/kg-health-api';
 import type { Spec } from '@/types';
 
 vi.mock('@/services/api', () => ({ useDashboardApi: () => decisionApi }));
-const decisionApi = { getDecisionReviews: vi.fn().mockResolvedValue({ decisions: [], history: [], complete: false }) };
+const decisionApi = { getDecisionReviews: vi.fn().mockResolvedValue({ board_id: 'board-decisions-tab', spec_id: 'spec_test', decisions: [], history: [], complete: false }) };
 
 const { hasPermission } = vi.hoisted(() => ({
   hasPermission: vi.fn(),
@@ -106,7 +106,7 @@ afterEach(() => {
 describe('DecisionsTab cognitive badge wiring', () => {
   it('never renders a complete progress bar from an incomplete evidence population', async () => {
     vi.mocked(kgHealthApi.getKGCognitivePendingBadges).mockRejectedValueOnce(new Error('Graph unavailable'));
-    decisionApi.getDecisionReviews.mockResolvedValueOnce({ complete: false, history: [],
+    decisionApi.getDecisionReviews.mockResolvedValueOnce({ board_id: BOARD_ID, spec_id: 'spec_test', complete: false, history: [],
       decisions: [{ decision_id: 'dec_alpha', status: 'verified' }, { decision_id: 'dec_beta', status: 'verified' }] });
     render(<DecisionsTab spec={buildSpec()} onUpdate={() => undefined} />);
     await screen.findAllByText('Verified');

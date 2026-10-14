@@ -18,6 +18,7 @@ import { CriterionVerificationDetails } from './CriterionVerificationPanel';
 import { RequirementVerificationPanel } from './RequirementVerificationPanel';
 import { ScenarioVerificationMethodEditor } from './ScenarioVerificationMethodEditor';
 import { VerificationReportDetails } from './VerificationReportDetails';
+import { ScenarioReceiptDetails } from './ScenarioReceiptDetails';
 import { verificationRequirementOptions } from './criterionVerificationOptions';
 import {
   X,
@@ -283,6 +284,7 @@ function stableEntityPayload(item: StructuredObjectEntity): Record<string, unkno
 
 function TestScenariosTab({
   spec,
+  focusReceipt,
   onUpdate,
   onSpecUpdate,
   onSpecRefreshed,
@@ -290,6 +292,7 @@ function TestScenariosTab({
   policyRefreshKey,
 }: {
   spec: Spec;
+  focusReceipt?: string | null;
   onUpdate: (scenarios: TestScenario[]) => void;
   onSpecUpdate: (data: Record<string, unknown>) => Promise<void>;
   onSpecRefreshed: (updated: Spec) => void;
@@ -409,6 +412,8 @@ function TestScenariosTab({
           <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${spec.skip_test_coverage ? 'translate-x-5' : ''}`} />
         </button>
       </div>
+
+      {focusReceipt && <ScenarioReceiptDetails scenarios={scenarios} receipt={focusReceipt} />}
 
       {/* Scenarios list */}
       {scenarios.length === 0 && !adding && (
@@ -2293,6 +2298,7 @@ export function SpecModal({
           )}
           {activeTab === 'coverage' && spec.id === specId && (canReadCoverage || canReadCodeTraceability) && (
             <SpecCoveragePanel boardId={spec.board_id} specId={spec.id} revision={`${spec.edition}:${spec.version}:${spec.updated_at}`}
+              focusExceptionId={readinessReference?.startsWith('exception:') ? readinessReference.slice('exception:'.length) : null}
               canReadSummary={canReadCoverage} canReadImplementation={canReadCodeTraceability}
               skipDeliveryEvidence={spec.skip_delivery_evidence}
               onSkipDeliveryEvidenceChange={canEditCodeEvidenceCoverage ? async (value) => {
@@ -2345,6 +2351,7 @@ export function SpecModal({
 
           {activeTab === 'tests' && spec && (
             <TestScenariosTab
+              focusReceipt={readinessReference?.startsWith('receipt:') ? readinessReference.slice('receipt:'.length) : null}
               spec={spec}
               canReadPolicyCompliance={canReadPolicyCompliance}
               policyRefreshKey={testScenarioPolicyRefreshKey}
@@ -2570,6 +2577,7 @@ export function SpecModal({
           {activeTab === 'decisions' && spec && (
             <DecisionsTab
               spec={spec}
+              focusInspectionId={readinessReference?.startsWith('inspection:') ? readinessReference.slice('inspection:'.length) : null}
               canCreate={canStructured('decision', 'create')}
               canEdit={canStructured('decision', 'update')}
               canDelete={canStructured('decision', 'revoke')}

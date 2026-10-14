@@ -1,5 +1,6 @@
 import { resolveDeliveryGateMode } from '@/components/board/deliveryGateSettings';
 import { DeliveryReadinessPanel } from './DeliveryReadinessPanel';
+import { DeliveryExceptionDetails } from './DeliveryExceptionDetails';
 import type { ReadinessSpecLocation } from './readinessNavigation';
 import { useEffect, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
@@ -17,6 +18,7 @@ interface Props {
   onSkipDeliveryEvidenceChange?: (value: boolean) => void;
   onOpenDecisions?: () => void;
   onOpenReadinessSpec?: (location: ReadinessSpecLocation) => void;
+  focusExceptionId?: string | null;
 }
 
 function ObligationEvidenceDetails({ data, row }: {
@@ -68,7 +70,7 @@ function ObligationEvidenceDetails({ data, row }: {
 // (mockup sm_5ebd7063). Read-only by design: recording is card-scoped
 // (task DoD) and waivers are rollup-level, human-only — this surface only
 // presents the aggregated verdict, never mutates it.
-export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryEvidence = false, onSkipDeliveryEvidenceChange, onOpenDecisions, onOpenReadinessSpec }: Props) {
+export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryEvidence = false, onSkipDeliveryEvidenceChange, onOpenDecisions, onOpenReadinessSpec, focusExceptionId }: Props) {
   const api = useDashboardApi();
   const [data, setData] = useState<DeliveryEvidenceProjection | null>(null);
   const [gateMode, setGateMode] = useState<'advisory' | 'blocking' | null>(null);
@@ -79,13 +81,14 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
     const controller = new AbortController();
     setData(null); setGateMode(null); setError('');
     api.getDeliveryEvidence(boardId, specId, controller.signal).then(value => {
+      if (value.board_id !== boardId || value.spec_id !== specId) throw new Error('Delivery evidence scope changed. Refresh the Spec.');
       if (!controller.signal.aborted) setData(value);
     }).catch(err => { if (!controller.signal.aborted) setError(err instanceof Error ? err.message : 'Delivery proof could not be loaded.'); });
     api.getBoard(boardId).then(board => {
       if (!controller.signal.aborted) setGateMode(resolveDeliveryGateMode(board.settings?.delivery_evidence_gate));
     }).catch(() => { if (!controller.signal.aborted) setGateMode(null); });
     return () => controller.abort();
-  }, [api, boardId, specId, revision, reload]);
+  }, [api, boardId, specId, revision, reload, focusExceptionId]);
 
   const missingImplementation = data?.rows.filter(row => !row.implementation_satisfied).length ?? 0;
   const missingTest = data?.rows.filter(row => !row.test_satisfied && !row.decision_verification_status).length ?? 0;
@@ -98,6 +101,8 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
       .filter(Boolean).join(' · ') + ' obligation' + ((missingImplementation + missingTest) === 1 ? '' : 's');
 
   return <section className="space-y-5" aria-label="Implementation and verification">
+    {focusExceptionId && data?.board_id === boardId && data.spec_id === specId
+      && <DeliveryExceptionDetails data={data} recordId={focusExceptionId} />}
     <DeliveryReadinessPanel boardId={boardId} specId={specId} revision={`${revision ?? ''}:${reload}`} onOpenReadinessSpec={onOpenReadinessSpec} />
     <p className="text-sm text-gray-500 dark:text-gray-400">Track implementation and verification for each obligation. Expand an item to inspect its evidence.</p>
     <div className="flex flex-wrap items-center justify-between gap-4">

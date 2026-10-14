@@ -35,6 +35,22 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
+it('refreshes exception detail when navigating in-place and rejects foreign evidence', async () => {
+  const data = projection();
+  data.records = [{ id: 'waiver', kind: 'waiver', actor_id: 'human', created_at: '2026-10-14T10:00:00Z', revoked: false,
+    payload: { justification: 'Recorded scope exception', phase: 'test' } }];
+  api.getDeliveryEvidence.mockResolvedValueOnce(data).mockResolvedValueOnce({ ...data, records: [{ ...data.records[0], revoked: true }] })
+    .mockResolvedValueOnce({ ...data, board_id: 'foreign' });
+  const view = render(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  await screen.findByText('Bindings live on the card ledger');
+  view.rerender(<DeliveryEvidencePanel boardId="b" specId="s" focusExceptionId="waiver" />);
+  expect(await screen.findByText('Delivery exception · Revoked')).toBeInTheDocument();
+  expect(api.getDeliveryEvidence).toHaveBeenCalledTimes(2);
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh delivery rollup' }));
+  expect(await screen.findByText('Delivery evidence scope changed. Refresh the Spec.')).toBeInTheDocument();
+  expect(screen.queryByText('Recorded scope exception')).not.toBeInTheDocument();
+});
+
 it('shows Decision adherence without implementation credit and links to its single review form', async () => {
   const data = projection();
   data.rows = [{ ...data.rows[0], obligation: { title: 'Only the mock', binding: { obligation_ref: 'decision:d', semantic_sha256: 'd'.repeat(64) } },
