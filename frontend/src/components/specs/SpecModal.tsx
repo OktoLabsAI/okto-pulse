@@ -2282,14 +2282,14 @@ export function SpecModal({
             <SpecCoveragePanel boardId={spec.board_id} specId={spec.id} revision={`${spec.edition}:${spec.version}:${spec.updated_at}`}
               canReadSummary={canReadCoverage} canReadImplementation={canReadCodeTraceability}
               skipDeliveryEvidence={spec.skip_delivery_evidence}
-              onSkipDeliveryEvidenceChange={async (value) => {
+              onSkipDeliveryEvidenceChange={canEditCodeEvidenceCoverage ? async (value) => {
                 try {
                   const updated = await api.updateSpec(specId, { skip_delivery_evidence: value } as any);
                   setSpec(updated);
                 } catch (err) {
                   toast.error(err instanceof Error && err.message ? err.message : 'Failed to update spec');
                 }
-              }}
+              } : undefined}
               onOpenSection={setActiveTab}
               canCorrect={!spec.archived && spec.status === 'draft' ? [
                 ...(hasPermissionWithState(perms.has, 'spec.tests.edit', 'spec', spec.status) ? ['tests' as const] : []),

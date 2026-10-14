@@ -24,6 +24,7 @@ const apiMock = vi.hoisted(() => ({
   getArchitectureClassifications: vi.fn(),
   getRequirementVerification: vi.fn(),
   updateSpecEntity: vi.fn(),
+  updateSpec: vi.fn(),
 }));
 const permissionMock = vi.hoisted(() => ({
   allowAll: true,
@@ -169,6 +170,14 @@ vi.mock('../SpecValidationHistoryPanel', () => ({
   ),
 }));
 
+vi.mock('../SpecCoveragePanel', () => ({
+  SpecCoveragePanel: ({ onSkipDeliveryEvidenceChange }: { onSkipDeliveryEvidenceChange?: (value: boolean) => void }) => (
+    <div data-testid="coverage-panel">
+      {onSkipDeliveryEvidenceChange && <button onClick={() => onSkipDeliveryEvidenceChange(true)}>Skip delivery gate</button>}
+    </div>
+  ),
+}));
+
 vi.mock('react-hot-toast', () => ({
   default: { error: vi.fn(), success: vi.fn() },
 }));
@@ -249,6 +258,34 @@ async function openCriteria() {
 }
 
 describe('SpecModal validation navigation', () => {
+  it.each(['draft', 'review', 'approved', 'validated', 'in_progress', 'done'] as SpecStatus[])(
+    'offers delivery override only in authorized Draft: %s', async status => {
+      apiMock.updateSpec.mockResolvedValue({ ...baseSpec, skip_delivery_evidence: true });
+      renderSpec(status);
+      fireEvent.click(await screen.findByRole('tab', { name: 'Coverage' }));
+      await screen.findByTestId('coverage-panel');
+      expect(Boolean(screen.queryByRole('button', { name: 'Skip delivery gate' }))).toBe(status === 'draft');
+      if (status === 'draft') {
+        fireEvent.click(screen.getByRole('button', { name: 'Skip delivery gate' }));
+        await waitFor(() => expect(apiMock.updateSpec).toHaveBeenCalledWith(baseSpec.id, { skip_delivery_evidence: true }));
+      }
+    },
+  );
+
+  it.each(['spec.entity.edit_coverage_flags', 'spec.interact_in.draft', 'archived'])(
+    'hides delivery override without authority: %s', async missing => {
+      permissionMock.allowAll = false;
+      permissionMock.allowed = new Set(['board.read', 'spec.entity.read', 'card.entity.read', 'spec.tests.read',
+        'spec.integration_requirements.read', 'spec.observability_requirements.read', 'code_traceability.evidence.read',
+        'spec.entity.edit_coverage_flags', 'spec.interact_in.draft'].filter(flag => flag !== missing));
+      apiMock.getSpec.mockResolvedValue({ ...baseSpec, archived: missing === 'archived' });
+      render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+      fireEvent.click(await screen.findByRole('tab', { name: 'Coverage' }));
+      await screen.findByTestId('coverage-panel');
+      expect(screen.queryByRole('button', { name: 'Skip delivery gate' })).not.toBeInTheDocument();
+    },
+  );
+
   it('groups requirement and verification editors without duplicating the old top-level tabs', async () => {
     renderSpec('draft');
     await screen.findByText(baseSpec.title);
