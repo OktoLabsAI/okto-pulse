@@ -8,6 +8,7 @@ import type {
   Card,
   CardSummary,
   CardStatus,
+  Spec,
   PolicyComplianceTransitionDecision,
   TestScenario,
 } from '@/types';
@@ -144,12 +145,6 @@ vi.mock('react-hot-toast', () => ({
     error: vi.fn(),
     success: vi.fn(),
   },
-}));
-
-vi.mock('@/components/shared/EditableField', () => ({
-  EditableField: ({ value, renderView, placeholder }: any) => (
-    <div>{value ? renderView(value) : placeholder}</div>
-  ),
 }));
 
 vi.mock('@/components/shared/MarkdownContent', () => ({
@@ -498,6 +493,8 @@ describe('CardModal', () => {
     learningCaptureApi.history.mockReset().mockResolvedValue({ items: [], next_cursor: null });
     learningCaptureApi.create.mockReset();
     vi.clearAllMocks();
+    workspace.options = null;
+    workspace.refreshPermissions.mockReset().mockResolvedValue({ board_id: 'board-1', flags: { card: { entity: { read: true } } } });
     permissionsMock.has.mockImplementation((_permission: string) => true);
     storeMock.selectedCardId = 'bug-1';
     storeMock.isCardModalOpen = true;
@@ -709,11 +706,18 @@ describe('CardModal', () => {
     await waitFor(() => expect(apiMock.getSpec).toHaveBeenCalled());
     if (cardType === 'normal') {
       expect(await screen.findByText(/This Spec is Done\. Normal task content is locked/)).toBeVisible();
-      expect(title).toHaveAttribute('contenteditable', 'false');
+      fireEvent.click(title);
+      expect(screen.queryByPlaceholderText('Card title')).not.toBeInTheDocument();
+      expect(apiMock.updateCard).not.toHaveBeenCalled();
       const status = screen.getByRole('combobox', { name: 'Card status' });
       expect(within(status).queryByRole('option', { name: 'Started' })).not.toBeInTheDocument();
     } else {
-      expect(title).toHaveAttribute('contenteditable', 'true');
+      apiMock.updateCard.mockResolvedValue({ ...selected, title: 'Updated regression work' });
+      fireEvent.click(title);
+      const input = screen.getByPlaceholderText('Card title');
+      fireEvent.change(input, { target: { value: 'Updated regression work' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => expect(apiMock.updateCard).toHaveBeenCalledWith(selected.id, { title: 'Updated regression work' }));
       expect(screen.queryByText(/Normal task content is locked/)).not.toBeInTheDocument();
     }
     expect(screen.getByRole('tab', { name: /^Comments/ })).toBeVisible();
@@ -725,7 +729,7 @@ describe('CardModal', () => {
     expect(cardKnowledgeTabMock.render).toHaveBeenLastCalledWith(expect.objectContaining({ readOnly: cardType === 'normal' }));
     fireEvent.click(screen.getByRole('tab', { name: /^Architecture/ }));
     expect(screen.getByTestId('architecture-tab')).toHaveAttribute('data-locked', String(cardType === 'normal'));
-    expect(apiMock.updateCard).not.toHaveBeenCalled();
+    expect(apiMock.updateCard).toHaveBeenCalledTimes(cardType === 'normal' ? 0 : 1);
     expect(apiMock.moveCard).not.toHaveBeenCalled();
   });
 
@@ -831,9 +835,9 @@ describe('CardModal', () => {
       />,
     );
 
-    expect(
-      await screen.findByRole('heading', { name: rejectedCard.title }),
-    ).toHaveAttribute('contenteditable', 'false');
+    fireEvent.click(await screen.findByText(rejectedCard.title));
+    expect(screen.queryByPlaceholderText('Card title')).not.toBeInTheDocument();
+    expect(apiMock.updateCard).not.toHaveBeenCalled();
     expect(screen.queryByRole('button', { name: 'Delete' }))
       .not.toBeInTheDocument();
     const status = await screen.findByRole('combobox', { name: 'Card status' });
@@ -1377,6 +1381,57 @@ describe('CardModal', () => {
       view.unmount();
       vi.useRealTimers();
     }
+  });
+
+  it('preserves an unsaved title when an external revision changes the saved value', async () => {
+    render(<CardModal boardId="board-1" />);
+    await screen.findByRole('tablist', { name: 'Card sections' });
+    fireEvent.click(screen.getByText(bugCard.title));
+    fireEvent.change(screen.getByPlaceholderText('Card title'), { target: { value: 'My local draft' } });
+    apiMock.getCard.mockResolvedValue({ ...bugCard, title: 'Remote title', updated_at: '2026-10-14T21:00:00Z' });
+    await externalRevision();
+    expect(await screen.findByText('Current value: Remote title')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('Card title')).toHaveValue('My local draft');
+    fireEvent.blur(screen.getByPlaceholderText('Card title'));
+    expect(apiMock.updateCard).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Use current value' }));
+    expect(screen.getByText('Remote title')).toBeInTheDocument();
+  });
+
+  it('queues external invalidation while the original threshold read is pending', async () => {
+    const spec = deferred<Spec>();
+    apiMock.getSpec.mockReturnValueOnce(spec.promise);
+    render(<CardModal boardId="board-1" />);
+    await screen.findByRole('tablist', { name: 'Card sections' });
+    await externalRevision();
+    expect(apiMock.getCard).toHaveBeenCalledTimes(1);
+    await act(async () => spec.resolve({ id: 'spec-1', title: 'Loaded', test_scenarios: [] } as unknown as Spec));
+    await waitFor(() => expect(apiMock.getCard).toHaveBeenCalledTimes(2));
+  });
+
+  it('does not poll the full card without a revision change', async () => {
+    vi.useFakeTimers();
+    const view = render(<CardModal boardId="board-1" />);
+    try {
+      await flushMicrotasks();
+      expect(apiMock.getCard).toHaveBeenCalledTimes(1);
+      await act(async () => vi.advanceTimersByTimeAsync(30_000));
+      expect(apiMock.getCard).toHaveBeenCalledTimes(1);
+    } finally { view.unmount(); vi.useRealTimers(); }
+  });
+
+  it('clears the Card after access is revoked and ignores a late data response', async () => {
+    const late = deferred<Card>();
+    render(<CardModal boardId="board-1" />);
+    await screen.findByRole('tablist', { name: 'Card sections' });
+    apiMock.getCard.mockReturnValueOnce(late.promise);
+    await externalRevision();
+    workspace.refreshPermissions.mockResolvedValue({ board_id: 'board-1', flags: { card: { entity: { read: false } } } });
+    await act(async () => workspace.options!.onChange({ subjects: workspace.options!.subjects, initial: false, authorityChanged: true }));
+    expect(storeMock.closeCardModal).toHaveBeenCalled();
+    await act(async () => late.resolve({ ...bugCard, title: 'Protected late result' }));
+    expect(screen.queryByText('Protected late result')).not.toBeInTheDocument();
+    expect(screen.queryByText(bugCard.title)).not.toBeInTheDocument();
   });
 
   it('does not restore a projected Q&A count when card.qa.read is denied', async () => {

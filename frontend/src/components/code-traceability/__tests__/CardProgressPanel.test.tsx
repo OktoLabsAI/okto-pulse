@@ -111,6 +111,31 @@ it('uses zero as a real empty-ledger revision', async () => {
   expect(api.recordCardDeliveryEvidence.mock.calls[0][3].expected_delivery_revision).toBe(0);
 });
 
+it('keeps a checkpoint draft on its original basis until the current basis is reviewed', async () => {
+  const p = props(); const view = render(<CardProgressPanel {...p} />); fill();
+  view.rerender(<CardProgressPanel {...p} edition={3} card={{ ...card, card_version: 9, delivery_revision: 8 }} />);
+  expect(screen.getByLabelText('Work recorded')).toHaveValue('Parser changed');
+  expect(screen.getByRole('button', { name: 'Save progress' })).toBeDisabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Save progress' }));
+  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Review current basis for this checkpoint' }));
+  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Save progress' }));
+  await waitFor(() => expect(api.recordCardDeliveryEvidence).toHaveBeenCalledOnce());
+  expect(api.recordCardDeliveryEvidence.mock.calls[0][3]).toMatchObject({ expected_card_version: 9, expected_spec_edition: 3, expected_delivery_revision: 8 });
+});
+
+it('preserves draft text but cannot record after read failure or an external lifecycle change', () => {
+  const p = props(); const view = render(<CardProgressPanel {...p} />); fill();
+  view.rerender(<CardProgressPanel {...p} readReady={false} />);
+  expect(screen.getByLabelText('Remaining work')).toHaveValue('Normalization missing');
+  expect(screen.getByRole('button', { name: 'Save progress' })).toBeDisabled();
+  view.rerender(<CardProgressPanel {...p} card={{ ...card, status: 'rejected' }} />);
+  expect(screen.getByLabelText('Work recorded')).toHaveValue('Parser changed');
+  expect(screen.getByRole('button', { name: 'Save progress' })).toBeDisabled();
+  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
+});
+
 it('shows several saved facts and an explicit history limit after reload', async () => {
   const entries = ['First change', 'Second change'].map((summary, i) => ({ id: String(i), actor_id: 'original-author', created_at: 'today', summary, remaining: 'Next work', text_truncated: false, material_change: 'unknown', source_state: { workspace_state: 'dirty', recoverability: 'external_workspace' }, target_ids: [] }));
   api.getBoard.mockResolvedValue({ settings: {} });

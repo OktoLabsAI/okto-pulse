@@ -5,9 +5,10 @@ import { CardResumePanel } from './CardResumePanel';
 import { DeliveryDisclosure, deliveryButton, deliveryError, deliveryField, deliveryNotice, deliverySection } from './deliveryPresentation';
 import type { CardDeliveryBatchInput, CardDeliveryBatchDraft, DeliveryPerCard } from '@/types/delivery-evidence';
 
-export function CardProgressPanel({ boardId, specId, edition, card, canWrite, onSaved, onStage }: {
+export function CardProgressPanel({ boardId, specId, edition, card, canWrite, readReady = true, onSaved, onStage }: {
   boardId: string; specId: string; edition: number; card: DeliveryPerCard;
   canWrite: boolean; onSaved: () => void;
+  readReady?: boolean;
   onStage?: (draft: CardDeliveryBatchDraft) => void;
 }) {
   const api = useDashboardApi();
@@ -18,18 +19,24 @@ export function CardProgressPanel({ boardId, specId, edition, card, canWrite, on
   const [targets, setTargets] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [basis, setBasis] = useState<{ edition: number; cardVersion: number | undefined; deliveryRevision: number | undefined } | null>(null);
   const pending = useRef(false);
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const retry = useRef<{ body: string; key: string } | null>(null);
   const writable = canWrite && ['started', 'in_progress'].includes(card.status) && !!card.card_version && card.delivery_revision !== undefined;
+  const currentBasis = { edition, cardVersion: card.card_version, deliveryRevision: card.delivery_revision };
+  const captureBasis = () => setBasis(value => value ?? currentBasis);
+  const basisChanged = basis !== null && (basis.edition !== edition || basis.cardVersion !== card.card_version || basis.deliveryRevision !== card.delivery_revision);
+  const missingTargets = change === 'targets' && targets.some(id => !card.progress?.target_options?.some(target => target.id === id));
+  const canSave = writable && readReady && !basisChanged && !missingTargets;
 
   async function save() {
-    if (!writable || pending.current || !summary.trim() || !remaining.trim() || !change || (change === 'targets' && !targets.length)) return;
+    if (!canSave || pending.current || !summary.trim() || !remaining.trim() || !change || (change === 'targets' && !targets.length)) return;
     const input: CardDeliveryBatchInput = {
       contract_version: 'card-delivery-batch/v1',
-      expected_card_version: card.card_version!, expected_spec_edition: edition,
-      expected_delivery_revision: card.delivery_revision!, idempotency_key: '',
+      expected_card_version: (basis ?? currentBasis).cardVersion!, expected_spec_edition: (basis ?? currentBasis).edition,
+      expected_delivery_revision: (basis ?? currentBasis).deliveryRevision!, idempotency_key: '',
       entries: [{ client_ref: 'progress', kind: 'progress', obligation_refs: [], justification: summary.trim(),
         progress: { contract_version: 'delivery-progress/v2', material_change: change, target_ids: change === 'targets' ? targets : [], remaining: remaining.trim(),
           source_state: { workspace_state: dirty ? 'dirty' : 'unknown', recoverability: dirty ? 'external_workspace' : 'unknown' } } }],
@@ -43,7 +50,7 @@ export function CardProgressPanel({ boardId, specId, edition, card, canWrite, on
         expected_spec_edition: input.expected_spec_edition, expected_delivery_revision: input.expected_delivery_revision, entries: input.entries });
       else await api.recordCardDeliveryEvidence(boardId, card.card_id, specId, input);
       if (!mounted.current) return;
-      retry.current = null; setSummary(''); setRemaining(''); setDirty(false); setChange(''); setTargets([]); if (!onStage) onSaved();
+      retry.current = null; setBasis(null); setSummary(''); setRemaining(''); setDirty(false); setChange(''); setTargets([]); if (!onStage) onSaved();
     } catch (err) {
       if (mounted.current) setError(err instanceof Error ? err.message : 'Progress could not be saved. Retry with the same content.');
     } finally { pending.current = false; if (mounted.current) setBusy(false); }
@@ -64,13 +71,20 @@ export function CardProgressPanel({ boardId, specId, edition, card, canWrite, on
     {!onStage && !!card.progress?.total && <CardProgressHistory key={`history:${boardId}:${card.card_id}:${specId}:${edition}:${card.delivery_revision}`} boardId={boardId} cardId={card.card_id} specId={specId} edition={edition} />}
     {!onStage && <CardResumePanel key={`${boardId}:${card.card_id}:${specId}:${edition}:${card.delivery_revision}`} boardId={boardId} cardId={card.card_id} specId={specId} edition={edition} />}
     {error && <p role="alert" className={deliveryError}>{error}</p>}
-    {writable ? <div className={deliverySection}>
+    {(writable || (canWrite && basis)) ? <div className={deliverySection}>
       <h4 className="text-sm font-semibold text-gray-800 dark:text-gray-100">New checkpoint</h4>
-      <label className="block font-medium">Work recorded<textarea rows={3} aria-label="Work recorded" value={summary} maxLength={20000} onChange={e => setSummary(e.target.value)} disabled={busy} className={deliveryField} /></label>
-      <label className="block font-medium">Remaining work<textarea rows={3} aria-label="Remaining work" value={remaining} maxLength={8000} onChange={e => setRemaining(e.target.value)} disabled={busy} className={deliveryField} /></label>
-      <label className="block"><input type="checkbox" checked={dirty} onChange={e => { setDirty(e.target.checked); if (e.target.checked && (!change || change === 'none')) setChange('unknown'); }} disabled={busy} /> Work is in an external dirty workspace</label>
+      {basisChanged && <div role="alert" className={deliveryNotice}>
+        <p>The Card or delivery basis changed. Your checkpoint draft has been preserved.</p>
+        <button type="button" className={deliveryButton} disabled={!readReady || !writable || busy} onClick={() => { setBasis(currentBasis); retry.current = null; }}>Review current basis for this checkpoint</button>
+      </div>}
+      {!readReady && <p role="status">Recording is disabled until current delivery evidence can be confirmed.</p>}
+      {!writable && <p role="status">This Card no longer permits recording progress in its current state.</p>}
+      {missingTargets && <p role="alert">A selected Target is no longer available. Select the current affected Targets before saving.</p>}
+      <label className="block font-medium">Work recorded<textarea rows={3} aria-label="Work recorded" value={summary} maxLength={20000} onChange={e => { captureBasis(); setSummary(e.target.value); }} disabled={busy} className={deliveryField} /></label>
+      <label className="block font-medium">Remaining work<textarea rows={3} aria-label="Remaining work" value={remaining} maxLength={8000} onChange={e => { captureBasis(); setRemaining(e.target.value); }} disabled={busy} className={deliveryField} /></label>
+      <label className="block"><input type="checkbox" checked={dirty} onChange={e => { captureBasis(); setDirty(e.target.checked); if (e.target.checked && (!change || change === 'none')) setChange('unknown'); }} disabled={busy} /> Work is in an external dirty workspace</label>
       <label className="block">Code change in this checkpoint
-        <select aria-label="Code change in this checkpoint" value={change} onChange={e => setChange(e.target.value as typeof change)} disabled={busy} className={deliveryField}>
+        <select aria-label="Code change in this checkpoint" value={change} onChange={e => { captureBasis(); setChange(e.target.value as typeof change); }} disabled={busy} className={deliveryField}>
           <option value="">Select the effect on code…</option>
           <option value="none">Context only — no code change</option>
           <option value="targets">Code changed for selected Targets</option>
@@ -82,7 +96,7 @@ export function CardProgressPanel({ boardId, specId, edition, card, canWrite, on
         {card.progress?.targets_truncated && <p>The Target list is shortened. Use the scoped API for other Targets.</p>}
       </fieldset>}
       {change && change !== 'none' && <p>Earlier observations of {change === 'targets' ? 'these Targets' : 'this card’s work'} stop proving the current result until a new accepted observation. Other notes do not restore proof.</p>}
-      <button type="button" className={deliveryButton} onClick={save} disabled={busy || !summary.trim() || !remaining.trim() || !change || (change === 'targets' && !targets.length)}>{onStage ? 'Add progress to report draft' : 'Save progress'}</button>
+      <button type="button" className={deliveryButton} onClick={save} disabled={busy || !canSave || !summary.trim() || !remaining.trim() || !change || (change === 'targets' && !targets.length)}>{onStage ? 'Add progress to report draft' : 'Save progress'}</button>
     </div> : <p className={deliveryNotice}>Recording progress requires execution state and permission to write the card’s report.</p>}
   </section>;
 }

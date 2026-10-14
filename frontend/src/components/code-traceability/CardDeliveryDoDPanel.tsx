@@ -9,6 +9,7 @@ import { PulseLoader } from '@/components/shared/PulseLoader';
 import { DeliveryDisclosure } from './deliveryPresentation';
 import { DeliveryReadinessPanel } from './DeliveryReadinessPanel';
 import { CardLedgerPanel } from './CardLedgerPanel';
+import { AuthenticatedFetchError } from '@/lib/authFetch';
 import type { ReadinessCardLocation } from './readinessNavigation';
 import type {
   CardDeliveryEvidenceInput,
@@ -52,6 +53,7 @@ export function CardDeliveryDoDPanel({ boardId, card, revision = 0, canRecord = 
   const [formBasis, setFormBasis] = useState<{ data: DeliveryEvidenceProjection; revision: number } | null>(null);
   const [loadedRevision, setLoadedRevision] = useState(revision);
   const [loading, setLoading] = useState(true);
+  const [readFailed, setReadFailed] = useState(false);
   const [refs, setRefs] = useState<string[]>([]);
   const [contributions, setContributions] = useState<Record<string, 'partial' | 'complete'>>({});
   const [composeProofs, setComposeProofs] = useState(false);
@@ -70,10 +72,19 @@ export function CardDeliveryDoDPanel({ boardId, card, revision = 0, canRecord = 
 
   useEffect(() => {
     const controller = new AbortController();
-    setLoading(true); setError('');
+    setLoading(true); setReadFailed(false); setError('');
     api.getDeliveryEvidence(boardId, card.spec_id, controller.signal).then(value => {
       if (!controller.signal.aborted) { setData(value); setLoadedRevision(revision); }
-    }).catch(err => { if (!controller.signal.aborted) setError(err instanceof Error ? err.message : 'Delivery proof could not be loaded.'); })
+    }).catch(err => {
+      if (controller.signal.aborted) return;
+      setReadFailed(true);
+      setError(err instanceof Error ? err.message : 'Delivery proof could not be loaded.');
+      if (err instanceof AuthenticatedFetchError && [401, 403, 404].includes(err.status)) {
+        setData(null); setFormBasis(null); setFormOpen(false);
+        setRefs([]); setContributions({}); setExecutionSets({}); setChoice(''); setTestedIds([]); setReason('');
+        replayRef.current = null;
+      }
+    })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     api.getBoard(boardId).then(board => {
       if (!controller.signal.aborted) setGateMode(resolveDeliveryGateMode(board.settings?.delivery_evidence_gate));
@@ -87,7 +98,7 @@ export function CardDeliveryDoDPanel({ boardId, card, revision = 0, canRecord = 
     formBasis.revision !== revision || formBasis.data !== data
   ));
   const openRecordingForm = () => {
-    if (!data || loading) return;
+    if (!data || loading || readFailed || loadedRevision !== revision) return;
     setFormBasis({ data, revision: loadedRevision }); setFormOpen(true); setError('');
   };
 
@@ -115,7 +126,7 @@ export function CardDeliveryDoDPanel({ boardId, card, revision = 0, canRecord = 
 
   async function submit() {
     const justification = reason.trim();
-    if (!recordingData || busy || loading || basisChanged || unavailableSelections || !justification || !refs.length) return;
+    if (!recordingData || busy || loading || readFailed || basisChanged || unavailableSelections || !justification || !refs.length) return;
     const selected = candidates.find(c => `${c.card_id}:${c.id}` === choice);
     const key = crypto.randomUUID();
     const input: CardDeliveryEvidenceInput = {
@@ -160,7 +171,7 @@ export function CardDeliveryDoDPanel({ boardId, card, revision = 0, canRecord = 
 
   async function submitWaiver() {
     const justification = reason.trim();
-    if (!recordingData || busy || loading || basisChanged || unavailableSelections || !justification || !refs.length) return;
+    if (!recordingData || busy || loading || readFailed || basisChanged || unavailableSelections || !justification || !refs.length) return;
     const input: DeliveryEvidenceInput = {
       expected_edition: recordingData.edition, expected_version: recordingData.version,
       idempotency_key: crypto.randomUUID(), kind: 'waiver',
@@ -179,12 +190,16 @@ export function CardDeliveryDoDPanel({ boardId, card, revision = 0, canRecord = 
     {!onStage && <DeliveryReadinessPanel boardId={boardId} specId={card.spec_id} cardId={card.id} revision={`${reload}:${revision}`} focusDiagnosis={focusDiagnosis} onOpenReadinessCard={onOpenReadinessCard} />}
     {isTest && !onStage && <div className="flex justify-end"><button type="button" disabled={!data && !error} onClick={() => setReload(value => value + 1)} className="rounded-md border border-gray-300 px-3 py-2 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800">Refresh evidence</button></div>}
     {error && <p role="alert" className="rounded-md border border-red-300 bg-red-50 p-3 text-xs text-red-700 dark:border-red-900/70 dark:bg-red-950/25 dark:text-red-300">{error}</p>}
+    {readFailed && <div className="text-sm text-amber-700 dark:text-amber-300">
+      <p>Current delivery evidence could not be confirmed. Recording is disabled until it can be loaded.</p>
+      <button type="button" className="btn btn-secondary mt-2" onClick={() => setReload(value => value + 1)}>Retry evidence</button>
+    </div>}
     {!data && !error && <PulseLoader label="Loading delivery evidence…" />}
     {data && <>
       {!onStage && focusRecordId && <CardLedgerPanel key={`${boardId}:${card.id}:${data.edition}:${focusRecordId}`}
         boardId={boardId} cardId={card.id} specId={card.spec_id} edition={data.edition} initialRecordId={focusRecordId} />}
       {isTest && !onStage && <TestDeliveryOverview data={data} cardId={card.id} />}
-      {mine && !isTest && <CardProgressPanel key={`${boardId}:${card.id}:${data.edition}:${canProgress}`} boardId={boardId} specId={card.spec_id} edition={data.edition} card={mine} canWrite={canProgress} onStage={onStage} onSaved={() => { setReload(v => v + 1); onChanged?.(); }} />}
+      {mine && !isTest && <CardProgressPanel key={`${boardId}:${card.id}:${card.spec_id}:${canProgress}`} boardId={boardId} specId={card.spec_id} edition={data.edition} card={mine} canWrite={canProgress} readReady={!loading && !readFailed && loadedRevision === revision} onStage={onStage} onSaved={() => { setReload(v => v + 1); onChanged?.(); }} />}
       {!onStage && <>
       {!isTest && mine?.accumulated_impact && <DeliveryNetImpactPanel value={mine.accumulated_impact} />}
       {!isTest && mine?.report_impact?.source === 'accumulated' && <p role="status" className="text-sm">
@@ -246,7 +261,7 @@ export function CardDeliveryDoDPanel({ boardId, card, revision = 0, canRecord = 
         <form className="space-y-3 rounded-md border p-3" onSubmit={e => { e.preventDefault(); void (canWaiver && !canRecordKind ? submitWaiver() : submit()); }} data-testid="dod-record-form">
           {basisChanged && <div role="alert" className="rounded border border-amber-300 p-3 text-sm">
             <p>Delivery evidence changed. Your selections and explanation still use the original basis.</p>
-            <button type="button" disabled={loading || loadedRevision !== revision || !data} className="btn btn-secondary mt-2"
+            <button type="button" disabled={loading || readFailed || loadedRevision !== revision || !data} className="btn btn-secondary mt-2"
               onClick={() => { if (data) { setFormBasis({ data, revision: loadedRevision }); replayRef.current = null; } }}>
               Review latest evidence for this draft
             </button>
@@ -328,7 +343,7 @@ export function CardDeliveryDoDPanel({ boardId, card, revision = 0, canRecord = 
           <label className="block text-sm">Explanation / audit reason
             <textarea required maxLength={20000} className={`${field} mt-1`} value={reason} onChange={e => setReason(e.target.value)} placeholder={isTest ? 'Explain what this run observed for the selected obligations, including failures.' : 'Explain how this execution receipt covers the selected obligations.'} />
           </label>
-          <button type="submit" disabled={busy || loading || basisChanged || unavailableSelections || !refs.length || !reason.trim() || (canRecordKind && (compose ? !setsReady : !choice || (isTest && !testedIds.length)))} className="rounded bg-cyan-700 px-3 py-2 text-sm text-white disabled:opacity-50">
+          <button type="submit" disabled={busy || loading || readFailed || basisChanged || unavailableSelections || !refs.length || !reason.trim() || (canRecordKind && (compose ? !setsReady : !choice || (isTest && !testedIds.length)))} className="rounded bg-cyan-700 px-3 py-2 text-sm text-white disabled:opacity-50">
             {busy ? 'Saving…' : onStage ? 'Add evidence to report draft' : canWaiver && !canRecordKind ? 'Record waiver (spec rollup)' : 'Record delivery evidence'}
           </button>
         </form>

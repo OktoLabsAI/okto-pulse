@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { CardDeliveryDoDPanel } from '../CardDeliveryDoDPanel';
 import type { DeliveryEvidenceProjection } from '@/types/delivery-evidence';
 
@@ -109,6 +109,9 @@ it('loads a newly eligible run after refresh, without listing foreign cards runs
     { kind: 'test', id: 'foreign', card_id: 'another-card', label: 'Foreign run' },
   ] });
   fireEvent.click(screen.getByRole('button', { name: 'Refresh evidence' }));
+  const review = await screen.findByRole('button', { name: 'Review latest evidence for this draft' });
+  await waitFor(() => expect(review).toBeEnabled());
+  fireEvent.click(review);
   expect(await screen.findByRole('option', { name: 'Verified capacity run · passed' })).toBeInTheDocument();
   expect(screen.getByRole('combobox', { name: /Authenticated run/ })).toBeEnabled();
   expect(screen.queryByRole('option', { name: 'Foreign run' })).not.toBeInTheDocument();
@@ -379,4 +382,99 @@ it('does not apply the implementation DoD presentation to a Test Card with inher
   expect(screen.queryByTestId('dod-blocked-banner')).not.toBeInTheDocument();
   expect(screen.getByTestId('dod-record-button')).toBeInTheDocument();
   expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
+});
+
+async function fillRecordingDraft() {
+  fireEvent.click(await screen.findByTestId('dod-record-button'));
+  fireEvent.click(screen.getByLabelText('Select ac:ac_77ce'));
+  fireEvent.change(screen.getByRole('combobox'), { target: { value: 'task-1:execution-1' } });
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Preserved explanation' } });
+}
+
+it('preserves a delivery draft and adopts new CAS values only after explicit review', async () => {
+  const initial = projection();
+  Object.assign(initial.per_card![0], { card_version: 4, delivery_revision: 3 });
+  api.getDeliveryEvidence.mockResolvedValue(initial);
+  const onStage = vi.fn();
+  const view = render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord revision={0} onStage={onStage} />);
+  await fillRecordingDraft();
+  const current = projection();
+  current.edition = 3;
+  Object.assign(current.per_card![0], { card_version: 7, delivery_revision: 5 });
+  current.candidates[0].card_version = 7;
+  api.getDeliveryEvidence.mockResolvedValue(current);
+  view.rerender(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord revision={1} onStage={onStage} />);
+  const review = await screen.findByRole('button', { name: 'Review latest evidence for this draft' });
+  await waitFor(() => expect(review).toBeEnabled());
+  expect(screen.getByRole('textbox')).toHaveValue('Preserved explanation');
+  expect(screen.getByLabelText('Select ac:ac_77ce')).toBeChecked();
+  const submit = screen.getByRole('button', { name: 'Add evidence to report draft' });
+  expect(submit).toBeDisabled();
+  fireEvent.submit(screen.getByTestId('dod-record-form'));
+  expect(onStage).not.toHaveBeenCalled();
+  fireEvent.click(review);
+  expect(onStage).not.toHaveBeenCalled();
+  fireEvent.click(submit);
+  await waitFor(() => expect(onStage).toHaveBeenCalledOnce());
+  expect(onStage.mock.calls[0][0]).toMatchObject({ expected_card_version: 7, expected_spec_edition: 3, expected_delivery_revision: 5,
+    entries: [{ justification: 'Preserved explanation', execution_id: 'execution-1' }] });
+});
+
+it('blocks recording after a failed refresh and retains selections through retry', async () => {
+  const view = render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord revision={0} />);
+  await fillRecordingDraft();
+  api.getDeliveryEvidence.mockRejectedValueOnce(new Error('Refresh failed'));
+  view.rerender(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord revision={1} />);
+  expect(await screen.findByText('Refresh failed')).toBeInTheDocument();
+  const submit = screen.getByRole('button', { name: 'Record delivery evidence' });
+  expect(submit).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Review latest evidence for this draft' })).toBeDisabled();
+  expect(screen.getByRole('textbox')).toHaveValue('Preserved explanation');
+  fireEvent.submit(screen.getByTestId('dod-record-form'));
+  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Retry evidence' }));
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Review latest evidence for this draft' })).toBeEnabled());
+  fireEvent.click(screen.getByRole('button', { name: 'Review latest evidence for this draft' }));
+  expect(screen.getByRole('textbox')).toHaveValue('Preserved explanation');
+  fireEvent.click(submit);
+  await waitFor(() => expect(api.recordCardDeliveryEvidence).toHaveBeenCalledOnce());
+});
+
+it('does not retain a selected receipt as admissible after it disappears on review', async () => {
+  const view = render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord revision={0} />);
+  await fillRecordingDraft();
+  api.getDeliveryEvidence.mockResolvedValue({ ...projection(), candidates: [] });
+  view.rerender(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord revision={1} />);
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Review latest evidence for this draft' })).toBeEnabled());
+  fireEvent.click(screen.getByRole('button', { name: 'Review latest evidence for this draft' }));
+  expect(screen.getByText(/Some selected obligations or receipts are no longer available/)).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Record delivery evidence' })).toBeDisabled();
+  fireEvent.submit(screen.getByTestId('dod-record-form'));
+  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
+});
+
+it('ignores an older pending projection after the current revision has loaded', async () => {
+  let resolveOld!: (value: DeliveryEvidenceProjection) => void;
+  api.getDeliveryEvidence.mockReturnValueOnce(new Promise<DeliveryEvidenceProjection>(resolve => { resolveOld = resolve; }));
+  const view = render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord revision={0} />);
+  const current = projection(); current.per_card![0].obligations[0].title = 'Current obligation';
+  api.getDeliveryEvidence.mockResolvedValue(current);
+  view.rerender(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord revision={1} />);
+  expect(await screen.findByText('Current obligation')).toBeVisible();
+  await act(async () => resolveOld(projection()));
+  expect(screen.getByText('Current obligation')).toBeVisible();
+  expect(screen.queryByText('Bindings live on the card ledger')).not.toBeInTheDocument();
+});
+
+it('retries a failed submission with its original receipt key and without requiring a new read', async () => {
+  api.recordCardDeliveryEvidence.mockRejectedValueOnce(new Error('Write interrupted'));
+  render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord />);
+  await fillRecordingDraft();
+  fireEvent.click(screen.getByRole('button', { name: 'Record delivery evidence' }));
+  expect(await screen.findByText('Write interrupted')).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Retry evidence' })).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Record delivery evidence' })).toBeEnabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Record delivery evidence' }));
+  await waitFor(() => expect(api.recordCardDeliveryEvidence).toHaveBeenCalledTimes(2));
+  expect(api.recordCardDeliveryEvidence.mock.calls[1][3]).toEqual(api.recordCardDeliveryEvidence.mock.calls[0][3]);
 });
