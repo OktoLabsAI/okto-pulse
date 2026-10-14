@@ -27,8 +27,8 @@ Historical evidence must not be rewritten. Gates and diagnostics must share fact
 | P07 | REST/MCP e erros | IN_PROGRESS (contract tests passed; prerequisite acceptance reconciliation pending) |
 | P08 | Mostradores e face do card | IMPLEMENTED (focused tests and visual checks passed; full acceptance P11) |
 | P09 | Painel de pendências e atualização cruzada | IMPLEMENTED (native links, invalidation and focused browser tests passed; full acceptance P11) |
-| P10 | Documentação, compatibilidade e pacote | PENDING |
-| P11 | Verificação integrada e relatório final | PENDING |
+| P10 | Documentação, compatibilidade e pacote | IMPLEMENTED (docs/manifests, paired locks, built/installed asset parity and bundle browser test passed) |
+| P11 | Verificação integrada e relatório final | IN_PROGRESS (full named-case/invariant reconciliation and final acceptance pending) |
 
 ## Consumer inventory (P00.2)
 
@@ -923,3 +923,19 @@ Validation:
 - No backend source change, production install/restart, data mutation or release. Isolated Vite stopped; captures remain local.
 
 P09 implementation is established with focused and real-frontend evidence. Proceed to P10 documentation, explicit deprecated-contract compatibility and packaged frontend. P11 must still reconcile every named case/invariant, verify full cross-surface mutation flows, accessibility/state coverage, performance/payload/read-only behavior and final wheels. Do not declare the entire plan delivered from the focused UI checks.
+
+## P10 documentation, compatibility and packaged frontend - 2026-10-14
+
+Starting pair: Core 893a36dc / Community 975b021b. Continued directly after the P09 push.
+
+- Updated Code Traceability reference/tool docs, Card/Spec workflows and agent operating instructions. Documented independent floored proof counts, Card/Test/Spec units, N/A versus unknown and waiver, current proof versus lifecycle, bounded diagnostic/action/detail reads, native links, minimal association-first recovery and historical Done.
+- Corrected the obsolete Card workflow ordering that required completion before implementation association. Explicitly retained the deprecated delivery_completeness contract and prohibited translating its maturity stages into new metrics; no evidence rewrite/backfill/migration.
+- Regenerated tools_catalog, ska_resource_manifest and ska_tool_manifest using their official modules. Only the resource manifest changed semantically; catalog/tool inventory remained identical.
+- Found both uv lockfiles still describing 0.3.3. Pinned the Core development edition to 0.4.0 and added paired local editable uv sources for the documented sibling repositories. Regenerated both locks without upgrading unrelated dependencies. Initial non-editable sources conflicted with uv's editable root; using the same editable identity for both local roots resolved it. Published wheel metadata retains the exact version dependency, not a local URL.
+- Ran the native frontend build/contract/sync pipeline and verify:frontend-dist: 79 packaged files, release 0.4.0, pulse-edition-api/4; tree SHA-256 6497e5e1b3177b45b067d2355c3efd094be84f67a3f7e24a38fdcc6f0335afc3. Existing bundle-size/Browserslist warnings were not suppressed.
+- Tested the production bundle with vite preview and the real Chromium readiness flow: 1 passed (9.5s total, 7.6s test), all API requests intercepted and writes refused. Preview was stopped afterwards.
+- Core old/new contract, deprecated completeness, catalog drift, SK-A manifest and agent-instruction suites: 95 passed (12.39s). Frontend version/incompatibility/metric hooks: 22 passed (5.21s), including U10 refusing a legacy score as readiness.
+- uv lock --check passed for both repositories (157/152 packages). Official source closure passed: 8964 ownership rows, zero findings, all eight budgets ZERO, exact README projections.
+- Built and force-reinstalled the pair only inside PULSE_REFACTOR/.validation-v040/dv-venv with no dependency install. Re-proved exact bytes for 861 Core and 323 Community Python files, 59 MCP Markdown/JSON resources and all 79 installed frontend files. Installed metadata confirms paired 0.4.0, exact Core version pin and no local URL dependency. This is not production reinstall and does not substitute for P11 final-wheel acceptance.
+
+P10 implementation and focused packaging evidence are established. P11 remains required: reconcile all 96 named cases and 15 invariants against actual assertions/results, run the integrated scenarios and broader relevant suites, measure read-only/performance/payload behavior and perform final wheel acceptance. A preliminary name-only inventory is local at PULSE_REFACTOR/.validation-v040/readiness-case-name-inventory.json; missing names there are not proof of missing behavior (parameter IDs and frontend tests need inspection). Full delivery is not yet claimed.
