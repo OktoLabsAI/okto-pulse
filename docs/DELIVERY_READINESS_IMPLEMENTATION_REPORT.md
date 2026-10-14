@@ -838,3 +838,15 @@ P09 is IN_PROGRESS, not complete:
 2. Extend existing delivery-evidence-changed invalidation to all relevant successful mutations/events, including test outcome/binding, Target/selection/contribution, edition, Decision, waiver/revocation, status and policy. Current evidence-save callback and focus refresh alone do not prove U07.
 3. Finish detail pagination/restriction/snapshot races and the full accessibility/layout state matrix, including compact loading/error height consistency and N/A CTA semantics. Final global lint (34 refresh warnings / budget 32) remains unresolved as previously recorded.
 4. Then P10 documentation/compatibility/generated packaged frontend and P11 full matrix, integrated flows, payload/performance/read-only/final-wheel checks. Do not restart completed backend milestones or claim final delivery.
+
+## P09 mutation refresh checkpoint requested by user - 2026-10-14
+
+Starting pair: Core d2198e0a / Community fafdb229. Saved all pending implementation changes at the user's request.
+
+- Added a shared, coalesced delivery-readiness invalidation signal after successful relevant writes through AuthenticatedFetch and the direct Board settings client. Reads, previews and rejected writes do not emit it.
+- Reused the existing Card modal refresh cycle to refresh verification affected by external-agent writes on related Cards; no new polling loop or persisted score.
+- Added regression coverage for mutation families, rejected writes, coalescing and U07: an authenticated Test-result write refreshes both the board cover and open Spec projection.
+- Validation at this checkpoint: 60 tests passed across readinessEvents, authFetch and useDeliveryReadiness; TypeScript build passed; targeted ESLint completed with zero errors and 13 existing CardModal warnings; git diff --check passed. No new browser acceptance or full global lint success is claimed.
+- No production installation, restart or data mutation. Generated .playwright-cli/ and output/ captures/logs remain local and outside implementation commits.
+
+Resume: P09 remains IN_PROGRESS. Production reference navigation is still unwired; continue native Card/Spec references with exact ownership/scope and focus, then pagination/restriction/snapshot-race and accessibility/layout checks. Mutation refresh now has focused integration evidence; browser-wide acceptance remains pending. Continue P10 documentation/packaging and P11 full matrix/final validation as already recorded. The global lint ratchet issue remains open. This checkpoint does not declare final delivery.

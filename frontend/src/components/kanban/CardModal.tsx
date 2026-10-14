@@ -3,6 +3,7 @@
  */
 
 import React, { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { notifyReadinessChanged } from '@/lib/readinessEvents';
 import { CardScenarioReferenceNotice } from './CardScenarioReferenceNotice';
 import { MissingLinkNotice } from '@/components/shared/MissingLinkNotice';
 import { DeliverySelectionEditor } from '@/components/code-traceability/DeliverySelectionEditor';
@@ -784,6 +785,9 @@ export function CardModal({
         const subjectChanged =
           card?.id === data.id
           && card.updated_at !== data.updated_at;
+        // Reuse the existing modal refresh cycle for external-agent writes.
+        // Verification may change on another Card while this Card stays Done.
+        notifyReadinessChanged();
         const previousStatus = cardStatusRef.current;
         cardStatusRef.current = reconciled.status;
         setCard(reconciled);
@@ -1833,7 +1837,7 @@ export function CardModal({
                     canWaiver={perms.has('code_traceability.waiver.create')}
                     onOpenTests={canReadTests && card.card_type === 'test' ? () => setActiveTab('tests') : undefined}
                     focusDiagnosis={cardModalTarget?.focusDiagnosis}
-                    onChanged={() => { void loadCard(card.id); window.dispatchEvent(new Event('pulse:delivery-evidence-changed')); }}
+                    onChanged={() => { void loadCard(card.id); notifyReadinessChanged(); }}
                   />
                 </AccessibleTabPanel>
               )}
