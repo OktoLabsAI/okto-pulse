@@ -21,7 +21,7 @@ from okto_pulse.community.adapters.delivery_verification import native_verificat
 from okto_pulse.community.adapters.sqlalchemy_decision_reviews import CommunityDecisionReviews
 from okto_pulse.community.adapters.sqlalchemy_delivery_evidence import CommunityDeliveryEvidenceStore
 from okto_pulse.community.adapters.sqlalchemy_models import (
-    Board, Card, Spec, SpecHistory, DeliveryEvidenceRecordRow as Record,
+    Agent, AgentBoard, Board, BoardShare, PermissionPreset, Card, Spec, SpecHistory, DeliveryEvidenceRecordRow as Record,
     CardDeliveryEvidenceRecordRow as CardRecord, ImplementationTargetExecutionRecordRow as Execution,
     ImplementationTargetRow as Target, CodeInvestigationReceiptRow as Receipt,
     CodeInvestigationReceiptRevocationRow as Revocation,
@@ -32,8 +32,13 @@ from okto_pulse.core.domain.delivery_evidence import (
 from okto_pulse.core.domain.delivery_progress import DeliveryProgress
 from okto_pulse.core.domain.enums import CardType
 from okto_pulse.core.domain.execution_contract import execution_contract
+from okto_pulse.core.domain.realm import LOCAL_REALM_ID
 from okto_pulse.core.ports.delivery_readiness import (
-    ReadinessCard, ReadinessReadError, ReadinessScenarioProcedure, ReadinessSnapshot,
+    ReadinessActor, ReadinessCard, ReadinessReadError, ReadinessScenarioProcedure, ReadinessSnapshot,
+    resolve_readiness_access,
+)
+from okto_pulse.core.ports.permission_policy import (
+    PermissionPresetLineageNode, board_membership_allows_read, resolve_agent_permission_facts,
 )
 from okto_pulse.core.ports.test_evidence import supported_test_verification_methods
 
@@ -213,6 +218,64 @@ class CommunityDeliveryReadinessReader:
         counts['facts'] += len(rows)
         return rows
 
+    async def _access(self, session, actor, board_id, counts):
+        """Load native identity/ACL/preset facts before reading delivery content."""
+        if (not isinstance(actor, ReadinessActor) or not actor.actor_id
+            or actor.actor_kind not in {'human', 'user', 'agent'}
+            or actor.board_id is not None and actor.board_id != board_id):
+            raise ReadinessReadError('readiness_scope_mismatch')
+        boards = await self._rows(session, select(Board).where(Board.id == board_id), 1, counts)
+        realm_id = actor.realm_id or LOCAL_REALM_ID
+        if not boards or (boards[0].realm_id or LOCAL_REALM_ID) != realm_id:
+            raise ReadinessReadError('readiness_scope_mismatch')
+        board = boards[0]
+        binding, share = None, None
+        if actor.actor_kind == 'agent':
+            agents = await self._rows(session, select(Agent).where(Agent.id == actor.actor_id,
+                Agent.is_active.is_(True)), 1, counts)
+            bindings = await self._rows(session, select(AgentBoard).where(
+                AgentBoard.agent_id == actor.actor_id, AgentBoard.board_id == board_id), 1, counts)
+            if not agents or not bindings:
+                raise ReadinessReadError('readiness_scope_mismatch')
+            agent, binding = agents[0], bindings[0]
+            member = board_membership_allows_read(owner_id=board.owner_id, actor_id=actor.actor_id,
+                verified_agent_board_access=True)
+        else:
+            shares = await self._rows(session, select(BoardShare).where(
+                BoardShare.board_id == board_id, BoardShare.user_id == actor.actor_id,
+                BoardShare.realm_id == realm_id), 1, counts)
+            share = shares[0].permission if shares else None
+            member = board_membership_allows_read(owner_id=board.owner_id, actor_id=actor.actor_id,
+                share_permission=share)
+            if not member:
+                raise ReadinessReadError('readiness_scope_mismatch')
+            # Match the existing REST resolve_user_permissions lookup exactly:
+            # user policy follows its first created Agent, otherwise defaults.
+            counts['queries'] += 1
+            agent = (await session.scalars(select(Agent).where(Agent.created_by == actor.actor_id).limit(1))).first()
+            counts['facts'] += int(agent is not None)
+            if agent is not None:
+                bindings = await self._rows(session, select(AgentBoard).where(
+                    AgentBoard.agent_id == agent.id, AgentBoard.board_id == board_id), 1, counts)
+                binding = bindings[0] if bindings else None
+        if not member:
+            raise ReadinessReadError('readiness_scope_mismatch')
+        presets = await self._rows(session, select(PermissionPreset).order_by(PermissionPreset.id), 5000, counts
+            ) if agent is not None and agent.preset_id else ()
+        permissions = resolve_agent_permission_facts(
+            agent_flags=agent.permission_flags if agent is not None else None,
+            preset_id=agent.preset_id if agent is not None else None,
+            presets=tuple(PermissionPresetLineageNode(p.id, p.flags, p.base_preset_id) for p in presets),
+            board_overrides=binding.permission_overrides if binding is not None else None)
+        spec_write_access = board_membership_allows_read(owner_id=board.owner_id, actor_id=actor.actor_id,
+            share_permission=share, verified_agent_board_access=actor.actor_kind == 'agent',
+            allowed_share_permissions={'editor', 'admin'})
+        access = resolve_readiness_access(actor=actor, board_id=board_id, realm_id=realm_id,
+            permissions=permissions, spec_write_access=spec_write_access)
+        access.require('code_traceability.evidence.read')
+        access.require('spec.entity.read')
+        return access
+
     async def _load_transaction(self, session, board_id, spec_id, card_id, counts):
         rows = {}
         rows[Spec] = await self._rows(session, select(Spec).where(Spec.id == spec_id,
@@ -268,7 +331,9 @@ class CommunityDeliveryReadinessReader:
                 tuple(c.test_scenario_ids) if c.test_scenario_ids is not None else None, c.assignee_id)
                 for c in rows[Card] if not c.archived), scenarios)
 
-    async def load(self, *, board_id, spec_id, card_id=None):
+    async def load(self, *, board_id, spec_id, card_id=None, actor=None):
+        # Actor-less reads are internal fact-loader compatibility only. Public
+        # composition requires the access facts produced by an authorized read.
         started = perf_counter()
         counts = {'queries': 0, 'facts': 0}
         try:
@@ -279,7 +344,13 @@ class CommunityDeliveryReadinessReader:
                     await connection.exec_driver_sql('BEGIN')
                     try:
                         async with AsyncSession(bind=connection, autoflush=False, expire_on_commit=False) as session:
+                            access = await self._access(session, actor, board_id, counts) if actor is not None else None
+                            if card_id is not None and access is not None:
+                                access.require('card.entity.read')
                             result = await self._load_transaction(session, board_id, spec_id, card_id, counts)
+                            if access is not None:
+                                result = replace(result, access=access,
+                                    snapshot_id=_digest({'facts': result.snapshot_id, 'access': access}))
                     finally:
                         await connection.rollback()
                     # data_version changes on this connection after ending the

@@ -81,7 +81,7 @@ async def test_batch_procedure_becomes_external_guidance_without_executing_or_wr
         board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID, card_id='test')
     assessment = assess_test_delivery(batch.facts, card_id='test', scenario_ids=(scenarios[0]['id'],))
     projection = compose_delivery_diagnostics(assessment, batch.facts, procedures=batch.scenarios,
-        spec_assessment=assess_obligation_delivery(batch.facts))
+        spec_assessment=assess_obligation_delivery(batch.facts), permissions={'spec.tests.execute': True})
     assert projection.graph.actions
     for action in projection.graph.actions:
         dto = render_diagnostic_action(action)
