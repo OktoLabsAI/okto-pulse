@@ -632,6 +632,7 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       subjectId: string,
       options: {
         includePrevious?: boolean;
+        includePlanning?: boolean;
         offset?: number;
         limit?: number;
         signal?: AbortSignal;
@@ -642,6 +643,7 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
         offset: String(options.offset ?? 0),
         limit: String(options.limit ?? 25),
       });
+      if (options.includePlanning) params.set('include_planning', 'true');
       return apiClient.fetchJson<ValidationCycleSummary>(
         `${qualitySubjectPath(subjectType, subjectId)}/validation-cycle?${params.toString()}`,
         { signal: options.signal },

@@ -886,6 +886,22 @@ export interface SpecPlanningManifest {
   authority_revision: number;
 }
 
+export interface SpecPlanningReadiness {
+  state: 'ready' | 'blocked' | 'unavailable';
+  blocked_actions: string[];
+  components: Array<{
+    key: string;
+    state: 'ready' | 'blocked' | 'unavailable';
+    mode: 'off' | 'advisory' | 'blocking' | null;
+    applicable: boolean | null;
+    native_result: string | null;
+    result_ids: string[];
+    reason_codes: string[];
+    message: string | null;
+    next_action: string | null;
+  }>;
+}
+
 export interface SpecValidationCycleSummary
   extends ValidationCycleSummaryIdentity {
   subject_type: 'spec';
@@ -901,6 +917,7 @@ export interface SpecValidationCycleSummary
   submission_fence?: ValidationSubmissionFence;
   /** Technical submission basis; present only with Spec Validation read access. */
   planning_manifest?: SpecPlanningManifest;
+  planning_readiness?: SpecPlanningReadiness;
   checks: ValidationCycleCheckSummary[];
   remaining_actions: string[];
 }

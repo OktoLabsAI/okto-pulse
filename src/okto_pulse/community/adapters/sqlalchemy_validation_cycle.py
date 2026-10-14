@@ -1463,6 +1463,7 @@ class CommunitySqlAlchemyValidationCycleReader:
         actor_id: str,
         realm_scope: RealmScope,
         board_id: str | None = None,
+        include_planning: bool = False,
     ) -> ValidationCycleSummary:
         self._require_local(realm_scope)
         async with self._session_factory() as session:
@@ -1485,6 +1486,7 @@ class CommunitySqlAlchemyValidationCycleReader:
                         include_previous=include_previous,
                         offset=offset,
                         limit=limit,
+                        include_planning=include_planning,
                     )
                 else:
                     result = await self._ambiguity_cycle(
@@ -1967,6 +1969,7 @@ class CommunitySqlAlchemyValidationCycleReader:
         include_previous: bool,
         offset: int,
         limit: int,
+        include_planning: bool = False,
     ) -> ValidationCycleSummary:
         edition = int(subject.edition)
         validation_visible = access.can(ValidationCycleResultType.SPEC_VALIDATION)
@@ -1996,6 +1999,20 @@ class CommunitySqlAlchemyValidationCycleReader:
         )
         status = _value(subject.status)
         any_started = any(item.status not in {"not_started", "off"} for item in checks)
+        planning = None
+        if include_planning:
+            from okto_pulse.core.runtime_context import current_runtime_values, runtime_value_scope
+            from .sqlalchemy_unit_of_work import CommunityUnitOfWork
+
+            # Bind services to this physical snapshot without replacing the
+            # caller's application-persistence registry or starting another transaction.
+            with runtime_value_scope(current_runtime_values(create=True).copy()):
+                uow = CommunityUnitOfWork(session)
+                native_spec = await uow.services.specs.get_spec(subject.id)
+                native_board = await uow.services.boards.get_board(subject.board_id)
+                planning = await uow.services.specs.get_planning_readiness(
+                    native_spec, native_board, can_read=access.has, can_act=access.has,
+                )
         manifest = None
         if validation_visible:
             manifest, = await CommunitySpecPlanningManifest(session, RealmScope.local()).read_many(
@@ -2041,6 +2058,7 @@ class CommunitySqlAlchemyValidationCycleReader:
             remaining_actions=actions if status == "approved" else (),
             visible_sections=access.visible_sections,
             planning_manifest=manifest,
+            planning_readiness=planning,
         )
 
     async def _batch_spec_checks(

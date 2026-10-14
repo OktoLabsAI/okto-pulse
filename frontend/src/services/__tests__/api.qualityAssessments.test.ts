@@ -195,6 +195,23 @@ describe('quality assessment REST client', () => {
     );
   });
 
+  it('requests full planning admission only when explicitly selected', async () => {
+    const { result } = renderHook(() => useDashboardApi());
+    const readiness = {
+      state: 'unavailable', blocked_actions: ['promote_to_validated'],
+      components: [{ key: 'decomposition', state: 'unavailable', native_result: null,
+        result_ids: [], reason_codes: ['read_access_required'], mode: null,
+        applicable: null, message: null, next_action: null }],
+    };
+    mockApiClient.fetchJson.mockResolvedValueOnce({ subject_type: 'spec', planning_readiness: readiness });
+    const response = await result.current.getValidationCycle('spec', 'spec-1', { includePlanning: true });
+    expect(response).toEqual({ subject_type: 'spec', planning_readiness: readiness });
+    expect(mockApiClient.fetchJson).toHaveBeenCalledWith(
+      '/specs/spec-1/validation-cycle?include_previous=false&offset=0&limit=25&include_planning=true',
+      { signal: undefined },
+    );
+  });
+
   it('submits only the canonical Spec validation and checklist lifecycle fields', async () => {
     const { result } = renderHook(() => useDashboardApi());
     const validation = {

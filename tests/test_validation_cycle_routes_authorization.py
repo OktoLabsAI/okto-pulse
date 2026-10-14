@@ -40,6 +40,7 @@ class _Reader:
         self.audit_error = audit_error
 
     async def get_validation_cycle(self, **_kwargs):
+        self.last_cycle_query = _kwargs
         if self.cycle_error is not None:
             raise self.cycle_error
         assert self.summary is not None
@@ -141,6 +142,28 @@ def test_rest_single_maps_zero_visible_leaf_to_403() -> None:
         "error_code": "permission_denied",
         "retryable": False,
     }
+
+
+def test_rest_explicit_planning_read_preserves_unavailable_components():
+    from dataclasses import replace
+    from okto_pulse.core.domain.spec_planning_readiness import (
+        PLANNING_COMPONENTS, SpecPlanningComponent, SpecPlanningReadiness,
+    )
+
+    planning = SpecPlanningReadiness(tuple(SpecPlanningComponent.unreadable(key) for key in PLANNING_COMPONENTS))
+    summary = replace(_partial_summary(ValidationCycleResultType.REQUIREMENT_LINT), planning_readiness=planning)
+    reader = _Reader(summary=summary)
+    response = _client(reader).get('/api/v1/specs/spec-1/validation-cycle?include_planning=true')
+    assert response.status_code == 200, response.text
+    assert reader.last_cycle_query['include_planning'] is True
+    assert response.json()['planning_readiness'] == planning.to_dict()
+    assert 'planning_manifest' not in response.json()
+
+
+def test_planning_projection_is_delimited_to_specs():
+    response = _client(_Reader()).get('/api/v1/ideations/idea/validation-cycle?include_planning=true')
+    assert response.status_code == 400, response.text
+    assert response.json()['detail']['error_code'] == 'validation_cycle_include_planning_invalid'
 
 
 def test_rest_single_preserves_the_authorized_validation_section() -> None:
