@@ -1763,6 +1763,9 @@ async def move_spec(
     except SpecDependencyOperationError as exc:
         raise _spec_dependency_error(exc) from exc
     except ValueError as e:
+        from okto_pulse.core.services.delivery_evidence import DeliveryGateBlocked
+        if isinstance(e, DeliveryGateBlocked):
+            raise RESTAdapterContract.http_error(e) from e
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except EntityNotFoundError:
         raise HTTPException(

@@ -637,6 +637,20 @@ class CommunityRelationalApplicationAdapter:
 
         return CommunityDeliveryEvidenceStore(session)
 
+    def delivery_readiness_read(self, session: AsyncSession):
+        from sqlalchemy.ext.asyncio import AsyncConnection
+        from okto_pulse.community.adapters.sqlalchemy_delivery_readiness import (
+            CommunityDeliveryReadinessReader, CommunityReadinessClock,
+        )
+        engine = session.bind.engine if isinstance(session.bind, AsyncConnection) else session.bind
+        return CommunityDeliveryReadinessReader(engine, clock=CommunityReadinessClock())
+
+    def delivery_readiness_cursor(self, session: AsyncSession):
+        from okto_pulse.core import get_settings
+        from okto_pulse.community.adapters.delivery_readiness_cursor import CommunityReadinessCursorCodec
+
+        return CommunityReadinessCursorCodec.from_settings(get_settings())
+
 
     def board_kg_analytics_read(self, session: AsyncSession):
         """Bind read-only relational/KG evidence for Analytics v2."""

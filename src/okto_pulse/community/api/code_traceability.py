@@ -15,6 +15,9 @@ from okto_pulse.core.models.delivery_report import CardDeliveryRecordInput, Deli
 from okto_pulse.core.application.use_cases.delivery_evidence import GetDeliveryEvidenceUseCase, RecordCardDeliveryEvidenceUseCase, RecordDeliveryEvidenceUseCase
 from okto_pulse.core.application.use_cases.decision_review import GetDecisionReviewsUseCase, RecordDecisionReviewsUseCase
 from okto_pulse.core.models.decision_review import DecisionReviewInput, DecisionReviewCommand, DecisionReviewQuery
+from okto_pulse.core.inbound.delivery_readiness_error import READINESS_ERRORS, project_readiness_error
+from okto_pulse.core.ports.delivery_readiness import ReadinessAccessDenied, ReadinessReadError
+from okto_pulse.core.services.delivery_evidence import DeliveryGateBlocked
 
 import base64
 from dataclasses import fields, is_dataclass
@@ -25,8 +28,8 @@ import hmac
 import json
 from typing import Literal, Mapping
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, create_model
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, create_model
 
 from okto_pulse.community.api.auth_deps import require_principal
 from okto_pulse.community.api.deps import get_unit_of_work
@@ -454,7 +457,14 @@ def _native(value: object, *, cursor_binding: str | None = None) -> object:
 
 
 def _http_error(exc: Exception) -> HTTPException:
-    if isinstance(exc, DeliveryReportRejected):
+    if isinstance(exc, READINESS_ERRORS):
+        projected = project_readiness_error(exc)
+        code = projected['code']
+        status_code = {'readiness_query_invalid': 422, 'readiness_scope_mismatch': 404,
+            'readiness_permission_denied': 403, 'readiness_cursor_stale': 409,
+            'readiness_snapshot_changed': 409}.get(code, 503)
+        return HTTPException(status_code=status_code, detail=projected)
+    if isinstance(exc, (DeliveryReportRejected, DeliveryGateBlocked)):
         return HTTPException(status_code=409, detail=exc.to_error_dict())
     if isinstance(exc, ValueError) and str(exc).startswith(("decision_review_", "decision_inspection_")):
         code = str(exc).split(":", 1)[0]
@@ -546,6 +556,7 @@ async def _execute(
         CodeTraceabilityPersistenceError,
         EntityNotFoundError,
         PermissionDeniedError,
+        ReadinessAccessDenied,
         ValueError,
     ) as exc:
         raise _http_error(exc) from exc
@@ -1225,19 +1236,28 @@ async def get_code_traceability_projection(
 
 
 @router.get("/{board_id}/specs/{spec_id}/delivery-evidence")
-async def get_delivery_evidence(board_id: str, spec_id: str, response: Response,
+async def get_delivery_evidence(board_id: str, spec_id: str, response: Response, request: Request,
     card_id: str | None = Query(default=None, min_length=1, max_length=512),
     cursor: str | None = Query(default=None, min_length=1, max_length=8192),
     record_id: str | None = Query(default=None, min_length=1, max_length=512),
     limit: int = Query(default=20, ge=1, le=20),
-    view: Literal["progress", "ledger", "resume"] = Query(default="progress"),
+    view: Literal["progress", "ledger", "resume", "readiness"] = Query(default="progress"),
     edition: int | None = Query(default=None, ge=1),
+    phase: Literal['all', 'implementation', 'verification', 'lifecycle'] = Query(default='all'),
+    issue_id: str | None = Query(default=None, min_length=1, max_length=512),
+    snapshot_id: str | None = Query(default=None, pattern=r'^[0-9a-f]{64}$'),
     principal: Principal = Depends(require_principal), uow: PulseUnitOfWork = Depends(get_unit_of_work)) -> object:
     response.headers["Cache-Control"] = "no-store"
-    if (card_id is None and (cursor or record_id or limit != 20 or view != "progress" or edition is not None)) or (cursor and record_id) or (view == "resume" and (cursor or record_id or edition is not None)):
-        raise HTTPException(status_code=422, detail="delivery_history_scope_invalid")
-    command = DeliveryEvidenceReadQuery(board_id=board_id, spec_id=spec_id,
-        card_id=card_id, cursor=cursor, record_id=record_id, limit=limit, view=view, edition=edition)
+    if view == 'readiness' and set(request.query_params) - (DeliveryEvidenceReadQuery.model_fields.keys() - {'board_id', 'spec_id'}):
+        raise _http_error(ReadinessReadError('readiness_query_invalid'))
+    try:
+        command = DeliveryEvidenceReadQuery(board_id=board_id, spec_id=spec_id,
+            card_id=card_id, cursor=cursor, record_id=record_id, limit=limit, view=view, edition=edition,
+            phase=phase, issue_id=issue_id, snapshot_id=snapshot_id)
+    except ValidationError as exc:
+        if view == 'readiness' or any(issue['type'] == 'readiness_query_invalid' for issue in exc.errors()):
+            raise _http_error(ReadinessReadError('readiness_query_invalid')) from exc
+        raise HTTPException(status_code=422, detail='delivery_history_scope_invalid') from exc
     return await _execute(GetDeliveryEvidenceUseCase(), command, board_id=board_id, principal=principal, uow=uow)
 
 

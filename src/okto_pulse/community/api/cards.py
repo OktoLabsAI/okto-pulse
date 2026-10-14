@@ -298,6 +298,9 @@ async def move_card(
     except LearningCaptureTargetConflict as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.to_dict()) from exc
     except ValueError as e:
+        from okto_pulse.core.services.delivery_evidence import DeliveryGateBlocked
+        if isinstance(e, DeliveryGateBlocked):
+            raise RESTAdapterContract.http_error(e) from e
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     except EntityNotFoundError:
         raise HTTPException(

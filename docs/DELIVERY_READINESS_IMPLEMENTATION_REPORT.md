@@ -691,3 +691,24 @@ Validation:
 - Final official paired source closure: 8934 ownership rows, zero findings, all eight architecture budgets ZERO; exact README projections validated. All test/audit handles terminal; final wheel acceptance remains P11.
 
 P06 historical handling and real Spec acceptance are now implemented; retain the full plan scope and audit its named cases before closing prerequisite phases. Next consolidate outstanding P02-P06 case evidence (including actual report rollback and source-fence tests), then P07 REST/MCP and P08-P11 frontend/docs/final acceptance in dependency order. No frontend/runtime install, production data mutation, deployment or release. Browser artifacts remain local.
+
+
+## P07 REST/MCP - requested commit/push checkpoint, 2026-10-14
+
+User requested committing and pushing all pending Pulse work. Starting pushed pair: Core 0d7d1982 / Community 02a41c23 on feature/v0.4.0. This is an IN_PROGRESS checkpoint, not an accepted milestone or release.
+
+Implemented the readiness view on existing REST/MCP delivery-evidence reads, closed query validation, service/port wiring, typed safe read errors, current authorization, pagination/detail queries and significant null preservation. Delivery mutation failures now carry a compact assessment summary and a fresh readiness query; the assessment fingerprint is deliberately not a readiness cursor snapshot. Existing history/progress contracts remain available. Updated tool documentation and added routing, error and native-schema surface tests.
+
+Observed validation:
+- Isolated installed/source parity reported 860 Core / 323 Community Python files.
+- Core routing/errors/progress/contracts/diagnostics/gates/catalog drift: 122 passed in 15.79s.
+- Community surfaces/error routes/progress/report/adopted report/real closeout: 58 passed in 122.46s. Terminal result recovered from session 38291 before checkpoint.
+- git diff --check passed in both repositories.
+- Ruff on all changed Python files reports E402 in Core mcp/server.py:206 and Community api/specs.py:771; both imports already exist at the starting HEAD. These lint findings remain open.
+- Official paired source closure FAILED (session 31202). It reports 8 adapter provenance violations, 5 import boundary violations, and community_adapter_bridges=7 (required ZERO). Blocking imports include DeliveryGateBlocked from core.services.delivery_evidence in Community cards, specs, code_traceability and rest_adapter, and READINESS_ERRORS/project_readiness_error from core.inbound.delivery_readiness_error in Community code_traceability. Functional test success does not override this architectural regression. No exception or budget was relaxed.
+
+Resume priorities:
+1. Correct P07 public contracts/error projection boundaries and adapter provenance through the public architecture; rerun closure until all eight budgets are ZERO.
+2. RESTORE_EVALUATION guidance still invokes get_delivery_evidence without explicit view=readiness. Wire the correct view/current scope and update action-contract tests.
+3. Finish P07 acceptance and remaining P02-P06 evidence reconciliation, then P08-P11 in the agreed plan. No full-plan completion is claimed.
+No production install/restart/reset, data mutation, deployment or release. Generated .playwright-cli/ and output/ artifacts remain local and excluded from commits.
