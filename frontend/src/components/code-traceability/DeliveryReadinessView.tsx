@@ -19,18 +19,19 @@ function Metric({ label, value, loading, compact }: { label: string; value?: Rea
   // Read the count as words; the visual slash/separator is not spoken context.
   const accessibleValue = `${text}${known ? `, ${value.satisfied} of ${value.applicable} applicable ${unit}` : ''}`;
   const failure = !!value && (value.counts_by_state.failed > 0 || value.counts_by_state.conflict > 0);
-  return <div className={`min-w-0 ${compact ? 'grid h-[62px] grid-rows-[24px_10px_28px]' : 'space-y-1.5 rounded-lg bg-gray-50 p-4 dark:bg-gray-900/60'}`}>
-    <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-2 gap-y-1">
-      <span className={`font-medium ${label === 'Implementation' ? 'text-sky-700 dark:text-sky-300' : 'text-emerald-700 dark:text-emerald-300'}`}>{label}</span>
-      <span className="text-gray-800 dark:text-gray-100"><strong>{text}</strong>{count && <span className="ml-2 text-gray-500 dark:text-gray-400">{count}</span>}</span>
+  return <div className="min-w-0">
+    <div className={`font-medium text-gray-600 dark:text-gray-300 ${compact ? 'text-[10px] leading-4' : 'text-xs leading-4'}`}>{label}</div>
+    <div className={`mt-2 flex items-start ${compact ? 'h-8' : 'h-10'}`}>
+      <strong className={known ? `tabular-nums leading-none ${compact ? 'text-lg' : 'text-xl'} ${label === 'Implementation' ? 'text-sky-700 dark:text-sky-400' : 'text-emerald-700 dark:text-emerald-400'}` : 'text-xs font-medium leading-4 text-gray-600 dark:text-gray-300'}>{text}</strong>
     </div>
-    {loading ? <div aria-hidden="true" className="h-2.5 rounded-full bg-gray-200 motion-safe:animate-pulse dark:bg-gray-700" />
-      : known ? <div className="h-2.5 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
+    {loading ? <div aria-hidden="true" className="h-1.5 rounded-full bg-gray-200 motion-safe:animate-pulse dark:bg-gray-700" />
+      : known ? <div className="h-1.5 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
         <div role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={value.percent!}
           aria-valuetext={accessibleValue} className={`h-full rounded-full motion-safe:transition-[width] ${label === 'Implementation' ? 'bg-sky-500' : 'bg-emerald-500'}`}
           style={{ width: `${value.percent}%` }} />
-      </div> : compact ? <span role="status" className="sr-only">{detail}</span> : <p role="status" className="text-gray-500 dark:text-gray-400">{value?.status === 'not_applicable' ? 'No applicable work in this phase.' : 'Current proof could not be evaluated.'}</p>}
-    {!loading && value && <div className={`flex flex-wrap gap-x-2 text-gray-500 dark:text-gray-400 ${compact ? 'row-start-3 content-start pt-1' : ''}`}>
+      </div> : <div className="h-1.5"><span role="status" className="sr-only">{detail}</span></div>}
+    {count && <p className={`mt-2 text-gray-500 dark:text-gray-400 ${compact ? 'text-[10px]' : 'text-xs'}`}>{count}{!compact && ` applicable ${unit}`}</p>}
+    {!loading && value && <div className="mt-1 flex flex-wrap gap-x-2 text-gray-500 dark:text-gray-400">
       {value.not_applicable > 0 && <span>{value.not_applicable} N/A</span>}
       {value.waived > 0 && <span>{value.waived} {compact ? 'waived' : 'waived · no proof credit'}</span>}
       {failure && <span className="inline-flex items-center gap-1 text-red-700 dark:text-red-300"><AlertTriangle size={12} aria-hidden="true" />{compact ? 'Failed / conflict' : 'Failed or conflicting evidence'}</span>}
@@ -51,10 +52,10 @@ export function DeliveryReadinessView({ value, loading, error, compact = false, 
   const inspectLabel = current?.delivery_state === 'not_applicable' ? 'View scope'
     : current?.delivery_state === 'delivered' || current?.delivery_state === 'delivered_with_exceptions' ? 'View evidence' : 'What is missing?';
   return <section aria-label="Delivery readiness" aria-busy={loading || undefined}
-    className={`min-w-0 rounded-lg border border-gray-200 dark:border-gray-700 ${compact ? 'mt-2 flex h-[274px] flex-col gap-3 bg-gray-50/70 p-2 text-[10px] dark:bg-gray-900/40' : 'space-y-3 p-4 text-sm'}`}>
+    className={`min-w-0 rounded-lg border border-gray-200 dark:border-gray-700 ${compact ? 'mt-2 flex h-[244px] flex-col gap-3 bg-gray-50/70 p-2 text-[10px] dark:bg-gray-900/40' : 'space-y-3 p-4 text-sm'}`}>
     {!compact && <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-semibold text-gray-800 dark:text-gray-100">Delivery readiness</h3>
       {current && <span className="text-xs text-gray-500 dark:text-gray-400">Status: {current.lifecycle.stored_status.replace(/_/g, ' ')}</span>}</div>}
-    <div className={compact ? 'h-[136px] shrink-0 space-y-3' : 'grid gap-4 sm:grid-cols-2'} title={explanation}>
+    <div className={`grid grid-cols-2 ${compact ? 'h-[106px] shrink-0 gap-3' : 'gap-4 py-2'}`} title={explanation}>
       <Metric label="Implementation" value={current?.implementation} loading={loading} compact={compact} />
       <Metric label="Verification" value={current?.verification} loading={loading} compact={compact} />
     </div>

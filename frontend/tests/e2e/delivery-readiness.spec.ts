@@ -145,7 +145,13 @@ test('P08/U01/U04/U09: native board and Delivery show separate accessible metric
   await expect(implementation).toHaveAttribute('aria-valuenow', '100');
   await expect(verification).toHaveAttribute('aria-valuetext', '75%, 6 of 8 applicable obligations');
   const blue = await implementation.boundingBox(), green = await verification.boundingBox();
-  expect(blue!.y + blue!.height).toBeLessThan(green!.y);
+  expect(blue!.x + blue!.width).toBeLessThan(green!.x);
+  expect(blue!.y).toBe(green!.y);
+  expect(blue!.height).toBe(6);
+  const coverLabel = await cover.getByText('Implementation', { exact: true }).boundingBox();
+  const coverPercent = await cover.getByText('100%', { exact: true }).boundingBox();
+  expect(coverLabel!.y + coverLabel!.height).toBeLessThan(coverPercent!.y);
+  expect(coverPercent!.y + coverPercent!.height).toBeLessThan(blue!.y);
   expect(await cover.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
   await cover.screenshot({ path: test.info().outputPath('readiness-cover.png') });
   const inspect = cover.getByRole('button', { name: 'What is missing?' });
@@ -172,6 +178,14 @@ test('P08/U01/U04/U09: native board and Delivery show separate accessible metric
   await panel.getByRole('button', { name: 'Refresh', exact: true }).focus();
   await page.keyboard.press('Enter');
   await expect(panel.getByRole('progressbar', { name: 'Implementation' })).toHaveAttribute('aria-valuenow', '100');
+  const deliveryBlue = await panel.getByRole('progressbar', { name: 'Implementation' }).boundingBox();
+  const deliveryGreen = await panel.getByRole('progressbar', { name: 'Verification' }).boundingBox();
+  const deliveryLabel = await panel.getByText('Implementation', { exact: true }).boundingBox();
+  const deliveryPercent = await panel.getByText('100%', { exact: true }).boundingBox();
+  expect(deliveryBlue!.x + deliveryBlue!.width).toBeLessThan(deliveryGreen!.x);
+  expect(deliveryBlue!.y).toBe(deliveryGreen!.y);
+  expect(deliveryLabel!.y + deliveryLabel!.height).toBeLessThan(deliveryPercent!.y);
+  expect(deliveryPercent!.y + deliveryPercent!.height).toBeLessThan(deliveryBlue!.y);
   await panel.screenshot({ path: test.info().outputPath('readiness-delivery-light.png') });
   const accessibility = async () => {
     const result = await new AxeBuilder({ page }).include('section[aria-label="Delivery readiness"]')
@@ -186,7 +200,9 @@ test('P08/U01/U04/U09: native board and Delivery show separate accessible metric
   expect(await panel.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
   const mobileBlue = await panel.getByRole('progressbar', { name: 'Implementation' }).boundingBox();
   const mobileGreen = await panel.getByRole('progressbar', { name: 'Verification' }).boundingBox();
-  expect(mobileBlue!.y + mobileBlue!.height).toBeLessThan(mobileGreen!.y);
+  expect(mobileBlue!.x + mobileBlue!.width).toBeLessThan(mobileGreen!.x);
+  expect(mobileBlue!.y).toBe(mobileGreen!.y);
+  expect(mobileBlue!.height).toBe(6);
   await panel.screenshot({ path: test.info().outputPath('readiness-delivery-dark-mobile.png') });
   await accessibility();
   const accessibilityTree = await panel.ariaSnapshot();
