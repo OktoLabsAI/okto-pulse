@@ -1479,12 +1479,18 @@ class CommunitySqlAlchemyValidationCycleReader:
                 session, actor_id=actor_id, board_id=query.board_id,
             )
             if permissions is None or access_level is None or any(
-                not permissions.has(f"{item.subject_type}.entity.read") for item in query.subjects
+                not permissions.has(f"{item.subject_type.removesuffix('_collection')}.entity.read") for item in query.subjects
             ):
                 raise ValidationCycleReadAccessDenied()
             if authority.incarnation is None or authority.revision is None:
                 raise WorkspaceRevisionsUnavailable()
             selects = []
+            collections = [item.subject_type for item in query.subjects if item.subject_type.endswith("_collection")]
+            if collections:
+                selects.append(select(
+                    revision.scope_kind.label("subject_type"), revision.scope_id.label("subject_id"),
+                    revision.incarnation, revision.revision,
+                ).where(revision.scope_kind.in_(collections), revision.scope_id == query.board_id))
             for kind, model in (("spec", Spec), ("card", Card)):
                 ids = [item.subject_id for item in query.subjects if item.subject_type == kind]
                 if ids:
@@ -1502,6 +1508,8 @@ class CommunitySqlAlchemyValidationCycleReader:
                 tokens[row.subject_type, row.subject_id] = WorkspaceRevisionToken(
                     incarnation=row.incarnation, revision=row.revision,
                 )
+            if any((kind, query.board_id) not in tokens for kind in collections):
+                raise WorkspaceRevisionsUnavailable()
             return WorkspaceRevisions(
                 board_id=query.board_id,
                 authority=WorkspaceRevisionToken(incarnation=authority.incarnation, revision=authority.revision),

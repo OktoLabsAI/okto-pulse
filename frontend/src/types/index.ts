@@ -887,7 +887,7 @@ export interface SpecPlanningManifest {
 }
 
 export interface WorkspaceSubjectRef {
-  subject_type: 'spec' | 'card';
+  subject_type: 'spec' | 'card' | 'spec_collection' | 'card_collection';
   subject_id: string;
 }
 

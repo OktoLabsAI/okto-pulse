@@ -38,6 +38,7 @@ from test_spec_validation_native_gate import (
     _seed_board_with_ids,
     _seed_native_checklist_board,
     _canonical_submit_data,
+    _decomposition_submit_data,
     _submit_spec_validation,
     ACTOR,
     BOARD_ID,
@@ -2089,20 +2090,15 @@ class TestBoardLevelConfig:
                     title="Custom Threshold Spec",
                     status=SpecStatus.APPROVED,
                     archived=False,
-                    skip_decisions_coverage=True,
                     acceptance_criteria=[],
                     functional_requirements=[],
                     test_scenarios=[],
                     business_rules=[],
                     technical_requirements=[],
                     api_contracts=[],
-                    decisions=[
-                        {
-                            "id": "dec_threshold",
-                            "title": "Thresholds are board-configured",
-                            "status": "active",
-                        },
-                    ],
+                    integration_requirements=[],
+                    observability_requirements=[],
+                    decisions=[],
                     created_by=USER_ID,
                 )
             )
@@ -2161,20 +2157,15 @@ class TestBoardLevelConfig:
                     title="Custom Pass Spec",
                     status=SpecStatus.APPROVED,
                     archived=False,
-                    skip_decisions_coverage=True,
                     acceptance_criteria=[],
                     functional_requirements=[],
                     test_scenarios=[],
                     business_rules=[],
                     technical_requirements=[],
                     api_contracts=[],
-                    decisions=[
-                        {
-                            "id": "dec_threshold_pass",
-                            "title": "Thresholds can pass",
-                            "status": "active",
-                        },
-                    ],
+                    integration_requirements=[],
+                    observability_requirements=[],
+                    decisions=[],
                     created_by=USER_ID,
                 )
             )
@@ -2192,6 +2183,7 @@ class TestBoardLevelConfig:
                     "decidability": 90,
                     "decidability_justification": "Explicit implementation choices.",
                     "confidence": 96,  # above custom min 95
+                    "decomposition": _decomposition_submit_data(),
                     "confidence_justification": "All ACs are covered with detailed test plans",
                     "assertiveness": 95,  # above custom min 90
                     "assertiveness_justification": "FRs are measurable and testable",
@@ -2227,20 +2219,15 @@ class TestBoardLevelConfig:
                     title="Default Threshold Spec",
                     status=SpecStatus.APPROVED,
                     archived=False,
-                    skip_decisions_coverage=True,
                     acceptance_criteria=[],
                     functional_requirements=[],
                     test_scenarios=[],
                     business_rules=[],
                     technical_requirements=[],
                     api_contracts=[],
-                    decisions=[
-                        {
-                            "id": "dec_default_threshold",
-                            "title": "Default thresholds apply",
-                            "status": "active",
-                        },
-                    ],
+                    integration_requirements=[],
+                    observability_requirements=[],
+                    decisions=[],
                     created_by=USER_ID,
                 )
             )
@@ -2253,7 +2240,7 @@ class TestBoardLevelConfig:
                 spec_id=spec_id,
                 reviewer_id=USER_ID,
                 reviewer_name="Tester",
-                data=_valid_submit_data(),
+                data={**_valid_submit_data(), "decomposition": _decomposition_submit_data()},
             )
 
         assert result["outcome"] == "success"
@@ -2571,20 +2558,15 @@ class TestEdgeCases:
                     title="No Coverage Spec",
                     status=SpecStatus.APPROVED,
                     archived=False,
-                    skip_decisions_coverage=True,
                     acceptance_criteria=[],
                     functional_requirements=[],
                     test_scenarios=[],
                     business_rules=[],
                     technical_requirements=[],
                     api_contracts=[],
-                    decisions=[
-                        {
-                            "id": "dec_no_coverage",
-                            "title": "Coverage arrays are empty by design",
-                            "status": "active",
-                        },
-                    ],
+                    integration_requirements=[],
+                    observability_requirements=[],
+                    decisions=[],
                     created_by=USER_ID,
                 )
             )
@@ -2601,6 +2583,8 @@ class TestEdgeCases:
             )
         # Empty coverage should pass the pre-checks (nothing to cover)
         assert result["outcome"] == "success"
+        assert result["spec_status"] == "approved"
+        assert result["planning_blockers"] == ["decomposition_approval_missing"]
 
 
 @pytest.mark.asyncio

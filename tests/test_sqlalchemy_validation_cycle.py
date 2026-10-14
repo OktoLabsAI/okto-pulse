@@ -548,6 +548,73 @@ async def test_workspace_metadata_is_bounded_and_tracks_card_changes_without_spe
     assert deleted.subjects[-1].token is None
 
 
+@pytest.mark.parametrize("kind", ["spec", "card"])
+async def test_workspace_collection_detects_unknown_insert_edit_delete_and_rollback(cycle_rig, kind):
+    from sqlalchemy import text
+    from okto_pulse.core.domain.workspace_revisions import WorkspaceRevisionsQuery
+    from okto_pulse.community.adapters.sqlalchemy_models import Card
+
+    reader = CommunitySqlAlchemyValidationCycleReader(cycle_rig.factory)
+    query = WorkspaceRevisionsQuery(board_id=BOARD_ID, subjects=[
+        {"subject_type": kind + "_collection", "subject_id": BOARD_ID},
+    ])
+    async def read():
+        return await reader.get_workspace_revisions(query, actor_id="owner", realm_scope=RealmScope.local())
+
+    before, statements = await _count_selects(cycle_rig.engine, read())
+    assert len(statements) == 2  # Permission resolution isolated by cycle_rig.
+    assert all("description" not in sql.lower() and "evaluations" not in sql.lower() for sql in statements)
+    assert before.subjects[0].token is not None  # Even an empty Card collection.
+    identity = "spec-cycle-99" if kind == "spec" else "new-card-not-in-client"
+    async with cycle_rig.factory() as session:
+        session.add(_spec(99) if kind == "spec" else Card(
+            id=identity, board_id=BOARD_ID, spec_id="spec-cycle-00", title="New", created_by="owner",
+        ))
+        await session.commit()
+    inserted = await read()
+    assert inserted.authority == before.authority
+    assert inserted.subjects[0].token.revision > before.subjects[0].token.revision
+    async with cycle_rig.factory() as session:
+        await session.execute(text(f"UPDATE {kind}s SET title='Rolled back' WHERE id=:id"), {"id": identity})
+        await session.rollback()
+    assert await read() == inserted
+    async with cycle_rig.factory() as session:
+        await session.execute(text(f"UPDATE {kind}s SET title='Edited' WHERE id=:id"), {"id": identity})
+        await session.commit()
+    edited = await read()
+    assert edited.subjects[0].token.revision > inserted.subjects[0].token.revision
+    async with cycle_rig.factory() as session:
+        await session.execute(text(f"DELETE FROM {kind}s WHERE id=:id"), {"id": identity})
+        await session.commit()
+    deleted = await read()
+    assert deleted.subjects[0].token.revision > edited.subjects[0].token.revision
+    assert deleted.authority == before.authority
+
+
+@pytest.mark.parametrize("kind", ["spec", "card"])
+async def test_workspace_collection_requires_entity_read_and_existing_metadata(cycle_rig, monkeypatch, kind):
+    from sqlalchemy import text
+    from okto_pulse.core.domain.workspace_revisions import WorkspaceRevisionsQuery
+    from okto_pulse.core.ports.validation_cycle import WorkspaceRevisionsUnavailable
+
+    reader = CommunitySqlAlchemyValidationCycleReader(cycle_rig.factory)
+    query = WorkspaceRevisionsQuery(board_id=BOARD_ID, subjects=[
+        {"subject_type": kind + "_collection", "subject_id": BOARD_ID},
+    ])
+    _permit_only(monkeypatch, "spec.validation.read")
+    with pytest.raises(ValidationCycleReadAccessDenied):
+        await reader.get_workspace_revisions(query, actor_id="owner", realm_scope=RealmScope.local())
+    _permit_only(monkeypatch, kind + ".entity.read")
+    assert (await reader.get_workspace_revisions(query, actor_id="owner", realm_scope=RealmScope.local())).subjects[0].token
+    async with cycle_rig.engine.begin() as connection:
+        # Explicit damaged-store fixture; runtime never reconstructs this token.
+        await connection.execute(text("DROP TRIGGER validation_revision_no_delete"))
+        await connection.execute(text("DELETE FROM validation_source_revisions WHERE scope_kind=:kind AND scope_id=:board"),
+                                 {"kind": kind + "_collection", "board": BOARD_ID})
+    with pytest.raises(WorkspaceRevisionsUnavailable):
+        await reader.get_workspace_revisions(query, actor_id="owner", realm_scope=RealmScope.local())
+
+
 async def test_workspace_metadata_reauthorizes_and_hides_foreign_subjects(cycle_rig, monkeypatch):
     from okto_pulse.core.domain.workspace_revisions import WorkspaceRevisionsQuery
 

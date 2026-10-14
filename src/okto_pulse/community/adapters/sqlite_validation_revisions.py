@@ -40,9 +40,18 @@ def _subject(type_column: str = "subject_type", id_column: str = "subject_id") -
 def validation_revision_sources() -> tuple[RevisionSource, ...]:
     """Every entry names a concrete Community input and its affected subjects."""
     sources = [
-        RevisionSource("boards", (_direct("board", "id"),), ("id", "owner_id", "realm_id", "settings")),
-        RevisionSource("specs", (_direct("spec", "id"),)),
-        RevisionSource("cards", (*_card("id"), _direct("spec", "spec_id"))),
+        RevisionSource("boards", (
+            _direct("board", "id"), _direct("spec_collection", "id"), _direct("card_collection", "id"),
+        ), ("id", "owner_id", "realm_id", "settings")),
+        # OLD/NEW board identities also cover deletion and reassociation, when
+        # a join through the live subject no longer describes the old Board.
+        RevisionSource("specs", (
+            _direct("spec", "id"), _direct("spec_collection", "board_id"), _direct("card_collection", "board_id"),
+        )),
+        RevisionSource("cards", (
+            *_card("id"), _direct("spec", "spec_id"),
+            _direct("spec_collection", "board_id"), _direct("card_collection", "board_id"),
+        )),
     ]
     for table in (
         "architecture_candidate_decisions", "spec_qa_items", "spec_knowledge_bases",
@@ -159,11 +168,21 @@ def validation_revision_trigger_manifest(metadata: MetaData) -> dict[str, tuple[
                 f"DELETE FROM validation_source_revisions WHERE scope_kind='{root}' AND scope_id=OLD.id;"
                 if operation == "delete" and root else ""
             )
+            if source.table == "boards" and operation == "delete":
+                cleanup += "DELETE FROM validation_source_revisions WHERE scope_kind IN ('spec_collection','card_collection') AND scope_id=OLD.id;"
             sql = f'''CREATE TRIGGER "{name}" AFTER {operation.upper()} ON "{source.table}"
 {when}
 BEGIN
   INSERT INTO validation_source_revisions(scope_kind,scope_id,incarnation,revision)
-  SELECT scope_kind,scope_id,lower(hex(randomblob(16))),1 FROM ({targets})
+  WITH affected AS ({targets}), boards_affected AS (
+    SELECT s.board_id FROM affected a JOIN specs s ON a.scope_kind='spec' AND a.scope_id=s.id
+    UNION SELECT c.board_id FROM affected a JOIN cards c ON a.scope_kind='card' AND a.scope_id=c.id
+  ), scopes AS (
+    SELECT scope_kind,scope_id FROM affected
+    UNION SELECT 'spec_collection',board_id FROM boards_affected
+    UNION SELECT 'card_collection',board_id FROM boards_affected
+  )
+  SELECT scope_kind,scope_id,lower(hex(randomblob(16))),1 FROM scopes
   WHERE scope_id IS NOT NULL AND scope_id <> ''
   ON CONFLICT(scope_kind,scope_id) DO UPDATE SET revision=revision+1;
   {cleanup}
@@ -176,6 +195,7 @@ BEFORE DELETE ON validation_source_revisions
 WHEN (OLD.scope_kind='board' AND EXISTS(SELECT 1 FROM boards WHERE id=OLD.scope_id))
 OR (OLD.scope_kind='spec' AND EXISTS(SELECT 1 FROM specs WHERE id=OLD.scope_id))
 OR (OLD.scope_kind='card' AND EXISTS(SELECT 1 FROM cards WHERE id=OLD.scope_id))
+OR (OLD.scope_kind IN ('spec_collection','card_collection') AND EXISTS(SELECT 1 FROM boards WHERE id=OLD.scope_id))
 BEGIN SELECT RAISE(ABORT,'validation_revision_delete_forbidden'); END''')
     manifest["validation_revision_monotonic"] = ("validation_source_revisions", '''CREATE TRIGGER validation_revision_monotonic
 BEFORE UPDATE ON validation_source_revisions

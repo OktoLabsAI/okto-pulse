@@ -1,7 +1,18 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SpecsPanel } from '../SpecsPanel';
 import type { IdeationSummary, SpecSummary } from '@/types';
+import type { useWorkspaceRevisions } from '@/hooks/useWorkspaceRevisions';
+
+const workspaceWatch = vi.hoisted(() => ({
+  options: null as Parameters<typeof useWorkspaceRevisions>[0] | null,
+}));
+vi.mock('@/hooks/useWorkspaceRevisions', () => ({
+  useWorkspaceRevisions: (options: Parameters<typeof useWorkspaceRevisions>[0]) => {
+    workspaceWatch.options = options;
+    return 'current';
+  },
+}));
 
 const apiMock = vi.hoisted(() => ({
   listSpecs: vi.fn(),
@@ -110,6 +121,7 @@ const groupModeKey = (boardId: string) => `okto-pulse:specs:group-mode:${boardId
 describe('SpecsPanel grouping modes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    workspaceWatch.options = null;
     localStorage.clear();
     window.history.replaceState({}, '', '/');
     apiMock.listSpecs.mockResolvedValue(specs);
@@ -173,6 +185,34 @@ describe('SpecsPanel grouping modes', () => {
     expect(screen.queryByTestId('specs-list-group-ideation:idea-1')).not.toBeInTheDocument();
     expect(screen.queryByTestId('specs-list-group-__ungrouped__')).not.toBeInTheDocument();
     expect(screen.getByText('Spec without parent')).toBeInTheDocument();
+  });
+
+  it('discovers a new Spec after a collection revision without resetting grouping or filters', async () => {
+    render(<SpecsPanel boardId="board-1" />);
+    await screen.findByText('Spec with refinement');
+    fireEvent.change(screen.getByTestId('specs-group-mode'), { target: { value: 'none' } });
+    expect(workspaceWatch.options?.subjects).toEqual([{ subject_type: 'spec_collection', subject_id: 'board-1' }]);
+    apiMock.listSpecsPage.mockResolvedValueOnce({
+      items: [...specs, { ...specs[0], id: 'new-mcp-spec', title: 'New MCP Spec' }],
+      total_filtered: 4, total_overall: 4, offset: 0, limit: 25,
+    });
+    await act(async () => { await workspaceWatch.options!.onChange({
+      subjects: [{ subject_type: 'spec_collection', subject_id: 'board-1' }], initial: false, authorityChanged: false,
+    }); });
+    await screen.findByText('New MCP Spec');
+    expect(screen.getByTestId('specs-group-mode')).toHaveValue('none');
+    expect(apiMock.listSpecsPage).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not restore protected Specs when an old list request returns after access loss', async () => {
+    let resolve!: (value: unknown) => void;
+    apiMock.listSpecsPage.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    render(<SpecsPanel boardId="board-1" />);
+    act(() => workspaceWatch.options!.onAccessLost());
+    await act(async () => { resolve({ items: specs, total_filtered: 3, total_overall: 3, offset: 0, limit: 25 }); });
+    expect(screen.getByRole('alert')).toHaveTextContent('Access to this Board is no longer available');
+    expect(screen.queryByText('Spec with refinement')).not.toBeInTheDocument();
+    expect(screen.queryByText('Create your first spec')).not.toBeInTheDocument();
   });
 
   it('groups by ideation only and leaves specs without ideation flat', async () => {

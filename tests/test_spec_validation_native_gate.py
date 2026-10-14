@@ -48,6 +48,22 @@ ACTOR = ActorContext(
 )
 
 
+def _decomposition_submit_data():
+    return {
+        "breakdown_completeness": 90,
+        "breakdown_justification": "Every fixture requirement has an owner.",
+        "granularity": 90,
+        "granularity_justification": "Implementation and verification are separated.",
+        "dependency_coherence": 90,
+        "dependency_justification": "The fixture has no unresolved predecessors.",
+        "test_coverage_quality": 90,
+        "test_coverage_justification": "Scenarios cover the three HTTP outcomes.",
+        "overall_score": 90,
+        "overall_justification": "The fixture plan is ready for quality review.",
+        "recommendation": "approve",
+    }
+
+
 @pytest.fixture
 async def db_factory(tmp_path, monkeypatch):
     engine, _ = await _runtime(tmp_path / "spec-validation.db")
@@ -90,7 +106,8 @@ async def db_factory(tmp_path, monkeypatch):
 
 
 async def _seed_board(
-    db_factory, board_id=None, spec_id=None, *, execution_ready=False
+    db_factory, board_id=None, spec_id=None, *, execution_ready=False,
+    decomposition_approved=True,
 ) -> None:
     """Create a board with ideation → refinement → spec chain.
 
@@ -102,7 +119,8 @@ async def _seed_board(
     if spec_id is None:
         spec_id = SPEC_ID
     return await _seed_board_with_ids(
-        db_factory, board_id, spec_id, execution_ready=execution_ready
+        db_factory, board_id, spec_id, execution_ready=execution_ready,
+        decomposition_approved=decomposition_approved,
     )
 
 
@@ -131,7 +149,8 @@ async def _seed_native_checklist_board(db, board_id):
 
 
 async def _seed_board_with_ids(
-    db_factory, board_id, spec_id, *, execution_ready=False
+    db_factory, board_id, spec_id, *, execution_ready=False,
+    decomposition_approved=True,
 ) -> None:
     """Create a board with ideation → refinement → spec chain.
 
@@ -239,18 +258,7 @@ async def _seed_board_with_ids(
                     actor_id=USER_ID,
                     origin="new_spec",
                 ),
-                evaluations=(
-                    [
-                        {
-                            "spec_edition": 1,
-                            "evaluator_id": "reviewer",
-                            "recommendation": "approve",
-                            "overall_score": 100,
-                        }
-                    ]
-                    if execution_ready
-                    else []
-                ),
+                evaluations=[],
                 skip_qualitative_validation=execution_ready,
                 architecture_adoption={
                     "contract_version": "architecture-adoption/v1",
@@ -381,12 +389,17 @@ async def _seed_board_with_ids(
                         "linked_task_ids": [card_impl_id],
                     },
                 ],
+                # Direct relational fixture: model the explicit empty collections
+                # initialized by create_spec, never an unknown read projection.
+                integration_requirements=[],
+                observability_requirements=[],
                 decisions=[
                     {
                         "id": "dec_1",
                         "title": "Use JWT",
                         "status": "active",
                         "linked_task_ids": [card_impl_id],
+                        "verification": {"obligation_refs": ["tr:tr_1"]},
                     },
                 ],
                 created_by=USER_ID,
@@ -427,6 +440,14 @@ async def _seed_board_with_ids(
         ) as uow:
             await db.flush()
             await _seed_native_checklist_board(db, board_id)
+            if decomposition_approved:
+                # Quality/lifecycle cases start with an independently reviewed
+                # plan. Missing approval is exercised explicitly below; the
+                # submission helper must never manufacture a review.
+                await SpecService(db).submit_spec_evaluation(
+                    spec_id, USER_ID, "Planning reviewer",
+                    _decomposition_submit_data(),
+                )
             await uow.commit()
 
 
@@ -513,11 +534,13 @@ async def _submit_spec_validation(service, db, *args, **kwargs):
 
 @pytest.mark.asyncio
 class TestCanonicalFiveMetricGate:
+    @pytest.mark.parametrize("decomposition_approved", [True, False])
     async def test_canonical_scores_justifications_and_pinpoints_are_persisted(
         self,
         db_factory,
+        decomposition_approved,
     ):
-        await _seed_board(db_factory)
+        await _seed_board(db_factory, decomposition_approved=decomposition_approved)
         async with db_factory() as db:
             result = await _submit_spec_validation(
                 SpecService(db),
@@ -529,7 +552,9 @@ class TestCanonicalFiveMetricGate:
             )
 
         assert result["outcome"] == "success"
-        assert result["spec_status"] == "validated"
+        assert result["spec_status"] == ("validated" if decomposition_approved else "approved")
+        assert result["planning_result"] == ("ready" if decomposition_approved else "blocked")
+        assert result["planning_blockers"] == ([] if decomposition_approved else ["decomposition_approval_missing"])
         assert result["confidence"] == 90
         assert result["clarity"] == 90
         assert result["assertiveness"] == 90
@@ -548,7 +573,9 @@ class TestCanonicalFiveMetricGate:
             projected = await SpecService(reader).list_spec_validations(SPEC_ID)
             assert projected["current_validation"]["id"] == result["id"]
             stored = await reader.get(Spec, SPEC_ID)
-            assert stored.status == SpecStatus.VALIDATED
+            assert stored.status == (SpecStatus.VALIDATED if decomposition_approved else SpecStatus.APPROVED)
+            assert len(stored.evaluations) == int(decomposition_approved)
+            assert result["decomposition_ids"] == [item["id"] for item in stored.evaluations]
             assert stored.current_validation_id == result["id"]
             assert stored.validations[-1]["pinpoints"] == result["pinpoints"]
             for metric in (

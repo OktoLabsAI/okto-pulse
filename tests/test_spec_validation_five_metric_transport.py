@@ -14,6 +14,7 @@ from pydantic import ValidationError
 from okto_pulse.community.api import specs
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.core.application.use_cases import ListSpecValidationsUseCase
+from okto_pulse.core.domain.spec_planning import SpecPlanningManifest
 from okto_pulse.core.application.use_cases.submit_spec_validation import (
     SubmitSpecValidationUseCase,
 )
@@ -21,6 +22,13 @@ from okto_pulse.core.application.use_cases.submit_spec_validation import (
 
 def _canonical_submit_payload() -> dict[str, object]:
     return {
+        "idempotency_key": "transport-validation",
+        # Synthetic basis for transport-only tests with a stubbed use case.
+        "expected_planning_manifest": SpecPlanningManifest(
+            board_id="board-1", spec_id="spec-1", edition=2, spec_version=7,
+            subject_incarnation="a" * 32, subject_revision=1,
+            authority_incarnation="b" * 32, authority_revision=1,
+        ).model_dump(mode="json"),
         "expected_validation_edition": 2,
         "expected_spec_version": 7,
         "expected_head_revision": 0,
@@ -110,6 +118,7 @@ def test_openapi_publishes_five_metric_input_and_typed_history(
     }
     assert canonical_fields <= set(request_schema["properties"])
     assert request_schema["additionalProperties"] is False
+    assert {"idempotency_key", "expected_planning_manifest"} <= set(request_schema["required"])
     assert {"completeness", "general_justification"}.isdisjoint(
         request_schema.get("required", ())
     )
@@ -128,7 +137,7 @@ def test_openapi_publishes_five_metric_input_and_typed_history(
     ]
     assert operation["responses"]["201"]["content"]["application/json"]["schema"][
         "$ref"
-    ].endswith("/SpecValidationAcceptedResponse")
+    ].endswith("/SpecValidationConclusionResponse")
     assert paths["/api/v1/specs/{spec_id}/validations"]["get"]["responses"]["200"][
         "content"
     ]["application/json"]["schema"]["$ref"].endswith(
@@ -156,7 +165,7 @@ def test_submit_schema_rejects_unknown_fields_and_normalizes_pinpoints() -> None
         )
 
 
-def test_submit_route_forwards_canonical_contract_and_returns_only_acknowledgement(
+def test_submit_route_forwards_canonical_contract_and_returns_composed_receipt(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -171,6 +180,11 @@ def test_submit_route_forwards_canonical_contract_and_returns_only_acknowledgeme
                 "validation_id": "val_current",
                 "validation_edition": 2,
                 "is_current": True,
+                "outcome": "success",
+                "spec_status": "approved",
+                "planning_result": "blocked",
+                "decomposition_ids": [],
+                "planning_blockers": ["decomposition_approval_missing"],
                 "confidence": 92,
                 "clarity": 88,
                 "decidability": 90,
@@ -190,6 +204,11 @@ def test_submit_route_forwards_canonical_contract_and_returns_only_acknowledgeme
         "validation_id": "val_current",
         "validation_edition": 2,
         "is_current": True,
+        "outcome": "success",
+        "spec_status": "approved",
+        "planning_result": "blocked",
+        "decomposition_ids": [],
+        "planning_blockers": ["decomposition_approval_missing"],
     }
 
 

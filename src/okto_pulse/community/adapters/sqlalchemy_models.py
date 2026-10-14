@@ -1531,7 +1531,7 @@ class ValidationSourceRevisionRow(Base):
 
     __tablename__ = "validation_source_revisions"
     __table_args__ = (
-        CheckConstraint("scope_kind IN ('board', 'spec', 'card')", name="ck_validation_revision_scope"),
+        CheckConstraint("scope_kind IN ('board', 'spec', 'card', 'spec_collection', 'card_collection')", name="ck_validation_revision_scope"),
         CheckConstraint("revision >= 1", name="ck_validation_revision_positive"),
         CheckConstraint("length(incarnation) = 32", name="ck_validation_revision_incarnation"),
     )
