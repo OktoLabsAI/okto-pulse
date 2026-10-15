@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { isSpecEntityVersionConflict, specEntityMutationError } from './specEntityErrors';
 import { ChevronDown, ChevronUp, Pencil } from 'lucide-react';
 import { useDashboardApi } from '@/services/api';
 import { verificationBadge, verificationButton, verificationCard, verificationInput, requirementTypeLabels } from './verificationPresentation';
@@ -124,11 +125,11 @@ function QualificationEditor({ scope, row, options, criterionLabels, readCurrent
     try {
       const response = await api.updateSpecEntity(scope.specId, row.requirement_type, row.requirement_id, { verification: draft }, baseScope.version);
       if (!live.current) return;
-      if (!response.success) throw new Error(response.error_message || 'Qualification was refused. Review the current Spec.');
+      if (!response.success) throw specEntityMutationError(response, 'Qualification was refused. Review the current Spec.');
       setSaved(true); await reload();
     } catch (cause) {
       if (live.current) {
-        if (typeof cause === 'object' && cause !== null && 'status' in cause && cause.status === 409) setConflict(true);
+        if (isSpecEntityVersionConflict(cause)) setConflict(true);
         setError(cause instanceof Error ? cause.message : 'Could not save. Refresh before retrying.');
       }
     } finally { writing.current = false; if (live.current) setBusy(false); }
@@ -221,7 +222,7 @@ function RequirementVerificationContent({ scope, canRead, canReadPlanning = fals
           || contract.adopted_in_edition > scope.edition) {
           throw new Error('Execution contract is unavailable or incompatible. Reload the Spec.');
         }
-        if (!sameScope(data, scope)) throw new Error('The Spec changed. Reload it before reviewing qualification.');
+        if (!sameScope(data, { boardId: scope.boardId, specId: scope.specId, version: scope.version, edition: scope.edition })) throw new Error('The Spec changed. Reload it before reviewing qualification.');
         if (live) setResult({ scope: stamp, data });
       } catch (cause) {
         if (live) {

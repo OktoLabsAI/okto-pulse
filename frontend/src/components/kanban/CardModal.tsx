@@ -1525,7 +1525,11 @@ export function CardModal({
   if (!isOpen) return null;
 
   return (
-    <div className="modal-overlay" onClick={handleClose}>
+    <div className="modal-overlay" onClick={event => {
+      // Nested dialogs are siblings of the Card content. Their clicks must not
+      // dismiss the Card (and thereby unmount an open Spec or its draft).
+      if (event.target === event.currentTarget) handleClose();
+    }}>
       {syncAuthorizing && <PulseLoader label="Checking Card access…" />}
       <div ref={nativeReferenceRoot} style={{ display: syncAuthorizing ? 'none' : undefined }} className={`modal-content ${expanded ? '!max-w-[95vw] !h-[95vh]' : ''}`} onClick={(e) => e.stopPropagation()}>
         {/* Header */}

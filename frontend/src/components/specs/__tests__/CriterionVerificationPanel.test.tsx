@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CriterionVerificationDetails, type VerificationRequirementOption } from '../CriterionVerificationPanel';
+import { AuthenticatedFetchError } from '@/lib/authFetch';
 
 import { verificationRequirementOptions } from '../criterionVerificationOptions';
 
@@ -88,6 +89,29 @@ describe('criterion verification authoring', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Spec version conflict');
     expect(screen.getByLabelText('Covered aspect 1')).toBeInTheDocument();
     expect(onSaved).not.toHaveBeenCalled();
+  });
+  it.each(['transport', 'result'])('recognizes version conflicts from %s without losing links', async channel => {
+    const failure = { success: false, error_code: 'version_conflict', error_message: 'Native refusal' };
+    if (channel === 'transport') api.updateSpecEntity.mockRejectedValue(new AuthenticatedFetchError({ status: 409, message: failure.error_message, details: failure }));
+    else api.updateSpecEntity.mockResolvedValue(failure);
+    const view = render(<CriterionVerificationDetails {...props()} />); edit(); add('business_rule', 'br_one');
+    fireEvent.click(screen.getByRole('button', { name: 'Save verification plan' }));
+    await screen.findByText('Native refusal');
+    expect(screen.getByRole('button', { name: 'Save verification plan' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Review verification base' })).toBeDisabled();
+    view.rerender(<CriterionVerificationDetails {...props({ version: 9 })} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Review verification base' }));
+    expect(screen.getByRole('button', { name: 'Save verification plan' })).toBeEnabled();
+    expect(screen.getByLabelText('Covered aspect 1')).toBeInTheDocument();
+    expect(onSaved).not.toHaveBeenCalled();
+  });
+  it('does not turn a business refusal into a version conflict', async () => {
+    api.updateSpecEntity.mockRejectedValue(new AuthenticatedFetchError({ status: 409, message: 'Review impact', details: { error_code: 'impact_ack_required' } }));
+    render(<CriterionVerificationDetails {...props()} />); edit();
+    fireEvent.click(screen.getByRole('button', { name: 'Save verification plan' }));
+    await screen.findByText('Review impact');
+    expect(screen.getByRole('button', { name: 'Save verification plan' })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: 'Review verification base' })).not.toBeInTheDocument();
   });
   it('reload failure after success cannot submit the write again', async () => {
     onSaved.mockRejectedValueOnce(new Error('network'));

@@ -1,10 +1,28 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { TextRequirementsTab } from '../TextRequirementsTab';
+import { AuthenticatedFetchError } from '@/lib/authFetch';
 
 const rows = [{ id: 'fr-a', text: 'Same content', title: 'First title' }, { id: 'fr-b', text: 'Same content', title: 'Second title' }];
 function props(extra = {}) { return { kind: 'FR' as const, version: 8, items: rows, canCreate: true, canEdit: true, canRevoke: true, onSave: vi.fn().mockResolvedValue(undefined), onRevoke: vi.fn().mockResolvedValue(undefined), ...extra }; }
 describe('structured FR and AC cards', () => {
+  it.each(['version_conflict', 'impact_ack_required'])('distinguishes native %s from a generic HTTP conflict', async code => {
+    const value = props({ onSave: vi.fn().mockRejectedValue(new AuthenticatedFetchError({
+      status: 409, message: 'Native refusal', details: { error_code: code },
+    })) });
+    const view = render(<TextRequirementsTab {...value} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit fr-a' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await screen.findByText('Native refusal');
+    expect(screen.getByRole('button', { name: 'Save' }).hasAttribute('disabled')).toBe(code === 'version_conflict');
+    expect(screen.getByLabelText('Content')).toHaveValue('Same content');
+    if (code === 'version_conflict') {
+      expect(screen.getByRole('button', { name: 'Review requirement base' })).toBeDisabled();
+      view.rerender(<TextRequirementsTab {...value} version={9} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Review requirement base' }));
+      expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
+    } else expect(screen.queryByRole('button', { name: 'Review requirement base' })).not.toBeInTheDocument();
+  });
   it('preserves a draft and requires explicit base review after an external version change', async () => {
     const value = props(); const view = render(<TextRequirementsTab {...value} />);
     fireEvent.click(screen.getByRole('button', { name: 'Edit fr-a' }));

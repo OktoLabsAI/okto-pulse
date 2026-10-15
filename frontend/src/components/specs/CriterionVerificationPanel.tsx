@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { isSpecEntityVersionConflict, specEntityMutationError } from './specEntityErrors';
 import { Pencil } from 'lucide-react';
 import { useDashboardApi } from '@/services/api';
 import { verificationButton, verificationCard, verificationInput, requirementTypeLabels } from './verificationPresentation';
@@ -79,12 +80,12 @@ function CriterionEditor({ specId, version, criterion, options, readCurrent, onS
         requirement_links: links.map(link => ({ ...link, aspect: link.aspect?.trim() ? link.aspect : null })),
       }, baseVersion);
       if (!mounted.current) return;
-      if (!result.success) throw new Error(result.error_message || 'The change was refused. Review the Spec and try again.');
+      if (!result.success) throw specEntityMutationError(result, 'The change was refused. Review the Spec and try again.');
       setSaved(true);
       await refresh();
     } catch (cause) {
       if (mounted.current) {
-        if (typeof cause === 'object' && cause !== null && 'status' in cause && cause.status === 409) setConflict(true);
+        if (isSpecEntityVersionConflict(cause)) setConflict(true);
         setError(cause instanceof Error ? cause.message : 'Could not save. Refresh the Spec before retrying.');
       }
     } finally {

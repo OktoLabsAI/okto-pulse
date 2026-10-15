@@ -15,6 +15,7 @@ import { useNativeReferenceFocus } from '@/components/shared/useNativeReferenceF
 import { useWorkspaceRevisions } from '@/hooks/useWorkspaceRevisions';
 import { MissingLinkNotice } from '@/components/shared/MissingLinkNotice';
 import { TextRequirementsTab, type TextRequirementDraft } from './TextRequirementsTab';
+import { specEntityMutationError } from './specEntityErrors';
 import { CriterionVerificationDetails } from './CriterionVerificationPanel';
 import { RequirementVerificationPanel } from './RequirementVerificationPanel';
 import { ScenarioVerificationMethodEditor } from './ScenarioVerificationMethodEditor';
@@ -1742,7 +1743,7 @@ export function SpecModal({
     const result = id
       ? await api.updateSpecEntity(specId, entityType, id, { ...draft }, expectedVersion)
       : await api.createSpecEntity(specId, entityType, { ...draft }, expectedVersion);
-    if (!result.success) throw new Error(result.error_message || 'Could not save requirement');
+    if (!result.success) throw specEntityMutationError(result, 'Could not save requirement');
     if (currentSpecId.current !== specId) return;
     // The write already succeeded. A read failure must not offer a duplicate create.
     try { await reloadSpecAfterStructuredEdit(); }

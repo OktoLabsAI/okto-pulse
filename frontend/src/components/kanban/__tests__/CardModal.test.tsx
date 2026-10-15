@@ -163,7 +163,10 @@ vi.mock('@/components/resources/ResourceGateDisclosure', () => ({
 }));
 
 vi.mock('@/components/specs/SpecModal', () => ({
-  SpecModal: () => <div />,
+  SpecModal: ({ onClose }: { onClose: () => void }) => <div role="dialog" aria-label="Nested Spec">
+    <button type="button">Nested Spec section</button>
+    <button type="button" onClick={onClose}>Close nested Spec</button>
+  </div>,
 }));
 
 vi.mock('@/components/policy-compliance', async (importOriginal) => {
@@ -478,6 +481,20 @@ function policyRejection(
 }
 
 describe('CardModal', () => {
+  it('does not dismiss the Card when interacting with or closing its nested Spec', async () => {
+    apiMock.getSpec.mockResolvedValue({ id: 'spec-1', title: 'Nested source Spec', status: 'draft', version: 1,
+      test_scenarios: [], business_rules: [], api_contracts: [], technical_requirements: [], knowledge_bases: [] });
+    render(<CardModal boardId="board-1" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Nested source Spec' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Nested Spec section' }));
+    expect(storeMock.closeCardModal).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog', { name: 'Nested Spec' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Close nested Spec' }));
+    expect(screen.queryByRole('dialog', { name: 'Nested Spec' })).not.toBeInTheDocument();
+    expect(storeMock.closeCardModal).not.toHaveBeenCalled();
+    fireEvent.click(document.querySelector('.modal-overlay')!);
+    expect(storeMock.closeCardModal).toHaveBeenCalledOnce();
+  });
   it.each(['normal', 'bug', 'test'] as const)('offers only current context for the selected %s Card', async cardType => {
     const selected = cardForType(cardType);
     storeMock.selectedCardId = selected.id;

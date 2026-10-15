@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { CheckCircle, ChevronDown, ChevronUp, FileText, Pencil, Plus, Trash2, XCircle } from 'lucide-react';
 import type { SpecTextRequirement } from '@/types';
+import { isSpecEntityVersionConflict } from './specEntityErrors';
 
 export interface TextRequirementDraft { title: string; text: string }
 interface Props {
@@ -41,7 +42,7 @@ export function TextRequirementsTab({ kind, version, readCurrent = true, items, 
     try { await action(); if (mounted.current) { setEditor(null); setConflict(false); } }
     catch (cause) {
       if (!mounted.current) return;
-      if (typeof cause === 'object' && cause !== null && 'status' in cause && cause.status === 409) setConflict(true);
+      if (isSpecEntityVersionConflict(cause)) setConflict(true);
       setError(cause instanceof Error ? cause.message : 'Could not save. Refresh the Spec before retrying.');
     }
     finally { writing.current = false; if (mounted.current) setBusy(false); }

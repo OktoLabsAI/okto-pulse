@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RequirementVerificationPanel } from '../RequirementVerificationPanel';
+import { AuthenticatedFetchError } from '@/lib/authFetch';
 import type { RequirementVerificationResponse, RequirementVerificationRow } from '@/types/requirement-verification';
 
 const api = vi.hoisted(() => ({ getRequirementVerification: vi.fn(), updateSpecEntity: vi.fn(), updateSpec: vi.fn() }));
@@ -51,6 +52,29 @@ describe('current execution contract', () => {
 
 describe('requirement qualification', () => {
   beforeEach(() => { vi.clearAllMocks(); api.getRequirementVerification.mockResolvedValue(response()); api.updateSpecEntity.mockResolvedValue({ success: true }); onSaved.mockResolvedValue(undefined); });
+  it.each(['transport', 'result'])('recognizes version conflicts from %s while preserving the qualification', async channel => {
+    const failure = { success: false, error_code: 'version_conflict', error_message: 'Native refusal' };
+    if (channel === 'transport') api.updateSpecEntity.mockRejectedValue(new AuthenticatedFetchError({ status: 409, message: failure.error_message, details: failure }));
+    else api.updateSpecEntity.mockResolvedValue(failure);
+    const view = render(<RequirementVerificationPanel {...props()} />); await edit(); useDefault(); save();
+    await screen.findByText('Native refusal');
+    expect(screen.getByRole('button', { name: 'Save qualification' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Review qualification base' })).toBeDisabled();
+    api.getRequirementVerification.mockResolvedValue(response({ spec_version: 9 }));
+    view.rerender(<RequirementVerificationPanel {...props({ scope: { ...scope, version: 9 } })} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Review qualification base' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Review qualification base' }));
+    expect(screen.getByRole('button', { name: 'Save qualification' })).toBeEnabled();
+    expect(screen.getByLabelText('functional')).toBeChecked();
+    expect(onSaved).not.toHaveBeenCalled();
+  });
+  it('does not turn a business refusal into a version conflict', async () => {
+    api.updateSpecEntity.mockRejectedValue(new AuthenticatedFetchError({ status: 409, message: 'Review impact', details: { error_code: 'impact_ack_required' } }));
+    render(<RequirementVerificationPanel {...props()} />); await edit(); useDefault(); save();
+    await screen.findByText('Review impact');
+    expect(screen.getByRole('button', { name: 'Save qualification' })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: 'Review qualification base' })).not.toBeInTheDocument();
+  });
   it('preserves a qualification draft across an external revision until the base is reviewed', async () => {
     const view = render(<RequirementVerificationPanel {...props()} />); await edit(); useDefault();
     api.getRequirementVerification.mockResolvedValue(response({ spec_version: 9 }));

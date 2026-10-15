@@ -397,6 +397,19 @@ describe('SpecModal validation navigation', () => {
     await waitFor(() => expect(apiMock.updateSpecEntity).toHaveBeenCalledWith(baseSpec.id, 'functional_requirement', 'fr-live', { title: 'Original title', text: 'Local unsaved content' }, 5));
   });
 
+  it('preserves a structured failure code through the Functional writer', async () => {
+    apiMock.getSpec.mockResolvedValue({ ...baseSpec, functional_requirements: [{ id: 'fr-live', title: 'Original title', text: 'Original content' }] });
+    apiMock.updateSpecEntity.mockResolvedValue({ success: false, error_code: 'version_conflict', error_message: 'Native version refusal' });
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('tab', { name: 'Requirements & Decisions' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit fr-live' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await screen.findByText('Native version refusal');
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Review requirement base' })).toBeDisabled();
+    expect(apiMock.getSpec).toHaveBeenCalledOnce();
+  });
+
   it('keeps an expanded AC verification draft across a watched version change', async () => {
     const initial = { ...baseSpec, acceptance_criteria: [{ id: 'ac-live', title: 'Observable condition', text: 'Initial condition' }],
       functional_requirements: [{ id: 'fr-live', title: 'Obligation', text: 'Initial obligation' }] };
