@@ -1588,7 +1588,10 @@ async def update_spec(
         raise RESTAdapterContract.http_error(e) from e
     except ValueError as e:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            status_code=(
+                status.HTTP_409_CONFLICT if str(e) == "spec_version_conflict"
+                else status.HTTP_422_UNPROCESSABLE_CONTENT
+            ),
             detail=str(e),
         )
     except (

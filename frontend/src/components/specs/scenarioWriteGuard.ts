@@ -20,16 +20,17 @@ export function prepareTestScenariosForWrite(
 
 type ScenarioSpecUpdater = (
   specId: string,
-  data: { test_scenarios: TestScenarioWrite[] },
+  data: { test_scenarios: TestScenarioWrite[]; expected_spec_version: number },
 ) => Promise<Spec>;
 
 export async function persistTestScenariosWithWriteGuard(
   updateSpec: ScenarioSpecUpdater,
   specId: string,
   scenarios: readonly TestScenario[],
+  expectedSpecVersion: number,
 ): Promise<Spec> {
   const testScenarios = prepareTestScenariosForWrite(
     scenarios,
   );
-  return updateSpec(specId, { test_scenarios: testScenarios });
+  return updateSpec(specId, { test_scenarios: testScenarios, expected_spec_version: expectedSpecVersion });
 }

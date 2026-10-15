@@ -761,6 +761,7 @@ describe('SpecModal Activity tab', () => {
           updateSpec,
           spec.id,
           [tampered],
+          spec.version,
         ),
       ).rejects.toThrow(/Invalid scenario_type undefined for scenario/);
     }
@@ -798,6 +799,7 @@ describe('SpecModal Activity tab', () => {
     expect(
       apiMock.updateSpec.mock.calls[0][1].test_scenarios[0],
     ).toHaveProperty('scenario_type', 'integration');
+    expect(apiMock.updateSpec.mock.calls[0][1].expected_spec_version).toBe(spec.version);
   });
 
   async function openScenarioDraft() {
@@ -811,6 +813,30 @@ describe('SpecModal Activity tab', () => {
       ['Then: expected result...', 'Clear the draft only after confirmation'],
     ]) fireEvent.change(screen.getByPlaceholderText(placeholder), { target: { value } });
   }
+
+  it('requires review of the authored scenario base after a method edit refreshes the Spec', async () => {
+    const scenario: TestScenario = { id: 'ts-method', title: 'Observe the condition', given: 'G', when: 'W', then: 'T', scenario_type: 'manual', status: 'ready', notes: null, linked_criteria: [], linked_task_ids: [] };
+    const initial = { ...spec, test_scenarios: [scenario] };
+    const refreshed = { ...initial, version: spec.version + 1, test_scenarios: [{ ...scenario, verification_method: 'inspection' as const }] };
+    apiMock.getSpec.mockResolvedValueOnce(initial).mockResolvedValue(refreshed);
+    apiMock.updateScenarioVerificationMethod.mockResolvedValue({ scenario_id: scenario.id });
+    render(<SpecModal specId={spec.id} boardId={spec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    await openScenarioDraft();
+    fireEvent.click(screen.getByText(scenario.title));
+    fireEvent.change(screen.getByLabelText('Verification method'), { target: { value: 'inspection' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save verification method' }));
+    await screen.findByRole('button', { name: 'Review scenario base' });
+    expect(screen.getByPlaceholderText('Scenario title')).toHaveValue('Preserve this authored scenario');
+    expect(screen.getByRole('button', { name: 'Add Scenario' })).toBeDisabled();
+    expect(apiMock.updateSpec).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Review scenario base' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add Scenario' }));
+    await waitFor(() => expect(apiMock.updateSpec).toHaveBeenCalledTimes(1));
+    expect(apiMock.updateSpec.mock.calls[0][1]).toEqual(expect.objectContaining({
+      expected_spec_version: refreshed.version,
+      test_scenarios: expect.arrayContaining([expect.objectContaining({ id: scenario.id, verification_method: 'inspection' })]),
+    }));
+  });
 
   it('preserves a scenario draft until the native write confirms and prevents duplicate submission', async () => {
     let confirm!: (value: Spec) => void;
@@ -836,6 +862,43 @@ describe('SpecModal Activity tab', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Scenario condition requires correction');
     expect(screen.getByPlaceholderText('Scenario title')).toHaveValue('Preserve this authored scenario');
     expect(screen.getByRole('button', { name: 'Add Scenario' })).toBeEnabled();
+    expect(apiMock.updateSpec).toHaveBeenCalledTimes(1);
+  });
+
+  it('reloads after a native version conflict without losing the draft or silently adopting the new base', async () => {
+    apiMock.updateSpec.mockRejectedValueOnce(new AuthenticatedFetchError({ status: 409, message: 'spec_version_conflict' }));
+    render(<SpecModal specId={spec.id} boardId={spec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    await openScenarioDraft();
+    fireEvent.click(screen.getByRole('button', { name: 'Add Scenario' }));
+    await screen.findByRole('button', { name: 'Reload scenarios' });
+    expect(screen.getByRole('button', { name: 'Review scenario base' })).toBeDisabled();
+    apiMock.getSpec.mockRejectedValueOnce(new Error('Current read unavailable'));
+    fireEvent.click(screen.getByRole('button', { name: 'Reload scenarios' }));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Current read unavailable'));
+    expect(screen.getByRole('button', { name: 'Add Scenario' })).toBeDisabled();
+    expect(screen.getByPlaceholderText('Scenario title')).toHaveValue('Preserve this authored scenario');
+    apiMock.getSpec.mockResolvedValueOnce({ ...spec, version: spec.version + 1 });
+    fireEvent.click(screen.getByRole('button', { name: 'Reload scenarios' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Review scenario base' })).toBeEnabled());
+    expect(screen.getByRole('button', { name: 'Add Scenario' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Review scenario base' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add Scenario' }));
+    await waitFor(() => expect(apiMock.updateSpec).toHaveBeenCalledTimes(2));
+    expect(apiMock.updateSpec.mock.calls[0][1].expected_spec_version).toBe(spec.version);
+    expect(apiMock.updateSpec.mock.calls[1][1].expected_spec_version).toBe(spec.version + 1);
+  });
+
+  it('removes the scenario draft when its conflict reload is denied', async () => {
+    apiMock.updateSpec.mockRejectedValueOnce(new AuthenticatedFetchError({ status: 409, message: 'spec_version_conflict' }));
+    const onClose = vi.fn();
+    render(<SpecModal specId={spec.id} boardId={spec.board_id} onClose={onClose} onChanged={vi.fn()} />);
+    await openScenarioDraft();
+    fireEvent.click(screen.getByRole('button', { name: 'Add Scenario' }));
+    await screen.findByRole('button', { name: 'Reload scenarios' });
+    apiMock.getSpec.mockRejectedValueOnce(new AuthenticatedFetchError({ status: 403, message: 'Access denied' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reload scenarios' }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(screen.queryByPlaceholderText('Scenario title')).not.toBeInTheDocument();
     expect(apiMock.updateSpec).toHaveBeenCalledTimes(1);
   });
 

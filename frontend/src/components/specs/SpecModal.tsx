@@ -292,14 +292,16 @@ function TestScenariosTab({
   onUpdate,
   onSpecUpdate,
   onSpecRefreshed,
+  onReload,
   canReadPolicyCompliance,
   policyRefreshKey,
 }: {
   spec: Spec;
   focusReceipt?: string | null;
-  onUpdate: (scenarios: TestScenario[]) => Promise<void>;
+  onUpdate: (scenarios: TestScenario[], expectedVersion: number) => Promise<void>;
   onSpecUpdate: (data: Record<string, unknown>) => Promise<void>;
   onSpecRefreshed: (updated: Spec) => void;
+  onReload: () => Promise<void>;
   canReadPolicyCompliance: boolean;
   policyRefreshKey: number;
 }) {
@@ -310,6 +312,10 @@ function TestScenariosTab({
   const [linkingScenarioId, setLinkingScenarioId] = useState<string | null>(null);
   const [scenarioSaving, setScenarioSaving] = useState(false);
   const [scenarioError, setScenarioError] = useState('');
+  const [scenarioBase, setScenarioBase] = useState<{ version: number; edition: number } | null>(null);
+  const [scenarioConflictVersion, setScenarioConflictVersion] = useState<number | null>(null);
+  const [scenarioReadPending, setScenarioReadPending] = useState(false);
+  const [scenarioReadFailed, setScenarioReadFailed] = useState(false);
   const scenarioWritePending = useRef(false);
   const scenarioEditorMounted = useRef(true);
   useEffect(() => {
@@ -328,16 +334,40 @@ function TestScenariosTab({
 
   const scenarios = spec.test_scenarios || [];
   const criteria = normalizeAcceptanceCriteria((spec.acceptance_criteria || []) as unknown[]);
+  const scenarioBaseChanged = scenarioBase !== null
+    && (scenarioBase.version !== spec.version || scenarioBase.edition !== spec.edition);
+  const scenarioReadCurrent = !scenarioReadPending && !scenarioReadFailed;
 
-  const saveScenarios = async (next: TestScenario[]) => {
-    if (scenarioWritePending.current) return false;
+  const reloadScenarios = async () => {
+    setScenarioReadPending(true);
+    try {
+      await onReload();
+      if (scenarioEditorMounted.current) { setScenarioReadFailed(false); setScenarioError(''); }
+    } catch (error) {
+      if (scenarioEditorMounted.current) {
+        setScenarioReadFailed(true);
+        setScenarioError(error instanceof Error ? error.message : 'Could not load current scenarios. Your draft is preserved.');
+      }
+      throw error;
+    } finally {
+      if (scenarioEditorMounted.current) setScenarioReadPending(false);
+    }
+  };
+
+  const saveScenarios = async (next: TestScenario[], expectedVersion: number) => {
+    if (scenarioWritePending.current || !scenarioReadCurrent) return false;
     scenarioWritePending.current = true;
     setScenarioSaving(true); setScenarioError('');
     try {
-      await onUpdate(next);
+      await onUpdate(next, expectedVersion);
       return scenarioEditorMounted.current;
     } catch (error) {
-      if (scenarioEditorMounted.current) setScenarioError(error instanceof Error ? error.message : 'Could not save the scenario. Your draft is preserved.');
+      if (scenarioEditorMounted.current) {
+        setScenarioError(error instanceof Error ? error.message : 'Could not save the scenario. Your draft is preserved.');
+        if (error instanceof AuthenticatedFetchError && error.status === 409 && error.message === 'spec_version_conflict') {
+          setScenarioConflictVersion(expectedVersion);
+        }
+      }
       return false;
     } finally {
       scenarioWritePending.current = false;
@@ -346,6 +376,7 @@ function TestScenariosTab({
   };
 
   const handleAdd = async () => {
+    if (!scenarioBase || scenarioBaseChanged || scenarioConflictVersion !== null) return;
     if (!newTitle.trim() || !newGiven.trim() || !newWhen.trim() || !newThen.trim()) return;
     const id = `ts_${Date.now()}`;
     const scenario: TestScenario = {
@@ -360,13 +391,14 @@ function TestScenariosTab({
       status: 'draft',
       linked_task_ids: null,
     };
-    if (!await saveScenarios([...scenarios, scenario])) return;
+    if (!await saveScenarios([...scenarios, scenario], scenarioBase.version)) return;
     setAdding(false);
+    setScenarioBase(null);
     setNewTitle(''); setNewType('integration'); setNewGiven(''); setNewWhen(''); setNewThen(''); setNewNotes(''); setNewCriteria([]);
   };
 
   const handleRemove = async (id: string) => {
-    await saveScenarios(scenarios.filter((s) => s.id !== id));
+    await saveScenarios(scenarios.filter((s) => s.id !== id), spec.version);
   };
 
   // Coverage matrix
@@ -382,6 +414,22 @@ function TestScenariosTab({
   return (
     <div className="space-y-4">
       {scenarioError && <p role="alert" className="text-sm text-red-600 dark:text-red-400">{scenarioError}</p>}
+      {adding && (scenarioBaseChanged || scenarioConflictVersion !== null) && (
+        <div role="status" className="rounded-lg border border-amber-300 p-3 text-sm text-amber-700 dark:text-amber-300">
+          <p>The Spec changed while you were writing. Your draft is preserved. Review the current scenarios and criteria before saving.</p>
+          <button type="button" className="btn btn-secondary text-xs mt-2"
+            disabled={scenarioSaving || !scenarioReadCurrent || scenarioConflictVersion === spec.version}
+            onClick={() => { setScenarioBase({ version: spec.version, edition: spec.edition }); setScenarioConflictVersion(null); setScenarioError(''); }}>
+            Review scenario base
+          </button>
+        </div>
+      )}
+      {(scenarioConflictVersion !== null || scenarioReadFailed) && (
+        <button type="button" className="btn btn-secondary text-xs" disabled={scenarioSaving || scenarioReadPending}
+          onClick={() => { void reloadScenarios().catch(() => { /* Inline error preserves the draft. */ }); }}>
+          {scenarioReadPending ? 'Loading scenarios…' : 'Reload scenarios'}
+        </button>
+      )}
       {/* Coverage summary */}
       {criteria.length > 0 && (() => {
         const coveredCount = criteria.length - uncoveredCriteria.length;
@@ -482,7 +530,7 @@ function TestScenariosTab({
                   e.stopPropagation();
                   void handleRemove(scenario.id);
                 }}
-                disabled={scenarioSaving || adding}
+                disabled={scenarioSaving || adding || !scenarioReadCurrent}
                 className="p-0.5 text-gray-400 hover:text-red-500"
                 aria-label={`Delete test scenario ${scenario.title}`}
               >
@@ -493,7 +541,8 @@ function TestScenariosTab({
               <div className="px-3 py-2 space-y-2 text-sm">
                 <ScenarioVerificationMethodEditor boardId={spec.board_id} specId={spec.id} version={spec.version} scenario={scenario}
                   canEdit={!spec.archived && spec.status === 'draft' && hasPermissionWithState(scenarioPermissions.has, 'spec.tests.edit', 'spec', spec.status)}
-                  onSaved={async () => { onSpecRefreshed(await api.getSpec(spec.id)); }} />
+                  readCurrent={scenarioReadCurrent}
+                  onSaved={reloadScenarios} />
                 <VerificationReportDetails evidence={scenario.evidence} />
                 <div className="grid grid-cols-3 gap-3">
                   <div>
@@ -674,11 +723,11 @@ function TestScenariosTab({
           )}
           <div className="flex justify-end gap-2">
             <button onClick={() => setAdding(false)} className="btn btn-secondary text-xs">Cancel</button>
-            <button onClick={() => void handleAdd()} disabled={scenarioSaving || !newTitle.trim() || !newGiven.trim() || !newWhen.trim() || !newThen.trim()} className="btn btn-primary text-xs">{scenarioSaving ? 'Saving scenario…' : 'Add Scenario'}</button>
+            <button onClick={() => void handleAdd()} disabled={scenarioSaving || !scenarioReadCurrent || scenarioBaseChanged || scenarioConflictVersion !== null || !newTitle.trim() || !newGiven.trim() || !newWhen.trim() || !newThen.trim()} className="btn btn-primary text-xs">{scenarioSaving ? 'Saving scenario…' : 'Add Scenario'}</button>
           </div>
         </fieldset>
       ) : (
-        <button disabled={scenarioSaving} onClick={() => { setAdding(true); setScenarioError(''); }} className="flex items-center gap-1 text-sm text-violet-600 dark:text-violet-400 hover:text-violet-800 dark:hover:text-violet-300">
+        <button disabled={scenarioSaving} onClick={() => { setAdding(true); setScenarioError(''); setScenarioConflictVersion(null); setScenarioBase({ version: spec.version, edition: spec.edition }); }} className="flex items-center gap-1 text-sm text-violet-600 dark:text-violet-400 hover:text-violet-800 dark:hover:text-violet-300">
           <Plus size={14} /> Add Test Scenario
         </button>
       )}
@@ -2470,12 +2519,13 @@ export function SpecModal({
               spec={spec}
               canReadPolicyCompliance={canReadPolicyCompliance}
               policyRefreshKey={testScenarioPolicyRefreshKey}
-              onUpdate={async (scenarios) => {
+              onUpdate={async (scenarios, expectedVersion) => {
                 try {
                   const updated = await persistTestScenariosWithWriteGuard(
                     api.updateSpec,
                     specId,
                     scenarios,
+                    expectedVersion,
                   );
                   if (currentSpecId.current !== specId) return;
                   setSpec(updated);
@@ -2490,9 +2540,22 @@ export function SpecModal({
                 }
               }}
               onSpecRefreshed={(updated) => {
+                if (currentSpecId.current !== specId || updated.id !== specId || updated.board_id !== spec.board_id) return;
                 setSpec(updated);
                 setTestScenarioPolicyRefreshKey((value) => value + 1);
                 onChanged();
+              }}
+              onReload={async () => {
+                try {
+                  const updated = await reloadSpecSnapshot({ includeRelated: false, notifyChanged: false, showLoading: false });
+                  if (!updated) throw new Error('The scenario reload was superseded. Reload to confirm the current base.');
+                  setTestScenarioPolicyRefreshKey(value => value + 1);
+                } catch (error) {
+                  if (currentSpecId.current === specId && error instanceof AuthenticatedFetchError && [401, 403, 404].includes(error.status)) {
+                    setSpec(null); onClose();
+                  }
+                  throw error;
+                }
               }}
               onSpecUpdate={async (data) => {
                 try {

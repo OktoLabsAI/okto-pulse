@@ -4192,6 +4192,8 @@ export interface CreateSpecRequest {
 }
 
 export interface UpdateSpecRequest extends TaskValidationGateOverride {
+  /** Authored base for test_scenarios only; other Spec updates have no generic CAS. */
+  expected_spec_version?: number;
   title?: string;
   description?: string;
   context?: string;
