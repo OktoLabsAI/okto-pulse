@@ -8,7 +8,7 @@ import {
 } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { Spec, SpecStatus } from '@/types';
+import type { ProjectStructureNode, Spec, SpecStatus } from '@/types';
 
 import { SpecModal } from '../SpecModal';
 
@@ -24,6 +24,9 @@ vi.mock('@/hooks/useWorkspaceRevisions', () => ({
 
 const apiMock = vi.hoisted(() => ({
   getSpec: vi.fn(),
+  getProjectStructure: vi.fn(),
+  mutateProjectStructure: vi.fn(),
+  getCodeTraceabilityProjection: vi.fn(),
   getAllowedTransitions: vi.fn(),
   getValidationCycle: vi.fn(),
   getValidationTechnicalAudit: vi.fn(),
@@ -275,6 +278,66 @@ async function openCriteria() {
 }
 
 describe('SpecModal validation navigation', () => {
+  const treeNode: ProjectStructureNode = {
+    id: 'psn_live', name: 'src', note: 'Original project note', kind: 'folder', parent_id: null, position: 0,
+    classification: 'to_be', state: 'planned', status: 'active', interpretation_limit: null,
+    task_references: [], test_references: [], evidence_ids: [],
+  };
+  const treeSnapshot = (version: number, note = treeNode.note) => ({
+    contract_version: 'project-structure/v1', state: 'authored', authored: true,
+    spec_id: baseSpec.id, spec_version: version, structure_revision: version,
+    digest: 'a'.repeat(64), nodes: [{ ...treeNode, note }],
+  });
+
+  it('refreshes Project Structure through the watcher without replacing its authored base', async () => {
+    apiMock.getSpec.mockResolvedValue({ ...baseSpec, project_structure: [treeNode], project_structure_revision: 4 });
+    apiMock.getProjectStructure.mockResolvedValue(treeSnapshot(4));
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('tab', { name: /^Project Structure/ }));
+    const tree = within(await screen.findByTestId('project-structure-tab'));
+    await waitFor(() => expect(tree.getByRole('button', { name: 'Refresh' })).toBeEnabled());
+    fireEvent.click(tree.getByRole('button', { name: 'Edit' }));
+    fireEvent.click(tree.getByRole('button', { name: 'Edit src' }));
+    fireEvent.change(tree.getByLabelText(/Note \/ Description/), { target: { value: 'Local authored note' } });
+    expect(workspaceWatch.options?.boardId).toBe(baseSpec.board_id);
+    apiMock.getSpec.mockResolvedValue({ ...baseSpec, version: 5, project_structure_revision: 5, project_structure: [{ ...treeNode, note: 'MCP note' }] });
+    apiMock.getProjectStructure.mockResolvedValue(treeSnapshot(5, 'MCP note'));
+    await act(async () => workspaceWatch.options!.onChange({ subjects: [], initial: false, authorityChanged: false }));
+    await waitFor(() => expect(tree.getByRole('button', { name: 'Review current structure' })).toBeEnabled());
+    expect(tree.getByLabelText(/Note \/ Description/)).toHaveValue('Local authored note');
+    expect(tree.getByRole('button', { name: 'Save' })).toBeDisabled();
+    fireEvent.click(tree.getByRole('button', { name: 'Review current structure' }));
+    apiMock.mutateProjectStructure.mockResolvedValue({ replayed: false, spec_version: 6, structure_revision: 6, affected_node_ids: [treeNode.id], nodes: [{ ...treeNode, note: 'Local authored note' }] });
+    apiMock.getSpec.mockResolvedValue({ ...baseSpec, version: 6, project_structure_revision: 6, project_structure: [{ ...treeNode, note: 'Local authored note' }] });
+    fireEvent.click(tree.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(apiMock.mutateProjectStructure).toHaveBeenCalledWith(baseSpec.board_id, baseSpec.id, expect.objectContaining({ expected_spec_version: 5, expected_structure_revision: 5 })));
+    await waitFor(() => expect(tree.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument());
+    await waitFor(() => expect(apiMock.getSpec).toHaveBeenCalledTimes(3));
+  });
+
+  it('recovers a failed full Spec read after confirmed tree mutation without repeating the write', async () => {
+    apiMock.getSpec.mockResolvedValueOnce({ ...baseSpec, project_structure: [treeNode], project_structure_revision: 4 })
+      .mockRejectedValue(new Error('Full Spec unavailable'));
+    apiMock.getProjectStructure.mockResolvedValue(treeSnapshot(4));
+    apiMock.mutateProjectStructure.mockResolvedValue({ replayed: false, spec_version: 5, structure_revision: 5, affected_node_ids: [treeNode.id], nodes: [{ ...treeNode, note: 'Confirmed note' }] });
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('tab', { name: /^Project Structure/ }));
+    const tree = within(await screen.findByTestId('project-structure-tab'));
+    await waitFor(() => expect(tree.getByRole('button', { name: 'Refresh' })).toBeEnabled());
+    fireEvent.click(tree.getByRole('button', { name: 'Edit' }));
+    fireEvent.click(tree.getByRole('button', { name: 'Edit src' }));
+    fireEvent.change(tree.getByLabelText(/Note \/ Description/), { target: { value: 'Confirmed note' } });
+    fireEvent.click(tree.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(tree.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument());
+    expect(tree.getByRole('button', { name: 'Add root' })).toBeDisabled();
+    apiMock.getSpec.mockResolvedValue({ ...baseSpec, title: 'Current full Spec', version: 5, project_structure_revision: 5, project_structure: [{ ...treeNode, note: 'Confirmed note' }] });
+    apiMock.getProjectStructure.mockResolvedValue(treeSnapshot(5, 'Confirmed note'));
+    fireEvent.click(tree.getByRole('button', { name: 'Refresh' }));
+    await screen.findByText('Current full Spec');
+    await waitFor(() => expect(tree.getByRole('button', { name: 'Add root' })).toBeEnabled());
+    expect(apiMock.mutateProjectStructure).toHaveBeenCalledOnce();
+  });
+
   it.each(['Decisions'])('subscribes %s after protecting its inspection writer', async tab => {
     apiMock.getSpec.mockResolvedValue(baseSpec);
     render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
@@ -576,6 +639,7 @@ describe('SpecModal validation navigation', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    apiMock.getCodeTraceabilityProjection.mockResolvedValue({ evidence: [] });
     permissionMock.refresh.mockReset();
     permissionMock.allowAll = true;
     permissionMock.allowed = new Set();

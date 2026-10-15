@@ -203,6 +203,7 @@ interface SpecSnapshotReloadOptions {
   includeRelated: boolean;
   notifyChanged: boolean;
   showLoading: boolean;
+  minimumVersion?: number;
 }
 
 const STATUS_ICON: Record<SpecStatus, React.ReactNode> = {
@@ -1750,6 +1751,7 @@ export function SpecModal({
     includeRelated,
     notifyChanged,
     showLoading,
+    minimumVersion = 0,
   }: SpecSnapshotReloadOptions): Promise<Spec | null> => {
     const requestedSpecId = specId;
     const generation = specReloadGeneration.current + 1;
@@ -1768,6 +1770,9 @@ export function SpecModal({
       const expectedBoardId = _boardId || (spec?.id === requestedSpecId ? spec.board_id : undefined);
       if (data.id !== requestedSpecId || (expectedBoardId && data.board_id !== expectedBoardId)) {
         throw new Error('The Spec response does not match the requested identity.');
+      }
+      if (data.version < minimumVersion) {
+        throw new Error('The Spec response predates the confirmed change. Reload the current Spec.');
       }
       setSpec(data);
       await loadAllowedTransitions(data, isCurrent);
@@ -2018,7 +2023,7 @@ export function SpecModal({
   const [workspaceSyncError, setWorkspaceSyncError] = useState<string | null>(null);
   const [workspaceReadPending, setWorkspaceReadPending] = useState(false);
   const workspaceLoadGeneration = useRef(0);
-  const validationLive = ['validation', 'frs', 'acs', 'rules', 'contracts', 'ors', 'trs', 'irs', 'decisions', 'tests'].includes(activeTab) || showSubmitValidationModal;
+  const validationLive = ['validation', 'frs', 'acs', 'rules', 'contracts', 'ors', 'trs', 'irs', 'decisions', 'tests', 'project-structure'].includes(activeTab) || showSubmitValidationModal;
   useEffect(() => {
     setPermissionCheckPending(false);
     setWorkspaceReadPending(false);
@@ -2068,6 +2073,26 @@ export function SpecModal({
       }
     },
   });
+  const reloadProjectStructureWorkspace = async (minimumVersion = spec?.version ?? 0) => {
+    const generation = ++workspaceLoadGeneration.current;
+    const id = specId;
+    const current = () => generation === workspaceLoadGeneration.current && currentSpecId.current === id;
+    setWorkspaceReadPending(true);
+    try {
+      const updated = await reloadSpecSnapshot({ includeRelated: false, notifyChanged: false, showLoading: false, minimumVersion });
+      if (!updated || !current()) throw new Error('The workspace reload was superseded. Refresh to confirm its current state.');
+      setWorkspaceSyncError(null);
+    } catch (error) {
+      if (current()) {
+        if (error instanceof AuthenticatedFetchError && [401, 403, 404].includes(error.status)) {
+          setSpec(null); onClose();
+        } else setWorkspaceSyncError('The current Spec could not be loaded. Your project structure draft is preserved; refresh to retry.');
+      }
+      throw error;
+    } finally {
+      if (current()) setWorkspaceReadPending(false);
+    }
+  };
   const specValidationSubmissionRequired = (
     policyTransitionPreview.status === 'ready'
     && policyTransitionPreview.transitions.some(
@@ -2576,6 +2601,15 @@ export function SpecModal({
               <ProjectStructureTab
                 boardId={spec.board_id || _boardId}
                 spec={spec}
+                refreshKey={validationHistoryRefreshKey}
+                readCurrent={!permissionCheckPending && !workspaceReadPending && !workspaceSyncError && syncState === 'current'}
+                onReload={() => reloadProjectStructureWorkspace()}
+                onAccessLost={() => {
+                  if (currentSpecId.current !== spec.id) return;
+                  workspaceLoadGeneration.current += 1;
+                  specReloadGeneration.current += 1;
+                  setSpec(null); onClose();
+                }}
                 focusNodeId={focusProjectNodeId}
                 canCreate={canCreateProjectStructure}
                 canUpdate={canUpdateProjectStructure}
@@ -2590,15 +2624,22 @@ export function SpecModal({
                 canUnlinkEvidence={canUnlinkProjectStructureEvidence}
                 canReadEvidence={canReadCodeTraceability}
                 onStructureChange={({ nodes, specVersion, structureRevision, source }) => {
-                  setSpec((current) => current
+                  if (currentSpecId.current !== spec.id) return;
+                  // A tree snapshot is not a full Spec snapshot. A new version
+                  // must reload the workspace rather than certify cached fields.
+                  if (source === 'mutation' || specVersion > spec.version) {
+                    if (source === 'mutation') onChanged();
+                    void reloadProjectStructureWorkspace(specVersion).catch(() => { /* Read failure is shown; never repeat the confirmed mutation. */ });
+                    return;
+                  }
+                  setSpec((current) => current && current.id === spec.id && current.board_id === spec.board_id
+                    && current.version === specVersion && (current.project_structure_revision ?? 0) <= (structureRevision ?? 0)
                     ? {
                       ...current,
                       project_structure: nodes,
                       project_structure_revision: structureRevision,
-                      version: specVersion,
                     }
                     : current);
-                  if (source === 'mutation') onChanged();
                 }}
               />
             </ProjectStructureErrorBoundary>

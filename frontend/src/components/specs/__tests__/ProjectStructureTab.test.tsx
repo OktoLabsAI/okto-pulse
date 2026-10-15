@@ -117,7 +117,121 @@ function renderTab(overrides: Partial<ComponentProps<typeof ProjectStructureTab>
   );
 }
 
+function tabProps(overrides: Partial<ComponentProps<typeof ProjectStructureTab>> = {}): ComponentProps<typeof ProjectStructureTab> {
+  return { boardId: 'board-1', spec, canCreate: true, canUpdate: true, canRevoke: true, canRestore: true,
+    canReorder: true, canLinkTask: true, canUnlinkTask: true, canLinkTest: true, canUnlinkTest: true,
+    canLinkEvidence: true, canUnlinkEvidence: true, onStructureChange: vi.fn(), ...overrides };
+}
+
 describe('ProjectStructureTab', () => {
+  it('retains only one disabled editor for a revoked node when removed nodes are visible', async () => {
+    apiMock.getProjectStructure.mockResolvedValueOnce(snapshot()).mockResolvedValue(snapshot(2, [nodes[0], { ...nodes[1], status: 'revoked' }]));
+    const initialProps = tabProps();
+    const view = render(<ProjectStructureTab {...initialProps} refreshKey={0} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit entry.tsx' }));
+    fireEvent.change(screen.getByLabelText(/Note \/ Description/), { target: { value: 'Removed node draft' } });
+    view.rerender(<ProjectStructureTab {...initialProps} refreshKey={1} />);
+    await screen.findByText(/This node was removed/);
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Show removed' }));
+    expect(screen.getAllByLabelText(/Note \/ Description/)).toHaveLength(1);
+    expect(screen.getByLabelText(/Note \/ Description/)).toHaveValue('Removed node draft');
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+  });
+
+  it('refreshes externally without dropping the node draft and retains a removed node', async () => {
+    apiMock.getProjectStructure.mockResolvedValueOnce(snapshot()).mockResolvedValue(snapshot(2, [nodes[0]]));
+    const initialProps = tabProps();
+    const view = render(<ProjectStructureTab {...initialProps} refreshKey={0} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit entry.tsx' }));
+    fireEvent.change(screen.getByLabelText(/Note \/ Description/), { target: { value: 'Retain removed node draft' } });
+    view.rerender(<ProjectStructureTab {...initialProps} refreshKey={1} />);
+    await screen.findByText(/This node was removed/);
+    expect(screen.getByLabelText(/Note \/ Description/)).toHaveValue('Retain removed node draft');
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    expect(apiMock.mutateProjectStructure).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByLabelText(/Note \/ Description/)).not.toBeInTheDocument();
+  });
+
+  it('clears protected tree and draft after a denied refresh', async () => {
+    const onAccessLost = vi.fn();
+    apiMock.getProjectStructure.mockResolvedValueOnce(snapshot()).mockRejectedValueOnce(new AuthenticatedFetchError({ status: 403, message: 'Denied' }));
+    renderTab({ onAccessLost });
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit entry.tsx' }));
+    fireEvent.change(screen.getByLabelText(/Note \/ Description/), { target: { value: 'Protected draft' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => expect(onAccessLost).toHaveBeenCalledOnce());
+    expect(screen.queryByLabelText(/Note \/ Description/)).not.toBeInTheDocument();
+    expect(screen.queryByText('entry.tsx')).not.toBeInTheDocument();
+  });
+
+  it('removes an update draft when that permission is revoked even if creation remains allowed', async () => {
+    const initialProps = tabProps();
+    const view = render(<ProjectStructureTab {...initialProps} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit entry.tsx' }));
+    view.rerender(<ProjectStructureTab {...initialProps} canUpdate={false} />);
+    expect(screen.queryByLabelText(/Note \/ Description/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add root' })).toBeEnabled();
+  });
+
+  it('ignores a mutation that finishes after switching Spec', async () => {
+    let finish!: (value: ProjectStructureMutationResponse) => void;
+    apiMock.mutateProjectStructure.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const initialProps = tabProps();
+    const view = render(<ProjectStructureTab {...initialProps} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit entry.tsx' }));
+    fireEvent.change(screen.getByLabelText(/Note \/ Description/), { target: { value: 'Old scope note' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    const otherChange = vi.fn();
+    apiMock.getProjectStructure.mockResolvedValue({ ...snapshot(), spec_id: 'other-spec' });
+    view.rerender(<ProjectStructureTab {...initialProps} spec={{ ...spec, id: 'other-spec' }} onStructureChange={otherChange} />);
+    await waitFor(() => expect(otherChange).toHaveBeenCalledOnce());
+    finish(mutation(2, nodes.map(node => ({ ...node, note: 'Old scope note' }))));
+    await Promise.resolve();
+    expect(otherChange).toHaveBeenCalledOnce();
+    expect(screen.queryByText('Old scope note')).not.toBeInTheDocument();
+  });
+
+  it('keeps the authored base after a plain refresh until explicit review', async () => {
+    apiMock.getProjectStructure.mockResolvedValueOnce(snapshot(1)).mockResolvedValue(snapshot(2));
+    renderTab();
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit entry.tsx' }));
+    const note = screen.getByLabelText(/Note \/ Description/);
+    fireEvent.change(note, { target: { value: 'Keep my authored note' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => expect(apiMock.getProjectStructure).toHaveBeenCalledTimes(2));
+    expect(screen.getByLabelText(/Note \/ Description/)).toHaveValue('Keep my authored note');
+    fireEvent.keyDown(note, { key: 'Enter', ctrlKey: true });
+    expect(apiMock.mutateProjectStructure).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Review current structure' }));
+    fireEvent.keyDown(note, { key: 'Enter', ctrlKey: true });
+    await waitFor(() => expect(apiMock.mutateProjectStructure).toHaveBeenCalledOnce());
+    expect(apiMock.mutateProjectStructure.mock.calls[0][2]).toMatchObject({ expected_spec_version: 2, expected_structure_revision: 2 });
+  });
+
+  it('retries an uncertain creation with exactly the original operation and idempotency key', async () => {
+    apiMock.mutateProjectStructure.mockRejectedValueOnce(new TypeError('response lost'))
+      .mockResolvedValueOnce({ ...mutation(2, nodes), replayed: true });
+    renderTab();
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add root' }));
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'New authored node' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    const retry = await screen.findByRole('button', { name: 'Retry original operation' });
+    const first = structuredClone(apiMock.mutateProjectStructure.mock.calls[0][2]);
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    fireEvent.click(retry);
+    await waitFor(() => expect(apiMock.mutateProjectStructure).toHaveBeenCalledTimes(2));
+    expect(apiMock.mutateProjectStructure.mock.calls[1][2]).toEqual(first);
+    await waitFor(() => expect(screen.queryByRole('form', { name: 'Create project node' })).not.toBeInTheDocument());
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     apiMock.getProjectStructure.mockResolvedValue(snapshot());
