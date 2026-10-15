@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { useDashboardApi } from '@/services/api';
 import { AuthenticatedFetchError } from '@/lib/authFetch';
 import type { ArchitectureClassificationReviewItem, ArchitectureClassificationsResponse, ArchitectureReviewState } from '@/types/architecture-classifications';
@@ -17,15 +17,17 @@ function failure(error: unknown) {
   return 'Classification review could not be loaded. Its completeness is unknown.';
 }
 
-function ReviewDetails({ boardId, specId, specVersion, specEdition, item, children }: {
+function ReviewDetails({ boardId, specId, specVersion, specEdition, item, children, readScope, readCurrent = true }: {
   boardId: string; specId: string; specVersion: number; specEdition: number; item: ArchitectureClassificationReviewItem;
   children?: ReactNode;
+  readScope?: string; readCurrent?: boolean;
 }) {
   const api = useDashboardApi();
   const [digest, setDigest] = useState<string | null>(null);
-  const [result, setResult] = useState<{ digest: string; detail?: ArchitectureClassificationReviewItem; error?: string } | null>(null);
+  const detailScope = JSON.stringify([boardId, specId, specVersion, specEdition, readScope, readCurrent, digest]);
+  const [result, setResult] = useState<{ scope: string; detail?: ArchitectureClassificationReviewItem; error?: string } | null>(null);
   useEffect(() => {
-    if (!digest) { setResult(null); return; }
+    if (!digest || !readCurrent) { setResult(null); return; }
     const controller = new AbortController();
     let active = true;
     void (async () => {
@@ -34,14 +36,14 @@ function ReviewDetails({ boardId, specId, specVersion, specEdition, item, childr
         const detail = response.items.find(row => row.candidate_id === item.candidate_id);
         if (response.board_id !== boardId || response.spec_id !== specId || response.spec_edition !== specEdition || response.spec_version !== specVersion || response.profile !== 'detail' || !detail || !('current_contract' in detail)
           || !(detail.source_digests.includes(digest) || (!detail.source_variant_count && detail.analyzed_source_digest === digest))) throw new Error('scope changed');
-        if (active) setResult({ digest, detail });
+        if (active) setResult({ scope: detailScope, detail });
       } catch (error) {
-        if (active) setResult({ digest, error: failure(error) });
+        if (active) setResult({ scope: detailScope, error: failure(error) });
       }
     })();
     return () => { active = false; controller.abort(); };
-  }, [api, boardId, specId, specVersion, specEdition, item.candidate_id, digest]);
-  const current = result?.digest === digest ? result : null;
+  }, [api, boardId, specId, specVersion, specEdition, item.candidate_id, digest, detailScope, readCurrent]);
+  const current = result?.scope === detailScope ? result : null;
   const variants = item.source_digests.length ? item.source_digests : item.analyzed_source_digest ? [item.analyzed_source_digest] : [];
   return <article className="mt-3 space-y-3 rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800/30">
     <div className="flex flex-wrap items-center justify-between gap-2"><h4 className="text-sm font-semibold">{item.name || item.interface_id}</h4>
@@ -80,22 +82,39 @@ function ReviewDetails({ boardId, specId, specVersion, specEdition, item, childr
   </article>;
 }
 
-export function ArchitectureClassificationsPanel({ boardId, specId, specVersion, canRead, authoring, integrated = false }: {
+interface PanelProps {
   boardId: string; specId: string; specVersion: number; canRead: boolean;
+  readCurrent?: boolean;
   authoring?: ArchitectureAuthoringAuthority;
   integrated?: boolean;
-}) {
+}
+
+export function ArchitectureClassificationsPanel(props: PanelProps) {
+  return <ClassificationWorkspace key={JSON.stringify([props.boardId, props.specId])} {...props} />;
+}
+
+function ClassificationWorkspace({ boardId, specId, specVersion, canRead, authoring, integrated = false, readCurrent = true }: PanelProps) {
   const api = useDashboardApi();
   const [open, setOpen] = useState(integrated);
   const [refresh, setRefresh] = useState(0);
   const [filter, setFilter] = useState<ArchitectureReviewState | ''>('');
-  const baseScope = JSON.stringify([boardId, specId, specVersion, canRead, open, refresh, filter]);
+  const baseScope = JSON.stringify([boardId, specId, specVersion, canRead, readCurrent, open, refresh, filter]);
   const [page, setPage] = useState({ scope: baseScope, offset: 0 });
   const offset = page.scope === baseScope ? page.offset : 0;
   const scope = JSON.stringify([baseScope, offset]);
-  const [result, setResult] = useState<{ scope: string; data?: ArchitectureClassificationsResponse; error?: string } | null>(null);
+  const [result, setResult] = useState<{ scope: string; data?: ArchitectureClassificationsResponse; error?: string; denied?: boolean } | null>(null);
+  const [retained, setRetained] = useState<Map<string, ArchitectureClassificationReviewItem>>(new Map());
+  const onDraftChange = useCallback((item: ArchitectureClassificationReviewItem, dirty: boolean) => {
+    setRetained(previous => {
+      if (dirty ? previous.get(item.candidate_id) === item : !previous.has(item.candidate_id)) return previous;
+      const next = new Map(previous);
+      if (dirty) next.set(item.candidate_id, item); else next.delete(item.candidate_id);
+      return next;
+    });
+  }, []);
   useEffect(() => {
-    if (!canRead || !open) { setResult(null); return; }
+    if (!canRead || !open) { setResult(null); setRetained(new Map()); return; }
+    if (!readCurrent) return;
     const controller = new AbortController();
     let active = true;
     void (async () => {
@@ -103,12 +122,19 @@ export function ArchitectureClassificationsPanel({ boardId, specId, specVersion,
         const data = await api.getArchitectureClassifications(boardId, specId, controller.signal, { offset, limit: 25, ...(filter ? { state: filter } : {}) });
         if (data.board_id !== boardId || data.spec_id !== specId || data.profile !== 'summary') throw new Error('scope mismatch');
         if (active) setResult({ scope, data });
-      } catch (error) { if (active) setResult({ scope, error: failure(error) }); }
+      } catch (error) {
+        if (active) {
+          const denied = error instanceof AuthenticatedFetchError && [401, 403, 404].includes(error.status);
+          if (denied) setRetained(new Map());
+          setResult({ scope, error: failure(error), denied });
+        }
+      }
     })();
     return () => { active = false; controller.abort(); };
-  }, [api, boardId, specId, scope, offset, filter, canRead, open]);
+  }, [api, boardId, specId, scope, offset, filter, canRead, readCurrent, open]);
   const current = result?.scope === scope ? result : null;
   const data = current?.data;
+  const rows = [...(data?.items ?? []), ...[...retained.values()].filter(row => !data?.items.some(item => item.candidate_id === row.candidate_id))];
   return <section aria-label="Architecture classifications" className="mb-4 rounded border border-gray-200 p-3 dark:border-gray-700">
     <h3 className="text-sm font-semibold">{integrated ? 'Architecture candidates' : 'Architecture classifications'}</h3>
     {integrated && <p className="mt-1 text-xs text-gray-500">Interface contracts from the adopted architecture. Create or reuse an integration requirement, or keep the interface as context. API Contracts are separate definitions.</p>}
@@ -128,20 +154,20 @@ export function ArchitectureClassificationsPanel({ boardId, specId, specVersion,
           {data.classification_complete && <p>Current contracts are classified. Execution gates and semantic review still apply.</p>}
           <ul aria-label="Global classification counts" className="mt-2 text-xs">{Object.entries(labels).map(([value, label]) => <li key={value}>{label}: {data.state_counts[value as ArchitectureReviewState]}</li>)}</ul>
           {data.items.length === 0 && <p>No classifications in this page or filter.</p>}
-          {(!authoring?.canClassify || integrated) && data.items.map(item => <ReviewDetails key={`${scope}:${item.candidate_id}`} boardId={boardId} specId={specId} specVersion={data.spec_version} specEdition={data.spec_edition} item={item}>
+        </>}
+          {!result?.denied && (!authoring?.canClassify || integrated) && rows.map(item => <ReviewDetails key={item.candidate_id} boardId={boardId} specId={specId} specVersion={specVersion} specEdition={authoring?.specEdition ?? data?.spec_edition ?? 0} item={item} readScope={scope} readCurrent={Boolean(data?.items.some(row => row.candidate_id === item.candidate_id))}>
             {integrated && authoring?.canClassify && <ArchitectureClassificationAuthoring
-              key={`${specVersion}:${item.candidate_id}`} {...authoring} boardId={boardId} specId={specId} specVersion={specVersion}
+              key={JSON.stringify([item.candidate_id, authoring.canPromote, authoring.canAssociate])} {...authoring} boardId={boardId} specId={specId} specVersion={specVersion} onDraftChange={onDraftChange}
               inlineItem={item} items={[]} renderItem={() => null}
-              sourceReady={Boolean(data.source_complete && data.spec_version === specVersion && data.spec_edition === authoring.specEdition
+              sourceReady={Boolean(data?.source_complete && data.items.some(row => row.candidate_id === item.candidate_id) && data.spec_version === specVersion && data.spec_edition === authoring.specEdition
                 && item.current_source_digest && item.source_variant_count === 1 && ['pending', 'current', 'review_required'].includes(item.state))} />}
           </ReviewDetails>)}
-          {(offset > 0 || data.has_more) && <nav aria-label="Classification pages" className="mt-2 flex gap-3 text-xs">
+          {data && (offset > 0 || data.has_more) && <nav aria-label="Classification pages" className="mt-2 flex gap-3 text-xs">
             <button type="button" disabled={offset === 0} onClick={() => setPage({ scope: baseScope, offset: Math.max(0, offset - 25) })}>Previous classifications</button>
             <button type="button" disabled={!data.has_more} onClick={() => setPage({ scope: baseScope, offset: offset + 25 })}>Next classifications</button>
           </nav>}
-        </>}
-        {!integrated && authoring?.canClassify && <ArchitectureClassificationAuthoring
-          key={JSON.stringify([boardId, specId, specVersion, authoring.specEdition, authoring.canPromote, authoring.canAssociate])}
+        {!result?.denied && !integrated && authoring?.canClassify && <ArchitectureClassificationAuthoring
+          key={JSON.stringify([boardId, specId, authoring.canPromote, authoring.canAssociate])}
           {...authoring} boardId={boardId} specId={specId} specVersion={specVersion}
           sourceReady={Boolean(data?.source_complete && data.spec_version === specVersion && data.spec_edition === authoring.specEdition)}
           items={data?.items ?? []}

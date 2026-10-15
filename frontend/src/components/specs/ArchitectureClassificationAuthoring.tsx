@@ -4,6 +4,7 @@ import { useDashboardApi } from '@/services/api';
 import { AuthenticatedFetchError } from '@/lib/authFetch';
 import type { IntegrationRequirement, IntegrationRequirementType } from '@/types';
 import type { ArchitectureClassificationBatch, ArchitectureClassificationDecision, ArchitectureClassificationReviewItem, AuthoredArchitectureIR } from '@/types/architecture-classifications';
+import { ArchitectureContractContent } from './ArchitectureContractContent';
 
 export interface ArchitectureAuthoringAuthority {
   canClassify: boolean;
@@ -15,6 +16,7 @@ export interface ArchitectureAuthoringAuthority {
 }
 
 interface Props extends ArchitectureAuthoringAuthority {
+  onDraftChange?: (item: ArchitectureClassificationReviewItem, dirty: boolean) => void;
   inlineItem?: ArchitectureClassificationReviewItem;
   boardId: string; specId: string; specVersion: number;
   sourceReady: boolean; items: ArchitectureClassificationReviewItem[];
@@ -49,7 +51,7 @@ function authoredIR(draft: IRDraft): AuthoredArchitectureIR {
   return ir;
 }
 
-export function ArchitectureClassificationAuthoring({ boardId, specId, specVersion, specEdition, canClassify, canPromote, canAssociate, requirements, onApplied, sourceReady, items, renderItem, inlineItem }: Props) {
+export function ArchitectureClassificationAuthoring({ boardId, specId, specVersion, specEdition, canClassify, canPromote, canAssociate, requirements, onApplied, sourceReady, items, renderItem, inlineItem, onDraftChange }: Props) {
   const api = useDashboardApi();
   const [selected, setSelected] = useState<Record<string, ArchitectureClassificationReviewItem>>({});
   const [queue, setQueue] = useState<{ name: string; source: ArchitectureClassificationReviewItem; decision: ArchitectureClassificationDecision }[]>([]);
@@ -65,6 +67,10 @@ export function ArchitectureClassificationAuthoring({ boardId, specId, specVersi
   const [message, setMessage] = useState('');
   const [mode, setMode] = useState<'editing' | 'submitting' | 'unknown' | 'rejected' | 'saved'>('editing');
   const [suggesting, setSuggesting] = useState(false);
+  const [base, setBase] = useState<{ version: number; edition: number; inline?: ArchitectureClassificationReviewItem } | null>(null);
+  const [review, setReview] = useState<{ version: number; edition: number; rows: ArchitectureClassificationReviewItem[] } | null>(null);
+  const [reviewing, setReviewing] = useState(false);
+  const reviewRequest = useRef<AbortController | null>(null);
   const mounted = useRef(true);
   const inFlight = useRef(false);
   const attempt = useRef<ArchitectureClassificationBatch | null>(null);
@@ -73,13 +79,31 @@ export function ArchitectureClassificationAuthoring({ boardId, specId, specVersi
   const sourcePrefill = useRef(false);
   useEffect(() => {
     mounted.current = true;
-    return () => { mounted.current = false; suggestion.current?.abort(); };
+    return () => { mounted.current = false; suggestion.current?.abort(); reviewRequest.current?.abort(); };
   }, []);
-  const chosen = inlineItem ? [inlineItem] : Object.values(selected);
+  const inlineDigest = inlineItem?.current_source_digest;
+  useEffect(() => {
+    suggestion.current?.abort(); reviewRequest.current?.abort();
+    setSuggesting(false); setReviewing(false); setReview(null);
+  }, [specVersion, specEdition, sourceReady, inlineDigest]);
+  const chosen = inlineItem ? [base?.inline ?? inlineItem] : Object.values(selected);
+  const authoredSources = [...chosen, ...queue.map(row => row.source)];
+  const changed = Boolean(base && (base.version !== specVersion || base.edition !== specEdition
+    || (base.inline && base.inline.current_source_digest !== inlineDigest)
+    || (!inlineItem && authoredSources.some(row => items.some(current => current.candidate_id === row.candidate_id && current.current_source_digest !== row.current_source_digest)))));
+  const cancelReview = () => { reviewRequest.current?.abort(); setReview(null); setReviewing(false); };
+  const begin = () => { cancelReview(); setBase(value => value ?? { version: specVersion, edition: specEdition, inline: inlineItem }); };
+  const dirty = base !== null && mode !== 'saved';
+  useEffect(() => {
+    // Keep the confirmed receipt mounted through the post-write read too.
+    if (inlineItem) onDraftChange?.(inlineItem, base !== null);
+  }, [inlineItem, onDraftChange, base]);
   const editable = mode === 'editing' && canClassify;
   const irCounts = new Map<string, number>();
   requirements.forEach(ir => irCounts.set(ir.id, (irCounts.get(ir.id) ?? 0) + 1));
   const activeIRs = requirements.filter(ir => ir.status === 'active' && irCounts.get(ir.id) === 1);
+  const missingRefs = [...refs, ...queue.flatMap(row => row.decision.integration_requirement_refs ?? [])]
+    .filter(id => !activeIRs.some(ir => ir.id === id));
   const cancelSuggestion = () => { suggestion.current?.abort(); suggestion.current = null; setSuggesting(false); };
   const discardSourcePrefill = () => {
     if (!sourcePrefill.current) return;
@@ -93,7 +117,7 @@ export function ArchitectureClassificationAuthoring({ boardId, specId, specVersi
   };
 
   async function loadSourceSuggestion() {
-    if (chosen.length !== 1 || partial || !editable || !canPromote) return;
+    if (changed || !sourceReady || chosen.length !== 1 || partial || !editable || !canPromote) return;
     cancelSuggestion();
     const controller = new AbortController(); suggestion.current = controller;
     setSuggesting(true); setMessage('');
@@ -113,7 +137,7 @@ export function ArchitectureClassificationAuthoring({ boardId, specId, specVersi
   }
 
   function addDecisions() {
-    if (!editable || !sourceReady || !chosen.length || !disposition) return;
+    if (changed || !editable || !sourceReady || !chosen.length || !disposition) return;
     try {
       if (queue.length + chosen.length - (editingIndex === null ? 0 : 1) > 50) throw new Error('A batch can contain at most 50 decisions.');
       if (disposition === 'promote_to_ir' && (!canPromote || chosen.length !== 1)) throw new Error('Select one candidate to author its IRs, then queue other candidates for the same batch.');
@@ -138,11 +162,13 @@ export function ArchitectureClassificationAuthoring({ boardId, specId, specVersi
   }
 
   function resetForm() {
+    cancelReview();
     cancelSuggestion(); sourcePrefill.current = false; setEditingIndex(null); setSelected({}); setDisposition(''); setIRs([emptyIR()]); setRefs([]); setReason(''); setPartial(false); setPaths(''); setRemainder('');
   }
 
   function editQueued(index: number) {
     if (!editable) return;
+    cancelReview();
     cancelSuggestion(); sourcePrefill.current = false;
     const row = queue[index], decision = row.decision;
     setEditingIndex(index); setSelected({ [row.source.candidate_id]: row.source });
@@ -156,10 +182,62 @@ export function ArchitectureClassificationAuthoring({ boardId, specId, specVersi
     try { await onApplied(); } catch { if (mounted.current) setMessage('Classifications were saved. Refresh the Spec to load its current requirements; do not submit again.'); }
   }
 
+  async function reviewBase() {
+    if (!sourceReady || !canClassify || inFlight.current || mode === 'unknown') return;
+    reviewRequest.current?.abort();
+    const controller = new AbortController(); reviewRequest.current = controller;
+    setReviewing(true); setReview(null); setMessage('');
+    try {
+      const sources = [...new Map(authoredSources.map(row => [row.candidate_id, row])).values()];
+      const wanted = new Set(sources.map(row => row.candidate_id));
+      const currentSources = new Map<string, ArchitectureClassificationReviewItem>();
+      let offset = 0;
+      // The public detail contract requires identity AND digest. Discover the
+      // current digests in bounded pages; never retarget an old digest silently.
+      while (currentSources.size < wanted.size) {
+        const page = await api.getArchitectureClassifications(boardId, specId, controller.signal, { offset, limit: 100 });
+        if (controller.signal.aborted) return;
+        if (page.board_id !== boardId || page.spec_id !== specId || page.spec_version !== specVersion
+          || page.spec_edition !== specEdition || page.profile !== 'summary' || !page.source_complete) throw new Error('Source unavailable');
+        page.items.forEach(row => { if (wanted.has(row.candidate_id)) currentSources.set(row.candidate_id, row); });
+        if (!page.has_more) break;
+        if (!page.items.length) throw new Error('Incomplete source page');
+        offset += page.items.length;
+      }
+      const rows = await Promise.all(sources.map(async row => {
+        const digest = currentSources.get(row.candidate_id)?.current_source_digest;
+        if (!digest) throw new Error('Source unavailable');
+        const response = await api.getArchitectureClassifications(boardId, specId, controller.signal, { candidateId: row.candidate_id, sourceDigest: digest });
+        const current = response.items.find(item => item.candidate_id === row.candidate_id);
+        if (response.board_id !== boardId || response.spec_id !== specId || response.spec_version !== specVersion
+          || response.spec_edition !== specEdition || response.profile !== 'detail' || !response.source_complete
+          || !current?.current_source_digest || !current.current_contract || current.source_variant_count !== 1
+          || !['pending', 'current', 'review_required'].includes(current.state)) throw new Error('Source unavailable');
+        return current;
+      }));
+      if (mounted.current && !controller.signal.aborted) setReview({ version: specVersion, edition: specEdition, rows });
+    } catch {
+      if (mounted.current && !controller.signal.aborted) setMessage('A selected source is unavailable or changed. Keep the draft, refresh classifications and review the affected candidates before submitting.');
+    } finally { if (mounted.current && !controller.signal.aborted) setReviewing(false); }
+  }
+
+  function acceptReviewedBase() {
+    if (!review || !sourceReady || review.version !== specVersion || review.edition !== specEdition || mode === 'unknown' || inFlight.current) return;
+    const byId = new Map(review.rows.map(row => [row.candidate_id, row]));
+    setSelected(value => Object.fromEntries(Object.entries(value).map(([id, row]) => [id, byId.get(id) ?? row])));
+    setQueue(value => value.map(row => {
+      const current = byId.get(row.source.candidate_id)!;
+      return { ...row, source: current, decision: { ...row.decision, expected_source_digest: current.current_source_digest! } };
+    }));
+    setBase({ version: review.version, edition: review.edition, inline: inlineItem ? byId.get(inlineItem.candidate_id) : undefined });
+    attempt.current = null; setMode('editing'); setReview(null);
+    setMessage('Base reviewed. Check your authored scopes, IR content and references before submitting. No classification has been saved.');
+  }
+
   async function submit(inlineDecisions?: ArchitectureClassificationDecision[]) {
-    if (inFlight.current || !canClassify || (mode !== 'unknown' && (!sourceReady || mode !== 'editing' || !(inlineDecisions?.length || queue.length) || editingIndex !== null))) return;
+    if (inFlight.current || !canClassify || (mode !== 'unknown' && (changed || missingRefs.length || !sourceReady || mode !== 'editing' || !(inlineDecisions?.length || queue.length) || editingIndex !== null))) return;
     if (!attempt.current) {
-      const batch: ArchitectureClassificationBatch = { expected_spec_version: specVersion, expected_spec_edition: specEdition, idempotency_key: uuidv4(), decisions: inlineDecisions ?? queue.map(row => row.decision) };
+      const batch: ArchitectureClassificationBatch = { expected_spec_version: base?.version ?? specVersion, expected_spec_edition: base?.edition ?? specEdition, idempotency_key: uuidv4(), decisions: inlineDecisions ?? queue.map(row => row.decision) };
       if (new TextEncoder().encode(JSON.stringify(batch)).length > 256 * 1024) { setMessage('The batch exceeds 256 KiB. Reduce the authored content before submitting.'); return; }
       attempt.current = JSON.parse(JSON.stringify(batch)) as ArchitectureClassificationBatch;
     }
@@ -167,7 +245,7 @@ export function ArchitectureClassificationAuthoring({ boardId, specId, specVersi
     inFlight.current = true; setMode('submitting'); setMessage('');
     try {
       const receipt = await api.classifyArchitectureCandidates(boardId, specId, batch);
-      if (receipt.contract_version !== 'architecture-classification/v1' || receipt.board_id !== boardId || receipt.spec_id !== specId || receipt.spec_edition !== specEdition || receipt.idempotency_key !== batch.idempotency_key || receipt.spec_version !== specVersion + 1) throw new Error('Unconfirmed receipt');
+      if (receipt.contract_version !== 'architecture-classification/v1' || receipt.board_id !== boardId || receipt.spec_id !== specId || receipt.spec_edition !== batch.expected_spec_edition || receipt.idempotency_key !== batch.idempotency_key || receipt.spec_version !== batch.expected_spec_version + 1) throw new Error('Unconfirmed receipt');
       if (!mounted.current) return;
       setMode('saved'); setQueue([]); setSelected({});
       setMessage(receipt.replayed ? 'The original classification was confirmed. No duplicate IRs were created.' : 'Classifications saved. Requirement readiness and Spec execution gates still apply.');
@@ -188,7 +266,15 @@ export function ArchitectureClassificationAuthoring({ boardId, specId, specVersi
     } finally { inFlight.current = false; }
   }
 
-  return <div aria-label="Classification authoring" className="mt-3 space-y-3">
+  return <div aria-label="Classification authoring" className="mt-3 space-y-3" onChangeCapture={begin}>
+    {changed && mode !== 'saved' && <p role="status" className="text-sm text-amber-700 dark:text-amber-400">The classification base changed. Your draft is preserved; review the current contracts before applying it.</p>}
+    {missingRefs.length > 0 && <p role="alert" className="text-sm">Some selected IR references are no longer active. Edit the affected decision or discard the draft before submitting.</p>}
+    {(changed || mode === 'rejected') && mode !== 'unknown' && mode !== 'saved' && <button type="button" className="btn btn-secondary text-xs" disabled={!sourceReady || !canClassify || reviewing || mode === 'submitting'} onClick={() => void reviewBase()}>Review classification base</button>}
+    {review && <div className="space-y-2 rounded-lg border p-3">
+      <p className="text-sm">Review these current contracts against your authored intent. Accepting this base does not change your IR content or contract paths.</p>
+      {review.rows.map(row => <details key={row.candidate_id}><summary className="cursor-pointer text-sm font-medium">{row.name || row.interface_id} — current contract</summary><ArchitectureContractContent value={row.current_contract!} /></details>)}
+      <button type="button" className="btn btn-secondary text-xs" disabled={!sourceReady || missingRefs.length > 0} onClick={acceptReviewedBase}>Use reviewed classification base</button>
+    </div>}
     {!inlineItem && <p className="text-xs">Select explicit contracts and queue your decisions. Saving applies the whole batch once; it does not start or approve the Spec.</p>}
     {!sourceReady && <p role="status" className="text-xs">Refresh the Spec and wait for current sources before preparing a submission.</p>}
     {!inlineItem && items.map(item => renderItem(item, <label className="text-xs"><input type="checkbox" aria-label={`Select ${item.name || item.interface_id}`} checked={Boolean(selected[item.candidate_id])}
@@ -198,7 +284,7 @@ export function ArchitectureClassificationAuthoring({ boardId, specId, specVersi
     {inlineItem && <div className="flex flex-wrap gap-2">{(['promote_to_ir', 'associate_existing_ir', 'context_only'] as const).map(action =>
       <button key={action} type="button" aria-pressed={disposition === action}
         disabled={!editable || !sourceReady || (action === 'promote_to_ir' && !canPromote) || (action === 'associate_existing_ir' && !canAssociate)}
-        onClick={() => { cancelSuggestion(); setDisposition(action); }}
+        onClick={() => { begin(); cancelSuggestion(); setDisposition(action); }}
         className={`inline-flex h-9 items-center rounded-lg border px-3 text-xs font-medium transition-colors disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-blue-500 ${disposition === action
           ? 'border-blue-300 bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
           : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200'}`}>
@@ -225,7 +311,7 @@ export function ArchitectureClassificationAuthoring({ boardId, specId, specVersi
         {activeIRs.map(ir => <label key={ir.id} className="block"><input type="checkbox" checked={refs.includes(ir.id)} onChange={event => setRefs(value => event.target.checked ? [...value, ir.id] : value.filter(id => id !== ir.id))} />{ir.title} ({ir.id})</label>)}
       </fieldset>}
       {disposition === 'promote_to_ir' && <>
-        <button type="button" disabled={partial || suggesting} onClick={() => void loadSourceSuggestion()} className="text-xs text-blue-600 dark:text-blue-400">{suggesting ? 'Loading source suggestion…' : 'Replace first IR with source suggestion'}</button>
+        <button type="button" disabled={changed || partial || suggesting} onClick={() => void loadSourceSuggestion()} className="text-xs text-blue-600 dark:text-blue-400">{suggesting ? 'Loading source suggestion…' : 'Replace first IR with source suggestion'}</button>
         {partial && <p className="text-xs">Author the IR content for the selected parts. The full source stays preserved in provenance.</p>}
         {irs.map((ir, index) => <fieldset key={index} className="space-y-1 border p-2"><legend>Proposed IR {index + 1}</legend>
           <label className="block text-xs">IR title<input value={ir.title} onChange={event => updateIR(index, { title: event.target.value })} className="block w-full border dark:bg-gray-800" /></label>
@@ -236,7 +322,7 @@ export function ArchitectureClassificationAuthoring({ boardId, specId, specVersi
         </fieldset>)}
         <button type="button" onClick={() => { cancelSuggestion(); setIRs(value => [...value, emptyIR()]); }}>Add another proposed IR</button>
       </>}
-      <button type="button" disabled={!disposition || !sourceReady || suggesting} onClick={addDecisions} className="btn btn-secondary text-xs">{inlineItem ? 'Apply decision' : editingIndex === null ? 'Queue decision' : 'Update queued decision'}</button>
+      <button type="button" disabled={changed || !disposition || !sourceReady || suggesting} onClick={addDecisions} className="btn btn-secondary text-xs">{inlineItem ? 'Apply decision' : editingIndex === null ? 'Queue decision' : 'Update queued decision'}</button>
       {editingIndex !== null && <button type="button" onClick={resetForm}>Cancel queued edit</button>}
     </fieldset>
     {queue.length > 0 && <section aria-label="Queued classifications" className="text-xs">
@@ -244,15 +330,17 @@ export function ArchitectureClassificationAuthoring({ boardId, specId, specVersi
         <p>Scope: {row.decision.scope_paths.map(path => path || 'Whole contract').join(', ')}</p>
         <details><summary>Review queued content</summary><pre className="max-h-60 overflow-auto whitespace-pre-wrap">{JSON.stringify(row.decision, null, 2)}</pre></details>
         <button type="button" disabled={!editable || editingIndex !== null} onClick={() => editQueued(index)}>Edit queued decision {index + 1}</button>
-        <button type="button" disabled={!editable || editingIndex !== null} onClick={() => setQueue(value => value.filter((_, position) => position !== index))}>Remove queued decision {index + 1}</button>
+        <button type="button" disabled={!editable || editingIndex !== null} onClick={() => { cancelReview(); setQueue(value => value.filter((_, position) => position !== index)); }}>Remove queued decision {index + 1}</button>
       </div>)}
     </section>}
     {message && <p role={mode === 'saved' ? 'status' : 'alert'} className="text-sm">{message}</p>}
-    {!inlineItem && mode === 'editing' && <button type="button" disabled={!canClassify || !queue.length || !sourceReady || suggesting || editingIndex !== null} onClick={() => void submit()} className="btn btn-primary text-xs">Save queued classifications</button>}
+    {!inlineItem && mode === 'editing' && <button type="button" disabled={changed || missingRefs.length > 0 || !canClassify || !queue.length || !sourceReady || suggesting || editingIndex !== null} onClick={() => void submit()} className="btn btn-primary text-xs">Save queued classifications</button>}
     {mode === 'submitting' && <p role="status">Saving classifications…</p>}
     {mode === 'unknown' && <button type="button" disabled={!canClassify} onClick={() => void submit()} className="btn btn-primary text-xs">Retry exact submission</button>}
-    {mode === 'rejected' && <button type="button" onClick={() => { attempt.current = null; setQueue([]); setSelected({}); setMessage(''); setMode('editing'); }}>Discard rejected batch</button>}
+    {mode === 'rejected' && <button type="button" onClick={() => { attempt.current = null; setBase(null); setReview(null); resetForm(); setQueue([]); setMessage(''); setMode('editing'); }}>Discard rejected batch</button>}
+    {dirty && mode === 'editing' && <button type="button" className="btn btn-secondary text-xs" onClick={() => { resetForm(); setQueue([]); setBase(null); setReview(null); setMessage(''); }}>Discard classification draft</button>}
     {mode === 'rejected' && rejectionEditable && <button type="button" onClick={() => { attempt.current = null; resetForm(); setMode('editing'); setMessage('Correct the rejected content, then submit a new intent. The original batch made no partial changes.'); }}>Edit rejected batch</button>}
     {mode === 'saved' && <button type="button" onClick={() => void reloadSaved()}>Reload Spec after saving</button>}
+    {mode === 'saved' && <button type="button" className="btn btn-secondary text-xs" disabled={!sourceReady || !canClassify || specVersion <= (attempt.current?.expected_spec_version ?? specVersion)} onClick={() => { resetForm(); setBase(null); attempt.current = null; uncertain.current = false; setMode('editing'); setMessage(''); }}>Start new classification</button>}
   </div>;
 }

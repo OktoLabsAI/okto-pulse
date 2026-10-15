@@ -1850,9 +1850,9 @@ export function SpecModal({
   const [workspaceSyncError, setWorkspaceSyncError] = useState<string | null>(null);
   const [workspaceReadPending, setWorkspaceReadPending] = useState(false);
   const workspaceLoadGeneration = useRef(0);
-  // IR and Decisions also mount classification/inspection writers. Protect
-  // those nested drafts before subscribing their tabs, along with scenarios.
-  const validationLive = ['validation', 'frs', 'acs', 'rules', 'contracts', 'ors', 'trs'].includes(activeTab) || showSubmitValidationModal;
+  // Classification drafts are protected. Decision inspections and scenarios
+  // still need their own base protection before subscribing those tabs.
+  const validationLive = ['validation', 'frs', 'acs', 'rules', 'contracts', 'ors', 'trs', 'irs'].includes(activeTab) || showSubmitValidationModal;
   useEffect(() => {
     setPermissionCheckPending(false);
     setWorkspaceReadPending(false);
@@ -2589,6 +2589,7 @@ export function SpecModal({
               boardId={spec.board_id}
               specId={spec.id}
               specVersion={spec.version}
+              readCurrent={!permissionCheckPending && !workspaceReadPending && !workspaceSyncError && syncState === 'current'}
               canRead={canReadIR && perms.has('spec.architecture.read') && perms.has('spec.entity.read')}
               authoring={{
                 canClassify: !spec.archived && spec.status === 'draft' && canReadIR

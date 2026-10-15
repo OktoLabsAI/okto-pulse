@@ -4,7 +4,7 @@ import { AuthenticatedFetchError } from '@/lib/authFetch';
 import type { ArchitectureClassificationsResponse } from '@/types/architecture-classifications';
 import { ArchitectureClassificationsPanel } from '../ArchitectureClassificationsPanel';
 
-const api = vi.hoisted(() => ({ getArchitectureClassifications: vi.fn() }));
+const api = vi.hoisted(() => ({ getArchitectureClassifications: vi.fn(), classifyArchitectureCandidates: vi.fn() }));
 vi.mock('@/services/api', () => ({ useDashboardApi: () => api }));
 const props = { boardId: 'board', specId: 'spec', specVersion: 9, canRead: true };
 function result(changes: Partial<ArchitectureClassificationsResponse> = {}): ArchitectureClassificationsResponse {
@@ -27,7 +27,65 @@ function details(): ArchitectureClassificationsResponse {
   return response;
 }
 function open() { fireEvent.click(screen.getByRole('button', { name: 'Review classifications' })); }
-beforeEach(() => api.getArchitectureClassifications.mockReset());
+beforeEach(() => { api.getArchitectureClassifications.mockReset(); api.classifyArchitectureCandidates.mockReset(); });
+
+it('retains a confirmed inline receipt during the following read and never offers a duplicate submission', async () => {
+  let complete!: (value: ArchitectureClassificationsResponse) => void;
+  api.getArchitectureClassifications.mockResolvedValueOnce(result()).mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
+  api.classifyArchitectureCandidates.mockImplementation(async (_board, _spec, batch) => ({
+    contract_version: 'architecture-classification/v1', board_id: 'board', spec_id: 'spec', spec_edition: 2,
+    spec_version: 10, idempotency_key: batch.idempotency_key, replayed: false,
+  }));
+  const authoring = { canClassify: true, canPromote: true, canAssociate: true, specEdition: 2, requirements: [], onApplied: vi.fn() };
+  const { rerender } = render(<ArchitectureClassificationsPanel {...props} integrated authoring={authoring} />);
+  authoring.onApplied.mockImplementation(async () => { rerender(<ArchitectureClassificationsPanel {...props} specVersion={10} integrated authoring={authoring} />); });
+  fireEvent.click(await screen.findByRole('button', { name: 'Context only' }));
+  fireEvent.change(screen.getByLabelText('Context reason'), { target: { value: 'Reviewed source scope' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Apply decision' }));
+  await screen.findByText(/Classifications saved/);
+  expect(screen.getByRole('button', { name: 'Apply decision' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Start new classification' })).toBeDisabled();
+  await act(async () => { complete(result({ spec_version: 10 })); });
+  expect(screen.getByText(/Classifications saved/)).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Apply decision' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Start new classification' })).toBeEnabled();
+  expect(api.classifyArchitectureCandidates).toHaveBeenCalledTimes(1);
+});
+
+it('keeps the integrated author draft mounted while a new revision is loading', async () => {
+  api.getArchitectureClassifications.mockResolvedValueOnce(result()).mockReturnValue(new Promise(() => {}));
+  const authoring = { canClassify: true, canPromote: true, canAssociate: true, specEdition: 2, requirements: [], onApplied: vi.fn() };
+  const { rerender } = render(<ArchitectureClassificationsPanel {...props} integrated authoring={authoring} />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Context only' }));
+  fireEvent.change(screen.getByLabelText('Context reason'), { target: { value: 'Keep this authored intent' } });
+  rerender(<ArchitectureClassificationsPanel {...props} specVersion={10} integrated authoring={authoring} />);
+  expect(screen.getByLabelText('Context reason')).toHaveValue('Keep this authored intent');
+  expect(screen.getByRole('button', { name: 'Apply decision' })).toBeDisabled();
+});
+
+it.each(['present', 'removed', 'network', 'denied'])('handles a refreshed %s source without silently discarding authorized intent', async state => {
+  let finish!: (value: ArchitectureClassificationsResponse) => void;
+  let reject!: (value: unknown) => void;
+  api.getArchitectureClassifications.mockResolvedValueOnce(result()).mockImplementationOnce(() => new Promise((resolve, fail) => { finish = resolve; reject = fail; }));
+  const authoring = { canClassify: true, canPromote: true, canAssociate: true, specEdition: 2, requirements: [], onApplied: vi.fn() };
+  const { rerender } = render(<ArchitectureClassificationsPanel {...props} integrated authoring={authoring} />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Context only' }));
+  fireEvent.change(screen.getByLabelText('Context reason'), { target: { value: 'Keep my intent' } });
+  rerender(<ArchitectureClassificationsPanel {...props} specVersion={10} integrated authoring={authoring} />);
+  await act(async () => {
+    if (state === 'denied' || state === 'network') reject(new AuthenticatedFetchError({ status: state === 'denied' ? 403 : 500, message: 'provider details' }));
+    else finish(result({ spec_version: 10, ...(state === 'removed' ? { items: [] } : {}) }));
+  });
+  if (state === 'denied') {
+    expect(screen.queryByLabelText('Context reason')).not.toBeInTheDocument();
+    expect(screen.queryByText('Orders')).not.toBeInTheDocument();
+  } else {
+    expect(screen.getByLabelText('Context reason')).toHaveValue('Keep my intent');
+    expect(screen.getByRole('button', { name: 'Apply decision' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Discard classification draft' }));
+    expect(screen.queryByDisplayValue('Keep my intent')).not.toBeInTheDocument();
+  }
+});
 
 it('reads only on request and retains off-page pending counts without approval', async () => {
   api.getArchitectureClassifications.mockResolvedValue(result());

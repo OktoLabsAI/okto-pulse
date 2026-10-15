@@ -275,12 +275,20 @@ async function openCriteria() {
 }
 
 describe('SpecModal validation navigation', () => {
-  it.each(['Integration', 'Decisions'])('defers external refresh of %s until its nested writer is protected', async tab => {
+  it.each(['Decisions'])('defers external refresh of %s until its nested writer is protected', async tab => {
     apiMock.getSpec.mockResolvedValue(baseSpec);
     render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
     fireEvent.click(await screen.findByRole('tab', { name: 'Requirements & Decisions' }));
     fireEvent.click(screen.getByRole('tab', { name: tab }));
     expect(workspaceWatch.options?.boardId).toBeUndefined();
+  });
+
+  it('subscribes Integration after protecting its classification writer', async () => {
+    apiMock.getSpec.mockResolvedValue(baseSpec);
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('tab', { name: 'Requirements & Decisions' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Integration' }));
+    expect(workspaceWatch.options?.boardId).toBe(baseSpec.board_id);
   });
 
   it('preserves a Business draft after a native refusal and reviews a watched base before retrying', async () => {

@@ -38,6 +38,102 @@ it('disables direct candidate actions when its source is not ready', () => {
   expect(screen.getByRole('button', { name: 'Associate IR' })).toBeDisabled();
   expect(screen.getByRole('button', { name: 'Context only' })).toBeDisabled();
 });
+
+it('preserves an inline draft but blocks applying it after the Spec revision changes', () => {
+  const { rerender } = render(<ArchitectureClassificationAuthoring {...props} inlineItem={item()} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Context only' }));
+  change('Context reason', 'Authored on the original contract');
+  rerender(<ArchitectureClassificationAuthoring {...props} specVersion={10} inlineItem={item()} />);
+  expect(screen.getByLabelText('Context reason')).toHaveValue('Authored on the original contract');
+  expect(screen.getByRole('button', { name: 'Apply decision' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Review classification base' })).toBeEnabled();
+  expect(api.classifyArchitectureCandidates).not.toHaveBeenCalled();
+});
+
+it('keeps a queued batch on its original base until explicit review', () => {
+  const { rerender } = render(<ArchitectureClassificationAuthoring {...props} />);
+  select(); queueContext();
+  rerender(<ArchitectureClassificationAuthoring {...props} specVersion={10} />);
+  expect(screen.getByText('0 selected across pages · 1 queued decisions')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Save queued classifications' })).toBeDisabled();
+  expect(api.classifyArchitectureCandidates).not.toHaveBeenCalled();
+});
+
+it('reviews the actual current digest before explicitly rebasing and saving the preserved intent', async () => {
+  const revised = { ...item(), current_source_digest: 'b'.repeat(64), source_digests: ['b'.repeat(64)], current_contract: { event_schema: { revision: 2 } } };
+  api.getArchitectureClassifications.mockImplementation(async (_board, _spec, _signal, options) => ({
+    board_id: 'board', spec_id: 'spec', spec_version: 10, spec_edition: 2, source_complete: true,
+    profile: options.candidateId ? 'detail' : 'summary', items: [revised], has_more: false,
+  }));
+  api.classifyArchitectureCandidates.mockImplementation(async (_board, _spec, batch) => receipt(batch, { spec_version: 11 }));
+  const { rerender } = render(<ArchitectureClassificationAuthoring {...props} inlineItem={item()} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Context only' })); change('Context reason', 'Keep my analysis');
+  rerender(<ArchitectureClassificationAuthoring {...props} specVersion={10} inlineItem={revised} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Review classification base' }));
+  const accept = await screen.findByRole('button', { name: 'Use reviewed classification base' });
+  expect(api.getArchitectureClassifications).toHaveBeenLastCalledWith('board', 'spec', expect.any(AbortSignal), { candidateId: 'a', sourceDigest: 'b'.repeat(64) });
+  expect(screen.getByText('Contract a — current contract')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Apply decision' })).toBeDisabled();
+  expect(api.classifyArchitectureCandidates).not.toHaveBeenCalled();
+  fireEvent.click(accept);
+  expect(screen.getByLabelText('Context reason')).toHaveValue('Keep my analysis');
+  fireEvent.click(screen.getByRole('button', { name: 'Apply decision' }));
+  await screen.findByText(/Classifications saved/);
+  expect(api.classifyArchitectureCandidates.mock.calls[0][2]).toMatchObject({ expected_spec_version: 10,
+    decisions: [{ expected_source_digest: 'b'.repeat(64), reason: 'Keep my analysis' }] });
+});
+
+it('preserves the draft and refuses review when a selected source has disappeared', async () => {
+  api.getArchitectureClassifications.mockResolvedValue({ board_id: 'board', spec_id: 'spec', spec_version: 10,
+    spec_edition: 2, source_complete: true, profile: 'summary', items: [], has_more: false });
+  const { rerender } = render(<ArchitectureClassificationAuthoring {...props} />);
+  select(); queueContext(); rerender(<ArchitectureClassificationAuthoring {...props} specVersion={10} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Review classification base' }));
+  await screen.findByText(/A selected source is unavailable/);
+  expect(screen.getByRole('button', { name: 'Save queued classifications' })).toBeDisabled();
+  expect(screen.queryByRole('button', { name: 'Use reviewed classification base' })).not.toBeInTheDocument();
+  expect(screen.getByText('0 selected across pages · 1 queued decisions')).toBeInTheDocument();
+});
+
+it('replays an uncertain original batch after a newer Spec revision arrives', async () => {
+  api.classifyArchitectureCandidates.mockRejectedValueOnce(new Error('network'))
+    .mockImplementationOnce(async (_board, _spec, batch) => receipt(batch, { replayed: true }));
+  const { rerender } = render(<ArchitectureClassificationAuthoring {...props} />);
+  select(); queueContext(); save(); await screen.findByRole('button', { name: 'Retry exact submission' });
+  rerender(<ArchitectureClassificationAuthoring {...props} specVersion={12} />);
+  expect(screen.queryByRole('button', { name: 'Review classification base' })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Retry exact submission' }));
+  await screen.findByText(/original classification was confirmed/);
+  expect(api.classifyArchitectureCandidates.mock.calls[1]).toEqual(api.classifyArchitectureCandidates.mock.calls[0]);
+  expect(onApplied).toHaveBeenCalledTimes(1);
+});
+
+it('does not apply a late source review to another revision', async () => {
+  let finish!: (value: unknown) => void;
+  api.getArchitectureClassifications.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  const { rerender } = render(<ArchitectureClassificationAuthoring {...props} />);
+  select(); queueContext(); rerender(<ArchitectureClassificationAuthoring {...props} specVersion={10} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Review classification base' }));
+  const signal = api.getArchitectureClassifications.mock.calls[0][2] as AbortSignal;
+  rerender(<ArchitectureClassificationAuthoring {...props} specVersion={11} />);
+  expect(signal.aborted).toBe(true);
+  await act(async () => finish({ board_id: 'board', spec_id: 'spec', spec_version: 10, spec_edition: 2, source_complete: true, profile: 'summary', items: [item()], has_more: false }));
+  expect(screen.queryByRole('button', { name: 'Use reviewed classification base' })).not.toBeInTheDocument();
+  expect(api.getArchitectureClassifications).toHaveBeenCalledTimes(1);
+});
+
+it('cancels a pending suggestion when its revision changes without overwriting authored fields', async () => {
+  let complete!: (value: ReturnType<typeof suggestion>) => void;
+  api.getArchitectureClassifications.mockImplementation(() => new Promise(resolve => { complete = resolve; }));
+  const { rerender } = render(<ArchitectureClassificationAuthoring {...props} />);
+  select(); choose('promote_to_ir'); change('IR title', 'Keep my title');
+  fireEvent.click(screen.getByRole('button', { name: 'Replace first IR with source suggestion' }));
+  const signal = api.getArchitectureClassifications.mock.calls[0][2] as AbortSignal;
+  rerender(<ArchitectureClassificationAuthoring {...props} specVersion={10} />);
+  expect(signal.aborted).toBe(true);
+  await act(async () => { complete(suggestion()); });
+  expect(screen.getByLabelText('IR title')).toHaveValue('Keep my title');
+});
 function receipt(batch: ArchitectureClassificationBatch, changes: Partial<ArchitectureClassificationReceipt> = {}): ArchitectureClassificationReceipt {
   return { contract_version: 'architecture-classification/v1', board_id: 'board', spec_id: 'spec', spec_edition: 2, spec_version: 10, idempotency_key: batch.idempotency_key, created_ir_ids: [], decisions: [], pending_checks: ['requirement_readiness_and_spec_start_gates_not_evaluated'], replayed: false, ...changes };
 }
