@@ -1,6 +1,6 @@
 import { workspaceItem, workspacePage } from '@/testFixtures/effectiveResources';
 import { useState } from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ArchitectureTab, ArchitectureValidationPanel } from '../ArchitectureTab';
 import type { ArchitectureDesign, ArchitectureDesignSummary, ScreenMockup } from '@/types';
@@ -159,6 +159,51 @@ describe('ArchitectureTab', () => {
     expect(screen.queryByRole('button', { name: /New/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Save/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Delete/i })).not.toBeInTheDocument();
+  });
+
+  it('refreshes a visible Card snapshot on revision without notifying a mutation', async () => {
+    const onChanged = vi.fn();
+    const view = render(<ArchitectureTab parentType="card" parentId="card-1" revision={0} onChanged={onChanged} />);
+    await screen.findByText('Runtime Architecture');
+    apiMock.listArchitectureDesigns.mockResolvedValue([{ ...summary, title: 'Updated snapshot', version: 2 }]);
+    apiMock.getArchitectureDesign.mockResolvedValue({ ...design, title: 'Updated snapshot', version: 2 });
+    view.rerender(<ArchitectureTab parentType="card" parentId="card-1" revision={1} onChanged={onChanged} />);
+    await screen.findByText('Updated snapshot');
+    expect(onChanged).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: /^Save$/ })).not.toBeInTheDocument();
+  });
+
+  it('defers Card architecture list and effective-resource reads while hidden', async () => {
+    const view = render(<ArchitectureTab parentType="card" parentId="card-1" boardId="board-1" active={false} revision={0} />);
+    await act(async () => {});
+    expect(apiMock.listArchitectureDesigns).not.toHaveBeenCalled();
+    expect(apiMock.getEffectiveResources).not.toHaveBeenCalled();
+    view.rerender(<ArchitectureTab parentType="card" parentId="card-1" boardId="board-1" active revision={2} />);
+    await screen.findByText('Runtime Architecture');
+    expect(apiMock.listArchitectureDesigns).toHaveBeenCalledTimes(1);
+    expect(apiMock.getEffectiveResources).toHaveBeenCalledTimes(2);
+  });
+
+  it('ignores a late architecture list from another Card', async () => {
+    let resolveOld!: (value: ArchitectureDesignSummary[]) => void;
+    apiMock.listArchitectureDesigns.mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve; }));
+    const view = render(<ArchitectureTab parentType="card" parentId="card-1" />);
+    apiMock.listArchitectureDesigns.mockResolvedValue([{ ...summary, title: 'Current snapshot' }]);
+    apiMock.getArchitectureDesign.mockResolvedValue({ ...design, title: 'Current snapshot' });
+    view.rerender(<ArchitectureTab parentType="card" parentId="card-2" />);
+    await screen.findByText('Current snapshot');
+    await act(async () => resolveOld([summary]));
+    expect(screen.getByText('Current snapshot')).toBeInTheDocument();
+    expect(screen.queryByText('Runtime Architecture')).not.toBeInTheDocument();
+  });
+
+  it('clears a Card snapshot after a denied list refresh', async () => {
+    const view = render(<ArchitectureTab parentType="card" parentId="card-1" revision={0} />);
+    await screen.findByText('Runtime Architecture');
+    apiMock.listArchitectureDesigns.mockRejectedValue({ status: 403 });
+    view.rerender(<ArchitectureTab parentType="card" parentId="card-1" revision={1} />);
+    await screen.findByText('Architecture access is no longer available.');
+    expect(screen.queryByText('Runtime Architecture')).not.toBeInTheDocument();
   });
 
   it('renders inherited effective architecture as read-only with provenance', async () => {

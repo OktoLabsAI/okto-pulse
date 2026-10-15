@@ -1523,6 +1523,8 @@ describe('CardModal', () => {
 
     const view = render(<CardModal boardId="board-1" />);
     await screen.findByText('Card with source spec');
+    fireEvent.click(screen.getByRole('tab', { name: /^Resources/ }));
+    fireEvent.click(screen.getByRole('tab', { name: /^Knowledge/ }));
     await waitFor(() => {
       expect(apiMock.getSpecKnowledge).toHaveBeenCalledWith('spec-a', 'old-kb');
     });
@@ -2363,6 +2365,40 @@ describe('CardModal', () => {
     expect(apiMock.getCardActivity).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('tab', { name: /Activity/i }));
     await waitFor(() => expect(apiMock.getCardActivity).toHaveBeenCalledOnce());
+  });
+
+  it('defers inherited Knowledge bodies until their resource pane is visible', async () => {
+    apiMock.getSpec.mockResolvedValue({ id: 'spec-1', title: 'Source', knowledge_bases: [{ id: 'kb-new' }] });
+    apiMock.getSpecKnowledge.mockResolvedValue({ id: 'kb-new', title: 'Current root', content: 'Current content' });
+    render(<CardModal boardId="board-1" />);
+    await screen.findByRole('tab', { name: /^Resources/ });
+    await waitFor(() => expect(apiMock.getSpec).toHaveBeenCalled());
+    expect(apiMock.getSpecKnowledge).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('tab', { name: /^Resources/ }));
+    expect(apiMock.getSpecKnowledge).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('tab', { name: /^Knowledge/ }));
+    await waitFor(() => expect(apiMock.getSpecKnowledge).toHaveBeenCalledWith('spec-1', 'kb-new'));
+    fireEvent.click(screen.getByRole('tab', { name: /^Details$/ }));
+    apiMock.getSpecKnowledge.mockClear();
+    await externalRevision();
+    expect(apiMock.getSpecKnowledge).not.toHaveBeenCalled();
+  });
+
+  it('refreshes inherited Knowledge roots after an external Spec edit and removes deleted roots', async () => {
+    apiMock.getSpec.mockResolvedValue({ id: 'spec-1', title: 'Source', knowledge_bases: [{ id: 'kb-old' }] });
+    apiMock.getSpecKnowledge.mockResolvedValue({ id: 'kb-old', title: 'Old root', content: 'Old content' });
+    render(<CardModal boardId="board-1" />);
+    fireEvent.click(await screen.findByRole('tab', { name: /^Resources/ }));
+    fireEvent.click(screen.getByRole('tab', { name: /^Knowledge/ }));
+    const roots = () => cardKnowledgeTabMock.render.mock.calls.at(-1)![0].specKnowledgeBases;
+    await waitFor(() => expect(roots()).toEqual([expect.objectContaining({ id: 'kb-old' })]));
+    apiMock.getSpec.mockResolvedValue({ id: 'spec-1', title: 'Source', knowledge_bases: [{ id: 'kb-new' }] });
+    apiMock.getSpecKnowledge.mockResolvedValue({ id: 'kb-new', title: 'New root', content: 'New content' });
+    await externalRevision();
+    await waitFor(() => expect(roots()).toEqual([expect.objectContaining({ id: 'kb-new' })]));
+    apiMock.getSpec.mockResolvedValue({ id: 'spec-1', title: 'Source', knowledge_bases: [] });
+    await externalRevision();
+    await waitFor(() => expect(roots()).toEqual([]));
   });
 
   it('propagates external revisions and visibility through Resources to Knowledge', async () => {

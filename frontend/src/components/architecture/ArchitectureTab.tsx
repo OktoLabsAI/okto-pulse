@@ -70,6 +70,8 @@ interface ArchitectureTabProps {
   expanded?: boolean;
   screenMockups?: ScreenMockup[] | null;
   onChanged?: (designs: ArchitectureDesignSummary[]) => void;
+  revision?: string | number;
+  active?: boolean;
 }
 
 type EffectiveArchitectureDesignSummary = ArchitectureDesignSummary & {
@@ -659,6 +661,8 @@ export function ArchitectureTab({
   expanded = false,
   screenMockups = [],
   onChanged,
+  revision = 0,
+  active = true,
 }: ArchitectureTabProps) {
   const api = useDashboardApi();
   const apiRef = useRef(api);
@@ -670,6 +674,12 @@ export function ArchitectureTab({
   const [design, setDesign] = useState<ArchitectureDesign | null>(null);
   const [selectedDiagramId, setSelectedDiagramId] = useState('');
   const [loading, setLoading] = useState(false);
+  const [readError, setReadError] = useState<string | null>(null);
+  const readScope = `${boardId || ''}:${parentType}:${parentId}:${entityType || ''}:${entityId || ''}`;
+  const currentReadScope = useRef({ scope: readScope, active });
+  currentReadScope.current = { scope: readScope, active };
+  const listEpoch = useRef(0);
+  const effectiveEpoch = useRef(0);
   const [saving, setSaving] = useState(false);
   const [creating, setCreating] = useState(false);
   const [validation, setValidation] = useState<ArchitectureDesignValidationResult | null>(null);
@@ -760,13 +770,34 @@ export function ArchitectureTab({
     setFocusRequest({ ...target, signal: Date.now() });
   }, []);
 
+  const failRead = useCallback((error: unknown) => {
+    if (typeof error === 'object' && error !== null && 'status' in error && [401, 403, 404].includes(Number(error.status))) {
+      listEpoch.current += 1;
+      effectiveEpoch.current += 1;
+      setDirectSummaries([]);
+      setEffectiveArchitecture([]);
+      setEffectiveMockups([]);
+      setSelectedId('');
+      setDesign(null);
+      setLoading(false);
+      setReadError('Architecture access is no longer available.');
+    } else {
+      setReadError(error instanceof Error ? error.message : 'Could not refresh architecture. Displayed content may be outdated.');
+    }
+  }, []);
+
   const loadList = useCallback(async (
     preferredSelectedId?: string,
     notify = false,
   ) => {
+    if (!currentReadScope.current.active || currentReadScope.current.scope !== readScope) return [];
+    const epoch = ++listEpoch.current;
+    const isCurrent = () => epoch === listEpoch.current && currentReadScope.current.scope === readScope && currentReadScope.current.active;
     setLoading(true);
+    setReadError(null);
     try {
       const data = await apiRef.current.listArchitectureDesigns(parentType, parentId);
+      if (!isCurrent()) return [];
       setDirectSummaries(data);
       // Only notify the parent after a real mutation. Notifying on every read
       // makes the parent modal reload (flipping its loading flag), which
@@ -779,14 +810,17 @@ export function ArchitectureTab({
       });
       return data;
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to load architecture');
+      if (isCurrent()) failRead(err);
       return [];
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
-  }, [parentId, parentType]);
+  }, [parentId, parentType, readScope, failRead]);
 
   const loadEffectiveResources = useCallback(async () => {
+    if (!currentReadScope.current.active || currentReadScope.current.scope !== readScope) return;
+    const epoch = ++effectiveEpoch.current;
+    const isCurrent = () => epoch === effectiveEpoch.current && currentReadScope.current.scope === readScope && currentReadScope.current.active;
     const resolvedBoardId = boardId || '';
     const resolvedEntityType = entityType || parentType;
     const resolvedEntityId = entityId || parentId;
@@ -802,21 +836,36 @@ export function ArchitectureTab({
         loadEffectiveResourceItems(apiRef.current.getEffectiveResources, resolvedBoardId,
           resolvedEntityType, resolvedEntityId, 'mockup', 'full'),
       ]);
+      if (!isCurrent()) return;
       setEffectiveArchitecture(architecture);
       setEffectiveMockups(mockups);
-    } catch {
+    } catch (error) {
+      if (!isCurrent()) return;
       setEffectiveArchitecture([]);
       setEffectiveMockups([]);
+      failRead(error);
     }
-  }, [boardId, entityId, entityType, parentId, parentType]);
+  }, [boardId, entityId, entityType, parentId, parentType, readScope, failRead]);
 
   useEffect(() => {
+    setDirectSummaries([]);
+    setEffectiveArchitecture([]);
+    setEffectiveMockups([]);
+    setSelectedId('');
+    setDesign(null);
+  }, [readScope]);
+
+  useEffect(() => {
+    if (!active) return;
     void loadList();
-  }, [loadList]);
+    return () => { listEpoch.current += 1; };
+  }, [loadList, active, revision]);
 
   useEffect(() => {
+    if (!active) return;
     void loadEffectiveResources();
-  }, [loadEffectiveResources]);
+    return () => { effectiveEpoch.current += 1; };
+  }, [loadEffectiveResources, active, revision]);
 
   useEffect(() => {
     if (summaries.length === 0) {
@@ -829,6 +878,7 @@ export function ArchitectureTab({
   }, [selectedId, summaries]);
 
   useEffect(() => {
+    if (!active) return;
     if (!selectedId) {
       setDesign(null);
       return;
@@ -840,21 +890,25 @@ export function ArchitectureTab({
       return;
     }
     let cancelled = false;
+    const epoch = listEpoch.current;
+    const effective = effectiveEpoch.current;
+    const isCurrent = () => !cancelled && currentReadScope.current.scope === readScope && currentReadScope.current.active && epoch === listEpoch.current && effective === effectiveEpoch.current;
     apiRef.current.getArchitectureDesign(selectedId, true)
       .then((data) => {
-        if (cancelled) return;
+        if (!isCurrent()) return;
         setDesign(data);
         setSelectedDiagramId((current) => resolveSelectedDiagramId(data.diagrams, current));
       })
       .catch((err) => {
-        if (!cancelled) toast.error(err instanceof Error ? err.message : 'Failed to load architecture design');
+        if (isCurrent()) failRead(err);
       });
     return () => {
       cancelled = true;
     };
-  }, [selectedId, selectedSummary]);
+  }, [selectedId, selectedSummary, active, readScope, failRead]);
 
   useEffect(() => {
+    if (!active) return;
     if (!design) {
       setValidation(null);
       setValidationError(null);
@@ -893,19 +947,21 @@ export function ArchitectureTab({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [design?.diagrams, design?.entities, design?.global_description, design?.interfaces, design?.title]);
+  }, [active, design?.diagrams, design?.entities, design?.global_description, design?.interfaces, design?.title]);
 
   const refresh = async (notify = false) => {
     const data = await loadList(selectedId, notify);
     await loadEffectiveResources();
+    if (!currentReadScope.current.active || currentReadScope.current.scope !== readScope) return;
     const detailId = selectedId && data.some((item) => item.id === selectedId) ? selectedId : data[0]?.id;
     if (detailId) {
       try {
         const next = await apiRef.current.getArchitectureDesign(detailId, true);
+        if (!currentReadScope.current.active || currentReadScope.current.scope !== readScope) return;
         setDesign(next);
         setSelectedDiagramId((current) => resolveSelectedDiagramId(next.diagrams, current, selectedDiagram));
       } catch (err) {
-        toast.error(err instanceof Error ? err.message : 'Failed to refresh architecture design');
+        if (currentReadScope.current.active && currentReadScope.current.scope === readScope) failRead(err);
       }
     }
   };
@@ -1357,6 +1413,11 @@ export function ArchitectureTab({
 
   return (
     <div className={`space-y-4 min-w-0 overflow-hidden ${expanded ? 'min-h-[70vh]' : ''}`}>
+      {readError && <div role="alert" className="rounded-lg border border-amber-300 p-3 text-sm text-amber-800 dark:border-amber-800 dark:text-amber-200">
+        <p>{readError}</p>
+        <button type="button" className="btn btn-secondary mt-2 text-xs" disabled={!active || loading}
+          onClick={() => { void refresh(); }}>Retry architecture read</button>
+      </div>}
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1 flex-wrap">
           {summaries.map((item) => (

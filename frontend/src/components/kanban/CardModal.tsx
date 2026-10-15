@@ -414,6 +414,7 @@ export function CardModal({
   const [viewingSpecId, setViewingSpecId] = useState<string | null>(null);
   const [viewingSpecNodeId, setViewingSpecNodeId] = useState<string | null>(null);
   const [specKBsFull, setSpecKBsFull] = useState<{ id: string; title: string; description?: string; content: string; mime_type?: string }[]>([]);
+  const [knowledgeReaderActive, setKnowledgeReaderActive] = useState(false);
   const [showConclusionPrompt, setShowConclusionPrompt] = useState(false);
   const [showCancelDialog, setShowCancelDialog] = useState(false);
   const [conclusionTargetStatus, setConclusionTargetStatus] = useState<CardStatus>('done');
@@ -736,17 +737,6 @@ export function CardModal({
             setSpecIRs(spec.integration_requirements || []);
             setSpecORs(spec.observability_requirements || []);
             setSpecTRs((spec.technical_requirements || []).map((tr: any, i: number) => typeof tr === 'string' ? { id: `tr_legacy_${i}`, text: tr, linked_task_ids: null } : tr));
-            // Knowledge bodies are not part of the threshold authority, but
-            // remain guarded by the same full-load generation.
-            void Promise.all(
-              (spec.knowledge_bases || []).map((kb: any) => api.getSpecKnowledge(spec.id, kb.id).catch(() => null))
-            ).then((kbs) => {
-              if (isCurrentLoad()) {
-                setSpecKBsFull(kbs.filter(Boolean) as any[]);
-              }
-            }).catch(() => {
-              if (isCurrentLoad()) setSpecKBsFull([]);
-            });
           } else {
             setParentSpec(null);
             setFullSpec(null);
@@ -817,6 +807,31 @@ export function CardModal({
       })
       .catch(() => {});
   };
+
+  // Bodies are needed only by the visible Knowledge picker, not threshold
+  // resolution. A new Spec inventory replaces the previous roots; late results
+  // from a closed pane or another Card never repopulate the current picker.
+  const knowledgeSourceId = fullSpec?.id;
+  const knowledgeSourceInventory = fullSpec?.knowledge_bases;
+  const knowledgeCardSpecId = card?.spec_id;
+  useEffect(() => {
+    if (!canReadKnowledge || !knowledgeSourceId || knowledgeCardSpecId !== knowledgeSourceId) {
+      setSpecKBsFull([]);
+      return;
+    }
+    if (!knowledgeReaderActive || activeTab !== 'resources' || syncAuthorizing) return;
+    let cancelled = false;
+    setSpecKBsFull([]);
+    void Promise.all((knowledgeSourceInventory || []).map(kb =>
+      api.getSpecKnowledge(knowledgeSourceId, kb.id).catch(() => null),
+    )).then(items => {
+      if (!cancelled) setSpecKBsFull(items.filter(item => item !== null).map(item => ({
+        ...item, description: item.description ?? undefined, content: item.content || '',
+      })));
+    });
+    return () => { cancelled = true; };
+  }, [api, canReadKnowledge, selectedCardId, knowledgeCardSpecId, knowledgeSourceId,
+    knowledgeSourceInventory, knowledgeReaderActive, activeTab, syncAuthorizing, liveRevision]);
 
   // Silent refresh — updates card data without showing loading spinner
   const silentRefresh = useCallback((cardId: string) => {
@@ -2415,6 +2430,7 @@ export function CardModal({
                     card={card}
                     revision={liveRevision}
                     active={activeTab === 'resources' && !syncAuthorizing}
+                    onKnowledgeVisibilityChange={setKnowledgeReaderActive}
                     expanded={expanded}
                     contentReadOnly={normalContentFrozen}
                     specKnowledgeBases={specKBsFull}

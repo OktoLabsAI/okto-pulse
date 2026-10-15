@@ -10,6 +10,7 @@ interface ResourceGateDisclosureProps {
   entityId: string;
   refreshKey?: string | number;
   defaultExpanded?: boolean;
+  active?: boolean;
 }
 
 /**
@@ -21,6 +22,7 @@ export function ResourceGateDisclosure({
   entityId,
   refreshKey = 0,
   defaultExpanded = false,
+  active = true,
 }: ResourceGateDisclosureProps) {
   const contentId = useId();
   const [expanded, setExpanded] = useState(defaultExpanded);
@@ -49,7 +51,7 @@ export function ResourceGateDisclosure({
           <ChevronDown size={16} className="shrink-0 text-gray-500" aria-hidden="true" />
         )}
       </button>
-      {expanded && (
+      {expanded && active && (
         <div
           id={contentId}
           className="border-t border-gray-200 p-3 dark:border-gray-700"
