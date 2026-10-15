@@ -4,6 +4,28 @@ import { ValidationErrorDisplay, parseValidationErrorMessage } from '../Validati
 
 describe('ValidationErrorDisplay', () => {
   it.each([
+    ['policy_compliance_receipt_missing', 'no accepted assessment'],
+    ['policy_compliance_blocked', 'does not satisfy its required criteria'],
+    ['policy_assessment_unavailable', 'does not count as approval'],
+  ])('renders the native policy diagnosis %s without a guessed enforcement mode', (code, copy) => {
+    const error = JSON.stringify({ detail: {
+      outcome: 'error', error: code, code, message: code,
+      reason_codes: [code], policy_compliance_required: true,
+      transition: { entity_type: 'spec', subject_id: 'spec-1', from_status: 'approved', to_status: 'validated' },
+    } });
+    const parsed = parseValidationErrorMessage(error);
+    expect(parsed.structured).toBe(true);
+    expect(parsed.enforcementMode).toBeNull();
+    expect(parsed.requiredTool).toBeNull();
+    render(<ValidationErrorDisplay error={error} />);
+    expect(screen.getByText('Policy Compliance')).toBeInTheDocument();
+    expect(screen.getByText(new RegExp(copy))).toBeInTheDocument();
+    expect(screen.getByText('approved->validated')).toBeInTheDocument();
+    expect(screen.getByText(/Open Policy Compliance in Validation/)).toBeInTheDocument();
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+  });
+
+  it.each([
     {
       code: 'spec_checklist_gate_required',
       message: 'The blocking Spec checklist is not satisfied for the current Spec version.',

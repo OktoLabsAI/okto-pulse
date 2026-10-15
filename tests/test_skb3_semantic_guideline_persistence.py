@@ -645,7 +645,8 @@ async def _install_guideline_impact_triggers(engine) -> None:
 
 
 async def _native_guideline_binding(
-    session, *, board_id, revision, priority=0, minimum_confidence=80, overrides=None
+    session, *, board_id, revision, priority=0, minimum_confidence=80, overrides=None,
+    enforcement=GuidelineEnforcement.BLOCKING, actor_id="board-owner",
 ):
     adapter = CommunitySqlAlchemyGuidelinePolicy(session)
     head = await adapter.get_head(guideline_id=revision.guideline_id)
@@ -693,10 +694,10 @@ async def _native_guideline_binding(
             subjects=await adapter.list_policy_subjects(board_id=board_id),
             waivers=(),
             proposed_priority=priority,
-            proposed_enforcement=GuidelineEnforcement.BLOCKING,
+            proposed_enforcement=enforcement,
             proposed_minimum_confidence=minimum_confidence,
             proposed_metric_threshold_overrides=overrides or {},
-            requested_by="board-owner",
+            requested_by=actor_id,
             created_at=_now(),
             idempotency_key=_id(),
         )
@@ -707,7 +708,7 @@ async def _native_guideline_binding(
         current_snapshot=impact_fence_from_receipt(preview.receipt),
         current_binding=None,
         retirement=None,
-        actor_id="board-owner",
+        actor_id=actor_id,
         actor_type="user",
         occurred_at=_now(),
         event_id=_id(),

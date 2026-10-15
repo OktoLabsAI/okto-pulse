@@ -113,6 +113,30 @@ export function parseValidationErrorMessage(error: string): ParsedValidationErro
   const code = typeof detail?.error === 'string' ? detail.error : null;
   const message = typeof detail?.message === 'string' ? detail.message : error;
   const details = asObject(detail?.details);
+  const policyReasons: Record<string, string> = {
+    policy_subject_required: 'The authoritative policy subject could not be verified.',
+    policy_compliance_receipt_missing: 'An applicable policy has no accepted assessment for this edition.',
+    policy_compliance_receipt_stale: 'An applicable policy assessment is no longer current.',
+    policy_compliance_blocked: 'An applicable policy assessment does not satisfy its required criteria.',
+    policy_assessment_unavailable: 'The policy assessment could not be verified. This does not count as approval.',
+  };
+  const policyTransition = asObject(detail?.transition);
+  if (code && Object.prototype.hasOwnProperty.call(policyReasons, code) && detail?.policy_compliance_required === true
+    && Array.isArray(detail.reason_codes) && detail.reason_codes.includes(code)
+    && policyTransition?.entity_type === 'spec') {
+    const reasons = detail.reason_codes.filter((reason): reason is string =>
+      typeof reason === 'string' && Object.prototype.hasOwnProperty.call(policyReasons, reason));
+    const from = _str(policyTransition.from_status);
+    const to = _str(policyTransition.to_status);
+    return {
+      ..._EMPTY,
+      gateType: 'Policy Compliance', gateTypeCode: 'policy_compliance',
+      issue: reasons.map(reason => policyReasons[reason]).join(' '),
+      action: 'Open Policy Compliance in Validation to review the applicable assessment and its findings.',
+      resources: [], structured: true,
+      blockedTransition: from && to ? `${from}->${to}` : null,
+    };
+  }
   const resources =
     (Array.isArray(details?.uncovered_resources) ? details?.uncovered_resources : null) ??
     (Array.isArray(detail?.uncovered_resources) ? detail?.uncovered_resources : null) ??
