@@ -101,6 +101,59 @@ describe('ArchitectureTab', () => {
     Promise.resolve(workspacePage(boardId, entityType, entityId, options.resource_type, [], options.profile)));
   });
 
+  it('keeps the authored draft after an external version and requires review before saving', async () => {
+    const view = render(<ArchitectureTab parentType="ideation" parentId="ideation-1" revision={0} />);
+    await screen.findByDisplayValue(design.title);
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Local intent' } });
+    const changed = { ...design, title: 'Another writer', version: 2 };
+    apiMock.listArchitectureDesigns.mockResolvedValue([{ ...summary, title: changed.title, version: 2 }]);
+    apiMock.getArchitectureDesign.mockResolvedValue(changed);
+    view.rerender(<ArchitectureTab parentType="ideation" parentId="ideation-1" revision={1} />);
+    await screen.findByRole('button', { name: 'Review architecture base' });
+    expect(screen.getByLabelText('Name')).toHaveValue('Local intent');
+    expect(screen.getByRole('button', { name: /^Save$/ })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Review architecture base' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Keep draft on reviewed base' }));
+    apiMock.updateArchitectureDesign.mockResolvedValue({ ...changed, title: 'Local intent', version: 3 });
+    apiMock.getArchitectureDesign.mockResolvedValue({ ...changed, title: 'Local intent', version: 3 });
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/ }));
+    await waitFor(() => expect(apiMock.updateArchitectureDesign).toHaveBeenCalledWith('arch-1', expect.objectContaining({
+      expected_version: 2, title: 'Local intent',
+    })));
+    await waitFor(() => expect(screen.getByLabelText('Version')).toHaveValue('v3'));
+  }, 15000);
+
+  it('preserves a dirty selected design when the authoritative list removes it', async () => {
+    const view = render(<ArchitectureTab parentType="ideation" parentId="ideation-1" revision={0} />);
+    await screen.findByDisplayValue(design.title);
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Unsaved removed design' } });
+    apiMock.listArchitectureDesigns.mockResolvedValue([]);
+    view.rerender(<ArchitectureTab parentType="ideation" parentId="ideation-1" revision={1} />);
+    await screen.findByText('This architecture is no longer in the current resource list. Your draft has not been saved.');
+    expect(screen.getByLabelText('Name')).toHaveValue('Unsaved removed design');
+    expect(screen.getByRole('button', { name: /^Save$/ })).toBeDisabled();
+    expect(apiMock.updateArchitectureDesign).not.toHaveBeenCalled();
+  });
+
+  it('recovers only the read after a confirmed save whose detail request fails', async () => {
+    const onChanged = vi.fn();
+    render(<ArchitectureTab parentType="ideation" parentId="ideation-1" onChanged={onChanged} />);
+    await screen.findByDisplayValue(design.title);
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Confirmed intent' } });
+    apiMock.updateArchitectureDesign.mockResolvedValue({ ...design, title: 'Confirmed intent', version: 2 });
+    apiMock.getArchitectureDesign.mockRejectedValueOnce(new Error('Detail read unavailable'));
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/ }));
+    await screen.findByRole('button', { name: 'Reload saved architecture' });
+    expect(screen.getByRole('button', { name: /^Save$/ })).toBeDisabled();
+    apiMock.getArchitectureDesign.mockResolvedValue({ ...design, title: 'Confirmed intent', version: 2 });
+    apiMock.listArchitectureDesigns.mockResolvedValue([{ ...summary, title: 'Confirmed intent', version: 2 }]);
+    fireEvent.click(screen.getByRole('button', { name: 'Reload saved architecture' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Reload saved architecture' })).not.toBeInTheDocument());
+    expect(apiMock.updateArchitectureDesign).toHaveBeenCalledTimes(1);
+    expect(onChanged).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText('Version')).toHaveValue('v2');
+  }, 15000);
+
   it('loads architecture once when parent passes an inline onChanged callback', async () => {
     render(<InlineOnChangedWrapper />);
 
@@ -116,6 +169,73 @@ describe('ArchitectureTab', () => {
     expect(screen.queryByLabelText('Stale')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Breaking')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Review')).not.toBeInTheDocument();
+  });
+
+  it('retains an uncommitted entity form across an external revision', async () => {
+    const view = render(<ArchitectureTab parentType="ideation" parentId="ideation-1" revision={0} />);
+    await screen.findByDisplayValue(design.title);
+    fireEvent.click(screen.getAllByText('Add', { selector: 'button' })[0]);
+    fireEvent.change(screen.getByLabelText('Entity name'), { target: { value: 'Uncommitted component' } });
+    apiMock.listArchitectureDesigns.mockResolvedValue([{ ...summary, version: 2 }]);
+    apiMock.getArchitectureDesign.mockResolvedValue({ ...design, version: 2 });
+    view.rerender(<ArchitectureTab parentType="ideation" parentId="ideation-1" revision={1} />);
+    await screen.findByText('Review architecture base', { selector: 'button' });
+    expect(screen.getByLabelText('Entity name')).toHaveValue('Uncommitted component');
+    expect(screen.getByLabelText('Version')).toHaveValue('v1');
+    expect(screen.getByText('Save', { selector: 'button' })).toBeDisabled();
+  });
+
+  it('does not retry an unconfirmed write or infer success from matching content', async () => {
+    render(<ArchitectureTab parentType="ideation" parentId="ideation-1" />);
+    await screen.findByDisplayValue(design.title);
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Uncertain intent' } });
+    apiMock.updateArchitectureDesign.mockRejectedValueOnce(new Error('Response lost'));
+    fireEvent.click(screen.getByText('Save', { selector: 'button' }));
+    await screen.findByText('Reload current architecture', { selector: 'button' });
+    expect(screen.getByText('Save', { selector: 'button' })).toBeDisabled();
+    apiMock.listArchitectureDesigns.mockResolvedValue([{ ...summary, version: 2, title: 'Uncertain intent' }]);
+    apiMock.getArchitectureDesign.mockResolvedValue({ ...design, version: 2, title: 'Uncertain intent' });
+    fireEvent.click(screen.getByText('Reload current architecture', { selector: 'button' }));
+    await waitFor(() => expect(apiMock.getArchitectureDesign.mock.calls.length).toBeGreaterThan(1));
+    expect(screen.getByText('Save', { selector: 'button' })).toBeDisabled();
+    expect(screen.getByText(/The save response was not confirmed/)).toBeInTheDocument();
+    expect(apiMock.updateArchitectureDesign).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores a confirmed save received after architecture access was denied', async () => {
+    let resolveSave!: (value: ArchitectureDesign) => void;
+    apiMock.updateArchitectureDesign.mockImplementationOnce(() => new Promise(resolve => { resolveSave = resolve; }));
+    const onChanged = vi.fn();
+    const view = render(<ArchitectureTab parentType="ideation" parentId="ideation-1" revision={0} onChanged={onChanged} />);
+    await screen.findByDisplayValue(design.title);
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Protected intent' } });
+    fireEvent.click(screen.getByText('Save', { selector: 'button' }));
+    apiMock.listArchitectureDesigns.mockRejectedValueOnce(Object.assign(new Error('Denied'), { status: 403 }));
+    view.rerender(<ArchitectureTab parentType="ideation" parentId="ideation-1" revision={1} onChanged={onChanged} />);
+    await screen.findByText('Architecture access is no longer available.');
+    await act(async () => resolveSave({ ...design, title: 'Protected intent', version: 2 }));
+    expect(screen.queryByDisplayValue('Protected intent')).not.toBeInTheDocument();
+    expect(screen.queryByText('Reload saved architecture', { selector: 'button' })).not.toBeInTheDocument();
+    expect(onChanged).not.toHaveBeenCalled();
+  });
+
+  it('does not publish a late save into another parent workspace', async () => {
+    let resolveSave!: (value: ArchitectureDesign) => void;
+    apiMock.updateArchitectureDesign.mockImplementationOnce(() => new Promise(resolve => { resolveSave = resolve; }));
+    const onChanged = vi.fn();
+    const view = render(<ArchitectureTab parentType="ideation" parentId="ideation-1" onChanged={onChanged} />);
+    await screen.findByDisplayValue(design.title);
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Old workspace intent' } });
+    fireEvent.click(screen.getByText('Save', { selector: 'button' }));
+    const other = { ...design, id: 'arch-other', parent_id: 'ideation-other', title: 'Other workspace' };
+    apiMock.listArchitectureDesigns.mockResolvedValue([{ ...summary, ...other }]);
+    apiMock.getArchitectureDesign.mockResolvedValue(other);
+    view.rerender(<ArchitectureTab parentType="ideation" parentId="ideation-other" onChanged={onChanged} />);
+    await screen.findByDisplayValue('Other workspace');
+    await act(async () => resolveSave({ ...design, title: 'Old workspace intent', version: 2 }));
+    expect(screen.getByLabelText('Name')).toHaveValue('Other workspace');
+    expect(screen.queryByText('Reload saved architecture', { selector: 'button' })).not.toBeInTheDocument();
+    expect(onChanged).not.toHaveBeenCalled();
   });
 
   it('does not notify onChanged for a pure read so the parent modal never remounts it', async () => {

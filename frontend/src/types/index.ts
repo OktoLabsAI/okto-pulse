@@ -1893,6 +1893,7 @@ export type CreateArchitectureDesignRequest = Pick<
 
 export type UpdateArchitectureDesignRequest = Partial<CreateArchitectureDesignRequest> & {
   change_summary?: string;
+  expected_version?: number;
 };
 
 export interface ArchitectureWarningAcknowledgementRequest {

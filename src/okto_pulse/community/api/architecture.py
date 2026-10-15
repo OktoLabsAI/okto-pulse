@@ -56,6 +56,7 @@ from okto_pulse.core.models.schemas import (
 )
 from okto_pulse.core.services.architecture import (
     ArchitecturePayloadValidationError,
+    ArchitectureVersionConflict,
     ArchitecturePropagationBlocked,
     CARD_ARCHITECTURE_READ_ONLY_MESSAGE,
     CardArchitectureReadOnlyError,
@@ -128,6 +129,8 @@ class ArchitecturePayloadValidationResponse(BaseModel):
 
 
 def _http_error_from_value(error: ValueError) -> HTTPException:
+    if isinstance(error, ArchitectureVersionConflict):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=error.to_payload())
     if isinstance(error, ArchitectureWarningAcknowledgementRequired):
         return HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=error.to_payload()

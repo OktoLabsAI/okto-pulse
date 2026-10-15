@@ -672,12 +672,25 @@ export function ArchitectureTab({
   const [effectiveMockups, setEffectiveMockups] = useState<KnowledgeWorkspaceItem[]>([]);
   const [selectedId, setSelectedId] = useState('');
   const [design, setDesign] = useState<ArchitectureDesign | null>(null);
+  const [latestDesign, setLatestDesign] = useState<ArchitectureDesign | null>(null);
+  const [draftDirty, setDraftDirty] = useState(false);
+  const [reviewingBase, setReviewingBase] = useState(false);
+  const [confirmedSave, setConfirmedSave] = useState<{ id: string; version: number } | null>(null);
+  const [saveOutcomeUnknown, setSaveOutcomeUnknown] = useState(false);
+  const [directReady, setDirectReady] = useState(false);
+  const [effectiveReady, setEffectiveReady] = useState(false);
+  const draftProtected = useRef(false);
+  const designRef = useRef(design);
+  const latestDesignRef = useRef(latestDesign);
+  designRef.current = design;
+  latestDesignRef.current = latestDesign;
   const [selectedDiagramId, setSelectedDiagramId] = useState('');
   const [loading, setLoading] = useState(false);
   const [readError, setReadError] = useState<string | null>(null);
   const readScope = `${boardId || ''}:${parentType}:${parentId}:${entityType || ''}:${entityId || ''}`;
-  const currentReadScope = useRef({ scope: readScope, active });
-  currentReadScope.current = { scope: readScope, active };
+  const currentReadScope = useRef({ scope: readScope, active, generation: 0 });
+  currentReadScope.current = { scope: readScope, active,
+    generation: currentReadScope.current.generation + (currentReadScope.current.scope === readScope ? 0 : 1) };
   const listEpoch = useRef(0);
   const effectiveEpoch = useRef(0);
   const [saving, setSaving] = useState(false);
@@ -694,6 +707,7 @@ export function ArchitectureTab({
   const [interfaceDraft, setInterfaceDraft] = useState<ArchitectureInterface | null>(null);
   const [editingEntityIndex, setEditingEntityIndex] = useState<number | null>(null);
   const [editingInterfaceIndex, setEditingInterfaceIndex] = useState<number | null>(null);
+  draftProtected.current = draftDirty || Boolean(entityDraft || interfaceDraft || confirmedSave || saveOutcomeUnknown);
   const [openPanels, setOpenPanels] = useState<Record<ArchitecturePanelKey, boolean>>({
     metadata: true,
     components: true,
@@ -723,8 +737,22 @@ export function ArchitectureTab({
   const selectedInheritedReadOnly = Boolean(selectedSummary?.inherited && selectedSummary.read_only);
   const cardSnapshotReadOnly = parentType === 'card';
   const locked = lockedProp || cardSnapshotReadOnly || selectedInheritedReadOnly;
-  const entityAuthoringLocked = lockedProp || cardSnapshotReadOnly;
-  const authoringLocked = locked;
+  const entityAuthoringLocked = lockedProp || cardSnapshotReadOnly || loading || Boolean(readError)
+    || !directReady || !effectiveReady || saving || creating || Boolean(confirmedSave) || saveOutcomeUnknown;
+  const authoringLocked = locked || saving || Boolean(confirmedSave) || saveOutcomeUnknown;
+  const selectionRemoved = directReady && effectiveReady && Boolean(selectedId) && !selectedSummary;
+  const baseChanged = Boolean(design && latestDesign?.id === design.id && latestDesign.version !== design.version);
+  const writeBlocked = authoringLocked || loading || Boolean(readError) || selectionRemoved || baseChanged || Boolean(entityDraft || interfaceDraft);
+
+  const receiveDesign = useCallback((next: ArchitectureDesign) => {
+    if (latestDesignRef.current?.id === next.id && latestDesignRef.current.version > next.version) return;
+    latestDesignRef.current = next;
+    setLatestDesign(next);
+    if (draftProtected.current && designRef.current?.id === next.id) return;
+    designRef.current = next;
+    setDesign(next);
+    setSelectedDiagramId((current) => resolveSelectedDiagramId(next.diagrams, current));
+  }, []);
 
   const selectedDiagram = useMemo(
     () => design?.diagrams.find((item) => item.id === selectedDiagramId) || design?.diagrams[0] || null,
@@ -772,6 +800,7 @@ export function ArchitectureTab({
 
   const failRead = useCallback((error: unknown) => {
     if (typeof error === 'object' && error !== null && 'status' in error && [401, 403, 404].includes(Number(error.status))) {
+      currentReadScope.current.generation += 1;
       listEpoch.current += 1;
       effectiveEpoch.current += 1;
       setDirectSummaries([]);
@@ -779,6 +808,23 @@ export function ArchitectureTab({
       setEffectiveMockups([]);
       setSelectedId('');
       setDesign(null);
+      setLatestDesign(null);
+      designRef.current = null;
+      latestDesignRef.current = null;
+      draftProtected.current = false;
+      setDraftDirty(false);
+      setEntityDraft(null);
+      setInterfaceDraft(null);
+      setNewTitle('');
+      setNewDescription('');
+      setShowImport(false);
+      setConfirmedSave(null);
+      setSaveOutcomeUnknown(false);
+      setReviewingBase(false);
+      setSaving(false);
+      setCreating(false);
+      setDirectReady(false);
+      setEffectiveReady(false);
       setLoading(false);
       setReadError('Architecture access is no longer available.');
     } else {
@@ -799,6 +845,7 @@ export function ArchitectureTab({
       const data = await apiRef.current.listArchitectureDesigns(parentType, parentId);
       if (!isCurrent()) return [];
       setDirectSummaries(data);
+      setDirectReady(true);
       // Only notify the parent after a real mutation. Notifying on every read
       // makes the parent modal reload (flipping its loading flag), which
       // remounts this tab and re-triggers the read — an infinite loop.
@@ -827,6 +874,7 @@ export function ArchitectureTab({
     if (!resolvedBoardId || !resolvedEntityType || !resolvedEntityId) {
       setEffectiveArchitecture([]);
       setEffectiveMockups([]);
+      setEffectiveReady(true);
       return;
     }
     try {
@@ -839,6 +887,7 @@ export function ArchitectureTab({
       if (!isCurrent()) return;
       setEffectiveArchitecture(architecture);
       setEffectiveMockups(mockups);
+      setEffectiveReady(true);
     } catch (error) {
       if (!isCurrent()) return;
       setEffectiveArchitecture([]);
@@ -853,6 +902,24 @@ export function ArchitectureTab({
     setEffectiveMockups([]);
     setSelectedId('');
     setDesign(null);
+    setLatestDesign(null);
+    designRef.current = null;
+    latestDesignRef.current = null;
+    draftProtected.current = false;
+    setDraftDirty(false);
+    setReviewingBase(false);
+    setConfirmedSave(null);
+    setSaveOutcomeUnknown(false);
+    setDirectReady(false);
+    setEffectiveReady(false);
+    setEntityDraft(null);
+    setInterfaceDraft(null);
+    setNewTitle('');
+    setNewDescription('');
+    setShowImport(false);
+    setSaving(false);
+    setCreating(false);
+    setReadError(null);
   }, [readScope]);
 
   useEffect(() => {
@@ -868,11 +935,8 @@ export function ArchitectureTab({
   }, [loadEffectiveResources, active, revision]);
 
   useEffect(() => {
-    if (summaries.length === 0) {
-      if (selectedId) setSelectedId('');
-      return;
-    }
-    if (!selectedId || !summaries.some((item) => item.id === selectedId)) {
+    // Removal must never silently switch an authored draft to another design.
+    if (!selectedId && summaries.length > 0) {
       setSelectedId(summaries[0].id);
     }
   }, [selectedId, summaries]);
@@ -883,10 +947,10 @@ export function ArchitectureTab({
       setDesign(null);
       return;
     }
+    if (!selectedSummary) return;
     if (selectedSummary?.effective_payload) {
       const payload = selectedSummary.effective_payload;
-      setDesign(payload);
-      setSelectedDiagramId((current) => resolveSelectedDiagramId(payload.diagrams, current));
+      receiveDesign(payload);
       return;
     }
     let cancelled = false;
@@ -896,8 +960,7 @@ export function ArchitectureTab({
     apiRef.current.getArchitectureDesign(selectedId, true)
       .then((data) => {
         if (!isCurrent()) return;
-        setDesign(data);
-        setSelectedDiagramId((current) => resolveSelectedDiagramId(data.diagrams, current));
+        receiveDesign(data);
       })
       .catch((err) => {
         if (isCurrent()) failRead(err);
@@ -905,7 +968,7 @@ export function ArchitectureTab({
     return () => {
       cancelled = true;
     };
-  }, [selectedId, selectedSummary, active, readScope, failRead]);
+  }, [selectedId, selectedSummary, active, readScope, failRead, receiveDesign]);
 
   useEffect(() => {
     if (!active) return;
@@ -953,13 +1016,14 @@ export function ArchitectureTab({
     const data = await loadList(selectedId, notify);
     await loadEffectiveResources();
     if (!currentReadScope.current.active || currentReadScope.current.scope !== readScope) return;
-    const detailId = selectedId && data.some((item) => item.id === selectedId) ? selectedId : data[0]?.id;
+    const detailId = selectedId
+      ? (data.some((item) => item.id === selectedId) ? selectedId : undefined)
+      : data[0]?.id;
     if (detailId) {
       try {
         const next = await apiRef.current.getArchitectureDesign(detailId, true);
         if (!currentReadScope.current.active || currentReadScope.current.scope !== readScope) return;
-        setDesign(next);
-        setSelectedDiagramId((current) => resolveSelectedDiagramId(next.diagrams, current, selectedDiagram));
+        receiveDesign(next);
       } catch (err) {
         if (currentReadScope.current.active && currentReadScope.current.scope === readScope) failRead(err);
       }
@@ -967,7 +1031,70 @@ export function ArchitectureTab({
   };
 
   const patchDesign = (patch: Partial<ArchitectureDesign>) => {
+    draftProtected.current = true;
+    setDraftDirty(true);
     setDesign((current) => (current ? { ...current, ...patch } : current));
+  };
+
+  const selectDesign = (id: string) => {
+    if (id === selectedId) return;
+    if (confirmedSave || saving) return;
+    if (draftProtected.current && !window.confirm('Discard the unsaved architecture draft and select another design?')) return;
+    draftProtected.current = false;
+    setDraftDirty(false);
+    setReviewingBase(false);
+    setSaveOutcomeUnknown(false);
+    setDesign(null);
+    designRef.current = null;
+    setLatestDesign(null);
+    latestDesignRef.current = null;
+    setSelectedId(id);
+  };
+
+  const useLatestDesign = () => {
+    if (!latestDesign || selectionRemoved) return;
+    draftProtected.current = false;
+    setDraftDirty(false);
+    setEntityDraft(null);
+    setInterfaceDraft(null);
+    setSaveOutcomeUnknown(false);
+    setReviewingBase(false);
+    designRef.current = latestDesign;
+    setDesign(latestDesign);
+    setSelectedDiagramId((current) => resolveSelectedDiagramId(latestDesign.diagrams, current));
+  };
+
+  const reloadSavedArchitecture = async (receipt = confirmedSave) => {
+    if (!receipt) return;
+    const origin = currentReadScope.current;
+    const isCurrent = () => currentReadScope.current.scope === origin.scope && currentReadScope.current.generation === origin.generation;
+    setSaving(true);
+    try {
+      const full = await apiRef.current.getArchitectureDesign(receipt.id, true);
+      if (!isCurrent()) return;
+      if (full.id !== receipt.id || full.version < Math.max(receipt.version, latestDesignRef.current?.version || 0)) {
+        throw new Error('Saved architecture is not available in the current read yet.');
+      }
+      const items = await apiRef.current.listArchitectureDesigns(parentType, parentId);
+      if (!isCurrent()) return;
+      draftProtected.current = false;
+      setDraftDirty(false);
+      setEntityDraft(null);
+      setInterfaceDraft(null);
+      setConfirmedSave(null);
+      setSaveOutcomeUnknown(false);
+      setReadError(null);
+      setDirectSummaries(items);
+      setDirectReady(true);
+      setSelectedId(full.id);
+      receiveDesign(full);
+      setWarningAcknowledged(false);
+      onChangedRef.current?.(items);
+    } catch (error) {
+      if (isCurrent()) failRead(error);
+    } finally {
+      if (isCurrent()) setSaving(false);
+    }
   };
 
   const togglePanel = (key: ArchitecturePanelKey) => {
@@ -1000,17 +1127,19 @@ export function ArchitectureTab({
   };
 
   const saveDesign = async () => {
-    if (!design || authoringLocked) return;
+    if (!design || writeBlocked) return;
     const structuredWarnings = validation?.structured_warnings || [];
     if (structuredWarnings.length > 0 && !warningAcknowledged) {
       toast.error('Review and acknowledge architecture warnings before saving.');
       return;
     }
-    const previousDiagram = selectedDiagram;
+    const origin = currentReadScope.current;
+    const isCurrent = () => currentReadScope.current.scope === origin.scope && currentReadScope.current.generation === origin.generation;
     setSaving(true);
     try {
       const updated = await apiRef.current.updateArchitectureDesign(design.id, {
         title: design.title,
+        expected_version: design.version,
         global_description: design.global_description,
         entities: design.entities,
         interfaces: design.interfaces,
@@ -1024,22 +1153,24 @@ export function ArchitectureTab({
             }
           : null,
       });
-      const full = await apiRef.current.getArchitectureDesign(updated.id, true);
-      setSelectedId(full.id);
-      setDesign(full);
-      setWarningAcknowledged(false);
-      setSelectedDiagramId(resolveSelectedDiagramId(full.diagrams, selectedDiagramId, previousDiagram));
-      toast.success('Architecture design saved');
-      await loadList(full.id, true);
+      if (!isCurrent()) return;
+      const receipt = { id: updated.id, version: updated.version };
+      setConfirmedSave(receipt);
+      await reloadSavedArchitecture(receipt);
     } catch (err) {
+      if (!isCurrent()) return;
+      const status = typeof err === 'object' && err !== null && 'status' in err ? Number(err.status) : 0;
+      if ([401, 403, 404].includes(status)) failRead(err);
+      else if (status === 409) { void refresh(); }
+      else if (!status || status >= 500) setSaveOutcomeUnknown(true);
       toast.error(err instanceof Error ? err.message : 'Failed to save architecture');
     } finally {
-      setSaving(false);
+      if (isCurrent()) setSaving(false);
     }
   };
 
   const deleteDesign = async () => {
-    if (!design || authoringLocked || !confirm('Delete this architecture design?')) return;
+    if (!design || writeBlocked || !confirm('Delete this architecture design?')) return;
     await apiRef.current.deleteArchitectureDesign(design.id);
     toast.success('Architecture design deleted');
     setDesign(null);
@@ -1413,10 +1544,46 @@ export function ArchitectureTab({
 
   return (
     <div className={`space-y-4 min-w-0 overflow-hidden ${expanded ? 'min-h-[70vh]' : ''}`}>
-      {readError && <div role="alert" className="rounded-lg border border-amber-300 p-3 text-sm text-amber-800 dark:border-amber-800 dark:text-amber-200">
+      {readError && !confirmedSave && <div role="alert" className="rounded-lg border border-amber-300 p-3 text-sm text-amber-800 dark:border-amber-800 dark:text-amber-200">
         <p>{readError}</p>
         <button type="button" className="btn btn-secondary mt-2 text-xs" disabled={!active || loading}
           onClick={() => { void refresh(); }}>Retry architecture read</button>
+      </div>}
+      {confirmedSave && <div role="status" className="rounded-lg border border-amber-300 p-3 text-sm dark:border-amber-800">
+        <p>Architecture v{confirmedSave.version} was saved. Reload the saved result before another change.</p>
+        {readError && <p className="mt-1 text-amber-700 dark:text-amber-300">{readError}</p>}
+        <button type="button" className="btn btn-secondary mt-2 text-xs" disabled={saving || !active}
+          onClick={() => { void reloadSavedArchitecture(); }}>Reload saved architecture</button>
+      </div>}
+      {saveOutcomeUnknown && <div role="alert" className="rounded-lg border border-amber-300 p-3 text-sm dark:border-amber-800">
+        <p>The save response was not confirmed. Your draft is retained; the write will not be repeated automatically.</p>
+        <button type="button" className="btn btn-secondary mt-2 text-xs" disabled={loading || !active}
+          onClick={() => { void refresh(); }}>Reload current architecture</button>
+        <button type="button" className="btn btn-secondary mt-2 ml-2 text-xs" disabled={loading || !latestDesign || selectionRemoved || Boolean(readError)}
+          onClick={useLatestDesign}>Use current architecture and discard draft</button>
+      </div>}
+      {selectionRemoved && design && <div role="alert" className="rounded-lg border border-amber-300 p-3 text-sm dark:border-amber-800">
+        This architecture is no longer in the current resource list. Your draft has not been saved.
+      </div>}
+      {baseChanged && !confirmedSave && !saveOutcomeUnknown && <div role="status" className="rounded-lg border border-amber-300 p-3 text-sm dark:border-amber-800">
+        <p>Architecture changed from v{design?.version} to v{latestDesign?.version}. Your draft is preserved.</p>
+        <button type="button" className="btn btn-secondary mt-2 text-xs" disabled={loading || Boolean(readError) || selectionRemoved}
+          onClick={() => setReviewingBase(true)}>Review architecture base</button>
+        {reviewingBase && latestDesign && <div className="mt-3 space-y-2 border-t border-amber-200 pt-3 dark:border-amber-800">
+          <p className="font-medium">Current architecture v{latestDesign.version}: {latestDesign.title}</p>
+          <p>{latestDesign.global_description}</p>
+          <p>Entities: {latestDesign.entities.map(item => item.name).join(', ') || 'None'}</p>
+          <p>Interfaces: {latestDesign.interfaces.map(item => item.name).join(', ') || 'None'}</p>
+          <p>Diagrams: {latestDesign.diagrams.map(item => item.title).join(', ') || 'None'}</p>
+          <p>Keeping the draft retains all its content over this base. Inspect changed contracts and diagrams before saving.</p>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" className="btn btn-secondary text-xs" onClick={useLatestDesign}>Use current architecture and discard draft</button>
+            <button type="button" className="btn btn-primary text-xs" onClick={() => {
+              setDesign(current => current ? { ...current, version: latestDesign.version } : current);
+              setReviewingBase(false);
+            }}>Keep draft on reviewed base</button>
+          </div>
+        </div>}
       </div>}
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1 flex-wrap">
@@ -1424,7 +1591,7 @@ export function ArchitectureTab({
             <button
               key={item.id}
               type="button"
-              onClick={() => setSelectedId(item.id)}
+              onClick={() => selectDesign(item.id)}
               className={`px-2.5 py-1 rounded text-xs flex items-center gap-1.5 ${
                 selectedId === item.id
                   ? 'bg-cyan-100 text-cyan-700 dark:bg-cyan-900/40 dark:text-cyan-200 font-medium'
@@ -1545,17 +1712,20 @@ export function ArchitectureTab({
                 />
               </label>
               <div className="flex gap-2 pt-1">
-                {!authoringLocked && (
-                  <button type="button" onClick={saveDesign} disabled={saving} className="btn btn-primary text-sm flex items-center gap-1 disabled:opacity-50">
+                {!locked && (
+                  <button type="button" onClick={saveDesign} disabled={writeBlocked} className="btn btn-primary text-sm flex items-center gap-1 disabled:opacity-50">
                     <Save size={14} /> Save
                   </button>
                 )}
                 {!authoringLocked && (
-                  <button type="button" onClick={deleteDesign} className="btn btn-secondary text-sm flex items-center gap-1">
+                  <button type="button" onClick={deleteDesign} disabled={writeBlocked} className="btn btn-secondary text-sm flex items-center gap-1">
                     <Trash2 size={14} /> Delete
                   </button>
                 )}
               </div>
+              {(entityDraft || interfaceDraft) && <p className="text-xs text-amber-700 dark:text-amber-300">
+                Finish adding the entity or interface before saving the design.
+              </p>}
               <ArchitectureValidationPanel
                 result={validation}
                 loading={validating}
