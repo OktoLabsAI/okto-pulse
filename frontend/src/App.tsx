@@ -155,6 +155,7 @@ function App() {
   const { isLoaded, isSignedIn } = authAdapter.useAuth();
   const terms = useTermsAcceptance();
   const currentBoard = useDashboardStore((s) => s.currentBoard);
+  const boardError = useDashboardStore((s) => s.error);
   const permissions = usePermissions(currentBoard?.id);
   const policyAuthorityReady = (
     !permissions.isLoading
@@ -390,6 +391,7 @@ function App() {
 
   const loadBoards = async () => {
     setLoading(true);
+    setError(null);
     try {
       const [myBoards, shared] = await Promise.all([
         api.listBoards(0, 100, 'my'),
@@ -579,7 +581,14 @@ function App() {
           ) : (
             <div className="h-full flex items-center justify-center">
               <div className="text-center text-gray-500 dark:text-gray-400">
-                <p className="mb-4">Select or create a board to get started</p>
+                <p className="mb-4" role={boardError ? 'alert' : undefined}>
+                  {boardError ?? 'Select or create a board to get started'}
+                </p>
+                {boardError ? (
+                  <button onClick={() => void loadBoards()} className="btn btn-secondary">
+                    Reload boards
+                  </button>
+                ) : (
                 <button
                   onClick={() => { if (canCreateBoard) setCreateBoardOpen(true); }}
                   disabled={!canCreateBoard}
@@ -587,6 +596,7 @@ function App() {
                 >
                   Create Board
                 </button>
+                )}
               </div>
             </div>
           )}

@@ -27,7 +27,11 @@ export class WorkspaceRevisionWatch {
   private generation = 0;
   private failures = 0;
 
-  constructor(private boardId: string, private read: ReadRevisions) {}
+  constructor(
+    private boardId: string,
+    private read: ReadRevisions,
+    private onAccessLost?: (isCurrent: () => boolean) => void,
+  ) {}
 
   subscribe(subscription: WorkspaceSubscription) {
     this.subscriptions.add(subscription);
@@ -128,6 +132,7 @@ export class WorkspaceRevisionWatch {
         this.authority = undefined;
         this.state('access-lost');
         for (const subscriber of this.subscriptions) subscriber.onAccessLost();
+        this.onAccessLost?.(current);
       } else this.state(navigator.onLine === false ? 'offline' : 'unavailable');
     } finally {
       if (current()) {

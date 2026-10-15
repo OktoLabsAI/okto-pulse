@@ -130,6 +130,7 @@ interface DashboardState {
   addBoard: (board: BoardSummary) => void;
   setSharedBoards: (boards: BoardSummary[]) => void;
   setCurrentBoard: (board: Board | null) => void;
+  removeInaccessibleBoard: (boardId: string) => void;
   setColumns: (columns: Record<CardStatus, CardSummary[]>) => void;
   beginColumnsGeneration: (projection?: LoadedColumnsProjection) => number;
   applyColumnsBatch: (generation: number, response: ColumnsBatchResponse) => boolean;
@@ -185,6 +186,22 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   setBoards: (boards) => set({ boards }),
   addBoard: (board) => set((state) => ({ boards: [board, ...state.boards] })),
   setSharedBoards: (sharedBoards) => set({ sharedBoards }),
+  removeInaccessibleBoard: (boardId) => set((state) => ({
+    boards: state.boards.filter(board => board.id !== boardId),
+    sharedBoards: state.sharedBoards.filter(board => board.id !== boardId),
+    ...(state.currentBoard?.id === boardId ? {
+      currentBoard: null,
+      columns: {} as Record<CardStatus, CardSummary[]>,
+      columnsMeta: {},
+      columnsProjection: null,
+      columnsGeneration: state.columnsGeneration + 1,
+      columnPageState: emptyColumnPageState(),
+      selectedCardId: null,
+      isCardModalOpen: false,
+      cardModalTarget: null,
+      error: 'Access to this Board is no longer available. Reload boards to check your current access.',
+    } : {}),
+  })),
   setCurrentBoard: (board) => set((state) => {
     if (state.currentBoard?.id === board?.id) return { currentBoard: board };
     return {
