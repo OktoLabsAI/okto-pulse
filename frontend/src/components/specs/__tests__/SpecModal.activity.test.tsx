@@ -1,9 +1,10 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import toast from 'react-hot-toast';
 import { SpecModal } from '../SpecModal';
 
-vi.mock('@/hooks/useWorkspaceRevisions', () => ({ useWorkspaceRevisions: () => 'current' }));
+const scenarioWatch = vi.hoisted(() => ({ options: null as null | Parameters<typeof import('@/hooks/useWorkspaceRevisions').useWorkspaceRevisions>[0] }));
+vi.mock('@/hooks/useWorkspaceRevisions', () => ({ useWorkspaceRevisions: (options: NonNullable<typeof scenarioWatch.options>) => { scenarioWatch.options = options; return 'current'; } }));
 import { persistTestScenariosWithWriteGuard } from '../scenarioWriteGuard';
 import type { Spec, SpecHistoryEntry, TestScenario } from '@/types';
 import { AuthenticatedFetchError } from '@/lib/authFetch';
@@ -27,6 +28,8 @@ const apiMock = vi.hoisted(() => ({
   listSpecKnowledge: vi.fn(),
   updateSpec: vi.fn(),
   updateScenarioVerificationMethod: vi.fn(),
+  linkTaskToScenario: vi.fn(),
+  unlinkTaskFromScenario: vi.fn(),
 }));
 const methodDeniedPermissions = vi.hoisted(() => new Set<string>());
 const validationGateOverrideSpy = vi.hoisted(() => vi.fn());
@@ -1048,5 +1051,106 @@ describe('SpecModal Activity tab', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
     expect(screen.queryByPlaceholderText('Scenario title')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Check scenario write' })).not.toBeInTheDocument();
+  });
+
+  it.each(['link', 'unlink'] as const)('does not repeat a confirmed %s when its protected read fails', async kind => {
+    const scenario: TestScenario = { id: 'ts-link', title: 'Link recovery scenario', given: 'G', when: 'W', then: 'T', scenario_type: 'manual', status: 'draft', notes: null, linked_criteria: [], linked_task_ids: kind === 'unlink' ? ['card-link'] : [] };
+    const initial = { ...spec, test_scenarios: [scenario], cards: [{ id: 'card-link', title: 'Selectable mock task', status: 'not_started', priority: 'none', assignee_id: null }] };
+    apiMock.getSpec.mockResolvedValueOnce(initial).mockRejectedValueOnce(new Error('read offline')).mockResolvedValue(initial);
+    apiMock.linkTaskToScenario.mockResolvedValue(undefined);
+    apiMock.unlinkTaskFromScenario.mockResolvedValue(undefined);
+    render(<SpecModal specId={spec.id} boardId={spec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    await screen.findByText(spec.title);
+    fireEvent.click(screen.getByRole('tab', { name: /^Tests/ }));
+    fireEvent.click(screen.getByText(scenario.title));
+    if (kind === 'link') {
+      fireEvent.click(screen.getByRole('button', { name: /Link task/ }));
+      fireEvent.click(screen.getByRole('button', { name: 'Selectable mock task' }));
+    } else fireEvent.click(screen.getByTitle('Unlink task'));
+    await screen.findByText(/change was saved, but its current state/);
+    expect(screen.getByRole('button', { name: /Link task/ })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Reload scenario state' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Reload scenario state' })).not.toBeInTheDocument());
+    expect(kind === 'link' ? apiMock.linkTaskToScenario : apiMock.unlinkTaskFromScenario).toHaveBeenCalledExactlyOnceWith(spec.id, scenario.id, 'card-link');
+  });
+
+  it('surfaces a rejected coverage change without claiming it was saved', async () => {
+    apiMock.updateSpec.mockRejectedValueOnce(new AuthenticatedFetchError({ status: 409, message: 'Coverage override denied' }));
+    render(<SpecModal specId={spec.id} boardId={spec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    await screen.findByText(spec.title);
+    fireEvent.click(screen.getByRole('tab', { name: /^Tests/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Skip test coverage requirement' }));
+    await screen.findByText('Coverage override denied');
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(apiMock.getSpec).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a foreign scenario reload before updating the modal', async () => {
+    apiMock.updateSpec.mockRejectedValueOnce(new AuthenticatedFetchError({ status: 409, message: 'spec_version_conflict' }));
+    render(<SpecModal specId={spec.id} boardId={spec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    await openScenarioDraft();
+    fireEvent.click(screen.getByRole('button', { name: 'Add Scenario' }));
+    await screen.findByRole('button', { name: 'Reload scenarios' });
+    apiMock.getSpec.mockResolvedValueOnce({ ...spec, id: 'foreign', title: 'Foreign Spec content' });
+    fireEvent.click(screen.getByRole('button', { name: 'Reload scenarios' }));
+    await screen.findByText('The Spec response does not match the requested identity.');
+    expect(screen.queryByText('Foreign Spec content')).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText('Scenario title')).toHaveValue('Preserve this authored scenario');
+    expect(screen.getByRole('button', { name: 'Add Scenario' })).toBeDisabled();
+  });
+
+  it('subscribes Tests and preserves its dirty form on a same-version external snapshot change', async () => {
+    render(<SpecModal specId={spec.id} boardId={spec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    await openScenarioDraft();
+    expect(scenarioWatch.options?.boardId).toBe(spec.board_id);
+    apiMock.getSpec.mockResolvedValueOnce({ ...spec, scenario_snapshot: 'b'.repeat(64) });
+    await act(async () => scenarioWatch.options!.onChange({ subjects: [], authorityChanged: false, initial: false }));
+    expect(screen.getByPlaceholderText('Scenario title')).toHaveValue('Preserve this authored scenario');
+    expect(screen.getByRole('button', { name: 'Add Scenario' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Review scenario base' })).toBeEnabled();
+    expect(apiMock.updateSpec).not.toHaveBeenCalled();
+  });
+
+  it('preserves an external report draft when the watcher removes its scenario', async () => {
+    const scenario: TestScenario = { id: 'ts-report', title: 'Report subject', given: 'G', when: 'W', then: 'T', scenario_type: 'manual', verification_method: 'inspection', status: 'ready', notes: null, linked_criteria: [], linked_task_ids: [] };
+    apiMock.getAllowedTransitions.mockImplementation(async (boardId, query) => ({
+      board_id: boardId, entity_type: query.entity_type, entity_id: query.entity_id,
+      current_status: query.current_status ?? spec.status, source: 'core_sdlc_registry_v1', allowed_transitions: [],
+    }));
+    apiMock.getSpec.mockResolvedValueOnce({ ...spec, test_scenarios: [scenario] });
+    render(<SpecModal specId={spec.id} boardId={spec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    await screen.findByText(spec.title);
+    fireEvent.click(screen.getByRole('tab', { name: /^Tests/ }));
+    fireEvent.click(screen.getByText(scenario.title));
+    fireEvent.change(await screen.findByLabelText('Verification report ts-report'), { target: { value: '{"draft":"retain this observation"}' } });
+    apiMock.getSpec.mockResolvedValueOnce({ ...spec, version: spec.version + 1, scenario_snapshot: 'b'.repeat(64), test_scenarios: [] });
+    await act(async () => scenarioWatch.options!.onChange({ subjects: [], authorityChanged: false, initial: false }));
+    expect(screen.getByLabelText('Verification report ts-report')).toHaveValue('{"draft":"retain this observation"}');
+    expect(screen.getByLabelText('Verification report ts-report')).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Discard removed report draft' }));
+    await waitFor(() => expect(screen.queryByText(scenario.title)).not.toBeInTheDocument());
+  });
+
+  it('removes Tests drafts when its revision subscription loses access', async () => {
+    const onClose = vi.fn();
+    render(<SpecModal specId={spec.id} boardId={spec.board_id} onClose={onClose} onChanged={vi.fn()} />);
+    await openScenarioDraft();
+    act(() => scenarioWatch.options!.onAccessLost());
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(screen.queryByPlaceholderText('Scenario title')).not.toBeInTheDocument();
+  });
+
+  it('recovers a failed watcher read without remounting the scenario draft', async () => {
+    render(<SpecModal specId={spec.id} boardId={spec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    await openScenarioDraft();
+    apiMock.getSpec.mockRejectedValueOnce(new Error('offline'));
+    await act(async () => scenarioWatch.options!.onChange({ subjects: [], authorityChanged: false, initial: false }));
+    expect(screen.getByRole('button', { name: 'Add Scenario' })).toBeDisabled();
+    expect(screen.getByPlaceholderText('Scenario title')).toHaveValue('Preserve this authored scenario');
+    apiMock.getSpec.mockResolvedValueOnce({ ...spec, scenario_snapshot: 'b'.repeat(64) });
+    fireEvent.click(screen.getByRole('button', { name: 'Reload scenarios' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Review scenario base' })).toBeEnabled());
+    expect(screen.getByPlaceholderText('Scenario title')).toHaveValue('Preserve this authored scenario');
+    expect(apiMock.updateSpec).not.toHaveBeenCalled();
   });
 });

@@ -291,19 +291,19 @@ function TestScenariosTab({
   focusReceipt,
   onUpdate,
   onSpecUpdate,
-  onSpecRefreshed,
   onReload,
   canReadPolicyCompliance,
   policyRefreshKey,
+  readCurrent,
 }: {
   spec: Spec;
   focusReceipt?: string | null;
   onUpdate: (scenarios: TestScenario[], expectedVersion: number, expectedSnapshot: string) => Promise<void>;
   onSpecUpdate: (data: Record<string, unknown>) => Promise<void>;
-  onSpecRefreshed: (updated: Spec) => void;
   onReload: () => Promise<Spec>;
   canReadPolicyCompliance: boolean;
   policyRefreshKey: number;
+  readCurrent: boolean;
 }) {
   const api = useDashboardApi();
   const scenarioPermissions = usePermissions(spec.board_id);
@@ -319,6 +319,10 @@ function TestScenariosTab({
   const [uncertainWrite, setUncertainWrite] = useState<ScenarioWriteAttempt | null>(null);
   const [writeObservation, setWriteObservation] = useState<'unchecked' | 'unchanged' | 'changed'>('unchecked');
   const [methodDrafts, setMethodDrafts] = useState<Record<string, TestScenario>>({});
+  const [reportDrafts, setReportDrafts] = useState<Record<string, TestScenario>>({});
+  const [operationPending, setOperationPending] = useState(false);
+  const [operationNeedsRead, setOperationNeedsRead] = useState(false);
+  const operating = useRef(false);
   const scenarioWritePending = useRef(false);
   const scenarioEditorMounted = useRef(true);
   useEffect(() => {
@@ -340,8 +344,30 @@ function TestScenariosTab({
   const scenarioBaseChanged = scenarioBase !== null
     && (scenarioBase.version !== spec.version || scenarioBase.edition !== spec.edition
       || scenarioBase.snapshot !== spec.scenario_snapshot);
-  const scenarioReadCurrent = !scenarioReadPending && !scenarioReadFailed
+  const scenarioReadCurrent = readCurrent && !scenarioReadPending && !scenarioReadFailed
     && typeof spec.scenario_snapshot === 'string' && /^[0-9a-f]{64}$/.test(spec.scenario_snapshot);
+
+  const runScenarioOperation = async (write: () => Promise<unknown>, message: string) => {
+    if (operating.current || operationNeedsRead || !scenarioReadCurrent) return;
+    operating.current = true; setOperationPending(true); setScenarioError('');
+    let confirmed = false;
+    try {
+      await write(); confirmed = true;
+      if (!scenarioEditorMounted.current) return;
+      setLinkingScenarioId(null);
+      await reloadScenarios();
+      if (scenarioEditorMounted.current) toast.success(message);
+    } catch (error) {
+      if (!scenarioEditorMounted.current) return;
+      const rejected = error instanceof AuthenticatedFetchError && error.status >= 400 && error.status < 500 && error.status !== 408;
+      setOperationNeedsRead(confirmed || !rejected);
+      setScenarioError(confirmed ? 'The change was saved, but its current state could not be loaded. Reload; do not submit it again.'
+        : error instanceof Error ? error.message : 'Could not confirm the scenario change.');
+      if (error instanceof AuthenticatedFetchError && [401, 403, 404].includes(error.status)) {
+        try { await reloadScenarios(); } catch { /* Parent removes denied content. */ }
+      }
+    } finally { operating.current = false; if (scenarioEditorMounted.current) setOperationPending(false); }
+  };
 
   const reloadScenarios = async () => {
     setScenarioReadPending(true);
@@ -372,7 +398,7 @@ function TestScenariosTab({
   };
 
   const saveScenarioAttempt = async (attempt: ScenarioWriteAttempt) => {
-    if (scenarioWritePending.current || !scenarioReadCurrent) return false;
+    if (scenarioWritePending.current || operationPending || operationNeedsRead || !scenarioReadCurrent) return false;
     scenarioWritePending.current = true;
     setScenarioSaving(true); setScenarioError('');
     try {
@@ -449,6 +475,12 @@ function TestScenariosTab({
   return (
     <div className="space-y-4">
       {scenarioError && <p role="alert" className="text-sm text-red-600 dark:text-red-400">{scenarioError}</p>}
+      {!readCurrent && <p role="status" className="text-sm text-amber-600">Current scenarios could not be verified. Your drafts are preserved; reload before another write.</p>}
+      {operationNeedsRead && <div role="status" className="text-sm text-amber-600">
+        <p>Check the current scenario state before another action. No operation will be repeated automatically.</p>
+        <button type="button" className="btn btn-secondary text-xs" disabled={scenarioReadPending || operationPending}
+          onClick={() => { void reloadScenarios().then(() => { if (scenarioEditorMounted.current) setOperationNeedsRead(false); }).catch(() => {}); }}>Reload scenario state</button>
+      </div>}
       {uncertainWrite && <div role="status" className="rounded-lg border border-amber-300 p-3 text-sm text-amber-700 dark:text-amber-300 space-y-2">
         <p>The write response was lost. The operation may have been saved. Check the current scenarios before doing anything again.</p>
         {writeObservation === 'changed' && <p>The collection changed and the requested result could not be confirmed. Inspect the current scenarios; this operation will not be repeated over a new base.</p>}
@@ -470,7 +502,7 @@ function TestScenariosTab({
           </button>
         </div>
       )}
-      {(scenarioConflictVersion !== null || scenarioReadFailed || !spec.scenario_snapshot) && (
+      {!operationNeedsRead && (!readCurrent || scenarioConflictVersion !== null || scenarioReadFailed || !spec.scenario_snapshot) && (
         <button type="button" className="btn btn-secondary text-xs" disabled={scenarioSaving || scenarioReadPending}
           onClick={() => { void reloadScenarios().catch(() => { /* Inline error preserves the draft. */ }); }}>
           {scenarioReadPending ? 'Loading scenarios…' : 'Reload scenarios'}
@@ -529,7 +561,9 @@ function TestScenariosTab({
           <p className="text-[10px] text-gray-400">Allow moving spec to Done without full test coverage</p>
         </div>
         <button
-          onClick={() => onSpecUpdate({ skip_test_coverage: !spec.skip_test_coverage })}
+          aria-label="Skip test coverage requirement"
+          disabled={operationPending || operationNeedsRead || !scenarioReadCurrent}
+          onClick={() => void runScenarioOperation(() => onSpecUpdate({ skip_test_coverage: !spec.skip_test_coverage }), 'Coverage setting saved')}
           className={`relative w-10 h-5 rounded-full transition-colors ${spec.skip_test_coverage ? 'bg-amber-500' : 'bg-gray-300 dark:bg-gray-600'}`}
         >
           <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${spec.skip_test_coverage ? 'translate-x-5' : ''}`} />
@@ -547,7 +581,7 @@ function TestScenariosTab({
         </div>
       )}
 
-      {[...scenarios, ...Object.values(methodDrafts).filter(draft => !scenarios.some(item => item.id === draft.id))].map((scenario) => {
+      {[...scenarios, ...Object.values({ ...methodDrafts, ...reportDrafts }).filter(draft => !scenarios.some(item => item.id === draft.id))].map((scenario) => {
         const missing = !scenarios.some(item => item.id === scenario.id);
         const isExpanded = expandedId === scenario.id;
         const linkedCards = scenario.linked_task_ids?.length || 0;
@@ -578,24 +612,25 @@ function TestScenariosTab({
                   e.stopPropagation();
                   void handleRemove(scenario.id);
                 }}
-                disabled={missing || scenarioSaving || Boolean(uncertainWrite) || adding || !scenarioReadCurrent}
+                disabled={missing || scenarioSaving || operationPending || operationNeedsRead || Boolean(uncertainWrite) || adding || !scenarioReadCurrent}
                 className="p-0.5 text-gray-400 hover:text-red-500"
                 aria-label={`Delete test scenario ${scenario.title}`}
               >
                 <Trash2 size={12} />
               </button>
             </div>
-            {(isExpanded || Boolean(methodDrafts[scenario.id])) && (
+            {(isExpanded || Boolean(methodDrafts[scenario.id]) || Boolean(reportDrafts[scenario.id])) && (
               <div hidden={!isExpanded && !missing} className="px-3 py-2 space-y-2 text-sm">
                 <ScenarioVerificationMethodEditor boardId={spec.board_id} specId={spec.id} version={spec.version} scenario={scenario}
                   canEdit={!spec.archived && spec.status === 'draft' && hasPermissionWithState(scenarioPermissions.has, 'spec.tests.edit', 'spec', spec.status)}
-                  readCurrent={scenarioReadCurrent && !uncertainWrite}
+                  readCurrent={scenarioReadCurrent && !uncertainWrite && !operationPending && !operationNeedsRead}
                   missing={missing}
                   onDraftChange={dirty => setMethodDrafts(current => {
                     if (dirty) return current[scenario.id] ? current : { ...current, [scenario.id]: scenario };
                     if (!current[scenario.id]) return current;
                     const next = { ...current }; delete next[scenario.id]; return next;
                   })}
+                  onReload={reloadScenarios}
                   onSaved={async () => { await reloadScenarios(); }} />
                 {missing && <button type="button" className="btn btn-secondary text-xs" onClick={() => setMethodDrafts(current => {
                   const next = { ...current }; delete next[scenario.id]; return next;
@@ -637,6 +672,7 @@ function TestScenariosTab({
                   <div className="flex items-center justify-between mb-1">
                     <span className="text-[10px] text-gray-400">Linked tasks:</span>
                     <button
+                      disabled={operationPending || operationNeedsRead || !scenarioReadCurrent}
                       onClick={() => setLinkingScenarioId(linkingScenarioId === scenario.id ? null : scenario.id)}
                       className="text-[10px] text-blue-500 hover:text-blue-600 dark:text-blue-400"
                     >
@@ -661,14 +697,8 @@ function TestScenariosTab({
                                 </span>
                               )}
                               <button
-                                onClick={async () => {
-                                  try {
-                                    await api.unlinkTaskFromScenario(spec.id, scenario.id, taskId);
-                                    const updated = await api.getSpec(spec.id);
-                                    onSpecRefreshed(updated);
-                                    toast.success('Task unlinked');
-                                  } catch { toast.error('Failed to unlink'); }
-                                }}
+                                disabled={operationPending || operationNeedsRead || !scenarioReadCurrent}
+                                onClick={() => void runScenarioOperation(() => api.unlinkTaskFromScenario(spec.id, scenario.id, taskId), 'Task unlinked')}
                                 className="p-0.5 text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
                                 title="Unlink task"
                               >
@@ -691,15 +721,8 @@ function TestScenariosTab({
                         .map((c) => (
                           <button
                             key={c.id}
-                            onClick={async () => {
-                              try {
-                                await api.linkTaskToScenario(spec.id, scenario.id, c.id);
-                                const updated = await api.getSpec(spec.id);
-                                onSpecRefreshed(updated);
-                                setLinkingScenarioId(null);
-                                toast.success('Task linked');
-                              } catch { toast.error('Failed to link'); }
-                            }}
+                            disabled={operationPending || operationNeedsRead || !scenarioReadCurrent}
+                            onClick={() => void runScenarioOperation(() => api.linkTaskToScenario(spec.id, scenario.id, c.id), 'Task linked')}
                             className="w-full text-left px-2 py-1 rounded text-[11px] text-gray-600 dark:text-gray-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 truncate flex items-center gap-1"
                           >
                             <Link size={9} className="shrink-0 text-gray-400" />
@@ -712,7 +735,15 @@ function TestScenariosTab({
                     </div>
                   )}
                 </div>
-                <TestScenarioPolicyCompliance
+                </>}
+                {(isExpanded || Boolean(reportDrafts[scenario.id])) && <TestScenarioPolicyCompliance
+                  readCurrent={scenarioReadCurrent && !operationPending && !operationNeedsRead && !uncertainWrite}
+                  missing={missing}
+                  onReportDraftChange={dirty => setReportDrafts(current => {
+                    if (dirty) return current[scenario.id] ? current : { ...current, [scenario.id]: scenario };
+                    if (!current[scenario.id]) return current;
+                    const next = { ...current }; delete next[scenario.id]; return next;
+                  })}
                   canSubmitVerificationReport={scenarioPermissions.has('spec.tests.execute')}
                   boardId={spec.board_id}
                   specId={spec.id}
@@ -720,9 +751,8 @@ function TestScenariosTab({
                   scenario={scenario}
                   canReadPolicyCompliance={canReadPolicyCompliance}
                   refreshKey={policyRefreshKey}
-                  onSpecRefreshed={onSpecRefreshed}
-                />
-                </>}
+                  onReload={reloadScenarios}
+                />}
               </div>
             )}
           </div>
@@ -731,7 +761,7 @@ function TestScenariosTab({
 
       {/* Add scenario form */}
       {adding ? (
-        <fieldset disabled={scenarioSaving || Boolean(uncertainWrite)} className="border border-violet-200 dark:border-violet-700 rounded-lg p-3 space-y-2 bg-violet-50/50 dark:bg-violet-900/10">
+        <fieldset disabled={scenarioSaving || operationPending || operationNeedsRead || Boolean(uncertainWrite)} className="border border-violet-200 dark:border-violet-700 rounded-lg p-3 space-y-2 bg-violet-50/50 dark:bg-violet-900/10">
           <div className="flex gap-2">
             <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Scenario title" className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600" autoFocus />
             <select
@@ -1735,6 +1765,10 @@ export function SpecModal({
       if (!isCurrent()) {
         return null;
       }
+      const expectedBoardId = _boardId || (spec?.id === requestedSpecId ? spec.board_id : undefined);
+      if (data.id !== requestedSpecId || (expectedBoardId && data.board_id !== expectedBoardId)) {
+        throw new Error('The Spec response does not match the requested identity.');
+      }
       setSpec(data);
       await loadAllowedTransitions(data, isCurrent);
       if (!isCurrent()) {
@@ -1984,9 +2018,7 @@ export function SpecModal({
   const [workspaceSyncError, setWorkspaceSyncError] = useState<string | null>(null);
   const [workspaceReadPending, setWorkspaceReadPending] = useState(false);
   const workspaceLoadGeneration = useRef(0);
-  // Classification and inspection drafts are protected. Scenarios still need
-  // their parent write/read integration before subscribing Tests.
-  const validationLive = ['validation', 'frs', 'acs', 'rules', 'contracts', 'ors', 'trs', 'irs', 'decisions'].includes(activeTab) || showSubmitValidationModal;
+  const validationLive = ['validation', 'frs', 'acs', 'rules', 'contracts', 'ors', 'trs', 'irs', 'decisions', 'tests'].includes(activeTab) || showSubmitValidationModal;
   useEffect(() => {
     setPermissionCheckPending(false);
     setWorkspaceReadPending(false);
@@ -2025,6 +2057,7 @@ export function SpecModal({
         await reloadSpecSnapshot({ includeRelated: false, notifyChanged: false, showLoading: false });
         if (!current()) return;
         setValidationHistoryRefreshKey(value => value + 1);
+        setTestScenarioPolicyRefreshKey(value => value + 1);
       } catch (error) {
         if (!current()) return;
         if (authorityChanged || (error instanceof AuthenticatedFetchError && [401, 403, 404].includes(error.status))) {
@@ -2578,7 +2611,9 @@ export function SpecModal({
               spec={spec}
               canReadPolicyCompliance={canReadPolicyCompliance}
               policyRefreshKey={testScenarioPolicyRefreshKey}
+              readCurrent={!permissionCheckPending && !workspaceReadPending && !workspaceSyncError && syncState === 'current'}
               onUpdate={async (scenarios, expectedVersion, expectedSnapshot) => {
+                const generation = ++specReloadGeneration.current;
                 try {
                   const updated = await persistTestScenariosWithWriteGuard(
                     api.updateSpec,
@@ -2588,7 +2623,9 @@ export function SpecModal({
                     expectedSnapshot,
                   );
                   if (currentSpecId.current !== specId) return;
-                  setSpec(updated);
+                  if (updated.id !== specId || updated.board_id !== spec.board_id) throw new Error('The scenario write response does not match its Spec. Reload to check the result.');
+                  if (generation === specReloadGeneration.current) setSpec(updated);
+                  else await reloadSpecSnapshot({ includeRelated: false, notifyChanged: false, showLoading: false });
                   setTestScenarioPolicyRefreshKey((value) => value + 1);
                   try { onChanged(); } catch { toast.error('Scenario saved. Refresh to update related views.'); }
                 } catch (err) {
@@ -2602,17 +2639,12 @@ export function SpecModal({
                   throw err;
                 }
               }}
-              onSpecRefreshed={(updated) => {
-                if (currentSpecId.current !== specId || updated.id !== specId || updated.board_id !== spec.board_id) return;
-                setSpec(updated);
-                setTestScenarioPolicyRefreshKey((value) => value + 1);
-                onChanged();
-              }}
               onReload={async () => {
                 try {
                   const updated = await reloadSpecSnapshot({ includeRelated: false, notifyChanged: false, showLoading: false });
                   if (!updated) throw new Error('The scenario reload was superseded. Reload to confirm the current base.');
                   setTestScenarioPolicyRefreshKey(value => value + 1);
+                  setWorkspaceSyncError(null);
                   return updated;
                 } catch (error) {
                   if (currentSpecId.current === specId && error instanceof AuthenticatedFetchError && [401, 403, 404].includes(error.status)) {
@@ -2622,12 +2654,7 @@ export function SpecModal({
                 }
               }}
               onSpecUpdate={async (data) => {
-                try {
-                  const updated = await api.updateSpec(specId, data as any);
-                  setSpec(updated);
-                } catch (err) {
-                  toast.error(err instanceof Error && err.message ? err.message : 'Failed to update spec');
-                }
+                await api.updateSpec(specId, data);
               }}
             />
           )}

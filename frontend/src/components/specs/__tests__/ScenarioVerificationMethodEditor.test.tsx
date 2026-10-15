@@ -1,16 +1,60 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { ScenarioVerificationMethodEditor } from '../ScenarioVerificationMethodEditor';
-import type { TestScenario } from '@/types';
+import type { Spec, TestScenario } from '@/types';
 import { AuthenticatedFetchError } from '@/lib/authFetch';
 const api = vi.hoisted(() => ({ updateScenarioVerificationMethod: vi.fn() }));
 vi.mock('@/services/api', () => ({ useDashboardApi: () => api }));
 const onSaved = vi.fn();
+const onReload = vi.fn();
 const scenario: TestScenario = { id: 'ts', title: 'Observe', scenario_type: 'manual', status: 'ready', given: 'G', when: 'W', then: 'T', notes: null, linked_criteria: ['ac'], linked_task_ids: null };
-function props(extra = {}) { return { boardId: 'board', specId: 'spec', version: 7, scenario, canEdit: true, onSaved, ...extra }; }
+function props(extra = {}) { return { boardId: 'board', specId: 'spec', version: 7, scenario, canEdit: true, onSaved, onReload, ...extra }; }
 function choose(value: string) { fireEvent.change(screen.getByLabelText('Verification method ts'), { target: { value } }); }
 function save() { fireEvent.click(screen.getByRole('button', { name: 'Save verification method' })); }
-beforeEach(() => { vi.clearAllMocks(); api.updateScenarioVerificationMethod.mockResolvedValue({ scenario_id: 'ts', evidence_invalidated: false, updated_fields: ['verification_method'] }); onSaved.mockResolvedValue(undefined); });
+beforeEach(() => { vi.clearAllMocks(); api.updateScenarioVerificationMethod.mockResolvedValue({ scenario_id: 'ts', evidence_invalidated: false, updated_fields: ['verification_method'] }); onSaved.mockResolvedValue(undefined); onReload.mockReset(); });
+
+it('checks a lost method response without repeating the write', async () => {
+  api.updateScenarioVerificationMethod.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+  onReload.mockResolvedValue({ id: 'spec', board_id: 'board', version: 8, test_scenarios: [{ ...scenario, verification_method: 'inspection' }] } as Spec);
+  render(<ScenarioVerificationMethodEditor {...props()} />); choose('inspection'); save();
+  await screen.findByRole('button', { name: 'Check method write' });
+  expect(screen.getByRole('button', { name: 'Save verification method' })).toBeDisabled();
+  expect(screen.getByRole('combobox')).toBeDisabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Check method write' }));
+  await screen.findByRole('button', { name: 'Reload saved method' });
+  expect(api.updateScenarioVerificationMethod).toHaveBeenCalledOnce();
+});
+
+it('keeps an uncertain method locked on failed or foreign reads, then allows only the original version retry', async () => {
+  api.updateScenarioVerificationMethod.mockRejectedValueOnce(new TypeError('offline'));
+  onReload.mockRejectedValueOnce(new Error('read offline'))
+    .mockResolvedValueOnce({ id: 'other', board_id: 'board', version: 7, test_scenarios: [scenario] })
+    .mockResolvedValueOnce({ id: 'spec', board_id: 'board', version: 7, test_scenarios: [scenario] });
+  render(<ScenarioVerificationMethodEditor {...props()} />); choose('inspection'); save();
+  fireEvent.click(await screen.findByRole('button', { name: 'Check method write' }));
+  await screen.findByText('read offline');
+  expect(screen.getByRole('button', { name: 'Save verification method' })).toBeDisabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Check method write' }));
+  await screen.findByText('The current Spec could not be verified.');
+  expect(screen.getByRole('button', { name: 'Save verification method' })).toBeDisabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Check method write' }));
+  await screen.findByText(/original version is still current/); save();
+  await waitFor(() => expect(api.updateScenarioVerificationMethod).toHaveBeenCalledTimes(2));
+  expect(api.updateScenarioVerificationMethod.mock.calls[1]).toEqual(api.updateScenarioVerificationMethod.mock.calls[0]);
+});
+
+it('requires explicit review when an uncertain method has a different current version', async () => {
+  api.updateScenarioVerificationMethod.mockRejectedValueOnce(new TypeError('offline'));
+  onReload.mockResolvedValue({ id: 'spec', board_id: 'board', version: 8, test_scenarios: [{ ...scenario, verification_method: 'demonstration' }] });
+  const view = render(<ScenarioVerificationMethodEditor {...props()} />); choose('inspection'); save();
+  fireEvent.click(await screen.findByRole('button', { name: 'Check method write' }));
+  await screen.findByText(/requested method was not observed/);
+  view.rerender(<ScenarioVerificationMethodEditor {...props({ version: 8, scenario: { ...scenario, verification_method: 'demonstration' } })} />);
+  expect(screen.getByRole('button', { name: 'Save verification method' })).toBeDisabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Review method base' })); save();
+  await waitFor(() => expect(api.updateScenarioVerificationMethod).toHaveBeenCalledTimes(2));
+  expect(api.updateScenarioVerificationMethod.mock.calls[1][4]).toBe(8);
+});
 
 it('does not infer a method from a manual scenario and sends only the versioned method edit', async () => {
   render(<ScenarioVerificationMethodEditor {...props()} />);

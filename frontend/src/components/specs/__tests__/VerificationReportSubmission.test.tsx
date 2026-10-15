@@ -8,13 +8,61 @@ const api = vi.hoisted(() => ({ admitTestVerificationReport: vi.fn(), updateTest
 vi.mock('@/services/api', () => ({ useDashboardApi: () => api }));
 const onSaved = vi.fn();
 const onRejected = vi.fn();
+const onReload = vi.fn();
 const scenario: TestScenario = { id: 'ts', title: 'Inspect', verification_method: 'inspection', scenario_type: 'manual', status: 'ready', given: 'G', when: 'W', then: 'T', notes: null, linked_criteria: ['ac'], linked_task_ids: null };
 const report = { method: 'inspection', result: 'passed', report_id: 'report-1', conclusion: 'Observed condition', observed_at: '2026-09-23T10:00:00Z', observations: [] };
 const evidence: TestScenarioEvidence = { evidence_class: 'verification_report', execution_receipt: 'server-receipt', report_author_id: 'author', verification_report: { ...report, result: 'passed' } };
-function props(extra = {}) { return { specId: 'spec', scenario, canSubmit: true, allowedResults: ['passed', 'failed'], onSaved, onRejected, ...extra }; }
+function props(extra = {}) { return { specId: 'spec', scenario, canSubmit: true, allowedResults: ['passed', 'failed'], onSaved, onRejected, onReload, ...extra }; }
 function fill(value = report) { fireEvent.change(screen.getByLabelText('Verification report ts'), { target: { value: JSON.stringify(value) } }); }
 function submit() { fireEvent.click(screen.getByRole('button', { name: 'Record verification report' })); }
-beforeEach(() => { vi.clearAllMocks(); api.admitTestVerificationReport.mockResolvedValue({ evidence }); api.updateTestScenarioStatus.mockResolvedValue({}); onSaved.mockResolvedValue(undefined); onRejected.mockResolvedValue(false); });
+beforeEach(() => { vi.clearAllMocks(); api.admitTestVerificationReport.mockResolvedValue({ evidence }); api.updateTestScenarioStatus.mockResolvedValue({}); onSaved.mockResolvedValue(undefined); onRejected.mockResolvedValue(false); onReload.mockReset(); });
+
+it('preserves report text through read outages and scenario changes until explicit review', async () => {
+  const view = render(<VerificationReportSubmission {...props()} />); fill();
+  view.rerender(<VerificationReportSubmission {...props({ readCurrent: false, allowedResults: [] })} />);
+  expect(screen.getByLabelText('Verification report ts')).toHaveValue(JSON.stringify(report));
+  expect(screen.getByRole('button', { name: 'Record verification report' })).toBeDisabled();
+  view.rerender(<VerificationReportSubmission {...props({ scenario: { ...scenario, then: 'New observation' } })} />);
+  expect(screen.getByLabelText('Verification report ts')).toHaveValue(JSON.stringify(report));
+  expect(screen.getByRole('button', { name: 'Record verification report' })).toBeDisabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Review report base' })); submit();
+  await waitFor(() => expect(onSaved).toHaveBeenCalledOnce());
+});
+
+it('does not attach admitted evidence after the scenario changes while admission is pending', async () => {
+  let finish!: (value: { evidence: TestScenarioEvidence }) => void;
+  api.admitTestVerificationReport.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  const view = render(<VerificationReportSubmission {...props()} />); fill(); submit();
+  view.rerender(<VerificationReportSubmission {...props({ scenario: { ...scenario, then: 'New condition' } })} />);
+  finish({ evidence });
+  await screen.findByText(/scenario changed during admission/);
+  expect(api.updateTestScenarioStatus).not.toHaveBeenCalled();
+  expect(screen.getByLabelText('Verification report ts')).toHaveValue(JSON.stringify(report));
+});
+
+it('observes a recorded receipt after a lost status response without repeating either stage', async () => {
+  api.updateTestScenarioStatus.mockRejectedValueOnce(new TypeError('response lost'));
+  onReload.mockResolvedValue({ id: 'spec', test_scenarios: [{ ...scenario, status: 'passed', evidence }] });
+  render(<VerificationReportSubmission {...props()} />); fill(); submit();
+  fireEvent.click(await screen.findByRole('button', { name: 'Check report submission' }));
+  await screen.findByRole('button', { name: 'Report recorded' });
+  expect(api.admitTestVerificationReport).toHaveBeenCalledOnce();
+  expect(api.updateTestScenarioStatus).toHaveBeenCalledOnce();
+});
+
+it('retains an unknown admission and permits only discard after a successful check', async () => {
+  api.admitTestVerificationReport.mockRejectedValueOnce(new TypeError('response lost'));
+  onReload.mockRejectedValueOnce(new Error('read offline')).mockResolvedValue({ id: 'spec', test_scenarios: [scenario] });
+  render(<VerificationReportSubmission {...props()} />); fill(); submit();
+  fireEvent.click(await screen.findByRole('button', { name: 'Check report submission' }));
+  await screen.findByText('read offline');
+  expect(screen.queryByRole('button', { name: 'Discard unresolved submission' })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Check report submission' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Discard unresolved submission' }));
+  expect(screen.getByLabelText('Verification report ts')).toHaveValue('');
+  expect(api.admitTestVerificationReport).toHaveBeenCalledOnce();
+  expect(api.updateTestScenarioStatus).not.toHaveBeenCalled();
+});
 
 it('records only the unchanged server-issued evidence through the scoped status writer', async () => {
   render(<VerificationReportSubmission {...props()} />); fill(); submit();

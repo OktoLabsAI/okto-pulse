@@ -1,17 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
 import { useDashboardApi } from '@/services/api';
-import type { TestScenario } from '@/types';
+import type { Spec, TestScenario } from '@/types';
 import { AuthenticatedFetchError } from '@/lib/authFetch';
 
 const methods = ['automated_test', 'static_analysis', 'inspection', 'demonstration'] as const;
 type Method = typeof methods[number];
-type Props = { boardId: string; specId: string; version: number; scenario: TestScenario; canEdit: boolean; readCurrent?: boolean; missing?: boolean; onDraftChange?: (dirty: boolean) => void; onSaved: () => Promise<void> };
+type Props = { boardId: string; specId: string; version: number; scenario: TestScenario; canEdit: boolean; readCurrent?: boolean; missing?: boolean; onDraftChange?: (dirty: boolean) => void; onSaved: () => Promise<void>; onReload: () => Promise<Spec> };
 
 export function ScenarioVerificationMethodEditor(props: Props) {
   return <MethodEditor key={JSON.stringify([props.boardId, props.specId, props.scenario.id, props.canEdit])} {...props} />;
 }
 
-function MethodEditor({ boardId, specId, version, scenario, canEdit, readCurrent = true, missing = false, onDraftChange, onSaved }: Props) {
+function MethodEditor({ boardId, specId, version, scenario, canEdit, readCurrent = true, missing = false, onDraftChange, onSaved, onReload }: Props) {
   const api = useDashboardApi();
   const [draft, setDraft] = useState<{ method: string; version: number } | null>(null);
   const method = draft?.method ?? scenario.verification_method ?? '';
@@ -20,6 +20,7 @@ function MethodEditor({ boardId, specId, version, scenario, canEdit, readCurrent
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
+  const [uncertain, setUncertain] = useState(false);
   const live = useRef(true);
   const writing = useRef(false);
   useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
@@ -28,7 +29,7 @@ function MethodEditor({ boardId, specId, version, scenario, canEdit, readCurrent
     try { await onSaved(); } catch { if (live.current) setError('Saved. Reload the Spec to see the current method.'); }
   }
   async function save() {
-    if (!canEdit || missing || !readCurrent || writing.current || saved || baseChanged || conflictVersion !== null || (method && !methods.includes(method as Method))) return;
+    if (!canEdit || missing || !readCurrent || writing.current || saved || uncertain || baseChanged || conflictVersion !== null || (method && !methods.includes(method as Method))) return;
     const expectedVersion = draft?.version ?? version;
     setDraft(current => current ?? { method, version: expectedVersion });
     writing.current = true; setBusy(true); setError('');
@@ -39,6 +40,12 @@ function MethodEditor({ boardId, specId, version, scenario, canEdit, readCurrent
     } catch (cause) {
       if (live.current) {
         setError(cause instanceof Error ? cause.message : 'Method could not be saved. Refresh the Spec before retrying.');
+        const rejected = cause instanceof AuthenticatedFetchError && cause.status >= 400 && cause.status < 500 && cause.status !== 408;
+        setUncertain(!rejected);
+        if (cause instanceof AuthenticatedFetchError && [401, 403, 404].includes(cause.status)) {
+          setDraft(null);
+          try { await onReload(); } catch { /* Protected parent handles access denial. */ }
+        }
         // This endpoint returns the native code as HTTP detail text. Other 409s
         // include locks and workflow refusals and must not imply a version change.
         if (cause instanceof AuthenticatedFetchError && cause.status === 409 && cause.message === 'spec_version_conflict') {
@@ -48,20 +55,45 @@ function MethodEditor({ boardId, specId, version, scenario, canEdit, readCurrent
       }
     } finally { writing.current = false; if (live.current) setBusy(false); }
   }
+  async function checkWrite() {
+    if (writing.current || !draft) return;
+    writing.current = true; setBusy(true); setError('');
+    try {
+      const current = await onReload();
+      if (!live.current) return;
+      if (current.id !== specId || current.board_id !== boardId) throw new Error('The current Spec could not be verified.');
+      const found = current.test_scenarios?.find(item => item.id === scenario.id);
+      if (found && (found.verification_method || '') === draft.method && current.version > draft.version) {
+        // Observe the desired state, without claiming authorship or resubmitting.
+        setSaved(true); setUncertain(false);
+      } else if (found) {
+        setUncertain(false);
+        if (current.version !== draft.version) setConflictVersion(draft.version);
+        setError(current.version === draft.version
+          ? 'The original version is still current. You may retry the selected method on that version.'
+          : 'The requested method was not observed. Review the current scenario before another write.');
+      } else setError('The scenario was removed. The method will not be resubmitted.');
+    } catch (cause) { if (live.current) setError(cause instanceof Error ? cause.message : 'Could not check the method write.'); }
+    finally { writing.current = false; if (live.current) setBusy(false); }
+  }
   if (!canEdit) return <p className="text-xs text-gray-500">Verification method: {scenario.verification_method || 'Not defined'}</p>;
   return <div className="space-y-2 rounded border border-gray-300 p-2 dark:border-gray-600">
     {missing && <p role="status" className="text-xs text-amber-600">This scenario was removed. Your selected method is preserved for reference; it cannot be saved or recreate the scenario.</p>}
     {!readCurrent && <p role="status" className="text-xs text-amber-600">Current Spec could not be verified. Your selection is preserved; refresh before saving.</p>}
+    {uncertain && !missing && <div role="status" className="text-xs text-amber-600">
+      <p>The method response was lost. Check its current state before another write.</p>
+      <button type="button" className="btn btn-secondary text-xs" disabled={busy} onClick={() => void checkWrite()}>Check method write</button>
+    </div>}
     {!missing && !saved && (baseChanged || conflictVersion !== null) && <div className="rounded-lg border border-amber-300 p-2 text-xs">
       <p>The Spec changed. Review the current scenario before saving your selected method.</p>
       <p>Current saved method: {scenario.verification_method || 'Not defined'}</p>
       <p className="whitespace-pre-wrap">Expected observation: {scenario.then}</p>
       <button type="button" className="btn btn-secondary text-xs mt-2"
-        disabled={busy || missing || !readCurrent || (conflictVersion !== null && conflictVersion === version)}
+        disabled={busy || uncertain || missing || !readCurrent || (conflictVersion !== null && conflictVersion === version)}
         onClick={() => { setDraft({ method, version }); setConflictVersion(null); setError(''); }}>Review method base</button>
     </div>}
     <label className="text-xs">Verification method
-      <select aria-label={`Verification method ${scenario.id}`} disabled={busy || saved || missing} value={method}
+      <select aria-label={`Verification method ${scenario.id}`} disabled={busy || saved || missing || uncertain} value={method}
         onChange={event => setDraft(current => ({ method: event.target.value, version: current?.version ?? version }))} className="ml-2 rounded bg-white p-1 dark:bg-gray-800">
         <option value="">Not defined</option>
         {method && !methods.includes(method as Method) && <option value={method} disabled>Unsupported stored method: {method}</option>}
@@ -70,7 +102,7 @@ function MethodEditor({ boardId, specId, version, scenario, canEdit, readCurrent
     </label>
     <p className="text-xs text-gray-500">A method declares the required observation. Credit requires an installed admission path and authenticated evidence; unsupported methods remain pending.</p>
     {(scenario.evidence) && <p className="text-xs text-amber-600">Changing this method invalidates the current scenario evidence.</p>}
-    <button type="button" className="btn btn-primary text-xs disabled:opacity-50 disabled:cursor-not-allowed" disabled={busy || saved || missing || !readCurrent || baseChanged || conflictVersion !== null || (Boolean(method) && !methods.includes(method as Method))} onClick={() => void save()}>{busy ? 'Saving method…' : 'Save verification method'}</button>
+    <button type="button" className="btn btn-primary text-xs disabled:opacity-50 disabled:cursor-not-allowed" disabled={busy || saved || uncertain || missing || !readCurrent || baseChanged || conflictVersion !== null || (Boolean(method) && !methods.includes(method as Method))} onClick={() => void save()}>{busy ? 'Saving method…' : 'Save verification method'}</button>
     {error && <p role="alert">{error}</p>}
     {saved && <button type="button" className="btn btn-secondary text-xs" onClick={() => void reload()}>Reload saved method</button>}
     {saved && <button type="button" className="btn btn-secondary text-xs ml-2" disabled={busy || missing || !readCurrent || !draft || version <= draft.version}
