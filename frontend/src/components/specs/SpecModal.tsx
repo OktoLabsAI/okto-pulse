@@ -1850,9 +1850,9 @@ export function SpecModal({
   const [workspaceSyncError, setWorkspaceSyncError] = useState<string | null>(null);
   const [workspaceReadPending, setWorkspaceReadPending] = useState(false);
   const workspaceLoadGeneration = useRef(0);
-  // Classification drafts are protected. Decision inspections and scenarios
-  // still need their own base protection before subscribing those tabs.
-  const validationLive = ['validation', 'frs', 'acs', 'rules', 'contracts', 'ors', 'trs', 'irs'].includes(activeTab) || showSubmitValidationModal;
+  // Classification and inspection drafts are protected. Scenarios still need
+  // their parent write/read integration before subscribing Tests.
+  const validationLive = ['validation', 'frs', 'acs', 'rules', 'contracts', 'ors', 'trs', 'irs', 'decisions'].includes(activeTab) || showSubmitValidationModal;
   useEffect(() => {
     setPermissionCheckPending(false);
     setWorkspaceReadPending(false);

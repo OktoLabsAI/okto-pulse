@@ -275,12 +275,12 @@ async function openCriteria() {
 }
 
 describe('SpecModal validation navigation', () => {
-  it.each(['Decisions'])('defers external refresh of %s until its nested writer is protected', async tab => {
+  it.each(['Decisions'])('subscribes %s after protecting its inspection writer', async tab => {
     apiMock.getSpec.mockResolvedValue(baseSpec);
     render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
     fireEvent.click(await screen.findByRole('tab', { name: 'Requirements & Decisions' }));
     fireEvent.click(screen.getByRole('tab', { name: tab }));
-    expect(workspaceWatch.options?.boardId).toBeUndefined();
+    expect(workspaceWatch.options?.boardId).toBe(baseSpec.board_id);
   });
 
   it('subscribes Integration after protecting its classification writer', async () => {

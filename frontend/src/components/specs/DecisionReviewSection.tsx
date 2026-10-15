@@ -37,6 +37,7 @@ interface DecisionReviewSectionProps {
   data: DecisionReviewProjection; decisionId: string; canReview: boolean;
   onSubmit: (body: DecisionReviewInput) => Promise<void>;
   readCurrent?: boolean;
+  onDraftChange?: (decisionId: string, active: boolean) => void;
 }
 
 export function DecisionReviewSection(props: DecisionReviewSectionProps) {
@@ -44,7 +45,7 @@ export function DecisionReviewSection(props: DecisionReviewSectionProps) {
   return <DecisionReviewEditor key={JSON.stringify([props.data.board_id, props.data.spec_id, props.decisionId, props.canReview, denied])} {...props} />;
 }
 
-function DecisionReviewEditor({ data, decisionId, canReview, onSubmit, readCurrent = true }: DecisionReviewSectionProps) {
+function DecisionReviewEditor({ data, decisionId, canReview, onSubmit, readCurrent = true, onDraftChange }: DecisionReviewSectionProps) {
   const [observed, setObserved] = useState('');
   const [result, setResult] = useState<DecisionReviewResult>('inconclusive');
   const [reconcile, setReconcile] = useState(false);
@@ -57,6 +58,8 @@ function DecisionReviewEditor({ data, decisionId, canReview, onSubmit, readCurre
   const inFlight = useRef(false);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const current = data.decisions.find(d => d.decision_id === decisionId);
+  const displayed = current?.basis ? current : base?.decision;
+  useEffect(() => { onDraftChange?.(decisionId, base !== null); }, [onDraftChange, decisionId, base]);
   const snapshot = current ? { edition: data.edition, version: data.version, review: data.review_revision, decision: current } : null;
   const changed = Boolean(base && JSON.stringify(base) !== JSON.stringify(snapshot));
   const ready = readCurrent && data.complete && Boolean(current?.basis && current.separation?.allowed);
@@ -104,7 +107,8 @@ function DecisionReviewEditor({ data, decisionId, canReview, onSubmit, readCurre
     </details>;
   });
   return <section className="space-y-3 border-t border-gray-200 pt-3 dark:border-gray-700" aria-label="Decision verification">
-    <h4 className="text-sm font-semibold">{decisionStatusLabel(current?.status || 'planning_pending')}</h4>
+    <h4 className="text-sm font-semibold">{readCurrent ? decisionStatusLabel(current?.status || 'planning_pending') : 'Current verification unavailable'}</h4>
+    {!readCurrent && <p role="status" className="text-sm">Current inspection data is unavailable. Your draft is preserved and recording is disabled.</p>}
     {changed && <div className="space-y-2 rounded-lg border border-amber-300 p-3 text-sm dark:border-amber-700">
       <p>Your observation belongs to an earlier inspection base. Review the current condition and sources before recording it.</p>
       <p className="whitespace-pre-wrap">Original condition: {base?.decision.basis?.expected}</p>
@@ -112,29 +116,33 @@ function DecisionReviewEditor({ data, decisionId, canReview, onSubmit, readCurre
         setBase(snapshot); setReconcile(false); retry.current = undefined; setError('');
       }}>Review inspection base</button>
     </div>}
-    {current?.basis && <>
-      <p className="text-sm">{current.basis.expected}</p>
+    {displayed?.basis && <>
+      {!current?.basis && <p role="status">This inspection basis is no longer available. The preserved draft cannot be recorded.</p>}
+      <p className="text-sm">{displayed.basis.expected}</p>
       <details className="rounded-lg border border-gray-200 dark:border-gray-700"><summary className="cursor-pointer px-3 py-2 text-sm">Observed scope</summary>
-        <div className="space-y-1 p-3 text-xs">{current.basis.sources.map(s => <p key={s.reference} className="break-all">{s.reference} · {s.revision} · {s.sha256.slice(0, 12)}</p>)}</div>
+        <div className="space-y-1 p-3 text-xs">{displayed.basis.sources.map(s => <p key={s.reference} className="break-all">{s.reference} · {s.revision} · {s.sha256.slice(0, 12)}</p>)}</div>
       </details>
-      {canReview && current.separation?.allowed && <details className="rounded-lg border border-gray-200 dark:border-gray-700">
+      {canReview && displayed.separation?.allowed && <details className="rounded-lg border border-gray-200 dark:border-gray-700">
         <summary className="cursor-pointer px-3 py-2 text-sm font-medium">Record inspection</summary>
         <div className="space-y-3 border-t border-gray-200 p-3 dark:border-gray-700">
           <p className="text-xs text-gray-500">Record what you inspected against this scope. Your authenticated observation is preserved; Pulse does not execute the inspection.</p>
-          {current.separation.warning && <p role="status" className="text-sm text-amber-700 dark:text-amber-400">The Board permits this review with a separation warning.</p>}
+          {readCurrent && current?.separation?.warning && <p role="status" className="text-sm text-amber-700 dark:text-amber-400">The Board permits this review with a separation warning.</p>}
           <label className="block text-sm">Observed result<textarea disabled={!ready || saving || uncertain} aria-label="Observed result" rows={3} maxLength={2000} value={observed} onChange={e => { begin(); setObserved(e.target.value); }} className="mt-1 w-full rounded-lg border p-2 dark:border-gray-600 dark:bg-gray-800" /></label>
           <label className="block text-sm">Conclusion<select disabled={!ready || saving || uncertain} aria-label="Inspection conclusion" value={result} onChange={e => { begin(); setResult(e.target.value as DecisionReviewResult); }} className="ml-2 rounded-lg border p-2 dark:border-gray-600 dark:bg-gray-800">
             {(['inconclusive', 'passed', 'failed', 'unavailable', 'aborted'] as const).map(v => <option key={v} value={v}>{decisionStatusLabel(v)}</option>)}
           </select></label>
-          {!!current.record_ids.length && <label className="flex items-center gap-2 text-sm"><input disabled={!ready || saving || uncertain || changed} type="checkbox" checked={reconcile} onChange={e => { begin(); setReconcile(e.target.checked); }} />Reconcile all current observations with this conclusion</label>}
+          {!!displayed.record_ids.length && <label className="flex items-center gap-2 text-sm"><input disabled={!ready || saving || uncertain || changed} type="checkbox" checked={reconcile} onChange={e => { begin(); setReconcile(e.target.checked); }} />Reconcile all current observations with this conclusion</label>}
           {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
           <button type="button" className="btn btn-primary text-sm" disabled={saving || uncertain || changed || !ready || !observed.trim()} onClick={() => void submit()}>{saving ? 'Recording…' : 'Record observation'}</button>
           {uncertain && <button type="button" className="btn btn-secondary text-sm" disabled={saving} onClick={() => void submit()}>Retry original observation</button>}
+          {base && !uncertain && <button type="button" className="btn btn-secondary text-sm" disabled={saving} onClick={() => {
+            setObserved(''); setResult('inconclusive'); setReconcile(false); setBase(null); setError(''); retry.current = undefined;
+          }}>Discard inspection draft</button>}
         </div>
       </details>}
-      {canReview && current.separation && !current.separation.allowed && <p className="text-sm text-amber-700 dark:text-amber-400">An independent reviewer with known authorship is required by the Board.</p>}
+      {canReview && current?.separation && !current.separation.allowed && <p className="text-sm text-amber-700 dark:text-amber-400">An independent reviewer with known authorship is required by the Board.</p>}
     </>}
-    {currentHistory.length > 0 && <details><summary className="cursor-pointer text-sm">Observations in this edition ({currentHistory.length})</summary><div className="mt-2 space-y-2">{renderHistory(currentHistory)}</div></details>}
-    {prior.length > 0 && <details><summary className="cursor-pointer text-sm">Previous versions</summary><div className="mt-2 space-y-2">{renderHistory(prior)}</div></details>}
+    {readCurrent && currentHistory.length > 0 && <details><summary className="cursor-pointer text-sm">Observations in this edition ({currentHistory.length})</summary><div className="mt-2 space-y-2">{renderHistory(currentHistory)}</div></details>}
+    {readCurrent && prior.length > 0 && <details><summary className="cursor-pointer text-sm">Previous versions</summary><div className="mt-2 space-y-2">{renderHistory(prior)}</div></details>}
   </section>;
 }
