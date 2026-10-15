@@ -10,7 +10,7 @@ const contract = (patch: Partial<ApiContract> = {}): ApiContract => ({
   linked_task_ids: ['task-current'], status: 'active', notes: null, ...patch,
 });
 const spec = (contracts: ApiContract[] = []): Spec => ({
-  id: 'spec', api_contracts: contracts,
+  id: 'spec', board_id: 'board', version: 8, edition: 1, api_contracts: contracts,
   functional_requirements: [{ id: 'fr-order', text: 'Return orders' }], business_rules: [],
 } as unknown as Spec);
 

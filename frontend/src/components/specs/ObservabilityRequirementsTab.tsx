@@ -1,10 +1,13 @@
+import { useSpecCollectionEditor } from './useSpecCollectionEditor';
+import { SpecCollectionDraftNotice } from './SpecCollectionDraftNotice';
 import { useEffect, useMemo, useState } from 'react';
 import { CheckCircle, ChevronDown, ChevronUp, Gauge, Link, Pencil, Plus, Trash2, Unlink, XCircle } from 'lucide-react';
 import type { CardSummaryForSpec, ObservabilityRequirement, ObservabilitySignalType, Spec } from '@/types';
 
 interface ObservabilityRequirementsTabProps {
   spec: Spec;
-  onUpdate: (requirements: ObservabilityRequirement[]) => void;
+  onUpdate: (requirements: ObservabilityRequirement[], expectedVersion: number) => void | Promise<void>;
+  readCurrent?: boolean;
   onSpecUpdate?: (patch: Record<string, unknown>) => Promise<void>;
   specCards?: CardSummaryForSpec[];
   onLinkTask?: (requirementId: string, cardId: string) => Promise<void>;
@@ -68,9 +71,14 @@ function LinkTaskPicker({
   );
 }
 
-export function ObservabilityRequirementsTab({
+export function ObservabilityRequirementsTab(props: ObservabilityRequirementsTabProps) {
+  return <ObservabilityRequirementsTabEditor key={`${props.spec.board_id}:${props.spec.id}:${props.canCreate}:${props.canEdit}`} {...props} />;
+}
+
+function ObservabilityRequirementsTabEditor({
   spec,
   onUpdate,
+  readCurrent = true,
   onSpecUpdate,
   specCards = [],
   onLinkTask,
@@ -84,6 +92,8 @@ export function ObservabilityRequirementsTab({
   focusCreateToken = null,
   onFocusHandled,
 }: ObservabilityRequirementsTabProps) {
+  const editor = useSpecCollectionEditor(spec, readCurrent);
+  const begin = editor.begin;
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -128,6 +138,7 @@ export function ObservabilityRequirementsTab({
   };
 
   const buildRequirement = (id: string, current?: ObservabilityRequirement): ObservabilityRequirement => ({
+    ...current,
     id,
     title: formTitle.trim(),
     signal_type: formSignalType,
@@ -144,14 +155,15 @@ export function ObservabilityRequirementsTab({
     notes: formNotes.trim() || null,
   });
 
-  const handleAdd = () => {
+  const handleAdd = async () => {
     if (!formTitle.trim() || !formDescription.trim()) return;
-    onUpdate([...requirements, buildRequirement(`or_${Date.now()}`)]);
+    if (missing.length || !canCreate || !await editor.save(version => onUpdate([...requirements, buildRequirement(`or_${Date.now()}`)], version))) return;
     setAdding(false);
     resetForm();
   };
 
   const handleEdit = (item: ObservabilityRequirement) => {
+    if (!canEdit || !editor.begin()) return;
     setEditingId(item.id);
     setFormTitle(item.title);
     setFormSignalType(item.signal_type || 'metric');
@@ -167,32 +179,33 @@ export function ObservabilityRequirementsTab({
   };
 
   useEffect(() => {
-    if (!focusEditId || !canEdit) return;
+    if (!focusEditId || !canEdit || editingId || adding) return;
     const target = requirements.find((item) => item.id === focusEditId);
     if (!target) return;
     handleEdit(target);
     setExpandedId(null);
     onFocusHandled?.();
-  }, [focusEditId, canEdit, spec.observability_requirements, onFocusHandled]);
+  }, [focusEditId, canEdit, spec.observability_requirements, onFocusHandled, editingId, adding]);
 
   useEffect(() => {
-    if (!focusCreateToken || !canCreate) return;
+    if (!focusCreateToken || !canCreate || editingId || adding) return;
+    if (!begin()) return;
     resetForm();
     setAdding(true);
     setEditingId(null);
     onFocusHandled?.();
-  }, [focusCreateToken, canCreate, onFocusHandled]);
+  }, [focusCreateToken, canCreate, onFocusHandled, editingId, adding, begin]);
 
-  const handleSaveEdit = () => {
+  const handleSaveEdit = async () => {
     if (!editingId || !formTitle.trim() || !formDescription.trim()) return;
-    onUpdate(requirements.map((item) => item.id === editingId ? buildRequirement(editingId, item) : item));
+    if (removed || missing.length || !canEdit || !await editor.save(version => onUpdate(requirements.map((item) => item.id === editingId ? buildRequirement(editingId, item) : item), version))) return;
     setEditingId(null);
     resetForm();
   };
 
-  const handleRemove = (id: string) => {
+  const handleRemove = async (id: string) => {
     if (!confirm('Remove this observability requirement?')) return;
-    onUpdate(requirements.filter((item) => item.id !== id));
+    if (canDelete) await editor.save(version => onUpdate(requirements.filter((item) => item.id !== id), version), true);
   };
 
   const toggleFR = (frIndex: string) => {
@@ -203,10 +216,17 @@ export function ObservabilityRequirementsTab({
     setFormLinkedIRs((current) => current.includes(irId) ? current.filter((item) => item !== irId) : [...current, irId]);
   };
 
+  const currentRequirement = requirements.find(item => item.id === editingId);
+  const removed = !!editingId && !requirements.some(item => item.id === editingId);
+  const missing = [
+    ...formLinkedFRs.filter(id => !frs.some(fr => fr.id === id && (fr.status || 'active') === 'active')),
+    ...formLinkedIRs.filter(id => !integrationRequirements.some(item => item.id === id && (item.status || 'active') === 'active')),
+  ];
+
   const isFormValid = Boolean(formTitle.trim() && formDescription.trim());
 
   const renderForm = (onSubmit: () => void, submitLabel: string, onCancel: () => void) => (
-    <div className="border border-emerald-200 dark:border-emerald-700 rounded-lg p-3 space-y-2 bg-emerald-50/50 dark:bg-emerald-900/10">
+    <fieldset disabled={editor.saving} className="border border-emerald-200 dark:border-emerald-700 rounded-lg p-3 space-y-2 bg-emerald-50/50 dark:bg-emerald-900/10">
       <div className="grid grid-cols-[150px_minmax(0,1fr)] gap-2">
         <select value={formSignalType} onChange={(event) => setFormSignalType(event.target.value as ObservabilitySignalType)} className="px-2 py-2 border border-gray-300 rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600">
           {SIGNAL_TYPES.map((type) => <option key={type} value={type}>{SIGNAL_LABELS[type]}</option>)}
@@ -257,14 +277,18 @@ export function ObservabilityRequirementsTab({
       )}
 
       <div className="flex justify-end gap-2">
-        <button onClick={onCancel} className="btn btn-secondary text-xs">Cancel</button>
-        <button onClick={onSubmit} disabled={!isFormValid} className="btn btn-primary text-xs">{submitLabel}</button>
+        <button onClick={() => { editor.cancel(); onCancel(); }} className="btn btn-secondary text-xs">Cancel</button>
+        <button onClick={onSubmit} disabled={!isFormValid || editor.blocked || removed || missing.length > 0} className="btn btn-primary text-xs">{submitLabel}</button>
       </div>
-    </div>
+    </fieldset>
   );
 
   return (
     <div className="space-y-4">
+      <SpecCollectionDraftNotice editor={editor} active={adding || !!editingId} removed={removed} missing={missing}
+        currentText={currentRequirement && [currentRequirement.title, currentRequirement.description, currentRequirement.notes].filter(Boolean).join('\n')}
+        onRemoveMissing={() => { setFormLinkedFRs(formLinkedFRs.filter(id => !missing.includes(id))); setFormLinkedIRs(formLinkedIRs.filter(id => !missing.includes(id))); }} />
+      {removed && renderForm(handleSaveEdit, 'Save', () => { setEditingId(null); resetForm(); })}
       {activeRequirements.length > 0 && (
         <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-3">
           <div className="flex items-center justify-between mb-2">
@@ -313,10 +337,10 @@ export function ObservabilityRequirementsTab({
               <span className="text-sm font-medium text-gray-900 dark:text-white truncate flex-1">{item.title}</span>
               <span className={`text-[10px] px-1.5 py-0.5 rounded ${taskCount > 0 ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300' : 'bg-gray-100 text-gray-400 dark:bg-gray-700 dark:text-gray-500'}`}>{taskCount} tasks</span>
               {canEdit && (
-                <button onClick={(event) => { event.stopPropagation(); handleEdit(item); }} className="p-0.5 text-gray-400 hover:text-blue-500"><Pencil size={12} /></button>
+                <button disabled={editor.saving || !readCurrent || adding} title="Edit" onClick={(event) => { event.stopPropagation(); handleEdit(item); }} className="p-0.5 text-gray-400 hover:text-blue-500"><Pencil size={12} /></button>
               )}
               {canDelete && (
-                <button onClick={(event) => { event.stopPropagation(); handleRemove(item.id); }} className="p-0.5 text-gray-400 hover:text-red-500"><Trash2 size={12} /></button>
+                <button disabled={editor.saving || !readCurrent || adding || !!editingId} title="Remove" onClick={(event) => { event.stopPropagation(); handleRemove(item.id); }} className="p-0.5 text-gray-400 hover:text-red-500"><Trash2 size={12} /></button>
               )}
               {expanded ? <ChevronUp size={14} className="text-gray-400" /> : <ChevronDown size={14} className="text-gray-400" />}
             </div>
@@ -363,7 +387,7 @@ export function ObservabilityRequirementsTab({
       {adding ? (
         renderForm(handleAdd, 'Add OR', () => { setAdding(false); resetForm(); })
       ) : canCreate ? (
-        <button onClick={() => setAdding(true)} className="w-full py-2 border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-500 hover:border-emerald-400 hover:text-emerald-500 transition-colors flex items-center justify-center gap-1">
+        <button onClick={() => { if (editor.begin()) setAdding(true); }} disabled={editor.saving || !readCurrent} className="w-full py-2 border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-500 hover:border-emerald-400 hover:text-emerald-500 transition-colors flex items-center justify-center gap-1">
           <Plus size={14} />
           Add Observability Requirement
         </button>

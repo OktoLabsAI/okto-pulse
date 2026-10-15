@@ -20,10 +20,13 @@ import { PulseLoader } from '@/components/shared/PulseLoader';
 import type { DecisionReviewProjection, DecisionVerification } from '@/types/decision-reviews';
 import { DecisionVerificationEditor, decisionObligationOptions } from './DecisionVerificationEditor';
 import { DecisionInspectionDetails, DecisionReviewSection, decisionStatusLabel } from './DecisionReviewSection';
+import { useSpecCollectionEditor } from './useSpecCollectionEditor';
+import { SpecCollectionDraftNotice } from './SpecCollectionDraftNotice';
 
 interface DecisionsTabProps {
   spec: Spec;
-  onUpdate: (decisions: Decision[]) => void;
+  onUpdate: (decisions: Decision[], expectedVersion: number) => void | Promise<void>;
+  readCurrent?: boolean;
   onSpecUpdate?: (patch: Record<string, any>) => void;
   specCards?: Array<{ id: string; title: string }>;
   onLinkTask?: (decisionId: string, cardId: string) => void | Promise<void>;
@@ -45,9 +48,14 @@ const STATUS_COLORS: Record<DecisionStatus, string> = {
   revoked: 'bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400',
 };
 
-export function DecisionsTab({
+export function DecisionsTab(props: DecisionsTabProps) {
+  return <DecisionsTabEditor key={`${props.spec.board_id}:${props.spec.id}:${props.canCreate}:${props.canEdit}`} {...props} />;
+}
+
+function DecisionsTabEditor({
   spec,
   onUpdate,
+  readCurrent = true,
   specCards = [],
   onLinkTask,
   onUnlinkTask,
@@ -61,6 +69,8 @@ export function DecisionsTab({
   focusCreateToken = null,
   onFocusHandled,
 }: DecisionsTabProps) {
+  const editor = useSpecCollectionEditor(spec, readCurrent);
+  const begin = editor.begin;
   const api = useDashboardApi();
   const [reviewData, setReviewData] = useState<DecisionReviewProjection | null>(null);
   const [reviewError, setReviewError] = useState('');
@@ -123,7 +133,7 @@ export function DecisionsTab({
     return trimmed.split(/\n|;|\|/).map((x) => x.trim()).filter(Boolean);
   };
 
-  const handleAdd = () => {
+  const handleAdd = async () => {
     if (!formTitle.trim() || !formRationale.trim()) return;
     const id = `dec_${Date.now()}`;
     const newDecision: Decision = {
@@ -147,12 +157,13 @@ export function DecisionsTab({
         d.id === formSupersedesId && d.status === 'active' ? { ...d, status: 'superseded' as DecisionStatus } : d
       );
     }
-    onUpdate(next);
+    if (missing.length || !canCreate || !await editor.save(version => onUpdate(next, version))) return;
     setAdding(false);
     resetForm();
   };
 
   const handleEdit = (d: Decision) => {
+    if (!canEdit || !editor.begin()) return;
     setEditingId(d.id);
     setFormTitle(d.title);
     setFormRationale(d.rationale);
@@ -166,24 +177,27 @@ export function DecisionsTab({
 
   useEffect(() => {
     if (!focusEditId || !canEdit) return;
+    if (editingId || adding) return;
     const target = decisions.find((decision) => decision.id === focusEditId);
     if (!target) return;
     handleEdit(target);
     setExpandedId(null);
     onFocusHandled?.();
-  }, [focusEditId, canEdit, spec.decisions, onFocusHandled]);
+  }, [focusEditId, canEdit, spec.decisions, onFocusHandled, editingId, adding]);
 
   useEffect(() => {
     if (!focusCreateToken || !canCreate) return;
+    if (editingId || adding) return;
+    if (!begin()) return;
     resetForm();
     setAdding(true);
     setEditingId(null);
     onFocusHandled?.();
-  }, [focusCreateToken, canCreate, onFocusHandled]);
+  }, [focusCreateToken, canCreate, onFocusHandled, editingId, adding, begin]);
 
-  const handleSaveEdit = () => {
+  const handleSaveEdit = async () => {
     if (!editingId || !formTitle.trim() || !formRationale.trim()) return;
-    onUpdate(decisions.map((d) =>
+    if (removed || missing.length || !canEdit || !await editor.save(version => onUpdate(decisions.map((d) =>
       d.id === editingId
         ? {
             ...d,
@@ -197,14 +211,14 @@ export function DecisionsTab({
             verification: formVerification,
           }
         : d
-    ));
+    ), version))) return;
     setEditingId(null);
     resetForm();
   };
 
-  const handleRevoke = (id: string) => {
+  const handleRevoke = async (id: string) => {
     if (!confirm('Revoke this decision? Soft-delete — it stays in the history with status=revoked.')) return;
-    onUpdate(decisions.map((d) => (d.id === id ? { ...d, status: 'revoked' as DecisionStatus } : d)));
+    if (canDelete) await editor.save(version => onUpdate(decisions.map((d) => (d.id === id ? { ...d, status: 'revoked' as DecisionStatus } : d)), version), true);
   };
 
   const toggleFR = (key: string) => {
@@ -218,6 +232,14 @@ export function DecisionsTab({
 
   const isFormValid = formTitle.trim() && formRationale.trim() && (!formVerification?.inspection ||
     (formVerification.inspection.condition.trim() && formVerification.inspection.scope_refs.length > 0));
+  const removed = !!editingId && !decisions.some(item => item.id === editingId);
+  const currentDecision = decisions.find(item => item.id === editingId);
+  const missing = [
+    ...formLinkedFRs.filter(id => !frs.some(fr => fr.id === id && (fr.status || 'active') === 'active')),
+    ...(formSupersedesId && !availableSupersedesTargets.some(item => item.id === formSupersedesId) ? [formSupersedesId] : []),
+    ...(formVerification?.obligation_refs || []).filter(ref => !decisionObligationOptions(spec).some(option => option.ref === ref)),
+    ...(formVerification?.inspection?.scope_refs || []).filter(ref => ref.kind === 'spec' ? ref.id !== spec.id : !decisionObligationOptions(spec).some(option => option.ref === ref.id)).map(ref => ref.id),
+  ];
 
   const activeDecisions = decisions.filter((d) => d.status === 'active');
   const activeTotal = activeDecisions.length;
@@ -225,7 +247,7 @@ export function DecisionsTab({
   const coveragePct = activeTotal === 0 ? 0 : Math.round((verified / activeTotal) * 100);
 
   const renderForm = (onSubmit: () => void, submitLabel: string, onCancel: () => void) => (
-    <div className="border border-indigo-200 dark:border-indigo-700 rounded-lg p-3 space-y-2 bg-indigo-50/50 dark:bg-indigo-900/10">
+    <fieldset disabled={editor.saving} className="border border-indigo-200 dark:border-indigo-700 rounded-lg p-3 space-y-2 bg-indigo-50/50 dark:bg-indigo-900/10">
       <input
         type="text"
         value={formTitle}
@@ -304,16 +326,27 @@ export function DecisionsTab({
       )}
       <DecisionVerificationEditor spec={spec} value={formVerification} onChange={setFormVerification} />
       <div className="flex justify-end gap-2">
-        <button onClick={onCancel} className="btn btn-secondary text-xs">Cancel</button>
-        <button onClick={onSubmit} disabled={!isFormValid} className="btn btn-primary text-xs">
+        <button onClick={() => { editor.cancel(); onCancel(); }} className="btn btn-secondary text-xs">Cancel</button>
+        <button onClick={onSubmit} disabled={!isFormValid || editor.blocked || removed || missing.length > 0} className="btn btn-primary text-xs">
           {submitLabel}
         </button>
       </div>
-    </div>
+    </fieldset>
   );
 
   return (
     <div className="space-y-4">
+      <SpecCollectionDraftNotice editor={editor} active={adding || !!editingId} removed={removed} missing={missing}
+        currentText={currentDecision && [currentDecision.title, currentDecision.rationale, currentDecision.context, currentDecision.notes].filter(Boolean).join('\n')}
+        onRemoveMissing={() => {
+          setFormLinkedFRs(formLinkedFRs.filter(id => !missing.includes(id)));
+          if (missing.includes(formSupersedesId)) setFormSupersedesId('');
+          if (formVerification) setFormVerification({ ...formVerification,
+            obligation_refs: formVerification.obligation_refs.filter(ref => !missing.includes(ref)),
+            inspection: formVerification.inspection && { ...formVerification.inspection, scope_refs: formVerification.inspection.scope_refs.filter(ref => !missing.includes(ref.id)) },
+          });
+        }} />
+      {removed && renderForm(handleSaveEdit, 'Save', () => { setEditingId(null); resetForm(); })}
       {/* Legacy banner — decisions inline em Description ficam visíveis, mas esta aba é canônica */}
 
 
@@ -409,7 +442,7 @@ export function DecisionsTab({
               {linkedTasksCount > 0 && <span className="rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-600 dark:bg-gray-700 dark:text-gray-300">{linkedTasksCount} contextual task links</span>}
               <button
                 onClick={(e) => { e.stopPropagation(); handleEdit(d); }}
-                disabled={!canEdit}
+                disabled={!canEdit || editor.saving || !readCurrent}
                 className={`p-0.5 ${canEdit ? 'text-gray-400 hover:text-blue-500' : 'text-gray-300 cursor-not-allowed'}`}
                 title={canEdit ? 'Edit' : 'Requires spec.structured_entity.decision.update'}
               >
@@ -418,7 +451,7 @@ export function DecisionsTab({
               {d.status !== 'revoked' && (
                 <button
                   onClick={(e) => { e.stopPropagation(); handleRevoke(d.id); }}
-                  disabled={!canDelete}
+                  disabled={!canDelete || editor.saving || !readCurrent || adding || !!editingId}
                   className={`p-0.5 ${canDelete ? 'text-gray-400 hover:text-red-500' : 'text-gray-300 cursor-not-allowed'}`}
                   title={canDelete ? 'Revoke (soft-delete)' : 'Requires spec.structured_entity.decision.revoke'}
                 >
@@ -575,8 +608,8 @@ export function DecisionsTab({
       ) : (
         !editingId && (
           <button
-            onClick={() => setAdding(true)}
-            disabled={!canCreate}
+            onClick={() => { if (editor.begin()) setAdding(true); }}
+            disabled={!canCreate || editor.saving || !readCurrent}
             title={canCreate ? 'Add Decision' : 'Requires spec.structured_entity.decision.create'}
             className={`flex items-center gap-1 text-sm ${canCreate ? 'text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300' : 'text-gray-300 cursor-not-allowed'}`}
           >

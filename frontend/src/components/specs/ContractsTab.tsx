@@ -6,9 +6,13 @@ import { useMemo, useState } from 'react';
 import { Plus, Trash2, ChevronDown, ChevronUp, FileCode, Pencil, Link, Unlink } from 'lucide-react';
 import type { Spec, ApiContract, CardSummaryForSpec } from '@/types';
 
+import { useSpecCollectionEditor } from './useSpecCollectionEditor';
+import { SpecCollectionDraftNotice } from './SpecCollectionDraftNotice';
+
 interface ContractsTabProps {
   spec: Spec;
-  onUpdate: (contracts: ApiContract[]) => void;
+  onUpdate: (contracts: ApiContract[], expectedVersion: number) => void | Promise<void>;
+  readCurrent?: boolean;
   onSpecUpdate?: (data: Record<string, unknown>) => Promise<void>;
   specCards?: CardSummaryForSpec[];
   onLinkTask?: (contractId: string, cardId: string) => Promise<void>;
@@ -80,9 +84,14 @@ function LinkTaskPicker({ contractId, linkedIds, cards, onLink }: {
   );
 }
 
-export function ContractsTab({
+export function ContractsTab(props: ContractsTabProps) {
+  return <ContractsTabEditor key={`${props.spec.board_id}:${props.spec.id}:${props.canCreate}:${props.canEdit}`} {...props} />;
+}
+
+function ContractsTabEditor({
   spec,
   onUpdate,
+  readCurrent = true,
   onSpecUpdate,
   specCards,
   onLinkTask,
@@ -92,6 +101,7 @@ export function ContractsTab({
   canDelete = true,
   canLinkTask = true,
 }: ContractsTabProps) {
+  const editor = useSpecCollectionEditor(spec, readCurrent);
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -151,15 +161,16 @@ export function ContractsTab({
     notes: formNotes.trim() || null,
   });
 
-  const handleAdd = () => {
+  const handleAdd = async () => {
     if (!isFormValid) return;
     const id = `ac_${Date.now()}`;
-    onUpdate([...(spec.api_contracts || []), buildContract(id)]);
+    if (missing.length || !canCreate || !await editor.save(version => onUpdate([...(spec.api_contracts || []), buildContract(id)], version))) return;
     setAdding(false);
     resetForm();
   };
 
   const handleEdit = (contract: ApiContract) => {
+    if (!canEdit || !editor.begin()) return;
     setEditingId(contract.id);
     setFormType(contract.contract_type);
     setFormMethod(contract.method || 'GET');
@@ -173,16 +184,16 @@ export function ContractsTab({
     setFormNotes(contract.notes || '');
   };
 
-  const handleSaveEdit = () => {
+  const handleSaveEdit = async () => {
     if (!editingId || !isFormValid) return;
-    onUpdate((spec.api_contracts || []).map((c) => c.id === editingId ? buildContract(editingId) : c));
+    if (removed || missing.length || !canEdit || !await editor.save(version => onUpdate((spec.api_contracts || []).map((c) => c.id === editingId ? buildContract(editingId) : c), version))) return;
     setEditingId(null);
     resetForm();
   };
 
-  const handleRemove = (id: string) => {
+  const handleRemove = async (id: string) => {
     if (!confirm('Remove this API contract?')) return;
-    onUpdate((spec.api_contracts || []).filter((c) => c.id !== id));
+    if (canDelete) await editor.save(version => onUpdate((spec.api_contracts || []).filter((c) => c.id !== id), version), true);
   };
 
   const toggleFR = (fr: string) => {
@@ -198,9 +209,15 @@ export function ContractsTab({
   };
 
   const isFormValid = (formType !== 'http' || (ALL_METHODS.includes(formMethod) && !!formPath.trim())) && !!formDescription.trim();
+  const removed = !!editingId && !contracts.some(item => item.id === editingId);
+  const currentContract = contracts.find(item => item.id === editingId);
+  const missing = [
+    ...formLinkedFRs.filter(id => !frs.some(fr => fr.id === id && (fr.status || 'active') === 'active')),
+    ...formLinkedBRs.filter(id => !brs.some(br => br.id === id && (br.status || 'active') === 'active')),
+  ];
 
   const renderForm = (onSubmit: () => void, submitLabel: string, onCancel: () => void) => (
-    <div className="border border-cyan-200 dark:border-cyan-700 rounded-lg p-3 space-y-2 bg-cyan-50/50 dark:bg-cyan-900/10">
+    <fieldset disabled={editor.saving} className="border border-cyan-200 dark:border-cyan-700 rounded-lg p-3 space-y-2 bg-cyan-50/50 dark:bg-cyan-900/10">
       <div className="flex gap-2">
         <select aria-label="Contract type" value={formType}
           onChange={(event) => setFormType(event.target.value as ApiContract['contract_type'])}
@@ -320,14 +337,18 @@ export function ContractsTab({
         </div>
       )}
       <div className="flex justify-end gap-2">
-        <button onClick={onCancel} className="btn btn-secondary text-xs">Cancel</button>
-        <button onClick={onSubmit} disabled={!isFormValid} className="btn btn-primary text-xs">{submitLabel}</button>
+        <button onClick={() => { editor.cancel(); onCancel(); }} className="btn btn-secondary text-xs">Cancel</button>
+        <button onClick={onSubmit} disabled={!isFormValid || editor.blocked || removed || missing.length > 0} className="btn btn-primary text-xs">{submitLabel}</button>
       </div>
-    </div>
+    </fieldset>
   );
 
   return (
     <div className="space-y-4">
+      <SpecCollectionDraftNotice editor={editor} active={adding || !!editingId} removed={removed} missing={missing}
+        currentText={currentContract && [currentContract.contract_type, currentContract.method, currentContract.path, currentContract.description, currentContract.notes].filter(Boolean).join('\n')}
+        onRemoveMissing={() => { setFormLinkedFRs(formLinkedFRs.filter(id => !missing.includes(id))); setFormLinkedBRs(formLinkedBRs.filter(id => !missing.includes(id))); }} />
+      {removed && renderForm(handleSaveEdit, 'Save', () => { setEditingId(null); resetForm(); })}
       {/* Contract Task Linkage Coverage */}
       {contracts.length > 0 && (
         <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-3">
@@ -420,7 +441,7 @@ export function ContractsTab({
               )}
               <button
                 onClick={(e) => { e.stopPropagation(); handleEdit(contract); }}
-                disabled={!canEdit}
+                disabled={!canEdit || editor.saving || !readCurrent}
                 className={`p-0.5 ${canEdit ? 'text-gray-400 hover:text-blue-500' : 'text-gray-300 cursor-not-allowed'}`}
                 title={canEdit ? 'Edit' : 'Requires spec.structured_entity.api_contract.update'}
               >
@@ -428,7 +449,7 @@ export function ContractsTab({
               </button>
               <button
                 onClick={(e) => { e.stopPropagation(); handleRemove(contract.id); }}
-                disabled={!canDelete}
+                disabled={!canDelete || editor.saving || !readCurrent || adding || !!editingId}
                 className={`p-0.5 ${canDelete ? 'text-gray-400 hover:text-red-500' : 'text-gray-300 cursor-not-allowed'}`}
                 title={canDelete ? 'Remove' : 'Requires spec.structured_entity.api_contract.revoke'}
               >
@@ -567,8 +588,8 @@ export function ContractsTab({
       ) : (
         !editingId && (
           <button
-            onClick={() => setAdding(true)}
-            disabled={!canCreate}
+            onClick={() => { if (editor.begin()) setAdding(true); }}
+            disabled={!canCreate || editor.saving || !readCurrent}
             title={canCreate ? 'Add API Contract' : 'Requires spec.structured_entity.api_contract.create'}
             className={`flex items-center gap-1 text-sm ${canCreate ? 'text-cyan-600 dark:text-cyan-400 hover:text-cyan-800 dark:hover:text-cyan-300' : 'text-gray-300 cursor-not-allowed'}`}
           >

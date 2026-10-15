@@ -1722,13 +1722,13 @@ export function SpecModal({
         ack_token: ackToken,
       });
       if (!acknowledged.success) {
-        throw new Error(acknowledged.error_message || 'Structured operation failed');
+        throw specEntityMutationError(acknowledged, 'Structured operation failed');
       }
       return acknowledged.spec_version;
     }
 
     if (!result.success) {
-      throw new Error(result.error_message || 'Structured operation failed');
+      throw specEntityMutationError(result, 'Structured operation failed');
     }
     return result.spec_version;
   };
@@ -1754,10 +1754,15 @@ export function SpecModal({
     field: StructuredCollectionField,
     currentItems: StructuredObjectEntity[] | null,
     nextItems: StructuredObjectEntity[],
+    expectedVersion: number,
   ) => {
-    if (!spec) return;
+    if (!spec) throw new Error('Current Spec is unavailable.');
+    if (spec.version !== expectedVersion) {
+      throw Object.assign(new Error('The Spec changed. Review the current base before saving.'), { code: 'version_conflict' });
+    }
+    const completed: string[] = [];
     try {
-      let version: number | null = spec.version;
+      let version: number | null = expectedVersion;
       const entityType = STRUCTURED_ENTITY_BY_FIELD[field];
       const currentById = new Map((currentItems || []).map((item) => [item.id, item]));
       const nextById = new Map(nextItems.map((item) => [item.id, item]));
@@ -1769,6 +1774,7 @@ export function SpecModal({
         }
         if (!nextById.has(current.id)) {
           version = await applyImpactAwareOperation(entityType, current.id, 'revoke', version);
+          completed.push(`revoke ${current.id}`);
         }
       }
 
@@ -1776,8 +1782,9 @@ export function SpecModal({
         const current = currentById.get(next.id);
         if (!current) {
           const result = await api.createSpecEntity(specId, entityType, stableEntityPayload(next), version);
-          if (!result.success) throw new Error(result.error_message || 'Structured create failed');
+          if (!result.success) throw specEntityMutationError(result, 'Structured create failed');
           version = result.spec_version;
+          completed.push(`create ${next.id}`);
           continue;
         }
 
@@ -1796,17 +1803,19 @@ export function SpecModal({
             const result = await api.operateSpecEntity(specId, entityType, next.id, 'restore', {
               expected_spec_version: version,
             });
-            if (!result.success) throw new Error(result.error_message || 'Structured restore failed');
+            if (!result.success) throw specEntityMutationError(result, 'Structured restore failed');
             version = result.spec_version;
           }
+          completed.push(`${nextStatus} ${next.id}`);
           delete currentPayload.status;
           delete nextPayload.status;
         }
 
         if (JSON.stringify(currentPayload) !== JSON.stringify(nextPayload)) {
           const result = await api.updateSpecEntity(specId, entityType, next.id, nextPayload, version);
-          if (!result.success) throw new Error(result.error_message || 'Structured update failed');
+          if (!result.success) throw specEntityMutationError(result, 'Structured update failed');
           version = result.spec_version;
+          completed.push(`update ${next.id}`);
         }
       }
 
@@ -1818,14 +1827,20 @@ export function SpecModal({
         version = await applyImpactAwareOperation(entityType, '__collection__', 'reorder', version, {
           ordered_entity_ids: nextIds,
         });
+        completed.push('reorder');
       }
 
-      await reloadSpecAfterStructuredEdit();
     } catch (error) {
-      if ((error as Error).message !== 'Operation cancelled') {
-        toast.error((error as Error).message || 'Failed to update');
+      if (completed.length) {
+        try { await reloadSpecAfterStructuredEdit(); } catch { /* Preserve the confirmed write report even if reading fails. */ }
+        throw Object.assign(new Error(`Some changes were saved (${completed.join(', ')}). ${error instanceof Error ? error.message : 'The remaining change failed.'} Your draft is preserved. Refresh and reopen the editor to review the saved state before another submission.`), { code: 'partial_collection_write' });
       }
+      throw error;
     }
+    // Writes succeeded. A subsequent read failure must never offer another create.
+    if (currentSpecId.current !== specId) return;
+    try { await reloadSpecAfterStructuredEdit(); }
+    catch { toast.error('Changes saved. Refresh the Spec to see its current state.'); }
   };
 
   const boardSettings = (currentBoard?.settings || {}) as BoardSettings;
@@ -1835,9 +1850,9 @@ export function SpecModal({
   const [workspaceSyncError, setWorkspaceSyncError] = useState<string | null>(null);
   const [workspaceReadPending, setWorkspaceReadPending] = useState(false);
   const workspaceLoadGeneration = useRef(0);
-  // Expand only to editors whose native write base is preserved. The remaining
-  // Spec consumers are integrated after their own draft/read protections.
-  const validationLive = ['validation', 'frs', 'acs'].includes(activeTab) || showSubmitValidationModal;
+  // IR and Decisions also mount classification/inspection writers. Protect
+  // those nested drafts before subscribing their tabs, along with scenarios.
+  const validationLive = ['validation', 'frs', 'acs', 'rules', 'contracts', 'ors', 'trs'].includes(activeTab) || showSubmitValidationModal;
   useEffect(() => {
     setPermissionCheckPending(false);
     setWorkspaceReadPending(false);
@@ -2463,11 +2478,12 @@ export function SpecModal({
           {activeTab === 'rules' && spec && (
             <RulesTab
               spec={spec}
+              readCurrent={!permissionCheckPending && !workspaceReadPending && !workspaceSyncError && syncState === 'current'}
               canCreate={canStructured('business_rule', 'create')}
               canEdit={canStructured('business_rule', 'update')}
               canDelete={canStructured('business_rule', 'revoke')}
-              onUpdate={async (rules) => {
-                await syncStructuredCollection('business_rules', spec.business_rules || [], rules);
+              onUpdate={async (rules, expectedVersion) => {
+                await syncStructuredCollection('business_rules', spec.business_rules || [], rules, expectedVersion);
               }}
               onSpecUpdate={async (patch) => {
                 try {
@@ -2512,12 +2528,13 @@ export function SpecModal({
           {activeTab === 'contracts' && spec && (
             <ContractsTab
               spec={spec}
+              readCurrent={!permissionCheckPending && !workspaceReadPending && !workspaceSyncError && syncState === 'current'}
               canCreate={canStructured('api_contract', 'create')}
               canEdit={canStructured('api_contract', 'update')}
               canDelete={canStructured('api_contract', 'revoke')}
               canLinkTask={canStructured('api_contract', 'link_task')}
-              onUpdate={async (contracts) => {
-                await syncStructuredCollection('api_contracts', spec.api_contracts || [], contracts);
+              onUpdate={async (contracts, expectedVersion) => {
+                await syncStructuredCollection('api_contracts', spec.api_contracts || [], contracts, expectedVersion);
               }}
               onSpecUpdate={async (data) => {
                 try {
@@ -2540,6 +2557,7 @@ export function SpecModal({
             <>
             <IntegrationRequirementsTab
               spec={spec}
+              readCurrent={!permissionCheckPending && !workspaceReadPending && !workspaceSyncError && syncState === 'current'}
               canCreate={canCreateIR}
               canEdit={canEditIR}
               canDelete={canDeleteIR}
@@ -2548,8 +2566,8 @@ export function SpecModal({
               focusEditId={detailsStructuredEditor?.tab === 'irs' && detailsStructuredEditor.mode === 'edit' ? detailsStructuredEditor.entityId || null : null}
               focusCreateToken={detailsStructuredEditor?.tab === 'irs' && detailsStructuredEditor.mode === 'add' ? detailsStructuredEditor.token : null}
               onFocusHandled={clearDetailsStructuredEditor}
-              onUpdate={async (requirements) => {
-                await syncStructuredCollection('integration_requirements', spec.integration_requirements || [], requirements);
+              onUpdate={async (requirements, expectedVersion) => {
+                await syncStructuredCollection('integration_requirements', spec.integration_requirements || [], requirements, expectedVersion);
               }}
               onSpecUpdate={async (patch) => {
                 try {
@@ -2588,6 +2606,7 @@ export function SpecModal({
           {activeTab === 'ors' && spec && canReadOR && (
             <ObservabilityRequirementsTab
               spec={spec}
+              readCurrent={!permissionCheckPending && !workspaceReadPending && !workspaceSyncError && syncState === 'current'}
               canCreate={canCreateOR}
               canEdit={canEditOR}
               canDelete={canDeleteOR}
@@ -2596,8 +2615,8 @@ export function SpecModal({
               focusEditId={detailsStructuredEditor?.tab === 'ors' && detailsStructuredEditor.mode === 'edit' ? detailsStructuredEditor.entityId || null : null}
               focusCreateToken={detailsStructuredEditor?.tab === 'ors' && detailsStructuredEditor.mode === 'add' ? detailsStructuredEditor.token : null}
               onFocusHandled={clearDetailsStructuredEditor}
-              onUpdate={async (requirements) => {
-                await syncStructuredCollection('observability_requirements', spec.observability_requirements || [], requirements);
+              onUpdate={async (requirements, expectedVersion) => {
+                await syncStructuredCollection('observability_requirements', spec.observability_requirements || [], requirements, expectedVersion);
               }}
               onSpecUpdate={async (patch) => {
                 try {
@@ -2619,6 +2638,7 @@ export function SpecModal({
           {activeTab === 'trs' && spec && (
             <TechnicalRequirementsTab
               spec={spec}
+              readCurrent={!permissionCheckPending && !workspaceReadPending && !workspaceSyncError && syncState === 'current'}
               canCreate={canStructured('technical_requirement', 'create')}
               canEdit={canStructured('technical_requirement', 'update')}
               canDelete={canStructured('technical_requirement', 'revoke')}
@@ -2626,9 +2646,9 @@ export function SpecModal({
               focusEditId={detailsStructuredEditor?.tab === 'trs' && detailsStructuredEditor.mode === 'edit' ? detailsStructuredEditor.entityId || null : null}
               focusCreateToken={detailsStructuredEditor?.tab === 'trs' && detailsStructuredEditor.mode === 'add' ? detailsStructuredEditor.token : null}
               onFocusHandled={clearDetailsStructuredEditor}
-              onUpdate={async (trs) => {
+              onUpdate={async (trs, expectedVersion) => {
                 const currentTRs = spec.technical_requirements || [];
-                await syncStructuredCollection('technical_requirements', currentTRs, trs);
+                await syncStructuredCollection('technical_requirements', currentTRs, trs, expectedVersion);
               }}
               specCards={spec.cards || []}
               onLinkTask={async (trId, cardId) => {
@@ -2650,6 +2670,7 @@ export function SpecModal({
           {activeTab === 'decisions' && spec && (
             <DecisionsTab
               spec={spec}
+              readCurrent={!permissionCheckPending && !workspaceReadPending && !workspaceSyncError && syncState === 'current'}
               focusInspectionId={readinessReference?.startsWith('inspection:') ? readinessReference.slice('inspection:'.length) : null}
               canCreate={canStructured('decision', 'create')}
               canEdit={canStructured('decision', 'update')}
@@ -2661,8 +2682,8 @@ export function SpecModal({
               focusEditId={detailsStructuredEditor?.tab === 'decisions' && detailsStructuredEditor.mode === 'edit' ? detailsStructuredEditor.entityId || null : null}
               focusCreateToken={detailsStructuredEditor?.tab === 'decisions' && detailsStructuredEditor.mode === 'add' ? detailsStructuredEditor.token : null}
               onFocusHandled={clearDetailsStructuredEditor}
-              onUpdate={async (decisions) => {
-                await syncStructuredCollection('decisions', spec.decisions || [], decisions);
+              onUpdate={async (decisions, expectedVersion) => {
+                await syncStructuredCollection('decisions', spec.decisions || [], decisions, expectedVersion);
               }}
               onSpecUpdate={async (patch) => {
                 try {

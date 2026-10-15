@@ -35,6 +35,10 @@ const apiMock = vi.hoisted(() => ({
   getArchitectureClassifications: vi.fn(),
   getRequirementVerification: vi.fn(),
   updateSpecEntity: vi.fn(),
+  createSpecEntity: vi.fn(),
+  previewSpecEntityImpact: vi.fn(),
+  operateSpecEntity: vi.fn(),
+  getDecisionReviews: vi.fn(),
   updateSpec: vi.fn(),
 }));
 const permissionMock = vi.hoisted(() => ({
@@ -271,6 +275,79 @@ async function openCriteria() {
 }
 
 describe('SpecModal validation navigation', () => {
+  it.each(['Integration', 'Decisions'])('defers external refresh of %s until its nested writer is protected', async tab => {
+    apiMock.getSpec.mockResolvedValue(baseSpec);
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('tab', { name: 'Requirements & Decisions' }));
+    fireEvent.click(screen.getByRole('tab', { name: tab }));
+    expect(workspaceWatch.options?.boardId).toBeUndefined();
+  });
+
+  it('preserves a Business draft after a native refusal and reviews a watched base before retrying', async () => {
+    const rule = { id: 'br-live', title: 'Saved rule', rule: 'Normative condition', when: 'Requested', then: 'Return orders', status: 'active' as const };
+    const initial = { ...baseSpec, business_rules: [rule] };
+    apiMock.getSpec.mockResolvedValue(initial);
+    apiMock.updateSpecEntity.mockResolvedValueOnce({ success: false, error_code: 'version_conflict', error_message: 'Native business version conflict' })
+      .mockResolvedValue({ success: true, spec_version: 6 });
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('tab', { name: 'Requirements & Decisions' }));
+    fireEvent.click(screen.getByRole('tab', { name: /^Business/ }));
+    expect(workspaceWatch.options?.boardId).toBe(baseSpec.board_id);
+    fireEvent.click(screen.getByTitle('Edit'));
+    fireEvent.change(screen.getByPlaceholderText('Rule title'), { target: { value: 'Local rule draft' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await screen.findByText('Native business version conflict');
+    expect(screen.getByDisplayValue('Local rule draft')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    apiMock.getSpec.mockResolvedValue({ ...initial, version: 5, business_rules: [{ ...rule, title: 'Remote saved rule' }] });
+    await act(async () => workspaceWatch.options!.onChange({ subjects: [], initial: false, authorityChanged: false }));
+    expect(screen.getByDisplayValue('Local rule draft')).toBeInTheDocument();
+    expect(screen.getByText(/Remote saved rule/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Review current base' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(apiMock.updateSpecEntity).toHaveBeenCalledTimes(2));
+    expect(apiMock.updateSpecEntity).toHaveBeenLastCalledWith(baseSpec.id, 'business_rule', rule.id, expect.objectContaining({ title: 'Local rule draft' }), 5);
+  });
+
+  it('does not offer another Business create when only the confirmed-write refresh fails', async () => {
+    apiMock.getSpec.mockResolvedValueOnce(baseSpec).mockRejectedValue(new Error('Read unavailable'));
+    apiMock.createSpecEntity.mockResolvedValue({ success: true, spec_version: 5 });
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('tab', { name: 'Requirements & Decisions' }));
+    fireEvent.click(screen.getByRole('tab', { name: /^Business/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add Business Rule' }));
+    for (const [placeholder, value] of [['Rule title', 'New rule'], ['Rule description — what must be enforced', 'Guard'], ['When: condition...', 'Requested'], ['Then: action/result...', 'Result']]) {
+      fireEvent.change(screen.getByPlaceholderText(placeholder), { target: { value } });
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Add Rule' }));
+    await waitFor(() => expect(screen.queryByDisplayValue('New rule')).not.toBeInTheDocument());
+    expect(apiMock.createSpecEntity).toHaveBeenCalledOnce();
+    expect(apiMock.createSpecEntity).toHaveBeenCalledWith(baseSpec.id, 'business_rule', expect.objectContaining({ title: 'New rule' }), 4);
+  });
+
+  it('reports confirmed supersession without retrying a failed Decision create', async () => {
+    const decision = { id: 'dec-live', title: 'Existing choice', rationale: 'Reason', status: 'active' as const };
+    apiMock.getSpec.mockResolvedValue({ ...baseSpec, decisions: [decision] });
+    apiMock.getDecisionReviews.mockResolvedValue({ board_id: baseSpec.board_id, spec_id: baseSpec.id, decisions: [], complete: true });
+    apiMock.previewSpecEntityImpact.mockResolvedValue({ impact_report: { impacted_refs: [] } });
+    apiMock.operateSpecEntity.mockResolvedValue({ success: true, spec_version: 5 });
+    apiMock.createSpecEntity.mockResolvedValue({ success: false, error_code: 'version_conflict', error_message: 'Changed during create' });
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('tab', { name: 'Requirements & Decisions' }));
+    fireEvent.click(screen.getByRole('tab', { name: /^Decisions/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add Decision' }));
+    fireEvent.change(screen.getByPlaceholderText("Decision title — e.g. 'Use embedded graph storage over an external graph database'"), { target: { value: 'Successor' } });
+    fireEvent.change(screen.getByPlaceholderText('Rationale — why this choice was made'), { target: { value: 'New information' } });
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: decision.id } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Decision' }));
+    await screen.findByText(/Some changes were saved \(superseded dec-live\)/);
+    expect(screen.getByDisplayValue('Successor')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add Decision' })).toBeDisabled();
+    expect(apiMock.operateSpecEntity).toHaveBeenCalledOnce();
+    expect(apiMock.createSpecEntity).toHaveBeenCalledOnce();
+    expect(apiMock.createSpecEntity).toHaveBeenCalledWith(baseSpec.id, 'decision', expect.objectContaining({ title: 'Successor' }), 5);
+  });
+
   it.each(['draft', 'review', 'approved', 'validated', 'in_progress', 'done'] as SpecStatus[])(
     'offers delivery override only in authorized Draft: %s', async status => {
       apiMock.updateSpec.mockResolvedValue({ ...baseSpec, skip_delivery_evidence: true });
