@@ -1,7 +1,8 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { ScenarioVerificationMethodEditor } from '../ScenarioVerificationMethodEditor';
 import type { TestScenario } from '@/types';
+import { AuthenticatedFetchError } from '@/lib/authFetch';
 const api = vi.hoisted(() => ({ updateScenarioVerificationMethod: vi.fn() }));
 vi.mock('@/services/api', () => ({ useDashboardApi: () => api }));
 const onSaved = vi.fn();
@@ -58,13 +59,68 @@ it('never resubmits a confirmed mutation after reload fails', async () => {
   await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(2));
   expect(api.updateScenarioVerificationMethod).toHaveBeenCalledOnce();
 });
-it('prevents double writes and ignores a completion from an obsolete version', async () => {
+it('prevents double writes and ignores a completion from another Spec', async () => {
   let finish!: (value: unknown) => void;
   api.updateScenarioVerificationMethod.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
   const view = render(<ScenarioVerificationMethodEditor {...props()} />); choose('automated_test');
   const button = screen.getByRole('button', { name: 'Save verification method' }); fireEvent.click(button); fireEvent.click(button);
   expect(api.updateScenarioVerificationMethod).toHaveBeenCalledOnce();
-  view.rerender(<ScenarioVerificationMethodEditor {...props({ version: 8 })} />); finish({ scenario_id: 'ts' });
+  view.rerender(<ScenarioVerificationMethodEditor {...props({ specId: 'other' })} />); finish({ scenario_id: 'ts' });
   await Promise.resolve(); expect(onSaved).not.toHaveBeenCalled();
   expect(screen.getByLabelText('Verification method ts')).toHaveValue('');
+});
+
+it('preserves a selected method across a new version until the author reviews the base', async () => {
+  const view = render(<ScenarioVerificationMethodEditor {...props()} />); choose('inspection');
+  view.rerender(<ScenarioVerificationMethodEditor {...props({ version: 8, scenario: { ...scenario, verification_method: 'static_analysis' } })} />);
+  expect(screen.getByLabelText('Verification method ts')).toHaveValue('inspection');
+  expect(screen.getByRole('button', { name: 'Save verification method' })).toBeDisabled();
+  expect(screen.getByText(/Current saved method: static_analysis/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Review method base' })); save();
+  await waitFor(() => expect(onSaved).toHaveBeenCalledOnce());
+  expect(api.updateScenarioVerificationMethod).toHaveBeenCalledExactlyOnceWith('board', 'spec', 'ts', 'inspection', 8);
+});
+
+it('keeps a native version conflict blocked until a newer valid read', async () => {
+  api.updateScenarioVerificationMethod.mockRejectedValueOnce(new AuthenticatedFetchError({ status: 409, message: 'spec_version_conflict' }));
+  const view = render(<ScenarioVerificationMethodEditor {...props()} />); choose('inspection'); save();
+  expect(await screen.findByRole('button', { name: 'Review method base' })).toBeDisabled();
+  view.rerender(<ScenarioVerificationMethodEditor {...props({ version: 8, readCurrent: false })} />);
+  expect(screen.getByLabelText('Verification method ts')).toHaveValue('inspection');
+  expect(screen.getByRole('button', { name: 'Review method base' })).toBeDisabled();
+  view.rerender(<ScenarioVerificationMethodEditor {...props({ version: 8 })} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Review method base' })); save();
+  await waitFor(() => expect(onSaved).toHaveBeenCalledOnce());
+  expect(api.updateScenarioVerificationMethod.mock.calls[1][4]).toBe(8);
+});
+
+it('does not confuse an unrelated 409 with a version conflict', async () => {
+  api.updateScenarioVerificationMethod.mockRejectedValueOnce(new AuthenticatedFetchError({ status: 409, message: 'Scenario is locked' }));
+  render(<ScenarioVerificationMethodEditor {...props()} />); choose('inspection'); save();
+  expect(await screen.findByRole('alert')).toHaveTextContent('Scenario is locked');
+  expect(screen.queryByRole('button', { name: 'Review method base' })).not.toBeInTheDocument();
+  expect(screen.getByLabelText('Verification method ts')).toHaveValue('inspection');
+});
+
+it('confirms a completed write even when the same Spec receives another revision while it is pending', async () => {
+  let finish!: (value: unknown) => void;
+  api.updateScenarioVerificationMethod.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  const view = render(<ScenarioVerificationMethodEditor {...props()} />); choose('inspection'); save();
+  view.rerender(<ScenarioVerificationMethodEditor {...props({ version: 8 })} />);
+  await act(async () => finish({ scenario_id: 'ts' }));
+  expect(onSaved).toHaveBeenCalledOnce();
+  expect(screen.getByRole('button', { name: 'Save verification method' })).toBeDisabled();
+  expect(api.updateScenarioVerificationMethod).toHaveBeenCalledOnce();
+});
+
+it('starts another edit only from a newly read saved base', async () => {
+  const view = render(<ScenarioVerificationMethodEditor {...props()} />); choose('inspection'); save();
+  await waitFor(() => expect(onSaved).toHaveBeenCalledOnce());
+  expect(screen.getByRole('button', { name: 'Edit current method' })).toBeDisabled();
+  view.rerender(<ScenarioVerificationMethodEditor {...props({ version: 8, scenario: { ...scenario, verification_method: 'inspection' } })} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Edit current method' }));
+  expect(screen.getByLabelText('Verification method ts')).toHaveValue('inspection');
+  choose('static_analysis'); save();
+  await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(2));
+  expect(api.updateScenarioVerificationMethod.mock.calls[1][4]).toBe(8);
 });
