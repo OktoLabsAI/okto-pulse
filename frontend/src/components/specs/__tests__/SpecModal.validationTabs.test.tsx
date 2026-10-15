@@ -24,6 +24,8 @@ vi.mock('@/hooks/useWorkspaceRevisions', () => ({
 
 const apiMock = vi.hoisted(() => ({
   getSpec: vi.fn(),
+  getIdeation: vi.fn(),
+  getRefinement: vi.fn(),
   getProjectStructure: vi.fn(),
   mutateProjectStructure: vi.fn(),
   getCodeTraceabilityProjection: vi.fn(),
@@ -191,8 +193,8 @@ vi.mock('../SpecValidationHistoryPanel', () => ({
 }));
 
 vi.mock('../SpecCoveragePanel', () => ({
-  SpecCoveragePanel: ({ onSkipDeliveryEvidenceChange }: { onSkipDeliveryEvidenceChange?: (value: boolean) => void }) => (
-    <div data-testid="coverage-panel">
+  SpecCoveragePanel: ({ revision, onSkipDeliveryEvidenceChange }: { revision: string; onSkipDeliveryEvidenceChange?: (value: boolean) => void }) => (
+    <div data-testid="coverage-panel" data-revision={revision}>
       {onSkipDeliveryEvidenceChange && <button onClick={() => onSkipDeliveryEvidenceChange(true)}>Skip delivery gate</button>}
     </div>
   ),
@@ -278,6 +280,51 @@ async function openCriteria() {
 }
 
 describe('SpecModal validation navigation', () => {
+  it('invalidates Coverage after a watched Card change without a Spec version or timestamp bump', async () => {
+    renderSpec('draft');
+    fireEvent.click(await screen.findByRole('tab', { name: 'Coverage' }));
+    const panel = screen.getByTestId('coverage-panel');
+    const previous = panel.getAttribute('data-revision');
+    expect(workspaceWatch.options?.boardId).toBe(baseSpec.board_id);
+    await act(async () => workspaceWatch.options!.onChange({ subjects: [{ subject_type: 'spec', subject_id: baseSpec.id }], initial: false, authorityChanged: false }));
+    expect(panel.getAttribute('data-revision')).not.toBe(previous);
+    expect(screen.getByRole('tab', { name: 'Coverage' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('makes stale Coverage visible and withholds its override until the workspace recovers', async () => {
+    renderSpec('draft');
+    fireEvent.click(await screen.findByRole('tab', { name: 'Coverage' }));
+    expect(screen.getByRole('button', { name: 'Skip delivery gate' })).toBeInTheDocument();
+    apiMock.getSpec.mockRejectedValueOnce(new Error('Read failed'));
+    await act(async () => workspaceWatch.options!.onChange({ subjects: [], initial: false, authorityChanged: false }));
+    expect(screen.queryByRole('button', { name: 'Skip delivery gate' })).not.toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('current data could not be loaded');
+    fireEvent.click(screen.getByRole('button', { name: 'Reload current workspace' }));
+    await screen.findByRole('button', { name: 'Skip delivery gate' });
+    expect(apiMock.updateSpec).not.toHaveBeenCalled();
+  });
+
+  it('refreshes derived Card references and origin after an external change without changing the open subtab', async () => {
+    const card = { id: 'card-live', title: 'Original Card title', status: 'not_started', priority: 'none', assignee_id: null };
+    const initial = { ...baseSpec, ideation_id: 'idea-live', cards: [card] };
+    apiMock.getSpec.mockResolvedValue(initial);
+    apiMock.getIdeation.mockResolvedValue({ id: 'idea-live', title: 'Original origin', version: 1 });
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('tab', { name: /^References/ }));
+    const references = within(screen.getByTestId('spec-references-panel'));
+    await references.findByText('Original origin');
+    fireEvent.click(screen.getByRole('tab', { name: /^Derived cards/ }));
+    await screen.findByText('Original Card title');
+    apiMock.getSpec.mockResolvedValue({ ...initial, cards: [{ ...card, title: 'Card changed through MCP' }] });
+    apiMock.getIdeation.mockResolvedValue({ id: 'idea-live', title: 'Current origin', version: 2 });
+    await act(async () => workspaceWatch.options!.onChange({ subjects: [], initial: false, authorityChanged: false }));
+    await screen.findByText('Card changed through MCP');
+    expect(screen.getByRole('tab', { name: /^Derived cards/ })).toHaveAttribute('aria-selected', 'true');
+    fireEvent.click(screen.getByRole('tab', { name: 'Origin' }));
+    await references.findByText('Current origin');
+    expect(screen.queryByText('Original origin')).not.toBeInTheDocument();
+  });
+
   const treeNode: ProjectStructureNode = {
     id: 'psn_live', name: 'src', note: 'Original project note', kind: 'folder', parent_id: null, position: 0,
     classification: 'to_be', state: 'planned', status: 'active', interpretation_limit: null,

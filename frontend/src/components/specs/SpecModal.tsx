@@ -2023,7 +2023,7 @@ export function SpecModal({
   const [workspaceSyncError, setWorkspaceSyncError] = useState<string | null>(null);
   const [workspaceReadPending, setWorkspaceReadPending] = useState(false);
   const workspaceLoadGeneration = useRef(0);
-  const validationLive = ['validation', 'frs', 'acs', 'rules', 'contracts', 'ors', 'trs', 'irs', 'decisions', 'tests', 'project-structure'].includes(activeTab) || showSubmitValidationModal;
+  const validationLive = ['validation', 'frs', 'acs', 'rules', 'contracts', 'ors', 'trs', 'irs', 'decisions', 'tests', 'project-structure', 'coverage', 'references'].includes(activeTab) || showSubmitValidationModal;
   useEffect(() => {
     setPermissionCheckPending(false);
     setWorkspaceReadPending(false);
@@ -2059,7 +2059,7 @@ export function SpecModal({
             setSpec(null); setShowSubmitValidationModal(false); onClose(); return;
           }
         }
-        await reloadSpecSnapshot({ includeRelated: false, notifyChanged: false, showLoading: false });
+        await reloadSpecSnapshot({ includeRelated: activeTab === 'references', notifyChanged: false, showLoading: false });
         if (!current()) return;
         setValidationHistoryRefreshKey(value => value + 1);
         setTestScenarioPolicyRefreshKey(value => value + 1);
@@ -2073,20 +2073,20 @@ export function SpecModal({
       }
     },
   });
-  const reloadProjectStructureWorkspace = async (minimumVersion = spec?.version ?? 0) => {
+  const reloadWorkspaceSnapshot = async (minimumVersion = spec?.version ?? 0) => {
     const generation = ++workspaceLoadGeneration.current;
     const id = specId;
     const current = () => generation === workspaceLoadGeneration.current && currentSpecId.current === id;
     setWorkspaceReadPending(true);
     try {
-      const updated = await reloadSpecSnapshot({ includeRelated: false, notifyChanged: false, showLoading: false, minimumVersion });
+      const updated = await reloadSpecSnapshot({ includeRelated: activeTab === 'references', notifyChanged: false, showLoading: false, minimumVersion });
       if (!updated || !current()) throw new Error('The workspace reload was superseded. Refresh to confirm its current state.');
       setWorkspaceSyncError(null);
     } catch (error) {
       if (current()) {
         if (error instanceof AuthenticatedFetchError && [401, 403, 404].includes(error.status)) {
           setSpec(null); onClose();
-        } else setWorkspaceSyncError('The current Spec could not be loaded. Your project structure draft is preserved; refresh to retry.');
+        } else setWorkspaceSyncError('The current Spec could not be loaded. Unsaved input is preserved; refresh to retry.');
       }
       throw error;
     } finally {
@@ -2445,6 +2445,13 @@ export function SpecModal({
         {/* Body */}
         <div className="flex-1 overflow-y-auto px-6 py-4">
           <MissingLinkNotice context={spec.missing_link_context} />
+          {['coverage', 'references'].includes(activeTab) && (workspaceSyncError || ['offline', 'unavailable'].includes(syncState)) && (
+            <div role="status" className="mb-3 rounded-lg border border-amber-300 p-3 text-xs text-amber-700 dark:text-amber-300">
+              <p>{workspaceSyncError || 'Live updates are unavailable. Displayed data may be out of date.'}</p>
+              <button type="button" className="btn btn-secondary mt-2 text-xs" disabled={workspaceReadPending || permissionCheckPending}
+                onClick={() => { void reloadWorkspaceSnapshot().then(() => setValidationHistoryRefreshKey(value => value + 1)).catch(() => { /* Keep the visible recovery state. */ }); }}>Reload current workspace</button>
+            </div>
+          )}
           <AccessibleTabPanel
             idBase={`spec-${specId}`}
             tabId={primaryTab}
@@ -2577,14 +2584,14 @@ export function SpecModal({
             />
           )}
           {activeTab === 'coverage' && spec.id === specId && (canReadCoverage || canReadCodeTraceability) && (
-            <SpecCoveragePanel boardId={spec.board_id} specId={spec.id} revision={`${spec.edition}:${spec.version}:${spec.updated_at}`}
+            <SpecCoveragePanel boardId={spec.board_id} specId={spec.id} revision={`${spec.edition}:${spec.version}:${spec.updated_at}:${validationHistoryRefreshKey}`}
               focusExceptionId={readinessReference?.startsWith('exception:') ? readinessReference.slice('exception:'.length) : null}
               canReadSummary={canReadCoverage} canReadImplementation={canReadCodeTraceability}
               skipDeliveryEvidence={spec.skip_delivery_evidence}
-              onSkipDeliveryEvidenceChange={canEditCodeEvidenceCoverage ? async (value) => {
+              onSkipDeliveryEvidenceChange={canEditCodeEvidenceCoverage && !permissionCheckPending && !workspaceReadPending && !workspaceSyncError && syncState === 'current' ? async (value) => {
                 try {
                   const updated = await api.updateSpec(specId, { skip_delivery_evidence: value } as any);
-                  setSpec(updated);
+                  if (currentSpecId.current === specId && updated.id === specId && updated.board_id === spec.board_id) setSpec(updated);
                 } catch (err) {
                   toast.error(err instanceof Error && err.message ? err.message : 'Failed to update spec');
                 }
@@ -2603,7 +2610,7 @@ export function SpecModal({
                 spec={spec}
                 refreshKey={validationHistoryRefreshKey}
                 readCurrent={!permissionCheckPending && !workspaceReadPending && !workspaceSyncError && syncState === 'current'}
-                onReload={() => reloadProjectStructureWorkspace()}
+                onReload={() => reloadWorkspaceSnapshot()}
                 onAccessLost={() => {
                   if (currentSpecId.current !== spec.id) return;
                   workspaceLoadGeneration.current += 1;
@@ -2629,7 +2636,7 @@ export function SpecModal({
                   // must reload the workspace rather than certify cached fields.
                   if (source === 'mutation' || specVersion > spec.version) {
                     if (source === 'mutation') onChanged();
-                    void reloadProjectStructureWorkspace(specVersion).catch(() => { /* Read failure is shown; never repeat the confirmed mutation. */ });
+                    void reloadWorkspaceSnapshot(specVersion).catch(() => { /* Read failure is shown; never repeat the confirmed mutation. */ });
                     return;
                   }
                   setSpec((current) => current && current.id === spec.id && current.board_id === spec.board_id
@@ -3127,7 +3134,7 @@ export function SpecModal({
                     <div className="rounded-xl border border-dashed border-gray-300 px-4 py-8 text-center dark:border-gray-700">
                       <GitBranch size={28} className="mx-auto mb-2 text-gray-300 dark:text-gray-600" />
                       <p className="text-sm text-gray-500 dark:text-gray-400">
-                        No origin is registered for this spec.
+                        {spec.ideation_id || spec.refinement_id ? 'The registered origin could not be loaded.' : 'No origin is registered for this spec.'}
                       </p>
                     </div>
                   ) : (
