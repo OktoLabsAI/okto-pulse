@@ -64,3 +64,44 @@ async def test_live_catalog_initialize_tools_list_and_manifest_agree(
     assert "okto_pulse_remove_spec_entity" in names
     assert aliases == {}
     assert "okto_pulse_ask_question" not in names
+
+
+@pytest.mark.asyncio
+async def test_initial_public_footprint_under_unchanged_budget(
+    active_runtime_registry, record_property,
+):
+    """ts_edd149c4: measure initialize/tools-list as the consumer receives them.
+
+    Core's transport-neutral parameters are not the materialized inputSchema.
+    Keep the original limits and encoding; no schema or description is stripped
+    by this test. Closed-contract fidelity remains guarded by host adapter tests.
+    """
+    tiktoken = pytest.importorskip("tiktoken")
+    transaction = register_and_freeze_community_resource_catalog(active_runtime_registry)
+    frozen, identity = transaction.require_frozen_projection()
+    host = CommunityMcpHostProvider().materialize_catalog(
+        server.mcp, resource_catalog=frozen, projection_identity=identity,
+    )
+    transaction.commit()
+    async with Client(host) as client:
+        listed = await client.list_tools()
+        instructions = client.initialize_result.instructions or ""
+
+    assert {tool.name for tool in listed} == {tool.name for tool in server.mcp.iter_tools()}
+    assert len(listed) == 285
+    assert instructions == server.mcp.instructions
+    enc = tiktoken.get_encoding("cl100k_base")
+    instructions_tokens = len(enc.encode(instructions))
+    tools_tokens = len(enc.encode("\n".join(
+        f"{tool.name}\n{tool.description or ''}\n"
+        + json.dumps(tool.inputSchema, separators=(",", ":"))
+        for tool in listed
+    )))
+    record_property("instructions_tokens", instructions_tokens)
+    record_property("tools_tokens", tools_tokens)
+    assert instructions_tokens <= 10_000
+    assert tools_tokens <= 50_800, f"tools/list metadata {tools_tokens} exceeds 50.8K guard"
+    assert instructions_tokens + tools_tokens <= 53_500, (
+        f"Combined initial footprint exceeds 53.5K guard "
+        f"(instructions={instructions_tokens}, tools={tools_tokens})"
+    )
