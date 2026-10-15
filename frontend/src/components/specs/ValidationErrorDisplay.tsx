@@ -41,6 +41,7 @@ const RESOURCE_LABELS: Record<string, string> = {
 // cognitive-readiness / test-card block.
 const GATE_TYPE_LABELS: Record<string, string> = {
   spec_validation: 'Spec Validation',
+  spec_checklist: 'Spec Checklist',
   spec_architecture_classification: 'Architecture Classification',
   spec_qualitative_evaluation: 'Qualitative Evaluation',
   test_card_completion: 'Test Card Completion',

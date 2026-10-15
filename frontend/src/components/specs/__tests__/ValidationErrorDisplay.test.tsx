@@ -3,6 +3,48 @@ import { describe, expect, it } from 'vitest';
 import { ValidationErrorDisplay, parseValidationErrorMessage } from '../ValidationErrorDisplay';
 
 describe('ValidationErrorDisplay', () => {
+  it.each([
+    {
+      code: 'spec_checklist_gate_required',
+      message: 'The blocking Spec checklist is not satisfied for the current Spec version.',
+      action: 'Complete and pass the current checklist before validating the Spec.',
+      mode: 'blocking',
+      tool: 'okto_pulse_submit_checklist_execution',
+    },
+    {
+      code: 'checklist_validation_binding_snapshot_missing',
+      message: 'The current Spec edition has no frozen Checklist configuration. Inspect the validation cycle and Board Checklist settings; an authorized reopening and admission is required before validation can continue.',
+      action: null,
+      mode: null,
+      tool: null,
+    },
+  ])('renders $code as the Checklist gate without inventing approval or repair', ({ code, message, action, mode, tool }) => {
+    const error = JSON.stringify({ detail: {
+      code, error: code, message,
+      details: {
+        gate_type: 'spec_checklist',
+        blocked_transition: 'approved->validated',
+        required_status: 'validated',
+        operator_action: action,
+        enforcement_mode: mode,
+        required_tool: tool,
+      },
+    } });
+    const parsed = parseValidationErrorMessage(error);
+    expect(parsed.structured).toBe(true);
+    expect(parsed.gateType).toBe('Spec Checklist');
+    expect(parsed.issue).toBe(message);
+    expect(parsed.blockedTransition).toBe('approved->validated');
+    expect(parsed.requiredTool).toBe(tool);
+    expect(parsed.enforcementMode).toBe(mode);
+    render(<ValidationErrorDisplay error={error} />);
+    expect(screen.getByText('Spec Checklist')).toBeInTheDocument();
+    expect(screen.getByText(message)).toBeInTheDocument();
+    if (action) expect(screen.getByText(action)).toBeInTheDocument();
+    if (tool) expect(screen.getByText(tool)).toBeInTheDocument();
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+  });
+
   it('shows architecture blocker IDs, truncation and governed revision guidance', () => {
     const error = JSON.stringify({detail: {
       error: 'spec_architecture_classification_incomplete',
