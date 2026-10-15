@@ -1841,12 +1841,9 @@ export function SpecModal({
     showLoading: false,
   });
 
-  const reloadSpecAfterDependencyMutation = async () => {
-    await reloadSpecSnapshot({
-      includeRelated: false,
-      notifyChanged: true,
-      showLoading: false,
-    });
+  const reloadSpecAfterDependencyMutation = async (minimumVersion?: number) => {
+    await reloadWorkspaceSnapshot(minimumVersion);
+    onChanged();
   };
 
   const applyImpactAwareOperation = async (
@@ -2023,7 +2020,7 @@ export function SpecModal({
   const [workspaceSyncError, setWorkspaceSyncError] = useState<string | null>(null);
   const [workspaceReadPending, setWorkspaceReadPending] = useState(false);
   const workspaceLoadGeneration = useRef(0);
-  const validationLive = ['validation', 'frs', 'acs', 'rules', 'contracts', 'ors', 'trs', 'irs', 'decisions', 'tests', 'project-structure', 'coverage', 'references'].includes(activeTab) || showSubmitValidationModal;
+  const validationLive = ['validation', 'frs', 'acs', 'rules', 'contracts', 'ors', 'trs', 'irs', 'decisions', 'tests', 'project-structure', 'coverage', 'references', 'dependencies'].includes(activeTab) || showSubmitValidationModal;
   useEffect(() => {
     setPermissionCheckPending(false);
     setWorkspaceReadPending(false);
@@ -2079,7 +2076,7 @@ export function SpecModal({
     const current = () => generation === workspaceLoadGeneration.current && currentSpecId.current === id;
     setWorkspaceReadPending(true);
     try {
-      const updated = await reloadSpecSnapshot({ includeRelated: activeTab === 'references', notifyChanged: false, showLoading: false, minimumVersion });
+      const updated = await reloadSpecSnapshot({ includeRelated: activeTab === 'references', notifyChanged: false, showLoading: false, minimumVersion: Math.max(minimumVersion, spec?.version ?? 0) });
       if (!updated || !current()) throw new Error('The workspace reload was superseded. Refresh to confirm its current state.');
       setWorkspaceSyncError(null);
     } catch (error) {
@@ -2445,7 +2442,7 @@ export function SpecModal({
         {/* Body */}
         <div className="flex-1 overflow-y-auto px-6 py-4">
           <MissingLinkNotice context={spec.missing_link_context} />
-          {['coverage', 'references'].includes(activeTab) && (workspaceSyncError || ['offline', 'unavailable'].includes(syncState)) && (
+          {['coverage', 'references', 'dependencies'].includes(activeTab) && (workspaceSyncError || ['offline', 'unavailable'].includes(syncState)) && (
             <div role="status" className="mb-3 rounded-lg border border-amber-300 p-3 text-xs text-amber-700 dark:text-amber-300">
               <p>{workspaceSyncError || 'Live updates are unavailable. Displayed data may be out of date.'}</p>
               <button type="button" className="btn btn-secondary mt-2 text-xs" disabled={workspaceReadPending || permissionCheckPending}
@@ -2727,6 +2724,14 @@ export function SpecModal({
           {activeTab === 'dependencies' && spec && canReadDependencies && (
             <SpecDependenciesTab
               boardId={spec.board_id}
+              refreshKey={validationHistoryRefreshKey}
+              readCurrent={!permissionCheckPending && !workspaceReadPending && !workspaceSyncError && syncState === 'current'}
+              onAccessLost={() => {
+                if (currentSpecId.current !== spec.id) return;
+                workspaceLoadGeneration.current += 1;
+                specReloadGeneration.current += 1;
+                setSpec(null); onClose();
+              }}
               spec={{
                 id: spec.id,
                 title: spec.title,
@@ -2751,7 +2756,7 @@ export function SpecModal({
               canRemove={canManageDependencies}
               requestedDirection={dependencyDirectionRequest.direction}
               directionRequestToken={dependencyDirectionRequest.token}
-              onRetryReadiness={() => void loadSpec()}
+              onRetryReadiness={() => { void reloadWorkspaceSnapshot().catch(() => { /* Workspace retains its visible recovery state. */ }); }}
               onOpenSpec={openSpecReference}
               onMutated={reloadSpecAfterDependencyMutation}
             />
