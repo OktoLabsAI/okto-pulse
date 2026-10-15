@@ -297,7 +297,7 @@ function TestScenariosTab({
 }: {
   spec: Spec;
   focusReceipt?: string | null;
-  onUpdate: (scenarios: TestScenario[]) => void;
+  onUpdate: (scenarios: TestScenario[]) => Promise<void>;
   onSpecUpdate: (data: Record<string, unknown>) => Promise<void>;
   onSpecRefreshed: (updated: Spec) => void;
   canReadPolicyCompliance: boolean;
@@ -308,6 +308,14 @@ function TestScenariosTab({
   const [adding, setAdding] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [linkingScenarioId, setLinkingScenarioId] = useState<string | null>(null);
+  const [scenarioSaving, setScenarioSaving] = useState(false);
+  const [scenarioError, setScenarioError] = useState('');
+  const scenarioWritePending = useRef(false);
+  const scenarioEditorMounted = useRef(true);
+  useEffect(() => {
+    scenarioEditorMounted.current = true;
+    return () => { scenarioEditorMounted.current = false; };
+  }, []);
 
   // New scenario form
   const [newTitle, setNewTitle] = useState('');
@@ -321,7 +329,23 @@ function TestScenariosTab({
   const scenarios = spec.test_scenarios || [];
   const criteria = normalizeAcceptanceCriteria((spec.acceptance_criteria || []) as unknown[]);
 
-  const handleAdd = () => {
+  const saveScenarios = async (next: TestScenario[]) => {
+    if (scenarioWritePending.current) return false;
+    scenarioWritePending.current = true;
+    setScenarioSaving(true); setScenarioError('');
+    try {
+      await onUpdate(next);
+      return scenarioEditorMounted.current;
+    } catch (error) {
+      if (scenarioEditorMounted.current) setScenarioError(error instanceof Error ? error.message : 'Could not save the scenario. Your draft is preserved.');
+      return false;
+    } finally {
+      scenarioWritePending.current = false;
+      if (scenarioEditorMounted.current) setScenarioSaving(false);
+    }
+  };
+
+  const handleAdd = async () => {
     if (!newTitle.trim() || !newGiven.trim() || !newWhen.trim() || !newThen.trim()) return;
     const id = `ts_${Date.now()}`;
     const scenario: TestScenario = {
@@ -336,13 +360,13 @@ function TestScenariosTab({
       status: 'draft',
       linked_task_ids: null,
     };
-    onUpdate([...scenarios, scenario]);
+    if (!await saveScenarios([...scenarios, scenario])) return;
     setAdding(false);
     setNewTitle(''); setNewType('integration'); setNewGiven(''); setNewWhen(''); setNewThen(''); setNewNotes(''); setNewCriteria([]);
   };
 
-  const handleRemove = (id: string) => {
-    onUpdate(scenarios.filter((s) => s.id !== id));
+  const handleRemove = async (id: string) => {
+    await saveScenarios(scenarios.filter((s) => s.id !== id));
   };
 
   // Coverage matrix
@@ -357,6 +381,7 @@ function TestScenariosTab({
 
   return (
     <div className="space-y-4">
+      {scenarioError && <p role="alert" className="text-sm text-red-600 dark:text-red-400">{scenarioError}</p>}
       {/* Coverage summary */}
       {criteria.length > 0 && (() => {
         const coveredCount = criteria.length - uncoveredCriteria.length;
@@ -455,8 +480,9 @@ function TestScenariosTab({
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  handleRemove(scenario.id);
+                  void handleRemove(scenario.id);
                 }}
+                disabled={scenarioSaving || adding}
                 className="p-0.5 text-gray-400 hover:text-red-500"
                 aria-label={`Delete test scenario ${scenario.title}`}
               >
@@ -597,7 +623,7 @@ function TestScenariosTab({
 
       {/* Add scenario form */}
       {adding ? (
-        <div className="border border-violet-200 dark:border-violet-700 rounded-lg p-3 space-y-2 bg-violet-50/50 dark:bg-violet-900/10">
+        <fieldset disabled={scenarioSaving} className="border border-violet-200 dark:border-violet-700 rounded-lg p-3 space-y-2 bg-violet-50/50 dark:bg-violet-900/10">
           <div className="flex gap-2">
             <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Scenario title" className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600" autoFocus />
             <select
@@ -648,11 +674,11 @@ function TestScenariosTab({
           )}
           <div className="flex justify-end gap-2">
             <button onClick={() => setAdding(false)} className="btn btn-secondary text-xs">Cancel</button>
-            <button onClick={handleAdd} disabled={!newTitle.trim() || !newGiven.trim() || !newWhen.trim() || !newThen.trim()} className="btn btn-primary text-xs">Add Scenario</button>
+            <button onClick={() => void handleAdd()} disabled={scenarioSaving || !newTitle.trim() || !newGiven.trim() || !newWhen.trim() || !newThen.trim()} className="btn btn-primary text-xs">{scenarioSaving ? 'Saving scenario…' : 'Add Scenario'}</button>
           </div>
-        </div>
+        </fieldset>
       ) : (
-        <button onClick={() => setAdding(true)} className="flex items-center gap-1 text-sm text-violet-600 dark:text-violet-400 hover:text-violet-800 dark:hover:text-violet-300">
+        <button disabled={scenarioSaving} onClick={() => { setAdding(true); setScenarioError(''); }} className="flex items-center gap-1 text-sm text-violet-600 dark:text-violet-400 hover:text-violet-800 dark:hover:text-violet-300">
           <Plus size={14} /> Add Test Scenario
         </button>
       )}
@@ -2439,6 +2465,7 @@ export function SpecModal({
 
           {activeTab === 'tests' && spec && (
             <TestScenariosTab
+              key={`${spec.board_id}:${spec.id}`}
               focusReceipt={readinessReference?.startsWith('receipt:') ? readinessReference.slice('receipt:'.length) : null}
               spec={spec}
               canReadPolicyCompliance={canReadPolicyCompliance}
@@ -2450,14 +2477,16 @@ export function SpecModal({
                     specId,
                     scenarios,
                   );
+                  if (currentSpecId.current !== specId) return;
                   setSpec(updated);
                   setTestScenarioPolicyRefreshKey((value) => value + 1);
-                  onChanged();
+                  try { onChanged(); } catch { toast.error('Scenario saved. Refresh to update related views.'); }
                 } catch (err) {
                   // Surface the backend validation message (e.g. the strict
                   // scenario_type contract) instead of a generic string so a
                   // stale client/agent can correct the request (spec ac16b3c9).
-                  toast.error(err instanceof Error && err.message ? err.message : 'Failed to update test scenarios');
+                  if (currentSpecId.current === specId) toast.error(err instanceof Error && err.message ? err.message : 'Failed to update test scenarios');
+                  throw err;
                 }
               }}
               onSpecRefreshed={(updated) => {

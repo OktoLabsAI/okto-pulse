@@ -6,6 +6,7 @@ import { SpecModal } from '../SpecModal';
 vi.mock('@/hooks/useWorkspaceRevisions', () => ({ useWorkspaceRevisions: () => 'current' }));
 import { persistTestScenariosWithWriteGuard } from '../scenarioWriteGuard';
 import type { Spec, SpecHistoryEntry, TestScenario } from '@/types';
+import { AuthenticatedFetchError } from '@/lib/authFetch';
 
 type ValidationGateOverrideProps = {
   title?: string;
@@ -797,5 +798,61 @@ describe('SpecModal Activity tab', () => {
     expect(
       apiMock.updateSpec.mock.calls[0][1].test_scenarios[0],
     ).toHaveProperty('scenario_type', 'integration');
+  });
+
+  async function openScenarioDraft() {
+    await screen.findByText(spec.title);
+    fireEvent.click(screen.getByRole('tab', { name: /^Tests/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Add Test Scenario/i }));
+    for (const [placeholder, value] of [
+      ['Scenario title', 'Preserve this authored scenario'],
+      ['Given: precondition...', 'A local draft exists'],
+      ['When: action...', 'The native write is submitted'],
+      ['Then: expected result...', 'Clear the draft only after confirmation'],
+    ]) fireEvent.change(screen.getByPlaceholderText(placeholder), { target: { value } });
+  }
+
+  it('preserves a scenario draft until the native write confirms and prevents duplicate submission', async () => {
+    let confirm!: (value: Spec) => void;
+    apiMock.updateSpec.mockReturnValueOnce(new Promise<Spec>(resolve => { confirm = resolve; }));
+    render(<SpecModal specId={spec.id} boardId={spec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    await openScenarioDraft();
+    fireEvent.click(screen.getByRole('button', { name: 'Add Scenario' }));
+    expect(screen.getByPlaceholderText('Scenario title')).toHaveValue('Preserve this authored scenario');
+    expect(screen.getByRole('button', { name: /Saving scenario/ })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /^Cancel$/ })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: /Saving scenario/ }));
+    expect(apiMock.updateSpec).toHaveBeenCalledTimes(1);
+    confirm({ ...spec, version: 4, test_scenarios: apiMock.updateSpec.mock.calls[0][1].test_scenarios });
+    await waitFor(() => expect(screen.queryByPlaceholderText('Scenario title')).not.toBeInTheDocument());
+    expect(screen.getByText('Preserve this authored scenario')).toBeInTheDocument();
+  });
+
+  it('preserves a scenario draft and reports a definite native rejection inline', async () => {
+    apiMock.updateSpec.mockRejectedValueOnce(new AuthenticatedFetchError({ status: 422, message: 'Scenario condition requires correction' }));
+    render(<SpecModal specId={spec.id} boardId={spec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    await openScenarioDraft();
+    fireEvent.click(screen.getByRole('button', { name: 'Add Scenario' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Scenario condition requires correction');
+    expect(screen.getByPlaceholderText('Scenario title')).toHaveValue('Preserve this authored scenario');
+    expect(screen.getByRole('button', { name: 'Add Scenario' })).toBeEnabled();
+    expect(apiMock.updateSpec).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not replace another Spec with a late scenario write response', async () => {
+    let confirm!: (value: Spec) => void;
+    apiMock.updateSpec.mockReturnValueOnce(new Promise<Spec>(resolve => { confirm = resolve; }));
+    const view = render(<SpecModal specId={spec.id} boardId={spec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    await openScenarioDraft();
+    fireEvent.click(screen.getByRole('button', { name: 'Add Scenario' }));
+    apiMock.getSpec.mockResolvedValue({ ...spec, id: 'other-spec', title: 'Other current Spec' });
+    view.rerender(<SpecModal specId="other-spec" boardId={spec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    await screen.findByText('Other current Spec');
+    confirm({ ...spec, version: 4, test_scenarios: apiMock.updateSpec.mock.calls[0][1].test_scenarios });
+    await waitFor(() => expect(screen.getByText('Other current Spec')).toBeInTheDocument());
+    // Flush the completed callback before asserting identity, not just the old DOM.
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(screen.queryByText(spec.title)).not.toBeInTheDocument();
+    expect(screen.queryByText('Preserve this authored scenario')).not.toBeInTheDocument();
   });
 });
