@@ -157,6 +157,7 @@ const spec: Spec = {
   technical_requirements: [],
   acceptance_criteria: [],
   test_scenarios: [],
+  scenario_snapshot: 'a'.repeat(64),
   business_rules: [],
   api_contracts: [],
   integration_requirements: [],
@@ -762,6 +763,7 @@ describe('SpecModal Activity tab', () => {
           spec.id,
           [tampered],
           spec.version,
+          spec.scenario_snapshot!,
         ),
       ).rejects.toThrow(/Invalid scenario_type undefined for scenario/);
     }
@@ -900,6 +902,37 @@ describe('SpecModal Activity tab', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
     expect(screen.queryByPlaceholderText('Scenario title')).not.toBeInTheDocument();
     expect(apiMock.updateSpec).toHaveBeenCalledTimes(1);
+  });
+
+  it('requires explicit review after a same-version scenario snapshot conflict', async () => {
+    apiMock.updateSpec.mockRejectedValueOnce(new AuthenticatedFetchError({ status: 409, message: 'scenario_snapshot_conflict' }));
+    render(<SpecModal specId={spec.id} boardId={spec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    await openScenarioDraft();
+    fireEvent.click(screen.getByRole('button', { name: 'Add Scenario' }));
+    await screen.findByRole('button', { name: 'Reload scenarios' });
+    expect(screen.getByRole('button', { name: 'Review scenario base' })).toBeDisabled();
+    expect(apiMock.updateSpec.mock.calls[0][1].expected_scenario_snapshot).toBe(spec.scenario_snapshot);
+    apiMock.getSpec.mockResolvedValueOnce({ ...spec, scenario_snapshot: 'b'.repeat(64) });
+    fireEvent.click(screen.getByRole('button', { name: 'Reload scenarios' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Review scenario base' })).toBeEnabled());
+    expect(screen.getByPlaceholderText('Scenario title')).toHaveValue('Preserve this authored scenario');
+    expect(screen.getByRole('button', { name: 'Add Scenario' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Review scenario base' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add Scenario' }));
+    await waitFor(() => expect(apiMock.updateSpec).toHaveBeenCalledTimes(2));
+    expect(apiMock.updateSpec.mock.calls[1][1]).toEqual(expect.objectContaining({
+      expected_spec_version: spec.version, expected_scenario_snapshot: 'b'.repeat(64),
+    }));
+  });
+
+  it('does not author a scenario from a projection without its snapshot', async () => {
+    apiMock.getSpec.mockResolvedValue({ ...spec, scenario_snapshot: undefined });
+    render(<SpecModal specId={spec.id} boardId={spec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    await screen.findByText(spec.title);
+    fireEvent.click(screen.getByRole('tab', { name: /^Tests/ }));
+    expect(screen.getByRole('button', { name: /Add Test Scenario/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Reload scenarios' })).toBeEnabled();
+    expect(apiMock.updateSpec).not.toHaveBeenCalled();
   });
 
   it('does not replace another Spec with a late scenario write response', async () => {

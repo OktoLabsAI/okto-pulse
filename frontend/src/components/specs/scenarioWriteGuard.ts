@@ -20,7 +20,7 @@ export function prepareTestScenariosForWrite(
 
 type ScenarioSpecUpdater = (
   specId: string,
-  data: { test_scenarios: TestScenarioWrite[]; expected_spec_version: number },
+  data: { test_scenarios: TestScenarioWrite[]; expected_spec_version: number; expected_scenario_snapshot: string },
 ) => Promise<Spec>;
 
 export async function persistTestScenariosWithWriteGuard(
@@ -28,9 +28,14 @@ export async function persistTestScenariosWithWriteGuard(
   specId: string,
   scenarios: readonly TestScenario[],
   expectedSpecVersion: number,
+  expectedScenarioSnapshot: string,
 ): Promise<Spec> {
   const testScenarios = prepareTestScenariosForWrite(
     scenarios,
   );
-  return updateSpec(specId, { test_scenarios: testScenarios, expected_spec_version: expectedSpecVersion });
+  if (!/^[0-9a-f]{64}$/.test(expectedScenarioSnapshot)) {
+    throw new Error('Reload scenarios before saving: the authoring snapshot is unavailable.');
+  }
+  return updateSpec(specId, { test_scenarios: testScenarios, expected_spec_version: expectedSpecVersion,
+    expected_scenario_snapshot: expectedScenarioSnapshot });
 }
