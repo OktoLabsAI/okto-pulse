@@ -137,7 +137,7 @@ import {
   normalizeAcceptanceCriteria,
 } from './acceptanceCriteriaCoverage';
 import { ResourceGateDisclosure } from '@/components/resources/ResourceGateDisclosure';
-import { KnowledgeWorkspace } from '@/components/resources/KnowledgeWorkspace';
+import { SpecKnowledgeResources } from './SpecKnowledgeResources';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import { useOptionalModalStack } from '@/contexts/ModalStackContext';
 import { openContextualHelp } from '@/components/help';
@@ -1249,87 +1249,6 @@ export function QATab({
    Knowledge Base Tab
    ============================================================ */
 
-function KnowledgeTab({
-  specId,
-  boardId,
-  onChanged,
-}: {
-  specId: string;
-  boardId: string;
-  onChanged?: () => void;
-}) {
-  const api = useDashboardApi();
-  const [refreshGeneration, setRefreshGeneration] = useState(0);
-  const [adding, setAdding] = useState(false);
-
-  // Add form
-  const [newTitle, setNewTitle] = useState('');
-  const [newDesc, setNewDesc] = useState('');
-  const [newContent, setNewContent] = useState('');
-
-  const refreshWorkspace = () => {
-    setRefreshGeneration((current) => current + 1);
-  };
-
-  const handleAdd = async () => {
-    if (!newTitle.trim() || !newContent.trim()) return;
-    try {
-      await api.createSpecKnowledge(specId, {
-        title: newTitle.trim(),
-        description: newDesc.trim() || undefined,
-        content: newContent.trim(),
-      });
-      toast.success('Knowledge base item added');
-      setAdding(false);
-      setNewTitle(''); setNewDesc(''); setNewContent('');
-      refreshWorkspace();
-      onChanged?.();
-    } catch { toast.error('Failed to add knowledge'); }
-  };
-
-  const handleDelete = async (knowledgeId: string) => {
-    if (!confirm('Delete this knowledge base item?')) return false;
-    try {
-      await api.deleteSpecKnowledge(specId, knowledgeId);
-      toast.success('Deleted');
-      onChanged?.();
-      return true;
-    } catch {
-      toast.error('Failed to delete');
-      return false;
-    }
-  };
-
-  return (
-    <div className="space-y-3">
-      <KnowledgeWorkspace
-        boardId={boardId}
-        entityType="spec"
-        entityId={specId}
-        refreshKey={refreshGeneration}
-
-        onDelete={handleDelete}
-      />
-
-      {adding ? (
-        <div className="border border-amber-200 dark:border-amber-700 rounded-lg p-3 space-y-2 bg-amber-50/50 dark:bg-amber-900/10">
-          <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Title" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600" />
-          <input type="text" value={newDesc} onChange={(e) => setNewDesc(e.target.value)} placeholder="Description (optional)" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600" />
-          <textarea value={newContent} onChange={(e) => setNewContent(e.target.value)} placeholder="Content (markdown, text, JSON...)" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600" rows={6} />
-          <div className="flex justify-end gap-2">
-            <button onClick={() => setAdding(false)} className="btn btn-secondary text-xs">Cancel</button>
-            <button onClick={handleAdd} disabled={!newTitle.trim() || !newContent.trim()} className="btn btn-primary text-xs">Add</button>
-          </div>
-        </div>
-      ) : (
-        <button onClick={() => setAdding(true)} className="flex items-center gap-1 text-sm text-amber-600 dark:text-amber-400 hover:text-amber-800 dark:hover:text-amber-300">
-          <Plus size={14} /> Add Knowledge
-        </button>
-      )}
-    </div>
-  );
-}
-
 /* ============================================================
    Validation Error Display — parses gate errors into readable items
    ============================================================ */
@@ -2020,7 +1939,7 @@ export function SpecModal({
   const [workspaceSyncError, setWorkspaceSyncError] = useState<string | null>(null);
   const [workspaceReadPending, setWorkspaceReadPending] = useState(false);
   const workspaceLoadGeneration = useRef(0);
-  const validationLive = ['validation', 'frs', 'acs', 'rules', 'contracts', 'ors', 'trs', 'irs', 'decisions', 'tests', 'project-structure', 'coverage', 'references', 'dependencies'].includes(activeTab) || showSubmitValidationModal;
+  const validationLive = ['validation', 'frs', 'acs', 'rules', 'contracts', 'ors', 'trs', 'irs', 'decisions', 'tests', 'project-structure', 'coverage', 'references', 'dependencies', 'resources'].includes(activeTab) || showSubmitValidationModal;
   useEffect(() => {
     setPermissionCheckPending(false);
     setWorkspaceReadPending(false);
@@ -2060,6 +1979,7 @@ export function SpecModal({
         if (!current()) return;
         setValidationHistoryRefreshKey(value => value + 1);
         setTestScenarioPolicyRefreshKey(value => value + 1);
+        setResourceGateRefreshKey(value => value + 1);
       } catch (error) {
         if (!current()) return;
         if (authorityChanged || (error instanceof AuthenticatedFetchError && [401, 403, 404].includes(error.status))) {
@@ -2090,6 +2010,14 @@ export function SpecModal({
       if (current()) setWorkspaceReadPending(false);
     }
   };
+  const reloadResources = async (minimumVersion?: number) => {
+    const origin = specId;
+    await reloadWorkspaceSnapshot(minimumVersion);
+    if (currentSpecId.current !== origin) throw new Error('The resource owner changed during reload.');
+    setResourceGateRefreshKey(value => value + 1);
+    onChanged();
+  };
+  const resourcesReadCurrent = !permissionCheckPending && !workspaceReadPending && !workspaceSyncError && syncState === 'current';
   const specValidationSubmissionRequired = (
     policyTransitionPreview.status === 'ready'
     && policyTransitionPreview.transitions.some(
@@ -2941,11 +2869,17 @@ export function SpecModal({
           )}
           {activeTab === 'resources' && spec && (
             <div className="space-y-4" data-testid="spec-resources-panel">
+              {!resourcesReadCurrent && <div role="status" className="space-y-2 rounded-lg border border-amber-300 p-3 text-sm dark:border-amber-800">
+                <p>{workspaceSyncError || 'Checking current resources. Unsaved input is preserved; writes wait for an authorized current read.'}</p>
+                <button type="button" className="btn btn-secondary text-xs" disabled={workspaceReadPending || permissionCheckPending}
+                  onClick={() => { void reloadResources().catch(() => undefined); }}>Reload resource workspace</button>
+              </div>}
               <ResourceGateDisclosure
                 boardId={spec.board_id || _boardId}
                 entityType="spec"
                 entityId={specId}
                 refreshKey={resourceGateRefreshKey}
+                active={resourcesReadCurrent}
               />
               <AccessibleTabList
                 idBase={`spec-${specId}-resources`}
@@ -2993,10 +2927,20 @@ export function SpecModal({
                     entityType="spec"
                     entityId={specId}
                     expanded={expanded}
-                    onUpdate={async (mockups) => {
-                      const updated = await api.updateSpec(specId, { screen_mockups: mockups });
-                      setSpec(updated);
-                      setResourceGateRefreshKey((value) => value + 1);
+                    version={spec.version}
+                    snapshot={spec.mockup_snapshot}
+                    revision={resourceGateRefreshKey}
+                    active={resourceTab === 'mockups'}
+                    readCurrent={resourcesReadCurrent && Boolean(spec.mockup_snapshot)}
+                    onReload={reloadResources}
+                    onUpdate={async (mockups, base) => {
+                      if (!base?.expectedVersion || !base.expectedSnapshot) throw new Error('Reload the Spec before editing mockups.');
+                      const origin = specId;
+                      const updated = await api.updateSpec(origin, { screen_mockups: mockups, expected_spec_version: base.expectedVersion,
+                        expected_mockup_snapshot: base.expectedSnapshot });
+                      if (currentSpecId.current !== origin) throw new Error('The mockup owner changed during save.');
+                      setSpec(current => current?.id === origin && current.version <= updated.version ? updated : current);
+                      return { version: updated.version };
                     }}
                   />
               </AccessibleTabPanel>
@@ -3006,13 +2950,13 @@ export function SpecModal({
                 value={resourceTab}
                 mount="lazy-keep"
               >
-                  <KnowledgeTab
+                  <SpecKnowledgeResources
                     specId={specId}
                     boardId={spec.board_id}
-                    onChanged={() => {
-                      setResourceGateRefreshKey((value) => value + 1);
-                      void loadSpec();
-                    }}
+                    revision={resourceGateRefreshKey}
+                    active={resourceTab === 'knowledge'}
+                    readCurrent={resourcesReadCurrent}
+                    onReload={reloadResources}
                   />
               </AccessibleTabPanel>
               <AccessibleTabPanel
@@ -3030,13 +2974,10 @@ export function SpecModal({
                     expanded={expanded}
                     locked={['validated', 'in_progress', 'done'].includes(spec.status)}
                     screenMockups={spec.screen_mockups || []}
-                    onChanged={(items) => {
-                      setSpec((current) => current
-                        ? { ...current, architecture_designs: items }
-                        : current);
-                      setResourceGateRefreshKey((value) => value + 1);
-                      void loadSpec();
-                    }}
+                    revision={resourceGateRefreshKey}
+                    active={resourceTab === 'architecture'}
+                    readCurrent={resourcesReadCurrent}
+                    onChanged={async () => { await reloadResources(); }}
                   />
               </AccessibleTabPanel>
             </div>

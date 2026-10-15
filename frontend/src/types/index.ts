@@ -2183,6 +2183,7 @@ export interface Spec extends TaskValidationGateOverride {
   test_scenarios: TestScenario[] | null;
   /** Opaque authoring snapshot returned with the full scenario collection. */
   scenario_snapshot?: string;
+  mockup_snapshot?: string;
   business_rules: BusinessRule[] | null;
   api_contracts: ApiContract[] | null;
   integration_requirements: IntegrationRequirement[] | null;
@@ -4195,9 +4196,10 @@ export interface CreateSpecRequest {
 }
 
 export interface UpdateSpecRequest extends TaskValidationGateOverride {
-  /** Authored base for test_scenarios only; other Spec updates have no generic CAS. */
+  /** Authored base for test_scenarios/screen_mockups; other Spec updates have no generic CAS. */
   expected_spec_version?: number;
   expected_scenario_snapshot?: string;
+  expected_mockup_snapshot?: string;
   title?: string;
   description?: string;
   context?: string;

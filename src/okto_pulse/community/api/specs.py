@@ -1589,7 +1589,7 @@ async def update_spec(
     except ValueError as e:
         raise HTTPException(
             status_code=(
-                status.HTTP_409_CONFLICT if str(e) in {"spec_version_conflict", "scenario_snapshot_conflict"}
+                status.HTTP_409_CONFLICT if str(e) in {"spec_version_conflict", "scenario_snapshot_conflict", "mockup_snapshot_conflict"}
                 else status.HTTP_422_UNPROCESSABLE_CONTENT
             ),
             detail=str(e),

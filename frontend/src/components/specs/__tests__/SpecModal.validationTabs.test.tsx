@@ -9,6 +9,7 @@ import {
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ProjectStructureNode, Spec, SpecStatus } from '@/types';
+import { workspacePage } from '@/testFixtures/effectiveResources';
 
 import { SpecModal } from '../SpecModal';
 
@@ -45,6 +46,9 @@ const apiMock = vi.hoisted(() => ({
   operateSpecEntity: vi.fn(),
   getDecisionReviews: vi.fn(),
   updateSpec: vi.fn(),
+  getEffectiveResources: vi.fn(),
+  createSpecKnowledge: vi.fn(),
+  listSpecKnowledge: vi.fn(),
 }));
 const permissionMock = vi.hoisted(() => ({
   allowAll: true,
@@ -224,6 +228,7 @@ const baseSpec: Spec = {
   observability_requirements: [],
   decisions: [],
   screen_mockups: [],
+  mockup_snapshot: 'a'.repeat(64),
   architecture_designs: [],
   skip_test_coverage: false,
   skip_code_evidence_coverage: false,
@@ -280,6 +285,82 @@ async function openCriteria() {
 }
 
 describe('SpecModal validation navigation', () => {
+  it('refreshes Resources without replacing hidden drafts and saves mockups on the reviewed snapshot', async () => {
+    apiMock.getSpec.mockResolvedValue(baseSpec);
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('tab', { name: 'Resources' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Add Mockup' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Add Mockup' }));
+    fireEvent.change(screen.getByPlaceholderText('e.g. Login Page'), { target: { value: 'Local mockup' } });
+    fireEvent.change(document.querySelector('textarea')!, { target: { value: '<main>Local</main>' } });
+    fireEvent.click(screen.getByRole('tab', { name: /^Knowledge/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add Knowledge' }));
+    fireEvent.change(screen.getByLabelText('Knowledge title'), { target: { value: 'Local KB' } });
+    const external = { ...baseSpec, mockup_snapshot: 'b'.repeat(64), screen_mockups: [{ id: 'external', title: 'MCP screen', description: null, screen_type: 'page' as const, html_content: '<main>External</main>', order: 0, annotations: null }] };
+    apiMock.getSpec.mockResolvedValue(external);
+    expect(workspaceWatch.options?.boardId).toBe(baseSpec.board_id);
+    await act(async () => workspaceWatch.options!.onChange({ subjects: [], initial: false, authorityChanged: false }));
+    expect(screen.getByLabelText('Knowledge title')).toHaveValue('Local KB');
+    fireEvent.click(screen.getByRole('tab', { name: /^Mockups/ }));
+    expect(screen.getByPlaceholderText('e.g. Login Page')).toHaveValue('Local mockup');
+    expect(screen.getByRole('button', { name: 'Add Mockup' })).toBeDisabled();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Review mockup base' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Review mockup base' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Use reviewed mockup base' }));
+    apiMock.updateSpec.mockImplementation(async (_id, payload) => {
+      const saved = { ...external, screen_mockups: payload.screen_mockups, mockup_snapshot: 'c'.repeat(64) };
+      apiMock.getSpec.mockResolvedValue(saved);
+      return saved;
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Mockup' }));
+    await waitFor(() => expect(apiMock.updateSpec).toHaveBeenCalledOnce());
+    expect(apiMock.updateSpec.mock.calls[0][1]).toMatchObject({ expected_spec_version: baseSpec.version, expected_mockup_snapshot: 'b'.repeat(64),
+      screen_mockups: [external.screen_mockups[0], expect.objectContaining({ title: 'Local mockup' })] });
+    await waitFor(() => expect(screen.queryByPlaceholderText('e.g. Login Page')).not.toBeInTheDocument());
+    fireEvent.click(screen.getByRole('tab', { name: /^Knowledge/ }));
+    expect(screen.getByLabelText('Knowledge title')).toHaveValue('Local KB');
+  }, 15000);
+
+  it('keeps a confirmed mockup write pending when the complete parent read fails', async () => {
+    apiMock.getSpec.mockResolvedValue(baseSpec);
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('tab', { name: 'Resources' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Add Mockup' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Add Mockup' }));
+    fireEvent.change(screen.getByPlaceholderText('e.g. Login Page'), { target: { value: 'Confirmed mockup' } });
+    fireEvent.change(document.querySelector('textarea')!, { target: { value: '<main>Confirmed</main>' } });
+    apiMock.updateSpec.mockResolvedValue({ ...baseSpec, mockup_snapshot: 'b'.repeat(64) });
+    apiMock.getSpec.mockRejectedValue(new Error('Parent unavailable'));
+    fireEvent.click(screen.getByRole('button', { name: 'Add Mockup' }));
+    await screen.findByText('Mockup changes were saved. Reload the saved result before another change.');
+    await screen.findByText('Parent unavailable');
+    expect(screen.getByPlaceholderText('e.g. Login Page')).toHaveValue('Confirmed mockup');
+    apiMock.getSpec.mockResolvedValue({ ...baseSpec, mockup_snapshot: 'b'.repeat(64) });
+    fireEvent.click(screen.getByRole('button', { name: 'Reload saved mockups' }));
+    await waitFor(() => expect(screen.queryByPlaceholderText('e.g. Login Page')).not.toBeInTheDocument());
+    expect(apiMock.updateSpec).toHaveBeenCalledOnce();
+  });
+
+  it('awaits Knowledge parent recovery and preserves input without duplicating its native create', async () => {
+    apiMock.getSpec.mockResolvedValue(baseSpec);
+    apiMock.createSpecKnowledge.mockResolvedValue({ id: 'kb-new' });
+    apiMock.listSpecKnowledge.mockResolvedValue([{ id: 'kb-new', title: 'Local KB' }]);
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('tab', { name: 'Resources' }));
+    fireEvent.click(screen.getByRole('tab', { name: /^Knowledge/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add Knowledge' }));
+    fireEvent.change(screen.getByLabelText('Knowledge title'), { target: { value: 'Local KB' } });
+    fireEvent.change(screen.getByLabelText('Knowledge content'), { target: { value: 'Local content' } });
+    apiMock.getSpec.mockRejectedValue(new Error('Parent unavailable'));
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    await screen.findByText('Parent unavailable');
+    expect(screen.getByLabelText('Knowledge content')).toHaveValue('Local content');
+    apiMock.getSpec.mockResolvedValue(baseSpec);
+    fireEvent.click(screen.getByRole('button', { name: 'Reload saved knowledge' }));
+    await waitFor(() => expect(screen.queryByLabelText('Knowledge content')).not.toBeInTheDocument());
+    expect(apiMock.createSpecKnowledge).toHaveBeenCalledOnce();
+  });
+
   it('invalidates Coverage after a watched Card change without a Spec version or timestamp bump', async () => {
     renderSpec('draft');
     fireEvent.click(await screen.findByRole('tab', { name: 'Coverage' }));
@@ -686,6 +767,7 @@ describe('SpecModal validation navigation', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    apiMock.getEffectiveResources.mockImplementation((board, type, id, options) => Promise.resolve(workspacePage(board, type, id, options.resource_type, [], options.profile)));
     apiMock.getCodeTraceabilityProjection.mockResolvedValue({ evidence: [] });
     permissionMock.refresh.mockReset();
     permissionMock.allowAll = true;

@@ -4,7 +4,7 @@ import { loadEffectiveResourceItems } from '@/services/effectiveResources';
  * Supports viewing existing mockups and creating new ones via HTML editor.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Monitor, Smartphone, MessageSquare, Plus, X, Eye, Code } from 'lucide-react';
 import { useDashboardApi } from '@/services/api';
 import type { KnowledgeWorkspaceItem, ResourceGateEntityType, ScreenMockup } from '@/types';
@@ -31,7 +31,13 @@ const SCREEN_TYPES = [
 interface MockupsTabProps {
   screenMockups: ScreenMockup[] | null;
   expanded?: boolean;
-  onUpdate?: (mockups: ScreenMockup[]) => Promise<void>;
+  onUpdate?: (mockups: ScreenMockup[], base?: { expectedVersion?: number; expectedSnapshot?: string }) => Promise<void | { version: number }>;
+  version?: number;
+  snapshot?: string;
+  revision?: string | number;
+  active?: boolean;
+  readCurrent?: boolean;
+  onReload?: (minimumVersion?: number) => Promise<void>;
   boardId?: string | null;
   entityType?: ResourceGateEntityType;
   entityId?: string | null;
@@ -78,7 +84,12 @@ function sourceLabel(screen: EffectiveScreenMockup): string {
   return `${type}: ${title}`;
 }
 
-export function MockupsTab({ screenMockups, expanded = false, onUpdate, boardId, entityType, entityId }: MockupsTabProps) {
+function statusOf(error: unknown): number {
+  return typeof error === 'object' && error !== null && 'status' in error ? Number(error.status) : 0;
+}
+
+export function MockupsTab({ screenMockups, expanded = false, onUpdate, boardId, entityType, entityId,
+  version, snapshot, revision, active = true, readCurrent = true, onReload }: MockupsTabProps) {
   const api = useDashboardApi();
   const apiRef = useRef(api);
   const directScreens = useMemo(
@@ -113,28 +124,73 @@ export function MockupsTab({ screenMockups, expanded = false, onUpdate, boardId,
   const [formDsVersion, setFormDsVersion] = useState('');
   const [formDsEvidence, setFormDsEvidence] = useState('');
   const [gateError, setGateError] = useState<string | null>(null);
+  const [base, setBase] = useState<{ version?: number; snapshot?: string; screens: ScreenMockup[] } | null>(null);
+  const [draftId, setDraftId] = useState('');
+  const [reviewingBase, setReviewingBase] = useState(false);
+  const [versionConflict, setVersionConflict] = useState(false);
+  const [confirmed, setConfirmed] = useState<{ version?: number; selectedId: string } | null>(null);
+  const [uncertain, setUncertain] = useState(false);
+  const [inspected, setInspected] = useState(false);
+  const [accessDenied, setAccessDenied] = useState(false);
+  const [resourceError, setResourceError] = useState<string | null>(null);
+  const [resourceLoading, setResourceLoading] = useState(false);
+  const [readGeneration, setReadGeneration] = useState(0);
+  const scope = `${boardId || ''}:${entityType || ''}:${entityId || ''}`;
+  const context = useRef({ scope, generation: 0 });
+  if (context.current.scope !== scope) context.current = { scope, generation: context.current.generation + 1 };
+  const busy = useRef(false);
+  const baseChanged = Boolean(base && (base.version !== version || base.snapshot !== snapshot || JSON.stringify(base.screens) !== JSON.stringify(directScreens)));
+  const blocked = !active || !readCurrent || accessDenied || saving || Boolean(confirmed) || uncertain
+    || Boolean(resourceError) || resourceLoading;
+
+  const clearForm = useCallback(() => {
+    setShowForm(false); setFormTitle(''); setFormDescription(''); setFormType('page');
+    setFormHtml(''); setFormPreview(false); setFormDsRef(''); setFormDsVersion(''); setFormDsEvidence('');
+    setBase(null); setDraftId(''); setReviewingBase(false); setVersionConflict(false);
+  }, []);
+  const denyAccess = useCallback(() => {
+    context.current.generation += 1;
+    clearForm(); setConfirmed(null); setUncertain(false); setInspected(false);
+    setEffectiveMockups([]); setAccessDenied(true); setSaving(false); busy.current = false;
+    setGateError(null); setResourceError('Mockup access is no longer available.');
+  }, [clearForm]);
+
+  useEffect(() => {
+    clearForm(); setConfirmed(null); setUncertain(false); setInspected(false);
+    setAccessDenied(false); setGateError(null); setResourceError(null); setSaving(false);
+    setEffectiveMockups([]); setSelectedId(''); busy.current = false;
+    return () => { context.current.generation += 1; };
+  }, [scope, clearForm]);
 
   useEffect(() => {
     apiRef.current = api;
   }, [api]);
 
   useEffect(() => {
+    if (!active) return;
     if (!boardId || !entityType || !entityId) {
       setEffectiveMockups([]);
       return;
     }
     let cancelled = false;
+    const origin = { ...context.current };
+    setResourceLoading(true);
     loadEffectiveResourceItems(apiRef.current.getEffectiveResources, boardId, entityType, entityId, 'mockup', 'full')
       .then((response) => {
-        if (!cancelled) setEffectiveMockups(response);
+        if (!cancelled && context.current.generation === origin.generation) {
+          setEffectiveMockups(response); setResourceError(null);
+        }
       })
-      .catch(() => {
-        if (!cancelled) setEffectiveMockups([]);
-      });
+      .catch((error: unknown) => {
+        if (cancelled || context.current.generation !== origin.generation) return;
+        if ([401, 403, 404].includes(statusOf(error))) denyAccess();
+        else setResourceError('Effective mockups could not be loaded. Reload before another change.');
+      })
+      .finally(() => { if (!cancelled) setResourceLoading(false); });
     return () => {
       cancelled = true;
     };
-  }, [boardId, entityId, entityType]);
+  }, [boardId, entityId, entityType, active, revision, readGeneration, denyAccess]);
 
   useEffect(() => {
     if (screens.length === 0) {
@@ -146,66 +202,121 @@ export function MockupsTab({ screenMockups, expanded = false, onUpdate, boardId,
     }
   }, [screens, selectedId]);
 
-  const handleCreate = async () => {
-    if (!formTitle.trim() || !formHtml.trim() || !onUpdate) return;
+  const openCreate = () => {
+    if (blocked || busy.current) return;
+    setBase({ version, snapshot, screens: directScreens });
+    setDraftId(`mockup_${crypto.randomUUID()}`);
+    setGateError(null); setShowForm(true);
+  };
+
+  const recoverRead = async (receipt = confirmed) => {
+    const origin = { ...context.current };
+    const current = () => origin.scope === context.current.scope && origin.generation === context.current.generation;
+    setSaving(true); busy.current = true;
+    try {
+      await onReload?.(receipt?.version);
+      if (!current()) return;
+      setReadGeneration(value => value + 1);
+      if (receipt) { clearForm(); setSelectedId(receipt.selectedId); setConfirmed(null); }
+      else if (uncertain) setInspected(true);
+      setGateError(null);
+    } catch (error) {
+      if (!current()) return;
+      if ([401, 403, 404].includes(statusOf(error))) denyAccess();
+      else setGateError(error instanceof Error ? error.message : 'Could not reload current mockups.');
+    } finally { if (current()) { busy.current = false; setSaving(false); } }
+  };
+
+  const write = async (next: ScreenMockup[], authoredBase: { version?: number; snapshot?: string; screens: ScreenMockup[] }, nextSelectedId: string) => {
+    if (!onUpdate || blocked || busy.current) return;
+    const origin = { ...context.current };
+    const current = () => origin.scope === context.current.scope && origin.generation === context.current.generation;
+    busy.current = true;
     setSaving(true);
     setGateError(null);
     try {
+      const result = await onUpdate(next, { expectedVersion: authoredBase.version, expectedSnapshot: authoredBase.snapshot });
+      if (!current()) return;
+      const receipt = { version: result?.version, selectedId: nextSelectedId };
+      setConfirmed(receipt);
+      await recoverRead(receipt);
+    } catch (error) {
+      if (!current()) return;
+      const status = statusOf(error);
+      if ([401, 403, 404].includes(status)) { denyAccess(); return; }
+      const detail = (error as { detail?: { message?: string; code?: string } })?.detail;
+      setGateError(detail?.message || detail?.code || (error instanceof Error ? error.message : 'Failed to save mockup.'));
+      if (status === 409 && error instanceof Error && ['spec_version_conflict', 'mockup_snapshot_conflict'].includes(error.message)) setVersionConflict(true);
+      else if (onReload && (!status || status >= 500)) { setUncertain(true); setInspected(false); }
+    } finally { if (current()) { busy.current = false; setSaving(false); } }
+  };
+
+  const handleCreate = async () => {
+    if (!formTitle.trim() || !formHtml.trim() || !base || blocked || baseChanged || versionConflict) return;
       const newMockup: ScreenMockup = {
-        id: `mockup_${Date.now()}`,
+        id: draftId,
         title: formTitle.trim(),
         description: formDescription.trim() || null,
         screen_type: formType,
         html_content: formHtml,
         annotations: null,
-        order: screens.length,
+        order: base.screens.length,
         design_system_ref: formDsRef.trim()
           ? { design_system_id: formDsRef.trim(), version: formDsVersion.trim() ? Number(formDsVersion) : null }
           : null,
         design_system_evidence: formDsEvidence.trim() || null,
       };
-      await onUpdate([...directScreens, newMockup]);
-      setSelectedId(newMockup.id);
-      setShowForm(false);
-      setFormTitle('');
-      setFormDescription('');
-      setFormType('page');
-      setFormHtml('');
-      setFormPreview(false);
-      setFormDsRef('');
-      setFormDsVersion('');
-      setFormDsEvidence('');
-    } catch (e) {
-      // The MockupDesignSystemGate (blocking) rejects with an actionable message/code.
-      // authFetch.fetchJson throws an Error whose `.message` already carries the backend's
-      // structured message/code; older HTTPException-style payloads expose it under `detail`.
-      const detail = (e as { detail?: { message?: string; code?: string } })?.detail;
-      const errMsg = e instanceof Error ? e.message : undefined;
-      setGateError(detail?.message || detail?.code || errMsg || 'Failed to save mockup.');
-    } finally {
-      setSaving(false);
-    }
+      await write([...base.screens, newMockup], base, newMockup.id);
   };
 
   const handleDelete = async (id: string) => {
-    if (!onUpdate) return;
+    if (!onUpdate || blocked || busy.current || versionConflict) return;
     if (!confirm('Delete this mockup?')) return;
     const updated = directScreens.filter((s) => s.id !== id);
-    await onUpdate(updated);
-    if (selectedId === id) {
-      setSelectedId(updated[0]?.id || screens.find((screen) => screen.id !== id)?.id || '');
-    }
+    await write(updated, { version, snapshot, screens: directScreens }, updated[0]?.id || '');
   };
+
+  const notices = <>
+    {!readCurrent && <p role="status" className="text-sm text-amber-700 dark:text-amber-300">Current mockups could not be verified. Your input is preserved; reload before another change.</p>}
+    {resourceError && <p role="alert" className="text-sm text-amber-700 dark:text-amber-300">{resourceError}</p>}
+    {gateError && <p role="alert" data-testid="mockup-gate-error" className="text-xs text-red-600 dark:text-red-400">{gateError}</p>}
+    {confirmed && <p role="status" className="text-sm text-amber-700 dark:text-amber-300">Mockup changes were saved. Reload the saved result before another change.</p>}
+    {uncertain && <div role="alert" className="space-y-2 rounded-lg border border-amber-300 p-3 text-sm dark:border-amber-800">
+      <p>The response was not confirmed. The write will not be repeated automatically. Inspect current mockups before discarding this attempt.</p>
+      {inspected && <ul>{directScreens.map(item => <li key={item.id}>{item.title} · {item.id}</li>)}</ul>}
+      <button type="button" className="btn btn-secondary text-xs" disabled={!inspected || saving || !readCurrent || Boolean(resourceError)} onClick={() => {
+        setUncertain(false); setInspected(false); setGateError(null); clearForm();
+      }}>I reviewed mockups; discard local attempt</button>
+    </div>}
+    {(confirmed || uncertain || versionConflict || resourceError || !readCurrent) && !accessDenied && <button type="button" className="btn btn-secondary text-xs" disabled={!active || saving} onClick={() => { void recoverRead(); }}>
+      {confirmed ? 'Reload saved mockups' : 'Reload current mockups'}
+    </button>}
+    {(baseChanged || versionConflict) && !uncertain && !confirmed && <div role="status" className="space-y-2 rounded-lg border border-amber-300 p-3 text-sm dark:border-amber-800">
+      <p>Mockup authoring base changed. Your input is preserved.</p>
+      <button type="button" className="btn btn-secondary text-xs" disabled={!readCurrent || saving || Boolean(resourceError)} onClick={() => setReviewingBase(true)}>Review mockup base</button>
+      {reviewingBase && <div className="space-y-2">
+        <p>Current version: {version ?? 'unversioned'}. This operation will use only the current collection below.</p>
+        <ul>{directScreens.map(item => <li key={item.id}>{item.title} · {item.id}</li>)}</ul>
+        <button type="button" className="btn btn-primary text-xs" disabled={!readCurrent || saving || Boolean(resourceError)} onClick={() => {
+          setBase({ version, snapshot, screens: directScreens }); setVersionConflict(false); setReviewingBase(false); setGateError(null);
+        }}>Use reviewed mockup base</button>
+      </div>}
+    </div>}
+  </>;
+
+  if (accessDenied) return <div role="alert">Mockup access is no longer available.</div>;
 
   // Empty state
   if (screens.length === 0 && !showForm) {
     return (
       <div className="text-center py-12">
+        {notices}
         <Monitor size={32} className="mx-auto text-gray-300 dark:text-gray-600 mb-2" />
         <p className="text-sm text-gray-500 dark:text-gray-400">No screen mockups yet</p>
         {onUpdate && (
           <button
-            onClick={() => setShowForm(true)}
+            onClick={openCreate}
+            disabled={blocked || versionConflict}
             className="mt-3 text-sm text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 flex items-center gap-1 mx-auto"
           >
             <Plus size={14} /> Add Mockup
@@ -219,9 +330,11 @@ export function MockupsTab({ screenMockups, expanded = false, onUpdate, boardId,
   if (showForm) {
     return (
       <div className="space-y-3">
+        {notices}
+        <fieldset disabled={saving || Boolean(confirmed) || uncertain} className="min-w-0 space-y-3">
         <div className="flex items-center justify-between">
           <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300">New Mockup</h4>
-          <button onClick={() => setShowForm(false)} className="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 rounded">
+          <button aria-label="Cancel mockup" onClick={clearForm} className="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 rounded">
             <X size={16} />
           </button>
         </div>
@@ -294,10 +407,6 @@ export function MockupsTab({ screenMockups, expanded = false, onUpdate, boardId,
           </div>
         </div>
 
-        {gateError && (
-          <p data-testid="mockup-gate-error" className="text-xs text-red-600 dark:text-red-400">{gateError}</p>
-        )}
-
         <div>
           <div className="flex items-center justify-between mb-1">
             <label className="block text-xs font-medium text-gray-500 dark:text-gray-400">HTML Content * <span className="font-normal text-gray-400">(Tailwind CSS available)</span></label>
@@ -337,15 +446,16 @@ export function MockupsTab({ screenMockups, expanded = false, onUpdate, boardId,
         </div>
 
         <div className="flex justify-end gap-2">
-          <button onClick={() => setShowForm(false)} className="btn btn-secondary text-sm">Cancel</button>
+          <button onClick={clearForm} className="btn btn-secondary text-sm">Cancel</button>
           <button
             onClick={handleCreate}
-            disabled={!formTitle.trim() || !formHtml.trim() || saving}
+            disabled={!formTitle.trim() || !formHtml.trim() || blocked || baseChanged || versionConflict}
             className="btn btn-primary text-sm disabled:opacity-50"
           >
             {saving ? 'Saving...' : 'Add Mockup'}
           </button>
         </div>
+        </fieldset>
       </div>
     );
   }
@@ -356,6 +466,7 @@ export function MockupsTab({ screenMockups, expanded = false, onUpdate, boardId,
 
   return (
     <div className="space-y-3">
+      {notices}
       {/* Screen selector + controls */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-1 flex-wrap">
@@ -383,7 +494,8 @@ export function MockupsTab({ screenMockups, expanded = false, onUpdate, boardId,
           ))}
           {onUpdate && (
             <button
-              onClick={() => setShowForm(true)}
+              onClick={openCreate}
+              disabled={blocked || versionConflict}
               className="px-2 py-1 rounded text-xs text-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 flex items-center gap-1"
             >
               <Plus size={12} /> Add
@@ -394,6 +506,7 @@ export function MockupsTab({ screenMockups, expanded = false, onUpdate, boardId,
           {onUpdate && selected && !selected.read_only && (
             <button
               onClick={() => handleDelete(selected.id)}
+              disabled={blocked || versionConflict}
               className="p-1 text-gray-400 hover:text-red-500 rounded mr-1"
               title="Delete mockup"
             >
