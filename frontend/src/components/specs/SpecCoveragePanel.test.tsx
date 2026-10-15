@@ -134,6 +134,23 @@ it('reloads after a source revision without retaining previous pages', async () 
   expect(api.getSpecCoverage.mock.calls[1][2].cursor).toBeUndefined();
 });
 
+it('updates factual delivery progress on a delivery revision without a new Spec edition', async () => {
+  const view = render(<SpecCoveragePanel boardId="board" specId="spec" revision="delivery-1" onOpenSection={vi.fn()} />);
+  expect(await screen.findByRole('progressbar', { name: 'Implementation proof' })).toHaveAttribute('aria-valuenow', '0');
+  api.getSpecCoverage.mockResolvedValue({ ...base, delivery: { ...base.delivery,
+    counts: { ...base.delivery.counts, implementation_proven: 2, verification_proven: 1 },
+    blockers: ['delivery_test_result_missing'],
+  } });
+  view.rerender(<SpecCoveragePanel boardId="board" specId="spec" revision="delivery-2" onOpenSection={vi.fn()} />);
+  await waitFor(() => expect(screen.getByRole('progressbar', { name: 'Implementation proof' })).toHaveAttribute('aria-valuenow', '2'));
+  expect(screen.getByRole('progressbar', { name: 'Verification proof' })).toHaveAttribute('aria-valuenow', '1');
+  expect(screen.getByText('100%')).toBeVisible();
+  expect(screen.getByText('50%')).toBeVisible();
+  expect(screen.getByText(/Edition 1/)).toBeVisible();
+  expect(api.getSpecCoverage).toHaveBeenCalledTimes(2);
+  expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true');
+});
+
 it('merges implementation and verification navigation into the original checks', async () => {
   render(<SpecCoveragePanel boardId="board" specId="spec" revision="1" onOpenSection={vi.fn()} />);
   await screen.findByText('67%');

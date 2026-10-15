@@ -15,12 +15,53 @@ from okto_pulse.core.kg.interfaces.graph_errors import GraphQueryTimeout
 from okto_pulse.core.ports.spec_coverage_query import SpecCoverageQuery
 from okto_pulse.core.models.spec_coverage_query import SpecCoverageResponse
 from okto_pulse.core.services.spec_coverage_query import project_spec_coverage
+from okto_pulse.core.domain.delivery_assessment import assess_obligation_delivery, aggregate_delivery_metrics
 import test_delivery_evidence_integration as delivery_fixture
+from test_delivery_readiness_batch import read as read_readiness, reader as readiness_reader
 
 ledger = delivery_fixture.ledger
 BOARD = delivery_fixture.BOARD_ID
 SPEC = delivery_fixture.SPEC_ID
 QUERY = SpecCoverageQuery(BOARD, SPEC, 'authorized-actor')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('ledger', ['native_schema'], indirect=True)
+@pytest.mark.parametrize('damage', ['none', 'target_revision', 'revoked'])
+async def test_in_progress_coverage_matches_factual_readiness_without_completing_cards(ledger, damage):
+    session, store, _ = ledger
+    await session.execute(update(Card).values(status='in_progress'))
+    await session.commit()
+    implementation = await delivery_fixture.record(store, delivery_fixture.command())
+    await delivery_fixture.record(store, delivery_fixture.command('test', implementation_ids=[implementation['id']]))
+    if damage == 'target_revision':
+        from datetime import datetime, timezone
+        from hashlib import sha256
+        from okto_pulse.community.adapters.sqlalchemy_code_traceability import CommunitySqlAlchemyCodeTraceabilityStore
+        targets = CommunitySqlAlchemyCodeTraceabilityStore(session)
+        target = await targets.get_target(board_id=BOARD, target_id='target')
+        await targets.update_target(target=replace(target, revision=2,
+            last_change_reason_sha256=sha256(b'Changed target path').hexdigest(),
+            relative_path_hint='src/revised.py', updated_at=datetime.now(timezone.utc)), expected_revision=1)
+    elif damage == 'revoked':
+        await delivery_fixture.record(store, delivery_fixture.command('revoke',
+            card_id='task', record_id=implementation['id']), human=True)
+    await session.commit()
+
+    observed = await CommunitySpecCoverageReader(session, delivery_store=store).read(QUERY, timeout_ms=15000)
+    batch = await read_readiness(readiness_reader(session))
+    # Both native adapters resolve the very same admitted facts, not fabricated
+    # percentages. The only distinction is proof progress versus final lifecycle.
+    assert observed.delivery == batch.facts
+    metrics = aggregate_delivery_metrics(assess_obligation_delivery(batch.facts))
+    result = project_spec_coverage(QUERY, observed)
+    SpecCoverageResponse.model_validate(result)
+    expected = 2 if damage == 'none' else 0
+    assert result['delivery']['counts']['implementation_proven'] == metrics.implementation.satisfied == expected
+    assert result['delivery']['counts']['verification_proven'] == metrics.verification.satisfied == expected
+    assert not evaluate_delivery_coverage(observed.delivery).allowed
+    assert {card.status.value for card in await session.scalars(select(Card))} == {'in_progress'}
+    assert (await session.get(Spec, SPEC)).version == 1
 
 
 @pytest.mark.asyncio

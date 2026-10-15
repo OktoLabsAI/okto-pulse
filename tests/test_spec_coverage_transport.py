@@ -51,6 +51,9 @@ async def api(monkeypatch):
         )
         proof = replace(proof, effective_context=EffectiveDeliveryContext(
             inventory, (), (), frozenset({"automated_test"}),
+            # The fixture declares an empty scenario collection above. None
+            # means an unreadable population and must not be reported as zero.
+            required_scenarios=(),
         ))
         facts = SpecCoverageSnapshot(scope, query.actor_scope_ref, 'revision', datetime.now(timezone.utc), spec, (), True, proof)
         if not query.read_delivery:
