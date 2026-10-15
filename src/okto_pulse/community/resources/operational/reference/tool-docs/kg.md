@@ -147,19 +147,18 @@ Both `profile=summary` and `profile=full` expose:
   plus `reasons` and `policy_reason`.
 - top-level `cognitive_enforcement_mode` (`advisory`/`blocking`) and
   `enforcement_active`.
-- `non_maskable_items` — one entry per OPEN technical item with `artifact_ref`,
-  `source_ref`, `signal`, `last_error`, `error_text`, `next_action`,
-  `remediation` and `drill_down_tool`. A cognitive skip/no_action can never
-  reduce this list (it is derived from health, not from the cognitive verdict).
+- `non_maskable_items` — bounded Board aggregates with `signal` and count when
+  known. They expose no row IDs, source refs or raw errors; `artifact_ref` is
+  the authorized Board, `next_action` is `none` and `drill_down_tool` is null.
+  A cognitive skip/no_action never clears a technical blocker.
+  Missing observations stay unavailable/unknown, never zero or healthy.
 
 `profile=full` ADDS the prose `health_issues` + `root_cause`. An invalid profile
-returns `invalid_profile` (HTTP 400 on REST). Optional `artifact_ref` scopes
-`non_maskable_items`.
+returns `invalid_profile` (HTTP 400 on REST). Observations are Board-scoped.
 
 Args:
     board_id: Board UUID.
     profile: "summary" (default) or "full".
-    artifact_ref: Optional `type:id` ref to scope `non_maskable_items`.
 
 Returns:
     JSON `{board_id, profile, overall_state, cognitive_enforcement_mode,
