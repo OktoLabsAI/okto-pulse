@@ -2411,6 +2411,8 @@ export function CardModal({
                 >
                   <CardResourcesPanel
                     card={card}
+                    revision={liveRevision}
+                    active={activeTab === 'resources' && !syncAuthorizing}
                     expanded={expanded}
                     contentReadOnly={normalContentFrozen}
                     specKnowledgeBases={specKBsFull}

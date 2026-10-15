@@ -24,6 +24,7 @@ interface KnowledgeWorkspaceProps {
   entityType: ResourceGateEntityType;
   entityId: string;
   refreshKey?: string | number;
+  active?: boolean;
   onDelete?: (resourceId: string) => Promise<void | boolean>;
   canDelete?: (item: KnowledgeWorkspaceItem) => boolean;
   className?: string;
@@ -117,6 +118,7 @@ export function KnowledgeWorkspace({
   entityType,
   entityId,
   refreshKey,
+  active = true,
   onDelete,
   canDelete,
   className = '',
@@ -248,12 +250,13 @@ export function KnowledgeWorkspace({
   }, [applyPage, boardId, contextKey, entityId, entityType]);
 
   useEffect(() => {
+    if (!active) return;
     void loadFirstPage();
     return () => {
       requestEpochRef.current += 1;
       loadingMoreRef.current = false;
     };
-  }, [loadFirstPage, refreshKey]);
+  }, [active, loadFirstPage, refreshKey]);
 
   const loadMore = async () => {
     if (!nextCursor || loadingMoreRef.current) return;

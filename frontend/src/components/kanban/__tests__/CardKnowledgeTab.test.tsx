@@ -765,7 +765,10 @@ describe('CardKnowledgeTab', () => {
       expect(apiMock.getCardKnowledgeAssignments.mock.calls.length).toBeGreaterThanOrEqual(2);
     });
     expect(apiMock.replaceCardKnowledgeAssignments).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole('radio', { name: 'No decision' })).toBeChecked();
+    expect(screen.getByRole('radio', { name: 'Reference' })).toBeChecked();
+    expect(screen.getByLabelText(/Relevance justification/i)).toHaveValue('Relevant to this task.');
+    expect(screen.getByRole('button', { name: 'Save explicit decision' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Review current base' })).toBeEnabled();
   });
 
   it('uses typed HTTP 409 metadata to reload the revision and require reconfirmation', async () => {
@@ -804,6 +807,128 @@ describe('CardKnowledgeTab', () => {
       expect(apiMock.getCardKnowledgeAssignments.mock.calls.length).toBeGreaterThanOrEqual(2);
     });
     expect(apiMock.replaceCardKnowledgeAssignments).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole('radio', { name: 'No decision' })).toBeChecked();
+    expect(screen.getByRole('radio', { name: 'Reference' })).toBeChecked();
+    expect(screen.getByLabelText(/Relevance justification/i)).toHaveValue('Relevant before the source changed.');
+    expect(screen.getByRole('button', { name: 'Save explicit decision' })).toBeDisabled();
+    const original = apiMock.replaceCardKnowledgeAssignments.mock.calls[0][1];
+    apiMock.replaceCardKnowledgeAssignments.mockResolvedValue(mutationResponse);
+    fireEvent.click(screen.getByRole('button', { name: 'Review current base' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save explicit decision' }));
+    await waitFor(() => expect(apiMock.replaceCardKnowledgeAssignments).toHaveBeenCalledTimes(2));
+    const retry = apiMock.replaceCardKnowledgeAssignments.mock.calls[1][1];
+    expect(retry.expected_revision).toBe(7);
+    expect(retry.knowledge_ids).toEqual(original.knowledge_ids);
+    expect(retry.idempotency_key).not.toBe(original.idempotency_key);
+  });
+
+  it('preserves an edited decision on an external revision until explicit base review', async () => {
+    const props = { card: baseCard, specKnowledgeBases: [], onUpdate: vi.fn() };
+    const view = render(<CardKnowledgeTab {...props} revision={0} />);
+    await screen.findByText('revision 7');
+    fireEvent.click(screen.getByRole('radio', { name: 'Drop' }));
+    fireEvent.change(screen.getByLabelText(/Relevance justification/i), { target: { value: 'Draft rationale' } });
+    apiMock.getCardKnowledgeAssignments.mockResolvedValue({ ...emptyTechnicalRead, revision: 8 });
+    view.rerender(<CardKnowledgeTab {...props} revision={1} />);
+    await screen.findByText('revision 8');
+    expect(screen.getByLabelText(/Relevance justification/i)).toHaveValue('Draft rationale');
+    expect(screen.getByRole('button', { name: 'Save explicit decision' })).toBeDisabled();
+    expect(apiMock.dropCardKnowledgeAssignments).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Review current base' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save explicit decision' }));
+    await waitFor(() => expect(apiMock.dropCardKnowledgeAssignments).toHaveBeenCalledWith('c1',
+      expect.objectContaining({ expected_revision: 8, justification: 'Draft rationale' })));
+  });
+
+  it('does not manufacture a conflict when refresh returns the same assignment revision', async () => {
+    const props = { card: baseCard, specKnowledgeBases: [], onUpdate: vi.fn() };
+    const view = render(<CardKnowledgeTab {...props} revision={0} />);
+    await screen.findByText('revision 7');
+    fireEvent.click(screen.getByRole('radio', { name: 'Drop' }));
+    fireEvent.change(screen.getByLabelText(/Relevance justification/i), { target: { value: 'Keep draft' } });
+    view.rerender(<CardKnowledgeTab {...props} revision={1} />);
+    await waitFor(() => expect(apiMock.getCardKnowledgeAssignments).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save explicit decision' })).toBeEnabled());
+    expect(screen.queryByRole('button', { name: 'Review current base' })).not.toBeInTheDocument();
+  });
+
+  it('blocks writes after a partial inventory read failure without discarding the draft', async () => {
+    const props = { card: baseCard, specKnowledgeBases: [], onUpdate: vi.fn() };
+    const view = render(<CardKnowledgeTab {...props} revision={0} />);
+    await screen.findByText('revision 7');
+    fireEvent.click(screen.getByRole('radio', { name: 'Drop' }));
+    fireEvent.change(screen.getByLabelText(/Relevance justification/i), { target: { value: 'Offline draft' } });
+    apiMock.getEffectiveResources.mockRejectedValue(new Error('offline'));
+    view.rerender(<CardKnowledgeTab {...props} revision={1} />);
+    await screen.findByText('Failed to load source spec Knowledge inventory.');
+    expect(screen.getByLabelText(/Relevance justification/i)).toHaveValue('Offline draft');
+    expect(screen.getByRole('button', { name: 'Save explicit decision' })).toBeDisabled();
+    expect(apiMock.dropCardKnowledgeAssignments).not.toHaveBeenCalled();
+  });
+
+  it('defers both Knowledge readers while hidden and reads the latest revision on opening', async () => {
+    const props = { card: baseCard, specKnowledgeBases: [], onUpdate: vi.fn() };
+    const view = render(<CardKnowledgeTab {...props} active={false} revision={0} />);
+    await Promise.resolve();
+    expect(apiMock.getCardKnowledgeAssignments).not.toHaveBeenCalled();
+    expect(apiMock.getEffectiveResources).not.toHaveBeenCalled();
+    view.rerender(<CardKnowledgeTab {...props} active={false} revision={2} />);
+    await Promise.resolve();
+    expect(apiMock.getCardKnowledgeAssignments).not.toHaveBeenCalled();
+    view.rerender(<CardKnowledgeTab {...props} active revision={2} />);
+    await screen.findByText('revision 7');
+    expect(apiMock.getCardKnowledgeAssignments).toHaveBeenCalledTimes(1);
+    expect(apiMock.getEffectiveResources).toHaveBeenCalledWith('b1', 'card', 'c1', { profile: 'summary', limit: 25 });
+  });
+
+  it('requires an explicit correction when a selected root disappears', async () => {
+    const props = { card: baseCard, specKnowledgeBases: [{ id: 'root', title: 'Removed root', content: '' }], onUpdate: vi.fn() };
+    const view = render(<CardKnowledgeTab {...props} revision={0} />);
+    await screen.findByText('revision 7');
+    fireEvent.click(screen.getByRole('radio', { name: 'Reference' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select Removed root' }));
+    fireEvent.change(screen.getByLabelText(/Relevance justification/i), { target: { value: 'Retained explanation' } });
+    apiMock.getCardKnowledgeAssignments.mockResolvedValue({ ...emptyTechnicalRead, revision: 8 });
+    view.rerender(<CardKnowledgeTab {...props} specKnowledgeBases={[]} revision={1} />);
+    await screen.findByText('revision 8');
+    expect(screen.getByLabelText(/Relevance justification/i)).toHaveValue('Retained explanation');
+    expect(screen.getByRole('button', { name: 'Review current base' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Save explicit decision' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Remove unavailable selections' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Review current base' }));
+    expect(screen.getByRole('button', { name: 'Save explicit decision' })).toBeDisabled();
+    expect(apiMock.replaceCardKnowledgeAssignments).not.toHaveBeenCalled();
+  });
+
+  it('clears protected content and the draft after a denied read', async () => {
+    const props = { card: baseCard, specKnowledgeBases: [], onUpdate: vi.fn() };
+    const view = render(<CardKnowledgeTab {...props} revision={0} />);
+    await screen.findByText('revision 7');
+    fireEvent.click(screen.getByRole('radio', { name: 'Drop' }));
+    fireEvent.change(screen.getByLabelText(/Relevance justification/i), { target: { value: 'Protected draft' } });
+    apiMock.getCardKnowledgeAssignments.mockRejectedValue({ status: 403 });
+    view.rerender(<CardKnowledgeTab {...props} revision={1} />);
+    await screen.findByText('Knowledge access is no longer available.');
+    expect(screen.queryByDisplayValue('Protected draft')).not.toBeInTheDocument();
+    expect(screen.queryByText('Existing KB')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Save explicit decision' })).not.toBeInTheDocument();
+  });
+
+  it('ignores a mutation response after its Card was replaced', async () => {
+    const pending = deferred<unknown>();
+    apiMock.dropCardKnowledgeAssignments.mockReturnValue(pending.promise);
+    const props = { card: baseCard, specKnowledgeBases: [], onUpdate: vi.fn() };
+    const view = render(<CardKnowledgeTab {...props} />);
+    await screen.findByText('revision 7');
+    fireEvent.click(screen.getByRole('radio', { name: 'Drop' }));
+    fireEvent.change(screen.getByLabelText(/Relevance justification/i), { target: { value: 'Old Card draft' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save explicit decision' }));
+    await waitFor(() => expect(apiMock.dropCardKnowledgeAssignments).toHaveBeenCalledTimes(1));
+    view.rerender(<CardKnowledgeTab {...props} card={{ ...baseCard, id: 'c2' }} />);
+    await waitFor(() => expect(apiMock.getCardKnowledgeAssignments).toHaveBeenCalledWith('c2'));
+    pending.resolve(mutationResponse);
+    await waitFor(() => expect(screen.getByRole('radio', { name: 'No decision' })).toBeChecked());
+    expect(props.onUpdate).not.toHaveBeenCalled();
+    expect(toastMock.success).not.toHaveBeenCalled();
+    expect(screen.queryByDisplayValue('Old Card draft')).not.toBeInTheDocument();
   });
 });

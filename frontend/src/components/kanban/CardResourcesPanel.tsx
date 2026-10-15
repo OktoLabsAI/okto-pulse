@@ -37,6 +37,8 @@ type CardResourceTab =
 interface CardResourcesPanelProps {
   card: Card;
   expanded: boolean;
+  revision?: number;
+  active?: boolean;
   contentReadOnly: boolean;
   specKnowledgeBases: {
     id: string;
@@ -194,6 +196,8 @@ function AttachmentsPanel({
 export function CardResourcesPanel({
   card,
   expanded,
+  revision = 0,
+  active = true,
   contentReadOnly,
   specKnowledgeBases,
   canReadMockups,
@@ -316,6 +320,8 @@ export function CardResourcesPanel({
         >
           <CardKnowledgeTab
             card={card}
+            revision={`${revision}:${resourceRevision}`}
+            active={active && activeTab === 'knowledge'}
             specKnowledgeBases={specKnowledgeBases}
             readOnly={contentReadOnly || card.status === 'rejected'}
             onUpdate={async () => {
