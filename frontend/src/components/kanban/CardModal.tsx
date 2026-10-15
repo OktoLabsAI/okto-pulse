@@ -1863,6 +1863,8 @@ export function CardModal({
                 >
                   <ImplementationTargetsPanel
                     boardId={card.board_id}
+                    revision={liveRevision}
+                    active={activeTab === 'implementation-targets' && !syncAuthorizing}
                     subjectId={card.id}
                     subjectVersion={card.subject_version ?? 1}
                     specVersion={fullSpec?.version}

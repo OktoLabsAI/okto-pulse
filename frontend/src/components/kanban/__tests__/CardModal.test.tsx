@@ -2365,6 +2365,28 @@ describe('CardModal', () => {
     await waitFor(() => expect(apiMock.getCardActivity).toHaveBeenCalledOnce());
   });
 
+  it('propagates external revisions and visibility through Resources to Knowledge', async () => {
+    render(<CardModal boardId="board-1" />);
+    fireEvent.click(await screen.findByRole('tab', { name: /^Resources/ }));
+    fireEvent.click(await screen.findByRole('tab', { name: /^Knowledge/ }));
+    await screen.findByTestId('card-knowledge-tab');
+    const props = () => cardKnowledgeTabMock.render.mock.calls.at(-1)![0];
+    expect(props().active).toBe(true);
+    const initial = props().revision;
+    await externalRevision();
+    await waitFor(() => expect(props().revision).not.toBe(initial));
+    expect(props().active).toBe(true);
+    fireEvent.click(screen.getByRole('tab', { name: /^Details$/ }));
+    expect(props().active).toBe(false);
+    const hidden = props().revision;
+    await externalRevision();
+    await waitFor(() => expect(props().revision).not.toBe(hidden));
+    expect(props().active).toBe(false);
+    fireEvent.click(screen.getByRole('tab', { name: /^Resources/ }));
+    expect(props().active).toBe(true);
+    expect(screen.getByRole('tab', { name: /^Knowledge/ })).toHaveAttribute('aria-selected', 'true');
+  });
+
   it.each(['assign', 'drop', 'refresh'] as const)(
     'keeps the Knowledge tab mounted and ignores Escape, backdrop, and tab changes during %s',
     async (operation) => {
