@@ -120,8 +120,12 @@ async def test_native_resource_readiness_matches_public_promotions(
     if blocked:
         assert status in {None, 409}, response
         diagnosis = response['detail'] if surface == 'rest' else response
-        assert diagnosis.get('message') == component.message, diagnosis
-        assert diagnosis.get('code', diagnosis.get('error')) == component.reason_codes[0], diagnosis
+        # Native Resource Gate transports use distinct fields, preserving the
+        # same code/message/facts; do not demand a new envelope from the gate.
+        assert diagnosis['message' if surface == 'rest' else 'error'] == component.message, diagnosis
+        assert diagnosis['error' if surface == 'rest' else 'code'] == component.reason_codes[0], diagnosis
+        assert diagnosis['details']['spec_id'] == spec_id
+        assert diagnosis['details']['board_id'] == board_id
         assert await _state(db_factory, spec_id) == before
     else:
         assert status in {None, 201 if quality_enabled else 200}, response

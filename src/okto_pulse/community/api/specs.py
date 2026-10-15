@@ -1761,6 +1761,11 @@ async def move_spec(
         raise RESTAdapterContract.http_error(e) from e
     except SpecDependencyOperationError as exc:
         raise _spec_dependency_error(exc) from exc
+    except CodeTraceabilityContractError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=exc.to_error_dict(),
+        ) from exc
     except ValueError as e:
         from okto_pulse.core.application.delivery_errors import DeliveryGateBlocked
         if isinstance(e, DeliveryGateBlocked):
