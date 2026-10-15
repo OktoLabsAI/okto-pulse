@@ -1719,8 +1719,9 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       });
     },
 
-    async deleteArchitectureDesign(designId: string): Promise<void> {
-      await apiClient.fetch(`/architecture/${designId}`, { method: 'DELETE' });
+    async deleteArchitectureDesign(designId: string, expectedVersion?: number): Promise<void> {
+      const query = expectedVersion === undefined ? '' : `?expected_version=${expectedVersion}`;
+      await apiClient.fetch(`/architecture/${designId}${query}`, { method: 'DELETE' });
     },
 
     async getArchitectureDiagramPayload(designId: string, diagramId: string): Promise<ArchitectureDiagramPayloadResponse> {
@@ -1730,7 +1731,7 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
     async updateArchitectureDiagramPayload(
       designId: string,
       diagramId: string,
-      data: { payload: Record<string, unknown> | unknown[] | string; format?: ArchitectureDiagramFormat; change_summary?: string },
+      data: { payload: Record<string, unknown> | unknown[] | string; format?: ArchitectureDiagramFormat; change_summary?: string; expected_version?: number },
     ): Promise<ArchitectureDesign> {
       return apiClient.fetchJson<ArchitectureDesign>(`/architecture/${designId}/diagrams/${diagramId}/payload`, {
         method: 'PUT',
@@ -1748,6 +1749,7 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
         order_index?: number;
         replace_diagram_id?: string | null;
         change_summary?: string;
+        expected_version?: number;
       },
     ): Promise<ArchitectureDesign> {
       return apiClient.fetchJson<ArchitectureDesign>(`/architecture/${designId}/diagrams/import-excalidraw`, {

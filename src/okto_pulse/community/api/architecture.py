@@ -74,6 +74,7 @@ class DiagramPayloadUpdate(BaseModel):
     """Payload replacement for an existing diagram."""
 
     payload: dict[str, Any] | list[Any] | str
+    expected_version: int | None = Field(None, ge=1, strict=True)
     format: ArchitectureDiagramFormat | None = None
     change_summary: str | None = None
     architecture_warning_acknowledgement: (
@@ -85,6 +86,7 @@ class ExcalidrawImportRequest(BaseModel):
     """Import an Excalidraw scene into an architecture design."""
 
     title: str = Field(..., min_length=1, max_length=255)
+    expected_version: int | None = Field(None, ge=1, strict=True)
     payload: dict[str, Any]
     diagram_type: ArchitectureDiagramType = "other"
     description: str | None = None
@@ -433,12 +435,13 @@ async def update_architecture_design(
 @router.delete("/architecture/{design_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_architecture_design(
     design_id: str,
+    expected_version: int | None = Query(None, ge=1),
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     try:
         await DeleteArchitectureDesignUseCase().execute(
-            DeleteArchitectureDesignCommand(design_id),
+            DeleteArchitectureDesignCommand(design_id, expected_version=expected_version),
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
@@ -451,6 +454,9 @@ async def delete_architecture_design(
         raise _http_error_from_conflict(exc)
     except SubjectEditRequiresDraftError as error:
         raise RESTAdapterContract.http_error(error) from error
+
+    except ValueError as error:
+        raise _http_error_from_value(error) from error
 
 
 @router.get(
@@ -506,6 +512,7 @@ async def update_architecture_diagram_payload(
                 data.payload,
                 data.change_summary,
                 data.architecture_warning_acknowledgement,
+                expected_version=data.expected_version,
             ),
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
@@ -551,6 +558,7 @@ async def import_excalidraw_architecture_diagram(
                 data.replace_diagram_id,
                 data.change_summary,
                 data.architecture_warning_acknowledgement,
+                expected_version=data.expected_version,
             ),
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
