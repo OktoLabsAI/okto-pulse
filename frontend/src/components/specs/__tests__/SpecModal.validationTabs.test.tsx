@@ -378,6 +378,41 @@ describe('SpecModal validation navigation', () => {
     await waitFor(() => expect(apiMock.getSpec).toHaveBeenCalledTimes(2));
   });
 
+  it('keeps a Functional draft across a watched Spec reload and submits only after explicit base review', async () => {
+    const initial = { ...baseSpec, functional_requirements: [{ id: 'fr-live', title: 'Original title', text: 'Original content' }] };
+    apiMock.getSpec.mockResolvedValue(initial);
+    apiMock.updateSpecEntity.mockResolvedValue({ success: true, spec_version: 6 });
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('tab', { name: 'Requirements & Decisions' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit fr-live' }));
+    fireEvent.change(screen.getByLabelText('Content'), { target: { value: 'Local unsaved content' } });
+    expect(workspaceWatch.options?.boardId).toBe(baseSpec.board_id);
+    apiMock.getSpec.mockResolvedValue({ ...initial, version: 5, functional_requirements: [{ ...initial.functional_requirements[0], text: 'Remote content' }] });
+    await act(async () => workspaceWatch.options!.onChange({ subjects: [], initial: false, authorityChanged: false }));
+    expect(screen.getByLabelText('Content')).toHaveValue('Local unsaved content');
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    expect(apiMock.updateSpecEntity).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Review requirement base' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(apiMock.updateSpecEntity).toHaveBeenCalledWith(baseSpec.id, 'functional_requirement', 'fr-live', { title: 'Original title', text: 'Local unsaved content' }, 5));
+  });
+
+  it('keeps an expanded AC verification draft across a watched version change', async () => {
+    const initial = { ...baseSpec, acceptance_criteria: [{ id: 'ac-live', title: 'Observable condition', text: 'Initial condition' }],
+      functional_requirements: [{ id: 'fr-live', title: 'Obligation', text: 'Initial obligation' }] };
+    apiMock.getSpec.mockResolvedValue(initial);
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    await openCriteria();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit verification ac-live' }));
+    fireEvent.change(screen.getByLabelText('Verification profile'), { target: { value: 'technical' } });
+    apiMock.getSpec.mockResolvedValue({ ...initial, version: 5 });
+    await act(async () => workspaceWatch.options!.onChange({ subjects: [], initial: false, authorityChanged: false }));
+    expect(screen.getByLabelText('Verification profile')).toHaveValue('technical');
+    expect(screen.getByRole('button', { name: 'Save verification plan' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Review verification base' })).toBeEnabled();
+    expect(apiMock.updateSpecEntity).not.toHaveBeenCalled();
+  });
+
   it('shows the assigned method and expected observation inside the AC without another criterion list', async () => {
     apiMock.getSpec.mockResolvedValue({ ...baseSpec,
       acceptance_criteria: [{ id: 'ac-plan', title: 'Public boundary', text: 'No private imports' }],

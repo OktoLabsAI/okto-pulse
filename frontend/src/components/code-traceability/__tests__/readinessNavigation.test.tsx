@@ -156,7 +156,7 @@ it('focuses and expands the exact native row when it arrives, without editing or
     const root = useRef<HTMLDivElement>(null);
     useNativeReferenceFocus(root, 'ac:capacity', 'b:s');
     return <><div data-readiness-ref="ac:capacity" tabIndex={-1}>Another modal</div><div ref={root}>
-      {loaded && <TextRequirementsTab kind="AC" items={[{ id: 'capacity', title: 'Capacity', text: 'Reject overbooking', status: 'active' }]}
+      {loaded && <TextRequirementsTab kind="AC" version={1} items={[{ id: 'capacity', title: 'Capacity', text: 'Reject overbooking', status: 'active' }]}
         canCreate canEdit canRevoke onSave={save} onRevoke={revoke} />}
     </div></>;
   }

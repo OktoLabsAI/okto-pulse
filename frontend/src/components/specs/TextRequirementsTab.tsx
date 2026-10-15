@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { CheckCircle, ChevronDown, ChevronUp, FileText, Pencil, Plus, Trash2, XCircle } from 'lucide-react';
 import type { SpecTextRequirement } from '@/types';
@@ -6,9 +6,11 @@ import type { SpecTextRequirement } from '@/types';
 export interface TextRequirementDraft { title: string; text: string }
 interface Props {
   kind: 'FR' | 'AC';
+  version: number;
+  readCurrent?: boolean;
   items: SpecTextRequirement[];
   canCreate: boolean; canEdit: boolean; canRevoke: boolean;
-  onSave: (id: string | null, draft: TextRequirementDraft) => Promise<void>;
+  onSave: (id: string | null, draft: TextRequirementDraft, expectedVersion: number) => Promise<void>;
   onRevoke: (id: string) => Promise<void>;
   renderDetails?: (item: SpecTextRequirement) => ReactNode;
 }
@@ -16,30 +18,51 @@ const button = 'inline-flex min-h-9 items-center justify-center gap-1.5 rounded-
 const input = 'mt-1 block w-full rounded-lg border border-gray-300 bg-white p-2 text-sm dark:border-gray-600 dark:bg-gray-900';
 
 /** Edits stable entities directly; text equality never determines identity. */
-export function TextRequirementsTab({ kind, items, canCreate, canEdit, canRevoke, onSave, onRevoke, renderDetails }: Props) {
-  const [editor, setEditor] = useState<{ id: string | null; draft: TextRequirementDraft } | null>(null);
+export function TextRequirementsTab({ kind, version, readCurrent = true, items, canCreate, canEdit, canRevoke, onSave, onRevoke, renderDetails }: Props) {
+  const [editor, setEditor] = useState<{ id: string | null; draft: TextRequirementDraft; version: number } | null>(null);
+  const [conflict, setConflict] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const writing = useRef(false);
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  useEffect(() => {
+    setEditor(current => current && (current.id ? !canEdit : !canCreate) ? null : current);
+  }, [canEdit, canCreate]);
   const rows = items.filter(item => (item.status || 'active') === 'active');
+  const currentItem = editor?.id ? rows.find(item => item.id === editor.id) : null;
+  const removed = Boolean(editor?.id && !currentItem);
+  const changed = Boolean(editor && (editor.version !== version || conflict));
   const title = kind === 'FR' ? 'Functional requirements' : 'Acceptance criteria';
   async function write(action: () => Promise<void>) {
-    if (writing.current) return;
+    if (writing.current || !readCurrent) return;
     writing.current = true; setBusy(true); setError('');
-    try { await action(); setEditor(null); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not save. Refresh the Spec before retrying.'); }
-    finally { writing.current = false; setBusy(false); }
+    try { await action(); if (mounted.current) { setEditor(null); setConflict(false); } }
+    catch (cause) {
+      if (!mounted.current) return;
+      if (typeof cause === 'object' && cause !== null && 'status' in cause && cause.status === 409) setConflict(true);
+      setError(cause instanceof Error ? cause.message : 'Could not save. Refresh the Spec before retrying.');
+    }
+    finally { writing.current = false; if (mounted.current) setBusy(false); }
   }
   const form = editor && (editor.id ? canEdit : canCreate) && <form onSubmit={event => {
     event.preventDefault();
-    if (editor.draft.title.trim() && editor.draft.text.trim()) void write(() => onSave(editor.id, { title: editor.draft.title.trim(), text: editor.draft.text.trim() }));
+    if (!changed && !removed && readCurrent && editor.draft.title.trim() && editor.draft.text.trim()) void write(() => onSave(editor.id, { title: editor.draft.title.trim(), text: editor.draft.text.trim() }, editor.version));
   }} className="border border-sky-200 dark:border-sky-700 rounded-lg p-3 space-y-2 bg-sky-50/50 dark:bg-sky-900/10">
-    <fieldset disabled={busy} className="space-y-3">
+    {removed && <p role="alert">This requirement is no longer active. Your draft is preserved; cancel it after reviewing the current requirements.</p>}
+    {!readCurrent && <p role="status">Current requirements could not be confirmed. Saving is unavailable until the Spec is refreshed.</p>}
+    {changed && <div role="alert" className="space-y-2 rounded border border-amber-300 p-2 text-sm">
+      <p>The Spec changed. Your draft is preserved; review the current requirement before using the new base.</p>
+      {currentItem && <div><p className="font-medium">Current title: {currentItem.title}</p><p className="whitespace-pre-wrap">{currentItem.text}</p></div>}
+      <button type="button" className={button} disabled={busy || !readCurrent || removed || (conflict && version === editor.version)}
+        onClick={() => { setEditor({ ...editor, version }); setConflict(false); setError(''); }}>Review requirement base</button>
+    </div>}
+    <fieldset disabled={busy || !readCurrent} className="space-y-3">
       <legend className="mb-2 text-sm font-semibold">{editor.id ? 'Edit' : 'New'} {kind}</legend>
       <label className="block text-sm font-medium">Title<input autoFocus required className={input} value={editor.draft.title} onChange={event => setEditor({ ...editor, draft: { ...editor.draft, title: event.target.value } })} /></label>
       <label className="block text-sm font-medium">Content<textarea required rows={5} className={input} value={editor.draft.text} onChange={event => setEditor({ ...editor, draft: { ...editor.draft, text: event.target.value } })} /></label>
-      <div className="flex gap-2"><button type="submit" className={`${button} bg-blue-600 text-white hover:bg-blue-700`} disabled={!editor.draft.title.trim() || !editor.draft.text.trim()}>{busy ? 'Saving…' : 'Save'}</button><button type="button" className={button} onClick={() => setEditor(null)}>Cancel</button></div>
+      <div className="flex gap-2"><button type="submit" className={`${button} bg-blue-600 text-white hover:bg-blue-700`} disabled={changed || removed || !editor.draft.title.trim() || !editor.draft.text.trim()}>{busy ? 'Saving…' : 'Save'}</button><button type="button" className={button} onClick={() => { setEditor(null); setConflict(false); }}>Cancel</button></div>
     </fieldset>
   </form>;
     const linked = rows.filter(item => (item.linked_task_ids?.length || 0) > 0).length;
@@ -71,8 +94,8 @@ export function TextRequirementsTab({ kind, items, canCreate, canEdit, canRevoke
               {kind === 'FR' && <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded ${taskCount > 0 ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300' : 'bg-gray-100 text-gray-400 dark:bg-gray-700 dark:text-gray-500'}`}>{taskCount} tasks</span>}
               {expanded ? <ChevronUp size={14} className="text-gray-400 shrink-0" /> : <ChevronDown size={14} className="text-gray-400 shrink-0" />}
             </button>
-            {canEdit && <button type="button" aria-label={`Edit ${item.id}`} title="Edit" disabled={busy} className="p-0.5 text-gray-400 hover:text-blue-500 disabled:opacity-50" onClick={() => { setError(''); setEditor({ id: item.id, draft: { title: item.title || '', text: item.text } }); }}><Pencil size={12} /></button>}
-            {canRevoke && <button type="button" aria-label={`Revoke ${item.id}`} title="Revoke" disabled={busy} className="p-0.5 text-gray-400 hover:text-red-500 disabled:opacity-50" onClick={() => void write(() => onRevoke(item.id))}><Trash2 size={12} /></button>}
+            {canEdit && <button type="button" aria-label={`Edit ${item.id}`} title="Edit" disabled={busy || !readCurrent} className="p-0.5 text-gray-400 hover:text-blue-500 disabled:opacity-50" onClick={() => { setError(''); setConflict(false); setEditor({ id: item.id, version, draft: { title: item.title || '', text: item.text } }); }}><Pencil size={12} /></button>}
+            {canRevoke && <button type="button" aria-label={`Revoke ${item.id}`} title="Revoke" disabled={busy || !readCurrent} className="p-0.5 text-gray-400 hover:text-red-500 disabled:opacity-50" onClick={() => void write(() => onRevoke(item.id))}><Trash2 size={12} /></button>}
           </header>
           {expanded && <div id={`requirement-details-${item.id}`} className="px-3 py-2 space-y-2 text-xs text-gray-600 dark:text-gray-400">
             <p className="text-xs text-gray-600 dark:text-gray-400 whitespace-pre-wrap break-words">{item.text}</p>
@@ -82,7 +105,8 @@ export function TextRequirementsTab({ kind, items, canCreate, canEdit, canRevoke
           </div>}
         </article>;
       })}
-      {editor?.id === null ? form : canCreate && <button type="button" disabled={busy} onClick={() => { setError(''); setEditor({ id: null, draft: { title: '', text: '' } }); }} className="w-full py-2 border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-500 hover:border-sky-400 hover:text-sky-500 transition-colors flex items-center justify-center gap-1 disabled:opacity-50"><Plus size={14} />{kind === 'FR' ? 'Add Functional Requirement' : 'Add AC'}</button>}
+      {removed && form}
+      {editor?.id === null ? form : canCreate && <button type="button" disabled={busy || !readCurrent || Boolean(editor)} onClick={() => { setError(''); setConflict(false); setEditor({ id: null, version, draft: { title: '', text: '' } }); }} className="w-full py-2 border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-500 hover:border-sky-400 hover:text-sky-500 transition-colors flex items-center justify-center gap-1 disabled:opacity-50"><Plus size={14} />{kind === 'FR' ? 'Add Functional Requirement' : 'Add AC'}</button>}
     </section>;
 
 }

@@ -51,6 +51,39 @@ describe('current execution contract', () => {
 
 describe('requirement qualification', () => {
   beforeEach(() => { vi.clearAllMocks(); api.getRequirementVerification.mockResolvedValue(response()); api.updateSpecEntity.mockResolvedValue({ success: true }); onSaved.mockResolvedValue(undefined); });
+  it('preserves a qualification draft across an external revision until the base is reviewed', async () => {
+    const view = render(<RequirementVerificationPanel {...props()} />); await edit(); useDefault();
+    api.getRequirementVerification.mockResolvedValue(response({ spec_version: 9 }));
+    view.rerender(<RequirementVerificationPanel {...props({ scope: { ...scope, version: 9 } })} />);
+    expect(screen.getByLabelText('functional')).toBeChecked();
+    expect(screen.getByRole('button', { name: 'Save qualification' })).toBeDisabled();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Review qualification base' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Review qualification base' })); save();
+    await waitFor(() => expect(api.updateSpecEntity).toHaveBeenCalled());
+    expect(api.updateSpecEntity.mock.calls[0][4]).toBe(9);
+  });
+  it('keeps qualification fields after a failed read and permits only reading to recover', async () => {
+    const view = render(<RequirementVerificationPanel {...props()} />); await edit(); useDefault();
+    api.getRequirementVerification.mockRejectedValue(new Error('offline'));
+    view.rerender(<RequirementVerificationPanel {...props({ scope: { ...scope, version: 9 } })} />);
+    await screen.findByText(/Qualification could not be loaded/);
+    expect(screen.getByLabelText('functional')).toBeChecked();
+    expect(screen.getByRole('button', { name: 'Save qualification' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Review qualification base' })).toBeDisabled();
+    api.getRequirementVerification.mockResolvedValue(response({ spec_version: 9 }));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh qualification' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Review qualification base' })).toBeEnabled());
+    expect(screen.getByLabelText('functional')).toBeChecked();
+    expect(api.updateSpecEntity).not.toHaveBeenCalled();
+  });
+  it('clears a qualification draft when its refreshed read is denied', async () => {
+    const view = render(<RequirementVerificationPanel {...props()} />); await edit(); useDefault();
+    api.getRequirementVerification.mockRejectedValue({ status: 403 });
+    view.rerender(<RequirementVerificationPanel {...props({ scope: { ...scope, version: 9 } })} />);
+    await screen.findByText(/Qualification could not be loaded/);
+    expect(screen.queryByLabelText('Qualification mode')).not.toBeInTheDocument();
+    expect(api.updateSpecEntity).not.toHaveBeenCalled();
+  });
   it('loads only when requested and materializes a default only after deliberate versioned save', async () => {
     render(<RequirementVerificationPanel {...props()} />);
     expect(api.getRequirementVerification).not.toHaveBeenCalled();

@@ -43,9 +43,9 @@ function editableCriterion(value: unknown): Criterion | null {
   return { ...row, text: String(row.text || row.title || '') } as unknown as Criterion;
 }
 
-function CriterionEditor({ specId, version, criterion, options, onSaved }: {
+function CriterionEditor({ specId, version, criterion, options, readCurrent, onSaved }: {
   specId: string; version: number; criterion: Criterion;
-  options: VerificationRequirementOption[]; onSaved: () => Promise<void>;
+  options: VerificationRequirementOption[]; readCurrent: boolean; onSaved: () => Promise<void>;
 }) {
   const api = useDashboardApi();
   const [profile, setProfile] = useState<VerificationProfile | ''>(criterion.verification_profile || '');
@@ -54,6 +54,13 @@ function CriterionEditor({ specId, version, criterion, options, onSaved }: {
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
+  const [baseVersion, setBaseVersion] = useState(version);
+  const [conflict, setConflict] = useState(false);
+  const knownChoices = useRef(new Set(options.map(item => identity(item.type, item.id))));
+  options.forEach(item => knownChoices.current.add(identity(item.type, item.id)));
+  const removedLink = links.some(link => knownChoices.current.has(identity(link.requirement_type, link.requirement_id))
+    && !options.some(item => identity(item.type, item.id) === identity(link.requirement_type, link.requirement_id)));
+  const baseChanged = baseVersion !== version || conflict;
   const inflight = useRef(false);
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
@@ -63,27 +70,39 @@ function CriterionEditor({ specId, version, criterion, options, onSaved }: {
     try { await onSaved(); } catch { if (mounted.current) setError('Saved. Refresh failed; reload the Spec to see the current version.'); }
   }
   async function save() {
-    if (inflight.current || saved) return;
+    if (inflight.current || saved || !readCurrent || baseChanged || removedLink) return;
     inflight.current = true;
     setBusy(true); setError('');
     try {
       const result = await api.updateSpecEntity(specId, 'acceptance_criterion', criterion.id, {
         verification_profile: profile || null,
         requirement_links: links.map(link => ({ ...link, aspect: link.aspect?.trim() ? link.aspect : null })),
-      }, version);
+      }, baseVersion);
       if (!mounted.current) return;
       if (!result.success) throw new Error(result.error_message || 'The change was refused. Review the Spec and try again.');
       setSaved(true);
       await refresh();
     } catch (cause) {
-      if (mounted.current) setError(cause instanceof Error ? cause.message : 'Could not save. Refresh the Spec before retrying.');
+      if (mounted.current) {
+        if (typeof cause === 'object' && cause !== null && 'status' in cause && cause.status === 409) setConflict(true);
+        setError(cause instanceof Error ? cause.message : 'Could not save. Refresh the Spec before retrying.');
+      }
     } finally {
       inflight.current = false;
       if (mounted.current) setBusy(false);
     }
   }
   return <div className={verificationCard}>
-    <fieldset disabled={busy || saved} className="space-y-3">
+    {!saved && baseChanged && <div role="alert" className="space-y-2 rounded border border-amber-300 p-2 text-sm">
+      <p>The Spec changed. Your verification draft is preserved. Review the current criterion and links before using the new base.</p>
+      <p className="whitespace-pre-wrap">Current criterion: {criterion.text}</p>
+      <p>Current profile: {criterion.verification_profile || 'Not defined'}</p>
+      <button type="button" className={verificationButton} disabled={busy || !readCurrent || removedLink || (conflict && version === baseVersion)}
+        onClick={() => { setBaseVersion(version); setConflict(false); setError(''); }}>Review verification base</button>
+    </div>}
+    {removedLink && <p role="alert">A selected requirement is no longer available. Remove or review that link before saving.</p>}
+    {!readCurrent && <p role="status">Current verification context is unavailable. Refresh the Spec before saving.</p>}
+    <fieldset disabled={busy || saved || !readCurrent} className="space-y-3">
       <label className="block text-sm">Verification profile
         <select aria-label="Verification profile" className={verificationInput} value={profile} onChange={event => setProfile(event.target.value as VerificationProfile | '')}>
           <option value="">Not defined</option>
@@ -112,7 +131,7 @@ function CriterionEditor({ specId, version, criterion, options, onSaved }: {
           setSelection('');
         }}>Add link</button>
       </div>
-      <button className={verificationButton} type="button" onClick={() => void save()}>{busy ? 'Saving…' : 'Save verification plan'}</button>
+      <button className={verificationButton} type="button" disabled={baseChanged || removedLink} onClick={() => void save()}>{busy ? 'Saving…' : 'Save verification plan'}</button>
     </fieldset>
     {error && <p role="alert">{error}</p>}
     {saved && <button className={verificationButton} type="button" onClick={() => void refresh()}>Reload saved criterion</button>}
@@ -120,9 +139,9 @@ function CriterionEditor({ specId, version, criterion, options, onSaved }: {
 }
 
 /** Verification is a facet of the expanded AC, never a second criterion list. */
-export function CriterionVerificationDetails({ specId, version, value, options, canEdit, onSaved }: {
+export function CriterionVerificationDetails({ specId, version, value, options, canEdit, readCurrent = true, onSaved }: {
   specId: string; version: number; value: unknown;
-  options: VerificationRequirementOption[]; canEdit: boolean; onSaved: () => Promise<void>;
+  options: VerificationRequirementOption[]; canEdit: boolean; readCurrent?: boolean; onSaved: () => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
   const criterion = editableCriterion(value);
@@ -133,7 +152,7 @@ export function CriterionVerificationDetails({ specId, version, value, options, 
       <h4 className="text-xs font-semibold">Verification</h4>
       {canEdit && <button type="button" className="p-1 text-gray-400 hover:text-blue-500" aria-label={`Edit verification ${criterion.id}`} onClick={() => setEditing(!editing)}><Pencil size={14} /></button>}
     </div>
-    {editing && canEdit ? <CriterionEditor key={`${specId}:${version}:${criterion.id}`} specId={specId} version={version} criterion={criterion} options={choices} onSaved={onSaved} /> : <>
+    {editing && canEdit ? <CriterionEditor key={`${specId}:${criterion.id}`} specId={specId} version={version} criterion={criterion} options={choices} readCurrent={readCurrent} onSaved={onSaved} /> : <>
       <p>Profile: <span className="font-medium">{criterion.verification_profile || 'Not defined'}</span></p>
       <div className="grid gap-2 sm:grid-cols-2">{(criterion.requirement_links || []).map(link => <div key={identity(link.requirement_type, link.requirement_id)} className="space-y-1 rounded-lg bg-gray-50 p-2 dark:bg-gray-900/40">
         <span className="text-xs font-medium text-blue-600 dark:text-blue-400">{requirementTypeLabels[link.requirement_type]}</span>

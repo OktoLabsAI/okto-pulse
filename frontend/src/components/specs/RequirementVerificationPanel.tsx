@@ -42,9 +42,9 @@ function sameScope(response: RequirementVerificationResponse, scope: Scope) {
     && response.spec_id === scope.specId && response.spec_version === scope.version && response.spec_edition === scope.edition;
 }
 
-function QualificationEditor({ scope, row, options, criterionLabels, onSaved }: {
+function QualificationEditor({ scope, row, options, criterionLabels, readCurrent, onSaved }: {
   scope: Scope; row: RequirementVerificationRow; options: VerificationRequirementOption[];
-  criterionLabels: Record<string, string>; onSaved: () => Promise<void>;
+  criterionLabels: Record<string, string>; readCurrent: boolean; onSaved: () => Promise<void>;
 }) {
   const api = useDashboardApi();
   const [draft, setDraft] = useState<RequirementVerification>(() => structuredClone(row.verification || { mode: 'explicit', required_profiles: [], inheritance: [], evidence_policy_ref: 'pulse-verification/v1' }));
@@ -56,10 +56,17 @@ function QualificationEditor({ scope, row, options, criterionLabels, onSaved }: 
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
+  const [baseScope, setBaseScope] = useState(() => ({ ...scope }));
+  const [conflict, setConflict] = useState(false);
+  const baseChanged = baseScope.version !== scope.version || baseScope.edition !== scope.edition || conflict;
   const live = useRef(true);
   const writing = useRef(false);
   const request = useRef<{ controller?: AbortController; generation: number }>({ generation: 0 });
   useEffect(() => { const pending = request.current; live.current = true; return () => { live.current = false; pending.controller?.abort(); }; }, []);
+  useEffect(() => {
+    request.current.controller?.abort(); request.current.generation += 1;
+    setSource(null); setLoading(false);
+  }, [scope.version, scope.edition]);
   const choices = options.filter(option => keyOf(option.type, option.id) !== keyOf(row.requirement_type, row.requirement_id)
     && options.filter(item => keyOf(item.type, item.id) === keyOf(option.type, option.id)).length === 1);
   const sourceCriteria = [...new Set(source?.criteria_paths.map(path => path.criterion_id) || [])];
@@ -69,6 +76,7 @@ function QualificationEditor({ scope, row, options, criterionLabels, onSaved }: 
     setSourceKey(value); setSource(null); setSelected([]); setAspect(''); setLoading(false); setError('');
   }
   async function loadSource(more = false) {
+    if (!readCurrent) return;
     const option = choices.find(item => keyOf(item.type, item.id) === sourceKey);
     if (!option || (more && source?.next_paths_offset == null)) return;
     request.current.controller?.abort();
@@ -107,23 +115,34 @@ function QualificationEditor({ scope, row, options, criterionLabels, onSaved }: 
     try { await onSaved(); } catch { if (live.current) setError('Saved. Refresh failed; reload the Spec to see the current qualification.'); }
   }
   async function save() {
-    if (writing.current || saved) return;
+    if (writing.current || saved || !readCurrent || baseChanged) return;
     if (!draft.required_profiles.length || (draft.mode === 'inherited' && !draft.inheritance?.length)) {
       setError('Choose the required profiles and complete any inheritance selections.'); return;
     }
     writing.current = true; setBusy(true); setError('');
     request.current.controller?.abort(); request.current.generation += 1; setLoading(false);
     try {
-      const response = await api.updateSpecEntity(scope.specId, row.requirement_type, row.requirement_id, { verification: draft }, scope.version);
+      const response = await api.updateSpecEntity(scope.specId, row.requirement_type, row.requirement_id, { verification: draft }, baseScope.version);
       if (!live.current) return;
       if (!response.success) throw new Error(response.error_message || 'Qualification was refused. Review the current Spec.');
       setSaved(true); await reload();
     } catch (cause) {
-      if (live.current) setError(cause instanceof Error ? cause.message : 'Could not save. Refresh before retrying.');
+      if (live.current) {
+        if (typeof cause === 'object' && cause !== null && 'status' in cause && cause.status === 409) setConflict(true);
+        setError(cause instanceof Error ? cause.message : 'Could not save. Refresh before retrying.');
+      }
     } finally { writing.current = false; if (live.current) setBusy(false); }
   }
   return <div className={verificationCard}>
-    <fieldset disabled={busy || saved} className="space-y-3">
+    {!saved && baseChanged && <div role="alert" className="space-y-2 rounded border border-amber-300 p-2 text-sm">
+      <p>The Spec changed. Your qualification draft is preserved. Review the current requirement and inheritance before using the new base.</p>
+      <p>Current requirement: {row.title}</p>
+      <p>Current profiles: {row.verification?.required_profiles.join(', ') || 'Not defined'}</p>
+      <button className={verificationButton} type="button" disabled={busy || !readCurrent || (conflict && baseScope.version === scope.version)}
+        onClick={() => { setBaseScope({ ...scope }); setConflict(false); setError(''); }}>Review qualification base</button>
+    </div>}
+    {!readCurrent && <p role="status">Current qualification is unavailable. Refresh qualification before saving.</p>}
+    <fieldset disabled={busy || saved || !readCurrent} className="space-y-3">
       {row.default_proposal && <button className={verificationButton} type="button" onClick={() => { setDraft(structuredClone(row.default_proposal!.verification)); resetSource(''); }}>Use proposed default ({row.default_proposal.version})</button>}
       <label className="block text-sm">Qualification mode
         <select aria-label="Qualification mode" className={verificationInput} value={draft.mode} onChange={event => { setDraft({ ...draft, mode: event.target.value as 'explicit' | 'inherited', inheritance: [] }); resetSource(''); }}>
@@ -155,7 +174,7 @@ function QualificationEditor({ scope, row, options, criterionLabels, onSaved }: 
           <button className={verificationButton} type="button" disabled={loading} onClick={adoptSelection}>Use selected criteria</button>
         </div>}
       </>}
-      <button className={verificationButton} type="button" onClick={() => void save()}>{busy ? 'Saving…' : 'Save qualification'}</button>
+      <button className={verificationButton} type="button" disabled={baseChanged} onClick={() => void save()}>{busy ? 'Saving…' : 'Save qualification'}</button>
     </fieldset>
     {error && <p role="alert">{error}</p>}
     {saved && <button className={verificationButton} type="button" onClick={() => void reload()}>Reload saved qualification</button>}
@@ -165,15 +184,16 @@ function QualificationEditor({ scope, row, options, criterionLabels, onSaved }: 
 type PanelProps = {
   scope: Scope; canRead: boolean; canEdit: (type: VerificationRequirementType) => boolean;
   canReadPlanning?: boolean;
+  readCurrent?: boolean;
   options: VerificationRequirementOption[]; criteria: unknown[]; onSaved: () => Promise<void>;
 };
 
 export function RequirementVerificationPanel(props: PanelProps) {
-  const key = JSON.stringify([props.scope, props.canRead, props.canReadPlanning, ...(['functional_requirement', 'technical_requirement', 'integration_requirement', 'observability_requirement', 'business_rule'] as const).map(props.canEdit)]);
+  const key = JSON.stringify([props.scope.boardId, props.scope.specId, props.canRead, props.canReadPlanning, ...(['functional_requirement', 'technical_requirement', 'integration_requirement', 'observability_requirement', 'business_rule'] as const).map(props.canEdit)]);
   return <RequirementVerificationContent key={key} {...props} />;
 }
 
-function RequirementVerificationContent({ scope, canRead, canReadPlanning = false, canEdit, options, criteria, onSaved }: PanelProps) {
+function RequirementVerificationContent({ scope, canRead, canReadPlanning = false, readCurrent = true, canEdit, options, criteria, onSaved }: PanelProps) {
   const api = useDashboardApi();
   const [open, setOpen] = useState(false);
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
@@ -203,12 +223,15 @@ function RequirementVerificationContent({ scope, canRead, canReadPlanning = fals
         }
         if (!sameScope(data, scope)) throw new Error('The Spec changed. Reload it before reviewing qualification.');
         if (live) setResult({ scope: stamp, data });
-      } catch {
-        if (live) setResult({ scope: stamp, error: 'Qualification could not be loaded for this Spec version. Its completeness is unknown; reload the Spec.' });
+      } catch (cause) {
+        if (live) {
+          if (typeof cause === 'object' && cause !== null && 'status' in cause && [401, 403, 404].includes(Number(cause.status))) setEditor(null);
+          setResult({ scope: stamp, error: 'Qualification could not be loaded for this Spec version. Its completeness is unknown; reload the Spec.' });
+        }
       }
     })();
     return () => { live = false; controller.abort(); };
-  }, [api, scope, canRead, open, offset, stamp]);
+  }, [api, scope.boardId, scope.specId, scope.version, scope.edition, canRead, open, offset, stamp]);
   if (!canRead) return <p className="text-xs text-slate-400">Requirement qualification needs Spec, IR and OR read permissions.</p>;
   return <section aria-label="Requirement qualification" className={verificationCard}>
     <button className={verificationButton} type="button" aria-expanded={open} onClick={() => { setOpen(!open); setEditor(null); }}>Review requirement qualification</button>
@@ -280,8 +303,12 @@ function RequirementVerificationContent({ scope, canRead, canReadPlanning = fals
         {offset > 0 && <button className={verificationButton} type="button" onClick={() => { setOffset(0); setEditor(null); }}>First requirements</button>}
         {current.data.next_offset != null && <button className={verificationButton} type="button" onClick={() => { setOffset(current.data!.next_offset!); setEditor(null); }}>Next requirements</button>}
       </>}
-      <button className={verificationButton} type="button" onClick={() => { setEditor(null); setRefresh(refresh + 1); }}>Refresh qualification</button>
-      {editor && canEdit(editor.requirement_type) && <QualificationEditor key={keyOf(editor.requirement_type, editor.requirement_id)} scope={scope} row={editor} options={options} criterionLabels={criterionLabels} onSaved={onSaved} />}
+      <button className={verificationButton} type="button" onClick={() => setRefresh(refresh + 1)}>Refresh qualification</button>
+      {editor && canEdit(editor.requirement_type) && (() => {
+        const currentRow = current?.data?.items.find(item => keyOf(item.requirement_type, item.requirement_id) === keyOf(editor.requirement_type, editor.requirement_id));
+        return <QualificationEditor key={keyOf(editor.requirement_type, editor.requirement_id)} scope={scope} row={currentRow || editor}
+          options={options} criterionLabels={criterionLabels} readCurrent={readCurrent && Boolean(current?.data?.population_complete && currentRow)} onSaved={onSaved} />;
+      })()}
     </>}
   </section>;
 }

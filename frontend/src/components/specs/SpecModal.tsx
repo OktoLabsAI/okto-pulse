@@ -1736,13 +1736,17 @@ export function SpecModal({
     entityType: 'functional_requirement' | 'acceptance_criterion',
     id: string | null,
     draft: TextRequirementDraft,
+    expectedVersion: number,
   ) => {
-    if (!spec) return;
+    if (!spec) throw new Error('Current Spec is unavailable.');
     const result = id
-      ? await api.updateSpecEntity(specId, entityType, id, { ...draft }, spec.version)
-      : await api.createSpecEntity(specId, entityType, { ...draft }, spec.version);
+      ? await api.updateSpecEntity(specId, entityType, id, { ...draft }, expectedVersion)
+      : await api.createSpecEntity(specId, entityType, { ...draft }, expectedVersion);
     if (!result.success) throw new Error(result.error_message || 'Could not save requirement');
-    await reloadSpecAfterStructuredEdit();
+    if (currentSpecId.current !== specId) return;
+    // The write already succeeded. A read failure must not offer a duplicate create.
+    try { await reloadSpecAfterStructuredEdit(); }
+    catch { toast.error('Requirement saved. Refresh the Spec to see its current state.'); }
   };
 
   const syncStructuredCollection = async (
@@ -1828,10 +1832,14 @@ export function SpecModal({
   const [showSubmitValidationModal, setShowSubmitValidationModal] = useState(false);
   const [permissionCheckPending, setPermissionCheckPending] = useState(false);
   const [workspaceSyncError, setWorkspaceSyncError] = useState<string | null>(null);
+  const [workspaceReadPending, setWorkspaceReadPending] = useState(false);
   const workspaceLoadGeneration = useRef(0);
-  const validationLive = activeTab === 'validation' || showSubmitValidationModal;
+  // Expand only to editors whose native write base is preserved. The remaining
+  // Spec consumers are integrated after their own draft/read protections.
+  const validationLive = ['validation', 'frs', 'acs'].includes(activeTab) || showSubmitValidationModal;
   useEffect(() => {
     setPermissionCheckPending(false);
+    setWorkspaceReadPending(false);
     return () => {
       workspaceLoadGeneration.current += 1;
       specReloadGeneration.current += 1;
@@ -1854,6 +1862,7 @@ export function SpecModal({
       const current = () => generation === workspaceLoadGeneration.current && currentSpecId.current === id;
       try {
         setWorkspaceSyncError(null);
+        setWorkspaceReadPending(true);
         if (authorityChanged) {
           setPermissionCheckPending(true);
           const permissions = await refreshBoardPermissions(spec.board_id);
@@ -1872,7 +1881,7 @@ export function SpecModal({
           setSpec(null); setShowSubmitValidationModal(false); onClose();
         } else setWorkspaceSyncError('The Spec changed, but its current data could not be loaded. Refresh to retry.');
       } finally {
-        if (current()) setPermissionCheckPending(false);
+        if (current()) { setPermissionCheckPending(false); setWorkspaceReadPending(false); }
       }
     },
   });
@@ -2285,7 +2294,9 @@ export function SpecModal({
           {(activeTab === 'frs' || activeTab === 'acs') && (() => {
             const type = activeTab === 'frs' ? 'functional_requirement' : 'acceptance_criterion';
             return <TextRequirementsTab
-              key={`${spec.id}:${spec.version}:${type}:${canStructured(type, 'create')}:${canStructured(type, 'update')}:${canStructured(type, 'revoke')}`}
+              key={`${spec.id}:${type}:${canStructured(type, 'create')}:${canStructured(type, 'update')}:${canStructured(type, 'revoke')}`}
+              version={spec.version}
+              readCurrent={!permissionCheckPending && !workspaceReadPending && !workspaceSyncError && syncState === 'current'}
               kind={activeTab === 'frs' ? 'FR' : 'AC'}
               items={(activeTab === 'frs' ? spec.functional_requirements : spec.acceptance_criteria) || []}
               canCreate={canStructured(type, 'create')}
@@ -2294,6 +2305,7 @@ export function SpecModal({
               renderDetails={activeTab === 'acs' && perms.has('spec.entity.read') ? item => <>
                 <CriterionVerificationDetails
                   specId={spec.id} version={spec.version} value={item}
+                  readCurrent={!permissionCheckPending && !workspaceReadPending && !workspaceSyncError && syncState === 'current'}
                   options={verificationRequirementOptions(spec, canReadIR, canReadOR)}
                   canEdit={!spec.archived && spec.status === 'draft'
                     && hasPermissionWithState(perms.has, 'spec.structured_entity.acceptance_criterion.update', 'spec', spec.status)}
@@ -2311,7 +2323,7 @@ export function SpecModal({
                   <p className="text-gray-500">Execution evidence and current verification results are available in Coverage → Implementation.</p>
                 </section>}
               </> : undefined}
-              onSave={(id, draft) => saveTextRequirement(type, id, draft)}
+              onSave={(id, draft, expectedVersion) => saveTextRequirement(type, id, draft, expectedVersion)}
               onRevoke={async id => {
                 await applyImpactAwareOperation(type, id, 'revoke', spec.version);
                 await reloadSpecAfterStructuredEdit();
@@ -2320,9 +2332,10 @@ export function SpecModal({
           })()}
           {activeTab === 'acs' && <div className="mt-6">
               <RequirementVerificationPanel
-                key={JSON.stringify([spec.board_id, spec.id, spec.version, spec.edition, spec.status, spec.archived, perms.has('spec.entity.read'), canReadIR, canReadOR,
+                key={JSON.stringify([spec.board_id, spec.id, spec.status, spec.archived, perms.has('spec.entity.read'), canReadIR, canReadOR,
                   ...(['functional_requirement', 'technical_requirement', 'integration_requirement', 'observability_requirement', 'business_rule'] as const).map(type => canStructured(type, 'update'))])}
                 scope={{ boardId: spec.board_id, specId: spec.id, version: spec.version, edition: spec.edition }}
+                readCurrent={!permissionCheckPending && !workspaceReadPending && !workspaceSyncError && syncState === 'current'}
                 canRead={perms.has('spec.entity.read') && canReadIR && canReadOR}
                 canReadPlanning={perms.has('spec.tests.read') && perms.has('card.entity.read')}
                 canEdit={type => !spec.archived && spec.status === 'draft'

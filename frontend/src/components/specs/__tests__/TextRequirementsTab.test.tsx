@@ -3,8 +3,37 @@ import { describe, expect, it, vi } from 'vitest';
 import { TextRequirementsTab } from '../TextRequirementsTab';
 
 const rows = [{ id: 'fr-a', text: 'Same content', title: 'First title' }, { id: 'fr-b', text: 'Same content', title: 'Second title' }];
-function props(extra = {}) { return { kind: 'FR' as const, items: rows, canCreate: true, canEdit: true, canRevoke: true, onSave: vi.fn().mockResolvedValue(undefined), onRevoke: vi.fn().mockResolvedValue(undefined), ...extra }; }
+function props(extra = {}) { return { kind: 'FR' as const, version: 8, items: rows, canCreate: true, canEdit: true, canRevoke: true, onSave: vi.fn().mockResolvedValue(undefined), onRevoke: vi.fn().mockResolvedValue(undefined), ...extra }; }
 describe('structured FR and AC cards', () => {
+  it('preserves a draft and requires explicit base review after an external version change', async () => {
+    const value = props(); const view = render(<TextRequirementsTab {...value} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit fr-a' }));
+    fireEvent.change(screen.getByLabelText('Content'), { target: { value: 'Local obligation' } });
+    view.rerender(<TextRequirementsTab {...value} version={9} items={[{ ...rows[0], text: 'Remote obligation' }, rows[1]]} />);
+    expect(screen.getByLabelText('Content')).toHaveValue('Local obligation');
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    expect(screen.getByText('Remote obligation')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Review requirement base' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(value.onSave).toHaveBeenCalledExactlyOnceWith('fr-a', { title: 'First title', text: 'Local obligation' }, 9));
+  });
+  it('keeps a removed requirement draft visible without recreating it or permitting save', () => {
+    const value = props(); const view = render(<TextRequirementsTab {...value} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit fr-a' }));
+    view.rerender(<TextRequirementsTab {...value} version={9} items={[rows[1]]} />);
+    expect(screen.getByLabelText('Title')).toHaveValue('First title');
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    expect(screen.getByText(/This requirement is no longer active/)).toBeInTheDocument();
+    expect(value.onSave).not.toHaveBeenCalled();
+  });
+  it('blocks a draft on a failed current read without discarding its fields', () => {
+    const value = props(); const view = render(<TextRequirementsTab {...value} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit fr-a' }));
+    view.rerender(<TextRequirementsTab {...value} readCurrent={false} />);
+    expect(screen.getByLabelText('Title')).toHaveValue('First title');
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    expect(value.onSave).not.toHaveBeenCalled();
+  });
   it('edits title and content by stable ID even when two items share content', async () => {
     const value = props(); render(<TextRequirementsTab {...value} />);
     fireEvent.click(screen.getByRole('button', { name: 'Edit fr-b' }));
@@ -12,7 +41,7 @@ describe('structured FR and AC cards', () => {
     fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Updated title' } });
     fireEvent.change(screen.getByLabelText('Content'), { target: { value: 'Updated body' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(value.onSave).toHaveBeenCalledExactlyOnceWith('fr-b', { title: 'Updated title', text: 'Updated body' }));
+    await waitFor(() => expect(value.onSave).toHaveBeenCalledExactlyOnceWith('fr-b', { title: 'Updated title', text: 'Updated body' }, 8));
     expect(value.onRevoke).not.toHaveBeenCalled();
   });
   it('creates an AC with separate title and content', async () => {
@@ -22,7 +51,7 @@ describe('structured FR and AC cards', () => {
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
     fireEvent.change(screen.getByLabelText('Content'), { target: { value: 'Given an invalid request, no write occurs.' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(value.onSave).toHaveBeenCalledWith(null, { title: 'Observable result', text: 'Given an invalid request, no write occurs.' }));
+    await waitFor(() => expect(value.onSave).toHaveBeenCalledWith(null, { title: 'Observable result', text: 'Given an invalid request, no write occurs.' }, 8));
   });
   it('shows AC titles in compact rows and expands the independently stored content', () => {
     render(<TextRequirementsTab {...props({ kind: 'AC' as const })} />);

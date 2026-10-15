@@ -109,11 +109,37 @@ describe('criterion verification authoring', () => {
     await waitFor(() => expect(api.updateSpecEntity).toHaveBeenCalledOnce());
     expect(onSaved).not.toHaveBeenCalled();
   });
-  it('discards the old draft when the Spec version changes', () => {
+  it('preserves verification links and requires explicit review when the Spec version changes', async () => {
     const view = render(<CriterionVerificationDetails {...props()} />); edit();
     add('functional_requirement', 'fr_one');
     view.rerender(<CriterionVerificationDetails {...props({ version: 9 })} />);
-    expect(screen.queryByLabelText('Covered aspect 1')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Covered aspect 1')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save verification plan' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Review verification base' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save verification plan' }));
+    await waitFor(() => expect(api.updateSpecEntity).toHaveBeenCalled());
+    expect(api.updateSpecEntity.mock.calls[0][4]).toBe(9);
+    expect(api.updateSpecEntity.mock.calls[0][3].requirement_links[0].requirement_id).toBe('fr_one');
+  });
+  it('requires correction when a selected visible requirement disappears', () => {
+    const view = render(<CriterionVerificationDetails {...props()} />); edit();
+    add('functional_requirement', 'fr_one');
+    view.rerender(<CriterionVerificationDetails {...props({ version: 9, options: [options[1]] })} />);
+    expect(screen.getByLabelText('Covered aspect 1')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Review verification base' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Save verification plan' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Remove link 1' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Review verification base' }));
+    expect(screen.getByRole('button', { name: 'Save verification plan' })).toBeEnabled();
+    expect(api.updateSpecEntity).not.toHaveBeenCalled();
+  });
+  it('blocks submission while the current Spec read is unavailable', () => {
+    const view = render(<CriterionVerificationDetails {...props()} />); edit();
+    add('functional_requirement', 'fr_one');
+    view.rerender(<CriterionVerificationDetails {...props({ readCurrent: false })} />);
+    expect(screen.getByLabelText('Covered aspect 1')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save verification plan' })).toBeDisabled();
+    expect(api.updateSpecEntity).not.toHaveBeenCalled();
   });
   it('filters restricted, inactive and legacy requirement choices', () => {
     const collections = { functional_requirements: ['legacy', { id: 'fr', text: 'FR' }], business_rules: [{ id: 'br', status: 'revoked' }], integration_requirements: [{ id: 'ir', title: 'Secret IR' }], observability_requirements: [{ id: 'or', title: 'Secret OR' }] };
