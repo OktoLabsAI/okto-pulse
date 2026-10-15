@@ -71,6 +71,7 @@ export function KnowledgePropagationSelector({
     value.action === 'reference' || value.action === 'snapshot';
   const isExplicitEmpty =
     value.action === 'drop' && value.knowledgeIds.length === 0;
+  const hasUnavailableSelection = value.knowledgeIds.some(id => !items.some(item => item.id === id));
 
   const setAction = (action: KnowledgePropagationAction) => {
     onChange({
@@ -286,7 +287,11 @@ export function KnowledgePropagationSelector({
       )}
 
       <div className="mt-2 min-h-5 text-xs">
-        {isExplicitEmpty ? (
+        {hasUnavailableSelection ? (
+          <p className="text-amber-700 dark:text-amber-300">
+            Review unavailable resources before saving this decision.
+          </p>
+        ) : isExplicitEmpty ? (
           <p className="font-medium text-amber-700 dark:text-amber-300">
             Explicit empty will be saved: all current assignments are disabled,
             and later refreshes cannot restore them.

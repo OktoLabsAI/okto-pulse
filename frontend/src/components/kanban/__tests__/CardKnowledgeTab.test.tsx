@@ -893,6 +893,7 @@ describe('CardKnowledgeTab', () => {
     expect(screen.getByLabelText(/Relevance justification/i)).toHaveValue('Retained explanation');
     expect(screen.getByRole('button', { name: 'Review current base' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Save explicit decision' })).toBeDisabled();
+    expect(screen.queryByText('Explicit decision ready to save.')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Remove unavailable selections' }));
     fireEvent.click(screen.getByRole('button', { name: 'Review current base' }));
     expect(screen.getByRole('button', { name: 'Save explicit decision' })).toBeDisabled();

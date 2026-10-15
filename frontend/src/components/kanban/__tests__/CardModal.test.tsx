@@ -43,6 +43,7 @@ const apiMock = vi.hoisted(() => ({
   getCardSeenStatus: vi.fn(),
   getCardDependencies: vi.fn(),
   getCardDependents: vi.fn(),
+  getCardProjectStructure: vi.fn(),
   getCardActivity: vi.fn(),
   getArchitectureDesign: vi.fn(),
   getBugRegressionScenarioCandidates: vi.fn(),
@@ -2382,6 +2383,91 @@ describe('CardModal', () => {
     apiMock.getSpecKnowledge.mockClear();
     await externalRevision();
     expect(apiMock.getSpecKnowledge).not.toHaveBeenCalled();
+  });
+
+  function structureProjection(name: string) {
+    return {
+      contract_version: 'project-structure/v1', state: 'projected', spec_id: 'spec-1', spec_version: 1,
+      authored: true, structure_revision: 1, digest: 'a'.repeat(64), reference_type: 'task', reference_id: 'task-1',
+      affected_references: [], nodes: [{ depth: 1, direct: true, context_only: false, reference_role: 'modify', node: {
+        id: 'node-1', parent_id: null, position: 0, kind: 'file', name, note: '', classification: 'to_be',
+        state: 'planned', interpretation_limit: null, status: 'active', task_references: [], test_references: [], evidence_ids: [],
+      } }],
+    };
+  }
+
+  function prepareStructureCard() {
+    const selected = { ...cardForType('normal'), spec_id: 'spec-1' };
+    storeMock.selectedCardId = selected.id;
+    apiMock.getCard.mockResolvedValue(selected);
+    apiMock.getSpec.mockResolvedValue({ id: 'spec-1', title: 'Source', project_structure: [], project_structure_revision: 1 });
+    apiMock.getCardProjectStructure.mockReset().mockResolvedValue(structureProjection('current.ts'));
+  }
+
+  it('defers project structure until visible and refreshes it after an external revision', async () => {
+    prepareStructureCard();
+    render(<CardModal boardId="board-1" />);
+    fireEvent.click(await screen.findByRole('tab', { name: /^References/ }));
+    const tab = await screen.findByRole('tab', { name: /^Project structure/ });
+    expect(apiMock.getCardProjectStructure).not.toHaveBeenCalled();
+    fireEvent.click(tab);
+    await screen.findByText('current.ts');
+    apiMock.getCardProjectStructure.mockResolvedValue(structureProjection('updated.ts'));
+    await externalRevision();
+    await screen.findByText('updated.ts');
+    fireEvent.click(screen.getByRole('tab', { name: /^Details$/ }));
+    apiMock.getCardProjectStructure.mockClear();
+    await externalRevision();
+    expect(apiMock.getCardProjectStructure).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('tab', { name: /^References/ }));
+    await waitFor(() => expect(apiMock.getCardProjectStructure).toHaveBeenCalled());
+  });
+
+  it('ignores an older project structure read after a newer revision completes', async () => {
+    prepareStructureCard();
+    const oldRead = deferred<ReturnType<typeof structureProjection>>();
+    apiMock.getCardProjectStructure.mockReturnValueOnce(oldRead.promise);
+    render(<CardModal boardId="board-1" />);
+    fireEvent.click(await screen.findByRole('tab', { name: /^References/ }));
+    fireEvent.click(await screen.findByRole('tab', { name: /^Project structure/ }));
+    await waitFor(() => expect(apiMock.getCardProjectStructure).toHaveBeenCalled());
+    await externalRevision();
+    await screen.findByText('current.ts');
+    await act(async () => oldRead.resolve(structureProjection('outdated.ts')));
+    expect(screen.getByText('current.ts')).toBeInTheDocument();
+    expect(screen.queryByText('outdated.ts')).not.toBeInTheDocument();
+  });
+
+  it('does not restore project structure after read permission is revoked', async () => {
+    prepareStructureCard();
+    const oldRead = deferred<ReturnType<typeof structureProjection>>();
+    apiMock.getCardProjectStructure.mockReturnValueOnce(oldRead.promise);
+    const view = render(<CardModal boardId="board-1" />);
+    fireEvent.click(await screen.findByRole('tab', { name: /^References/ }));
+    fireEvent.click(await screen.findByRole('tab', { name: /^Project structure/ }));
+    await waitFor(() => expect(apiMock.getCardProjectStructure).toHaveBeenCalled());
+    permissionsMock.has.mockImplementation(permission => permission !== 'spec.entity.read');
+    view.rerender(<CardModal boardId="board-1" />);
+    await act(async () => oldRead.resolve(structureProjection('protected.ts')));
+    expect(screen.queryByRole('tab', { name: /^Project structure/ })).not.toBeInTheDocument();
+    permissionsMock.has.mockImplementation(() => true);
+    apiMock.getCardProjectStructure.mockResolvedValue(structureProjection('authorized.ts'));
+    view.rerender(<CardModal boardId="board-1" />);
+    fireEvent.click(await screen.findByRole('tab', { name: /^Project structure/ }));
+    await screen.findByText('authorized.ts');
+    expect(screen.queryByText('protected.ts')).not.toBeInTheDocument();
+  });
+
+  it('refreshes dependency summaries without requiring a Card timestamp change', async () => {
+    render(<CardModal boardId="board-1" />);
+    fireEvent.click(await screen.findByRole('tab', { name: /^References/ }));
+    fireEvent.click(screen.getByRole('tab', { name: /^Dependencies/ }));
+    apiMock.getCardDependencies.mockResolvedValue([{ id: 'predecessor', title: 'External prerequisite', status: 'in_progress' }]);
+    await externalRevision();
+    await screen.findByText(/External prerequisite/);
+    apiMock.getCardDependencies.mockResolvedValue([]);
+    await externalRevision();
+    await waitFor(() => expect(screen.queryByText(/External prerequisite/)).not.toBeInTheDocument());
   });
 
   it('refreshes inherited Knowledge roots after an external Spec edit and removes deleted roots', async () => {

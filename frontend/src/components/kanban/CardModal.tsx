@@ -395,6 +395,7 @@ export function CardModal({
     useState<ProjectStructureProjectionResponse | null>(null);
   const [projectStructureLoading, setProjectStructureLoading] = useState(false);
   const [projectStructureError, setProjectStructureError] = useState<string | null>(null);
+  const projectStructureGeneration = useRef(0);
   const [taskValidationHierarchy, setTaskValidationHierarchy] =
     useState<TaskValidationHierarchySnapshot | null>(null);
   const [taskValidationHierarchyLoading, setTaskValidationHierarchyLoading] =
@@ -492,13 +493,14 @@ export function CardModal({
     canReadProjectStructure
     && card?.spec_id
     && ['normal', 'test'].includes(card.card_type ?? 'normal')
-    && (
-      projectStructureProjection?.authored
-      || (fullSpec
-        && fullSpec.project_structure !== null
-        && fullSpec.project_structure !== undefined)
-    ),
+    && fullSpec?.id === card.spec_id
+    && fullSpec.project_structure !== null
+    && fullSpec.project_structure !== undefined,
   );
+  const projectStructureActive = showCardProjectStructure && isOpen && card?.id === selectedCardId
+    && activeTab === 'references' && referencesTab === 'project-structure' && !syncAuthorizing;
+  const projectStructureVisible = useRef(projectStructureActive);
+  projectStructureVisible.current = projectStructureActive;
   const canLinkIRTasks = perms.has('spec.integration_requirements.link_task') && canMutateCard('card.link_to.ir');
   const canLinkORTasks = perms.has('spec.observability_requirements.link_task') && canMutateCard('card.link_to.or');
   const canReadTests = perms.has('card.tests.read');
@@ -548,6 +550,8 @@ export function CardModal({
   const loadProjectStructureProjection = useCallback(async (
     subject: Pick<Card, 'id' | 'board_id' | 'spec_id' | 'card_type'>,
   ) => {
+    if (!projectStructureVisible.current) return;
+    const generation = ++projectStructureGeneration.current;
     const supportsProjection = Boolean(
       canReadProjectStructure
       && subject.spec_id
@@ -560,6 +564,9 @@ export function CardModal({
       return;
     }
     const requestCardId = subject.id;
+    const isCurrent = () => generation === projectStructureGeneration.current
+      && selectedCardIdRef.current === requestCardId && boardIdRef.current === boardId
+      && projectStructureVisible.current;
     setProjectStructureLoading(true);
     setProjectStructureError(null);
     try {
@@ -567,14 +574,14 @@ export function CardModal({
         subject.board_id || boardId,
         requestCardId,
       );
-      if (selectedCardIdRef.current !== requestCardId) return;
+      if (!isCurrent()) return;
       setProjectStructureProjection(projection);
     } catch {
-      if (selectedCardIdRef.current !== requestCardId) return;
+      if (!isCurrent()) return;
       setProjectStructureProjection(null);
       setProjectStructureError('The project structure projection could not be loaded.');
     } finally {
-      if (selectedCardIdRef.current === requestCardId) {
+      if (isCurrent()) {
         setProjectStructureLoading(false);
       }
     }
@@ -1024,17 +1031,21 @@ export function CardModal({
   }, [isOpen, card?.id, selectedCardId, canReadCodeTraceability, cardModalTarget]);
 
   useEffect(() => {
-    if (!card || !isOpen) {
+    if (!card || !isOpen || !showCardProjectStructure) {
       setProjectStructureProjection(null);
       setProjectStructureError(null);
       setProjectStructureLoading(false);
       return;
     }
-    void loadProjectStructureProjection(card);
+    if (projectStructureActive) void loadProjectStructureProjection(card);
+    return () => { projectStructureGeneration.current += 1; };
   }, [
     card,
     fullSpec?.project_structure_revision,
     isOpen,
+    showCardProjectStructure,
+    projectStructureActive,
+    liveRevision,
     loadProjectStructureProjection,
   ]);
 
