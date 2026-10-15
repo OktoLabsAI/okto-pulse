@@ -96,7 +96,7 @@ import {
   TestScenarioPolicyCompliance,
   TestScenarioStatusBadge,
 } from './TestScenarioPolicyCompliance';
-import { persistTestScenariosWithWriteGuard } from './scenarioWriteGuard';
+import { inspectScenarioWrite, persistTestScenariosWithWriteGuard, ScenarioAuthoringInputError, type ScenarioWriteAttempt } from './scenarioWriteGuard';
 import {
   hasPermissionWithState,
   hasEffectivePermission,
@@ -301,7 +301,7 @@ function TestScenariosTab({
   onUpdate: (scenarios: TestScenario[], expectedVersion: number, expectedSnapshot: string) => Promise<void>;
   onSpecUpdate: (data: Record<string, unknown>) => Promise<void>;
   onSpecRefreshed: (updated: Spec) => void;
-  onReload: () => Promise<void>;
+  onReload: () => Promise<Spec>;
   canReadPolicyCompliance: boolean;
   policyRefreshKey: number;
 }) {
@@ -316,6 +316,9 @@ function TestScenariosTab({
   const [scenarioConflictVersion, setScenarioConflictVersion] = useState<string | null>(null);
   const [scenarioReadPending, setScenarioReadPending] = useState(false);
   const [scenarioReadFailed, setScenarioReadFailed] = useState(false);
+  const [uncertainWrite, setUncertainWrite] = useState<ScenarioWriteAttempt | null>(null);
+  const [writeObservation, setWriteObservation] = useState<'unchecked' | 'unchanged' | 'changed'>('unchecked');
+  const [methodDrafts, setMethodDrafts] = useState<Record<string, TestScenario>>({});
   const scenarioWritePending = useRef(false);
   const scenarioEditorMounted = useRef(true);
   useEffect(() => {
@@ -343,8 +346,12 @@ function TestScenariosTab({
   const reloadScenarios = async () => {
     setScenarioReadPending(true);
     try {
-      await onReload();
+      const updated = await onReload();
+      if (updated.id !== spec.id || updated.board_id !== spec.board_id || !updated.scenario_snapshot) {
+        throw new Error('The current scenario collection could not be verified. Reload before continuing.');
+      }
       if (scenarioEditorMounted.current) { setScenarioReadFailed(false); setScenarioError(''); }
+      return updated;
     } catch (error) {
       if (scenarioEditorMounted.current) {
         setScenarioReadFailed(true);
@@ -356,19 +363,32 @@ function TestScenariosTab({
     }
   };
 
-  const saveScenarios = async (next: TestScenario[], expectedVersion: number, expectedSnapshot: string | undefined) => {
-    if (scenarioWritePending.current || !scenarioReadCurrent || !expectedSnapshot) return false;
+  const finishScenarioWrite = (attempt: ScenarioWriteAttempt) => {
+    setUncertainWrite(null); setWriteObservation('unchecked'); setScenarioError('');
+    if (attempt.kind === 'create') {
+      setAdding(false); setScenarioBase(null);
+      setNewTitle(''); setNewType('integration'); setNewGiven(''); setNewWhen(''); setNewThen(''); setNewNotes(''); setNewCriteria([]);
+    }
+  };
+
+  const saveScenarioAttempt = async (attempt: ScenarioWriteAttempt) => {
+    if (scenarioWritePending.current || !scenarioReadCurrent) return false;
     scenarioWritePending.current = true;
     setScenarioSaving(true); setScenarioError('');
     try {
-      await onUpdate(next, expectedVersion, expectedSnapshot);
+      await onUpdate(attempt.next, attempt.expectedVersion, attempt.expectedSnapshot);
+      if (scenarioEditorMounted.current) finishScenarioWrite(attempt);
       return scenarioEditorMounted.current;
     } catch (error) {
       if (scenarioEditorMounted.current) {
         setScenarioError(error instanceof Error ? error.message : 'Could not save the scenario. Your draft is preserved.');
+        const definiteRejection = error instanceof ScenarioAuthoringInputError
+          || (error instanceof AuthenticatedFetchError && error.status >= 400 && error.status < 500 && error.status !== 408);
+        setUncertainWrite(definiteRejection ? null : attempt);
+        setWriteObservation('unchecked');
         if (error instanceof AuthenticatedFetchError && error.status === 409
           && ['spec_version_conflict', 'scenario_snapshot_conflict'].includes(error.message)) {
-          setScenarioConflictVersion(`${expectedVersion}:${expectedSnapshot}`);
+          setScenarioConflictVersion(`${attempt.expectedVersion}:${attempt.expectedSnapshot}`);
         }
       }
       return false;
@@ -378,8 +398,20 @@ function TestScenariosTab({
     }
   };
 
+  const checkScenarioWrite = async () => {
+    if (!uncertainWrite || scenarioReadPending || scenarioWritePending.current) return;
+    setWriteObservation('unchecked');
+    try {
+      const current = await reloadScenarios();
+      if (!scenarioEditorMounted.current) return;
+      const result = inspectScenarioWrite(uncertainWrite, current);
+      if (result === 'observed') finishScenarioWrite(uncertainWrite);
+      else setWriteObservation(result);
+    } catch { /* Reload keeps the draft and the unresolved request. */ }
+  };
+
   const handleAdd = async () => {
-    if (!scenarioBase || scenarioBaseChanged || scenarioConflictVersion !== null) return;
+    if (!scenarioBase?.snapshot || scenarioBaseChanged || scenarioConflictVersion !== null || uncertainWrite) return;
     if (!newTitle.trim() || !newGiven.trim() || !newWhen.trim() || !newThen.trim()) return;
     const id = `ts_${Date.now()}`;
     const scenario: TestScenario = {
@@ -394,14 +426,14 @@ function TestScenariosTab({
       status: 'draft',
       linked_task_ids: null,
     };
-    if (!await saveScenarios([...scenarios, scenario], scenarioBase.version, scenarioBase.snapshot)) return;
-    setAdding(false);
-    setScenarioBase(null);
-    setNewTitle(''); setNewType('integration'); setNewGiven(''); setNewWhen(''); setNewThen(''); setNewNotes(''); setNewCriteria([]);
+    await saveScenarioAttempt({ next: JSON.parse(JSON.stringify([...scenarios, scenario])) as TestScenario[],
+      expectedVersion: scenarioBase.version, expectedSnapshot: scenarioBase.snapshot, kind: 'create', scenarioId: id });
   };
 
   const handleRemove = async (id: string) => {
-    await saveScenarios(scenarios.filter((s) => s.id !== id), spec.version, spec.scenario_snapshot);
+    if (uncertainWrite || !spec.scenario_snapshot) return;
+    await saveScenarioAttempt({ next: JSON.parse(JSON.stringify(scenarios.filter((s) => s.id !== id))) as TestScenario[],
+      expectedVersion: spec.version, expectedSnapshot: spec.scenario_snapshot, kind: 'remove', scenarioId: id });
   };
 
   // Coverage matrix
@@ -417,11 +449,22 @@ function TestScenariosTab({
   return (
     <div className="space-y-4">
       {scenarioError && <p role="alert" className="text-sm text-red-600 dark:text-red-400">{scenarioError}</p>}
+      {uncertainWrite && <div role="status" className="rounded-lg border border-amber-300 p-3 text-sm text-amber-700 dark:text-amber-300 space-y-2">
+        <p>The write response was lost. The operation may have been saved. Check the current scenarios before doing anything again.</p>
+        {writeObservation === 'changed' && <p>The collection changed and the requested result could not be confirmed. Inspect the current scenarios; this operation will not be repeated over a new base.</p>}
+        {writeObservation === 'unchanged' && <p>The original collection is still current. You can retry the exact request with its original identity and preconditions.</p>}
+        <button type="button" className="btn btn-secondary text-xs" disabled={scenarioReadPending || scenarioSaving}
+          onClick={() => void checkScenarioWrite()}>{scenarioReadPending ? 'Checking scenario write…' : 'Check scenario write'}</button>
+        {writeObservation === 'unchanged' && <button type="button" className="btn btn-primary text-xs ml-2"
+          disabled={!scenarioReadCurrent || scenarioSaving} onClick={() => void saveScenarioAttempt(uncertainWrite)}>Retry original write</button>}
+        {writeObservation === 'changed' && <button type="button" className="btn btn-secondary text-xs ml-2"
+          disabled={!scenarioReadCurrent || scenarioSaving} onClick={() => { setUncertainWrite(null); setWriteObservation('unchecked'); setAdding(false); setScenarioBase(null); setScenarioError(''); }}>Discard unresolved operation</button>}
+      </div>}
       {adding && (scenarioBaseChanged || scenarioConflictVersion !== null) && (
         <div role="status" className="rounded-lg border border-amber-300 p-3 text-sm text-amber-700 dark:text-amber-300">
           <p>The Spec changed while you were writing. Your draft is preserved. Review the current scenarios and criteria before saving.</p>
           <button type="button" className="btn btn-secondary text-xs mt-2"
-            disabled={scenarioSaving || !scenarioReadCurrent || scenarioConflictVersion === `${spec.version}:${spec.scenario_snapshot}`}
+            disabled={scenarioSaving || Boolean(uncertainWrite) || !scenarioReadCurrent || scenarioConflictVersion === `${spec.version}:${spec.scenario_snapshot}`}
             onClick={() => { setScenarioBase({ version: spec.version, edition: spec.edition, snapshot: spec.scenario_snapshot }); setScenarioConflictVersion(null); setScenarioError(''); }}>
             Review scenario base
           </button>
@@ -504,7 +547,8 @@ function TestScenariosTab({
         </div>
       )}
 
-      {scenarios.map((scenario) => {
+      {[...scenarios, ...Object.values(methodDrafts).filter(draft => !scenarios.some(item => item.id === draft.id))].map((scenario) => {
+        const missing = !scenarios.some(item => item.id === scenario.id);
         const isExpanded = expandedId === scenario.id;
         const linkedCards = scenario.linked_task_ids?.length || 0;
         return (
@@ -516,6 +560,7 @@ function TestScenariosTab({
             >
               <FlaskConical size={14} className={linkedCards > 0 ? 'text-violet-500 shrink-0' : 'text-amber-500 shrink-0'} />
               <span className="text-sm font-medium text-gray-900 dark:text-white truncate flex-1">{scenario.title}</span>
+              {missing && <span className="text-xs text-amber-600">Removed · retained draft</span>}
               <ScenarioTypeBadge scenarioType={scenario.scenario_type} />
               <TestScenarioStatusBadge status={scenario.status} />
               <EvidenceBadge scenario={scenario} />
@@ -533,19 +578,29 @@ function TestScenariosTab({
                   e.stopPropagation();
                   void handleRemove(scenario.id);
                 }}
-                disabled={scenarioSaving || adding || !scenarioReadCurrent}
+                disabled={missing || scenarioSaving || Boolean(uncertainWrite) || adding || !scenarioReadCurrent}
                 className="p-0.5 text-gray-400 hover:text-red-500"
                 aria-label={`Delete test scenario ${scenario.title}`}
               >
                 <Trash2 size={12} />
               </button>
             </div>
-            {isExpanded && (
-              <div className="px-3 py-2 space-y-2 text-sm">
+            {(isExpanded || Boolean(methodDrafts[scenario.id])) && (
+              <div hidden={!isExpanded && !missing} className="px-3 py-2 space-y-2 text-sm">
                 <ScenarioVerificationMethodEditor boardId={spec.board_id} specId={spec.id} version={spec.version} scenario={scenario}
                   canEdit={!spec.archived && spec.status === 'draft' && hasPermissionWithState(scenarioPermissions.has, 'spec.tests.edit', 'spec', spec.status)}
-                  readCurrent={scenarioReadCurrent}
-                  onSaved={reloadScenarios} />
+                  readCurrent={scenarioReadCurrent && !uncertainWrite}
+                  missing={missing}
+                  onDraftChange={dirty => setMethodDrafts(current => {
+                    if (dirty) return current[scenario.id] ? current : { ...current, [scenario.id]: scenario };
+                    if (!current[scenario.id]) return current;
+                    const next = { ...current }; delete next[scenario.id]; return next;
+                  })}
+                  onSaved={async () => { await reloadScenarios(); }} />
+                {missing && <button type="button" className="btn btn-secondary text-xs" onClick={() => setMethodDrafts(current => {
+                  const next = { ...current }; delete next[scenario.id]; return next;
+                })}>Discard removed scenario draft</button>}
+                {!missing && isExpanded && <>
                 <VerificationReportDetails evidence={scenario.evidence} />
                 <div className="grid grid-cols-3 gap-3">
                   <div>
@@ -667,6 +722,7 @@ function TestScenariosTab({
                   refreshKey={policyRefreshKey}
                   onSpecRefreshed={onSpecRefreshed}
                 />
+                </>}
               </div>
             )}
           </div>
@@ -675,7 +731,7 @@ function TestScenariosTab({
 
       {/* Add scenario form */}
       {adding ? (
-        <fieldset disabled={scenarioSaving} className="border border-violet-200 dark:border-violet-700 rounded-lg p-3 space-y-2 bg-violet-50/50 dark:bg-violet-900/10">
+        <fieldset disabled={scenarioSaving || Boolean(uncertainWrite)} className="border border-violet-200 dark:border-violet-700 rounded-lg p-3 space-y-2 bg-violet-50/50 dark:bg-violet-900/10">
           <div className="flex gap-2">
             <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Scenario title" className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600" autoFocus />
             <select
@@ -730,7 +786,7 @@ function TestScenariosTab({
           </div>
         </fieldset>
       ) : (
-        <button disabled={scenarioSaving || !scenarioReadCurrent} onClick={() => { setAdding(true); setScenarioError(''); setScenarioConflictVersion(null); setScenarioBase({ version: spec.version, edition: spec.edition, snapshot: spec.scenario_snapshot }); }} className="flex items-center gap-1 text-sm text-violet-600 dark:text-violet-400 hover:text-violet-800 dark:hover:text-violet-300">
+        <button disabled={scenarioSaving || Boolean(uncertainWrite) || !scenarioReadCurrent} onClick={() => { setAdding(true); setScenarioError(''); setScenarioConflictVersion(null); setScenarioBase({ version: spec.version, edition: spec.edition, snapshot: spec.scenario_snapshot }); }} className="flex items-center gap-1 text-sm text-violet-600 dark:text-violet-400 hover:text-violet-800 dark:hover:text-violet-300">
           <Plus size={14} /> Add Test Scenario
         </button>
       )}
@@ -2540,6 +2596,9 @@ export function SpecModal({
                   // scenario_type contract) instead of a generic string so a
                   // stale client/agent can correct the request (spec ac16b3c9).
                   if (currentSpecId.current === specId) toast.error(err instanceof Error && err.message ? err.message : 'Failed to update test scenarios');
+                  if (currentSpecId.current === specId && err instanceof AuthenticatedFetchError && [401, 403, 404].includes(err.status)) {
+                    setSpec(null); onClose();
+                  }
                   throw err;
                 }
               }}
@@ -2554,6 +2613,7 @@ export function SpecModal({
                   const updated = await reloadSpecSnapshot({ includeRelated: false, notifyChanged: false, showLoading: false });
                   if (!updated) throw new Error('The scenario reload was superseded. Reload to confirm the current base.');
                   setTestScenarioPolicyRefreshKey(value => value + 1);
+                  return updated;
                 } catch (error) {
                   if (currentSpecId.current === specId && error instanceof AuthenticatedFetchError && [401, 403, 404].includes(error.status)) {
                     setSpec(null); onClose();

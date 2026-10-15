@@ -951,4 +951,102 @@ describe('SpecModal Activity tab', () => {
     expect(screen.queryByText(spec.title)).not.toBeInTheDocument();
     expect(screen.queryByText('Preserve this authored scenario')).not.toBeInTheDocument();
   });
+
+  it('reconciles a committed create after a lost response without submitting twice', async () => {
+    apiMock.updateSpec.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    render(<SpecModal specId={spec.id} boardId={spec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    await openScenarioDraft();
+    fireEvent.click(screen.getByRole('button', { name: 'Add Scenario' }));
+    await screen.findByRole('button', { name: 'Check scenario write' });
+    expect(screen.getByRole('button', { name: 'Add Scenario' })).toBeDisabled();
+    const request = apiMock.updateSpec.mock.calls[0][1];
+    apiMock.getSpec.mockResolvedValueOnce({ ...spec, version: spec.version + 1,
+      scenario_snapshot: 'b'.repeat(64), test_scenarios: request.test_scenarios });
+    fireEvent.click(screen.getByRole('button', { name: 'Check scenario write' }));
+    await waitFor(() => expect(screen.queryByPlaceholderText('Scenario title')).not.toBeInTheDocument());
+    expect(screen.getByText('Preserve this authored scenario')).toBeInTheDocument();
+    expect(apiMock.updateSpec).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries only the exact original scenario request after an unchanged authoritative read', async () => {
+    apiMock.updateSpec.mockRejectedValueOnce(new TypeError('Response lost'));
+    render(<SpecModal specId={spec.id} boardId={spec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    await openScenarioDraft();
+    fireEvent.click(screen.getByRole('button', { name: 'Add Scenario' }));
+    await screen.findByRole('button', { name: 'Check scenario write' });
+    const request = structuredClone(apiMock.updateSpec.mock.calls[0][1]);
+    expect(screen.queryByRole('button', { name: 'Retry original write' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Check scenario write' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry original write' }));
+    await waitFor(() => expect(apiMock.updateSpec).toHaveBeenCalledTimes(2));
+    expect(apiMock.updateSpec.mock.calls[1]).toEqual([spec.id, request]);
+  });
+
+  it('retains an uncertain operation across read failure and refuses retry over a changed base', async () => {
+    apiMock.updateSpec.mockRejectedValueOnce(new TypeError('Response lost'));
+    render(<SpecModal specId={spec.id} boardId={spec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    await openScenarioDraft();
+    fireEvent.click(screen.getByRole('button', { name: 'Add Scenario' }));
+    await screen.findByRole('button', { name: 'Check scenario write' });
+    apiMock.getSpec.mockRejectedValueOnce(new Error('Read unavailable'));
+    fireEvent.click(screen.getByRole('button', { name: 'Check scenario write' }));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Read unavailable'));
+    expect(screen.getByPlaceholderText('Scenario title')).toHaveValue('Preserve this authored scenario');
+    expect(screen.getByRole('button', { name: 'Add Scenario' })).toBeDisabled();
+    apiMock.getSpec.mockResolvedValueOnce({ ...spec, version: spec.version + 1, scenario_snapshot: 'b'.repeat(64) });
+    fireEvent.click(screen.getByRole('button', { name: 'Check scenario write' }));
+    await screen.findByText(/The collection changed and the requested result could not be confirmed/);
+    expect(screen.queryByRole('button', { name: 'Retry original write' })).not.toBeInTheDocument();
+    expect(apiMock.updateSpec).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains a method draft when another scenario refresh removes its subject', async () => {
+    const a: TestScenario = { id: 'ts-a', title: 'Scenario A', given: 'G', when: 'W', then: 'Original observation', scenario_type: 'manual', status: 'draft', notes: null, linked_criteria: [], linked_task_ids: [] };
+    const b: TestScenario = { ...a, id: 'ts-b', title: 'Scenario B' };
+    apiMock.getSpec.mockResolvedValueOnce({ ...spec, test_scenarios: [a, b] }).mockResolvedValue({ ...spec,
+      version: spec.version + 1, scenario_snapshot: 'b'.repeat(64), test_scenarios: [{ ...b, verification_method: 'demonstration' }] });
+    apiMock.updateScenarioVerificationMethod.mockResolvedValue({ scenario_id: b.id });
+    render(<SpecModal specId={spec.id} boardId={spec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    await screen.findByText(spec.title);
+    fireEvent.click(screen.getByRole('tab', { name: /^Tests/ }));
+    fireEvent.click(screen.getByText(a.title));
+    fireEvent.change(screen.getByLabelText('Verification method ts-a'), { target: { value: 'inspection' } });
+    fireEvent.click(screen.getByText(b.title));
+    fireEvent.change(screen.getByLabelText('Verification method ts-b'), { target: { value: 'demonstration' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save verification method' }));
+    await screen.findByText(/This scenario was removed. Your selected method is preserved/);
+    expect(screen.getByLabelText('Verification method ts-a')).toHaveValue('inspection');
+    expect(screen.getByLabelText('Verification method ts-a')).toBeDisabled();
+    expect(apiMock.updateScenarioVerificationMethod).toHaveBeenCalledExactlyOnceWith(spec.board_id, spec.id, b.id, 'demonstration', spec.version);
+    fireEvent.click(screen.getByRole('button', { name: 'Discard removed scenario draft' }));
+    expect(screen.queryByText(a.title)).not.toBeInTheDocument();
+  });
+
+  it('reconciles a removal after a lost response without another write', async () => {
+    const scenario: TestScenario = { id: 'ts-remove', title: 'Remove this scenario', given: 'G', when: 'W', then: 'T', scenario_type: 'manual', status: 'draft', notes: null, linked_criteria: [], linked_task_ids: [] };
+    apiMock.getSpec.mockResolvedValue({ ...spec, test_scenarios: [scenario] });
+    apiMock.updateSpec.mockRejectedValueOnce(new TypeError('Response lost'));
+    render(<SpecModal specId={spec.id} boardId={spec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    await screen.findByText(spec.title);
+    fireEvent.click(screen.getByRole('tab', { name: /^Tests/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete test scenario Remove this scenario' }));
+    await screen.findByRole('button', { name: 'Check scenario write' });
+    expect(screen.getByRole('button', { name: /Add Test Scenario/ })).toBeDisabled();
+    apiMock.getSpec.mockResolvedValueOnce({ ...spec, version: spec.version + 1, scenario_snapshot: 'b'.repeat(64) });
+    fireEvent.click(screen.getByRole('button', { name: 'Check scenario write' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Check scenario write' })).not.toBeInTheDocument());
+    expect(screen.queryByText(scenario.title)).not.toBeInTheDocument();
+    expect(apiMock.updateSpec).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears the scenario draft when the writer loses authority', async () => {
+    apiMock.updateSpec.mockRejectedValueOnce(new AuthenticatedFetchError({ status: 403, message: 'Access denied' }));
+    const onClose = vi.fn();
+    render(<SpecModal specId={spec.id} boardId={spec.board_id} onClose={onClose} onChanged={vi.fn()} />);
+    await openScenarioDraft();
+    fireEvent.click(screen.getByRole('button', { name: 'Add Scenario' }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(screen.queryByPlaceholderText('Scenario title')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Check scenario write' })).not.toBeInTheDocument();
+  });
 });
