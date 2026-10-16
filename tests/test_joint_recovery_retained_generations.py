@@ -8,6 +8,7 @@ import pytest
 from logical_transfer_matrix_support import one_node_corpus, seed_generation
 from okto_pulse.community.adapters import joint_recovery_snapshot as joint
 from okto_pulse.community.adapters.graph_backend_binding import CommunityGraphBackendBindingStore
+from okto_pulse.community.adapters.recovery_runtime_fence import offline_recovery_window
 import test_joint_recovery_snapshot as recovery
 
 sources = recovery.sources
@@ -98,6 +99,12 @@ def test_retained_source_change_during_graph_exports_refuses_entire_set(stored_s
 def test_incompatible_physical_payloads_refuse_capture_without_conversion(stored_sources):
     original, _, _, _ = stored_sources
     kg = original[3] / 'kg'
+    # Establish the real coordination mutexes before taking the byte baseline.
+    # Unix FileLock deliberately retains its empty inode on release: deleting
+    # it would split waiters across inodes and break mutual exclusion. This
+    # setup does not open, convert or exclude any graph payload from the check.
+    with offline_recovery_window((original[3], kg)):
+        pass
     payloads = ('boards/board-one/graph.lbug', 'boards/board-one/graph.lbug.wal',
         'global/discovery.lbug', 'global/discovery.lbug.wal')
     for index, relative in enumerate(payloads):
