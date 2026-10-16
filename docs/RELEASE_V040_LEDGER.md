@@ -39,6 +39,13 @@ bounded timeout. The writer must still block, no relation DML may precede the
 mutex, and commit must complete after release. All nine B08 relation cases pass;
 no production lock behavior changed.
 
+The architecture persistence fixture used a plain SQLAlchemy session, which
+correctly fails the protected semantic-model guard after Community composition.
+It now uses build_community_session_factory. All nine focused architecture and
+semantic-composition cases pass (159.30s), retaining competing-writer stale
+version refusal, rollback, timestamp preservation and uncomposed-session
+rejection. No production behavior or authority guard changed.
+
 The subsequent R05-B/C diagnostic reproduced three stale assertions requiring
 the retired demo seed to compose/bootstrap a graph. Native startup now composes
 in main/CLI; the empty My Board seed owns only relational defaults. Tests assert

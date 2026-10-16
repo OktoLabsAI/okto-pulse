@@ -7,7 +7,9 @@ import asyncio
 import pytest
 import pytest_asyncio
 from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import create_async_engine
+
+from okto_pulse.community.adapters.sqlalchemy_database import build_community_session_factory
 
 from okto_pulse.community.adapters.sqlalchemy_models import ArchitectureDesign, Base, Board, Ideation
 
@@ -48,7 +50,7 @@ async def architecture_sessions(tmp_path):
     try:
         async with engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
-        factory = async_sessionmaker(engine, expire_on_commit=False)
+        factory = build_community_session_factory(engine)
         async with factory() as db:
             db.add(Board(id="board", name="Fence", owner_id="author", realm_id="local"))
             await db.flush()
