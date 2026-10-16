@@ -43,6 +43,14 @@ repositories v0.4.0. No branch-protection bypass or failing-gate exemption.
 
 ## Resume
 
+The installed recovery E2E now pins the measured 285-tool catalog and its
+SHA-256 `6da5fc12f5c20f12f93f18db247c8c5577c137d60852ac732baa31d3f7e24ad1`.
+A regular-suite guard compares those optional E2E pins with the live registry.
+All six focused artifact harness cases pass (the independent full wheel gate
+also passed immediately before these test/documentation-only corrections).
+The release operations guide now uses `/health`, the native smoke and actual
+CI gates; the obsolete external replay-fixture instructions are removed.
+
 README platform inventory now also reports 285 Core/serve tools, matching the
 live manifest, installed HTTP smoke and independent artifact oracle. Earlier
 acceptance reports retain the counts actually measured at their historical heads.

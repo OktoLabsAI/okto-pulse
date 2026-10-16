@@ -79,10 +79,10 @@ BOARD_CENSUS_SIZE = 1_500
 # Observe the full 600s product attempt plus bounded polling/shutdown slack.
 # This does not extend the worker budget or reduce the 1,500-Board census.
 PREPARATION_OBSERVER_TIMEOUT = 660
-EXPECTED_TOOL_COUNT = 282
-EXPECTED_CANONICAL_TOOL_COUNT = 282
+EXPECTED_TOOL_COUNT = 285
+EXPECTED_CANONICAL_TOOL_COUNT = 285
 EXPECTED_TOOL_INVENTORY_SHA256 = (
-    "56f558d610f1e7acc3794d0734ad850e1db6e2a652b83f06d89b5f8fcfb11c32"
+    "6da5fc12f5c20f12f93f18db247c8c5577c137d60852ac732baa31d3f7e24ad1"
 )
 EXPECTED_TOOL_ALIASES = {}
 
