@@ -142,9 +142,9 @@ Both `profile=summary` and `profile=full` expose:
   `canonical_debt_open_count`, `active_queue_count`. These are SEPARATE
   operational domains: one count is never inferred from another (e.g.
   `active_queue_count` is not derived from `dead_letter_count`).
-- `readiness` — `blocking` (a technical problem IS visible) vs `would_block_done`
-  (whether the gate would actually block; `false` under advisory enforcement),
-  plus `reasons` and `policy_reason`.
+- `readiness` — `blocking` reports visible technical problems.
+  `would_block_done` is `null`: this Board observation does not decide artifact
+  completion. Inspect `reasons` and `policy_reason`; completion uses its own gates.
 - top-level `cognitive_enforcement_mode` (`advisory`/`blocking`) and
   `enforcement_active`.
 - `non_maskable_items` — bounded Board aggregates with `signal` and count when
