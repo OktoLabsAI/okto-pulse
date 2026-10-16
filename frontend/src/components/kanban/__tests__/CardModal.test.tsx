@@ -2421,6 +2421,28 @@ describe('CardModal', () => {
     apiMock.getCardProjectStructure.mockReset().mockResolvedValue(structureProjection('current.ts'));
   }
 
+  it('watches a linked Spec only while its entity is readable, preserving Card access', async () => {
+    prepareStructureCard();
+    permissionsMock.has.mockImplementation(permission => permission !== 'spec.entity.read');
+    const view = render(<CardModal boardId="board-1" />);
+    await screen.findByRole('tab', { name: /^Details$/ });
+    const cardSubject = { subject_type: 'card', subject_id: storeMock.selectedCardId };
+    expect(workspace.options!.subjects).toEqual([cardSubject]);
+    await externalRevision();
+    expect(screen.getByRole('tab', { name: /^Details$/ })).toBeInTheDocument();
+
+    permissionsMock.has.mockImplementation(() => true);
+    view.rerender(<CardModal boardId="board-1" />);
+    expect(workspace.options!.subjects).toEqual([
+      cardSubject, { subject_type: 'spec', subject_id: 'spec-1' },
+    ]);
+
+    permissionsMock.has.mockImplementation(permission => permission !== 'spec.entity.read');
+    view.rerender(<CardModal boardId="board-1" />);
+    expect(workspace.options!.subjects).toEqual([cardSubject]);
+    expect(screen.getByRole('tab', { name: /^Details$/ })).toBeInTheDocument();
+  });
+
   it('defers project structure until visible and refreshes it after an external revision', async () => {
     prepareStructureCard();
     render(<CardModal boardId="board-1" />);

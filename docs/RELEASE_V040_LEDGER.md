@@ -7,7 +7,7 @@ repositories v0.4.0. No branch-protection bypass or failing-gate exemption.
 
 - Core feature/develop PRs: #107, #109, #110 merged. Main PR #108 merged after
   required checks passed; main commit `63bd85f25d8ad1f0cfc1bef5703ce495d4266d58`.
-- Community feature/develop PRs: #116, #118, #119, #120 merged. Main PR #117
+- Community feature/develop PRs: #116, #118, #119, #120, #121, #122 merged. Main PR #117
   remains open, waiting for the required `docker build verify` check.
 - No v0.4.0 tag created yet. Tag Core first after the paired qualification;
   tagging Community triggers its gated Docker/GHCR Release workflow.
@@ -42,6 +42,18 @@ repositories v0.4.0. No branch-protection bypass or failing-gate exemption.
   all selected tests. A separate local tail subset is diagnostic only.
 
 ## Resume
+
+Review of PR #117 found that CardModal included an unreadable linked Spec in
+its revision batch, causing a 403 to close an otherwise readable Card. The
+watch now includes the Spec only with `spec.entity.read`; the backend remains
+unchanged. Regression covers absent, granted and revoked Spec access while
+preserving Card access. All 93 CardModal tests pass; TypeScript and production
+frontend build pass, and the packaged SPA was regenerated.
+
+Core main CI run 38846216617 failed only because paired Community main still
+has version 0.3.3. Rerun it after Community main is promoted; Core PR checks
+passed against paired 0.4.0 develop. Community full run 38848655415 remains
+in progress at this entry. No tags have been created.
 
 Community run 38846767938: 1375 passed, 4 skipped, then a stale cognitive-closeout
 test passed the removed `graph_state` argument. Updated the test to the native
