@@ -845,7 +845,9 @@ async def test_explicit_resume_reservation_wins_and_defers_tick_publication(
 
     def blocking_handoff(_previous, _resumed) -> None:
         handoff_entered.set()
-        assert release_handoff.wait(timeout=3)
+        # Synchronization deadlines bound a stalled test, not recovery latency.
+        # A busy CI runner can take more than two seconds to schedule SQL work.
+        assert release_handoff.wait(timeout=30)
 
     sync_engine, async_engine, factory, store = await _database(
         tmp_path / "resume-wins-tick.db",
@@ -865,7 +867,7 @@ async def test_explicit_resume_reservation_wins_and_defers_tick_publication(
                 reason="resume-first race",
             )
         )
-        assert await asyncio.to_thread(handoff_entered.wait, 2)
+        assert await asyncio.to_thread(handoff_entered.wait, 10)
 
         async with factory() as session:
             publication = asyncio.create_task(
@@ -897,7 +899,7 @@ async def test_blocked_resume_handoff_does_not_hold_relational_writer(
 
     def blocking_handoff(_previous, _resumed) -> None:
         handoff_entered.set()
-        assert release_handoff.wait(timeout=3)
+        assert release_handoff.wait(timeout=30)
 
     sync_engine, async_engine, _factory, store = await _database(
         tmp_path / "resume-handoff-short-writer.db",
@@ -915,7 +917,7 @@ async def test_blocked_resume_handoff_does_not_hold_relational_writer(
                 reason="prove short SQL window",
             )
         )
-        assert await asyncio.to_thread(handoff_entered.wait, 2)
+        assert await asyncio.to_thread(handoff_entered.wait, 10)
 
         started = time.monotonic()
         with sync_engine.begin() as connection:

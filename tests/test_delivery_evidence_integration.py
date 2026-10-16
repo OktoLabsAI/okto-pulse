@@ -81,7 +81,7 @@ async def ledger(tmp_path, request):
             (BOARD_ID,),
         )
         await conn.exec_driver_sql(
-            "INSERT INTO specs (id, board_id, title, status, version, created_by, architecture_adoption, execution_contract) VALUES (?, ?, 'Spec', 'in_progress', 1, 'owner', ?, ?)",
+            "INSERT INTO specs (id, board_id, title, status, version, created_by, architecture_adoption, execution_contract, project_structure_revision) VALUES (?, ?, 'Spec', 'in_progress', 1, 'owner', ?, ?, 0)",
             (SPEC_ID, BOARD_ID, json.dumps(ArchitectureAdoptionScope(board_id=BOARD_ID, spec_id=SPEC_ID,
                 adopted_in_edition=1, actor_id='owner', inherited_resource_ids=()).model_dump(mode='json')),
              json.dumps(new_execution_contract(board_id=BOARD_ID, spec_id=SPEC_ID, edition=1,
