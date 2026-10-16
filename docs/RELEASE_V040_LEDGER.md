@@ -43,6 +43,17 @@ repositories v0.4.0. No branch-protection bypass or failing-gate exemption.
 
 ## Resume
 
+CI 38860689585 passed 3866 tests (18 skipped) before the incompatible physical
+capture assertion failed on Linux. All 495 payload entries were identical;
+only the expected empty startup mutex inode had appeared. Unix FileLock retains
+that inode to keep contenders on the same lock. The test now establishes the
+real offline fence before taking its payload baseline; it still compares the
+entire graph tree byte for byte and refuses incompatible formats without
+conversion or publishing a destination. The changed case passes locally, and
+a real WSL/POSIX probe confirms the mutex remains empty and stable on reacquire.
+All seven retained-generation/recovery cases pass (335.23s). No runtime lock,
+recovery behavior or refusal gate was changed.
+
 Removed the obsolete one-off Sprint assignment helper: it could mutate scenario
 links before failing against the retired Sprint API. The documented boundary
 command now uses `test_retired_public_rebuild.py` instead of the deleted backfill
