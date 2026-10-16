@@ -1141,7 +1141,7 @@ export function CardModal({
     boardId: isOpen && selectedCardId ? boardId : undefined,
     subjects: selectedCardId ? [
       { subject_type: 'card', subject_id: selectedCardId },
-      ...(card?.id === selectedCardId && card.spec_id
+      ...(card?.id === selectedCardId && card.spec_id && perms.has('spec.entity.read')
         ? [{ subject_type: 'spec' as const, subject_id: card.spec_id }] : []),
     ] : [],
     onAccessLost: () => loseCardAccessRef.current(),
