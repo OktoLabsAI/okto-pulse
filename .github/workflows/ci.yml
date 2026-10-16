@@ -99,7 +99,7 @@ jobs:
         # Stop on the first failure so release blockers have a usable traceback
         # without waiting for the full suite timeout. A passing run still runs
         # every selected test; no marker or test is excluded by this option.
-        run: pytest -x -v --tb=short -m "not e2e and not stress" okto-pulse/tests
+        run: pytest -v --tb=short -m "not e2e and not stress" okto-pulse/tests
 
       - name: Build isolated wheels
         run: |
