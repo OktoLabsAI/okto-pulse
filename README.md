@@ -73,9 +73,9 @@ Current 0.4.0 implementation surface:
 | Surface | Count |
 | --- | ---: |
 | Governance gates | See the Core governance families and canonical gate contracts |
-| Core MCP tools | 282 |
+| Core MCP tools | 285 |
 | Community-only MCP tools | 0 |
-| MCP tools exposed by `okto-pulse serve` | 282 |
+| MCP tools exposed by `okto-pulse serve` | 285 |
 
 The community package materializes the full `okto-pulse-core` command catalog in
 its FastMCP host. That means installed community runtimes expose the complete

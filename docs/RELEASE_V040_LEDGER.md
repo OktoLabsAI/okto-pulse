@@ -43,6 +43,10 @@ repositories v0.4.0. No branch-protection bypass or failing-gate exemption.
 
 ## Resume
 
+README platform inventory now also reports 285 Core/serve tools, matching the
+live manifest, installed HTTP smoke and independent artifact oracle. Earlier
+acceptance reports retain the counts actually measured at their historical heads.
+
 Inventory review: the native runtime really exposes 285 tools (including
 `get_spec_validation_cycle`); the older artifact oracle still expected 284.
 Reproduction failed explicitly with `284 == 285`. Updated the independent
