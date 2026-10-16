@@ -11,6 +11,7 @@ import pytest
 from fastmcp import Client
 from mcp.shared.exceptions import McpError
 from mcp.types import PaginatedRequestParams
+from jsonschema import Draft202012Validator
 
 import okto_pulse.core.mcp.server as server
 from okto_pulse.community.adapters.mcp_host import CommunityMcpHostProvider
@@ -33,6 +34,48 @@ from okto_pulse.core.ports.mcp_resources import (
 
 
 _TEST_RESOURCE_PAGE_SIZE = 7
+
+
+def _assert_consumer_instruction_contracts(bodies, tools, instructions):
+    """Check the actual wire bodies against their actual executable schemas."""
+    schemas = {tool.name: tool.inputSchema for tool in tools}
+    for uri, body in bodies.items():
+        for section in re.finditer(
+            r"^## `(okto_pulse_[a-z0-9_]+)`\s*\n(.*?)(?=^## |\Z)", body, re.M | re.S
+        ):
+            name, text = section.groups()
+            assert name in schemas, (uri, name)
+            args = re.search(r"^Args:\s*\n(.*?)(?=^\S|\Z)", text, re.M | re.S)
+            if args:
+                declared = re.findall(r"^    ([a-z_][a-z0-9_]*)(?:\s*\([^\n]*?\))?:", args[1], re.M)
+                assert set(declared) <= set(schemas[name].get("properties", {})), (uri, name, declared)
+    assert "in Draft as `not_started`" in instructions
+    assert "legacy` only for compatibility" not in instructions
+    assert "Never create cards for a spec that is not" not in instructions
+    assert "sprint" not in instructions.lower()
+    cards = bodies["okto-pulse://workflows/cards"]
+    assert "Creation links the selected scenarios atomically" in cards
+    assert "Always call `okto_pulse_link_task" not in cards
+    assert "without repeating the write" in cards
+    errors = bodies["okto-pulse://reference/errors"]
+    assert "okto_pulse_copy_knowledge_to_card" not in errors
+    assert "Path C" not in errors and "sprint_required" not in errors
+    assert "Repair or migrate" not in errors
+    decision = bodies["okto-pulse://reference/tool-docs/decision"]
+    assert "Decision to have ≥1 linked task" not in decision
+    example = json.loads(re.search(r"```json\n(.*?)\n```", decision, re.S)[1])
+    payload = dict(board_id="board", spec_id="spec", title="Scope", rationale="Bounded choice", **example)
+    validator = Draft202012Validator(schemas["okto_pulse_add_decision"])
+    assert not list(validator.iter_errors(payload))
+    assert list(validator.iter_errors(dict(payload, alternatives_considered="A|B")))
+    assert not list(validator.iter_errors(dict(payload, alternatives_considered=["A", "B"])))
+    readiness = Draft202012Validator(schemas["okto_pulse_kg_evaluate_cognitive_readiness"])
+    assert list(readiness.iter_errors(dict(board_id="board", entity_type="spec", entity_id="spec")))
+    assert not list(readiness.iter_errors(dict(board_id="board", source_ref="spec:spec")))
+    assert "propagated to refinements/specs by default" not in bodies["okto-pulse://reference/tool-docs/knowledge"]
+    gates = bodies["okto-pulse://reference/spec_gates"]
+    assert "remain readable compatibility" not in gates
+    assert "More text is not itself improvement" in gates
 
 
 def _assert_common_error_guidance_preserved(common: str, served: str) -> None:
@@ -133,6 +176,7 @@ async def test_real_client_paginates_and_reads_exact_frozen_manifest(
 
     bodies_by_uri: dict[str, str] = {}
     async with Client(host) as client:
+        instructions = client.initialize_result.instructions
         pages = await _list_every_resource_page(client)
         listed_tools = await client.list_tools()
         for entry in frozen.manifest.entries:
@@ -149,6 +193,7 @@ async def test_real_client_paginates_and_reads_exact_frozen_manifest(
             )
 
     assert len(pages) > 1
+    _assert_consumer_instruction_contracts(bodies_by_uri, listed_tools, instructions)
     assert all(len(page.resources) == _TEST_RESOURCE_PAGE_SIZE for page in pages[:-1])
     assert 0 < len(pages[-1].resources) <= _TEST_RESOURCE_PAGE_SIZE
     listed = [resource for page in pages for resource in page.resources]
@@ -178,12 +223,16 @@ async def test_real_client_paginates_and_reads_exact_frozen_manifest(
     for uri, relative_path in replacement_by_uri.items():
         assert manifest_by_uri[uri].source_identity == f"community:{relative_path}"
         assert specs_by_uri[uri].replaced_source_identity == f"core:{relative_path}"
-        assert bodies_by_uri[uri] == (_OPERATIONAL_DIR / relative_path).read_text(
+        assert bodies_by_uri[uri] == common_bodies[uri].rstrip() + "\n\n" + (_OPERATIONAL_DIR / relative_path).read_text(
             encoding="utf-8"
         )
 
     # AI-02: test the body served over MCP, not merely the Core source file.
-    # Errors are explicitly synchronized common content plus Community notes.
+    # Errors and tool contracts are no longer handwritten edition copies.
+    for shared_uri in ("okto-pulse://reference/errors", "okto-pulse://reference/tool-docs/kg",
+                       "okto-pulse://reference/tool-docs/decision"):
+        assert specs_by_uri[shared_uri].edition == "core"
+        assert bodies_by_uri[shared_uri] == common_bodies[shared_uri]
     error_uri = "okto-pulse://reference/errors"
     _assert_common_error_guidance_preserved(common_bodies[error_uri], bodies_by_uri[error_uri])
     for uri in replacement_by_uri:

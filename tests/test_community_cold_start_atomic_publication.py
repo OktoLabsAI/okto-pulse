@@ -278,7 +278,7 @@ async def test_failed_community_cold_start_publishes_nothing_atomically(
     monkeypatch.setattr(
         community_resources,
         "build_community_resource_catalog",
-        lambda: catalog,
+        lambda _common: catalog,
     )
 
     if stage == "instruction_freeze":

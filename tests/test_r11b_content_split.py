@@ -1,22 +1,11 @@
-"""R11-B (COMMUNITY) — explicit replacement + byte-equivalence.
+"""Community operational composition: preserve common contracts and URI identity.
 
-Scenario mapping (spec ts_ ids):
-  ts_b12ee5a7 (TS01) — inventory before/after Community replacement injection:
-       ZERO missing / unexpected URI (the public URI set is identical).
-  ts_5563f5cb (TS03) — the Community operational runbook content is PRESERVED
-       (not removed): the four replacement bodies are non-empty and still
-       name the backend (the full pre-split content migrated, not deleted).
-  ts_328960e4 (TS04) — byte-equivalence: per URI, the MERGED effective content in
-       the Community runtime == the pre-split original byte-for-byte; semantic
-       exceptions (if any) are reported with a diff + rationale (here: ZERO).
-  ts_7c58a410 (TS06) — replay: resources/read of each split URI returns the
-       replacement content from the EFFECTIVE catalog (not a textual scan of
-       server.py / _RESOURCE_REGISTRY); tool-doc links still resolve.
+The effective KG workflow is the injected Core body plus edition-only notes.
+Errors and tool docs are Core-owned, without alternate handwritten copies.
 """
 
 from __future__ import annotations
 
-import difflib
 
 import pytest
 
@@ -29,6 +18,9 @@ from okto_pulse.community.adapters.resources import (
     register_and_freeze_community_resource_catalog,
 )
 from okto_pulse.core.ports.mcp_resources import (
+    McpResourceCatalogError,
+    McpResourceSpec,
+    StaticMcpResourceCatalog,
     McpResourceReplacementTarget,
     catalog_link_integrity,
     catalog_uri_conflicts,
@@ -41,12 +33,43 @@ _SPLIT_URIS = tuple(uri for uri, _, _ in _COMMUNITY_REPLACEMENT_TABLE)
 @pytest.fixture(autouse=True)
 def _reset_catalog():
     srv.reset_resource_catalog_for_tests()
+    global _COMMON_BODIES
+    _COMMON_BODIES = {s.uri: s.read() for s in srv.effective_resource_catalog().specs()}
     yield
     srv.reset_resource_catalog_for_tests()
 
 
+def _expected_body(uri, relative_path):
+    return _COMMON_BODIES[uri].rstrip() + "\n\n" + (
+        _OPERATIONAL_DIR / relative_path
+    ).read_text(encoding="utf-8")
+
+
 def _effective_specs():
     return {s.uri: s for s in srv.effective_resource_catalog().specs()}
+
+
+def test_common_update_is_consumed_without_editing_community_notes():
+    """The regression is a divergent copy, so exercise an injected update."""
+    uri = "okto-pulse://workflows/kg"
+    source = McpResourceSpec(
+        uri=uri, description="Common", category="workflows", edition="core",
+        path="workflows/kg.md", content="# Updated common contract\n",
+    )
+    catalog = build_community_resource_catalog(StaticMcpResourceCatalog("core", (source,)))
+    body = catalog.specs()[0].read()
+    assert body.startswith("# Updated common contract\n\n")
+    assert body.count("## Community runtime notes") == 1
+    assert "Transparent Grafx checkpoint recovery" in body
+    assert "## Consolidation Primitives" not in body  # no hidden old copy
+
+
+def test_composition_refuses_missing_or_already_replaced_common_workflow():
+    with pytest.raises(McpResourceCatalogError, match="common_resource_required"):
+        build_community_resource_catalog(StaticMcpResourceCatalog("core", ()))
+    composed = build_community_resource_catalog(srv.effective_resource_catalog())
+    with pytest.raises(McpResourceCatalogError, match="common_resource_required"):
+        build_community_resource_catalog(composed)
 
 
 # ===========================================================================
@@ -60,7 +83,7 @@ def test_ts_b12ee5a7_inventory_unchanged_after_replacement(active_runtime_regist
         "missing": sorted(before - after),
         "unexpected": sorted(after - before),
     }
-    # The four split URIs are replaced in-place, never added or removed.
+    # The edition-extended URIs are replaced in-place, never added or removed.
     assert set(_SPLIT_URIS) <= after
 
 
@@ -71,14 +94,13 @@ def test_ts_5563f5cb_operational_runbooks_preserved():
     for uri, rel, _cap in _COMMUNITY_REPLACEMENT_TABLE:
         body = (_OPERATIONAL_DIR / rel).read_text(encoding="utf-8")
         assert len(body) > 0, uri  # not removed / not empty
-    # the migrated operational content STILL names the backend (full pre-split
-    # content moved here, not deleted) — at least one backend term remains.
+    # the edition notes still explain the concrete runtime — at least one backend term remains.
     kg_body = (_OPERATIONAL_DIR / "workflows/kg.md").read_text(encoding="utf-8").lower()
     assert "ladybug" in kg_body or ".lbug" in kg_body or "sqlite" in kg_body
 
     # Every replacement names both stable source identities, has higher explicit
-    # precedence, and serves the byte-exact markdown body.
-    catalog = build_community_resource_catalog()
+    # precedence, and serves the composed body.
+    catalog = build_community_resource_catalog(srv.effective_resource_catalog())
     assert catalog.precedence == COMMUNITY_RESOURCE_PRECEDENCE
     assert catalog.precedence > 0
     specs = {s.uri: s for s in catalog.specs()}
@@ -96,11 +118,11 @@ def test_ts_5563f5cb_operational_runbooks_preserved():
             edition="core",
             source_identity=f"core:{rel}",
         )
-        assert s.read() == (_OPERATIONAL_DIR / rel).read_text(encoding="utf-8")
+        assert s.read() == _expected_body(uri, rel)
 
 
 # ===========================================================================
-# ts_328960e4 (TS04) — byte-equivalence + semantic exceptions (diff/rationale).
+# ts_328960e4 (TS04) — exact common-prefix and edition-suffix contract.
 # ===========================================================================
 def test_ts_328960e4_byte_equivalence_replacement_equals_today(
     active_runtime_registry,
@@ -108,30 +130,14 @@ def test_ts_328960e4_byte_equivalence_replacement_equals_today(
     register_and_freeze_community_resource_catalog(active_runtime_registry)
     specs = _effective_specs()
 
-    exceptions: list[dict] = []
     for uri, rel, _cap in _COMMUNITY_REPLACEMENT_TABLE:
-        replacement = specs[uri].read()
-        # The captured original (byte-exact pre-split content migrated to the
-        # operational catalog) IS "today"'s content.
-        original = (_OPERATIONAL_DIR / rel).read_text(encoding="utf-8")
-        if replacement != original:
-            diff = "\n".join(
-                difflib.unified_diff(
-                    original.splitlines(), replacement.splitlines(),
-                    fromfile=f"{uri} (today)",
-                    tofile=f"{uri} (replacement)",
-                    lineterm="",
-                )
-            )
-            exceptions.append({
-                "uri": uri,
-                "diff": diff[:2000],
-                "rationale": "replacement diverged from the pre-split original",
-            })
-
-    # The explicit replacements are byte-equivalent for ALL four URIs — ZERO
-    # semantic exceptions (the diff/rationale list is the report if any appear).
-    assert exceptions == [], exceptions
+        assert specs[uri].read() == _expected_body(uri, rel)
+    # Shared contract changes must reach Community unchanged; only runtime
+    # notes are edition-owned. No pre-split copy can mask an update.
+    for uri in ("okto-pulse://reference/errors", "okto-pulse://reference/tool-docs/kg",
+                "okto-pulse://reference/tool-docs/decision"):
+        assert specs[uri].edition == "core"
+        assert specs[uri].read() == _COMMON_BODIES[uri]
     # The winning spec is operational, so its backend terms are exempt from the
     # common-resource forbidden scan.
     assert all(specs[u].kind == "operational" for u in _SPLIT_URIS)
@@ -152,16 +158,14 @@ def test_ts_5b73ba44_payload_snapshot_uses_effective_catalog(active_runtime_regi
 
     # One snapshot entry per effective winner, not per raw declaration.
     assert len(snapshot) == len(eff.specs())
-    # The four replacements appear under the effective spec's stable projection
+    # The composed replacements appear under the effective spec's stable projection
     # key and retain the exact frozen body.
     specs = _effective_specs()
     for uri, rel, _cap in _COMMUNITY_REPLACEMENT_TABLE:
         projection_key = specs[uri].path or uri
         assert projection_key in snapshot
         assert snapshot[projection_key] == specs[uri].read()
-        assert snapshot[projection_key] == (_OPERATIONAL_DIR / rel).read_text(
-            encoding="utf-8"
-        )
+        assert snapshot[projection_key] == _expected_body(uri, rel)
 
 
 # ===========================================================================
@@ -175,7 +179,7 @@ def test_ts_7c58a410_replay_resources_read_and_links(active_runtime_registry):
     # resources/read resolves from the effective replacement, non-empty.
     for uri, rel, _cap in _COMMUNITY_REPLACEMENT_TABLE:
         replacement = specs[uri].read()
-        assert replacement == (_OPERATIONAL_DIR / rel).read_text(encoding="utf-8")
+        assert replacement == _expected_body(uri, rel)
         assert len(replacement) > 0
 
     # tool-doc links + every okto-pulse:// link inside content resolve to a

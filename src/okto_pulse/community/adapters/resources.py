@@ -5,14 +5,10 @@ The Community edition registers its OWN resource catalog using the CORE contract
 composition root injects the catalog into the effective catalog and freezes it
 after all providers are wired.
 
-R11-B content split: the four core common docs that leaked backend details
-(``workflows/kg``, ``reference/errors``, ``reference/tool-docs/kg``,
-``reference/tool-docs/decision``) were scrubbed backend-free in core. Their FULL
-backend-aware content is migrated here as explicit same-URI replacements. Each
-operational declaration targets the exact stable Core source identity and lives
-in a catalog with higher declared precedence. In Community the validated winner
-is the byte-exact operational body; Core-only continues to serve its backend-free
-common declaration.
+Common contracts remain owned by Core. The KG workflow adds Community runtime
+notes to the injected common body through the existing explicit replacement
+contract. Errors and tool documentation are served directly by Core, avoiding
+hand-maintained copies of domain rules in the edition.
 """
 
 from __future__ import annotations
@@ -25,6 +21,7 @@ from okto_pulse.core.ports.mcp_resources import (
     RESOURCE_KIND_OPERATIONAL,
     FrozenMcpResourceCatalog,
     McpResourceCatalogError,
+    McpResourceCatalog,
     McpResourceReplacementTarget,
     McpResourceSpec,
     StaticMcpResourceCatalog,
@@ -46,22 +43,14 @@ class CommunityFileMcpInstructionProvider:
         return self.path.read_text(encoding="utf-8") if self.path.is_file() else ""
 
 
-#: Where the Community operational resource bodies live (byte-exact captures of
-#: the pre-split originals — they MAY name the concrete backend; they are
-#: ``kind=operational`` and exempt from the common forbidden-term scan).
+#: Edition-owned supplements only; common contract bodies are injected through
+#: the public catalog port and frozen together with these operational notes.
 _OPERATIONAL_DIR = Path(__file__).resolve().parent.parent / "resources" / "operational"
 _LEGACY_AGENT_PROMPT_PATH = Path("/app/prompts/agent_system_prompt.md")
 
 #: R11-B explicit replacement table: (uri, operational path, capability).
 _COMMUNITY_REPLACEMENT_TABLE: tuple[tuple[str, str, str], ...] = (
     ("okto-pulse://workflows/kg", "workflows/kg.md", "kg"),
-    ("okto-pulse://reference/errors", "reference/errors.md", "errors"),
-    ("okto-pulse://reference/tool-docs/kg", "reference/tool-docs/kg.md", "kg"),
-    (
-        "okto-pulse://reference/tool-docs/decision",
-        "reference/tool-docs/decision.md",
-        "decision",
-    ),
 )
 
 
@@ -77,11 +66,20 @@ def _replacement_category(uri: str) -> str:
     return parts[0] if parts and parts[0] else "misc"
 
 
-def _build_replacement_specs() -> tuple[McpResourceSpec, ...]:
+def _build_replacement_specs(common_catalog: McpResourceCatalog) -> tuple[McpResourceSpec, ...]:
+    common = {spec.uri: spec for spec in common_catalog.specs()}
+    for uri, path, _capability in _COMMUNITY_REPLACEMENT_TABLE:
+        source = common.get(uri)
+        if source is None or source.edition != "core" or not source.is_common:
+            raise McpResourceCatalogError(
+                "common_resource_required",
+                "Community notes require the original Core common resource",
+                uri=uri,
+            )
     return tuple(
         McpResourceSpec(
             uri=uri,
-            description="(operational replacement — backend-specific content)",
+            description="KG query timing, consolidation and closeout; Community Grafx health and runtime notes.",
             category=_replacement_category(uri),
             edition=COMMUNITY_RESOURCE_EDITION,
             kind=RESOURCE_KIND_OPERATIONAL,
@@ -94,21 +92,23 @@ def _build_replacement_specs() -> tuple[McpResourceSpec, ...]:
                 source_identity=f"core:{path}",
             ),
             path=path,
-            loader=lambda path=path: (_OPERATIONAL_DIR / path).read_text(
-                encoding="utf-8"
-            ),
+            content=common[uri].read().rstrip() + "\n\n" + (
+                _OPERATIONAL_DIR / path
+            ).read_text(encoding="utf-8"),
         )
         for uri, path, capability in _COMMUNITY_REPLACEMENT_TABLE
     )
 
 
-def build_community_resource_catalog() -> StaticMcpResourceCatalog:
-    """Build the Community edition's operational resource catalog via the core
-    contracts (R11-B): four explicit, higher-precedence replacements that restore
-    the full backend-aware content scrubbed from Core common docs."""
+def build_community_resource_catalog(common_catalog: McpResourceCatalog) -> StaticMcpResourceCatalog:
+    """Compose the injected common workflow and edition notes once at startup.
+
+    Only the public catalog port is consumed; no private Core modules or source
+    paths are read. The existing freeze hashes the complete composed body.
+    """
     return StaticMcpResourceCatalog(
         COMMUNITY_RESOURCE_EDITION,
-        _build_replacement_specs(),
+        _build_replacement_specs(common_catalog),
         precedence=COMMUNITY_RESOURCE_PRECEDENCE,
     )
 
@@ -277,13 +277,12 @@ def register_and_freeze_community_resource_catalog(
     try:
         register_community_instruction_provider(freeze=False)
 
-        catalog = build_community_resource_catalog()
         effective = effective_resource_catalog()
         composed_editions = {
             item.edition for item in getattr(effective, "catalogs", ())
         }
-        if catalog.specs() and COMMUNITY_RESOURCE_EDITION not in composed_editions:
-            register_resource_catalog(catalog)
+        if COMMUNITY_RESOURCE_EDITION not in composed_editions:
+            register_resource_catalog(build_community_resource_catalog(effective))
         freeze_instruction_providers()
         freeze_resource_catalog()
 
