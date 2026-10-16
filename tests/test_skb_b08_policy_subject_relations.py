@@ -298,7 +298,7 @@ async def test_relational_writer_takes_board_mutex_before_subject_fact_write(
         await seed.commit()
 
     statements: list[str] = []
-    writer_entered = asyncio.Event()
+    mutex_attempted = asyncio.Event()
     engine = get_engine().sync_engine
 
     def capture_statement(
@@ -309,11 +309,13 @@ async def test_relational_writer_takes_board_mutex_before_subject_fact_write(
         _context: Any,
         _executemany: bool,
     ) -> None:
-        statements.append(" ".join(statement.lower().split()))
+        normalized = " ".join(statement.lower().split())
+        statements.append(normalized)
+        if normalized.startswith("update boards"):
+            mutex_attempted.set()
 
     async def mutate_relation() -> None:
         async with get_session_factory()() as writer:
-            writer_entered.set()
             row = await writer.get(relation_model, relation_id)
             assert row is not None
             mutate(row, "mutex-write")
@@ -326,14 +328,21 @@ async def test_relational_writer_takes_board_mutex_before_subject_fact_write(
         event.listen(engine, "before_cursor_execute", capture_statement)
         try:
             writer_task = asyncio.create_task(mutate_relation())
-            await asyncio.wait_for(writer_entered.wait(), timeout=2)
-            await asyncio.sleep(0.05)
+            waiting_for_mutex = asyncio.create_task(mutex_attempted.wait())
+            # Session entry does not mean a SQL statement has been attempted:
+            # a fresh connection first verifies the native storage contract.
+            # Synchronize on the actual mutex statement, not a 50ms sleep.
+            await asyncio.wait(
+                {writer_task, waiting_for_mutex}, timeout=10,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
             if writer_task.done():
                 await writer_task  # Surface writer failure instead of hiding it behind an event.
+            assert mutex_attempted.is_set(), statements
             assert not writer_task.done()
             assert any(
                 statement.startswith("update boards") for statement in statements
-            )
+            ), statements
             assert not any(
                 statement.startswith(f"update {relation_model.__tablename__}")
                 for statement in statements
@@ -342,9 +351,10 @@ async def test_relational_writer_takes_board_mutex_before_subject_fact_write(
             await snapshot.commit()
             await asyncio.wait_for(writer_task, timeout=2)
         finally:
+            waiting_for_mutex.cancel()
             if not writer_task.done():
                 writer_task.cancel()
-            await asyncio.gather(writer_task, return_exceptions=True)
+            await asyncio.gather(writer_task, waiting_for_mutex, return_exceptions=True)
             event.remove(engine, "before_cursor_execute", capture_statement)
 
     board_mutex_index = next(

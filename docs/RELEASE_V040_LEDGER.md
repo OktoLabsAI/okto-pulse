@@ -17,6 +17,42 @@ repositories v0.4.0. No branch-protection bypass or failing-gate exemption.
 
 ### Shared access watcher and native workflow qualification
 
+Follow-up: all 46 Learning/projection/chronology/coordination cases pass
+(1994.83s), and the fresh paired-wheel installation/runtime gate passes with
+the rebuilt frontend. Review found a deleted startup_graph_routes adapter and
+retired rollout capture/journal in the current architecture source map; removed
+those references and mechanically confirmed every remaining listed Community
+adapter path resolves. The reflective-query documentation test now reads the
+actual frozen effective MCP catalog instead of the removed duplicate file;
+its focused regression passes. These are documentation/test corrections only.
+
+The routed-facade diagnostic found a fixture still attempting to admit a Ladybug
+binding. It now asserts the native refusal reason, missing route without provider
+invocation, unchanged retired bytes, and persisted Grafx generation/page size
+despite a different resolver default. All 61 routed-facade tests pass; no backend
+compatibility was restored.
+
+Four B08 mutex cases sampled 50ms after session entry, before the fresh
+connection had emitted any SQL (`statements == []`). Synchronize on the actual
+board-mutex statement and race that signal against writer completion, with a
+bounded timeout. The writer must still block, no relation DML may precede the
+mutex, and commit must complete after release. All nine B08 relation cases pass;
+no production lock behavior changed.
+
+The architecture persistence fixture used a plain SQLAlchemy session, which
+correctly fails the protected semantic-model guard after Community composition.
+It now uses build_community_session_factory. All nine focused architecture and
+semantic-composition cases pass (159.30s), retaining competing-writer stale
+version refusal, rollback, timestamp preservation and uncomposed-session
+rejection. No production behavior or authority guard changed.
+
+The remaining diagnostic tail completed with 386 passes and three stale report
+fixtures: their generic source reference/revision did not match the implementation
+being verified. Bind those positive reports to the actual mock execution bases
+before signing. All 14 report-admission cases pass (51.46s), retaining old-observation,
+inconclusive/aborted/unavailable and failed-result credit revocation. No receipt
+verifier or admission predicate changed.
+
 The subsequent R05-B/C diagnostic reproduced three stale assertions requiring
 the retired demo seed to compose/bootstrap a graph. Native startup now composes
 in main/CLI; the empty My Board seed owns only relational defaults. Tests assert
