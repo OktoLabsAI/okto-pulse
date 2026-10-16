@@ -530,7 +530,7 @@ def _create_decision_schema(database: Database) -> None:
             "id STRING, title STRING, source_artifact_ref STRING, "
             "content STRING, context STRING, justification STRING, "
             "kind_of STRING, embedding VECTOR(decision_embedding_idx), "
-            "superseded_by STRING, graph_layer STRING, revocation_reason STRING, "
+            "superseded_by STRING, graph_layer STRING, revocation_reason STRING, source_status STRING, "
             "PRIMARY KEY(id))"
         )
 

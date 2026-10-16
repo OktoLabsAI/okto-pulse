@@ -123,6 +123,7 @@ async def _produce(
     executed_at: str = "2026-07-14T15:00:00Z",
     ledger: CommunityEvidenceLedger | None = None,
     execution_basis: dict | None = None,
+    executor=None,
 ):
     ledger = ledger or _ledger(tmp_path)
     path = ledger.manifest_root / "about-replay.json"
@@ -158,7 +159,7 @@ async def _produce(
         # attestation and HMAC checks; no fixture sets an authenticated flag.
         evidence = await evidence_adapter._execute_validated_manifest_and_build_evidence_v2(
             manifest=manifest, canonical_ref=canonical_ref, normalized_manifest=normalized,
-            **scope, status='passed', actor_id=ACTOR_ID, executor=execute, ledger=ledger,
+            **scope, status='passed', actor_id=ACTOR_ID, executor=executor or execute, ledger=ledger,
             environment='pytest', execution_basis=execution_basis)
         return ledger, calls, evidence
     evidence = await run_manifest_and_build_evidence_v2(
@@ -169,7 +170,7 @@ async def _produce(
         scenario_sha256=SCENARIO_SHA256,
         status="passed",
         actor_id=ACTOR_ID,
-        executor=execute,
+        executor=executor or execute,
         ledger=ledger,
         environment="pytest",
     )
