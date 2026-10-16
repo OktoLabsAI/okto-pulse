@@ -8,11 +8,17 @@ Python 3.11 or newer and Node.js are required. Clone the Core and Community
 repositories as siblings:
 
 ```bash
-git clone https://github.com/OktoLabsAI/okto-pulse-core.git
-git clone https://github.com/OktoLabsAI/okto-pulse.git
-cd okto-pulse
-pip install -e ../okto-pulse-core -e ".[dev]"
+git clone https://github.com/OktoLabsAI/okto-pulse-core.git okto_labs_pulse_core
+git clone https://github.com/OktoLabsAI/okto-pulse.git okto_labs_pulse_community
+cd okto_labs_pulse_community
+pip install -e ../okto_labs_pulse_core -e ".[dev]"
 ```
+
+These checkout names match the committed `tool.uv.sources` paths. For uv-based
+development, run `uv sync --locked --extra dev` from this directory. Docker/CI
+uses the separate `okto-pulse-core` / `okto-pulse` layout and installs with pip.
+When using `build.sh` with the uv checkout names above, set
+`OKTO_PULSE_CORE_DIR="$(pwd)/../okto_labs_pulse_core"` to select the sibling explicitly.
 
 The Community CI prefers an `okto-pulse-core` branch with the same name as the
 Community branch and falls back to Core `main` when none exists. Create matching

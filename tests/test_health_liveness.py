@@ -3,10 +3,17 @@ from contextlib import asynccontextmanager
 
 import httpx
 import pytest
+from pathlib import Path
 
 import okto_pulse.community.app as app_module
 from okto_pulse.community.adapters.sqlalchemy_database import configure_community_database
 from okto_pulse.community.config import CommunitySettings
+
+
+def test_both_docker_runtime_targets_probe_public_liveness():
+    dockerfile = (Path(__file__).parents[1] / "Dockerfile").read_text(encoding="utf-8")
+    probes = [line.strip() for line in dockerfile.splitlines() if "CMD curl" in line]
+    assert probes == ["CMD curl -fsS http://127.0.0.1:8100/health || exit 1"] * 2
 
 
 @pytest.mark.asyncio
