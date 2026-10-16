@@ -263,15 +263,27 @@ def test_removed_permissions_are_absent_from_registry_and_presets():
         assert {"rebuild", "global_recovery", "quarantine", "global_outbox", "tick", "schema"}.isdisjoint(operations)
 
 
-def test_distributed_instructions_do_not_advertise_retired_recovery_tools():
-    for package, prefix in (
-        ("okto_pulse.core", "mcp/resources"),
-        ("okto_pulse.community", "resources/operational"),
-    ):
-        resources = importlib.resources.files(package).joinpath(prefix)
-        for relative in ("workflows/kg.md", "reference/tool-docs/kg.md"):
-            content = resources.joinpath(relative).read_text(encoding="utf-8")
-            assert all(name not in content for name in RETIRED)
+def test_distributed_instructions_do_not_advertise_retired_recovery_tools(
+    active_runtime_registry,
+):
+    from okto_pulse.community.adapters.resources import (
+        register_and_freeze_community_resource_catalog,
+    )
+
+    resources = importlib.resources.files("okto_pulse.core").joinpath("mcp/resources")
+    for relative in ("workflows/kg.md", "reference/tool-docs/kg.md"):
+        content = resources.joinpath(relative).read_text(encoding="utf-8")
+        assert all(name not in content for name in RETIRED)
+
+    # Community serves the composed catalog; deduplicated Core documents need
+    # not exist a second time under the Community overlay directory.
+    transaction = register_and_freeze_community_resource_catalog(active_runtime_registry)
+    frozen, _ = transaction.require_frozen_projection()
+    by_uri = {str(spec.uri): spec for spec in frozen.specs()}
+    for uri in ("okto-pulse://workflows/kg", "okto-pulse://reference/tool-docs/kg"):
+        content = by_uri[uri].read()
+        assert all(name not in content for name in RETIRED)
+    transaction.commit()
 
 
 @pytest.mark.parametrize("arguments", [

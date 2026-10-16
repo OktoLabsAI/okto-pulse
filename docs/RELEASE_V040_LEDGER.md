@@ -43,6 +43,18 @@ repositories v0.4.0. No branch-protection bypass or failing-gate exemption.
 
 ## Resume
 
+Removed the obsolete one-off Sprint assignment helper: it could mutate scenario
+links before failing against the retired Sprint API. The documented boundary
+command now uses `test_retired_public_rebuild.py` instead of the deleted backfill
+test; its documentation guard verifies that every referenced test file exists.
+The exact updated 162-case command initially produced 161 passed / 1 failed:
+the resource-retirement test assumed a duplicate Community KG document still
+existed. It now checks the Core source and actual frozen Community catalog.
+All five affected resource/documentation cases pass after that fix. The broader
+diagnostic also exposed a Windows subprocess decode mismatch in the serve-lock
+test; explicit child/capture UTF-8 preserves the denial assertion, and all six
+serve-lock cases pass. Full required CI remains the final promotion gate.
+
 The installed recovery E2E now pins the measured 285-tool catalog and its
 SHA-256 `6da5fc12f5c20f12f93f18db247c8c5577c137d60852ac732baa31d3f7e24ad1`.
 A regular-suite guard compares those optional E2E pins with the live registry.
