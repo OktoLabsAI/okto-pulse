@@ -17,6 +17,16 @@ repositories v0.4.0. No branch-protection bypass or failing-gate exemption.
 
 ### Shared access watcher and native workflow qualification
 
+The subsequent R05-B/C diagnostic reproduced three stale assertions requiring
+the retired demo seed to compose/bootstrap a graph. Native startup now composes
+in main/CLI; the empty My Board seed owns only relational defaults. Tests assert
+that division and retain the public GraphSchemaManager bootstrap requirement
+and prohibition of direct Core schema imports. All 24 R05-B/C tests pass.
+No seed/runtime behavior changed.
+CI now completes the entire existing selected suite instead of stopping on its
+first failure, so qualification reports remaining failures together. Selection,
+required check, timeout and nonzero failure exit remain unchanged.
+
 PR #117 review identified a shared revision batch that treated one denied Spec
 as loss of access to every subscribed Card. Refused 403/404 batches now isolate
 the denied subjects; 401 still clears the authenticated session. CardModal
