@@ -218,9 +218,10 @@ def test_s10_run_kg_tick_once_refuses_live_serve_lock(tmp_path: Path):
         ]
     )
     proc = subprocess.run(
-        [sys.executable, str(_CORE_TICK_SCRIPT)],
+        [sys.executable, "-X", "utf8", str(_CORE_TICK_SCRIPT)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=120,
         env=env,
     )

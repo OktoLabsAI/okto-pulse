@@ -1,8 +1,6 @@
 """Unit tests for the `okto-pulse init` CLI command.
 
-Tests argparse wiring via subprocess (matching the pattern in
-test_cli_kg_backfill.py).  Full cmd_init flow requires a real DB
-so we only test the subparser shape here.
+Tests argparse wiring via subprocess and initialization with isolated storage.
 """
 
 from __future__ import annotations
