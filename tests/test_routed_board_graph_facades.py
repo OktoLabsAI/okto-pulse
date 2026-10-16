@@ -546,12 +546,16 @@ def test_persisted_bindings_override_current_resolver_backend_setting(
     legacy_path = binding_store.board_ladybug_path("board-l")
     legacy_path.parent.mkdir(parents=True)
     legacy_path.write_bytes(b"legacy")
-    binding_store.initialize_board_binding(
-        board_id="board-l",
-        backend="ladybug",
-        generation="legacy-3",
-        physical_path=legacy_path,
-    )
+    # Retired bytes cannot acquire a native binding. Refusal must leave the
+    # supplied storage untouched, while a valid Grafx binding remains routable.
+    with pytest.raises(GraphCapabilityUnavailable) as refused:
+        binding_store.initialize_board_binding(
+            board_id="board-l",
+            backend="ladybug",
+            generation="legacy-3",
+            physical_path=legacy_path,
+        )
+    assert refused.value.details["reason"] == "binding_argument_invalid"
     grafx_path = binding_store.board_grafx_path("board-g", "grafx-8")
     grafx_path.mkdir(parents=True)
     (grafx_path / "grafx.meta").write_bytes(b"grafx")
@@ -570,9 +574,7 @@ def test_persisted_bindings_override_current_resolver_backend_setting(
         global_backend="grafx",
         grafx_page_size=8192,
     )
-    legacy = Mock()
     grafx = Mock()
-    legacy.get_schema_version.return_value = "legacy"
     grafx.get_schema_version.return_value = "grafx"
 
     @contextmanager
@@ -585,13 +587,15 @@ def test_persisted_bindings_override_current_resolver_backend_setting(
         operation_window=operation_window,
     )
 
-    with pytest.raises(GraphUnavailable):
+    with pytest.raises(GraphCapabilityUnavailable) as missing:
         facade.get_schema_version("board-l")
+    assert missing.value.details["reason"] == "binding_missing"
+    grafx.get_schema_version.assert_not_called()
     assert facade.get_schema_version("board-g") == "grafx"
     assert legacy_path.read_bytes() == b"legacy"
-    assert changed_settings_resolver.acquire_board_route("board-g").generation == (
-        "grafx-8"
-    )
+    route = changed_settings_resolver.acquire_board_route("board-g")
+    assert route.generation == "grafx-8"
+    assert route.page_size == 4096
 
 
 def test_cypher_single_and_paired_reads_pin_one_route_and_one_window_each() -> None:

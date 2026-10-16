@@ -26,6 +26,12 @@ adapter path resolves. The reflective-query documentation test now reads the
 actual frozen effective MCP catalog instead of the removed duplicate file;
 its focused regression passes. These are documentation/test corrections only.
 
+The routed-facade diagnostic found a fixture still attempting to admit a Ladybug
+binding. It now asserts the native refusal reason, missing route without provider
+invocation, unchanged retired bytes, and persisted Grafx generation/page size
+despite a different resolver default. All 61 routed-facade tests pass; no backend
+compatibility was restored.
+
 The subsequent R05-B/C diagnostic reproduced three stale assertions requiring
 the retired demo seed to compose/bootstrap a graph. Native startup now composes
 in main/CLI; the empty My Board seed owns only relational defaults. Tests assert
