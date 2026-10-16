@@ -7,7 +7,7 @@ repositories v0.4.0. No branch-protection bypass or failing-gate exemption.
 
 - Core feature/develop PRs: #107, #109, #110 merged. Main PR #108 merged after
   required checks passed; main commit `63bd85f25d8ad1f0cfc1bef5703ce495d4266d58`.
-- Community feature/develop PRs: #116, #118, #119, #120, #121, #122, #123 merged. Main PR #117
+- Community feature/develop PRs: #116, #118, #119, #120, #121, #122, #123, #124 merged. Main PR #117
   remains open, waiting for the required `docker build verify` check.
 - No v0.4.0 tag created yet. Tag Core first after the paired qualification;
   tagging Community triggers its gated Docker/GHCR Release workflow.
@@ -42,6 +42,22 @@ repositories v0.4.0. No branch-protection bypass or failing-gate exemption.
   all selected tests. A separate local tail subset is diagnostic only.
 
 ## Resume
+
+Pre-tag inspection found the Release workflow replayed an April legacy trace
+with 250 previously successful calls to 26 removed tools, including Sprints.
+Replaced that incompatible fixture with a native HTTP smoke against the freshly
+initialized tagged container: version/inventory/resources, authenticated
+Ideation write/read persistence, native Q&A, and rejected retired target without
+mutation. Existing image scan, health, crash/handle checks and publish gates
+remain required; this smoke does not replace the complete CI suite.
+
+Validation: six verifier tests pass (JSON/SSE success and HTTP/domain/correlation/
+negative-test failures). Real isolated installed-pair smoke passes: 61 MCP calls,
+285 tools, 54 resources, 50 persistence round trips, native Q&A and retired-target
+refusal. Byte equality proved 867 Core and 326 Community Python files. The probe
+used a newly created validation home and terminated its own process; the default
+Pulse home/runtime was untouched. Evidence is under
+`PULSE_REFACTOR/.validation-v040/release-promotion-20261016/`.
 
 Further review found source-mode evidence could sign stale distribution metadata
 or a hardcoded 0.3.3 fallback as producer version. Evidence now identifies the
