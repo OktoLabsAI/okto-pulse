@@ -27,7 +27,10 @@ jobs:
   build-verify:
     name: docker build verify
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    # Native storage/concurrency cases plus paired-wheel and Docker builds need
+    # more than the former budget (observed ~20 minutes for the first 19%).
+    # Keep the complete selection; a time budget is not a test exemption.
+    timeout-minutes: 180
     env:
       OKTO_PULSE_CORE_REPO: ${{ github.workspace }}/okto-pulse-core
       # The release-artifact gate builds Grafx from a concrete, auditable source

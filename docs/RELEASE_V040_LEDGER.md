@@ -43,6 +43,11 @@ repositories v0.4.0. No branch-protection bypass or failing-gate exemption.
 
 ## Resume
 
+CI time budget increased from 75 to 180 minutes: run 38848655415 reached 19%
+of the full selection after about 20 minutes before a reviewed fix superseded
+it. Allow time for native storage/concurrency cases and subsequent artifact
+builds; no tests, assertions, required checks or failure conditions were removed.
+
 Pre-tag inspection found the Release workflow replayed an April legacy trace
 with 250 previously successful calls to 26 removed tools, including Sprints.
 Replaced that incompatible fixture with a native HTTP smoke against the freshly
