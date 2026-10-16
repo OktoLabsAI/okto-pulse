@@ -32,6 +32,13 @@ invocation, unchanged retired bytes, and persisted Grafx generation/page size
 despite a different resolver default. All 61 routed-facade tests pass; no backend
 compatibility was restored.
 
+Four B08 mutex cases sampled 50ms after session entry, before the fresh
+connection had emitted any SQL (`statements == []`). Synchronize on the actual
+board-mutex statement and race that signal against writer completion, with a
+bounded timeout. The writer must still block, no relation DML may precede the
+mutex, and commit must complete after release. All nine B08 relation cases pass;
+no production lock behavior changed.
+
 The subsequent R05-B/C diagnostic reproduced three stale assertions requiring
 the retired demo seed to compose/bootstrap a graph. Native startup now composes
 in main/CLI; the empty My Board seed owns only relational defaults. Tests assert
