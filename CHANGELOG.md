@@ -7,7 +7,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ---
 
-## [0.4.0] - Unreleased
+## [0.4.0] - 2026-10-16
 
 ### BREAKING CHANGE — no compatibility with earlier Pulse versions
 
@@ -97,7 +97,6 @@ obsolete demo Board and demonstration data.
 - Pre-0.4.0 data migration, legacy import/conversion and compatibility workflows.
 - Obsolete demo initialization and redundant Community copies of common MCP contracts.
 
-The release date will be recorded when 0.4.0 is published.
 
 ## [0.3.3] - 2026-08-23
 
