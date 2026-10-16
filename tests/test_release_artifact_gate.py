@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import os
@@ -15,6 +16,31 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 GATE = REPO / "scripts" / "release_artifact_gate.py"
+
+
+def test_installed_recovery_e2e_inventory_matches_live_release_catalog() -> None:
+    """Catch inventory drift before the expensive opt-in recovery run starts."""
+    from okto_pulse.core.mcp import server
+    from okto_pulse.core.mcp.manifest import tool_inventory_document, tool_inventory_sha256
+
+    source = REPO / "tests/test_global_discovery_recovery_installed_e2e.py"
+    pins = {
+        node.targets[0].id: ast.literal_eval(node.value)
+        for node in ast.parse(source.read_text(encoding="utf-8")).body
+        if isinstance(node, ast.Assign)
+        and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id in {
+            "EXPECTED_TOOL_COUNT", "EXPECTED_CANONICAL_TOOL_COUNT",
+            "EXPECTED_TOOL_INVENTORY_SHA256", "EXPECTED_TOOL_ALIASES",
+        }
+    }
+    inventory = tool_inventory_document(server.mcp)
+    assert pins["EXPECTED_TOOL_COUNT"] == len(inventory["tools"])
+    assert pins["EXPECTED_CANONICAL_TOOL_COUNT"] == (
+        len(inventory["tools"]) - len(inventory["aliases"])
+    )
+    assert pins["EXPECTED_TOOL_ALIASES"] == inventory["aliases"]
+    assert pins["EXPECTED_TOOL_INVENTORY_SHA256"] == tool_inventory_sha256(inventory)
 
 
 def test_ts24_release_harness_freezes_installed_inventory_and_provenance() -> None:

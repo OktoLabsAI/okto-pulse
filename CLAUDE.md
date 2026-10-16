@@ -40,7 +40,7 @@ python:3.12-slim
 Two **independent finalizer paths** (`local-runtime`, `pypi-runtime`) so dev and
 prod don't share an install layer that could mask a publishing bug. They emit
 the same runtime contract: ports 8100/8101, `okto-pulse serve` as PID 1, healthcheck on
-`/api/v1/kg/settings`, model cache at `/opt/hf-cache`.
+`/health`, model cache at `/opt/hf-cache`.
 
 ### Compose files
 
@@ -91,7 +91,7 @@ nothing inside the container.
 
 ```
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD curl -fsS http://127.0.0.1:8100/api/v1/kg/settings || exit 1
+    CMD curl -fsS http://127.0.0.1:8100/health || exit 1
 ```
 
 The healthcheck curls **inside the container** so it always uses 127.0.0.1
@@ -124,7 +124,7 @@ docker run --rm -d --name pulse-dev \
   -p 18100:8100 -p 18101:8101 \
   pulse:dev
 docker logs -f pulse-dev   # ctrl-c when "Startup complete"
-curl -fsS http://localhost:18100/api/v1/kg/settings
+curl -fsS http://localhost:18100/health
 docker rm -f pulse-dev
 ```
 
@@ -188,15 +188,18 @@ Python 3.12). All gates must pass before any image is pushed:
 2. Preflight: confirm `okto-pulse-core` has the matching `vX.Y.Z` tag
 3. Sibling-checkout both repos at the tag (workspace root holds both as siblings)
 4. Verify `pyproject.toml` versions in both repos match the git tag
-5. Install `okto-pulse-core` in editable mode + replay/test deps
+5. Install `okto-pulse-core` in editable mode + native smoke dependencies
 6. Set up Buildx + log in to GHCR (uses built-in `GITHUB_TOKEN`, no PAT)
 7. Compute image tags via `docker/metadata-action`
 8. Build image (`target=local-runtime`, `load: true` — into local daemon, not pushed)
 9. Spin up container, poll `docker inspect ... .State.Health.Status` until `healthy` (max 120s)
-10. Extract bootstrap API key (`dash_<hex>`) from container logs
-11. Run vendored `mcp_replay.py` against the long trace fixture (862 events,
-    `--behavioral --no-strict`)
-12. **Replay gate**: scan container logs for `sigbus|sigsegv|segmentation|bus error|ResourceWarning|RuntimeError.*Failed to open`,
+10. Consume the bootstrap API key (`dash_<hex>`) from its one-time handoff file
+    with the CLI inside the container; mask it before passing it to the probe
+11. Run `scripts/release_mcp_smoke.py` against the fresh container: verify native
+    inventory, create/read an Ideation, perform 50 read round trips, write/read
+    Q&A, and require refusal of a retired Sprint target without mutation.
+    HTTP, domain, protocol or assertion failures return a nonzero exit status.
+12. **Runtime gate**: scan container logs for `sigbus|sigsegv|segmentation|bus error|ResourceWarning|RuntimeError.*Failed to open`,
     confirm container is still `healthy`
 13. Push to GHCR with semver tags: `:X.Y.Z`, `:X.Y`, `:latest`, `:sha-<short>`
 14. Cleanup container (always, even on failure)
@@ -222,7 +225,7 @@ docker pull ghcr.io/oktolabsai/okto-pulse:X.Y.Z
 docker run -d --name pulse-verify -p 8100:8100 -p 8101:8101 \
     ghcr.io/oktolabsai/okto-pulse:X.Y.Z
 sleep 30
-curl -fsS http://localhost:8100/api/v1/kg/settings  # should 200
+curl -fsS http://localhost:8100/health  # should 200
 docker rm -f pulse-verify
 ```
 
@@ -271,22 +274,12 @@ bump and move forward.
 
 ### Known caveats
 
-- **No pytest gate in the workflow.** The `okto-pulse-core` test suite has
-  pre-existing post-Ladybug failures, notably `test_close_releases_handles`
-  which reproducibly leaks `graph.kuzu` + `graph.kuzu.wal` file handles on
-  Linux (real bug in `BoardConnection.close()`, not a CI flake). The smoke
-  test + MCP replay gates cover deployability today. Reinstate pytest in
-  `release.yml` once the kg layer's `close()` is fixed for Linux.
-
-- **Trace fixture must contain `create_ideation` events.** The replay
-  tool's `clean_golden_path` skips everything before the first
-  `create_ideation`. The vendored `session_long.jsonl` (~2.6 MB, 862 events)
-  has 42 of them. A trimmed-down trace without one will filter to zero and
-  fail the smoke step with `No entries to replay after filtering`.
-
-- **Replay tool's exit code is advisory.** The tool exits 0 unless the
-  trace is unparseable. The actual gate is the log scan + health check
-  that runs after the replay step.
+- **Release requires prior main qualification.** PR/main CI runs the Community
+  suite (excluding explicitly marked E2E/stress cases), architecture closure,
+  isolated wheel checks and Docker build verification. The tag workflow adds
+  image scanning, native MCP smoke, runtime health checks and image signing.
+  Pulse 0.4.0 requires fresh compatible storage; no old-version replay or
+  migration path is part of this release contract.
 
 - **First push of a new image to GHCR creates a private package.** Flip
   visibility manually once (see "Verifying a release" above). Subsequent
@@ -320,9 +313,8 @@ build time so the runtime is offline-capable.
 ## CI workflows in this repo
 
 - `.github/workflows/release.yml` — tag-driven release (above)
-- `.github/workflows/ci.yml` — PR + main: pytest gate is currently dropped
-  (same caveat as release); runs build verify on the Dockerfile to catch
-  Dockerfile/dep regressions before tagging
+- `.github/workflows/ci.yml` — PR + main: full selected Community suite,
+  architecture closure, isolated wheels and Docker build verification
 - The CLA check is enforced by the repository's external CLA integration;
   there is no local CLA workflow file.
 
