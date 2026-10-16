@@ -304,9 +304,12 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(argv if argv is not None else sys.argv[1:])
     try:
         if "--json-evidence" in argv:
+            from okto_pulse.core import __version__ as core_code_version
+            from okto_pulse.community import __version__ as community_code_version
+
             payload = run_runtime_smoke_evidence(
-                core_version=os.environ.get("R15B_CORE_VERSION", "0.3.3"),
-                community_version=os.environ.get("R15B_COMMUNITY_VERSION", "0.3.3"),
+                core_version=os.environ.get("R15B_CORE_VERSION", core_code_version),
+                community_version=os.environ.get("R15B_COMMUNITY_VERSION", community_code_version),
                 core_commit=os.environ.get("R15B_CORE_COMMIT", "working-tree"),
                 community_commit=os.environ.get(
                     "R15B_COMMUNITY_COMMIT", "working-tree"

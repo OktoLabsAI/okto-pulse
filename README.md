@@ -437,12 +437,6 @@ Restore network access and restart:
 okto-pulse serve
 ```
 
-You can also smoke-test the embedder from a source checkout:
-
-```bash
-python scripts/smoke_embedding.py
-```
-
 </details>
 
 <details>

@@ -43,6 +43,17 @@ repositories v0.4.0. No branch-protection bypass or failing-gate exemption.
 
 ## Resume
 
+Review follow-up: removed the obsolete Sprint-based `scripts/pgb.py` profiler
+and its one historical-baseline-only test, plus `smoke_embedding.py`, which
+always called the retired unauthenticated KG settings route. Removed the README
+instruction for that dead command. No product behavior or current feature test
+was removed. Preservation evidence now defaults to loaded Core/Community code
+versions rather than 0.3.3. All four preservation/evidence tests pass, including
+the new default-version regression; no retired version/route/Sprint model
+references remain in active scripts. The running local diagnostic was collected
+before the profiler retirement and may still attempt its deleted test; the full
+remote suite collects the final checkout afresh.
+
 Run 38852126320 failed after 1431 passed / 4 skipped on authenticated delivery:
 the adopted fixture replaced a valid source-bound attestation with an unbound
 one. Preserve its execution basis and use the actual ASGI observation through
