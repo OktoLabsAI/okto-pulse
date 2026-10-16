@@ -240,6 +240,28 @@ async def _produce_inline(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("installed_version", [None, "0.3.3"])
+async def test_signed_evidence_identifies_loaded_code_despite_missing_or_stale_install(
+    tmp_path, monkeypatch, installed_version,
+):
+    from importlib import metadata
+    from okto_pulse.community import __version__
+
+    def distribution_version(_name):
+        if installed_version is None:
+            raise metadata.PackageNotFoundError(_name)
+        return installed_version
+
+    monkeypatch.setattr(metadata, "version", distribution_version)
+    ledger, _calls, evidence = await _produce_inline(tmp_path)
+    assert evidence["execution_attestation"]["provenance"]["producer_version"] == __version__
+    assert verify_community_evidence_v2(
+        board_id=BOARD_ID, spec_id=SPEC_ID, status="passed", scenario_id=SCENARIO_ID,
+        scenario_sha256=SCENARIO_SHA256, actor_id=ACTOR_ID, evidence=evidence, ledger=ledger,
+    ).verified
+
+
+@pytest.mark.asyncio
 async def test_inline_replay_is_bound_persisted_canonically_and_idempotently(
     tmp_path,
 ):
