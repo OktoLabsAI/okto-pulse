@@ -201,12 +201,11 @@ Adapter source map:
 - KG data and graph runtime: `community/adapters/data.py`,
   `community/adapters/memory.py`, `community/adapters/grafx_*`,
   `community/adapters/routed_*`, `community/adapters/graph_*` (backend binding,
-  route resolution, DDL, memory pressure, rollout capture/journal, restore-serve
+  route resolution, DDL, memory pressure, restore-serve
   fence, operation guards and the runtime budget),
   `community/adapters/global_privacy_projection.py`,
   `community/adapters/global_operation_gate.py`,
   `community/adapters/cypher_statement_policy.py`,
-  `community/adapters/startup_graph_routes.py`,
   `community/adapters/kg_shutdown.py`,
   `community/adapters/kg_chaos_executor.py` and
   `community/adapters/sqlite_writer_diagnostics.py`.

@@ -17,6 +17,15 @@ repositories v0.4.0. No branch-protection bypass or failing-gate exemption.
 
 ### Shared access watcher and native workflow qualification
 
+Follow-up: all 46 Learning/projection/chronology/coordination cases pass
+(1994.83s), and the fresh paired-wheel installation/runtime gate passes with
+the rebuilt frontend. Review found a deleted startup_graph_routes adapter and
+retired rollout capture/journal in the current architecture source map; removed
+those references and mechanically confirmed every remaining listed Community
+adapter path resolves. The reflective-query documentation test now reads the
+actual frozen effective MCP catalog instead of the removed duplicate file;
+its focused regression passes. These are documentation/test corrections only.
+
 The subsequent R05-B/C diagnostic reproduced three stale assertions requiring
 the retired demo seed to compose/bootstrap a graph. Native startup now composes
 in main/CLI; the empty My Board seed owns only relational defaults. Tests assert

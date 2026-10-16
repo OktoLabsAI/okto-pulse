@@ -322,20 +322,17 @@ def test_real_grafx_multiple_seed_expansion_round_trip(tmp_path, monkeypatch, re
         database.close()
 
 
-def test_operational_kg_resource_describes_the_real_reflective_loop() -> None:
-    resource = (
-        Path(__file__).resolve().parents[1]
-        / "src"
-        / "okto_pulse"
-        / "community"
-        / "resources"
-        / "operational"
-        / "reference"
-        / "tool-docs"
-        / "kg.md"
-    ).read_text(encoding="utf-8")
+def test_operational_kg_resource_describes_the_real_reflective_loop(active_runtime_registry) -> None:
+    from okto_pulse.core.mcp import server
+    from okto_pulse.community.adapters.resources import register_and_freeze_community_resource_catalog
 
-    assert "production bounded retrieve → critic → corrective-action loop" in resource
+    register_and_freeze_community_resource_catalog(active_runtime_registry)
+    # Tool contracts are shared Core resources, served by the composed catalog;
+    # a second handwritten Community copy must not be required.
+    resource = next(item for item in server.effective_resource_catalog().specs()
+                    if item.uri == "okto-pulse://reference/tool-docs/kg").read()
+
+    assert "retrieve → critic → corrective action" in resource
     assert "deterministic critic" in resource
     assert "max_iterations" in resource
     assert "budget_units" in resource
