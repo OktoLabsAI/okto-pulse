@@ -1,0 +1,80 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]:
+        - button "Hide sidebar" [ref=e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=e12]
+        - generic [ref=e357]: / My Board
+      - generic [ref=e358]:
+        - button "Refresh board" [ref=e359] [cursor=pointer]
+        - button [ref=e366] [cursor=pointer]
+  - generic [ref=e13]:
+    - complementary [ref=e14]:
+      - generic [ref=e15]:
+        - generic [ref=e17]:
+          - heading "Boards" [level=2] [ref=e18]
+          - button "New board" [ref=e19] [cursor=pointer]
+        - navigation [ref=e21]:
+          - generic [ref=e22]:
+            - heading "My Boards" [level=3] [ref=e23]
+            - list [ref=e370]:
+              - listitem [ref=e371]:
+                - button "My Board" [ref=e372] [cursor=pointer]
+    - main [ref=e26]:
+      - group "Board views" [ref=e379]:
+        - button "Stories" [ref=e380] [cursor=pointer]
+        - button "Ideations" [ref=e384] [cursor=pointer]
+        - button "Refinements" [active] [pressed] [ref=e387] [cursor=pointer]
+        - button "Specs" [ref=e392] [cursor=pointer]
+        - button "Tasks" [ref=e397] [cursor=pointer]
+      - generic [ref=e974]:
+        - generic [ref=e975]:
+          - generic [ref=e976]:
+            - heading "Refinements" [level=2] [ref=e977]
+            - generic [ref=e978]: (1 of 1)
+          - generic [ref=e979]:
+            - textbox "Search refinements…" [ref=e981]
+            - group "View mode" [ref=e982]:
+              - button "List view" [pressed] [ref=e983] [cursor=pointer]
+              - button "Grid view" [ref=e985] [cursor=pointer]
+            - button "New Refinement" [ref=e991] [cursor=pointer]
+        - generic [ref=e993]:
+          - button "All" [ref=e994] [cursor=pointer]
+          - button "Draft" [ref=e995] [cursor=pointer]
+          - button "Review" [ref=e996] [cursor=pointer]
+          - button "Approved" [ref=e997] [cursor=pointer]
+          - button "Done" [ref=e998] [cursor=pointer]
+          - button "No derivation" [ref=e999] [cursor=pointer]
+          - button "Show archived" [ref=e1004] [cursor=pointer]
+        - generic [ref=e1006]:
+          - heading "E2E mock — etiquetas e resumo de estoque (14/10)" [level=3] [ref=e1012]
+          - generic [ref=e1015] [cursor=pointer]:
+            - generic [ref=e1016]:
+              - generic [ref=e1017]:
+                - generic [ref=e1018]: Done
+                - generic [ref=e1022]: Edition 1
+              - heading "E2E mock — contrato das funções de estoque" [level=3] [ref=e1023]
+              - paragraph [ref=e1024]: "Refinamento do ensaio local autorizado; duas funções puras e quatro cenários determinísticos. Incluído para exercitar também a derivação intermediária do Pulse. ## Parent Ideation Context - Title: E2E mock — etiquetas e resumo de estoque (14/10) - Version: 6 ### Description Ensaio descartável para validar o SDLC do Pulse da ideação ao fechamento. Duas funções Python puras com dados sintéticos; não é um produto real. A interface e o MCP sob teste são os do Pulse. Criar duas tasks e dois cards de teste e observar métricas calculadas a partir de provas atuais, até 100% de implementação/verificação e estado Done. Não alterar policies para obter aprovação. ### Problem Statement Confirmar que a mesma iniciativa atravessa criação, revisão, refinamento, especificação, implementação, testes autenticados e encerramento, com rastreabilidade e percentuais coerentes na UI e no MCP. ### Proposed Approach Fixture greenfield em D:/Projetos/pulse-e2e-estoque-mock. H01 normalizar_rotulo(texto): strip e upper, vazio após strip gera ValueError('rotulo_obrigatorio'). H02 somar_quantidades(quantidades): soma de lista de inteiros não negativos, vazia retorna 0, negativo gera ValueError('quantidade_negativa'), sem alterar a entrada. Domínio de entrada: strings para H01 e listas de inteiros (sem bool) para H02; tipos diferentes ficam fora do mock. Dois ACs e dois testes isolados por função; Python padrão e unittest. Sem UI nova, persistência, rede, relógio ou aleatoriedade. Novo conhecimento deste ensaio, sem decisão arquitetural reaproveitada. KG: nenhum similar ou bug relevante; busca global encontrou apenas T04 do mock anterior (entity_97a2d5ffb6f3caaf784f8826), que serve como antecedente de ensaio, sem reutilizar suas provas. Resultados de execução só serão registrados após observação local. ### Scope Assessment - Domains: 1/5 - Ambiguity: 1/5 - Dependencies: 1/5 - Complexity: small"
+              - 'generic "Ambiguity: 0 (0–5) · Edition 1" [ref=e1026]':
+                - generic [ref=e1027]: Ambiguity
+                - strong [ref=e1028]: "0"
+              - generic [ref=e1029]:
+                - generic [ref=e1030]: mock
+                - generic [ref=e1031]: e2e
+            - generic [ref=e1032]:
+              - button "Open lineage graph" [ref=e1033]
+              - button "Archive tree" [ref=e1038]
+        - generic [ref=e1044]:
+          - status [ref=e1045]: Showing 1–1 of 1 matching. 1 overall. Page 1 of 1.
+          - generic [ref=e1046]:
+            - generic [ref=e1047]:
+              - generic [ref=e1048]: Items per page
+              - combobox "Items per page" [ref=e1049]:
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+            - navigation "Refinements pagination" [ref=e1050]:
+              - generic [ref=e1051]:
+                - button "Previous page" [disabled] [ref=e1052]: Previous
+                - button "Page 1" [disabled] [ref=e1053]: "1"
+                - button "Next page" [disabled] [ref=e1054]: Next

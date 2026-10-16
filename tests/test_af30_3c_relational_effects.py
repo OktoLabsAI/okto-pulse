@@ -3,6 +3,8 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
+from okto_pulse.core.domain.realm import RealmScope
+
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -35,7 +37,7 @@ from okto_pulse.core.ports.knowledge_propagation import (
 @pytest.mark.asyncio
 async def test_af30_3c_community_relational_effects_register_and_persist(tmp_path):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'effects.db'}")
-    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False, info={"realm_scope": RealmScope.local()})
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
@@ -59,7 +61,7 @@ async def test_af30_3c_community_relational_effects_register_and_persist(tmp_pat
         target_role="projection_owner",
     ).to_payload()
     async with factory() as session:
-        session.add(Board(id=board_id, name="AF30-3cR", owner_id="test-owner"))
+        session.add(Board(realm_id="local", id=board_id, name="AF30-3cR", owner_id="test-owner"))
         await session.commit()
 
         port = get_relational_effects_port()

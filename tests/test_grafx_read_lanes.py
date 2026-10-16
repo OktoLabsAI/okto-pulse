@@ -131,7 +131,7 @@ def test_failed_open_releases_the_scheduling_charge():
 def test_composition_scope_passes_selected_lane_and_releases_on_resolution_failure():
     from okto_pulse.community.adapters.routed_board_graph_composition import _GrafxBoardAccess
     access = _GrafxBoardAccess(SimpleNamespace(), SimpleNamespace(), SimpleNamespace(),
-        SimpleNamespace(), configured_page_size=8192, connect=None,
+        configured_page_size=8192, connect=None,
         read_pools=(SimpleNamespace(read_only=True), SimpleNamespace(read_only=True)))
     calls = []
     def resolve(board, *, _lane=None):

@@ -10,6 +10,7 @@ import {
   type KanbanColumnMeta,
 } from '@/types';
 import { KanbanColumn, type KanbanColumnProps } from './KanbanColumn';
+import { AuthenticatedFetchError } from '@/lib/authFetch';
 
 interface KanbanColumnPageProps extends Omit<
   KanbanColumnProps,
@@ -20,6 +21,8 @@ interface KanbanColumnPageProps extends Omit<
   initialCards: CardSummary[];
   onItemsChange: (status: CardStatus, items: CardSummary[]) => void;
   onCollapse: () => void;
+  paused?: boolean;
+  onAccessLost?: () => void;
 }
 function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === 'AbortError';
@@ -38,12 +41,15 @@ export function KanbanColumnPage({
   initialCards,
   onItemsChange,
   onCollapse,
+  paused = false,
+  onAccessLost,
   ...columnProps
 }: KanbanColumnPageProps) {
   const api = useDashboardApi();
   const apiRef = useRef(api);
   apiRef.current = api;
   const pagination = usePersistedPagination(`kanban-column-${status}`, boardId);
+  const { setPagination } = pagination;
   const beginColumnPage = useDashboardStore((state) => state.beginColumnPage);
   const applyColumnPage = useDashboardStore((state) => state.applyColumnPage);
   const failColumnPage = useDashboardStore((state) => state.failColumnPage);
@@ -55,6 +61,7 @@ export function KanbanColumnPage({
   const [retryToken, setRetryToken] = useState(0);
 
   useEffect(() => {
+    if (paused) return;
     const controller = new AbortController();
     const token = beginColumnPage(status, pagination.requestIntent.offset);
     if (!token) {
@@ -84,11 +91,23 @@ export function KanbanColumnPage({
         throw new Error('The server returned a page for a different column window.');
       }
       if (!applyColumnPage(token, response)) return;
+      if (token.offset > 0 && token.offset >= response.meta.total_filtered) {
+        // A live deletion can remove the current page. Keep the expanded
+        // column, but request its nearest valid window instead of stranding it.
+        setPagination(previous => ({
+          ...previous,
+          page: Math.max(1, Math.ceil(response.meta.total_filtered / previous.pageSize)),
+        }));
+        return;
+      }
       setItems(response.items);
       setMeta(response.meta);
       onItemsChange(status, response.items);
     }).catch((requestError: unknown) => {
       if (controller.signal.aborted || isAbortError(requestError)) return;
+      if (requestError instanceof AuthenticatedFetchError && [401, 403, 404].includes(requestError.status)) {
+        onAccessLost?.(); return;
+      }
       const message = requestError instanceof Error
         ? requestError.message
         : 'Failed to load the column page';
@@ -111,9 +130,12 @@ export function KanbanColumnPage({
     onItemsChange,
     pagination.requestIntent.limit,
     pagination.requestIntent.offset,
+    setPagination,
     query,
     retryToken,
     status,
+    paused,
+    onAccessLost,
   ]);
 
   const totalFiltered = meta?.total_filtered ?? columnProps.totalCount ?? items.length;

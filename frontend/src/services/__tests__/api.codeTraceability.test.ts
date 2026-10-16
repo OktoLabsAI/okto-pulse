@@ -7,6 +7,7 @@ import type {
   TargetOverlapAcknowledgementRequest,
 } from '@/types';
 import { useDashboardApi } from '../api';
+import { AuthenticatedFetchError } from '@/lib/authFetch';
 
 const mockApiClient = {
   fetchJson: vi.fn(),
@@ -24,6 +25,65 @@ beforeEach(() => {
 });
 
 describe('Code Traceability REST client', () => {
+  const staleVersion = (details = {}) => new AuthenticatedFetchError({
+    message: 'code_investigation_subject_version_conflict',
+    code: 'code_investigation_subject_version_conflict',
+    status: 409,
+    details: { subject_type: 'spec', subject_id: 'spec-1', expected_subject_version: 7,
+      current_subject_version: 88, ...details },
+  });
+
+  it('refreshes a stale full gate read once at the authorized current version', async () => {
+    const projection = { subject_version: 88, context_scope: 'gate', profile: 'full' };
+    mockApiClient.fetchJson.mockRejectedValueOnce(staleVersion()).mockResolvedValueOnce(projection);
+    const { result } = renderHook(() => useDashboardApi());
+    const signal = new AbortController().signal;
+    await expect(result.current.getCodeTraceabilityProjection('board-1', 'spec', 'spec-1', 7,
+      { profile: 'full', contextScope: 'gate', signal })).resolves.toEqual(projection);
+    expect(mockApiClient.fetchJson).toHaveBeenCalledTimes(2);
+    expect(mockApiClient.fetchJson).toHaveBeenLastCalledWith(
+      '/boards/board-1/code-traceability-projection?subject_type=spec&subject_id=spec-1&subject_version=88&profile=full&context_scope=gate',
+      { signal },
+    );
+  });
+
+  it('does not loop when the subject changes again during refresh', async () => {
+    const conflict = staleVersion();
+    mockApiClient.fetchJson.mockRejectedValue(conflict);
+    const { result } = renderHook(() => useDashboardApi());
+    await expect(result.current.getCodeTraceabilityProjection('board-1', 'spec', 'spec-1', 7))
+      .rejects.toBe(conflict);
+    expect(mockApiClient.fetchJson).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    new AuthenticatedFetchError({ message: 'Forbidden', status: 403 }),
+    new Error('code_investigation_subject_version_conflict'),
+    staleVersion({ subject_id: 'another-spec' }),
+    staleVersion({ subject_type: 'card' }),
+    staleVersion({ expected_subject_version: 6 }),
+    staleVersion({ current_subject_version: 7 }),
+    staleVersion({ current_subject_version: null }),
+  ])('preserves unrelated or malformed errors without retry', async (error) => {
+    mockApiClient.fetchJson.mockRejectedValue(error);
+    const { result } = renderHook(() => useDashboardApi());
+    await expect(result.current.getCodeTraceabilityProjection('board-1', 'spec', 'spec-1', 7))
+      .rejects.toBe(error);
+    expect(mockApiClient.fetchJson).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not refresh an aborted read', async () => {
+    const controller = new AbortController();
+    mockApiClient.fetchJson.mockImplementationOnce(async () => {
+      controller.abort();
+      throw staleVersion();
+    });
+    const { result } = renderHook(() => useDashboardApi());
+    await expect(result.current.getCodeTraceabilityProjection('board-1', 'spec', 'spec-1', 7,
+      { signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(mockApiClient.fetchJson).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps detail and default scope as the exploratory projection defaults', async () => {
     const { result } = renderHook(() => useDashboardApi());
 

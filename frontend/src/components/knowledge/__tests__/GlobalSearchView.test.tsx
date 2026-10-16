@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { GlobalSearchView } from '../GlobalSearchView';
@@ -143,6 +143,26 @@ beforeEach(() => {
 });
 
 describe('GlobalSearchView typed Discovery params', () => {
+  it('executes Board Card blockers without Sprint input and opens the Card', async () => {
+    const blockers = { ...intent(null), name: 'blocked_cards', label: 'What is blocking cards on this board?',
+      category: 'dependencies_blockers', tool_binding: 'okto_pulse_list_blockers' };
+    vi.mocked(discoveryApi.listIntents).mockResolvedValue([blockers]);
+    vi.mocked(discoveryApi.executeIntent).mockResolvedValue({
+      rows: [{ id: 'card-1', type: 'on_hold_card', title: 'Paused task', summary: 'Explicitly paused',
+        meta: { entity_type: 'card', entity_id: 'card-1', card_id: 'card-1' } }],
+      columns: ['Type', 'Title', 'Reason'], total: 1, tool_binding: blockers.tool_binding,
+      params_echo: {},
+      execution: 'real_tool', intent_id: blockers.id, intent_name: blockers.name,
+    });
+    render(<GlobalSearchView boardId={BOARD} />);
+    fireEvent.click(await screen.findByTestId('discovery-intent-blocked_cards'));
+    expect(await screen.findByText('Explicitly paused')).toBeInTheDocument();
+    expect(discoveryApi.executeIntent).toHaveBeenCalledWith(blockers.id, BOARD, {});
+    expect(screen.queryByText(/sprint/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('discovery-intent-row-0-open'));
+    expect(mocks.openCardModal).toHaveBeenCalledWith('card-1');
+  });
+
   it('opens a search result in its own board and preserves the search input', async () => {
     vi.mocked(discoveryApi.listIntents).mockResolvedValue([]);
     vi.mocked(kgApi.globalSearch).mockResolvedValue({ results: [{
@@ -152,7 +172,9 @@ describe('GlobalSearchView typed Discovery params', () => {
     render(<GlobalSearchView boardId={BOARD} />);
     fireEvent.change(screen.getByTestId('discovery-search-input'), { target: { value: 'remote decision' } });
     fireEvent.click(screen.getByTestId('discovery-search-submit'));
-    fireEvent.click(await screen.findByTestId('global-search-result-remote-node'));
+    const result = await screen.findByTestId('global-search-result-remote-node');
+    expect(screen.queryByRole('button', { name: /\+\s*sprint/i })).not.toBeInTheDocument();
+    fireEvent.click(result);
     expect(mocks.pushModal).toHaveBeenCalledWith({ type: 'kg_node', id: 'remote-node', boardId: 'other-board' });
     expect(screen.getByTestId('discovery-search-input')).toHaveValue('remote decision');
   });
@@ -272,10 +294,10 @@ describe('GlobalSearchView typed Discovery params', () => {
     );
   });
 
-  it('preserves legacy text params and sends text values unchanged', async () => {
+  it('preserves explicitly typed text params and sends values unchanged', async () => {
     await openParamsForm(
       intent({
-        topic: { required: true, label: 'Topic' },
+        topic: { type: 'text', required: true, label: 'Topic' },
       }),
     );
 
@@ -291,6 +313,17 @@ describe('GlobalSearchView typed Discovery params', () => {
         { topic: 'authorization' },
       ),
     );
+  });
+
+  it('refuses untyped saved intent metadata without creating text inputs', async () => {
+    const incompatible = intent({ topic: { required: true, label: 'Topic' } });
+    vi.mocked(discoveryApi.listIntents).mockResolvedValue([incompatible]);
+    render(<GlobalSearchView boardId={BOARD} />);
+    fireEvent.click(await screen.findByTestId(`discovery-intent-${incompatible.name}`));
+    expect(await screen.findByText('This saved query has an incompatible parameter schema.')).toBeInTheDocument();
+    expect(screen.queryByTestId('discovery-params-form')).not.toBeInTheDocument();
+    expect(discoveryApi.executeIntent).not.toHaveBeenCalled();
+    expect(discoveryApi.listSelectorOptions).not.toHaveBeenCalled();
   });
 
   it('renders card entity selectors and sends the selected card reference', async () => {
@@ -614,7 +647,7 @@ describe('GlobalSearchView typed Discovery params', () => {
     });
   });
 
-  it('preserves the existing Open action through parent spec metadata', async () => {
+  it.each(['spec', 'sprint'])('only exposes supported parent navigation for %s metadata', async (entityType) => {
     vi.mocked(discoveryApi.listIntents).mockResolvedValue([intent(null)]);
     vi.mocked(discoveryApi.executeIntent).mockResolvedValue({
       rows: [
@@ -623,7 +656,7 @@ describe('GlobalSearchView typed Discovery params', () => {
           type: 'technical_requirement',
           title: 'TR-1 Cache invalidation',
           meta: {
-            entity_type: 'spec',
+            entity_type: entityType,
             entity_id: 'spec-parent',
             child_type: 'technical_requirement',
             child_ref: 'spec:spec-parent:technical_requirement:tr-1',
@@ -641,6 +674,12 @@ describe('GlobalSearchView typed Discovery params', () => {
 
     render(<GlobalSearchView boardId={BOARD} />);
     fireEvent.click(await screen.findByTestId('discovery-intent-trace_spec_child'));
+    if (entityType === 'sprint') {
+      await screen.findByText('TR-1 Cache invalidation');
+      expect(screen.queryByTestId('discovery-intent-row-0-open')).not.toBeInTheDocument();
+      expect(mocks.pushModal).not.toHaveBeenCalled();
+      return;
+    }
     fireEvent.click(await screen.findByTestId('discovery-intent-row-0-open'));
 
     expect(mocks.pushModal).toHaveBeenCalledWith({
@@ -650,3 +689,62 @@ describe('GlobalSearchView typed Discovery params', () => {
     });
   });
 });
+
+
+describe('Discovery Board isolation', () => {
+  it.each(['resolve', 'reject'] as const)(
+    'ignores a previous Board intent that settles by %s after switching',
+    async (outcome) => {
+      const query = intent(null);
+      vi.mocked(discoveryApi.listIntents).mockResolvedValue([query]);
+      let resolveOld!: (value: Awaited<ReturnType<typeof discoveryApi.executeIntent>>) => void;
+      let rejectOld!: (reason: Error) => void;
+      const old = new Promise<Awaited<ReturnType<typeof discoveryApi.executeIntent>>>(
+        (resolve, reject) => { resolveOld = resolve; rejectOld = reject; },
+      );
+      const response = (title: string) => ({
+        rows: [{ id: title, type: 'Spec', title, summary: 'Details',
+                 meta: { entity_type: 'spec', entity_id: title } }],
+        columns: ['Title'], total: 1, tool_binding: query.tool_binding,
+        params_echo: {}, execution: 'real_tool' as const,
+        intent_id: query.id, intent_name: query.name,
+      });
+      vi.mocked(discoveryApi.executeIntent)
+        .mockImplementationOnce(() => old)
+        .mockResolvedValueOnce(response('Current Board result'));
+      const view = render(<GlobalSearchView boardId="old-board" />);
+      fireEvent.click(await screen.findByTestId(`discovery-intent-${query.name}`));
+      await waitFor(() => expect(discoveryApi.executeIntent)
+        .toHaveBeenCalledWith(query.id, 'old-board', {}));
+      view.rerender(<GlobalSearchView boardId="current-board" />);
+      fireEvent.click(await screen.findByTestId(`discovery-intent-${query.name}`));
+      await screen.findByText('Current Board result');
+      await act(async () => {
+        if (outcome === 'resolve') resolveOld(response('Old Board result'));
+        else rejectOld(new Error('Old Board failure'));
+        await old.catch(() => undefined);
+      });
+      expect(screen.getByText('Current Board result')).toBeInTheDocument();
+      expect(screen.queryByText('Old Board result')).not.toBeInTheDocument();
+      expect(screen.queryByText('Old Board failure')).not.toBeInTheDocument();
+    },
+  );
+});
+
+
+it.each(['Permission denied', 'Search service unavailable'])(
+  'shows free-text search failure %s instead of a successful empty result',
+  async (message) => {
+    vi.mocked(discoveryApi.listIntents).mockResolvedValue([]);
+    vi.mocked(kgApi.globalSearch).mockRejectedValueOnce(new Error(message))
+      .mockResolvedValueOnce({ results: [], total: 0, graph_layer: 'canonical' });
+    render(<GlobalSearchView boardId={BOARD} />);
+    fireEvent.change(screen.getByTestId('discovery-search-input'), { target: { value: 'query' } });
+    fireEvent.click(screen.getByTestId('discovery-search-submit'));
+    expect(await screen.findByText(message)).toBeInTheDocument();
+    expect(screen.queryByText(/No results found/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('discovery-search-submit'));
+    expect(await screen.findByText(/No results found/)).toBeInTheDocument();
+    expect(screen.queryByText(message)).not.toBeInTheDocument();
+  },
+);

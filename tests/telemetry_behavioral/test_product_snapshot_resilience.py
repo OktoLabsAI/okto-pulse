@@ -291,7 +291,7 @@ def test_product_snapshot_http_contract_classification(
         assert state["mode"] == "disabled"
 
 
-def test_legacy_fatal_route_missing_state_retries_and_recovers(
+def test_fatal_route_missing_state_is_not_repaired(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -311,13 +311,9 @@ def test_legacy_fatal_route_missing_state_retries_and_recovers(
     session = ScriptedSession(snapshots=[_committed])
 
     result = _sender(settings, session, monkeypatch).publish_product_snapshot()
-    recovered = resolve_telemetry_config(settings).state
-
-    assert result["sent"] is True
-    assert session.calls == ["product_snapshot"]
-    assert recovered[PRODUCT_SNAPSHOT_FAILURE_STATE_KEY]["status"] == fs.STATUS_OK
-    assert recovered[PRODUCT_SNAPSHOT_FAILURE_STATE_KEY]["reason_code"] is None
-    assert recovered[PRODUCT_SNAPSHOT_FAILURE_STATE_KEY]["recovered_at"]
+    assert result == {"sent": False, "reason": "fatal"}
+    assert session.calls == []
+    assert resolve_telemetry_config(settings).state == state
 
 
 def _handshake_success() -> Response:

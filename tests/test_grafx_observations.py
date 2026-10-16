@@ -2,6 +2,8 @@
 
 from contextlib import nullcontext
 import pytest
+from okto_grafx import CommitId
+from graph_observation_fixtures import enable_fixture_history
 from okto_pulse.community.adapters.grafx_observations import (
     CommunityGrafxHistory,
     CommunityGrafxAnalytics,
@@ -13,7 +15,7 @@ from test_grafx_graph_store import BOARD_ID, _attrs, _edge_attrs, real_store  # 
 @pytest.fixture(scope="module")
 def observed(request):
     store, db, fence, path = request.getfixturevalue("real_store")
-    history = CommunityGrafxHistory(lambda _: db, fence)
+    history = CommunityGrafxHistory(lambda _: db)
     analytics = CommunityGrafxAnalytics(lambda _: nullcontext(db))
     return store, db, history, analytics, fence, path
 
@@ -31,13 +33,9 @@ def test_01_inactive_history_is_unavailable_and_writes_still_work(observed):
         )
 
 
-def test_02_activation_provenance_asof_diff_and_delete_recreate(observed):
+def test_02_preexisting_history_provenance_asof_diff_and_delete_recreate(observed):
     store, db, history, *_ = observed
-    result = history.activate(
-        BOARD_ID, ("Decision",), ("supersedes",), reason="test history"
-    )
-    assert result["one_way"] and not result["prior_history_available"]
-    history.activate(BOARD_ID, ("Decision",), ("supersedes",), reason="idempotence")
+    enable_fixture_history(db, relationships=("supersedes",))
     store.update_node(BOARD_ID, "Decision", "before", {"title": "First"})
     first = history.commits(BOARD_ID)["entries"][-1]
     assert first["metadata"]["origin"] == "okto-pulse.community"
@@ -71,11 +69,12 @@ def test_03_retention_refuses_old_reads_and_preserves_live_rows(observed):
     commits = history.commits(BOARD_ID)["entries"]
     before = commits[0]["commit"]
     retained = commits[-1]["commit"]
-    result = history.prune(
-        BOARD_ID, retained, ("Decision",), ("supersedes",), reason="bounded retention"
-    )
-    assert result["physical_bytes_reclaimed"] == 0
-    assert result["redacted_versions"] > 0
+    from okto_pulse.community.adapters.grafx_observations import scope
+
+    tables, _ = scope(("Decision",), ("supersedes",))
+    result = db.prune_system_history(CommitId.parse(retained), tables=tables, max_bytes=16777216)
+    assert result.physical_bytes_reclaimed == 0
+    assert result.redacted_versions > 0
     with pytest.raises(GraphError):
         history.as_of(BOARD_ID, before, ("Decision",), ())
     assert (
@@ -146,8 +145,6 @@ def test_04_cycles_components_and_filtered_bridges(observed):
 @pytest.mark.parametrize(
     "operation",
     [
-        lambda h, a: h.activate(BOARD_ID, ("NoSuchType",), (), reason="bad"),
-        lambda h, a: h.activate(BOARD_ID, ("Decision",), (), reason=" "),
         lambda h, a: h.commits(BOARD_ID, after="invalid"),
         lambda h, a: h.commits(BOARD_ID, limit=True),
         lambda h, a: a.analyze(
@@ -171,7 +168,7 @@ def test_validation_precedes_io(operation):
 
     with pytest.raises((ValueError, GraphError)):
         operation(
-            CommunityGrafxHistory(forbidden, forbidden),
+            CommunityGrafxHistory(forbidden),
             CommunityGrafxAnalytics(forbidden),
         )
 
@@ -194,7 +191,7 @@ def test_history_edges_are_historical_business_identities_and_reopen_retains_his
     assert diff["changes"][0]["before_entity"]["id"] == "a"
     assert diff["changes"][0]["after_entity"]["properties"]["title"] == "updated"
     with okto_grafx.connect(path, page_size=4096) as reopened:
-        provider = CommunityGrafxHistory(lambda _: reopened, lambda *_: None)
+        provider = CommunityGrafxHistory(lambda _: reopened)
         assert (
             provider.as_of(BOARD_ID, token, ("Decision",), ("supersedes",)) == picture
         )

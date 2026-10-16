@@ -1,0 +1,251 @@
+- generic [ref=f39e3]:
+  - banner [ref=f39e4]:
+    - generic [ref=f39e5]:
+      - generic [ref=f39e6]:
+        - button "Hide sidebar" [ref=f39e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f39e12]
+        - generic [ref=f39e31]: / My Board
+      - generic [ref=f39e32]:
+        - button "Refresh board" [ref=f39e33] [cursor=pointer]
+        - button [ref=f39e40] [cursor=pointer]
+  - generic [ref=f39e13]:
+    - complementary [ref=f39e14]:
+      - generic [ref=f39e15]:
+        - generic [ref=f39e17]:
+          - heading "Boards" [level=2] [ref=f39e18]
+          - button "New board" [ref=f39e19] [cursor=pointer]
+        - navigation [ref=f39e21]:
+          - generic [ref=f39e22]:
+            - heading "My Boards" [level=3] [ref=f39e23]
+            - list [ref=f39e44]:
+              - listitem [ref=f39e45]:
+                - button "My Board" [ref=f39e46] [cursor=pointer]
+    - main [ref=f39e26]:
+      - group "Board views" [ref=f39e53]:
+        - button "Stories" [ref=f39e54] [cursor=pointer]
+        - button "Ideations" [ref=f39e58] [cursor=pointer]
+        - button "Refinements" [ref=f39e61] [cursor=pointer]
+        - button "Specs" [ref=f39e66] [cursor=pointer]
+        - button "Tasks" [pressed] [ref=f39e71] [cursor=pointer]
+      - generic [ref=f39e213]:
+        - generic [ref=f39e214]:
+          - textbox "Search cards…" [ref=f39e216]
+          - button "Unlinked" [ref=f39e219] [cursor=pointer]
+          - button "Filter specs..." [ref=f39e221] [cursor=pointer]
+          - button "Show archived" [ref=f39e225] [cursor=pointer]
+        - generic [ref=f39e226]:
+          - generic [ref=f39e227]:
+            - generic [ref=f39e228]:
+              - generic [ref=f39e230]:
+                - generic [ref=f39e231]:
+                  - generic [ref=f39e232]:
+                    - heading "Not Started" [level=3] [ref=f39e233]
+                    - generic "7 total cards" [ref=f39e795]: "7"
+                  - generic [ref=f39e235]:
+                    - button "7 task cards" [pressed] [ref=f39e236] [cursor=pointer]:
+                      - generic [ref=f39e237]: Task
+                      - generic [ref=f39e242]: "7"
+                    - button "20 test cards" [active] [ref=f39e243] [cursor=pointer]:
+                      - generic [ref=f39e244]: Test
+                      - generic [ref=f39e248]: "20"
+                    - button "0 bug cards" [pressed] [ref=f39e249] [cursor=pointer]:
+                      - generic [ref=f39e250]: Bug
+                      - generic [ref=f39e261]: "0"
+                - button "Add card to Not Started" [ref=f39e262] [cursor=pointer]
+              - generic [ref=f39e264]:
+                - 'button "Domínio — calendário e invariantes de reserva spec Implementar valores/invariantes puros: capacidade inteira, intervalos semiabertos, precisão, fuso, dias úteis, janela de 30 dias e bloqueio ao início. Clock é porta injetada; nenhum HTTP/SQL. Oráculos T02–T09/T21 e contratos de invariantes/Clock. Escopo conceitual: definir workspace antes de qualquer execução. Planejamento do exercício SDLC; execução não autorizada nesta etapa. Recuperar contratos e ACs correntes antes de implementar. Requisitos técnicos: tr_res_hex, tr_res_clock. Integrações: ir_res_rules, ir_res_clock_port. Delivery completeness Not calculable C: Codex" [ref=f39e796]':
+                  - generic [ref=f39e797]:
+                    - generic "Move card" [ref=f39e798]
+                    - generic [ref=f39e806] [cursor=pointer]:
+                      - generic [ref=f39e807]:
+                        - heading "Domínio — calendário e invariantes de reserva" [level=4] [ref=f39e808]
+                        - generic "Linked to a spec" [ref=f39e809]: spec
+                      - paragraph [ref=f39e813]: "Implementar valores/invariantes puros: capacidade inteira, intervalos semiabertos, precisão, fuso, dias úteis, janela de 30 dias e bloqueio ao início. Clock é porta injetada; nenhum HTTP/SQL. Oráculos T02–T09/T21 e contratos de invariantes/Clock. Escopo conceitual: definir workspace antes de qualquer execução. Planejamento do exercício SDLC; execução não autorizada nesta etapa. Recuperar contratos e ACs correntes antes de implementar. Requisitos técnicos: tr_res_hex, tr_res_clock. Integrações: ir_res_rules, ir_res_clock_port."
+                      - generic "The delivery scope is incomplete or could not be fully verified." [ref=f39e814]:
+                        - generic [ref=f39e815]: Delivery completeness
+                        - generic [ref=f39e816]: Not calculable
+                      - 'generic "Creator: 2edcc8b9-2f64-479e-acb1-c49724f76ae3" [ref=f39e819]': "C: Codex"
+                - 'button "Aplicação — comandos, consultas e replay spec Orquestrar autenticação por porta, leitura própria, criação/alteração/cancelamento por UoW, CAS, recibo por ator/operação/chave e replay do snapshot original. Erros de negócio sem status HTTP. Nenhum commit parcial. Consultas e DTOs v2 incluem rótulos das salas. T11–T22,T26,T28,T36 e paridade. Planejamento do exercício SDLC; execução não autorizada nesta etapa. Recuperar contratos e ACs correntes antes de implementar. Requisitos técnicos: tr_res_hex, tr_res_atomic. Integrações: ir_res_usecases, ir_res_uow. Delivery completeness Not calculable C: Codex" [ref=f39e820]':
+                  - generic [ref=f39e821]:
+                    - generic "Move card" [ref=f39e822]
+                    - generic [ref=f39e830] [cursor=pointer]:
+                      - generic [ref=f39e831]:
+                        - heading "Aplicação — comandos, consultas e replay" [level=4] [ref=f39e832]
+                        - generic "Linked to a spec" [ref=f39e833]: spec
+                      - paragraph [ref=f39e837]: "Orquestrar autenticação por porta, leitura própria, criação/alteração/cancelamento por UoW, CAS, recibo por ator/operação/chave e replay do snapshot original. Erros de negócio sem status HTTP. Nenhum commit parcial. Consultas e DTOs v2 incluem rótulos das salas. T11–T22,T26,T28,T36 e paridade. Planejamento do exercício SDLC; execução não autorizada nesta etapa. Recuperar contratos e ACs correntes antes de implementar. Requisitos técnicos: tr_res_hex, tr_res_atomic. Integrações: ir_res_usecases, ir_res_uow."
+                      - generic "The delivery scope is incomplete or could not be fully verified." [ref=f39e838]:
+                        - generic [ref=f39e839]: Delivery completeness
+                        - generic [ref=f39e840]: Not calculable
+                      - 'generic "Creator: 2edcc8b9-2f64-479e-acb1-c49724f76ae3" [ref=f39e843]': "C: Codex"
+                - 'button "Persistência — UoW SQLite atômica e recuperável spec Adaptador externo implementa UoW pública, reserva+evento+recibo na mesma transação, exclusão/CAS sob concorrência, busy limitado a 2s, rollback e recuperação após resposta perdida. Leitura de recibos/histórico tipada. Executar T12/T13/T18/T19/T23–T25 e contrato de persistência; nunca importar privados. Planejamento do exercício SDLC; execução não autorizada nesta etapa. Recuperar contratos e ACs correntes antes de implementar. Requisitos técnicos: tr_res_atomic, tr_res_recovery. Integrações: ir_res_storage. Delivery completeness Not calculable C: Codex" [ref=f39e844]':
+                  - generic [ref=f39e845]:
+                    - generic "Move card" [ref=f39e846]
+                    - generic [ref=f39e854] [cursor=pointer]:
+                      - generic [ref=f39e855]:
+                        - heading "Persistência — UoW SQLite atômica e recuperável" [level=4] [ref=f39e856]
+                        - generic "Linked to a spec" [ref=f39e857]: spec
+                      - paragraph [ref=f39e861]: "Adaptador externo implementa UoW pública, reserva+evento+recibo na mesma transação, exclusão/CAS sob concorrência, busy limitado a 2s, rollback e recuperação após resposta perdida. Leitura de recibos/histórico tipada. Executar T12/T13/T18/T19/T23–T25 e contrato de persistência; nunca importar privados. Planejamento do exercício SDLC; execução não autorizada nesta etapa. Recuperar contratos e ACs correntes antes de implementar. Requisitos técnicos: tr_res_atomic, tr_res_recovery. Integrações: ir_res_storage."
+                      - generic "The delivery scope is incomplete or could not be fully verified." [ref=f39e862]:
+                        - generic [ref=f39e863]: Delivery completeness
+                        - generic [ref=f39e864]: Not calculable
+                      - 'generic "Creator: 2edcc8b9-2f64-479e-acb1-c49724f76ae3" [ref=f39e867]': "C: Codex"
+                - 'button "HTTP — sessão e seis contratos de reserva spec Implementar os seis contratos HTTP, mapear erros de negócio somente no adaptador. Aplicar sessão, isolamento, CSRF e perfis local_test/https_runtime; GET em query/path, IDs de alteração/cancelamento no path. DTO v2 e cursor vinculado ao ator. Validar schemas e recusas por operação; T15/T26/T27 e contratos HTTP. Planejamento do exercício SDLC; execução não autorizada nesta etapa. Recuperar contratos e ACs correntes antes de implementar. Requisitos técnicos: tr_res_security. Integrações: ir_res_search, ir_res_create, ir_res_list, ir_res_change, ir_res_cancel, ir_res_history, ir_res_identity_port. Delivery completeness Not calculable C: Codex" [ref=f39e868]':
+                  - generic [ref=f39e869]:
+                    - generic "Move card" [ref=f39e870]
+                    - generic [ref=f39e878] [cursor=pointer]:
+                      - generic [ref=f39e879]:
+                        - heading "HTTP — sessão e seis contratos de reserva" [level=4] [ref=f39e880]
+                        - generic "Linked to a spec" [ref=f39e881]: spec
+                      - paragraph [ref=f39e885]: "Implementar os seis contratos HTTP, mapear erros de negócio somente no adaptador. Aplicar sessão, isolamento, CSRF e perfis local_test/https_runtime; GET em query/path, IDs de alteração/cancelamento no path. DTO v2 e cursor vinculado ao ator. Validar schemas e recusas por operação; T15/T26/T27 e contratos HTTP. Planejamento do exercício SDLC; execução não autorizada nesta etapa. Recuperar contratos e ACs correntes antes de implementar. Requisitos técnicos: tr_res_security. Integrações: ir_res_search, ir_res_create, ir_res_list, ir_res_change, ir_res_cancel, ir_res_history, ir_res_identity_port."
+                      - generic "The delivery scope is incomplete or could not be fully verified." [ref=f39e886]:
+                        - generic [ref=f39e887]: Delivery completeness
+                        - generic [ref=f39e888]: Not calculable
+                      - 'generic "Creator: 2edcc8b9-2f64-479e-acb1-c49724f76ae3" [ref=f39e891]': "C: Codex"
+                - 'button "Frontend — busca e confirmação H01/H02 spec Implementar H01/H02 conforme Design System v1: carregando/vazio/falha distintos, resultados acessíveis, formulário preservado, revisão da intenção, uma chave por intenção e confirmação somente após sucesso. DTO v2 fornece nome/local. Tests T29/T30/T33; não presumir scripts funcionais nos mockups estáticos. Planejamento do exercício SDLC; execução não autorizada nesta etapa. Recuperar contratos e ACs correntes antes de implementar. Requisitos técnicos: tr_res_ui. Integrações: . Delivery completeness Not calculable C: Codex" [ref=f39e892]':
+                  - generic [ref=f39e893]:
+                    - generic "Move card" [ref=f39e894]
+                    - generic [ref=f39e902] [cursor=pointer]:
+                      - generic [ref=f39e903]:
+                        - heading "Frontend — busca e confirmação H01/H02" [level=4] [ref=f39e904]
+                        - generic "Linked to a spec" [ref=f39e905]: spec
+                      - paragraph [ref=f39e909]: "Implementar H01/H02 conforme Design System v1: carregando/vazio/falha distintos, resultados acessíveis, formulário preservado, revisão da intenção, uma chave por intenção e confirmação somente após sucesso. DTO v2 fornece nome/local. Tests T29/T30/T33; não presumir scripts funcionais nos mockups estáticos. Planejamento do exercício SDLC; execução não autorizada nesta etapa. Recuperar contratos e ACs correntes antes de implementar. Requisitos técnicos: tr_res_ui. Integrações: ."
+                      - generic "The delivery scope is incomplete or could not be fully verified." [ref=f39e910]:
+                        - generic [ref=f39e911]: Delivery completeness
+                        - generic [ref=f39e912]: Not calculable
+                      - 'generic "Creator: 2edcc8b9-2f64-479e-acb1-c49724f76ae3" [ref=f39e915]': "C: Codex"
+                - 'button "Frontend — gestão e cancelamento H03/H04 spec Implementar listagem própria, paginação, alteração com versão, conflito sem perda de dados, confirmação de cancelamento e histórico. Recarregar após replay para ações atuais. Seguir mockups H03/H04 e Design System v1; verificar T31/T32/T33. Planejamento do exercício SDLC; execução não autorizada nesta etapa. Recuperar contratos e ACs correntes antes de implementar. Requisitos técnicos: tr_res_ui. Integrações: . Delivery completeness Not calculable C: Codex" [ref=f39e916]':
+                  - generic [ref=f39e917]:
+                    - generic "Move card" [ref=f39e918]
+                    - generic [ref=f39e926] [cursor=pointer]:
+                      - generic [ref=f39e927]:
+                        - heading "Frontend — gestão e cancelamento H03/H04" [level=4] [ref=f39e928]
+                        - generic "Linked to a spec" [ref=f39e929]: spec
+                      - paragraph [ref=f39e933]: "Implementar listagem própria, paginação, alteração com versão, conflito sem perda de dados, confirmação de cancelamento e histórico. Recarregar após replay para ações atuais. Seguir mockups H03/H04 e Design System v1; verificar T31/T32/T33. Planejamento do exercício SDLC; execução não autorizada nesta etapa. Recuperar contratos e ACs correntes antes de implementar. Requisitos técnicos: tr_res_ui. Integrações: ."
+                      - generic "The delivery scope is incomplete or could not be fully verified." [ref=f39e934]:
+                        - generic [ref=f39e935]: Delivery completeness
+                        - generic [ref=f39e936]: Not calculable
+                      - 'generic "Creator: 2edcc8b9-2f64-479e-acb1-c49724f76ae3" [ref=f39e939]': "C: Codex"
+                - 'button "Composição e observabilidade dos comandos spec Composição externa injeta Clock, IdentityProvider e UoW; nenhum mecanismo no domínio/aplicação. Emitir log seguro e um contador por tentativa, incluindo replay/falha, sem segredos ou duplicação. Validar fronteiras/paridade T34/T35, contrato de composição e dois cenários de observabilidade. Planejamento do exercício SDLC; execução não autorizada nesta etapa. Recuperar contratos e ACs correntes antes de implementar. Requisitos técnicos: tr_res_hex. Integrações: ir_res_wiring. Delivery completeness Not calculable C: Codex" [ref=f39e940]':
+                  - generic [ref=f39e941]:
+                    - generic "Move card" [ref=f39e942]
+                    - generic [ref=f39e950] [cursor=pointer]:
+                      - generic [ref=f39e951]:
+                        - heading "Composição e observabilidade dos comandos" [level=4] [ref=f39e952]
+                        - generic "Linked to a spec" [ref=f39e953]: spec
+                      - paragraph [ref=f39e957]: "Composição externa injeta Clock, IdentityProvider e UoW; nenhum mecanismo no domínio/aplicação. Emitir log seguro e um contador por tentativa, incluindo replay/falha, sem segredos ou duplicação. Validar fronteiras/paridade T34/T35, contrato de composição e dois cenários de observabilidade. Planejamento do exercício SDLC; execução não autorizada nesta etapa. Recuperar contratos e ACs correntes antes de implementar. Requisitos técnicos: tr_res_hex. Integrações: ir_res_wiring."
+                      - generic "The delivery scope is incomplete or could not be fully verified." [ref=f39e958]:
+                        - generic [ref=f39e959]: Delivery completeness
+                        - generic [ref=f39e960]: Not calculable
+                      - 'generic "Creator: 2edcc8b9-2f64-479e-acb1-c49724f76ae3" [ref=f39e963]': "C: Codex"
+            - generic [ref=f39e546]:
+              - generic [ref=f39e548]:
+                - generic [ref=f39e549]:
+                  - generic [ref=f39e550]:
+                    - heading "Started" [level=3] [ref=f39e551]
+                    - generic "0 total cards" [ref=f39e552]: "0"
+                  - generic [ref=f39e553]:
+                    - button "0 task cards" [pressed] [ref=f39e554] [cursor=pointer]:
+                      - generic [ref=f39e555]: Task
+                      - generic [ref=f39e560]: "0"
+                    - button "0 test cards" [pressed] [ref=f39e561] [cursor=pointer]:
+                      - generic [ref=f39e562]: Test
+                      - generic [ref=f39e566]: "0"
+                    - button "0 bug cards" [pressed] [ref=f39e567] [cursor=pointer]:
+                      - generic [ref=f39e568]: Bug
+                      - generic [ref=f39e579]: "0"
+                - button "Add card to Started" [ref=f39e580] [cursor=pointer]
+              - generic [ref=f39e582]: No cards
+            - generic [ref=f39e584]:
+              - generic [ref=f39e587]:
+                - generic [ref=f39e588]:
+                  - heading "In Progress" [level=3] [ref=f39e589]
+                  - generic "0 total cards" [ref=f39e590]: "0"
+                - generic [ref=f39e591]:
+                  - button "0 task cards" [pressed] [ref=f39e592] [cursor=pointer]:
+                    - generic [ref=f39e593]: Task
+                    - generic [ref=f39e598]: "0"
+                  - button "0 test cards" [pressed] [ref=f39e599] [cursor=pointer]:
+                    - generic [ref=f39e600]: Test
+                    - generic [ref=f39e604]: "0"
+                  - button "0 bug cards" [pressed] [ref=f39e605] [cursor=pointer]:
+                    - generic [ref=f39e606]: Bug
+                    - generic [ref=f39e617]: "0"
+              - generic [ref=f39e618]: No cards
+            - generic [ref=f39e620]:
+              - generic [ref=f39e623]:
+                - generic [ref=f39e624]:
+                  - heading "Validation" [level=3] [ref=f39e625]
+                  - generic "0 total cards" [ref=f39e626]: "0"
+                - generic [ref=f39e627]:
+                  - button "0 task cards" [pressed] [ref=f39e628] [cursor=pointer]:
+                    - generic [ref=f39e629]: Task
+                    - generic [ref=f39e634]: "0"
+                  - button "0 test cards" [pressed] [ref=f39e635] [cursor=pointer]:
+                    - generic [ref=f39e636]: Test
+                    - generic [ref=f39e640]: "0"
+                  - button "0 bug cards" [pressed] [ref=f39e641] [cursor=pointer]:
+                    - generic [ref=f39e642]: Bug
+                    - generic [ref=f39e653]: "0"
+              - generic [ref=f39e654]: No cards
+            - generic [ref=f39e656]:
+              - generic [ref=f39e659]:
+                - generic [ref=f39e660]:
+                  - heading "Rejected" [level=3] [ref=f39e661]
+                  - generic "0 total cards" [ref=f39e662]: "0"
+                - generic [ref=f39e663]:
+                  - button "0 task cards" [pressed] [ref=f39e664] [cursor=pointer]:
+                    - generic [ref=f39e665]: Task
+                    - generic [ref=f39e670]: "0"
+                  - button "0 bug cards" [pressed] [ref=f39e671] [cursor=pointer]:
+                    - generic [ref=f39e672]: Bug
+                    - generic [ref=f39e683]: "0"
+              - generic [ref=f39e684]: No cards requiring rework
+            - generic [ref=f39e686]:
+              - generic [ref=f39e689]:
+                - generic [ref=f39e690]:
+                  - heading "On Hold" [level=3] [ref=f39e691]
+                  - generic "0 total cards" [ref=f39e692]: "0"
+                - generic [ref=f39e693]:
+                  - button "0 task cards" [pressed] [ref=f39e694] [cursor=pointer]:
+                    - generic [ref=f39e695]: Task
+                    - generic [ref=f39e700]: "0"
+                  - button "0 test cards" [pressed] [ref=f39e701] [cursor=pointer]:
+                    - generic [ref=f39e702]: Test
+                    - generic [ref=f39e706]: "0"
+                  - button "0 bug cards" [pressed] [ref=f39e707] [cursor=pointer]:
+                    - generic [ref=f39e708]: Bug
+                    - generic [ref=f39e719]: "0"
+              - generic [ref=f39e720]: No cards
+            - generic [ref=f39e722]:
+              - generic [ref=f39e725]:
+                - generic [ref=f39e726]:
+                  - heading "Done" [level=3] [ref=f39e727]
+                  - generic "0 total cards" [ref=f39e728]: "0"
+                - generic [ref=f39e729]:
+                  - button "0 task cards" [pressed] [ref=f39e730] [cursor=pointer]:
+                    - generic [ref=f39e731]: Task
+                    - generic [ref=f39e736]: "0"
+                  - button "0 test cards" [pressed] [ref=f39e737] [cursor=pointer]:
+                    - generic [ref=f39e738]: Test
+                    - generic [ref=f39e742]: "0"
+                  - button "0 bug cards" [pressed] [ref=f39e743] [cursor=pointer]:
+                    - generic [ref=f39e744]: Bug
+                    - generic [ref=f39e755]: "0"
+              - generic [ref=f39e756]: No cards
+            - generic [ref=f39e758]:
+              - generic [ref=f39e761]:
+                - generic [ref=f39e762]:
+                  - heading "Cancelled" [level=3] [ref=f39e763]
+                  - generic "0 total cards" [ref=f39e764]: "0"
+                - generic [ref=f39e765]:
+                  - button "0 task cards" [pressed] [ref=f39e766] [cursor=pointer]:
+                    - generic [ref=f39e767]: Task
+                    - generic [ref=f39e772]: "0"
+                  - button "0 test cards" [pressed] [ref=f39e773] [cursor=pointer]:
+                    - generic [ref=f39e774]: Test
+                    - generic [ref=f39e778]: "0"
+                  - button "0 bug cards" [pressed] [ref=f39e779] [cursor=pointer]:
+                    - generic [ref=f39e780]: Bug
+                    - generic [ref=f39e791]: "0"
+              - generic [ref=f39e792]: No cards
+          - status [ref=f39e794]

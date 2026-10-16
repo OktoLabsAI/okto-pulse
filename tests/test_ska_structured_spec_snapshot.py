@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+import pytest
 
 from okto_pulse.community.adapters.sqlalchemy_structured_spec import _record
 
@@ -13,10 +14,12 @@ def test_structured_spec_projection_preserves_null_empty_and_authored_fields() -
         board_id="board-ska-snapshot",
         status="draft",
         version=3,
+        edition=2,
         archived=False,
         title="Snapshot fidelity",
         description="NULL and [] are distinct canonical values.",
         context="SK-A A1a",
+        project_structure_revision=1,
         functional_requirements=None,
         business_rules=[],
         technical_requirements=[
@@ -47,8 +50,10 @@ def test_structured_spec_projection_preserves_null_empty_and_authored_fields() -
     )
 
     projected = _record(row)
+    assert projected.project_structure_revision == 1
 
     assert projected.title == row.title
+    assert projected.edition == 2
     assert projected.description == row.description
     assert projected.context == row.context
     assert projected.functional_requirements is None
@@ -68,3 +73,7 @@ def test_structured_spec_projection_preserves_null_empty_and_authored_fields() -
         projected.technical_requirements[0]
         is not row.technical_requirements[0]
     )
+    row.project_structure_revision = None
+    with pytest.raises(TypeError):
+        _record(row)
+    assert row.project_structure_revision is None

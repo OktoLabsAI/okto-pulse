@@ -1,0 +1,220 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]:
+        - button "Hide sidebar" [ref=e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=e12]
+        - generic [ref=e357]: / My Board
+      - generic [ref=e358]:
+        - button "Refresh board" [ref=e359] [cursor=pointer]
+        - button [ref=e366] [cursor=pointer]
+  - generic [ref=e13]:
+    - complementary [ref=e14]:
+      - generic [ref=e15]:
+        - generic [ref=e17]:
+          - heading "Boards" [level=2] [ref=e18]
+          - button "New board" [ref=e19] [cursor=pointer]
+        - navigation [ref=e21]:
+          - generic [ref=e22]:
+            - heading "My Boards" [level=3] [ref=e23]
+            - list [ref=e370]:
+              - listitem [ref=e371]:
+                - button "My Board" [ref=e372] [cursor=pointer]
+    - main [ref=e26]:
+      - group "Board views" [ref=e379]:
+        - button "Stories" [ref=e380] [cursor=pointer]
+        - button "Ideations" [ref=e384] [cursor=pointer]
+        - button "Refinements" [ref=e387] [cursor=pointer]
+        - button "Specs" [pressed] [ref=e392] [cursor=pointer]
+        - button "Tasks" [ref=e397] [cursor=pointer]
+      - generic [ref=e1055]:
+        - generic [ref=e1056]:
+          - generic [ref=e1057]:
+            - heading "Specifications" [level=2] [ref=e1058]
+            - generic [ref=e1059]: (2 of 2)
+          - generic [ref=e1060]:
+            - textbox "Search specs…" [ref=e1062]
+            - group "View mode" [ref=e1063]:
+              - button "List view" [pressed] [ref=e1064] [cursor=pointer]
+              - button "Grid view" [ref=e1066] [cursor=pointer]
+            - generic [ref=e1072]: Group specs
+            - combobox "Group specs" [ref=e1078]:
+              - option "None"
+              - option "Ideation"
+              - option "Refinement"
+              - option "Parents" [selected]
+            - button "New Spec" [ref=e1079] [cursor=pointer]
+        - generic [ref=e1081]:
+          - button "All" [ref=e1082] [cursor=pointer]
+          - button "Draft" [ref=e1083] [cursor=pointer]
+          - button "Review" [ref=e1084] [cursor=pointer]
+          - button "Approved" [ref=e1085] [cursor=pointer]
+          - button "Validated" [ref=e1086] [cursor=pointer]
+          - button "In Progress" [ref=e1087] [cursor=pointer]
+          - button "Done" [ref=e1088] [cursor=pointer]
+          - button "Show archived" [ref=e1089] [cursor=pointer]
+        - generic [ref=e1091]:
+          - generic [ref=e1092]:
+            - generic [ref=e1093] [cursor=pointer]:
+              - 'heading "Refinement: E2E mock — contrato das funções de estoque" [level=3] [ref=e1100]'
+              - generic [ref=e1101]: (1)
+            - generic [ref=e1105] [cursor=pointer]:
+              - generic [ref=e1106]:
+                - generic [ref=e1107]:
+                  - generic [ref=e1108]: Draft
+                  - generic "Edition 1" [ref=e1112]
+                - heading "E2E mock — estoque local completo" [level=3] [ref=e1113]
+                - paragraph [ref=e1114]: Duas funções locais e quatro cenários sintéticos para testar o fluxo completo do Pulse. A prova atual, e não o status ou uma porcentagem narrada, deve produzir 100% de implementação e verificação ao final.
+                - 'generic "Requirement lint: no current result · Edition 1; 0 previous results" [ref=e1116]':
+                  - generic [ref=e1117]: Requirement lint
+                  - strong [ref=e1118]: Not assessed
+                - generic [ref=e1119]:
+                  - generic [ref=e1120]: mock
+                  - generic [ref=e1121]: e2e
+                  - generic [ref=e1122]: completude
+              - generic [ref=e1123]:
+                - button "Open lineage graph" [ref=e1124]
+                - button "Archive tree" [ref=e1129]
+          - generic [ref=e1135]:
+            - generic [ref=e1136] [cursor=pointer]:
+              - 'heading "Ideation: Mock — Completude de cards: implementação e entrega verificada" [level=3] [ref=e1143]'
+              - generic [ref=e1144]: (1)
+            - generic [ref=e1148] [cursor=pointer]:
+              - generic [ref=e1149]:
+                - generic [ref=e1150]:
+                  - generic [ref=e1151]: In Progress
+                  - generic "Edition 3" [ref=e1155]
+                - heading "Mock de completude — lista de compras local" [level=3] [ref=e1156]
+                - paragraph [ref=e1157]: Quatro comportamentos locais para testar as barras de implementação e entrega verificada do Pulse. Dados sintéticos; sem produto real ou integrações. As obrigações efetivas (FR, BR e AC) serão enumeradas por Card antes da prova; os dois comportamentos por história não implicam du…
+                - 'generic "Requirement lint: 0 (0–96) · Edition 3" [ref=e1159]':
+                  - generic [ref=e1160]: Requirement lint
+                  - strong [ref=e1161]: "0"
+                - generic [ref=e1162]:
+                  - generic [ref=e1163]: completude
+                  - generic [ref=e1164]: mock
+              - generic [ref=e1165]:
+                - button "Open lineage graph" [ref=e1166]
+                - button "Archive tree" [ref=e1171]
+        - generic [ref=e1177]:
+          - status [ref=e1178]: Showing 1–2 of 2 matching. 2 overall. Page 1 of 1.
+          - generic [ref=e1179]:
+            - generic [ref=e1180]:
+              - generic [ref=e1181]: Items per page
+              - combobox "Items per page" [ref=e1182]:
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+            - navigation "Specifications pagination" [ref=e1183]:
+              - generic [ref=e1184]:
+                - button "Previous page" [disabled] [ref=e1185]: Previous
+                - button "Page 1" [disabled] [ref=e1186]: "1"
+                - button "Next page" [disabled] [ref=e1187]: Next
+        - dialog [ref=e1219]:
+          - generic [ref=e1220]:
+            - generic [ref=e1221]:
+              - generic [ref=e1222]: Draft
+              - heading "E2E mock — estoque local completo" [level=2] [ref=e1226]
+              - generic "Edition 1" [ref=e1227]
+            - generic [ref=e1228]:
+              - button "Open lineage graph" [ref=e1229] [cursor=pointer]
+              - button "Export report" [ref=e1234] [cursor=pointer]
+              - button "Refresh" [ref=e1238] [cursor=pointer]
+              - button "Expand" [ref=e1244] [cursor=pointer]
+              - button "Close spec" [ref=e1250] [cursor=pointer]
+          - generic [ref=e1254]:
+            - generic [ref=e1255]: "Move to:"
+            - button "Review" [ref=e1256] [cursor=pointer]
+            - button "Cancelled" [ref=e1259] [cursor=pointer]
+          - generic [ref=e1262]:
+            - generic [ref=e1263]: "From:"
+            - button "E2E mock — etiquetas e resumo de estoque (14/10) v6" [ref=e1264] [cursor=pointer]:
+              - text: E2E mock — etiquetas e resumo de estoque (14/10)
+              - generic [ref=e1267]: v6
+            - button "E2E mock — contrato das funções de estoque v5" [ref=e1270] [cursor=pointer]:
+              - text: E2E mock — contrato das funções de estoque
+              - generic [ref=e1275]: v5
+          - generic [ref=e1277]:
+            - tablist "Spec sections" [ref=e1278]:
+              - tab "Details" [selected] [ref=e1279] [cursor=pointer]
+              - tab "Coverage" [ref=e1284] [cursor=pointer]
+              - tab "Project Structure 2" [ref=e1290] [cursor=pointer]:
+                - generic [ref=e1296]: Project Structure
+                - generic [ref=e1297]: "2"
+              - tab "Code Evidence Matrix" [ref=e1298] [cursor=pointer]
+              - tab "Resources" [ref=e1302] [cursor=pointer]
+              - tab "Requirements & Decisions" [ref=e1306] [cursor=pointer]
+              - tab "Tests & Verifications" [ref=e1311] [cursor=pointer]
+              - tab "Q&A" [ref=e1315] [cursor=pointer]
+              - tab "Dependencies" [ref=e1320] [cursor=pointer]
+              - tab "References" [ref=e1326] [cursor=pointer]
+              - tab "KG Graph" [ref=e1331] [cursor=pointer]
+              - tab "Validation" [ref=e1338] [cursor=pointer]
+              - tab "Activity" [ref=e1343] [cursor=pointer]
+            - button "Scroll Spec sections right" [ref=e1349] [cursor=pointer]
+          - tabpanel "Details" [ref=e1353]:
+            - tabpanel [ref=e1354]:
+              - generic [ref=e1355]:
+                - generic [ref=e1356]:
+                  - heading "Description" [level=4] [ref=e1357]
+                  - paragraph [ref=e1359]: Duas funções locais e quatro cenários sintéticos para testar o fluxo completo do Pulse. A prova atual, e não o status ou uma porcentagem narrada, deve produzir 100% de implementação e verificação ao final.
+                - generic [ref=e1360]:
+                  - heading "Context" [level=4] [ref=e1361]
+                  - generic [ref=e1362]:
+                    - heading "Refinement Description" [level=2] [ref=e1363]
+                    - paragraph [ref=e1364]: Refinamento do ensaio local autorizado; duas funções puras e quatro cenários determinísticos. Incluído para exercitar também a derivação intermediária do Pulse.
+                    - heading "Parent Ideation Context" [level=2] [ref=e1365]
+                    - list [ref=e1366]:
+                      - listitem [ref=e1367]: "Title: E2E mock — etiquetas e resumo de estoque (14/10)"
+                      - listitem [ref=e1368]: "Version: 6"
+                    - heading "Description" [level=3] [ref=e1369]
+                    - paragraph [ref=e1370]: Ensaio descartável para validar o SDLC do Pulse da ideação ao fechamento. Duas funções Python puras com dados sintéticos; não é um produto real. A interface e o MCP sob teste são os do Pulse. Criar duas tasks e dois cards de teste e observar métricas calculadas a partir de provas atuais, até 100% de implementação/verificação e estado Done. Não alterar policies para obter aprovação.
+                    - heading "Problem Statement" [level=3] [ref=e1371]
+                    - paragraph [ref=e1372]: Confirmar que a mesma iniciativa atravessa criação, revisão, refinamento, especificação, implementação, testes autenticados e encerramento, com rastreabilidade e percentuais coerentes na UI e no MCP.
+                    - heading "Proposed Approach" [level=3] [ref=e1373]
+                    - paragraph [ref=e1374]: "Fixture greenfield em D:/Projetos/pulse-e2e-estoque-mock. H01 normalizar_rotulo(texto): strip e upper, vazio após strip gera ValueError('rotulo_obrigatorio'). H02 somar_quantidades(quantidades): soma de lista de inteiros não negativos, vazia retorna 0, negativo gera ValueError('quantidade_negativa'), sem alterar a entrada. Domínio de entrada: strings para H01 e listas de inteiros (sem bool) para H02; tipos diferentes ficam fora do mock. Dois ACs e dois testes isolados por função; Python padrão e unittest. Sem UI nova, persistência, rede, relógio ou aleatoriedade. Novo conhecimento deste ensaio, sem decisão arquitetural reaproveitada. KG: nenhum similar ou bug relevante; busca global encontrou apenas T04 do mock anterior (entity_97a2d5ffb6f3caaf784f8826), que serve como antecedente de ensaio, sem reutilizar suas provas. Resultados de execução só serão registrados após observação local."
+                    - heading "Scope Assessment" [level=3] [ref=e1375]
+                    - list [ref=e1376]:
+                      - listitem [ref=e1377]: "Domains: 1/5"
+                      - listitem [ref=e1378]: "Ambiguity: 1/5"
+                      - listitem [ref=e1379]: "Dependencies: 1/5"
+                      - listitem [ref=e1380]: "Complexity: small"
+                    - heading "In Scope" [level=2] [ref=e1381]
+                    - list [ref=e1382]:
+                      - listitem [ref=e1383]: normalizar_rotulo com normalização e erro de vazio
+                      - listitem [ref=e1384]: somar_quantidades com soma, vazio e erro de negativo
+                      - listitem [ref=e1385]: Duas tasks, dois Test Cards, quatro cenários unittest e provas autenticadas no Pulse
+                    - heading "Out of Scope" [level=2] [ref=e1386]
+                    - list [ref=e1387]:
+                      - listitem [ref=e1388]: UI própria do mock, banco, rede, persistência e produto real
+                      - listitem [ref=e1389]: Validação de tipos fora do domínio de entrada declarado
+                      - listitem [ref=e1390]: Migração de dados e alteração das policies do Board
+                    - heading "Analysis" [level=2] [ref=e1391]
+                    - paragraph [ref=e1392]: "Base greenfield exclusiva em D:/Projetos/pulse-e2e-estoque-mock, ainda sem implementação das funções. Inspeção local realizada: baseline 810ec4fb9d8521f607a17663e12c8ff3b52acaed contém somente README.md e .gitignore; não há módulo ou testes implementados. A ausência será atestada pela investigação contextual V2 desta versão. Stage 2 do KG: nenhuma decisão similar e nenhuma contradição; não há Decision âncora para consultar alternativas. Alternativa local de serviço HTTP foi descartada porque adicionaria infraestrutura sem valor ao ensaio. Requisitos do próprio ensaio: normalizar_rotulo recebe str e retorna strip().upper(), rejeitando vazio com ValueError('rotulo_obrigatorio'); somar_quantidades recebe lista de int não negativos, retorna soma (0 no vazio), rejeitando qualquer negativo com ValueError('quantidade_negativa'), sem mutar entrada. Tipos fora desses domínios não fazem parte do contrato. Python padrão/unittest, sem bibliotecas externas nem comportamento de terceiros a pesquisar. Sem frontend próprio, persistência, rede ou relógio; mockups/arquitetura visual não se aplicam. KG Stage 1 não encontrou decisão similar ou bug; entity_97a2d5ffb6f3caaf784f8826 é somente antecedente de teste do Pulse. Novas escolhas explícitas deste mock, não conhecimento reaproveitado. Não há pergunta de negócio pendente: o usuário delegou a construção do cenário sintético."
+                    - heading "Decisions" [level=2] [ref=e1393]
+                    - list [ref=e1394]:
+                      - listitem [ref=e1395]: "Escolha nova deste ensaio: funções puras em um módulo e unittest nativo, em vez de serviço HTTP; reduz infraestrutura sem remover os comportamentos verificáveis. Fonte: escopo de teste delegado pelo usuário."
+                    - heading "Contrato executável do ensaio" [level=2] [ref=e1396]
+                    - paragraph [ref=e1397]: "Python 3.13, biblioteca padrão, funções puras em estoque.py e quatro métodos unittest em test_estoque.py. Domínio válido: str para normalizar_rotulo; list[int], excluindo bool, para somar_quantidades. Tipos diferentes ficam fora do escopo. strip/upper têm a semântica nativa do Python; casos ASCII são suficientes para os exemplos deste ensaio. Sem rede, persistência, relógio, aleatoriedade ou UI própria. Cada cenário monta dados novos. O agente observa commit, conteúdo e execução antes de submeter provas; mocks não autorizam recibos fictícios. Não há IR, OR, contrato externo ou Decision independente a inventar. Project Structure: applicable, edição 1: estoque.py e test_estoque.py são TO-BE; README.md e .gitignore existem no baseline inspecionado. Não tratar intenção como evidência de código."
+                - generic [ref=e1398]:
+                  - generic [ref=e1399]: mock
+                  - generic [ref=e1400]: e2e
+                  - generic [ref=e1401]: completude
+                - region "Task Validation Gate" [ref=e1402]:
+                  - heading "Task Validation Gate" [level=4] [ref=e1403]
+                  - paragraph [ref=e1404]: Controls whether cards derived from this spec must pass Task Validation. These settings do not change the Spec Validation Gate.
+                  - generic [ref=e1405]:
+                    - generic [ref=e1406]:
+                      - term [ref=e1407]: Validation
+                      - definition [ref=e1408]: Board default
+                    - generic [ref=e1409]:
+                      - term [ref=e1410]: Minimum confidence
+                      - definition [ref=e1411]: Board default
+                    - generic [ref=e1412]:
+                      - term [ref=e1413]: Minimum completeness
+                      - definition [ref=e1414]: Board default
+                    - generic [ref=e1415]:
+                      - term [ref=e1416]: Maximum drift
+                      - definition [ref=e1417]: Board default
+          - generic [ref=e1418]:
+            - button "Delete spec" [ref=e1419] [cursor=pointer]
+            - button "Close" [ref=e1421] [cursor=pointer]

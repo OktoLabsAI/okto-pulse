@@ -15,9 +15,7 @@ from okto_pulse.core.kg.interfaces.graph_errors import (
     GraphError,
 )
 from okto_pulse.core.kg.schema_contract import (
-    MULTI_REL_TYPES,
     NODE_TYPES,
-    REL_TYPES,
     SCHEMA_VERSION,
     VECTOR_INDEX_TYPES,
     vector_index_name,
@@ -37,18 +35,13 @@ from okto_pulse.community.adapters.grafx_schema_manifest import (
     PULSE_GRAFX_SCHEMA_MANIFEST,
 )
 from okto_pulse.community.adapters.graph_ddl import (
-    COMMON_NODE_ATTRIBUTES,
     COMMON_NODE_COLUMNS,
     COMMON_REL_COLUMNS,
-    build_multi_rel_ddl,
-    build_node_ddl,
-    build_rel_ddl,
 )
 
 _BOARD_ID = "board-schema-bootstrap"
 _STAMP = Timestamp(micros=1_788_000_000_123_456)
-_FINGERPRINT = "4a7b425bf4b8c4864be633c1a87f034e5f7f641019dc029015b7d3ca786deb81"
-_KUZU_DDL_DIGEST = "18a8b1a1b9459d92d61670d734087a4212af29fa4039b0825d6e966ffa181e0e"
+_FINGERPRINT = "97a5ed31dfaf4d479b8d7810638ad3f07f3955894168a03b437a5533352b618b"
 
 
 def _meta_row(database) -> tuple:
@@ -173,14 +166,14 @@ class _BeginCountingDatabase:
 def test_manifest_is_the_closed_current_pulse_authority() -> None:
     manifest = PULSE_GRAFX_SCHEMA_MANIFEST
 
-    assert manifest.schema_version == "0.5.0"
+    assert manifest.schema_version == "0.8.0"
     assert tuple(table.name for table in manifest.nodes) == NODE_TYPES
     assert len(manifest.nodes) == 11
     assert len(manifest.board_meta.columns) == 5
-    assert len(manifest.relationships) == 69
-    assert len(manifest.tables) == 81
+    assert len(manifest.relationships) == 85
+    assert len(manifest.tables) == 97
     assert len(manifest.spaces) == 11
-    assert all(len(table.columns) == 44 for table in manifest.nodes)
+    assert all(len(table.columns) == 49 for table in manifest.nodes)
     assert all(len(table.columns) == 9 for table in manifest.relationships)
     assert sum(space.node_type in VECTOR_INDEX_TYPES for space in manifest.spaces) == 9
     assert manifest.logical_fingerprint == _FINGERPRINT
@@ -214,50 +207,8 @@ def test_manifest_is_the_closed_current_pulse_authority() -> None:
     assert len(descriptor["relationships"]) == 16
     assert "supersedes__Decision__Decision" not in repr(descriptor)
     descriptor["schema_version"] = "hostile"
-    assert manifest.logical_descriptor["schema_version"] == "0.5.0"
+    assert manifest.logical_descriptor["schema_version"] == "0.8.0"
     assert manifest.logical_fingerprint == _FINGERPRINT
-
-
-def test_structured_ddl_authority_preserves_the_existing_kuzu_rendering() -> None:
-    assert len(COMMON_NODE_COLUMNS) == 44
-    assert tuple(name for name, _type in COMMON_REL_COLUMNS) == (
-        "confidence",
-        "created_by_session_id",
-        "created_at",
-        "layer",
-        "rule_id",
-        "created_by",
-        "fallback_reason",
-    )
-    assert COMMON_NODE_ATTRIBUTES.startswith("id STRING PRIMARY KEY,\n    title STRING")
-    assert COMMON_NODE_ATTRIBUTES.endswith(
-        "selector_fingerprint STRING,\n    resolution_state STRING,\n    embedding DOUBLE[384]"
-    )
-    assert build_node_ddl("Decision") == (
-        f"CREATE NODE TABLE IF NOT EXISTS Decision ({COMMON_NODE_ATTRIBUTES})"
-    )
-    assert build_rel_ddl("edge", "Decision", "Entity") == (
-        "CREATE REL TABLE IF NOT EXISTS edge (FROM Decision TO Entity, "
-        "confidence DOUBLE, created_by_session_id STRING, created_at TIMESTAMP, "
-        "layer STRING, rule_id STRING, created_by STRING, fallback_reason STRING)"
-    )
-    assert build_multi_rel_ddl("edge", (("Decision", "Entity"),)) == (
-        "CREATE REL TABLE IF NOT EXISTS edge (FROM Decision TO Entity, "
-        "confidence DOUBLE, created_by_session_id STRING, created_at TIMESTAMP, "
-        "layer STRING, rule_id STRING, created_by STRING, fallback_reason STRING)"
-    )
-
-    all_rendered_ddl = (
-        *(build_node_ddl(node_type) for node_type in NODE_TYPES),
-        *(build_rel_ddl(*definition) for definition in REL_TYPES),
-        *(build_multi_rel_ddl(rel_name, pairs) for rel_name, pairs in MULTI_REL_TYPES),
-    )
-    encoded = json.dumps(
-        all_rendered_ddl,
-        ensure_ascii=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    assert hashlib.sha256(encoded).hexdigest() == _KUZU_DDL_DIGEST
 
 
 def test_empty_bootstrap_is_exact_second_call_is_noop_and_reopen_is_stable(
@@ -272,9 +223,9 @@ def test_empty_bootstrap_is_exact_second_call_is_noop_and_reopen_is_stable(
             bootstrapped_at=_STAMP,
         )
         assert first.changed is True
-        assert first.schema_version == "0.5.0"
+        assert first.schema_version == "0.8.0"
         assert first.logical_fingerprint == _FINGERPRINT
-        assert len(database.catalog.catalog.tables()) == 81
+        assert len(database.catalog.catalog.tables()) == 97
         assert len(database.catalog.catalog.spaces()) == 11
         ordered_indexes = {
             index.name: index
@@ -307,9 +258,13 @@ def test_empty_bootstrap_is_exact_second_call_is_noop_and_reopen_is_stable(
             for table in PULSE_GRAFX_SCHEMA_MANIFEST.nodes
         }
         assert all(index.columns == ("source_artifact_ref",) for index in source_indexes.values())
-        from okto_pulse.community.adapters.grafx_schema_evolution import _require_indexes
-        _require_indexes(database, "bootstrap")
-        assert _meta_row(database) == (_BOARD_ID, "0.5.0", _STAMP, None, None)
+        from okto_pulse.community.adapters.grafx_index_inventory import require_current_grafx_indexes
+        require_current_grafx_indexes(
+            database,
+            "bootstrap",
+            schema_manifest=PULSE_GRAFX_SCHEMA_MANIFEST,
+        )
+        assert _meta_row(database) == (_BOARD_ID, "0.8.0", _STAMP, None, None)
         assert database.verify("all").findings == ()
 
         catalog_before = database.catalog.catalog
@@ -346,7 +301,7 @@ def test_empty_bootstrap_is_exact_second_call_is_noop_and_reopen_is_stable(
             ).changed
             is False
         )
-        assert _meta_row(reopened) == (_BOARD_ID, "0.5.0", _STAMP, None, None)
+        assert _meta_row(reopened) == (_BOARD_ID, "0.8.0", _STAMP, None, None)
         assert reopened.verify("all").findings == ()
     finally:
         reopened.close()
@@ -395,7 +350,7 @@ def test_partial_exact_catalog_creates_only_missing_objects(tmp_path: Path) -> N
 
         assert result.changed is True
         assert result.logical_fingerprint == _FINGERPRINT
-        assert len(database.catalog.catalog.tables()) == 81
+        assert len(database.catalog.catalog.tables()) == 97
         assert len(database.catalog.catalog.spaces()) == 11
         tables_after = {table.name for table in database.catalog.catalog.tables()}
         spaces_after = {space.name for space in database.catalog.catalog.spaces()}
@@ -406,7 +361,7 @@ def test_partial_exact_catalog_creates_only_missing_objects(tmp_path: Path) -> N
         } == stable_ids
         assert _meta_row(database) == (
             _BOARD_ID,
-            "0.5.0",
+            "0.8.0",
             _STAMP,
             "all-MiniLM-L6-v2",
             384,
@@ -436,7 +391,7 @@ def test_missing_metadata_is_enriched_once_and_never_overwritten(
         assert enriched.changed is True
         assert _meta_row(database) == (
             _BOARD_ID,
-            "0.5.0",
+            "0.8.0",
             _STAMP,
             "all-MiniLM-L6-v2",
             384,
@@ -517,7 +472,7 @@ def test_missing_metadata_is_enriched_once_and_never_overwritten(
                 "MATCH (m:BoardMeta {board_id: $board_id}) "
                 "SET m.schema_version = $value, m.embedding_dimension = $dimension "
                 "RETURN m.board_id",
-                {"board_id": _BOARD_ID, "value": "0.5.0", "dimension": 383},
+                {"board_id": _BOARD_ID, "value": "0.8.0", "dimension": 383},
             )
         assert_refusal_is_inert(reason="board_meta_embedding_mismatch")
     finally:
@@ -836,7 +791,7 @@ def test_a_schema_failure_rolls_back_every_prefix_and_never_stamps_version(
         )
         assert retry.changed is True
         assert retry.logical_fingerprint == _FINGERPRINT
-        assert _meta_row(database) == (_BOARD_ID, "0.5.0", _STAMP, None, None)
+        assert _meta_row(database) == (_BOARD_ID, "0.8.0", _STAMP, None, None)
     finally:
         database.close()
 
@@ -856,7 +811,7 @@ def test_postvalidation_and_metadata_failures_leave_version_absent_and_retry(
             )
 
         assert postvalidation_failure.catalog_calls == 2
-        assert len(database.catalog.catalog.tables()) == 81
+        assert len(database.catalog.catalog.tables()) == 97
         assert len(database.catalog.catalog.spaces()) == 11
         assert database.catalog.catalog.has_table("BoardMeta")
         assert database.execute("MATCH (m:BoardMeta) RETURN m.board_id").rows == ()
@@ -887,7 +842,7 @@ def test_postvalidation_and_metadata_failures_leave_version_absent_and_retry(
         )
         assert retry.changed is True
         assert retry.logical_fingerprint == _FINGERPRINT
-        assert _meta_row(database) == (_BOARD_ID, "0.5.0", _STAMP, None, None)
+        assert _meta_row(database) == (_BOARD_ID, "0.8.0", _STAMP, None, None)
     finally:
         database.close()
 
@@ -914,3 +869,52 @@ def test_invalid_embedding_metadata_is_refused_without_backend_access(
             embedding_dimension=dimension,
         )
     assert captured.value.details["reason"] == "invalid_bootstrap_argument"
+
+
+def test_same_version_with_different_schema_is_refused_without_overwrite(tmp_path):
+    path = tmp_path / "conflicting-current-version"
+    manifest = PULSE_GRAFX_SCHEMA_MANIFEST
+    database = okto_grafx.connect(path)
+    try:
+        with database.begin("write") as tx:
+            for space in manifest.spaces:
+                tx.execute(space.ddl())
+            for table in manifest.tables:
+                ddl = table.ddl()
+                if table.name == manifest.nodes[0].name:
+                    assert "title STRING" in ddl
+                    ddl = ddl.replace("title STRING", "title INT64", 1)
+                tx.execute(ddl)
+            tx.execute(
+                "CREATE (m:BoardMeta {board_id: $board, schema_version: $version, "
+                "bootstrapped_at: $stamp})",
+                {"board": _BOARD_ID, "version": manifest.schema_version, "stamp": _STAMP},
+            )
+        row_before = _meta_row(database)
+        catalog_before = database.catalog.catalog
+        transactions_before = database.transactions
+        wal_before = database.wal
+        bytes_before = _wal_bytes(path, wal_before)
+        counted = _BeginCountingDatabase(database)
+        for _ in range(2):
+            with pytest.raises(GraphCapabilityUnavailable) as captured:
+                ensure_current_grafx_board_schema(
+                    counted, board_id=_BOARD_ID, bootstrapped_at=Timestamp(micros=1))
+            assert captured.value.details["reason"] == "table_shape_mismatch"
+            assert counted.begin_calls == 0
+            assert _meta_row(database) == row_before
+            assert database.catalog.catalog == catalog_before
+            assert database.transactions == transactions_before
+            assert database.wal == wal_before
+            assert _wal_bytes(path, wal_before) == bytes_before
+        assert row_before[1] == SCHEMA_VERSION
+        assert manifest.logical_fingerprint == _FINGERPRINT
+    finally:
+        database.close()
+    reopened = okto_grafx.connect(path)
+    try:
+        with pytest.raises(GraphCapabilityUnavailable):
+            validate_current_grafx_schema(reopened)
+        assert _meta_row(reopened) == row_before
+    finally:
+        reopened.close()

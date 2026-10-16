@@ -51,22 +51,6 @@ const HEALTH_FIXTURE = {
   },
 };
 
-const RUNTIME_SETTINGS_FIXTURE = {
-  kg_graph_backend: 'grafx',
-  kg_global_graph_backend: 'grafx',
-  kg_grafx_page_size: 8192,
-  kg_grafx_descriptor_revalidation: 'generation',
-  kg_queue_max_concurrent_workers: 4,
-  kg_queue_min_interval_ms: 100,
-  kg_queue_claim_timeout_s: 300,
-  kg_queue_max_attempts: 5,
-  kg_queue_alert_threshold: 5000,
-  kg_decay_tick_interval_minutes: 1440,
-  kg_decay_tick_staleness_days: 7,
-  kg_decay_tick_max_age_days: 0,
-  restart_required: false,
-};
-
 const BOARD_FIXTURE = {
   id: 'board-1',
   name: 'test-board',
@@ -102,19 +86,23 @@ const EMPTY_COLUMNS_FIXTURE = {
   },
 };
 
-test('KGHealthView passes accessibility, responsive navigation, help and settings integration', async ({ page }) => {
+test('KGHealthView passes accessibility, responsive navigation, help and maintenance absence', async ({ page }) => {
   test.setTimeout(60_000);
   const pageErrors: string[] = [];
   const graphWrites: string[] = [];
+  const maintenanceRequests: string[] = [];
   page.on('pageerror', (error) => pageErrors.push(error.message));
   page.on('request', (request) => {
-    if (request.url().includes('/api/v1/kg/') && request.method() !== 'GET' && !request.url().includes('/rebuild/preflight')) {
+    if (/\/(rebuild|historical-consolidation|tick)(\/|\?|$)/.test(request.url()) || request.url().includes('/settings/runtime')) {
+      maintenanceRequests.push(request.url());
+    }
+    if (request.url().includes('/api/v1/kg/') && request.method() !== 'GET') {
       graphWrites.push(request.url());
     }
   });
   // No test action is ever allowed to write to a running Pulse backend.
   await page.route('**/api/v1/**', (route, request) => {
-    if (request.method() === 'GET') return route.continue();
+    if (request.method() === 'GET') return route.fulfill({ status: 404, json: { detail: 'Unmocked reads blocked by the UI test' } });
     return route.fulfill({ status: 403, json: { detail: 'Unmocked writes blocked by the UI test' } });
   });
   await page.addInitScript(() => {
@@ -135,31 +123,6 @@ test('KGHealthView passes accessibility, responsive navigation, help and setting
     board_id: 'board-1', readonly: true, selected_kg_generation_id: null, legacy_mode: false,
     counts: { pending: 0, in_progress: 0, consolidated: 0, skipped: 0, failed: 0, total: 0 }, items: [],
   } }));
-  await page.route('**/api/v1/kg/boards/*/historical-consolidation/progress', (route) => route.fulfill({ json: {
-    enabled: true, status: 'inactive', total: 0, progress: 0, pending: 0, claimed: 0, paused: 0, failed: 0,
-  } }));
-  await page.route('**/api/v1/kg/rebuild/preflight**', (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        board_id: 'board-1',
-        outcome: 'ready',
-        action_required: 'none',
-        reason: null,
-        base_state: 'healthy',
-        metric_status: 'available',
-        current_kg_generation_id: 'kg-gen-1',
-        eligible_source_count: 0,
-        skipped_cancelled_count: 0,
-        has_non_deterministic_inputs: false,
-        preflight_hash: 'pf-hash-kg-hs4',
-        generated_at: new Date().toISOString(),
-        manifest_ref: 'manifest://kg-hs4',
-        source_set_hash: 'source-set-hash-kg-hs4',
-      }),
-    }),
-  );
   await page.route('**/api/v1/kg/cognitive-pending/candidate-decisions**', (route) =>
     route.fulfill({
       status: 200,
@@ -179,14 +142,6 @@ test('KGHealthView passes accessibility, responsive navigation, help and setting
       }),
     }),
   );
-  await page.route('**/api/v1/settings/runtime', (route, request) => {
-    if (request.method() !== 'GET') return route.fallback();
-    return route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify(RUNTIME_SETTINGS_FIXTURE),
-    });
-  });
   await page.route('**/api/v1/me/permissions**', (route) =>
     route.fulfill({
       status: 200,
@@ -252,13 +207,15 @@ test('KGHealthView passes accessibility, responsive navigation, help and setting
   const heading = page.getByRole('heading', { name: /KG Health Dashboard/i });
   await expect(heading).toBeVisible({ timeout: 10_000 });
   await expect(page.getByRole('heading', { name: 'Operational' })).toBeVisible();
-  await expect(page.getByTestId('kg-open-decay-settings')).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByTestId('kg-open-decay-settings')).toHaveCount(0);
+  await expect(page.getByTestId('kg-tick-run-now')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /rebuild|recovery/i })).toHaveCount(0);
 
   const navigation = page.getByRole('navigation', { name: 'KG Health sections' });
   const content = page.getByTestId('kg-health-scroll-content');
   for (const width of [360, 768, 1440]) {
     await page.setViewportSize({ width, height: 1000 });
-    for (const name of ['Processing & knowledge', 'Diagnostics', 'Recovery', 'Overview']) {
+    for (const name of ['Processing & knowledge', 'Diagnostics', 'Overview']) {
       await navigation.getByRole('link', { name, exact: true }).click();
       expect(await content.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
     }
@@ -282,12 +239,10 @@ test('KGHealthView passes accessibility, responsive navigation, help and setting
     expect(blocking, JSON.stringify(blocking, null, 2)).toHaveLength(0);
   }
 
-  await page.getByTestId('kg-open-decay-settings').click();
-
-  await expect(page.getByTestId('runtime-settings-panel')).toBeVisible();
-  await expect(page.getByTestId('tab-decaytick')).toHaveAttribute('aria-selected', 'true');
-  await expect(page.getByTestId('input-tick-interval-minutes')).toBeVisible();
-  await expect(heading).not.toBeVisible();
+  await page.getByRole('button', { name: /refresh kg data now/i }).click();
+  await expect(heading).toBeVisible();
+  await expect(page.getByTestId('runtime-settings-panel')).toHaveCount(0);
+  expect(maintenanceRequests).toEqual([]);
   expect(pageErrors).toEqual([]);
   expect(graphWrites).toEqual([]);
 });

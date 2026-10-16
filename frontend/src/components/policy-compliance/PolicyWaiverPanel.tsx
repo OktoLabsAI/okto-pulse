@@ -64,7 +64,6 @@ const ENTITY_TYPE_OPTIONS: PolicyEntityType[] = [
   'ideation',
   'refinement',
   'spec',
-  'sprint',
   'card',
   'test_scenario',
 ];

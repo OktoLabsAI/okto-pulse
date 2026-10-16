@@ -34,7 +34,7 @@ const AGGREGATE_KEYS = [
   'retirement',
   'bindings',
   'history_status',
-  'migration_notes',
+  'import_notes',
 ] as const;
 
 const IDENTITY_KEYS = [
@@ -61,9 +61,6 @@ const REVISION_KEYS = [
   'tags',
   'published_head_revision',
   'published_head_updated_at',
-  'legacy_version',
-  'legacy_version_unresolvable',
-  'legacy_tags',
 ] as const;
 
 const HEAD_KEYS = [
@@ -106,11 +103,9 @@ const EXPORTED_BINDING_KEYS = [
   'physical_source_kind',
   'binding_origin',
   'materialization',
-  'legacy_source_id',
-  'legacy_guideline_version',
-  'legacy_template_id',
-  'legacy_template_version',
-  'legacy_version_unresolvable',
+  'materialized_revision_number',
+  'materialized_template_id',
+  'materialized_template_version',
   'evidence_refs',
   'binding_digest',
 ] as const;
@@ -147,7 +142,6 @@ const ENTITY_TYPES = new Set([
   'ideation',
   'refinement',
   'spec',
-  'sprint',
   'card',
   'test_scenario',
 ]);
@@ -204,8 +198,6 @@ interface ValidatedRevision {
   parentRevisionId: string | null;
   metricCodes: Set<string>;
   metricCount: number;
-  legacyVersion: string | null;
-  legacyVersionUnresolvable: boolean;
 }
 
 interface ValidatedIdentity {
@@ -498,26 +490,6 @@ function validateRevision(
   if (publishedHeadUpdatedAt < createdAt) {
     invalidEnvelope(`${path}.published_head_updated_at`);
   }
-  const legacyVersion = revision.legacy_version === null
-    ? null
-    : semanticVersion(
-        revision.legacy_version,
-        `${path}.legacy_version`,
-      ).raw;
-  if (typeof revision.legacy_version_unresolvable !== 'boolean') {
-    invalidEnvelope(`${path}.legacy_version_unresolvable`);
-  }
-  if (
-    revision.legacy_version_unresolvable !== (legacyVersion !== null)
-  ) {
-    invalidEnvelope(`${path}.legacy_version`);
-  }
-  if (revision.legacy_tags !== null) {
-    uniqueTextList(revision.legacy_tags, `${path}.legacy_tags`);
-    if (!revision.legacy_version_unresolvable) {
-      invalidEnvelope(`${path}.legacy_tags`);
-    }
-  }
   return {
     revisionId,
     guidelineId,
@@ -530,8 +502,6 @@ function validateRevision(
     parentRevisionId,
     metricCodes: new Set(metrics.map((metric) => metric.code)),
     metricCount: metrics.length,
-    legacyVersion,
-    legacyVersionUnresolvable: revision.legacy_version_unresolvable,
   };
 }
 
@@ -762,25 +732,17 @@ function validateBinding(
     invalidEnvelope(`${path}.binding.source_kind`);
   }
 
-  canonicalText(
-    exported.physical_source_kind,
-    `${path}.physical_source_kind`,
-  );
+  if (exported.physical_source_kind !== 'native') {
+    invalidEnvelope(`${path}.physical_source_kind`);
+  }
   canonicalText(exported.binding_origin, `${path}.binding_origin`);
   if (exported.materialization !== 'live'
     && exported.materialization !== 'candidate') {
     invalidEnvelope(`${path}.materialization`);
   }
-  for (const key of [
-    'legacy_source_id',
-    'legacy_guideline_version',
-    'legacy_template_id',
-    'legacy_template_version',
-  ] as const) {
-    nullableCanonicalText(exported[key], `${path}.${key}`);
-  }
-  if (typeof exported.legacy_version_unresolvable !== 'boolean') {
-    invalidEnvelope(`${path}.legacy_version_unresolvable`);
+  nullableCanonicalText(exported.materialized_template_id, `${path}.materialized_template_id`);
+  for (const key of ['materialized_revision_number', 'materialized_template_version'] as const) {
+    if (exported[key] !== null) strictInteger(exported[key], `${path}.${key}`, 1);
   }
   if (!Array.isArray(exported.evidence_refs)) {
     invalidEnvelope(`${path}.evidence_refs`);
@@ -1001,25 +963,10 @@ function validateAggregate(
   }
   validateBindingHistories(bindings, `${path}.bindings`);
 
-  if (
-    aggregate.history_status !== 'complete'
-    && aggregate.history_status !== 'baseline_only'
-  ) {
+  if (aggregate.history_status !== 'complete') {
     invalidEnvelope(`${path}.history_status`);
   }
-  uniqueTextList(aggregate.migration_notes, `${path}.migration_notes`);
-  if (aggregate.history_status === 'baseline_only') {
-    if (
-      revisions.length !== 1
-      || !revisions[0].legacyVersionUnresolvable
-      || revisions[0].metricCount !== 0
-      || bindings.length !== 0
-    ) {
-      invalidEnvelope(`${path}.history_status`);
-    }
-  } else if (revisions.some((revision) => revision.legacyVersion !== null)) {
-    invalidEnvelope(`${path}.revisions`);
-  }
+  uniqueTextList(aggregate.import_notes, `${path}.import_notes`);
   if (
     sourceBoardId !== null
     && identity.scope === 'inline'

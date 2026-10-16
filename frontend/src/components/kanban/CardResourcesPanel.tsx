@@ -37,6 +37,10 @@ type CardResourceTab =
 interface CardResourcesPanelProps {
   card: Card;
   expanded: boolean;
+  revision?: number;
+  active?: boolean;
+  onKnowledgeVisibilityChange?: (visible: boolean) => void;
+  contentReadOnly: boolean;
   specKnowledgeBases: {
     id: string;
     title: string;
@@ -193,6 +197,10 @@ function AttachmentsPanel({
 export function CardResourcesPanel({
   card,
   expanded,
+  revision = 0,
+  active = true,
+  onKnowledgeVisibilityChange,
+  contentReadOnly,
   specKnowledgeBases,
   canReadMockups,
   canReadKnowledge,
@@ -269,13 +277,19 @@ export function CardResourcesPanel({
     onSubjectChanged();
   };
 
+  useEffect(() => {
+    onKnowledgeVisibilityChange?.(active && activeTab === 'knowledge' && canReadKnowledge);
+    return () => onKnowledgeVisibilityChange?.(false);
+  }, [active, activeTab, canReadKnowledge, onKnowledgeVisibilityChange]);
+
   return (
     <div className="space-y-4" data-testid="card-resources-panel">
       <ResourceGateDisclosure
         boardId={card.board_id}
         entityType="card"
         entityId={card.id}
-        refreshKey={resourceRevision}
+        refreshKey={`${revision}:${resourceRevision}`}
+        active={active}
       />
 
       <AccessibleTabList
@@ -314,8 +328,10 @@ export function CardResourcesPanel({
         >
           <CardKnowledgeTab
             card={card}
+            revision={`${revision}:${resourceRevision}`}
+            active={active && activeTab === 'knowledge'}
             specKnowledgeBases={specKnowledgeBases}
-            readOnly={card.status === 'rejected'}
+            readOnly={contentReadOnly || card.status === 'rejected'}
             onUpdate={async () => {
               const updated = await api.getCard(card.id).catch(() => null);
               if (updated) {
@@ -337,12 +353,14 @@ export function CardResourcesPanel({
         >
           <ArchitectureTab
             parentType="card"
+            revision={`${revision}:${resourceRevision}`}
+            active={active && activeTab === 'architecture'}
             parentId={card.id}
             boardId={card.board_id}
             entityType="card"
             entityId={card.id}
             specIdForCopy={card.spec_id}
-            locked={card.status === 'rejected'}
+            locked={contentReadOnly || card.status === 'rejected'}
             expanded={expanded}
             screenMockups={card.screen_mockups || []}
             onChanged={(items) => {

@@ -103,8 +103,6 @@ function candidate(
     guideline_id: guidelineId,
     title: guidelineId === 'g1' ? 'Already default' : 'Not default yet',
     scope: 'global',
-    guideline_version: 1,
-    ...head,
     head_revision: head,
     default_revision: isDefault
       ? revisionPin(guidelineId, defaultRevisionNumber)
@@ -454,14 +452,14 @@ describe('DefaultBoardConfigPanel', () => {
     expect(screen.queryByTestId('dbc-versions-pagination')).not.toBeInTheDocument();
   });
 
-  it('shows legacy/no-snapshot state when the board has no applied snapshot', async () => {
+  it('shows the native no-template state when the board has no applied snapshot', async () => {
     apiMock.getBoardDefaultConfigDiff.mockResolvedValue({
-      board_id: 'b1', snapshot_state: 'legacy_no_snapshot',
+      board_id: 'b1', snapshot_state: 'no_template_snapshot',
       applied_template_id: null, applied_template_version: null,
       active_template_id: null, active_template_version: null, is_outdated: false, fields: [],
     });
     render(<DefaultBoardConfigPanel boardId="b1" />);
-    expect(await screen.findByTestId('dbc-legacy')).toBeInTheDocument();
+    expect(await screen.findByTestId('dbc-no-template-snapshot')).toBeInTheDocument();
   });
 
   it('shows no-active-template state gracefully', async () => {
@@ -686,43 +684,21 @@ describe('DefaultBoardConfigPanel', () => {
         design_system_gate_mode: 'advisory',
       }),
     }));
+    expect(apiMock.createDefaultBoardConfigVersion.mock.calls[0][0].settings_payload)
+      .not.toHaveProperty('qa_require_role_separation');
   });
 
-  it('converges a retired Off template policy to Advisory when saving any draft', async () => {
+  it.each([null, { mode: 'off' }])('refuses incompatible template policy %j without saving', async (policy) => {
     apiMock.getActiveDefaultBoardConfig.mockResolvedValueOnce({
       scope: 'global',
       active: tmpl({
-        id: 'legacy-template',
-        version: 1,
-        settings_payload: {
-          require_task_validation: true,
-          code_traceability: {
-            mode: 'off',
-            minimum_trust: 'corroborated',
-          },
-        },
+        settings_payload: { require_task_validation: true, code_traceability: policy },
       }),
     });
-
     render(<DefaultBoardConfigPanel boardId="b1" />);
-
-    expect(
-      await screen.findByLabelText('Code Traceability enforcement mode'),
-    ).toHaveValue('advisory');
-    fireEvent.click(screen.getByRole('switch', { name: 'Require task validation' }));
-    fireEvent.click(screen.getByTestId('dbc-save-template'));
-
-    await waitFor(() => expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalledTimes(1));
-    expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalledWith(
-      expect.objectContaining({
-        settings_payload: expect.objectContaining({
-          code_traceability: expect.objectContaining({
-            mode: 'advisory',
-            minimum_trust: 'corroborated',
-          }),
-        }),
-      }),
-    );
+    expect(await screen.findByRole('alert')).toHaveTextContent('Code Traceability settings are incompatible');
+    expect(screen.queryByTestId('dbc-save-template')).not.toBeInTheDocument();
+    expect(apiMock.createDefaultBoardConfigVersion).not.toHaveBeenCalled();
   });
 
   it('versions the independent reviewer policy in Global Default', async () => {
@@ -864,4 +840,48 @@ describe('DefaultBoardConfigPanel', () => {
       }),
     }));
   });
+  it.each(['banana', null])('refuses invalid template Impact Evidence %j', async (mode) => {
+    apiMock.getActiveDefaultBoardConfig.mockResolvedValueOnce({
+      scope: 'global', active: tmpl({ settings_payload: { impact_evidence_mode: mode } }),
+    });
+    render(<DefaultBoardConfigPanel boardId="b1" />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('Impact Evidence policy is incompatible');
+    expect(screen.queryByTestId('dbc-save-template')).not.toBeInTheDocument();
+    expect(apiMock.createDefaultBoardConfigVersion).not.toHaveBeenCalled();
+  });
+
+  it('projects and preserves required Impact Evidence when saving another setting', async () => {
+    apiMock.getActiveDefaultBoardConfig.mockResolvedValueOnce({
+      scope: 'global', active: tmpl({ settings_payload: { impact_evidence_mode: 'require' } }),
+    });
+    render(<DefaultBoardConfigPanel boardId="b1" />);
+    expect(await screen.findByTestId('impact-evidence-mode-require')).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(screen.getByRole('switch', { name: 'Require task validation' }));
+    fireEvent.click(screen.getByTestId('dbc-save-template'));
+    await waitFor(() => expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalledTimes(1));
+    expect(apiMock.createDefaultBoardConfigVersion.mock.calls[0][0].settings_payload.impact_evidence_mode).toBe('require');
+  });
+
+  it.each([null, 'off'])('refuses invalid template Delivery Evidence %j', async (mode) => {
+    apiMock.getActiveDefaultBoardConfig.mockResolvedValueOnce({
+      scope: 'global', active: tmpl({ settings_payload: { delivery_evidence_gate: mode } }),
+    });
+    render(<DefaultBoardConfigPanel boardId="b1" />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('Delivery Evidence policy is incompatible');
+    expect(screen.queryByTestId('dbc-save-template')).not.toBeInTheDocument();
+    expect(apiMock.createDefaultBoardConfigVersion).not.toHaveBeenCalled();
+  });
+
+  it('projects and preserves advisory Delivery Evidence when saving another setting', async () => {
+    apiMock.getActiveDefaultBoardConfig.mockResolvedValueOnce({
+      scope: 'global', active: tmpl({ settings_payload: { delivery_evidence_gate: 'advisory' } }),
+    });
+    render(<DefaultBoardConfigPanel boardId="b1" />);
+    expect(await screen.findByTestId('delivery-evidence-gate-mode-advisory')).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(screen.getByRole('switch', { name: 'Require task validation' }));
+    fireEvent.click(screen.getByTestId('dbc-save-template'));
+    await waitFor(() => expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalledTimes(1));
+    expect(apiMock.createDefaultBoardConfigVersion.mock.calls[0][0].settings_payload.delivery_evidence_gate).toBe('advisory');
+  });
+
 });

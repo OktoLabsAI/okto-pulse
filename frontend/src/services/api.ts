@@ -1,5 +1,10 @@
 import { useMemo } from 'react';
-import type { DeliveryEvidenceInput, DeliveryEvidenceProjection } from '@/types/delivery-evidence';
+import type { DeliveryReadiness, DeliveryReadinessBoardSummary, ReadinessQuery, ReadinessResponse, ReadinessDetail } from '@/types/delivery-readiness';
+import type { DecisionReviewInput, DecisionReviewProjection } from '@/types/decision-reviews';
+import type { ArchitectureCandidatesResponse } from '@/types/architecture-candidates';
+import type { ArchitectureClassificationsResponse, ArchitectureReviewState, ArchitectureClassificationBatch, ArchitectureClassificationReceipt } from '@/types/architecture-classifications';
+import type { RequirementVerificationResponse, VerificationRequirementType } from '@/types/requirement-verification';
+import type { CardDeliveryEvidenceInput, CardDeliveryBatchInput, CardDeliveryReportInput, CardDeliveryWriteResult, DeliveryEvidenceInput, DeliveryEvidenceProjection } from '@/types/delivery-evidence';
 /**
  * API Service - all API calls centralized
  */
@@ -17,8 +22,6 @@ import type {
 import type {
   DeliveryIntelligenceFilters,
   DeliveryIntelligenceResponse,
-  DeliveryForecastResponse,
-  SprintAnalyticsResponse,
 } from '@/components/analytics/analyticsDeliveryTypes';
 import type {
   AddSpecDependencyRequest,
@@ -28,6 +31,8 @@ import type {
   SpecDependencyPage,
 } from '@/types/spec-dependencies';
 import type {
+  WorkspaceSubjectRef,
+  WorkspaceRevisions,
   Board,
   BoardSummary,
   BoardShare,
@@ -85,13 +90,11 @@ import type {
   CardStatus,
   CardType,
   ColumnPageResponse,
-  ColumnsOptInResponse,
+  ColumnsBatchResponse,
   LookupPage,
   AllowedTransitionEntityType,
   AllowedTransitionsResponse,
   Spec,
-  Sprint,
-  SprintSummary,
   SpecStructuredEntityMutationRequest,
   SpecStructuredEntityMutationResult,
   SpecStructuredEntityOperation,
@@ -107,7 +110,6 @@ import type {
   SpecValidationSubmitResponse,
   CreateSpecRequest,
   UpdateSpecRequest,
-  UpdateSprintRequest,
   MoveSpecRequest,
   SpecKnowledge,
   SpecKnowledgeSummary,
@@ -174,6 +176,7 @@ import type {
   ClearResourceNotApplicableRequest,
   CardCreateKnowledgeMutationResponse,
   DeriveSpecKnowledgeRequest,
+  DeriveIdeationSpecRequest,
   DeriveSpecKnowledgeResponse,
   KnowledgeAssignmentDropRequest,
   KnowledgeAssignmentRefreshRequest,
@@ -194,8 +197,8 @@ import type {
   ValidationCycleSummary,
   ValidationTechnicalAudit,
   CodeEvidenceRevokeRequest,
-  LegacyEvidenceClassificationBatchRequest,
-  LegacyEvidenceClassificationBatchResult,
+
+
   CodeInvestigationReceiptReadResult,
   CodeTraceabilityProfile,
   CodeTraceabilityProjection,
@@ -256,93 +259,17 @@ export type CodeTraceabilityProjectionOptions =
       contextScope: 'gate';
     };
 
-const legacyEvidenceClassificationConflictKinds = {
-  code_evidence_legacy_classification_payload_conflict: 'payload',
-  code_evidence_legacy_classification_revision_conflict: 'revision',
-  code_evidence_legacy_classification_idempotency_conflict: 'idempotency',
-} as const;
 
-export type LegacyEvidenceClassificationConflictCode =
-  keyof typeof legacyEvidenceClassificationConflictKinds;
 
-export type LegacyEvidenceClassificationConflictKind =
-  (typeof legacyEvidenceClassificationConflictKinds)[LegacyEvidenceClassificationConflictCode];
 
-export class LegacyEvidenceClassificationConflictError extends Error {
-  readonly status = 409;
-  readonly code: LegacyEvidenceClassificationConflictCode;
-  readonly kind: LegacyEvidenceClassificationConflictKind;
-  readonly details: Readonly<Record<string, unknown>>;
-  readonly retryable: boolean;
-  readonly transportError: AuthenticatedFetchError;
 
-  constructor(
-    code: LegacyEvidenceClassificationConflictCode,
-    transportError: AuthenticatedFetchError,
-  ) {
-    super(transportError.message);
-    this.name = 'LegacyEvidenceClassificationConflictError';
-    this.code = code;
-    this.kind = legacyEvidenceClassificationConflictKinds[code];
-    this.details = (
-      typeof transportError.details === 'object'
-      && transportError.details !== null
-    )
-      ? { ...transportError.details as Record<string, unknown> }
-      : {};
-    this.retryable = transportError.retryable;
-    this.transportError = transportError;
-  }
-}
 
-function legacyEvidenceClassificationConflict(
-  error: unknown,
-): LegacyEvidenceClassificationConflictError | null {
-  if (
-    !(error instanceof AuthenticatedFetchError)
-    || error.status !== 409
-    || error.code === null
-    || !(error.code in legacyEvidenceClassificationConflictKinds)
-  ) {
-    return null;
-  }
-  return new LegacyEvidenceClassificationConflictError(
-    error.code as LegacyEvidenceClassificationConflictCode,
-    error,
-  );
-}
 
-function canonicalLegacyEvidenceClassificationBatch(
-  request: LegacyEvidenceClassificationBatchRequest,
-): LegacyEvidenceClassificationBatchRequest {
-  const items = request.items.map((item) => ({
-    evidence_id: item.evidence_id,
-    expected_evidence_payload_sha256: item.expected_evidence_payload_sha256,
-    expected_classification_revision: item.expected_classification_revision,
-    source_role: item.source_role,
-    relevance_summary: item.relevance_summary,
-    scope_relation: item.scope_relation,
-    source_origin: item.source_origin,
-    interpretation_limit: item.interpretation_limit,
-    baseline_provenance: {
-      presence: item.baseline_provenance.presence,
-      workspace_state_id: item.baseline_provenance.workspace_state_id,
-      provenance_note: item.baseline_provenance.provenance_note,
-    },
-  }));
-  items.sort((left, right) => (
-    left.evidence_id < right.evidence_id
-      ? -1
-      : left.evidence_id > right.evidence_id
-        ? 1
-        : 0
-  ));
-  return {
-    items,
-    justification: request.justification,
-    idempotency_key: request.idempotency_key,
-  };
-}
+
+
+
+
+
 
 export type StoryPageItem = Omit<
   StorySummary,
@@ -355,24 +282,8 @@ export type BoardRefinementPageItem = RefinementSummary & {
   ideation_title: string;
 };
 
-export interface SprintPageItem {
-  id: string;
-  spec_id: string;
-  board_id: string;
-  title: string;
-  description: string | null;
-  objective: string | null;
-  expected_outcome: string | null;
-  status: 'draft' | 'active' | 'review' | 'closed' | 'cancelled';
-  created_by: string;
-  created_at: string;
-  updated_at: string;
-  archived: boolean;
-  open_qa_count?: number | null;
-}
-
 function isCardCreateKnowledgeMutationResponse(
-  response: Card | CardCreateKnowledgeMutationResponse,
+  response: unknown,
 ): response is CardCreateKnowledgeMutationResponse {
   return (
     typeof response === 'object'
@@ -470,6 +381,24 @@ export interface ActivityLogEntry {
 }
 
 function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
+  // Selectors need all candidates; the transport always uses the same page envelope.
+  async function collectListPages<T>(path: string, params: URLSearchParams): Promise<T[]> {
+    const items: T[] = [];
+    let offset = 0;
+    while (true) {
+      params.set('offset', String(offset));
+      params.set('limit', '100');
+      const page = await apiClient.fetchJson<PageEnvelope<T>>(`${path}?${params.toString()}`);
+      if (!Array.isArray(page.items) || page.offset !== offset || page.limit !== 100) {
+        throw new Error('Invalid list page response');
+      }
+      items.push(...page.items);
+      offset += page.items.length;
+      if (offset >= page.total_filtered) return items;
+      if (page.items.length === 0) throw new Error('Incomplete list page response');
+    }
+  }
+
   return {
     // ==================== QUALITY ASSESSMENTS ====================
 
@@ -599,12 +528,61 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
 
     // ==================== CODE TRACEABILITY ====================
 
+    async getCardDeliveryLedger(boardId: string, cardId: string, specId: string, edition: number, options: { cursor?: string; recordId?: string } = {}, signal?: AbortSignal): Promise<import('@/types/delivery-evidence').CardLedgerPage> {
+      const query = new URLSearchParams({ card_id: cardId, view: 'ledger', edition: String(edition) });
+      if (options.cursor) query.set('cursor', options.cursor);
+      if (options.recordId) query.set('record_id', options.recordId);
+      return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/delivery-evidence?${query}`, { signal });
+    },
+
+    async getCardDeliveryResume(boardId: string, cardId: string, specId: string, signal?: AbortSignal): Promise<import('@/types/delivery-evidence').CardDeliveryResume> {
+      const query = new URLSearchParams({ card_id: cardId, view: 'resume' });
+      return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/delivery-evidence?${query}`, { signal });
+    },
+
+    async getCardProgressHistory(boardId: string, cardId: string, specId: string, options: { cursor?: string; recordId?: string } = {}, signal?: AbortSignal): Promise<import('@/types/delivery-evidence').DeliveryProgressHistory> {
+      const query = new URLSearchParams({ card_id: cardId });
+      if (options.cursor) query.set('cursor', options.cursor);
+      if (options.recordId) query.set('record_id', options.recordId);
+      return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/delivery-evidence?${query}`, { signal });
+    },
+
     async getDeliveryEvidence(boardId: string, specId: string, signal?: AbortSignal): Promise<DeliveryEvidenceProjection> {
       return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/delivery-evidence`, { signal });
     },
 
+    async getDeliveryReadiness(boardId: string, specId: string, cardId?: string, signal?: AbortSignal): Promise<DeliveryReadiness> {
+      const query = new URLSearchParams({ view: 'readiness' });
+      if (cardId) query.set('card_id', cardId);
+      return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/delivery-evidence?${query}`, { signal });
+    },
+
+    async getDeliveryReadinessSummary(boardId: string, specId: string, signal?: AbortSignal): Promise<DeliveryReadinessBoardSummary> {
+      return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/delivery-readiness-summary`, { signal });
+    },
+
+    async getDeliveryReadinessPage(boardId: string, specId: string, options: ReadinessQuery, signal?: AbortSignal): Promise<ReadinessResponse | ReadinessDetail> {
+      const query = new URLSearchParams({ view: 'readiness' });
+      for (const [key, value] of Object.entries(options)) if (value != null) query.set(key, String(value));
+      return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/delivery-evidence?${query}`, { signal });
+    },
+
+    async getDecisionReviews(boardId: string, specId: string, signal?: AbortSignal): Promise<DecisionReviewProjection> {
+      return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/decision-reviews`, { signal });
+    },
+
+    async recordDecisionReviews(boardId: string, specId: string, body: DecisionReviewInput): Promise<{ id: string; replayed: boolean }> {
+      return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/decision-reviews`, { method: 'POST', body: JSON.stringify(body) });
+    },
+
     async recordDeliveryEvidence(boardId: string, specId: string, body: DeliveryEvidenceInput): Promise<{ id: string; replayed: boolean }> {
+      // Legacy spec-scoped surface: waivers and their revocations (human-only).
       return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/delivery-evidence`, { method: 'POST', body: JSON.stringify(body) });
+    },
+
+    async recordCardDeliveryEvidence(boardId: string, cardId: string, specId: string, body: CardDeliveryEvidenceInput | CardDeliveryBatchInput | CardDeliveryReportInput): Promise<CardDeliveryWriteResult> {
+      // Card-scoped surface (0.3.4, spec 793c43d0): the task owns its bindings.
+      return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/cards/${encodeURIComponent(cardId)}/specs/${encodeURIComponent(specId)}/delivery-evidence`, { method: 'POST', body: JSON.stringify(body) });
     },
 
     async getCodeTraceabilityProjection(
@@ -626,10 +604,39 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
         profile,
         context_scope: contextScope,
       });
-      return apiClient.fetchJson<CodeTraceabilityProjection>(
+      const readProjection = () => apiClient.fetchJson<CodeTraceabilityProjection>(
         `/boards/${encodeURIComponent(boardId)}/code-traceability-projection?${params.toString()}`,
         { signal: options.signal },
       );
+      try {
+        return await readProjection();
+      } catch (error) {
+        // A modal can outlive an MCP edit. Refresh this read once using the
+        // authorized response's current version; mutation fences stay unchanged.
+        if (!(error instanceof AuthenticatedFetchError)
+          || error.status !== 409
+          || error.code !== 'code_investigation_subject_version_conflict'
+          || !error.details || typeof error.details !== 'object') throw error;
+        const details = error.details as Record<string, unknown>;
+        const currentVersion = details.current_subject_version;
+        if (details.subject_type !== subjectType || details.subject_id !== subjectId
+          || details.expected_subject_version !== subjectVersion
+          || typeof currentVersion !== 'number' || !Number.isSafeInteger(currentVersion)
+          || currentVersion < 1 || currentVersion === subjectVersion) throw error;
+        options.signal?.throwIfAborted();
+        params.set('subject_version', String(currentVersion));
+        return readProjection();
+      }
+    },
+
+    async getWorkspaceRevisions(
+      boardId: string,
+      subjects: WorkspaceSubjectRef[],
+      signal?: AbortSignal,
+    ): Promise<WorkspaceRevisions> {
+      return apiClient.fetchJson<WorkspaceRevisions>('/workspace-revisions/query', {
+        method: 'POST', body: JSON.stringify({ board_id: boardId, subjects }), signal,
+      });
     },
 
     async getValidationCycle(
@@ -637,6 +644,7 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       subjectId: string,
       options: {
         includePrevious?: boolean;
+        includePlanning?: boolean;
         offset?: number;
         limit?: number;
         signal?: AbortSignal;
@@ -647,6 +655,7 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
         offset: String(options.offset ?? 0),
         limit: String(options.limit ?? 25),
       });
+      if (options.includePlanning) params.set('include_planning', 'true');
       return apiClient.fetchJson<ValidationCycleSummary>(
         `${qualitySubjectPath(subjectType, subjectId)}/validation-cycle?${params.toString()}`,
         { signal: options.signal },
@@ -689,28 +698,7 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       );
     },
 
-    async classifyLegacyCodeEvidence(
-      boardId: string,
-      request: LegacyEvidenceClassificationBatchRequest,
-      signal?: AbortSignal,
-    ): Promise<LegacyEvidenceClassificationBatchResult> {
-      const body = JSON.stringify(
-        canonicalLegacyEvidenceClassificationBatch(request),
-      );
-      try {
-        // The receipt is returned unchanged. This client deliberately performs
-        // no optimistic projection update or hidden read, so the consuming
-        // layer can perform exactly one canonical refetch after success.
-        return await apiClient.fetchJson<LegacyEvidenceClassificationBatchResult>(
-          `/boards/${encodeURIComponent(boardId)}/code-evidence/legacy-classifications`,
-          { method: 'POST', body, signal },
-        );
-      } catch (error) {
-        const conflict = legacyEvidenceClassificationConflict(error);
-        if (conflict !== null) throw conflict;
-        throw error;
-      }
-    },
+
 
     async revokeCodeEvidence(
       boardId: string,
@@ -766,7 +754,7 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
     },
 
     // ==================== BOARDS ====================
-    
+
     async createBoard(data: CreateBoardRequest): Promise<Board> {
       return apiClient.fetchJson<Board>('/boards', {
         method: 'POST',
@@ -795,15 +783,12 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
 
     async getBoardColumns(
       boardId: string,
-      options: BoardColumnsQuery | boolean = {},
-    ): Promise<ColumnsOptInResponse> {
-      const normalized = typeof options === 'boolean'
-        ? { includeArchived: options }
-        : options;
-      const params = boardColumnsParams(normalized);
-      return apiClient.fetchJson<ColumnsOptInResponse>(
+      options: BoardColumnsQuery = {},
+    ): Promise<ColumnsBatchResponse> {
+      const params = boardColumnsParams(options);
+      return apiClient.fetchJson<ColumnsBatchResponse>(
         `/boards/${boardId}/columns?${params.toString()}`,
-        { signal: normalized.signal },
+        { signal: options.signal },
       );
     },
 
@@ -875,38 +860,21 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       entityId: string,
       options: EffectiveResourcesOptions = {},
     ): Promise<EffectiveResourcesResponse> {
-      // Existing feature surfaces still consume the historical hydrated map.
-      // Request it explicitly during rolling upgrades; the shared Knowledge
-      // Workspace opts into the bounded v2 projections below.
-      const profile = options.profile || 'legacy';
-      const p = new URLSearchParams({ board_id: boardId, profile });
+      const profile = options.profile || 'summary';
+      const resourceType = options.resource_type || 'knowledge_base';
+      const p = new URLSearchParams({ board_id: boardId, profile, resource_type: resourceType });
       if (options.cursor) p.set('cursor', options.cursor);
       if (options.limit !== undefined) p.set('limit', String(options.limit));
-      const response = await apiClient.fetchJson<Partial<EffectiveResourcesResponse>>(
+      const response = await apiClient.fetchJson<EffectiveResourcesResponse>(
         `/resource-gate/${entityType}/${entityId}/effective-resources?${p.toString()}`
       );
-      const hasBoundedItems = Array.isArray(response.items);
-      const hasLegacyResources = Boolean(
-        response.resources
-        && typeof response.resources === 'object',
-      );
-      // An older server ignores the bounded profile parameters and returns the
-      // historical hydrated map without a profile discriminator. Preserve that
-      // truth instead of labelling the eager response as summary/detail.
-      const responseProfile = response.profile
-        || (hasLegacyResources && !hasBoundedItems ? 'legacy' : profile);
-      return {
-        ...response,
-        board_id: response.board_id || boardId,
-        entity_type: response.entity_type || entityType,
-        entity_id: response.entity_id || entityId,
-        profile: responseProfile,
-        resources: response.resources || {
-          architecture: [],
-          mockup: [],
-          knowledge_base: [],
-        },
-      };
+      if (response.contract_version !== 2 || !Array.isArray(response.items)
+        || response.profile !== profile || response.resource_type !== resourceType
+        || response.board_id !== boardId || response.entity_type !== entityType
+        || response.entity_id !== entityId) {
+        throw new Error('Invalid effective resources response contract.');
+      }
+      return response;
     },
 
     async markResourceNotApplicable(
@@ -964,14 +932,15 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
 
     async createCard(boardId: string, data: CreateCardRequest): Promise<Card> {
       const response = await apiClient.fetchJson<
-        Card | CardCreateKnowledgeMutationResponse
+        CardCreateKnowledgeMutationResponse
       >(`/boards/${boardId}/cards`, {
         method: 'POST',
         body: JSON.stringify(data),
       });
-      return isCardCreateKnowledgeMutationResponse(response)
-        ? response.card
-        : response;
+      if (!isCardCreateKnowledgeMutationResponse(response)) {
+        throw new Error('Invalid card creation receipt');
+      }
+      return response.card;
     },
 
     async getCard(cardId: string): Promise<Card> {
@@ -1227,13 +1196,13 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
         const params = new URLSearchParams({ scope, profile: 'summary', limit: '100' });
         if (boardId) params.set('board_id', boardId);
         if (cursor) params.set('cursor', cursor);
-        const response = await apiClient.fetchJson<DesignSystemListPage | DesignSystem[]>(
+        const response = await apiClient.fetchJson<DesignSystemListPage>(
           `/design-systems?${params.toString()}`,
         );
-        // Rolling upgrades may briefly pair the new client with the legacy REST
-        // array. Keep the UI compatible while the canonical server contract is
-        // the bounded summary envelope.
-        if (Array.isArray(response)) return response;
+        if (!response || Array.isArray(response) || !Array.isArray(response.items)
+          || (response.next_cursor !== null && typeof response.next_cursor !== 'string')) {
+          throw new Error('Design System catalog response is incompatible with this release.');
+        }
         items.push(...response.items);
         cursor = response.next_cursor;
         if (cursor) {
@@ -1316,8 +1285,7 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       const p = new URLSearchParams();
       if (status) p.set('status', status);
       if (includeArchived) p.set('include_archived', 'true');
-      const qs = p.toString() ? `?${p.toString()}` : '';
-      return apiClient.fetchJson<SpecSummary[]>(`/boards/${boardId}/specs${qs}`);
+      return collectListPages<SpecSummary>(`/boards/${boardId}/specs`, p);
     },
 
     async listSpecsPage(
@@ -1365,6 +1333,76 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
 
     async getSpec(specId: string): Promise<Spec> {
       return apiClient.fetchJson<Spec>(`/specs/${specId}`);
+    },
+
+    async listSpecEvaluations(specId: string, options: {
+      view?: 'all' | 'current' | 'previous'; offset?: number; limit?: number; signal?: AbortSignal;
+    } = {}): Promise<import('@/types').SpecEvaluationList> {
+      const params = new URLSearchParams({ view: options.view ?? 'current',
+        offset: String(options.offset ?? 0), limit: String(options.limit ?? 25) });
+      return apiClient.fetchJson(`/specs/${encodeURIComponent(specId)}/evaluations?${params}`, { signal: options.signal });
+    },
+
+    async submitSpecEvaluation(specId: string, input: import('@/types').SpecDecompositionInput): Promise<{
+      success: boolean; evaluation: Omit<import('@/types').SpecDecompositionOpinion, 'lifecycle_state'>;
+    }> {
+      return apiClient.fetchJson(`/specs/${encodeURIComponent(specId)}/evaluations`, {
+        method: 'POST', body: JSON.stringify(input), maxRetries: 0,
+      });
+    },
+
+    async classifyArchitectureCandidates(boardId: string, specId: string, batch: ArchitectureClassificationBatch): Promise<ArchitectureClassificationReceipt> {
+      return apiClient.fetchJson<ArchitectureClassificationReceipt>(
+        `/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/architecture-classifications`,
+        { method: 'POST', body: JSON.stringify(batch), maxRetries: 0 },
+      );
+    },
+
+    async getRequirementVerification(
+      boardId: string, specId: string, signal?: AbortSignal,
+      options: { offset?: number; limit?: number; requirementType?: VerificationRequirementType; requirementId?: string; pathsOffset?: number } = {},
+    ): Promise<RequirementVerificationResponse> {
+      const params = new URLSearchParams();
+      if (options.offset !== undefined) params.set('offset', String(options.offset));
+      if (options.limit !== undefined) params.set('limit', String(options.limit));
+      if (options.requirementType !== undefined) params.set('requirement_type', options.requirementType);
+      if (options.requirementId !== undefined) params.set('requirement_id', options.requirementId);
+      if (options.pathsOffset !== undefined) params.set('paths_offset', String(options.pathsOffset));
+      return apiClient.fetchJson<RequirementVerificationResponse>(
+        `/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/requirement-verification${params.size ? `?${params}` : ''}`, { signal },
+      );
+    },
+
+    async getArchitectureClassifications(
+      boardId: string, specId: string, signal?: AbortSignal,
+      options: { offset?: number; limit?: number; candidateId?: string; sourceDigest?: string; state?: ArchitectureReviewState } = {},
+    ): Promise<ArchitectureClassificationsResponse> {
+      const params = new URLSearchParams();
+      if (options.offset !== undefined) params.set('offset', String(options.offset));
+      if (options.limit !== undefined) params.set('limit', String(options.limit));
+      if (options.candidateId) params.set('candidate_id', options.candidateId);
+      if (options.sourceDigest) params.set('source_digest', options.sourceDigest);
+      if (options.state) params.set('state', options.state);
+      return apiClient.fetchJson<ArchitectureClassificationsResponse>(
+        `/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/architecture-classifications${params.size ? `?${params}` : ''}`,
+        { signal },
+      );
+    },
+
+    async getArchitectureCandidates(
+      boardId: string, specId: string, signal?: AbortSignal,
+      options: { offset?: number; limit?: number; candidateId?: string; sourceDigest?: string } = {},
+    ): Promise<ArchitectureCandidatesResponse> {
+      const params = new URLSearchParams();
+      if (options.offset !== undefined) params.set('offset', String(options.offset));
+      if (options.limit !== undefined) params.set('limit', String(options.limit));
+      if (options.candidateId) params.set('candidate_id', options.candidateId);
+      if (options.sourceDigest) params.set('source_digest', options.sourceDigest);
+      const query = params.size ? `?${params.toString()}` : '';
+      return apiClient.fetchJson<ArchitectureCandidatesResponse>(
+        `/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/architecture-candidates${query}`,
+        { signal },
+      );
     },
 
     async getProjectStructure(
@@ -1583,6 +1621,16 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       await apiClient.fetchJson(`/specs/${specId}/scenarios/${scenarioId}/unlink-task/${cardId}`, { method: 'POST' });
     },
 
+    async updateScenarioVerificationMethod(
+      boardId: string, specId: string, scenarioId: string,
+      verificationMethod: 'automated_test' | 'static_analysis' | 'inspection' | 'demonstration' | null,
+      expectedSpecVersion: number,
+    ): Promise<{ scenario_id: string; evidence_invalidated: boolean; updated_fields: string[] }> {
+      return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/scenarios/${encodeURIComponent(scenarioId)}/verification-method`, {
+        method: 'PATCH', body: JSON.stringify({ verification_method: verificationMethod, expected_spec_version: expectedSpecVersion }), maxRetries: 0,
+      });
+    },
+
     async updateTestScenarioStatus(
       specId: string,
       scenarioId: string,
@@ -1595,6 +1643,12 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
           body: JSON.stringify(data),
         },
       );
+    },
+
+    async admitTestVerificationReport(specId: string, scenarioId: string, report: Record<string, unknown>): Promise<{ evidence: import('@/types').TestScenarioEvidence }> {
+      return apiClient.fetchJson(`/specs/${encodeURIComponent(specId)}/scenarios/${encodeURIComponent(scenarioId)}/evidence/reports`, {
+        method: 'POST', body: JSON.stringify({ report }), maxRetries: 0,
+      });
     },
 
     async linkTaskToSpecItem(
@@ -1665,8 +1719,9 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       });
     },
 
-    async deleteArchitectureDesign(designId: string): Promise<void> {
-      await apiClient.fetch(`/architecture/${designId}`, { method: 'DELETE' });
+    async deleteArchitectureDesign(designId: string, expectedVersion?: number): Promise<void> {
+      const query = expectedVersion === undefined ? '' : `?expected_version=${expectedVersion}`;
+      await apiClient.fetch(`/architecture/${designId}${query}`, { method: 'DELETE' });
     },
 
     async getArchitectureDiagramPayload(designId: string, diagramId: string): Promise<ArchitectureDiagramPayloadResponse> {
@@ -1676,7 +1731,7 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
     async updateArchitectureDiagramPayload(
       designId: string,
       diagramId: string,
-      data: { payload: Record<string, unknown> | unknown[] | string; format?: ArchitectureDiagramFormat; change_summary?: string },
+      data: { payload: Record<string, unknown> | unknown[] | string; format?: ArchitectureDiagramFormat; change_summary?: string; expected_version?: number },
     ): Promise<ArchitectureDesign> {
       return apiClient.fetchJson<ArchitectureDesign>(`/architecture/${designId}/diagrams/${diagramId}/payload`, {
         method: 'PUT',
@@ -1694,6 +1749,7 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
         order_index?: number;
         replace_diagram_id?: string | null;
         change_summary?: string;
+        expected_version?: number;
       },
     ): Promise<ArchitectureDesign> {
       return apiClient.fetchJson<ArchitectureDesign>(`/architecture/${designId}/diagrams/import-excalidraw`, {
@@ -1777,8 +1833,7 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       if (filters?.linked !== undefined) p.set('linked', filters.linked ? 'true' : 'false');
       if (filters?.converted !== undefined) p.set('converted', filters.converted ? 'true' : 'false');
       if (filters?.includeArchived) p.set('include_archived', 'true');
-      const qs = p.toString() ? `?${p.toString()}` : '';
-      return apiClient.fetchJson<StorySummary[]>(`/boards/${boardId}/stories${qs}`);
+      return collectListPages<StorySummary>(`/boards/${boardId}/stories`, p);
     },
 
     async listStoriesPage(boardId: string, options: PageWindow & {
@@ -1858,8 +1913,7 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       const p = new URLSearchParams();
       if (status) p.set('status', status);
       if (includeArchived) p.set('include_archived', 'true');
-      const qs = p.toString() ? `?${p.toString()}` : '';
-      return apiClient.fetchJson<IdeationSummary[]>(`/boards/${boardId}/ideations${qs}`);
+      return collectListPages<IdeationSummary>(`/boards/${boardId}/ideations`, p);
     },
 
     async listIdeationsPage(
@@ -1955,9 +2009,11 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       });
     },
 
-    async deriveSpecFromIdeation(ideationId: string): Promise<Spec> {
-      return apiClient.fetchJson<Spec>(`/ideations/${ideationId}/derive-spec`, {
-        method: 'POST',
+    async deriveSpecFromIdeation(
+      ideationId: string, data: DeriveIdeationSpecRequest,
+    ): Promise<DeriveSpecKnowledgeResponse> {
+      return apiClient.fetchJson<DeriveSpecKnowledgeResponse>(`/ideations/${ideationId}/derive-spec`, {
+        method: 'POST', body: JSON.stringify(data),
       });
     },
 
@@ -2039,7 +2095,9 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
     },
 
     async listRefinements(ideationId: string): Promise<RefinementSummary[]> {
-      return apiClient.fetchJson<RefinementSummary[]>(`/ideations/${ideationId}/refinements`);
+      return collectListPages<RefinementSummary>(
+        `/ideations/${ideationId}/refinements`, new URLSearchParams(),
+      );
     },
 
     async listBoardRefinementsPage(boardId: string, options: PageWindow & {
@@ -2111,24 +2169,14 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       await apiClient.fetch(`/refinements/${refinementId}`, { method: 'DELETE' });
     },
 
-    async deriveSpecFromRefinement<
-      TRequest extends DeriveSpecKnowledgeRequest | undefined = undefined,
-    >(
-      refinementId: string,
-      data?: TRequest,
-    ): Promise<
-      TRequest extends DeriveSpecKnowledgeRequest
-        ? DeriveSpecKnowledgeResponse
-        : Spec
-    > {
-      type Response = TRequest extends DeriveSpecKnowledgeRequest
-        ? DeriveSpecKnowledgeResponse
-        : Spec;
+    async deriveSpecFromRefinement(
+      refinementId: string, data?: DeriveSpecKnowledgeRequest,
+    ): Promise<DeriveSpecKnowledgeResponse> {
       const options: RequestInit = { method: 'POST' };
       if (data !== undefined) {
         options.body = JSON.stringify(data);
       }
-      return apiClient.fetchJson<Response>(
+      return apiClient.fetchJson<DeriveSpecKnowledgeResponse>(
         `/refinements/${refinementId}/derive-spec`,
         options,
       );
@@ -2429,27 +2477,15 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       return apiClient.fetchJson<Guideline>(`/guidelines/${id}`);
     },
 
-    async updateGuideline(id: string, data: { title?: string; content?: string; tags?: string[] }): Promise<Guideline> {
-      return apiClient.fetchJson<Guideline>(`/guidelines/${id}`, {
-        method: 'PATCH',
-        body: JSON.stringify(data),
-      });
-    },
 
-    async deleteGuideline(id: string): Promise<void> {
-      await apiClient.fetch(`/guidelines/${id}`, { method: 'DELETE' });
-    },
+
+
 
     async getBoardGuidelines(boardId: string): Promise<BoardGuidelineEntry[]> {
       return apiClient.fetchJson<BoardGuidelineEntry[]>(`/boards/${boardId}/guidelines`);
     },
 
-    async linkGuidelineToBoard(boardId: string, guidelineId: string, priority?: number): Promise<void> {
-      await apiClient.fetchJson(`/boards/${boardId}/guidelines`, {
-        method: 'POST',
-        body: JSON.stringify({ guideline_id: guidelineId, priority }),
-      });
-    },
+
 
     async createInlineGuideline(boardId: string, data: { title: string; content: string; tags?: string[]; priority?: number }): Promise<void> {
       await apiClient.fetchJson(`/boards/${boardId}/guidelines`, {
@@ -2462,12 +2498,7 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       await apiClient.fetch(`/boards/${boardId}/guidelines/${guidelineId}`, { method: 'DELETE' });
     },
 
-    async updateGuidelinePriority(boardId: string, guidelineId: string, priority: number): Promise<void> {
-      await apiClient.fetchJson(`/boards/${boardId}/guidelines/${guidelineId}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ priority }),
-      });
-    },
+
 
     // ==================== ANALYTICS ====================
 
@@ -2633,7 +2664,7 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       return apiClient.fetchJson(`/boards/${boardId}/analytics/entity/${entityType}/${entityId}?${params.toString()}`);
     },
 
-    // --- Validation gate panel (spec + task gates, spec evaluation, sprint evaluation)
+    // --- Validation gate panel (spec + task gates, spec evaluation)
     async getBoardAnalyticsValidations(boardId: string, from?: string, to?: string): Promise<any> {
       const params = new URLSearchParams();
       if (from) params.set('from', from);
@@ -2642,12 +2673,7 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
     },
 
     // --- Sprint analytics panel (summary + per-sprint breakdown)
-    async getBoardAnalyticsSprints(boardId: string, from?: string, to?: string): Promise<SprintAnalyticsResponse> {
-      const params = new URLSearchParams();
-      if (from) params.set('from', from);
-      if (to) params.set('to', to);
-      return apiClient.fetchJson(`/boards/${boardId}/analytics/sprints?${params.toString()}`);
-    },
+
 
     async getBoardDeliveryIntelligence(
       boardId: string,
@@ -2658,8 +2684,6 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       const params = new URLSearchParams();
       if (from) params.set('from', from);
       if (to) params.set('to', to);
-      if (options.sprintId) params.append('sprint_id', options.sprintId);
-      if (options.lane && options.lane !== 'all') params.append('lane', options.lane);
       if (options.role && options.role !== 'all') params.append('role', options.role);
       if (options.contributionView) params.set('contribution_view', options.contributionView);
       if (options.cursor) params.set('cursor', options.cursor);
@@ -2676,8 +2700,6 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       const params = new URLSearchParams();
       if (from) params.set('from', from);
       if (to) params.set('to', to);
-      if (options.sprintId) params.append('sprint_id', options.sprintId);
-      if (options.lane && options.lane !== 'all') params.append('lane', options.lane);
       if (options.role && options.role !== 'all') params.append('role', options.role);
       if (options.contributionView) params.set('contribution_view', options.contributionView);
       if (options.cursor) params.set('cursor', options.cursor);
@@ -2695,28 +2717,51 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       URL.revokeObjectURL(url);
     },
 
-    async getBoardDeliveryForecast(boardId: string, from?: string, to?: string): Promise<DeliveryForecastResponse> {
+    async getSourceLineage(
+      boardId: string, query: import('@/components/traceability/lineageQueryTypes').LineageQuery,
+      signal?: AbortSignal,
+    ): Promise<import('@/components/traceability/lineageQueryTypes').SourceLineageResponse> {
       const params = new URLSearchParams();
-      if (from) params.set('from', from);
-      if (to) params.set('to', to);
-      return apiClient.fetchJson(`/boards/${boardId}/analytics/delivery-forecast?${params.toString()}`);
+      Object.entries(query).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') params.set(key, String(value));
+      });
+      return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/lineage?${params}`, { signal });
     },
 
-    async exportBoardDeliveryForecastCsv(boardId: string, from?: string, to?: string): Promise<void> {
+    async getDecisionImpact(
+      boardId: string, specId: string, decisionId: string,
+      query: import('@/components/specs/decisionImpactTypes').ImpactQuery = {},
+      signal?: AbortSignal,
+    ): Promise<import('@/components/specs/decisionImpactTypes').DecisionImpactResponse> {
       const params = new URLSearchParams();
-      if (from) params.set('from', from);
-      if (to) params.set('to', to);
-      const response = await apiClient.fetch(`/boards/${boardId}/analytics/delivery-forecast/export?${params.toString()}`);
-      if (!response.ok) throw new Error(`Export failed: ${response.status}`);
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `board-${boardId}-delivery-forecast.csv`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      Object.entries(query).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') params.set(key, String(value));
+      });
+      return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/decisions/${encodeURIComponent(decisionId)}/impact?${params}`, { signal });
+    },
+
+    async getSpecCoverage(
+      boardId: string, specId: string,
+      query: import('@/components/specs/specCoverageTypes').CoverageQuery = {},
+      signal?: AbortSignal,
+    ): Promise<import('@/components/specs/specCoverageTypes').SpecCoverageResponse> {
+      const params = new URLSearchParams();
+      Object.entries(query).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') params.set(key, String(value));
+      });
+      return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/coverage?${params}`, { signal });
+    },
+
+    async getBugClusters(
+      boardId: string,
+      query: import('@/components/analytics/bugClustersTypes').BugClustersQuery,
+      signal?: AbortSignal,
+    ): Promise<import('@/components/analytics/bugClustersTypes').BugClustersResponse> {
+      const params = new URLSearchParams();
+      Object.entries(query).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') params.set(key, String(value));
+      });
+      return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/analytics/bug-clusters?${params}`, { signal });
     },
 
     async getBoardKgAnalytics(
@@ -2777,9 +2822,7 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
     },
 
     // --- Per-sprint analytics detail (kanban distribution, task gate, evals)
-    async getBoardAnalyticsSprintDetail(boardId: string, sprintId: string): Promise<any> {
-      return apiClient.fetchJson(`/boards/${boardId}/analytics/sprint/${sprintId}`);
-    },
+
 
     async exportOverviewCsv(from?: string, to?: string): Promise<void> {
       const params = new URLSearchParams();
@@ -2866,93 +2909,6 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       await apiClient.fetch(`/presets/${presetId}`, { method: 'DELETE' });
     },
 
-    // ---- Sprints ----
-    async listSprints(boardId: string, specId: string): Promise<SprintSummary[]> {
-      return apiClient.fetchJson<SprintSummary[]>(`/boards/${boardId}/specs/${specId}/sprints`);
-    },
-
-    async listBoardSprints(boardId: string, status?: string, specId?: string, includeArchived?: boolean): Promise<SprintSummary[]> {
-      const params = new URLSearchParams();
-      if (status) params.set('status', status);
-      if (specId) params.set('spec_id', specId);
-      if (includeArchived) params.set('include_archived', 'true');
-      const qs = params.toString();
-      return apiClient.fetchJson<SprintSummary[]>(`/boards/${boardId}/sprints${qs ? `?${qs}` : ''}`);
-    },
-
-    async listBoardSprintsPage(boardId: string, options: PageWindow & {
-      status?: string;
-      specId?: string;
-      search?: string;
-      includeArchived?: boolean;
-    }): Promise<PageEnvelope<SprintPageItem>> {
-      const params = new URLSearchParams({
-        offset: String(options.offset),
-        limit: String(options.limit),
-      });
-      if (options.status) params.set('status', options.status);
-      if (options.specId) params.set('spec_id', options.specId);
-      if (options.search?.trim()) params.set('search', options.search.trim());
-      if (options.includeArchived) params.set('include_archived', 'true');
-      return apiClient.fetchJson<PageEnvelope<SprintPageItem>>(
-        `/boards/${boardId}/sprints?${params.toString()}`,
-        { signal: options.signal },
-      );
-    },
-
-    async createSprint(boardId: string, specId: string, data: any): Promise<any> {
-      return apiClient.fetchJson(`/boards/${boardId}/specs/${specId}/sprints`, {
-        method: 'POST', body: JSON.stringify(data),
-      });
-    },
-
-    async assignTasksToSprint(sprintId: string, cardIds: string[]): Promise<any> {
-      return apiClient.fetchJson(`/sprints/${sprintId}/assign-tasks`, {
-        method: 'POST', body: JSON.stringify({ card_ids: cardIds }),
-      });
-    },
-
-    async unassignTasksFromSprint(sprintId: string, cardIds: string[]): Promise<any> {
-      return apiClient.fetchJson(`/sprints/${sprintId}/unassign-tasks`, {
-        method: 'POST', body: JSON.stringify({ card_ids: cardIds }),
-      });
-    },
-
-    async getSprint(sprintId: string): Promise<Sprint> {
-      return apiClient.fetchJson<Sprint>(`/sprints/${sprintId}`);
-    },
-
-    async updateSprint(sprintId: string, data: UpdateSprintRequest): Promise<Sprint> {
-      return apiClient.fetchJson<Sprint>(`/sprints/${sprintId}`, {
-        method: 'PATCH', body: JSON.stringify(data),
-      });
-    },
-
-    async moveSprint(sprintId: string, data: { status: string; cancellation_reason?: string; expected_version?: number }): Promise<any> {
-      return apiClient.fetchJson(`/sprints/${sprintId}/move`, {
-        method: 'POST', body: JSON.stringify(data),
-      });
-    },
-
-    async deleteSprint(sprintId: string): Promise<void> {
-      await apiClient.fetch(`/sprints/${sprintId}`, { method: 'DELETE' });
-    },
-
-    async submitSprintEvaluation(sprintId: string, evaluation: any): Promise<any> {
-      return apiClient.fetchJson(`/sprints/${sprintId}/evaluations`, {
-        method: 'POST', body: JSON.stringify(evaluation),
-      });
-    },
-
-    async listSprintHistory(sprintId: string): Promise<any[]> {
-      return apiClient.fetchJson(`/sprints/${sprintId}/history`);
-    },
-
-    async suggestSprints(boardId: string, specId: string, threshold?: number): Promise<any> {
-      const params = threshold ? `?threshold=${threshold}` : '';
-      return apiClient.fetchJson(`/boards/${boardId}/specs/${specId}/sprints/suggest${params}`);
-    },
-
     // ==================== TASK VALIDATION ====================
 
     async submitTaskValidation(
@@ -3019,10 +2975,18 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       return apiClient.fetchJson('/checklist-templates');
     },
 
-    async getChecklistBinding(boardId: string): Promise<ChecklistBinding> {
-      return apiClient.fetchJson(
-        `/boards/${boardId}/checklist-bindings/spec/spec_validation`,
-      );
+    async getChecklistBinding(boardId: string): Promise<ChecklistBinding | null> {
+      try {
+        return await apiClient.fetchJson(
+          `/boards/${boardId}/checklist-bindings/spec/spec_validation`,
+        );
+      } catch (error) {
+        if (error instanceof AuthenticatedFetchError && error.status === 422
+          && (error.details as Record<string, unknown> | null)?.reason_code === 'checklist_board_binding_missing') {
+          return null;
+        }
+        throw error;
+      }
     },
 
     async updateChecklistBinding(

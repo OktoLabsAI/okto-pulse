@@ -55,11 +55,20 @@ def test_openapi_publishes_null_tolerant_cardmove_oneof(client: TestClient) -> N
     # Pydantic serializer and would accept anything.
     assert variants[0]["properties"]["before_id"] == {"type": "null"}
     assert "const" not in str(variants)
+    assert "delivery_selection" in card_move["properties"]
     # The move route's request body references the component (REF-ONLY).
     body = schema["paths"]["/api/v1/cards/{card_id}/move"]["post"]["requestBody"]
     assert body["content"]["application/json"]["schema"]["$ref"].endswith(
         "/CardMove"
     )
+
+
+def test_move_rejects_client_forged_selection_manifest(client: TestClient) -> None:
+    response = client.post("/api/v1/cards/card/move", json={"status": "validation", "delivery_selection": {
+        "expected_card_version": 1, "expected_spec_edition": 1, "expected_delivery_revision": 0,
+        "record_ids": [], "sha256": "a" * 64,
+    }})
+    assert response.status_code == 422
 
 
 @pytest.mark.parametrize(
@@ -104,3 +113,14 @@ def test_integral_floats_pass_the_parse_boundary(
         json={"status": "started", "position": position},
     )
     assert response.status_code != 422, response.text
+
+
+@pytest.mark.parametrize("value", [None, "done", "in_progress"])
+def test_card_patch_rejects_status_before_any_effect(client: TestClient, value) -> None:
+    schema = client.get("/openapi.json").json()["components"]["schemas"]
+    assert "status" not in schema["CardUpdate"]["properties"]
+    assert "status" in schema["CardMove"]["required"]
+    response = client.patch("/api/v1/cards/card", json={"status": value})
+    assert response.status_code == 422, response.text
+    assert any(error["type"] == "extra_forbidden" and error["loc"][-1] == "status"
+               for error in response.json()["detail"])

@@ -7,7 +7,6 @@ import type { MetricsSummary } from '@/services/metrics-api';
 const metricsApi = vi.hoisted(() => ({
   exportLocalMetrics: vi.fn(),
   getMetricsSummary: vi.fn(),
-  markMetricsMigrationNoticeSeen: vi.fn(),
   purgeLocalMetrics: vi.fn(),
   updateMetricsMode: vi.fn(),
 }));
@@ -60,8 +59,6 @@ function summary(overrides: MetricsSummaryOverrides = {}): MetricsSummary {
     mode: 'disabled',
     ui_mode: 'off',
     enabled: false,
-    normalized_from: null,
-    migration_notice: null,
     source: 'persisted_consent',
     metrics_dir: 'D:\\metrics',
     retention_days: 30,
@@ -97,7 +94,6 @@ describe('MetricsSettingsPanel', () => {
   beforeEach(() => {
     metricsApi.exportLocalMetrics.mockReset();
     metricsApi.getMetricsSummary.mockReset();
-    metricsApi.markMetricsMigrationNoticeSeen.mockReset();
     metricsApi.purgeLocalMetrics.mockReset();
     metricsApi.updateMetricsMode.mockReset();
     toastMock.mockReset();
@@ -105,18 +101,10 @@ describe('MetricsSettingsPanel', () => {
     toastMock.success.mockReset();
     permissionMock.has.mockReset();
     permissionMock.has.mockReturnValue(true);
-    metricsApi.markMetricsMigrationNoticeSeen.mockResolvedValue({
-      notice_key: 'local_only_to_disabled',
-      pending: false,
-      seen_at: '2026-05-28T12:00:00Z',
-      idempotent: false,
-    });
     metricsApi.updateMetricsMode.mockResolvedValue({
       mode: 'disabled',
       ui_mode: 'off',
       enabled: false,
-      normalized_from: null,
-      migration_notice: null,
       changed_at: '2026-05-14T00:00:00Z',
       schema_version: '1.1.0',
       acknowledged_items: [],
@@ -206,29 +194,12 @@ describe('MetricsSettingsPanel', () => {
     expect(screen.queryByText('Purge')).not.toBeInTheDocument();
   });
 
-  it('shows the migration toast once and marks it as seen', async () => {
-    metricsApi.getMetricsSummary.mockResolvedValue(
-      summary({
-        normalized_from: 'local_only',
-        migration_notice: {
-          type: 'local_only_to_disabled',
-          reason: 'legacy_local_only_disabled',
-          from_mode: 'local_only',
-          to_mode: 'disabled',
-          pending: true,
-          seen_at: null,
-          message: 'Previous Local metrics mode was migrated to Off.',
-        },
-      }),
-    );
-
+  it('reads current settings without showing a migration notice or writing consent', async () => {
+    metricsApi.getMetricsSummary.mockResolvedValue(summary());
     render(<MetricsSettingsPanel boardId="board-1" onClose={() => {}} />);
-
     await screen.findByTestId('metrics-on-off-toggle');
-
-    await waitFor(() => expect(toastMock).toHaveBeenCalledWith('Metrics were turned off'));
-    expect(metricsApi.markMetricsMigrationNoticeSeen).toHaveBeenCalledTimes(1);
-    expect(metricsApi.markMetricsMigrationNoticeSeen).toHaveBeenCalledWith('local_only_to_disabled');
+    expect(toastMock).not.toHaveBeenCalled();
+    expect(metricsApi.updateMetricsMode).not.toHaveBeenCalled();
   });
 
   it('does not load metrics when the canonical read permission is denied', async () => {

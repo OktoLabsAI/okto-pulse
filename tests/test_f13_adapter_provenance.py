@@ -56,6 +56,7 @@ blocked = (
     "okto_pulse.core.repositories.sqlalchemy.resource_gate_service",
     "okto_pulse.core.repositories.sqlalchemy.runtime_settings_service",
     "okto_pulse.core.repositories.sqlalchemy.traceability_read_model",
+    "okto_pulse.core.services.delivery_evidence",
 )
 original_import = builtins.__import__
 
@@ -69,12 +70,15 @@ builtins.__import__ = guarded_import
 from okto_pulse.community.adapters.sqlalchemy_resource_gate_service import CommunitySqlAlchemyResourceGateAdapter
 from okto_pulse.community.adapters.sqlalchemy_runtime_settings_service import AppSetting
 from okto_pulse.community.adapters.sqlalchemy_traceability_read_model import build_traceability_report
+from okto_pulse.community.adapters.sqlalchemy_delivery_evidence import CommunityDeliveryEvidenceStore
+from okto_pulse.core.ports.delivery_inventory import default_delivery_inventory_policy
 import okto_pulse.core.ports.permission_policy as core_permission_policy
 import okto_pulse.community.adapters.sqlalchemy_resource_gate_service as community_resource_gate
 
 assert CommunitySqlAlchemyResourceGateAdapter.__module__.startswith("okto_pulse.community.")
 assert AppSetting.__module__.startswith("okto_pulse.community.")
 assert build_traceability_report.__module__.startswith("okto_pulse.community.")
+assert CommunityDeliveryEvidenceStore(None).inventory.payload_digest({"a": 1}) == default_delivery_inventory_policy().payload_digest({"a": 1})
 core_origin = Path(core_permission_policy.__file__).resolve()
 community_origin = Path(community_resource_gate.__file__).resolve()
 assert core_origin.is_relative_to(Path(os.environ["C1_EXPECTED_CORE_SRC"]).resolve()), core_origin

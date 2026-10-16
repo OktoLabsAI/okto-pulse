@@ -5,7 +5,7 @@ import type {
   SourceContextRoleCountsV2,
   SourceContextSummaryV2,
 } from '@/types';
-import { ShieldCheck } from 'lucide-react';
+
 import {
   codeEvidenceSourceRoleLabel,
   contextualInvestigationOutcomeLabel,
@@ -19,10 +19,10 @@ interface Props {
   visibleContextItemCount: number;
   currentReceipts: readonly Pick<
     CodeInvestigationReceipt,
-    'id' | 'outcome' | 'source_ref' | 'omission_manifest'
+    'id' | 'contextual_outcome' | 'source_ref' | 'omission_manifest'
   >[];
-  unclassifiedActionCount?: number;
-  onReviewUnclassifiedEvidence?: (opener: HTMLButtonElement) => void;
+
+
 }
 
 interface OmissionPresentation {
@@ -101,11 +101,7 @@ const ROLE_COUNTS: readonly RoleCountDefinition[] = [
     countKey: 'reference_pattern_count',
     badgeClassName: 'bg-violet-50 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300',
   },
-  {
-    role: 'uncategorized_legacy',
-    countKey: 'uncategorized_legacy_count',
-    badgeClassName: 'bg-orange-50 text-orange-700 dark:bg-orange-950/40 dark:text-orange-300',
-  },
+
 ] as const;
 
 function provenanceLabel(sourceContext: SourceContextSummaryV2): string | null {
@@ -134,8 +130,8 @@ function SourceContextUnavailable() {
         Source context unavailable
       </h3>
       <p className="mt-1 text-xs leading-5 text-amber-800 dark:text-amber-300">
-        This projection predates the contextual contract. Technical evidence remains available
-        below for audit, but its role and applicability cannot be inferred safely.
+        This projection does not include source context. The available evidence does not
+        establish role or applicability. Reload the projection before using it for coverage.
       </p>
     </section>
   );
@@ -146,8 +142,8 @@ export function SourceContextOverview({
   contextualEvidenceCoverage,
   visibleContextItemCount,
   currentReceipts,
-  unclassifiedActionCount = 0,
-  onReviewUnclassifiedEvidence,
+
+
 }: Props) {
   if (!sourceContext) return <SourceContextUnavailable />;
 
@@ -352,34 +348,7 @@ export function SourceContextOverview({
         </p>
       )}
 
-      {sourceContext.classification_state.uncategorized_legacy_count > 0 && (
-        <div
-          className="rounded-md border border-orange-200 bg-orange-50/70 px-3 py-3 text-orange-800 dark:border-orange-900 dark:bg-orange-950/20 dark:text-orange-300 sm:flex sm:items-center sm:justify-between sm:gap-5"
-          role="note"
-        >
-          <div>
-            <p className="text-xs font-semibold leading-5">
-              {sourceContext.classification_state.uncategorized_legacy_count} legacy item
-              {sourceContext.classification_state.uncategorized_legacy_count === 1
-                ? ' needs classification'
-                : 's need classification'}
-            </p>
-            <p className="mt-0.5 text-xs leading-5">
-              Their original Evidence is preserved. Choose what each observation means before
-              using it for delivery decisions.
-            </p>
-          </div>
-          {unclassifiedActionCount > 0 && onReviewUnclassifiedEvidence && (
-            <button
-              type="button"
-              onClick={(event) => onReviewUnclassifiedEvidence(event.currentTarget)}
-              className="btn btn-primary mt-3 inline-flex w-full shrink-0 items-center justify-center gap-1.5 text-xs sm:mt-0 sm:w-auto"
-            >
-              <ShieldCheck size={12} aria-hidden="true" /> Review unclassified Evidence
-            </button>
-          )}
-        </div>
-      )}
+
 
       {!sourceContext.technical_details_available && (
         <p className="text-xs text-gray-500 dark:text-gray-400">

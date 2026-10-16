@@ -6,7 +6,8 @@ Cenários do test card 97764bbf:
 * S9 (ts_0393503b) — stress fail-closed: N threads fazendo open/read/write
   via BoardConnection em loop concorrente com close_board_db_cache,
   try_close_board_db e eviction LRU (KG_DB_CACHE_CAP=1); instrumentação da
-  fábrica + de ``ladybug.Database.close`` prova que NENHUM ``db.close()``
+  fábrica + de ``Database.close`` do runtime de grafo legado prova que
+  NENHUM ``db.close()``
   acontece com leitores registrados (>0) no modo runtime; leitor longo força
   o caminho deferido; reader_enter durante closing é fail-closed
   (``BoardCloseInProgressError`` OU espera-e-sucesso — nunca entrada
@@ -19,8 +20,7 @@ Cenários do test card 97764bbf:
   (``kg_shutdown.close_all_graphs_on_shutdown``).
 
 * S10 (ts_733b4ac4) — serve-lock na CLI: com lock de heartbeat fresco e PID
-  vivo (o do próprio teste), os entrypoints ``init``, ``verify-pipeline``,
-  ``kg backfill --apply`` e ``kg dedup-entities`` falham rápido (<5s, exit 2)
+  vivo (o do próprio teste), o entrypoint ``init`` falha rápido (<5s, exit 2)
   com mensagem de serve-lock e NENHUM open de Database (fábrica
   instrumentada); heartbeat stale + PID morto → prossegue (takeover
   permitido); heartbeat stale + PID vivo → recusa. Inclui o guard do

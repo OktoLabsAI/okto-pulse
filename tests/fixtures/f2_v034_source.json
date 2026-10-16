@@ -1,0 +1,35 @@
+{
+  "format": "f2-v034-source/v1",
+  "source_builds": {
+    "core": {
+      "commit": "207072509a282e8adec1481d05aee2d54c382bde",
+      "aggregate_sha256": "20e722193fa588d980ff5aeac50d3134fe859148079017aaf27780416b959202",
+      "python_files": 769,
+      "byte_identical_member_count": 834,
+      "wheel_sha256": "0e88432f27a721c254046342e7d44db228828347e433acf41c2ae2fb428b56d9"
+    },
+    "community": {
+      "commit": "b6dda64f512920fa4aaaf9d50c331b1796b87e27",
+      "aggregate_sha256": "8523fa985c6a6e17ea65c5ecb17ac36b99a139950a37e9f53d3c51908eceed2c",
+      "python_files": 311,
+      "byte_identical_member_count": 395,
+      "wheel_sha256": "6925e90a36054ae954d516f3fc4f5ed1513812bfdb915d145eb9a9bd5afa1d27"
+    }
+  },
+  "database_sha256": "31423b7b553fd4d50310074c6f5168adf9900e2435555d636769604b71bdac3d",
+  "database_size": 4280320,
+  "zip_sha256": "ece38af238a07dac2b7af1fac3b35b3c5857a400b71e714a0435809e4424da9a",
+  "capture": "Byte-verified installed local v0.3.4 pair; real registered init_db, then two closed Sprints with confidence 90/60 and two done Cards in one Spec; no agents, credentials, graph stores, workers or real user data.",
+  "seed": {
+    "board_id": "board-a",
+    "spec_id": "spec-a",
+    "sprint_ids": [
+      "sprint-a",
+      "sprint-b"
+    ],
+    "card_ids": [
+      "card-a",
+      "card-b"
+    ]
+  }
+}

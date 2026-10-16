@@ -3,23 +3,18 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Sequence
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import delete, func, select, update
-from sqlalchemy.orm.attributes import flag_modified
 
 from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
     lock_policy_board,
 )
 from okto_pulse.community.adapters.sqlalchemy_models import (
     ActivityLog,
-    Board,
     BoardErasureJob,
     BoardErasurePermit,
-    Card,
-    CodeEvidenceClassificationEventRow,
-    CodeEvidenceClassificationHeadRow,
     CodeEvidenceDispositionRow,
     CodeEvidenceRow,
     CodeEvidenceSpecLinkRow,
@@ -46,7 +41,6 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     GuidelineRetirementImpactRow,
     GuidelineRetirementRow,
     GuidelineRevisionRow,
-    Ideation,
     ImplementationTargetEvidenceLinkRow,
     ImplementationTargetExecutionRecordRow,
     ImplementationTargetResolutionRow,
@@ -63,44 +57,21 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     KnowledgeSnapshotRecord,
     KnowledgeTombstoneRecord,
     KuzuNodeRef,
-    PolicyComplianceAdoptedRevisionRow,
-    PolicyComplianceFindingRow,
-    PolicyComplianceReceiptRow,
-    PolicyWaiverEventRow,
-    PolicyWaiverRow,
-    Refinement,
-    SemanticGuidelineAssessmentReceiptRow,
     SemanticGuidelineAssessmentV2Row,
     SemanticGuidelineMetricResultV2Row,
     SemanticGuidelineFindingV2Row,
     SemanticGuidelineBindingConfigurationRow,
-    SemanticGuidelineFindingRow,
-    SemanticGuidelineLegacyMigrationRow,
-    SemanticGuidelineMetricResultRow,
     SemanticGuidelineRevisionRow,
     SemanticGuidelineSkipRow,
     SemanticGuidelineWaiverEventRow,
     SemanticGuidelineWaiverRow,
     SemanticSubjectVersionEventRow,
     SemanticSubjectVersionRow,
-    Spec,
     SpecDependency,
     SpecDependencyOperation,
-    Sprint,
-    Story,
     TargetOverlapAcknowledgementRow,
 )
-from okto_pulse.core.domain.enums import SpecStatus, SprintStatus
-from okto_pulse.core.ports.kg_events import HISTORICAL_PROGRESS_SETTINGS_KEY
-from okto_pulse.core.ports.kg_governance import (
-    BoardErasureJobFact,
-    BoostAuditRecord,
-    GovernanceUndoFact,
-    HistoricalArtifactFact,
-    HistoricalBoardRecord,
-    HistoricalQueueFact,
-    HistoricalQueueInsert,
-)
+from okto_pulse.core.ports.kg_governance import BoardErasureJobFact
 
 
 class BoardRelationalErasureError(RuntimeError):
@@ -184,243 +155,17 @@ async def _count_where(context: Any, model: Any, predicate: Any) -> int:
 
 
 class CommunitySqlAlchemyKGGovernanceStore:
-    async def get_board(
-        self, context: Any, *, board_id: str
-    ) -> HistoricalBoardRecord | None:
-        # Never materialize the Board ORM graph for a two-column governance
-        # lookup.  Its eager relationships can load thousands of unrelated
-        # rows and keep a SQLite snapshot open across the following write.
-        row = (
-            (
-                await context.execute(
-                    select(
-                        Board.id.label("id"), Board.settings.label("settings")
-                    ).where(Board.id == board_id)
-                )
-            )
-            .mappings()
-            .one_or_none()
-        )
-        return (
-            HistoricalBoardRecord(
-                id=str(row["id"]), settings=dict(row["settings"] or {})
-            )
-            if row is not None
-            else None
-        )
 
-    async def save_board(self, context: Any, board: HistoricalBoardRecord) -> None:
-        # A set-based update avoids reloading that same eager ORM graph while
-        # preserving the established caller-owned transaction/commit boundary.
-        await context.execute(
-            update(Board)
-            .where(Board.id == board.id)
-            .values(settings=dict(board.settings))
-        )
 
-    async def queue_counts(self, context: Any, *, board_id: str) -> dict[str, int]:
-        rows = (
-            await context.execute(
-                select(ConsolidationQueue.status, func.count())
-                .where(
-                    ConsolidationQueue.board_id == board_id,
-                    ConsolidationQueue.source == "historical_backfill",
-                )
-                .group_by(ConsolidationQueue.status)
-            )
-        ).all()
-        return {str(status): int(count) for status, count in rows}
 
-    async def list_historical_artifacts(
-        self, context: Any, *, board_id: str
-    ) -> tuple[HistoricalArtifactFact, ...]:
-        queries = (
-            (
-                "story",
-                select(Story.id).where(
-                    Story.board_id == board_id, Story.archived.is_(False)
-                ),
-            ),
-            (
-                "ideation",
-                select(Ideation.id).where(
-                    Ideation.board_id == board_id, Ideation.archived.is_(False)
-                ),
-            ),
-            (
-                "refinement",
-                select(Refinement.id).where(
-                    Refinement.board_id == board_id, Refinement.archived.is_(False)
-                ),
-            ),
-            (
-                "spec",
-                select(Spec.id).where(
-                    Spec.board_id == board_id,
-                    Spec.status.in_(
-                        (SpecStatus.DONE, SpecStatus.APPROVED, SpecStatus.VALIDATED)
-                    ),
-                    Spec.archived.is_(False),
-                ),
-            ),
-            (
-                "sprint",
-                select(Sprint.id).where(
-                    Sprint.board_id == board_id,
-                    Sprint.status == SprintStatus.CLOSED,
-                    Sprint.archived.is_(False),
-                ),
-            ),
-            ("card", select(Card.id).where(Card.board_id == board_id)),
-        )
-        output: list[HistoricalArtifactFact] = []
-        for artifact_type, statement in queries:
-            ids = (await context.execute(statement)).scalars().all()
-            output.extend(
-                HistoricalArtifactFact(artifact_type, str(artifact_id))
-                for artifact_id in ids
-            )
-        return tuple(output)
 
-    async def list_live_queue(
-        self, context: Any, *, board_id: str
-    ) -> tuple[HistoricalQueueFact, ...]:
-        rows = (
-            (
-                await context.execute(
-                    select(ConsolidationQueue).where(
-                        ConsolidationQueue.board_id == board_id,
-                        ConsolidationQueue.status.in_(("pending", "claimed", "paused")),
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        return tuple(
-            HistoricalQueueFact(
-                str(row.id),
-                str(row.artifact_type),
-                str(row.artifact_id),
-                str(row.source),
-                str(row.status),
-            )
-            for row in rows
-        )
 
-    async def delete_terminal_queue(self, context: Any, *, board_id: str) -> None:
-        await context.execute(
-            delete(ConsolidationQueue).where(
-                ConsolidationQueue.board_id == board_id,
-                ConsolidationQueue.status.in_(("done", "failed")),
-            )
-        )
 
-    async def add_queue_entries(
-        self, context: Any, entries: Sequence[HistoricalQueueInsert]
-    ) -> None:
-        context.add_all(
-            [
-                ConsolidationQueue(
-                    id=entry.id,
-                    board_id=entry.board_id,
-                    artifact_type=entry.artifact_type,
-                    artifact_id=entry.artifact_id,
-                    priority=entry.priority,
-                    source=entry.source,
-                    status=entry.status,
-                )
-                for entry in entries
-            ]
-        )
 
-    async def update_historical_status(
-        self, context: Any, *, board_id: str, old_status: str, new_status: str
-    ) -> None:
-        await context.execute(
-            update(ConsolidationQueue)
-            .where(
-                ConsolidationQueue.board_id == board_id,
-                ConsolidationQueue.source == "historical_backfill",
-                ConsolidationQueue.status == old_status,
-            )
-            .values(status=new_status)
-        )
 
-    async def delete_historical_pending(self, context: Any, *, board_id: str) -> int:
-        """Remove the full live historical run, including an in-flight claim.
 
-        A worker that already holds the deleted claim is fenced by its claim
-        token on ACK and compensates any unacknowledged graph mutation.  This
-        makes cancellation terminal instead of leaving a legacy ``claimed``
-        row that blocks a later restart.
-        """
-        result = await context.execute(
-            delete(ConsolidationQueue).where(
-                ConsolidationQueue.board_id == board_id,
-                ConsolidationQueue.source == "historical_backfill",
-                ConsolidationQueue.status.in_(("pending", "claimed", "paused")),
-            )
-        )
-        return int(result.rowcount or 0)
 
-    async def purge_stale_metadata(self, context: Any, *, board_id: str) -> None:
-        for model in (KuzuNodeRef, ConsolidationAudit, GlobalUpdateOutbox):
-            await context.execute(delete(model).where(model.board_id == board_id))
 
-    async def get_undo_fact(
-        self, context: Any, *, board_id: str, session_id: str
-    ) -> GovernanceUndoFact | None:
-        audit = (
-            (
-                await context.execute(
-                    select(ConsolidationAudit).where(
-                        ConsolidationAudit.session_id == session_id,
-                        ConsolidationAudit.board_id == board_id,
-                    )
-                )
-            )
-            .scalars()
-            .first()
-        )
-        if audit is None:
-            return None
-        refs = (
-            (
-                await context.execute(
-                    select(KuzuNodeRef).where(KuzuNodeRef.session_id == session_id)
-                )
-            )
-            .scalars()
-            .all()
-        )
-        node_ids = tuple(str(row.kuzu_node_id) for row in refs)
-        blockers: tuple[str, ...] = ()
-        if node_ids:
-            rows = (
-                (
-                    await context.execute(
-                        select(KuzuNodeRef.session_id).where(
-                            KuzuNodeRef.kuzu_node_id.in_(node_ids),
-                            KuzuNodeRef.session_id != session_id,
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            blockers = tuple(sorted({str(value) for value in rows}))
-        return GovernanceUndoFact(
-            session_id, str(audit.undo_status), node_ids, blockers
-        )
-
-    async def mark_session_undone(
-        self, context: Any, *, session_id: str, undone_at
-    ) -> None:
-        row = await context.get(ConsolidationAudit, session_id)
-        if row is not None:
-            row.undo_status = "undone"
-            row.undone_at = undone_at
 
     async def purge_expired_audit(self, context: Any, *, board_id: str, cutoff) -> int:
         result = await context.execute(
@@ -585,18 +330,6 @@ class CommunitySqlAlchemyKGGovernanceStore:
                     CodeEvidenceSpecLinkRow.board_id == board_id
                 )
             )
-            await context.execute(
-                delete(CodeEvidenceClassificationHeadRow).where(
-                    CodeEvidenceClassificationHeadRow.board_id == board_id
-                )
-            )
-            await _delete_restrict_history(
-                context,
-                model=CodeEvidenceClassificationEventRow,
-                identity=CodeEvidenceClassificationEventRow.id,
-                reference=CodeEvidenceClassificationEventRow.predecessor_classification_id,
-                predicate=CodeEvidenceClassificationEventRow.board_id == board_id,
-            )
             await _delete_restrict_history(
                 context,
                 model=CodeEvidenceRow,
@@ -634,22 +367,18 @@ class CommunitySqlAlchemyKGGovernanceStore:
 
             # SK-B3 semantic governance is independently append-only and must
             # participate in the same permit-scoped physical erasure. Delete
-            # lifecycle heads before exact receipt/binding authorities; their
-            # deferred/cascading lineage removes the corresponding events.
-            for model in (
-                SemanticGuidelineFindingV2Row,
-                SemanticGuidelineMetricResultV2Row,
-                SemanticGuidelineAssessmentV2Row,
-            ):
-                await context.execute(delete(model).where(model.board_id == board_id))
+            # events from newest to oldest before heads and evidence. The head
+            # pointer is deferred; predecessor RESTRICT checks are immediate.
+            await _delete_restrict_history(
+                context,
+                model=SemanticGuidelineWaiverEventRow,
+                identity=SemanticGuidelineWaiverEventRow.event_id,
+                reference=SemanticGuidelineWaiverEventRow.predecessor_event_id,
+                predicate=SemanticGuidelineWaiverEventRow.board_id == board_id,
+            )
             await context.execute(
                 delete(SemanticGuidelineWaiverRow).where(
                     SemanticGuidelineWaiverRow.board_id == board_id
-                )
-            )
-            await context.execute(
-                delete(SemanticGuidelineWaiverEventRow).where(
-                    SemanticGuidelineWaiverEventRow.board_id == board_id
                 )
             )
             await context.execute(
@@ -657,21 +386,12 @@ class CommunitySqlAlchemyKGGovernanceStore:
                     SemanticGuidelineSkipRow.board_id == board_id
                 )
             )
-            await context.execute(
-                delete(SemanticGuidelineFindingRow).where(
-                    SemanticGuidelineFindingRow.board_id == board_id
-                )
-            )
-            await context.execute(
-                delete(SemanticGuidelineMetricResultRow).where(
-                    SemanticGuidelineMetricResultRow.board_id == board_id
-                )
-            )
-            await context.execute(
-                delete(SemanticGuidelineAssessmentReceiptRow).where(
-                    SemanticGuidelineAssessmentReceiptRow.board_id == board_id
-                )
-            )
+            for model in (
+                SemanticGuidelineFindingV2Row,
+                SemanticGuidelineMetricResultV2Row,
+                SemanticGuidelineAssessmentV2Row,
+            ):
+                await context.execute(delete(model).where(model.board_id == board_id))
             await context.execute(
                 delete(SemanticSubjectVersionRow).where(
                     SemanticSubjectVersionRow.board_id == board_id
@@ -685,73 +405,11 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 predicate=SemanticSubjectVersionEventRow.board_id == board_id,
             )
             await context.execute(
-                delete(SemanticGuidelineLegacyMigrationRow).where(
-                    SemanticGuidelineLegacyMigrationRow.board_id == board_id
-                )
-            )
-            await context.execute(
                 delete(SemanticGuidelineBindingConfigurationRow).where(
                     SemanticGuidelineBindingConfigurationRow.board_id == board_id
                 )
             )
 
-            # SK-B policy history is append-only during ordinary lifecycle
-            # operations.  Right-to-erasure is the sole physical-delete path:
-            # remove receipt children before their exact binding/revision pins,
-            # then remove bindings and inline revision clusters while the
-            # scoped permit is still visible to the immutable guards.
-            receipt_ids = tuple(
-                str(value)
-                for value in (
-                    await context.execute(
-                        select(PolicyComplianceReceiptRow.receipt_id).where(
-                            PolicyComplianceReceiptRow.board_id == board_id
-                        )
-                    )
-                ).scalars()
-            )
-            waiver_event_ids = tuple(
-                str(value)
-                for value in (
-                    await context.execute(
-                        select(PolicyWaiverEventRow.event_id)
-                        .where(PolicyWaiverEventRow.board_id == board_id)
-                        .order_by(
-                            PolicyWaiverEventRow.waiver_id.asc(),
-                            PolicyWaiverEventRow.waiver_revision.desc(),
-                        )
-                    )
-                ).scalars()
-            )
-            for event_id in waiver_event_ids:
-                result = await context.execute(
-                    delete(PolicyWaiverEventRow).where(
-                        PolicyWaiverEventRow.event_id == event_id
-                    )
-                )
-                if int(result.rowcount or 0) != 1:
-                    raise BoardRelationalErasureError(
-                        "board_erasure_waiver_event_delete_mismatch:" + event_id
-                    )
-            await context.execute(
-                delete(PolicyWaiverRow).where(PolicyWaiverRow.board_id == board_id)
-            )
-            await context.execute(
-                delete(PolicyComplianceFindingRow).where(
-                    PolicyComplianceFindingRow.board_id == board_id
-                )
-            )
-            if receipt_ids:
-                await context.execute(
-                    delete(PolicyComplianceAdoptedRevisionRow).where(
-                        PolicyComplianceAdoptedRevisionRow.receipt_id.in_(receipt_ids)
-                    )
-                )
-            await context.execute(
-                delete(PolicyComplianceReceiptRow).where(
-                    PolicyComplianceReceiptRow.board_id == board_id
-                )
-            )
             # B08 has deferred binding -> operation proofs and reciprocal
             # operation -> binding lineage. Remove both ledgers inside this
             # permit-scoped transaction before bindings, then receipt evidence.
@@ -900,11 +558,7 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 # after their reference rows disappear. Purge under permit,
                 # before Board DELETE cascades run without that permit.
                 DomainEventRow,
-                SemanticGuidelineAssessmentReceiptRow,
                 SemanticGuidelineBindingConfigurationRow,
-                SemanticGuidelineFindingRow,
-                SemanticGuidelineLegacyMigrationRow,
-                SemanticGuidelineMetricResultRow,
                 SemanticGuidelineSkipRow,
                 SemanticGuidelineWaiverEventRow,
                 SemanticGuidelineWaiverRow,
@@ -929,12 +583,6 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 )
             )
 
-            board = await context.get(Board, board_id)
-            if board is not None and isinstance(board.settings, dict):
-                settings = dict(board.settings)
-                settings.pop(HISTORICAL_PROGRESS_SETTINGS_KEY, None)
-                board.settings = settings
-                flag_modified(board, "settings")
 
             # Verify every explicitly purged direct board identity before the
             # caller is allowed to commit.
@@ -954,11 +602,10 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 DesignSystemGateAudit,
                 ActivityLog,
                 DomainEventRow,
-                SemanticGuidelineAssessmentReceiptRow,
+                SemanticGuidelineAssessmentV2Row,
+                SemanticGuidelineMetricResultV2Row,
+                SemanticGuidelineFindingV2Row,
                 SemanticGuidelineBindingConfigurationRow,
-                SemanticGuidelineFindingRow,
-                SemanticGuidelineLegacyMigrationRow,
-                SemanticGuidelineMetricResultRow,
                 SemanticGuidelineSkipRow,
                 SemanticGuidelineWaiverEventRow,
                 SemanticGuidelineWaiverRow,
@@ -969,9 +616,7 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 CodeInvestigationReceiptRevocationRow,
                 CodeInvestigationHeadRow,
                 CodeEvidenceRow,
-                CodeEvidenceClassificationHeadRow,
-                CodeEvidenceClassificationEventRow,
-                SemanticGuidelineAssessmentV2Row,
+                                        SemanticGuidelineAssessmentV2Row,
                 SemanticGuidelineMetricResultV2Row,
                 SemanticGuidelineFindingV2Row,
                 CodeEvidenceSpecLinkRow,
@@ -1022,26 +667,6 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 GuidelineImpactReceiptRow,
                 GuidelineImpactReceiptRow.board_id == board_id,
             )
-            residuals[PolicyComplianceReceiptRow.__tablename__] = await _count_where(
-                context,
-                PolicyComplianceReceiptRow,
-                PolicyComplianceReceiptRow.board_id == board_id,
-            )
-            residuals[PolicyWaiverRow.__tablename__] = await _count_where(
-                context,
-                PolicyWaiverRow,
-                PolicyWaiverRow.board_id == board_id,
-            )
-            residuals[PolicyWaiverEventRow.__tablename__] = await _count_where(
-                context,
-                PolicyWaiverEventRow,
-                PolicyWaiverEventRow.board_id == board_id,
-            )
-            residuals[PolicyComplianceFindingRow.__tablename__] = await _count_where(
-                context,
-                PolicyComplianceFindingRow,
-                PolicyComplianceFindingRow.board_id == board_id,
-            )
             for model in (
                 ImplementationTargetSpecLinkRow,
                 ImplementationTargetEvidenceLinkRow,
@@ -1053,15 +678,6 @@ class CommunitySqlAlchemyKGGovernanceStore:
                         model,
                         model.target_id.in_(code_traceability_target_ids),
                     )
-            residuals[PolicyComplianceAdoptedRevisionRow.__tablename__] = 0
-            if receipt_ids:
-                residuals[
-                    PolicyComplianceAdoptedRevisionRow.__tablename__
-                ] = await _count_where(
-                    context,
-                    PolicyComplianceAdoptedRevisionRow,
-                    PolicyComplianceAdoptedRevisionRow.receipt_id.in_(receipt_ids),
-                )
             if inline_guideline_ids:
                 residuals[GuidelineHeadRow.__tablename__] = await _count_where(
                     context,
@@ -1243,20 +859,6 @@ class CommunitySqlAlchemyKGGovernanceStore:
         )
         return int(result.rowcount or 0) == 1
 
-    def add_boost_audit(self, context: Any, audit: BoostAuditRecord) -> None:
-        context.add(
-            ConsolidationAudit(
-                session_id=audit.session_id,
-                board_id=audit.board_id,
-                artifact_id=audit.artifact_id,
-                artifact_type="boost",
-                agent_id=audit.agent_id,
-                started_at=audit.started_at,
-                committed_at=audit.committed_at,
-                nodes_added=0,
-                edges_added=0,
-            )
-        )
 
     async def commit(self, context: Any) -> None:
         await context.commit()

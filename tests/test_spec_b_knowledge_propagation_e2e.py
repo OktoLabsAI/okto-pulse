@@ -8,6 +8,9 @@ stable, replayable pointers required by Pulse scenarios B1-B3.
 
 from __future__ import annotations
 
+from okto_pulse.community.adapters.sqlalchemy_resource_gate_service import CommunitySqlAlchemyResourceGateAdapter
+from okto_pulse.core.ports.relational_services import register_resource_gate_adapter_factory
+
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
@@ -15,6 +18,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -22,13 +27,9 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from okto_pulse.community.adapters.knowledge_propagation_backfill import (
-    backfill_knowledge_propagation_v2,
-)
 from okto_pulse.community.adapters.relational_application import (
     CommunityRelationalApplicationAdapter,
 )
-from okto_pulse.community.adapters.sqlalchemy_base import Base
 from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
     CommunitySemanticSession,
 )
@@ -69,6 +70,7 @@ from okto_pulse.community.adapters.sqlalchemy_unit_of_work import (
 from okto_pulse.community.api import cards as cards_api
 from okto_pulse.community.api import refinements as refinements_api
 from okto_pulse.core.application.use_cases import ActorContext
+from okto_pulse.core.domain.realm import RealmScope
 from okto_pulse.core.domain.enums import (
     IdeationStatus,
     RefinementStatus,
@@ -85,7 +87,6 @@ from okto_pulse.core.domain.code_traceability import (
     RefinementDeliveryContextProvenance,
     RefinementSourceContextManifestV2,
     SOURCE_CONTEXT_INTERPRETATION_RULE_V2,
-    SourceContextClassificationStateV2,
     SourceContextRoleCountsV2,
     SourceContextSummaryV2,
 )
@@ -165,9 +166,12 @@ async def spec_b_runtime(tmp_path) -> _Runtime:
         class_=AsyncSession,
         sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
+        info={"realm_scope": RealmScope.local()},
     )
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    from okto_pulse.community.adapters.current_relational_schema import (
+        current_schema_contract, initialize_current_schema,
+    )
+    await initialize_current_schema(engine, current_schema_contract())
 
     store = CommunitySqlAlchemyKnowledgePropagationStore(sessions)
     uow_factory = CommunityUnitOfWorkFactory(sessions)
@@ -178,6 +182,7 @@ async def spec_b_runtime(tmp_path) -> _Runtime:
         CommunityRelationalApplicationAdapter()
     )
     register_architecture_persistence_port(CommunitySqlAlchemyArchitecturePersistence())
+    register_resource_gate_adapter_factory(CommunitySqlAlchemyResourceGateAdapter)
     register_domain_event_publisher(CommunitySqlAlchemyDomainEventPublisher())
     register_spec_resource_propagation_store(
         CommunitySqlAlchemySpecResourcePropagationStore()
@@ -207,6 +212,7 @@ async def _seed_refinement_sources(
     *,
     refinement_id: str,
     roots: tuple[str, ...],
+    architecture_designs: tuple[Any, ...] = (),
 ) -> None:
     ideation_id = f"{refinement_id}-ideation"
     async with runtime.sessions() as session:
@@ -242,7 +248,7 @@ async def _seed_refinement_sources(
         session.add_all(
             [
                 RefinementKnowledgeBase(
-                    id=f"{root}-v1",
+                    id=root,
                     refinement_id=refinement_id,
                     title=f"Knowledge {root}",
                     content=f"{root}:revision-one",
@@ -253,6 +259,7 @@ async def _seed_refinement_sources(
                 for root in roots
             ]
         )
+        session.add_all(architecture_designs)
         # The production lifecycle creates the immutable snapshot only after
         # every child mutation has been flushed, so it pins the post-mutation
         # version resolved by Spec derivation.
@@ -270,10 +277,6 @@ async def _seed_refinement_sources(
                 ),
                 investigation_outcome=None,
                 role_counts=SourceContextRoleCountsV2(),
-                classification_state=SourceContextClassificationStateV2(
-                    classified_count=0,
-                    uncategorized_legacy_count=0,
-                ),
                 evidence_applicable=None,
                 interpretation_rule=SOURCE_CONTEXT_INTERPRETATION_RULE_V2,
                 items_not_current_implementation_count=0,
@@ -293,6 +296,7 @@ async def _seed_refinement_sources(
                 decisions=refinement.decisions,
                 labels=refinement.labels,
                 delivery_context=refinement.delivery_context,
+                code_evidence_manifest=[],
                 source_context_manifest=source_context.as_dict(),
                 source_context_sha256=source_context.payload_sha256,
                 created_by=ACTOR_ID,
@@ -332,7 +336,7 @@ async def _seed_spec_cards(
             )
         )
         session.add(
-            Spec(
+            Spec(architecture_adoption=ArchitectureAdoptionScope(board_id=BOARD_ID, spec_id=spec_id, adopted_in_edition=1, actor_id=ACTOR_ID, inherited_resource_ids=()).model_dump(mode="json"),
                 id=spec_id,
                 board_id=BOARD_ID,
                 title="Spec B source spec",
@@ -344,7 +348,7 @@ async def _seed_spec_cards(
         session.add_all(
             [
                 SpecKnowledgeBase(
-                    id=f"{root}-v1",
+                    id=root,
                     spec_id=spec_id,
                     title=f"Knowledge {root}",
                     content=f"{root}:revision-one",
@@ -363,7 +367,6 @@ async def _seed_spec_cards(
                     spec_id=spec_id,
                     title=f"Target {card_id}",
                     created_by=ACTOR_ID,
-                    knowledge_bases=[],
                 )
                 for card_id in card_ids
             ]
@@ -495,8 +498,8 @@ async def test_ts_9e54d02f_tri_state_v2_end_to_end(
                     selection_state="explicit_ids",
                     mode="reference",
                     knowledge_ids=[
-                        f"{roots[1]}-v1",
-                        f"{roots[0]}-v1",
+                        roots[1],
+                        roots[0],
                     ],
                     justification="Only the first two roots are relevant",
                     idempotency_key="b1-explicit-ids",
@@ -515,7 +518,6 @@ async def test_ts_9e54d02f_tri_state_v2_end_to_end(
     selected = await _scope_rows(runtime, explicit_ids.spec_id)
 
     assert omitted["scope"].selection_state == "omitted"
-    assert omitted["scope"].v2_active is True
     assert omitted["assignments"] == []
     assert omitted["snapshots"] == []
     assert omitted["tombstones"] == []
@@ -536,6 +538,39 @@ async def test_ts_9e54d02f_tri_state_v2_end_to_end(
     assert selected["tombstones"] == []
     assert len(selected["ledgers"]) == 1
     assert roots[2] not in {item.root_id for item in selected["assignments"]}
+
+    from okto_pulse.community.adapters.sqlalchemy_traceability_read_model import build_traceability_report
+    async with runtime.sessions() as session:
+        report = await build_traceability_report(session, BOARD_ID, include_artifacts=True)
+        compact = await build_traceability_report(session, BOARD_ID, include_artifacts=False)
+        assert not session.dirty
+    reported = {item["id"]: item for item in report["ideations"][0]["refinements"][0]["specs"]}
+    compact_specs = {item["id"]: item for item in compact["ideations"][0]["refinements"][0]["specs"]}
+    for identity, expected in (
+        (omitted_payload["spec_id"], set()),
+        (explicit_empty.spec_id, set()),
+        (explicit_ids.spec_id, set(roots[:2])),
+    ):
+        assert {kb["id"] for kb in reported[identity]["artifacts"]["knowledge_bases"]} == expected
+        assert set(compact_specs[identity]["artifact_summary"]["artifact_ids"]["knowledge_bases"]) == expected
+
+    # BASE T17: independent Specs retain the same completed refinement and its
+    # immutable source; the later derivations must not replace the earlier one.
+    spec_ids = {omitted_payload["spec_id"], explicit_empty.spec_id, explicit_ids.spec_id}
+    assert len(spec_ids) == 3
+    async with runtime.sessions() as session:
+        derived = (await session.scalars(select(Spec).where(Spec.refinement_id == refinement_id))).all()
+        assert {spec.id for spec in derived} == spec_ids
+        snapshots = (await session.scalars(select(RefinementSnapshot).where(
+            RefinementSnapshot.refinement_id == refinement_id))).all()
+        assert len(snapshots) == 1
+        for spec in derived:
+            assert spec.ideation_id == f"{refinement_id}-ideation"
+            assert spec.board_id == BOARD_ID
+            assert spec.source_refinement_snapshot_id == snapshots[0].id
+            assert spec.source_context_manifest is not None
+            assert spec.status == SpecStatus.DRAFT
+        assert (await session.get(Refinement, refinement_id)).status == RefinementStatus.DONE
 
 
 def _card_target(card_id: str) -> KnowledgeTargetKey:
@@ -588,7 +623,7 @@ async def test_ts_1e0f5761_reference_snapshot_temporal_semantics(
             board_id=BOARD_ID,
             card_id=reference_card,
             request=KnowledgeAssignmentReplaceRequest(
-                knowledge_ids=[f"{root}-v1" for root in reference_roots],
+                knowledge_ids=[root for root in reference_roots],
                 mode="reference",
                 justification="Follow both current source revisions",
                 idempotency_key="b2-reference-select",
@@ -605,7 +640,7 @@ async def test_ts_1e0f5761_reference_snapshot_temporal_semantics(
         snapshot_response = await cards_api.replace_card_knowledge_assignments(
             snapshot_card,
             KnowledgeAssignmentReplaceRequest(
-                knowledge_ids=[f"{root}-v1" for root in snapshot_roots],
+                knowledge_ids=[root for root in snapshot_roots],
                 mode="snapshot",
                 justification="Freeze both source revisions",
                 idempotency_key="b2-snapshot-select",
@@ -666,7 +701,7 @@ async def test_ts_1e0f5761_reference_snapshot_temporal_semantics(
 
     async with runtime.sessions() as session:
         for root in all_roots:
-            source = await session.get(SpecKnowledgeBase, f"{root}-v1")
+            source = await session.get(SpecKnowledgeBase, root)
             assert source is not None
             source.content = f"{root}:revision-two"
             source.source_version = 2
@@ -743,7 +778,7 @@ async def test_ts_f9c3c8e0_drop_survives_reconcilers_and_source_delete(
     spec_b_runtime: _Runtime,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """B3: a root DROP survives copy/backfill/restart and source deletion."""
+    """B3: a root DROP survives native fanout/restart and source deletion."""
 
     runtime = spec_b_runtime
     spec_id = "b3-spec"
@@ -760,7 +795,7 @@ async def test_ts_f9c3c8e0_drop_survives_reconcilers_and_source_delete(
     )
     async with runtime.sessions() as session:
         session.add(
-            Spec(
+            Spec(architecture_adoption=ArchitectureAdoptionScope(board_id=BOARD_ID, spec_id=relink_spec_id, adopted_in_edition=1, actor_id=ACTOR_ID, inherited_resource_ids=()).model_dump(mode="json"),
                 id=relink_spec_id,
                 board_id=BOARD_ID,
                 title="Spec B relink destination",
@@ -791,7 +826,7 @@ async def test_ts_f9c3c8e0_drop_survives_reconcilers_and_source_delete(
             board_id=BOARD_ID,
             card_id=card_id,
             request=KnowledgeAssignmentReplaceRequest(
-                knowledge_ids=[f"{root}-v1" for root in roots],
+                knowledge_ids=[root for root in roots],
                 mode="reference",
                 justification="Both roots are initially relevant",
                 idempotency_key="b3-select-both",
@@ -825,6 +860,26 @@ async def test_ts_f9c3c8e0_drop_survives_reconcilers_and_source_delete(
     assert initial_read[active_root].effective is True
     active_before_update = initial_read[active_root].content_bytes
 
+    # Native REST list/detail/download resolve the effective assignment; no
+    # physical Card Knowledge payload is available in the storage model.
+    async with runtime.uow_factory(actor=REST_ACTOR) as read_uow:
+        listing = await cards_api.list_card_knowledge(
+            card_id, user_id=ACTOR_ID, uow=read_uow,
+        )
+        assert len(listing["knowledge"]) == 1
+        entry = listing["knowledge"][0]
+        detail = await cards_api.get_card_knowledge(
+            card_id, entry["id"], user_id=ACTOR_ID, uow=read_uow,
+        )
+        assert detail == entry
+        download = await cards_api.download_card_knowledge(
+            card_id, entry["id"], user_id=ACTOR_ID, uow=read_uow,
+        )
+        assert download.headers["content-type"].startswith("text/markdown")
+        assert "attachment" in download.headers["content-disposition"]
+        assert ".md" in download.headers["content-disposition"]
+        assert json.loads(active_before_update)["content"].encode() in download.body
+
     initial_rows = await _scope_rows(runtime, card_id)
     assert initial_rows["scope"].scope_revision == 2
     assert [
@@ -836,7 +891,6 @@ async def test_ts_f9c3c8e0_drop_survives_reconcilers_and_source_delete(
     async with runtime.sessions() as session:
         propagation = SpecResourcePropagationService(
             session,
-            knowledge_propagation_port=runtime.store,
         )
         for trigger in (
             "card_created",
@@ -859,7 +913,7 @@ async def test_ts_f9c3c8e0_drop_survives_reconcilers_and_source_delete(
                 "removed_ids": [],
                 "warnings": [],
                 "skipped": True,
-                "reason": "v2_active",
+                "reason": "native_assignments",
             }
         board_backfill = await propagation.propagate_for_board(
             board_id=BOARD_ID,
@@ -873,40 +927,18 @@ async def test_ts_f9c3c8e0_drop_survives_reconcilers_and_source_delete(
             if card_result.get("card_id") == card_id
         ]
         assert len(card_results) == 1
-        assert card_results[0]["results"]["knowledge_base"]["reason"] == "v2_active"
+        assert card_results[0]["results"]["knowledge_base"]["reason"] == "native_assignments"
         await session.commit()
 
-    legacy_copy = json.loads(
-        await mcp_server.okto_pulse_copy_knowledge_to_card.fn(
-            board_id=BOARD_ID,
-            spec_id=spec_id,
-            card_id=card_id,
-            knowledge_ids=[],
-        )
-    )
-    assert legacy_copy["code"] == "knowledge_propagation_legacy_write_forbidden"
+    assert not hasattr(mcp_server, "okto_pulse_copy_knowledge_to_card")
     async with runtime.sessions() as session:
         card = await session.get(Card, card_id)
         assert card is not None
-        assert card.knowledge_bases == []
-
-    backfill = await backfill_knowledge_propagation_v2(
-        session_factory=runtime.sessions,
-        store=runtime.store,
-        service=KnowledgePropagationService(port=runtime.store),
-    )
-    assert backfill.active_v2_targets >= 1
-    after_backfill = await _scope_rows(runtime, card_id)
-    assert after_backfill["scope"].scope_revision == 2
-    assert [
-        item.root_id
-        for item in after_backfill["tombstones"]
-        if item.effective_to is None
-    ] == [dropped_root]
+        assert "knowledge_bases" not in Card.__table__.c
 
     async with runtime.sessions() as session:
         for root in roots:
-            source = await session.get(SpecKnowledgeBase, f"{root}-v1")
+            source = await session.get(SpecKnowledgeBase, root)
             assert source is not None
             source.content = f"{root}:revision-two"
             source.source_version = 2
@@ -942,7 +974,7 @@ async def test_ts_f9c3c8e0_drop_survives_reconcilers_and_source_delete(
     # Deleting the remaining source removes it from effective context while
     # retaining both assignment history and the DROP tombstone.
     async with runtime.sessions() as session:
-        source = await session.get(SpecKnowledgeBase, f"{active_root}-v1")
+        source = await session.get(SpecKnowledgeBase, active_root)
         assert source is not None
         await session.delete(source)
         await session.commit()
@@ -1003,3 +1035,98 @@ async def test_ts_f9c3c8e0_drop_survives_reconcilers_and_source_delete(
         "drop_delta",
         "relink_reset",
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["reference", "snapshot", "drop"])
+async def test_traceability_reports_native_card_knowledge_selection(
+    spec_b_runtime: _Runtime, monkeypatch: pytest.MonkeyPatch, mode: str,
+) -> None:
+    from okto_pulse.community.adapters.sqlalchemy_traceability_read_model import (
+        build_traceability_report,
+    )
+    from okto_pulse.core.application.effective_knowledge_read import load_effective_card_knowledge
+
+    runtime = spec_b_runtime
+    spec_id, card_id = "report-spec", "report-card"
+    roots = ("report-selected", "report-unselected")
+    await _seed_spec_cards(runtime, spec_id=spec_id, card_ids=(card_id,), roots=roots)
+    _install_real_mcp_runtime(monkeypatch)
+    selected = json.loads(await mcp_server.okto_pulse_replace_card_knowledge_assignments.fn(
+        board_id=BOARD_ID, card_id=card_id,
+        request=KnowledgeAssignmentReplaceRequest(
+            knowledge_ids=[roots[0]], mode="reference" if mode == "drop" else mode,
+            justification="Select one relevant source", idempotency_key="report-select",
+            expected_revision=0,
+        ),
+    ))
+    assert selected["success"] is True
+    if mode == "drop":
+        async with runtime.uow_factory(actor=REST_ACTOR) as uow:
+            await cards_api.drop_card_knowledge_assignments(
+                card_id, KnowledgeAssignmentDropRequest(
+                    knowledge_ids=[roots[0]], justification="Source is no longer relevant",
+                    idempotency_key="report-drop", expected_revision=1,
+                ), user_id=ACTOR_ID, uow=uow,
+            )
+
+    async with runtime.sessions() as session:
+        source = await session.get(SpecKnowledgeBase, roots[0])
+        source.content = "updated source after selection"
+        source.source_version = 2
+        await session.commit()
+
+    async with runtime.uow_factory(actor=REST_ACTOR) as uow:
+        card = await uow.services.cards.get_card(card_id)
+        effective = await load_effective_card_knowledge(uow.services, card)
+    expected_ids = {item["id"] for item in effective}
+    assert len(expected_ids) == (0 if mode == "drop" else 1)
+    async with runtime.sessions() as session:
+        full = await build_traceability_report(
+            session, BOARD_ID, spec_id=spec_id, include_artifacts=True,
+        )
+        compact = await build_traceability_report(
+            session, BOARD_ID, spec_id=spec_id, include_artifacts=False,
+        )
+        assert not session.dirty
+    full_card = full["orphan_specs"][0]["cards"][0]
+    compact_card = compact["orphan_specs"][0]["cards"][0]
+    assert {kb["id"] for kb in full_card["artifacts"]["knowledge_bases"]} == expected_ids
+    assert set(compact_card["artifact_summary"]["artifact_ids"]["knowledge_bases"]) == expected_ids
+    assert compact_card["artifact_summary"]["knowledge_bases_count"] == len(expected_ids)
+    actual = {kb["id"]: kb for kb in full_card["artifacts"]["knowledge_bases"]}
+    for kb in effective:
+        assert actual[kb["id"]]["content_hash"] == kb["content_hash"]
+        assert actual[kb["id"]]["knowledge_assignment"] == kb["knowledge_assignment"]
+        assert "content" not in actual[kb["id"]]
+    if mode == "snapshot":
+        assert effective[0]["content"] != "updated source after selection"
+        assert effective[0]["knowledge_assignment"]["stale"] is True
+    elif mode == "reference":
+        assert effective[0]["content"] == "updated source after selection"
+    # Parent references remain contextual, not a statement of Card selection.
+    assert {kb["id"] for kb in full["orphan_specs"][0]["artifacts"]["knowledge_bases"]} == set(roots)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("include_artifacts", [True, False])
+async def test_traceability_refuses_unavailable_knowledge_without_physical_fallback(
+    spec_b_runtime: _Runtime, include_artifacts: bool,
+) -> None:
+    from okto_pulse.community.adapters.sqlalchemy_traceability_read_model import build_traceability_report
+    from okto_pulse.core.ports.knowledge_propagation import reset_knowledge_propagation_port_for_tests
+    from okto_pulse.core.ports.traceability import TraceabilityReadError
+
+    await _seed_spec_cards(
+        spec_b_runtime, spec_id="unavailable-spec", card_ids=("unavailable-card",),
+        roots=("local-source",),
+    )
+    reset_knowledge_propagation_port_for_tests()
+    async with spec_b_runtime.sessions() as session:
+        with pytest.raises(TraceabilityReadError) as caught:
+            await build_traceability_report(
+                session, BOARD_ID, spec_id="unavailable-spec",
+                include_artifacts=include_artifacts,
+            )
+        assert caught.value.code == "knowledge_propagation_port_not_configured"
+        assert not session.dirty

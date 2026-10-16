@@ -21,6 +21,67 @@ const baseSettings: BoardSettings = {
   max_drift: 30,
 };
 
+describe('BoardSettingsForm — missing reference policy', () => {
+  it('defaults to advisory without writing and saves only the human selection', () => {
+    const onChange = vi.fn();
+    const { rerender } = render(<BoardSettingsForm settings={baseSettings} onChange={onChange} />);
+    const field = screen.getByRole('combobox', { name: 'Missing reference closeout' });
+    expect(field).toHaveValue('advisory');
+    expect(onChange).not.toHaveBeenCalled();
+    fireEvent.change(field, { target: { value: 'blocking' } });
+    expect(onChange).toHaveBeenCalledExactlyOnceWith({ missing_link_gate: 'blocking' });
+    rerender(<BoardSettingsForm settings={{ ...baseSettings, missing_link_gate: 'blocking' }} onChange={onChange} />);
+    expect(field).toHaveValue('blocking');
+    rerender(<BoardSettingsForm settings={baseSettings} onChange={onChange} />);
+    expect(field).toHaveValue('advisory');
+  });
+});
+
+describe('BoardSettingsForm — graph query policy', () => {
+  it('shows the legacy default without writing and follows Board/template changes', () => {
+    const onChange = vi.fn();
+    const { rerender } = render(<BoardSettingsForm settings={baseSettings} onChange={onChange} />);
+    const field = screen.getByRole('spinbutton', { name: 'Graph query timeout (ms)' });
+    expect(field).toHaveValue(15000);
+    expect(onChange).not.toHaveBeenCalled();
+    rerender(<BoardSettingsForm settings={{ ...baseSettings, kg_query_timeout_ms: 2000 }} onChange={onChange} />);
+    expect(field).toHaveValue(2000);
+    fireEvent.change(field, { target: { value: '30000' } });
+    fireEvent.blur(field);
+    expect(onChange).toHaveBeenCalledExactlyOnceWith({ kg_query_timeout_ms: 30000 });
+  });
+
+  it.each(['', '0', '30001', '1.5'])('does not save invalid timeout %s', (value) => {
+    const onChange = vi.fn();
+    render(<BoardSettingsForm settings={baseSettings} onChange={onChange} />);
+    const field = screen.getByRole('spinbutton', { name: 'Graph query timeout (ms)' });
+    fireEvent.change(field, { target: { value } });
+    fireEvent.blur(field);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(field).toHaveValue(15000);
+  });
+});
+
+describe('BoardSettingsForm — Bug Learning policy', () => {
+  it('reads omission as advisory without writing a default', () => {
+    const onChange = vi.fn();
+    render(<BoardSettingsForm settings={baseSettings} onChange={onChange} />);
+    expect(screen.getByRole('combobox', { name: 'Bug Learning closeout' })).toHaveValue('advisory');
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('patches only the selected policy and follows the current Board/template', () => {
+    const onChange = vi.fn();
+    const { rerender } = render(<BoardSettingsForm settings={{ ...baseSettings, bug_learning_closeout: 'blocking', skip_cognitive_consolidation: true }} onChange={onChange} />);
+    const select = screen.getByRole('combobox', { name: 'Bug Learning closeout' });
+    expect(select).toHaveValue('blocking');
+    fireEvent.change(select, { target: { value: 'advisory' } });
+    expect(onChange).toHaveBeenCalledExactlyOnceWith({ bug_learning_closeout: 'advisory' });
+    rerender(<BoardSettingsForm settings={baseSettings} onChange={onChange} />);
+    expect(select).toHaveValue('advisory');
+  });
+});
+
 describe('BoardSettingsForm — coverage overrides', () => {
   it('configures the Board-wide Code Evidence Matrix skip independently', () => {
     const onChange = vi.fn();
@@ -63,14 +124,14 @@ describe('BoardSettingsForm — independent reviewer policy', () => {
     expect(onChange).toHaveBeenCalledWith({ reviewer_separation_mode: 'warn' });
   });
 
-  it('projects an absent or unknown legacy value as off', () => {
+  it('uses the creation default and refuses an unknown policy', () => {
     const { rerender } = render(
       <BoardSettingsForm
         settings={{ ...baseSettings, reviewer_separation_mode: undefined }}
         onChange={vi.fn()}
       />,
     );
-    expect(screen.getByTestId('reviewer-separation-mode-off')).toHaveAttribute(
+    expect(screen.getByTestId('reviewer-separation-mode-enforce')).toHaveAttribute(
       'aria-pressed',
       'true',
     );
@@ -81,10 +142,9 @@ describe('BoardSettingsForm — independent reviewer policy', () => {
         onChange={vi.fn()}
       />,
     );
-    expect(screen.getByTestId('reviewer-separation-mode-off')).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
+    expect(screen.getByRole('alert')).toHaveTextContent('Reviewer separation policy is incompatible');
+    expect(screen.queryByTestId('reviewer-separation-mode-off')).not.toBeInTheDocument();
+
   });
 });
 
@@ -215,17 +275,15 @@ describe('BoardSettingsForm — execution report evidence mode', () => {
     expect(onChange).toHaveBeenLastCalledWith({ impact_evidence_mode: 'off' });
   });
 
-  it('an unknown persisted value reads as off instead of breaking the screen', () => {
-    render(
-      <BoardSettingsForm
-        settings={{ ...baseSettings, impact_evidence_mode: 'banana' as never }}
-        onChange={vi.fn()}
-      />,
-    );
-    expect(screen.getByTestId('impact-evidence-mode-off')).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
+  it.each(['banana', null])('refuses invalid Impact Evidence policy %j without editing', (mode) => {
+    const onChange = vi.fn();
+    render(<BoardSettingsForm
+      settings={{ ...baseSettings, impact_evidence_mode: mode as never }}
+      onChange={onChange}
+    />);
+    expect(screen.getByRole('alert')).toHaveTextContent('Impact Evidence policy is incompatible');
+    expect(screen.queryByTestId('impact-evidence-mode-off')).not.toBeInTheDocument();
+    expect(onChange).not.toHaveBeenCalled();
   });
 });
 
@@ -277,30 +335,15 @@ describe('BoardSettingsForm — agent-mediated Code Traceability', () => {
     });
   });
 
-  it('projects the retired Off value as Advisory', () => {
-    render(
-      <BoardSettingsForm
-        settings={{
-          ...baseSettings,
-          code_traceability: {
-            mode: 'off',
-            evidence_attestation: 'preferred',
-            target_resolution: 'advisory',
-            accepted_attestor_policy: 'granular_permission',
-            minimum_trust: 'single_attestation',
-            preflight_freshness_seconds: 1800,
-            overlap_policy: 'warn',
-            observed_state_policy: 'allow_dirty_attestation',
-            receipt_content: 'safe_excerpt',
-          },
-        }}
-        onChange={vi.fn()}
-      />,
-    );
-
-    expect(
-      screen.getByLabelText('Code Traceability enforcement mode'),
-    ).toHaveValue('advisory');
+  it.each([null, { mode: 'off' }])('refuses incompatible policy %j without a write', (policy) => {
+    const onChange = vi.fn();
+    render(<BoardSettingsForm
+      settings={{ ...baseSettings, code_traceability: policy } as unknown as BoardSettings}
+      onChange={onChange}
+    />);
+    expect(screen.getByRole('alert')).toHaveTextContent('Code Traceability settings are incompatible');
+    expect(screen.queryByLabelText('Code Traceability enforcement mode')).not.toBeInTheDocument();
+    expect(onChange).not.toHaveBeenCalled();
   });
 
   it('explains the current-coverage requirement in Blocking mode', () => {
@@ -330,4 +373,15 @@ describe('BoardSettingsForm — agent-mediated Code Traceability', () => {
       'Missing requirements selected by the Code Evidence, Technical Anchor and attestation sub-policies become blockers',
     );
   });
+  it.each([null, 'off'])('refuses incompatible Delivery Evidence %j without a write', (mode) => {
+    const onChange = vi.fn();
+    render(<BoardSettingsForm
+      settings={{ ...baseSettings, delivery_evidence_gate: mode } as unknown as BoardSettings}
+      onChange={onChange}
+    />);
+    expect(screen.getByRole('alert')).toHaveTextContent('Delivery Evidence policy is incompatible');
+    expect(screen.queryByTestId('delivery-evidence-gate-mode-blocking')).not.toBeInTheDocument();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
 });

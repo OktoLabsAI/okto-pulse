@@ -20,28 +20,15 @@ const CODE_TRACEABILITY_ENFORCEMENT_MODES = [
 export type CodeTraceabilityEnforcementMode =
   (typeof CODE_TRACEABILITY_ENFORCEMENT_MODES)[number];
 
-function normalizeCodeTraceabilityEnforcementMode(
+/** Resolve creation defaults; incompatible responses have no editable policy. */
+export function resolveCodeTraceabilitySettings(
   value: unknown,
-): CodeTraceabilityEnforcementMode {
-  return CODE_TRACEABILITY_ENFORCEMENT_MODES.includes(
-    value as CodeTraceabilityEnforcementMode,
-  )
-    ? (value as CodeTraceabilityEnforcementMode)
-    : 'advisory';
-}
-
-export function normalizeCodeTraceabilitySettings(
-  value: unknown,
-): CodeTraceabilitySettings {
-  const persisted = value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Partial<CodeTraceabilitySettings>)
-    : {};
-  return {
-    ...DEFAULT_CODE_TRACEABILITY_SETTINGS,
-    ...persisted,
-    // `off` was accepted by earlier releases. Keep the response type compatible
-    // with those payloads, but never project or resubmit a silent/no-guidance
-    // mode through the Board or Global Default configuration UI.
-    mode: normalizeCodeTraceabilityEnforcementMode(persisted.mode),
-  };
+): CodeTraceabilitySettings | null {
+  if (value === undefined) return { ...DEFAULT_CODE_TRACEABILITY_SETTINGS };
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+  const policy = value as Partial<CodeTraceabilitySettings>;
+  if (policy.mode !== undefined && !CODE_TRACEABILITY_ENFORCEMENT_MODES.includes(policy.mode)) {
+    return null;
+  }
+  return { ...DEFAULT_CODE_TRACEABILITY_SETTINGS, ...policy };
 }

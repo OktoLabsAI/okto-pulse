@@ -7,6 +7,7 @@
  */
 
 import type { Board, BoardSettings } from '@/types';
+import { notifyReadinessMutation } from '@/lib/readinessEvents';
 
 const BASE = '/api/v1/boards';
 
@@ -37,6 +38,7 @@ export async function patchBoardSettings(
     const err = await resp.json().catch(() => ({ detail: resp.statusText }));
     throw new Error(err.detail || err.message || `HTTP ${resp.status}`);
   }
+  notifyReadinessMutation(`${BASE}/${boardId}`, 'PATCH', true);
   const board: Board = await resp.json();
   return board.settings ?? null;
 }

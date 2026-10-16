@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+
 import asyncio
 import threading
 import time
@@ -57,8 +59,9 @@ from okto_pulse.core.ports.global_outbox import (
 async def _database(
     tmp_path: Path,
     name: str,
+    **engine_options,
 ) -> tuple[object, async_sessionmaker[AsyncSession]]:
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / name}")
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / name}", **engine_options)
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
@@ -107,29 +110,6 @@ def _baseline() -> MaterializationHealthBaseline:
     )
 
 
-class _ControllableGlobalOpenRuntime:
-    def __init__(self, *, corruption: bool, failures: int = 1) -> None:
-        self.corruption = corruption
-        self.failures_remaining = failures
-
-    def open_global_kuzu_db(
-        self,
-        _path: Path,
-        *,
-        on_corruption=None,
-    ) -> object:
-        if self.failures_remaining:
-            self.failures_remaining -= 1
-            failure = RuntimeError("invalid graph fixture")
-            if self.corruption and on_corruption is not None:
-                on_corruption(failure)
-            raise failure
-        return object()
-
-    def is_ladybug_corruption_error(self, _exc: BaseException) -> bool:
-        return self.corruption
-
-
 @pytest.mark.asyncio
 async def test_relational_census_is_exact_and_board_scoped(tmp_path: Path) -> None:
     engine, factory = await _database(tmp_path, "census.db")
@@ -139,15 +119,15 @@ async def test_relational_census_is_exact_and_board_scoped(tmp_path: Path) -> No
         async with factory() as session:
             session.add_all(
                 [
-                    Board(id=board_id, name="Census", owner_id="owner"),
-                    Board(id=other_board_id, name="Other", owner_id="owner"),
+                    Board(realm_id="local", id=board_id, name="Census", owner_id="owner"),
+                    Board(realm_id="local", id=other_board_id, name="Other", owner_id="owner"),
                     Card(
                         id="card-census",
                         board_id=board_id,
                         title="source",
                         created_by="owner",
                     ),
-                    Spec(
+                    Spec(architecture_adoption=ArchitectureAdoptionScope(board_id=board_id, spec_id="spec-census", adopted_in_edition=1, actor_id="owner", inherited_resource_ids=()).model_dump(mode="json"),
                         id="spec-census",
                         board_id=board_id,
                         title="spec source",
@@ -234,11 +214,32 @@ async def test_relational_census_is_exact_and_board_scoped(tmp_path: Path) -> No
             )
             await session.commit()
 
-        census = await CommunitySqlAlchemyMaterializationCensus(factory).snapshot(
-            board_id,
-            generation="generation-census",
-            deadline=HealthProbeDeadline(time.monotonic() + 2.0),
-        )
+        from sqlalchemy import event
+
+        statements = []
+
+        def observed_sql(_connection, _cursor, statement, _parameters, _context, _many):
+            statements.append(statement)
+
+        event.listen(engine.sync_engine, "before_cursor_execute", observed_sql)
+        try:
+            observations = [
+                await CommunitySqlAlchemyMaterializationCensus(factory).snapshot(
+                    board_id, generation="generation-census",
+                    deadline=HealthProbeDeadline(time.monotonic() + 2.0),
+                )
+                for _ in range(3)
+            ]
+        finally:
+            event.remove(engine.sync_engine, "before_cursor_execute", observed_sql)
+        assert statements
+        assert all(statement.lstrip().upper().startswith("SELECT ") for statement in statements)
+        assert all(observation.status is CensusStatus.AVAILABLE for observation in observations)
+        assert all(observation.generation == "generation-census" for observation in observations)
+        assert {(observation.source_count, observation.queue_depth, observation.active_queue_count,
+                 observation.dead_letter_count, observation.global_outbox_dead_letter_count)
+                for observation in observations} == {(3, 2, 3, 1, 1)}
+        census = observations[-1]
 
         assert census.status is CensusStatus.AVAILABLE
         assert census.generation == "generation-census"
@@ -297,6 +298,9 @@ async def test_relational_census_cancellation_drains_checked_out_session(
         async def execute(self, _statement):
             query_started.set()
             await asyncio.Event().wait()
+
+        async def connection(self):
+            return await self._session.connection()
 
         def in_transaction(self) -> bool:
             assert self._session is not None
@@ -390,6 +394,9 @@ async def test_cancellation_resistant_cleanup_is_bounded_through_real_asyncio_ru
                     query_started.set()
                     await asyncio.Event().wait()
 
+                async def connection(self):
+                    return await self._session.connection()
+
                 def in_transaction(self) -> bool:
                     assert self._session is not None
                     return bool(self._session.in_transaction())
@@ -465,7 +472,7 @@ async def test_normal_commit_advances_generation_before_ack_and_rolls_back_on_fa
     repository = CommunityAuditRepository(factory)
     try:
         async with factory() as session:
-            session.add(Board(id=board_id, name="Generation", owner_id="owner"))
+            session.add(Board(realm_id="local", id=board_id, name="Generation", owner_id="owner"))
             await session.commit()
 
         assert await generation_store.current(board_id) == (
@@ -563,7 +570,7 @@ async def test_borrowed_audit_transaction_reuses_locked_writer_and_obeys_owner_c
     )
     try:
         async with factory() as session:
-            session.add(Board(id=board_id, name="Before", owner_id="owner"))
+            session.add(Board(realm_id="local", id=board_id, name="Before", owner_id="owner"))
             await session.commit()
 
         # This unrelated worker mutation acquires SQLite's writer lock. Before
@@ -690,7 +697,7 @@ async def test_self_owned_audit_maps_real_sqlite_contention_to_stable_port_error
     repository = CommunityAuditRepository(factory)
     try:
         async with factory() as session:
-            session.add(Board(id=board_id, name="Before", owner_id="owner"))
+            session.add(Board(realm_id="local", id=board_id, name="Before", owner_id="owner"))
             await session.commit()
 
         async with factory() as lock_owner:

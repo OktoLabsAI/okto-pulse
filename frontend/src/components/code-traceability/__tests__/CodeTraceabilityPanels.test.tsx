@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { useState } from 'react';
 import type {
   CodeInvestigationReceiptReadResult,
@@ -208,12 +208,9 @@ const gateProjection: CodeTraceabilityProjection = {
       existing_scaffold_count: 0,
       existing_constraint_count: 0,
       reference_pattern_count: 0,
-      uncategorized_legacy_count: 0,
+
     },
-    classification_state: {
-      classified_count: 1,
-      uncategorized_legacy_count: 0,
-    },
+
     evidence_applicable: true,
     interpretation_rule: 'Only current implementation evidence contributes to coverage.',
     items_not_current_implementation_count: 0,
@@ -230,8 +227,8 @@ const gateProjection: CodeTraceabilityProjection = {
     context_origin: 'authored',
     context_contract_version: 2,
     evidence_applicable: true,
-    classification_revision: null,
-    classification_sha256: null,
+
+
   }],
   contextual_evidence_coverage: {
     total: 1,
@@ -239,7 +236,7 @@ const gateProjection: CodeTraceabilityProjection = {
     dispositioned: 0,
     pending: 0,
     pending_ids: [],
-    unresolved_applicability_count: 0,
+
     coverage_pct: 100,
     projection_complete: true,
   },
@@ -270,7 +267,10 @@ const receiptResult: CodeInvestigationReceiptReadResult = {
     predecessor_receipt_id: null,
     trust_level: 'single_attestation',
     acceptance_status: 'accepted',
-    outcome: 'accessible',
+    contextual_outcome: 'partial',
+    delivery_context: 'brownfield',
+    context_contract_version: 2,
+    idempotency_key: 'receipt-1',
     capabilities: ['file_read', 'symbol_search'],
     source_ref: 'source:opaque-1',
     source_identity_digest: 'sha256:source',
@@ -455,7 +455,7 @@ describe('Code Traceability passive Community surfaces', () => {
         dispositioned: 0,
         pending: 1,
         pending_ids: ['evidence-2'],
-        unresolved_applicability_count: 0,
+
         coverage_pct: 37.5,
         projection_complete: true,
       },
@@ -547,7 +547,7 @@ describe('Code Traceability passive Community surfaces', () => {
         dispositioned: 3,
         pending: 2,
         pending_ids: ['evidence-pending-a', 'evidence-pending-b'],
-        unresolved_applicability_count: 0,
+
         coverage_pct: 42.75,
         projection_complete: true,
       },
@@ -674,7 +674,7 @@ describe('Code Traceability passive Community surfaces', () => {
         dispositioned: 0,
         pending: 0,
         pending_ids: [],
-        unresolved_applicability_count: 0,
+
         coverage_pct: null,
         projection_complete: true,
       },
@@ -718,54 +718,7 @@ describe('Code Traceability passive Community surfaces', () => {
     expect(screen.queryByText(/waiver|warning/i)).not.toBeInTheDocument();
   });
 
-  it('does not treat raw legacy links as coverage while applicability is unresolved', async () => {
-    apiMock.getCodeTraceabilityProjection.mockResolvedValue({
-      ...gateProjection,
-      source_context: {
-        ...gateProjection.source_context!,
-        delivery_context: 'hybrid',
-        evidence_applicable: null,
-        investigation_outcome: null,
-      },
-      source_context_items: [{
-        ...gateProjection.source_context_items![0],
-        source_role: 'uncategorized_legacy',
-        context_origin: 'unclassified_legacy',
-        evidence_applicable: null,
-        context_contract_version: null,
-      }],
-      contextual_evidence_coverage: {
-        ...gateProjection.contextual_evidence_coverage!,
-        linked: 0,
-        pending: 0,
-        pending_ids: [],
-        unresolved_applicability_count: 1,
-        coverage_pct: null,
-      },
-      obligation_evidence_mappings: [{
-        ...gateProjection.obligation_evidence_mappings![0],
-        evidence_applicable: null,
-        context_origin: 'unclassified_legacy',
-        source_role: 'uncategorized_legacy',
-      }],
-    });
 
-    render(
-      <EvidenceMatrixPanel
-        boardId="board-1"
-        subjectId="spec-1"
-        subjectVersion={7}
-        obligationTitles={{ 'TR-2': 'TR-1: Acquire the lock before persistence' }}
-      />,
-    );
-
-    expect(await screen.findByTestId('code-evidence-coverage-status'))
-      .toHaveTextContent('Needs classification');
-    expect(screen.getAllByText('Needs classification', { selector: 'span' })).toHaveLength(2);
-    expect(screen.getByText('TR-1: Acquire the lock before persistence')).toBeInTheDocument();
-    expect(screen.getByText('Applicability unresolved')).toBeInTheDocument();
-    expect(screen.queryByText('100%')).not.toBeInTheDocument();
-  });
 
   it('shows contextual associations in every obligation column without changing server coverage', async () => {
     const kinds = ['spec', 'functional_requirement', 'technical_requirement', 'business_rule',
@@ -776,7 +729,7 @@ describe('Code Traceability passive Community surfaces', () => {
       source_context_items: [{ ...gateProjection.source_context_items![0], evidence_applicable: false }],
       contextual_evidence_coverage: {
         total: 0, linked: 0, dispositioned: 0, pending: 0, pending_ids: [],
-        unresolved_applicability_count: 0, coverage_pct: null, projection_complete: true,
+         coverage_pct: null, projection_complete: true,
       },
       obligation_evidence_mappings: kinds.map((kind) => ({
         ...gateProjection.obligation_evidence_mappings![0],
@@ -1241,6 +1194,166 @@ describe('Code Traceability passive Community surfaces', () => {
     expect(await screen.findByText('Agent-attested resolution · PF-103')).toBeInTheDocument();
     expect(screen.getByText('Historical')).toBeInTheDocument();
     expect(screen.queryByText(/PF-104/)).not.toBeInTheDocument();
+  });
+
+  it('keeps the target draft on Spec changes until its base is explicitly reviewed', async () => {
+    permissionState.canCreateTarget = true;
+    const props = { boardId: 'board-1', subjectId: 'card-1', subjectVersion: 4, specVersion: 7 };
+    const view = render(<ImplementationTargetsPanel {...props} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Add semantic target' }));
+    fireEvent.change(screen.getByLabelText('Target intent'), { target: { value: 'Preserved target intent' } });
+    view.rerender(<ImplementationTargetsPanel {...props} specVersion={8} />);
+    const form = screen.getByRole('region', { name: 'Add semantic target' });
+    expect(within(form).getByLabelText('Target intent')).toHaveValue('Preserved target intent');
+    expect(within(form).getByRole('button', { name: 'Add semantic target' })).toBeDisabled();
+    expect(apiMock.createImplementationTarget).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole('button', { name: 'Review target base' }));
+    await waitFor(() => expect(within(form).getByRole('button', { name: 'Add semantic target' })).toBeEnabled());
+    fireEvent.click(within(form).getByRole('button', { name: 'Add semantic target' }));
+    await waitFor(() => expect(apiMock.createImplementationTarget).toHaveBeenCalledWith('board-1', 'card-1',
+      expect.objectContaining({ expected_spec_version: 8, intent: 'Preserved target intent' })));
+  });
+
+  it('requires target base review when the selected source receipt changes', async () => {
+    permissionState.canCreateTarget = true;
+    const props = { boardId: 'board-1', subjectId: 'card-1', subjectVersion: 4, specVersion: 7 };
+    const view = render(<ImplementationTargetsPanel {...props} revision={0} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Add semantic target' }));
+    fireEvent.change(screen.getByLabelText('Target intent'), { target: { value: 'Same Spec, new receipt' } });
+    apiMock.getCodeTraceabilityProjection.mockResolvedValue({ ...projection,
+      heads: [{ ...projection.heads[0], current_receipt_id: 'receipt-new', generation: 105 }] });
+    view.rerender(<ImplementationTargetsPanel {...props} revision={1} />);
+    await screen.findByRole('button', { name: 'Review target base' });
+    expect(screen.getByLabelText('Target intent')).toHaveValue('Same Spec, new receipt');
+    expect(within(screen.getByRole('region', { name: 'Add semantic target' })).getByRole('button', { name: 'Add semantic target' })).toBeDisabled();
+  });
+
+  it('keeps the target draft but blocks it when its source disappears or reading fails', async () => {
+    permissionState.canCreateTarget = true;
+    const props = { boardId: 'board-1', subjectId: 'card-1', subjectVersion: 4, specVersion: 7 };
+    const view = render(<ImplementationTargetsPanel {...props} revision={0} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Add semantic target' }));
+    fireEvent.change(screen.getByLabelText('Target intent'), { target: { value: 'Retain this intent' } });
+    apiMock.getCodeTraceabilityProjection.mockRejectedValue(new Error('Target read offline'));
+    view.rerender(<ImplementationTargetsPanel {...props} revision={1} />);
+    await screen.findByText('Target read offline');
+    expect(screen.getByLabelText('Target intent')).toHaveValue('Retain this intent');
+    const submit = () => within(screen.getByRole('region', { name: 'Add semantic target' })).getByRole('button', { name: 'Add semantic target' });
+    expect(submit()).toBeDisabled();
+    apiMock.getCodeTraceabilityProjection.mockResolvedValue({ ...projection, heads: [] });
+    fireEvent.click(screen.getByRole('button', { name: 'Retry target read' }));
+    await screen.findByText('The selected source is no longer available. Choose a current source before saving.');
+    expect(submit()).toBeDisabled();
+    expect(apiMock.createImplementationTarget).not.toHaveBeenCalled();
+  });
+
+  it('defers target reads when hidden and reads the latest revision on opening', async () => {
+    const props = { boardId: 'board-1', subjectId: 'card-1', subjectVersion: 4, specVersion: 7 };
+    const view = render(<ImplementationTargetsPanel {...props} active={false} revision={0} />);
+    await act(async () => {});
+    expect(apiMock.getCodeTraceabilityProjection).not.toHaveBeenCalled();
+    view.rerender(<ImplementationTargetsPanel {...props} active={false} revision={2} />);
+    await act(async () => {});
+    expect(apiMock.getCodeTraceabilityProjection).not.toHaveBeenCalled();
+    view.rerender(<ImplementationTargetsPanel {...props} active revision={2} />);
+    await screen.findByText('Agent-attested resolution · PF-103');
+    expect(apiMock.getCodeTraceabilityProjection).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not replace current targets with a delayed response from another Card', async () => {
+    let resolveOld!: (value: CodeTraceabilityProjection) => void;
+    apiMock.getCodeTraceabilityProjection.mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve; }));
+    const props = { boardId: 'board-1', subjectId: 'card-1', subjectVersion: 4, specVersion: 7 };
+    const view = render(<ImplementationTargetsPanel {...props} />);
+    apiMock.getCodeTraceabilityProjection.mockResolvedValue({ ...projection, targets: [{ ...projection.targets[0], intent: 'Current Card intent' }] });
+    view.rerender(<ImplementationTargetsPanel {...props} subjectId="card-2" />);
+    await screen.findByText('Current Card intent');
+    await act(async () => resolveOld(projection));
+    expect(screen.getByText('Current Card intent')).toBeInTheDocument();
+    expect(screen.queryByText('Acquire the lock before persistence.')).not.toBeInTheDocument();
+  });
+
+  it('clears the target draft and protected projection after a denied read', async () => {
+    permissionState.canCreateTarget = true;
+    const props = { boardId: 'board-1', subjectId: 'card-1', subjectVersion: 4, specVersion: 7 };
+    const view = render(<ImplementationTargetsPanel {...props} revision={0} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Add semantic target' }));
+    fireEvent.change(screen.getByLabelText('Target intent'), { target: { value: 'Protected intent' } });
+    apiMock.getCodeTraceabilityProjection.mockRejectedValue({ status: 403 });
+    view.rerender(<ImplementationTargetsPanel {...props} revision={1} />);
+    await screen.findByText('Implementation targets access is no longer available.');
+    expect(screen.queryByDisplayValue('Protected intent')).not.toBeInTheDocument();
+    expect(screen.queryByText('Acquire the lock before persistence.')).not.toBeInTheDocument();
+  });
+
+  it('requires explicit review after a typed target conflict, preserving intent for retry', async () => {
+    permissionState.canCreateTarget = true;
+    apiMock.createImplementationTarget.mockRejectedValueOnce({ status: 409 });
+    render(<ImplementationTargetsPanel boardId="board-1" subjectId="card-1" subjectVersion={4} specVersion={7} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Add semantic target' }));
+    fireEvent.change(screen.getByLabelText('Target intent'), { target: { value: 'Original intent' } });
+    const form = screen.getByRole('region', { name: 'Add semantic target' });
+    fireEvent.click(within(form).getByRole('button', { name: 'Add semantic target' }));
+    const review = await screen.findByRole('button', { name: 'Review target base' });
+    await waitFor(() => expect(review).toBeEnabled());
+    expect(screen.getByLabelText('Target intent')).toHaveValue('Original intent');
+    expect(within(form).getByRole('button', { name: 'Add semantic target' })).toBeDisabled();
+    expect(apiMock.createImplementationTarget).toHaveBeenCalledTimes(1);
+    fireEvent.click(review);
+    fireEvent.click(within(form).getByRole('button', { name: 'Add semantic target' }));
+    await waitFor(() => expect(apiMock.createImplementationTarget).toHaveBeenCalledTimes(2));
+    expect(apiMock.createImplementationTarget.mock.calls[1][2]).toMatchObject({ intent: 'Original intent', expected_spec_version: 7 });
+  });
+
+  it('ignores an old target mutation response after switching Cards', async () => {
+    permissionState.canCreateTarget = true;
+    let resolveOld!: (value: unknown) => void;
+    apiMock.createImplementationTarget.mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve; }));
+    const props = { boardId: 'board-1', subjectId: 'card-1', subjectVersion: 4, specVersion: 7 };
+    const view = render(<ImplementationTargetsPanel {...props} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Add semantic target' }));
+    fireEvent.change(screen.getByLabelText('Target intent'), { target: { value: 'Old Card intent' } });
+    fireEvent.click(within(screen.getByRole('region', { name: 'Add semantic target' })).getByRole('button', { name: 'Add semantic target' }));
+    await waitFor(() => expect(apiMock.createImplementationTarget).toHaveBeenCalledOnce());
+    view.rerender(<ImplementationTargetsPanel {...props} subjectId="card-2" />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Add semantic target' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Add semantic target' }));
+    fireEvent.change(screen.getByLabelText('Target intent'), { target: { value: 'New Card draft' } });
+    apiMock.getCodeTraceabilityProjection.mockClear();
+    await act(async () => resolveOld({}));
+    expect(screen.getByLabelText('Target intent')).toHaveValue('New Card draft');
+    expect(apiMock.getCodeTraceabilityProjection).not.toHaveBeenCalled();
+  });
+
+  it('does not reload a hidden target panel when an outstanding mutation completes', async () => {
+    permissionState.canCreateTarget = true;
+    let resolveWrite!: (value: unknown) => void;
+    apiMock.createImplementationTarget.mockImplementationOnce(() => new Promise(resolve => { resolveWrite = resolve; }));
+    const props = { boardId: 'board-1', subjectId: 'card-1', subjectVersion: 4, specVersion: 7 };
+    const view = render(<ImplementationTargetsPanel {...props} active />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Add semantic target' }));
+    fireEvent.change(screen.getByLabelText('Target intent'), { target: { value: 'Saved while hidden' } });
+    fireEvent.click(within(screen.getByRole('region', { name: 'Add semantic target' })).getByRole('button', { name: 'Add semantic target' }));
+    await waitFor(() => expect(apiMock.createImplementationTarget).toHaveBeenCalledOnce());
+    view.rerender(<ImplementationTargetsPanel {...props} active={false} />);
+    apiMock.getCodeTraceabilityProjection.mockClear();
+    await act(async () => resolveWrite({}));
+    expect(apiMock.getCodeTraceabilityProjection).not.toHaveBeenCalled();
+    view.rerender(<ImplementationTargetsPanel {...props} active />);
+    await waitFor(() => expect(apiMock.getCodeTraceabilityProjection).toHaveBeenCalledOnce());
+  });
+
+  it('does not conflict or reset a target draft when the authoritative base is unchanged', async () => {
+    permissionState.canCreateTarget = true;
+    const props = { boardId: 'board-1', subjectId: 'card-1', subjectVersion: 4, specVersion: 7 };
+    const view = render(<ImplementationTargetsPanel {...props} revision={0} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Add semantic target' }));
+    fireEvent.change(screen.getByLabelText('Target intent'), { target: { value: 'Same base' } });
+    view.rerender(<ImplementationTargetsPanel {...props} revision={1} />);
+    const form = screen.getByRole('region', { name: 'Add semantic target' });
+    await waitFor(() => expect(within(form).getByRole('button', { name: 'Add semantic target' })).toBeEnabled());
+    expect(screen.getByLabelText('Target intent')).toHaveValue('Same base');
+    expect(screen.queryByRole('button', { name: 'Review target base' })).not.toBeInTheDocument();
   });
 
   it('creates a human semantic target with the canonical closed REST body', async () => {

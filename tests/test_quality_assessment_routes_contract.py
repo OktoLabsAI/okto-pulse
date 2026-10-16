@@ -51,6 +51,15 @@ def _record_payload() -> dict[str, object]:
     }
 
 
+@pytest.mark.parametrize("state", ["stale", "superseded", "history_only"])
+def test_removed_receipt_state_filter_is_rejected_before_read(client, monkeypatch, state):
+    async def unexpected_read(*args, **kwargs):
+        pytest.fail("Removed filters must not reach the read use case")
+    monkeypatch.setattr(QualityAssessmentReadUseCases, "list_assessments", unexpected_read)
+    response = client.get(f"/api/v1/ideations/i-1/quality-assessments?state={state}")
+    assert response.status_code == 422
+
+
 def test_api01_write_schema_is_closed_and_server_owned(
     client: TestClient,
 ) -> None:

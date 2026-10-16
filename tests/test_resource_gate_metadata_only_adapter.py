@@ -8,6 +8,7 @@ import os
 import re
 
 import pytest
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
 from sqlalchemy import event
 
 import okto_pulse.community.app as _community_app  # noqa: F401
@@ -76,9 +77,9 @@ def test_gate_profile_projects_only_persisted_metadata(
 
     async def drive() -> tuple[dict, list[str], list[object]]:
         async with metadata_session_factory() as db:
-            db.add(Board(id="board-1", name="Board", owner_id="owner", settings={}))
+            db.add(Board(realm_id="local", id="board-1", name="Board", owner_id="owner", settings={}))
             db.add(
-                Spec(
+                Spec(architecture_adoption=ArchitectureAdoptionScope(board_id="board-1", spec_id="spec-1", adopted_in_edition=1, actor_id="owner", inherited_resource_ids=()).model_dump(mode="json"),
                     id="spec-1",
                     board_id="board-1",
                     title="Spec",
@@ -104,9 +105,7 @@ def test_gate_profile_projects_only_persisted_metadata(
                     description=body,
                     content=body,
                     source_version=7,
-                    root_source_kb_id="kb-root",
-                    immediate_parent_kb_id="kb-parent",
-                    source_kb_id="kb-parent",
+                    root_source_kb_id="kb-1",
                     content_hash=persisted_hash,
                     created_by="owner",
                 )
@@ -250,9 +249,9 @@ def test_missing_persisted_hash_is_not_computed_from_content(
 ) -> None:
     async def drive() -> dict:
         async with metadata_session_factory() as db:
-            db.add(Board(id="board-2", name="Board", owner_id="owner", settings={}))
+            db.add(Board(realm_id="local", id="board-2", name="Board", owner_id="owner", settings={}))
             db.add(
-                Spec(
+                Spec(architecture_adoption=ArchitectureAdoptionScope(board_id="board-2", spec_id="spec-2", adopted_in_edition=1, actor_id="owner", inherited_resource_ids=()).model_dump(mode="json"),
                     id="spec-2",
                     board_id="board-2",
                     title="Spec",
@@ -292,9 +291,9 @@ def test_gate_profile_filters_v2_snapshot_from_persisted_stamps_only(
 
     async def drive() -> tuple[dict, list[str]]:
         async with metadata_session_factory() as db:
-            db.add(Board(id="board-3", name="Board", owner_id="owner", settings={}))
+            db.add(Board(realm_id="local", id="board-3", name="Board", owner_id="owner", settings={}))
             db.add(
-                Spec(
+                Spec(architecture_adoption=ArchitectureAdoptionScope(board_id="board-3", spec_id="spec-3", adopted_in_edition=1, actor_id="owner", inherited_resource_ids=()).model_dump(mode="json"),
                     id="spec-3",
                     board_id="board-3",
                     title="Spec",
@@ -330,9 +329,7 @@ def test_gate_profile_filters_v2_snapshot_from_persisted_stamps_only(
                     target_type="card",
                     target_id="card-3",
                     scope_revision=1,
-                    v2_active=True,
                     selection_state="explicit_ids",
-                    v2_activated_at=occurred_at,
                 )
             )
             await db.flush()
@@ -434,7 +431,7 @@ def test_every_metadata_collection_fails_closed_on_limit_plus_one(
     async def drive() -> list[ResourceGateError]:
         async with metadata_session_factory() as db:
             db.add(
-                Board(
+                Board(realm_id="local",
                     id="overflow-board",
                     name="Overflow",
                     owner_id="owner",
@@ -443,13 +440,13 @@ def test_every_metadata_collection_fails_closed_on_limit_plus_one(
             )
             db.add_all(
                 [
-                    Spec(
+                    Spec(architecture_adoption=ArchitectureAdoptionScope(board_id="overflow-board", spec_id="overflow-architecture", adopted_in_edition=1, actor_id="owner", inherited_resource_ids=()).model_dump(mode="json"),
                         id="overflow-architecture",
                         board_id="overflow-board",
                         title="Architecture owner",
                         created_by="owner",
                     ),
-                    Spec(
+                    Spec(architecture_adoption=ArchitectureAdoptionScope(board_id="overflow-board", spec_id="overflow-mockup", adopted_in_edition=1, actor_id="owner", inherited_resource_ids=()).model_dump(mode="json"),
                         id="overflow-mockup",
                         board_id="overflow-board",
                         title="Mockup owner",
@@ -459,26 +456,16 @@ def test_every_metadata_collection_fails_closed_on_limit_plus_one(
                         ],
                         created_by="owner",
                     ),
-                    Spec(
+                    Spec(architecture_adoption=ArchitectureAdoptionScope(board_id="overflow-board", spec_id="overflow-finding-run", adopted_in_edition=1, actor_id="owner", inherited_resource_ids=()).model_dump(mode="json"),
                         id="overflow-finding-run",
                         board_id="overflow-board",
                         title="Finding run owner",
                         created_by="owner",
                     ),
-                    Spec(
+                    Spec(architecture_adoption=ArchitectureAdoptionScope(board_id="overflow-board", spec_id="overflow-kb-row", adopted_in_edition=1, actor_id="owner", inherited_resource_ids=()).model_dump(mode="json"),
                         id="overflow-kb-row",
                         board_id="overflow-board",
                         title="KB owner",
-                        created_by="owner",
-                    ),
-                    Card(
-                        id="overflow-card-json",
-                        board_id="overflow-board",
-                        title="Card JSON owner",
-                        knowledge_bases=[
-                            {"id": "card-kb-a", "title": "A", "content": "body-a"},
-                            {"id": "card-kb-b", "title": "B", "content": "body-b"},
-                        ],
                         created_by="owner",
                     ),
                     Card(
@@ -576,9 +563,7 @@ def test_every_metadata_collection_fails_closed_on_limit_plus_one(
                         target_type="card",
                         target_id="overflow-assignment",
                         scope_revision=1,
-                        v2_active=True,
                         selection_state="explicit_ids",
-                        v2_activated_at=occurred_at,
                     ),
                     KnowledgePropagationScopeRecord(
                         id="overflow-tombstone-scope",
@@ -586,9 +571,7 @@ def test_every_metadata_collection_fails_closed_on_limit_plus_one(
                         target_type="card",
                         target_id="overflow-tombstone",
                         scope_revision=1,
-                        v2_active=True,
                         selection_state="explicit_empty",
-                        v2_activated_at=occurred_at,
                     ),
                 ]
             )
@@ -643,7 +626,6 @@ def test_every_metadata_collection_fails_closed_on_limit_plus_one(
                     "architecture_finding_run",
                 ),
                 ("spec", "overflow-mockup", "mockup"),
-                ("card", "overflow-card-json", "knowledge_base"),
                 ("spec", "overflow-kb-row", "knowledge_base"),
                 ("card", "overflow-assignment", "knowledge_assignment"),
                 ("card", "overflow-tombstone", "knowledge_tombstone"),
@@ -686,4 +668,4 @@ def test_every_metadata_collection_fails_closed_on_limit_plus_one(
         return errors
 
     errors = asyncio.run(drive())
-    assert len(errors) == 7
+    assert len(errors) == 6

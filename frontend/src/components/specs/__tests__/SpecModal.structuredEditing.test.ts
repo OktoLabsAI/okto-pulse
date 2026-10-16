@@ -25,7 +25,7 @@ describe('SpecModal structured entity editing', () => {
   });
 
   it('uses impact preview and acknowledgement for destructive structured operations', () => {
-    const block = sourceBlock('const applyImpactAwareOperation = async', 'const syncTextEntityList = async');
+    const block = sourceBlock('const applyImpactAwareOperation = async', 'const saveTextRequirement = async');
 
     expect(block).toContain('api.previewSpecEntityImpact');
     expect(block).toContain('ack_token: ackToken');

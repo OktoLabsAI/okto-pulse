@@ -13,7 +13,7 @@ from okto_pulse.community.adapters import (
     telemetry_effect_config as effect_config_adapter,
 )
 from okto_pulse.community.adapters.telemetry_store import CommunityLocalTelemetryStore
-from okto_pulse.core.infra.config import CoreSettings
+from okto_pulse.community.config import CommunitySettings
 from okto_pulse.core.telemetry.effect_config_registry import (
     reset_telemetry_effect_config_provider_for_tests,
 )
@@ -65,32 +65,27 @@ def test_community_effect_config_metrics_dir_precedence(
         == (data_dir / "metrics").resolve()
     )
 
-    env_home = tmp_path / "env-home"
-    monkeypatch.setenv("OKTO_PULSE_HOME", str(env_home))
-    assert (
-        provider.metrics_dir(_Settings(metrics_dir="", data_dir=""))
-        == (env_home / "metrics").resolve()
-    )
-
-    monkeypatch.delenv("OKTO_PULSE_HOME", raising=False)
     user_home = tmp_path / "user-home"
     monkeypatch.setattr(effect_config_adapter.Path, "home", lambda: user_home)
+    retired = tmp_path / "retired-home"
+    monkeypatch.setenv("OKTO_PULSE_HOME", str(retired))
     assert (
         provider.metrics_dir(_Settings(metrics_dir="", data_dir=""))
         == (user_home / ".okto-pulse" / "metrics").resolve()
     )
+    assert not retired.exists()
 
 
 def test_registered_community_effect_config_drives_core_resolution(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    monkeypatch.setenv("OKTO_PULSE_HOME", str(tmp_path / "env-home"))
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "env-home"))
     reset_telemetry_effect_config_provider_for_tests()
     register_community_telemetry_effect_config_provider()
     try:
         cfg = resolve_telemetry_config(
-            CoreSettings(metrics_dir="", metrics_beacon_url=""),
+            CommunitySettings(metrics_dir="", metrics_beacon_url="", _env_file=None),
             state_snapshot={"mode": "disabled"},
         )
     finally:

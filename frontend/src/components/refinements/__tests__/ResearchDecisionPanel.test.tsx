@@ -151,21 +151,21 @@ beforeEach(() => {
 });
 
 describe('ResearchDecisionPanel', () => {
-  it('fails the new read leaf closed while keeping legacy strings separate', () => {
+  it('denies ledger access while keeping authored refinement notes separate', () => {
     permissionsMock.has.mockImplementation(
       (permission: string) =>
         permission !== 'refinement.research_decisions.read',
     );
 
     renderPanel({
-      legacyDecisions: ['Use the historical retry policy.'],
+      decisionNotes: ['Use the retry policy.'],
     });
 
     expect(
       screen.getByTestId('research-decision-read-denied'),
     ).toBeInTheDocument();
-    expect(screen.getByTestId('legacy-refinement-decisions')).toHaveTextContent(
-      'Historical read-only strings',
+    expect(screen.getByTestId('refinement-decision-notes')).toHaveTextContent(
+      'Text notes authored on the Refinement.',
     );
     expect(apiMock.listResearchDecisions).not.toHaveBeenCalled();
   });

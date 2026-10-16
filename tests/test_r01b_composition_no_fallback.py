@@ -15,14 +15,17 @@ from __future__ import annotations
 import pytest
 
 
-def test_ac3_community_app_registers_community_uow_factory():
+def test_ac3_community_app_registers_community_uow_factory(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("KG_BASE_DIR", str(tmp_path / "kg"))
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'native.db'}")
     import okto_pulse.community.main as m
     from okto_pulse.community.adapters.sqlalchemy_unit_of_work import (
         CommunityUnitOfWorkFactory,
     )
     from okto_pulse.core.composition import RuntimeComposition
 
-    composition = m.app.state.runtime_composition
+    composition = m.create_community_app().state.runtime_composition
     assert isinstance(composition, RuntimeComposition)
     # The point of IMP1: a REAL composition-owned Community UnitOfWorkFactory,
     # registered/observable — NOT None, NOT a core implicit fallback.

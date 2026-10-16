@@ -28,7 +28,7 @@ from pathlib import Path, PurePosixPath
 import re
 import secrets
 import stat
-from typing import Any, Awaitable, Callable, Mapping, Sequence
+from typing import Any, Awaitable, Callable, Mapping
 from urllib.parse import urlsplit
 
 from okto_pulse.core.ports.test_evidence import (
@@ -49,6 +49,7 @@ COMMUNITY_EVIDENCE_ADAPTER = "okto_pulse.community.adapters.test_evidence"
 COMMUNITY_MANIFEST_SCHEMA = "okto-pulse-http-replay/v1"
 COMMUNITY_MANIFEST_PURPOSE = "test_scenario_evidence"
 COMMUNITY_RECEIPT_SCHEMA = "okto-pulse-evidence-receipt/v1"
+COMMUNITY_REPORT_RECEIPT_SCHEMA = "okto-pulse-verification-receipt/v1"
 COMMUNITY_MAX_LEDGER_RECEIPTS = 10_000
 COMMUNITY_MAX_MANIFEST_BYTES = 1024 * 1024
 _RECEIPT_RE = re.compile(r"^ev2r\.([0-9a-f]{32})\.([0-9a-f]{64})$")
@@ -77,7 +78,9 @@ _RECEIPT_RECORD_KEYS = frozenset(
         "signature",
     }
 )
-_LEGACY_RECEIPT_RECORD_KEYS = _RECEIPT_RECORD_KEYS - {"scenario_sha256"}
+_REPORT_RECEIPT_RECORD_KEYS = (_RECEIPT_RECORD_KEYS - {
+    'manifest_ref', 'manifest_sha256', 'attestation_sha256', 'run_id',
+}) | {'verification_method', 'report_sha256'}
 
 
 class CommunityTestEvidenceError(ValueError):
@@ -96,26 +99,6 @@ class ProductExecutionObservation:
     outcome: str
     assertions: tuple[Mapping[str, Any], ...]
     executed_at: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class EvidenceMigrationReport:
-    scenarios: tuple[dict[str, Any], ...]
-    canonical_v2: int
-    promoted_v2: int
-    legacy_unverified: int
-    malformed: int
-
-
-@dataclass(frozen=True, slots=True)
-class PersistedEvidenceMigrationReport:
-    specs_scanned: int
-    specs_updated: int
-    canonical_v2: int
-    promoted_v2: int
-    legacy_unverified: int
-    malformed: int
-    dry_run: bool
 
 
 RuntimeExecutor = Callable[
@@ -790,15 +773,13 @@ class CommunityEvidenceLedger:
 
     @staticmethod
     def _receipt_record_schema_valid(
-        record: Mapping[str, Any], *, allow_legacy: bool = False
+        record: Mapping[str, Any]
     ) -> bool:
         record_keys = set(record)
-        legacy_non_authoritative = record_keys == _LEGACY_RECEIPT_RECORD_KEYS
-        if record_keys != _RECEIPT_RECORD_KEYS and not (
-            allow_legacy and legacy_non_authoritative
-        ):
+        report_record = record_keys == _REPORT_RECEIPT_RECORD_KEYS
+        if not report_record and record_keys != _RECEIPT_RECORD_KEYS:
             return False
-        if record.get("schema_version") != COMMUNITY_RECEIPT_SCHEMA:
+        if record.get("schema_version") != (COMMUNITY_REPORT_RECEIPT_SCHEMA if report_record else COMMUNITY_RECEIPT_SCHEMA):
             return False
         if not isinstance(
             record.get("receipt_id"), str
@@ -813,25 +794,26 @@ class CommunityEvidenceLedger:
             return False
         if parsed_issued_at.tzinfo is None or parsed_issued_at.utcoffset() is None:
             return False
-        for field in (
+        identity_fields = (
             "board_id",
             "spec_id",
             "scenario_id",
             "actor_id",
-            "manifest_ref",
-            "run_id",
-        ):
+        ) + (() if report_record else ('manifest_ref', 'run_id'))
+        for field in identity_fields:
             if not isinstance(record.get(field), str) or not record[field].strip():
                 return False
-        if record.get("status") not in {"passed", "automated", "failed"}:
+        if record.get("status") not in ({"ready", "passed", "failed"} if report_record else {"passed", "automated", "failed"}):
             return False
-        digest_fields = [
+        if report_record and (record.get('verification_method') not in {'static_analysis', 'inspection', 'demonstration'}
+                or record.get('status') not in {'ready', 'passed', 'failed'}):
+            return False
+        digest_fields = ['report_sha256', 'evidence_sha256'] if report_record else [
             "manifest_sha256",
             "attestation_sha256",
             "evidence_sha256",
         ]
-        if not legacy_non_authoritative:
-            digest_fields.append("scenario_sha256")
+        digest_fields.append("scenario_sha256")
         for field in digest_fields:
             if not isinstance(record.get(field), str) or not _SHA256_RE.fullmatch(
                 record[field]
@@ -850,9 +832,8 @@ class CommunityEvidenceLedger:
     ) -> tuple[tuple[str, tuple[int, int, int, int, int]], ...]:
         """Authenticate the complete immutable history before appending.
 
-        A signed pre-hardening record may prove only key continuity here. It is
-        explicitly legacy/non-authoritative and is still rejected by
-        :meth:`verify`, which never enables ``allow_legacy``.
+        Every record must satisfy the current contract, including its scenario
+        digest. Unsupported records refuse append without rewriting history.
         """
 
         key_fingerprint = hashlib.sha256(key).hexdigest()
@@ -896,7 +877,7 @@ class CommunityEvidenceLedger:
                     first_error.__cause__ = exc
                 continue
             if not isinstance(record, dict) or not self._receipt_record_schema_valid(
-                record, allow_legacy=True
+                record
             ):
                 if first_error is None:
                     first_error = CommunityTestEvidenceError(
@@ -1037,13 +1018,33 @@ class CommunityEvidenceLedger:
         actor_id: str,
         evidence: Mapping[str, Any],
     ) -> str:
+        attestation = _plain(evidence.get('execution_attestation')) or {}
+        return self._issue_record(board_id=board_id, spec_id=spec_id, scenario_id=scenario_id,
+            scenario_sha256=scenario_sha256, status=status, actor_id=actor_id, evidence=evidence,
+            schema_version=COMMUNITY_RECEIPT_SCHEMA, proof_metadata={
+                'manifest_ref': evidence.get('manifest_ref'), 'manifest_sha256': attestation.get('manifest_sha256'),
+                'attestation_sha256': attestation.get('attestation_sha256'), 'run_id': attestation.get('run_id')})
+
+    def issue_verification_report(self, *, board_id, spec_id, scenario_id, scenario_sha256, status, actor_id, evidence):
+        """Called only after authorized report/context validation, never an execution claim."""
+        from okto_pulse.core.domain.verification_report import parse_verification_report, verification_report_scenario_status
+
+        report = parse_verification_report(evidence['verification_report'])
+        if verification_report_scenario_status(report) != status or evidence.get('report_author_id') != actor_id:
+            raise CommunityTestEvidenceError('verification_report_author_or_result_mismatch')
+        return self._issue_record(board_id=board_id, spec_id=spec_id, scenario_id=scenario_id,
+            scenario_sha256=scenario_sha256, status=status, actor_id=actor_id, evidence=evidence,
+            schema_version=COMMUNITY_REPORT_RECEIPT_SCHEMA, proof_metadata={
+                'verification_method': report.method, 'report_sha256': _sha256_json(evidence['verification_report'])})
+
+    def _issue_record(self, *, board_id, spec_id, scenario_id, scenario_sha256, status, actor_id, evidence,
+            schema_version, proof_metadata):
         key = self._secret(create=True)
         key_fingerprint = hashlib.sha256(key).hexdigest()
         key_id = key_fingerprint[:16]
         self._assert_secure_layout()
         _ensure_secure_directory(self.receipt_root)
         history_fingerprint = self._validate_existing_receipts(key)
-        attestation = _plain(evidence.get("execution_attestation")) or {}
         unsigned_evidence = {
             name: value
             for name, value in evidence.items()
@@ -1052,7 +1053,7 @@ class CommunityEvidenceLedger:
         for _attempt in range(5):
             receipt_id = secrets.token_hex(16)
             record: dict[str, Any] = {
-                "schema_version": COMMUNITY_RECEIPT_SCHEMA,
+                "schema_version": schema_version,
                 "receipt_id": receipt_id,
                 "issued_at": datetime.now(timezone.utc).isoformat(),
                 "board_id": board_id,
@@ -1061,10 +1062,7 @@ class CommunityEvidenceLedger:
                 "scenario_sha256": scenario_sha256,
                 "status": status,
                 "actor_id": actor_id,
-                "manifest_ref": evidence.get("manifest_ref"),
-                "manifest_sha256": attestation.get("manifest_sha256"),
-                "attestation_sha256": attestation.get("attestation_sha256"),
-                "run_id": attestation.get("run_id"),
+                **proof_metadata,
                 "evidence_sha256": _sha256_json(unsigned_evidence),
                 "secret_key_id": key_id,
             }
@@ -1180,6 +1178,16 @@ class CommunityEvidenceLedger:
                 reasons.append(f"evidence_v2.receipt_{field}_binding_mismatch")
         if actor_id is not None and record.get("actor_id") != actor_id:
             reasons.append("evidence_v2.receipt_actor_id_binding_mismatch")
+        if record['schema_version'] == COMMUNITY_REPORT_RECEIPT_SCHEMA:
+            report = evidence.get('verification_report')
+            if (not isinstance(report, dict) or record.get('verification_method') != report.get('method')
+                    or record.get('report_sha256') != _sha256_json(report)
+                    or record.get('actor_id') != evidence.get('report_author_id')):
+                reasons.append('verification_report.receipt_report_binding_mismatch')
+            if record.get('evidence_sha256') != _sha256_json({name: value for name, value in evidence.items()
+                    if name != 'execution_receipt'}):
+                reasons.append('evidence_v2.receipt_evidence_tampered')
+            return tuple(reasons)
         attestation = _plain(evidence.get("execution_attestation")) or {}
         for field, expected in (
             ("manifest_ref", evidence.get("manifest_ref")),
@@ -1455,6 +1463,12 @@ async def run_inline_replay_and_build_evidence_v2(
         decoded = inline_replay
     else:
         raise CommunityTestEvidenceError("evidence_v2.inline_replay_object_required")
+    if isinstance(decoded, Mapping) and "runner_ref" in decoded:
+        from .external_test_runner import execute_external_request
+        return await execute_external_request(dict(decoded), ledger=ledger,
+            scope=dict(board_id=board_id, spec_id=spec_id, scenario_id=scenario_id,
+                       scenario_sha256=scenario_sha256),
+            status=status, actor_id=actor_id, environment=environment)
     normalized_manifest = build_inline_replay_manifest(
         decoded,
         board_id=board_id,
@@ -1495,6 +1509,7 @@ async def _execute_validated_manifest_and_build_evidence_v2(
     executor: RuntimeExecutor,
     ledger: CommunityEvidenceLedger,
     environment: str,
+    execution_basis: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Execute already-validated bytes and append an authenticated receipt."""
 
@@ -1520,6 +1535,10 @@ async def _execute_validated_manifest_and_build_evidence_v2(
         observation=observed,
         environment=environment,
     )
+    if execution_basis is not None:
+        evidence["execution_attestation"]["execution_basis"] = dict(execution_basis)
+        evidence["execution_attestation"]["attestation_sha256"] = compute_execution_attestation_sha256(
+            evidence["execution_attestation"], manifest_ref=canonical_ref)
     # Validate executor facts before creating an immutable record. A temporary
     # opaque value satisfies only CORE's structural receipt check.
     provisional = {**evidence, "execution_receipt": "pending-server-receipt"}
@@ -1551,57 +1570,6 @@ async def _execute_validated_manifest_and_build_evidence_v2(
     return evidence
 
 
-def normalize_test_scenario_evidence(
-    evidence: object,
-    *,
-    scenario_id: str | None = None,
-    status: str | None = None,
-) -> dict[str, Any]:
-    """Normalize canonical V2 without inventing legacy execution facts."""
-
-    normalized = _plain(evidence)
-    if normalized is None:
-        raise CommunityTestEvidenceError("evidence must be an object")
-    embedded = _plain(normalized.get("mcp_replay_manifest"))
-    if embedded and not normalized.get("manifest_ref"):
-        candidate_ref = embedded.get("manifest_ref")
-        candidate_attestation = embedded.get("execution_attestation")
-        candidate_receipt = embedded.get("execution_receipt")
-        if (
-            isinstance(candidate_ref, str)
-            and candidate_attestation is not None
-            and candidate_receipt is not None
-        ):
-            candidate = {
-                **normalized,
-                "evidence_class": "mcp_replay_manifest",
-                "manifest_ref": candidate_ref,
-                "execution_attestation": candidate_attestation,
-                "execution_receipt": candidate_receipt,
-            }
-            candidate.pop("mcp_replay_manifest", None)
-            candidate_attestation_map = _plain(candidate_attestation)
-            candidate_scenario_id = scenario_id or str(
-                (candidate_attestation_map or {}).get("scenario_id") or ""
-            )
-            candidate_status = status or str(
-                (candidate_attestation_map or {}).get("outcome") or "passed"
-            )
-            if verify_mcp_replay_evidence_v2(
-                candidate_status, candidate, scenario_id=candidate_scenario_id
-            ).verified:
-                normalized = candidate
-    if normalized.get("manifest_ref") is not None:
-        normalized.setdefault("evidence_class", "mcp_replay_manifest")
-        legacy = normalized.get("mcp_replay_manifest")
-        if (
-            isinstance(legacy, str)
-            and legacy.strip() == str(normalized.get("manifest_ref")).strip()
-        ):
-            normalized.pop("mcp_replay_manifest", None)
-    return normalized
-
-
 def verify_community_evidence_v2(
     *,
     board_id: str,
@@ -1615,9 +1583,9 @@ def verify_community_evidence_v2(
 ) -> EvidenceVerificationResult:
     """Verify CORE semantics, allowlisted bytes, ledger record, and HMAC."""
 
-    normalized = normalize_test_scenario_evidence(
-        evidence, scenario_id=scenario_id, status=status
-    )
+    normalized = _plain(evidence)
+    if normalized is None:
+        raise CommunityTestEvidenceError("evidence must be an object")
     verdict = verify_mcp_replay_evidence_v2(
         status,
         normalized,
@@ -1645,16 +1613,19 @@ def verify_community_evidence_v2(
         if manifest_sha256(manifest) != attestation.get("manifest_sha256"):
             reasons.append("evidence_v2.manifest_content_hash_mismatch")
         try:
-            validate_replay_manifest(
-                _decode_manifest_json(
-                    manifest,
-                    source=str(normalized["manifest_ref"]),
-                ),
+            decoded_manifest = _decode_manifest_json(manifest, source=str(normalized["manifest_ref"]))
+            from .external_test_runner import SCHEMA, validate_external_manifest
+            external = decoded_manifest.get("schema_version") == SCHEMA
+            validator = validate_external_manifest if external else validate_replay_manifest
+            validator(
+                decoded_manifest,
                 board_id=board_id,
                 spec_id=spec_id,
                 scenario_id=scenario_id,
                 scenario_sha256=scenario_sha256,
             )
+            if decoded_manifest.get("execution_basis") != attestation.get("execution_basis"):
+                reasons.append("evidence_v2.execution_basis_mismatch")
         except CommunityTestEvidenceError as exc:
             reasons.append(str(exc))
     reasons.extend(
@@ -1683,6 +1654,10 @@ class CommunityTestEvidenceWriteVerifier:
     def __init__(self, *, ledger: CommunityEvidenceLedger) -> None:
         self._ledger = ledger
 
+    @property
+    def verification_methods(self) -> frozenset[str]:
+        return frozenset({"automated_test", "static_analysis", "inspection", "demonstration"})
+
     def verify(
         self,
         *,
@@ -1694,6 +1669,17 @@ class CommunityTestEvidenceWriteVerifier:
         actor_id: str | None,
         evidence: object,
     ) -> TestEvidenceWriteVerification:
+        if isinstance(evidence, dict) and evidence.get("evidence_class") == "verification_report":
+            from okto_pulse.core.domain.verification_report import VerificationReportEvidence, verification_report_scenario_status
+            try:
+                parsed = VerificationReportEvidence.model_validate(evidence)
+                if verification_report_scenario_status(parsed.verification_report) != status or parsed.scenario_sha256 != scenario_sha256:
+                    raise ValueError("verification_report_binding_mismatch")
+            except (TypeError, ValueError):
+                return TestEvidenceWriteVerification(False, ("verification_report_invalid",))
+            reasons = self._ledger.verify(board_id=board_id, spec_id=spec_id, status=status,
+                scenario_id=scenario_id, scenario_sha256=scenario_sha256, actor_id=actor_id, evidence=evidence)
+            return TestEvidenceWriteVerification(not reasons, tuple(reasons))
         verdict = verify_community_evidence_v2(
             board_id=board_id,
             spec_id=spec_id,
@@ -1708,6 +1694,32 @@ class CommunityTestEvidenceWriteVerifier:
             verified=verdict.verified,
             reason_codes=verdict.reason_codes,
         )
+
+
+class CommunityTestVerificationReportIssuer:
+    """Sign an external submission using the same installation's evidence ledger.
+
+    Does not execute commands, fetch references, infer observations or confer
+    independent approval. Scope and permission are resolved by the Core use case.
+    """
+    def __init__(self, *, ledger: CommunityEvidenceLedger) -> None:
+        self._ledger = ledger
+
+    async def admit(self, request):
+        from okto_pulse.core.domain.verification_report import parse_verification_report, VerificationReportEvidence, verification_report_scenario_status
+        report = parse_verification_report(request.report)
+        evidence = {
+            "evidence_class": "verification_report",
+            "verification_report": report.model_dump(mode="json"),
+            "report_author_id": request.actor_id,
+            "scenario_sha256": request.scenario_sha256,
+        }
+        # Validate the complete envelope before touching the key or ledger.
+        VerificationReportEvidence.model_validate({**evidence, "execution_receipt": "ev2r." + "0" * 32 + "." + "0" * 64})
+        evidence["execution_receipt"] = self._ledger.issue_verification_report(
+            board_id=request.board_id, spec_id=request.spec_id, scenario_id=request.scenario_id,
+            scenario_sha256=request.scenario_sha256, status=verification_report_scenario_status(report), actor_id=request.actor_id, evidence=evidence)
+        return TestEvidenceExecutionResult(evidence=evidence)
 
 
 class CommunityTestEvidenceExecutionIssuer:
@@ -1759,118 +1771,6 @@ class CommunityTestEvidenceExecutionIssuer:
         return TestEvidenceExecutionResult(evidence=evidence)
 
 
-def migrate_test_scenario_evidence(
-    scenarios: Sequence[Mapping[str, Any]],
-) -> EvidenceMigrationReport:
-    """Pure JSON-column migration; legacy values stay unverified."""
-
-    migrated: list[dict[str, Any]] = []
-    canonical_v2 = promoted_v2 = legacy_unverified = malformed = 0
-    for original in scenarios:
-        scenario = dict(original)
-        for field in ("evidence", "latest_evidence"):
-            raw = scenario.get(field)
-            if raw is None:
-                continue
-            raw_map = _plain(raw)
-            if raw_map is None:
-                malformed += 1
-                continue
-            was_canonical = bool(
-                raw_map.get("manifest_ref")
-                and raw_map.get("execution_attestation")
-                and raw_map.get("execution_receipt")
-            )
-            normalized = normalize_test_scenario_evidence(
-                raw_map,
-                scenario_id=str(scenario.get("id"))
-                if scenario.get("id") is not None
-                else None,
-                status=str(scenario.get("status"))
-                if scenario.get("status") is not None
-                else None,
-            )
-            is_canonical = bool(
-                normalized.get("manifest_ref")
-                and normalized.get("execution_attestation")
-                and normalized.get("execution_receipt")
-            )
-            scenario[field] = normalized
-            if is_canonical:
-                if was_canonical:
-                    canonical_v2 += 1
-                else:
-                    promoted_v2 += 1
-            elif (
-                normalized.get("mcp_replay_manifest") is not None
-                or normalized.get("manifest_ref") is not None
-                or normalized.get("execution_attestation") is not None
-            ):
-                legacy_unverified += 1
-        migrated.append(scenario)
-    return EvidenceMigrationReport(
-        scenarios=tuple(migrated),
-        canonical_v2=canonical_v2,
-        promoted_v2=promoted_v2,
-        legacy_unverified=legacy_unverified,
-        malformed=malformed,
-    )
-
-
-async def migrate_persisted_test_scenario_evidence(
-    session: object,
-    *,
-    board_id: str | None = None,
-    dry_run: bool = True,
-) -> PersistedEvidenceMigrationReport:
-    """Scan Community SQL specs and persist only lossless V2 promotions."""
-
-    from sqlalchemy import select
-    from sqlalchemy.orm.attributes import flag_modified
-
-    from okto_pulse.community.adapters.sqlalchemy_models import Spec
-
-    statement = select(Spec)
-    if board_id is not None:
-        statement = statement.where(Spec.board_id == board_id)
-    execute = getattr(session, "execute", None)
-    if not callable(execute):
-        raise TypeError("session must provide async execute()")
-    result = await execute(statement)
-    specs = list(result.scalars().all())
-    totals = {
-        "canonical_v2": 0,
-        "promoted_v2": 0,
-        "legacy_unverified": 0,
-        "malformed": 0,
-    }
-    updated = 0
-    for spec in specs:
-        original = list(spec.test_scenarios or [])
-        report = migrate_test_scenario_evidence(original)
-        for key in totals:
-            totals[key] += int(getattr(report, key))
-        migrated = list(report.scenarios)
-        if migrated != original:
-            updated += 1
-            if not dry_run:
-                spec.test_scenarios = migrated
-                flag_modified(spec, "test_scenarios")
-    if not dry_run:
-        flush = getattr(session, "flush", None)
-        if callable(flush):
-            await flush()
-    return PersistedEvidenceMigrationReport(
-        specs_scanned=len(specs),
-        specs_updated=updated,
-        canonical_v2=totals["canonical_v2"],
-        promoted_v2=totals["promoted_v2"],
-        legacy_unverified=totals["legacy_unverified"],
-        malformed=totals["malformed"],
-        dry_run=dry_run,
-    )
-
-
 __all__ = [
     "COMMUNITY_EVIDENCE_ADAPTER",
     "COMMUNITY_EVIDENCE_PRODUCER",
@@ -1882,14 +1782,9 @@ __all__ = [
     "CommunityTestEvidenceError",
     "CommunityTestEvidenceExecutionIssuer",
     "CommunityTestEvidenceWriteVerifier",
-    "EvidenceMigrationReport",
-    "PersistedEvidenceMigrationReport",
     "ProductExecutionObservation",
     "build_inline_replay_manifest",
     "manifest_sha256",
-    "migrate_test_scenario_evidence",
-    "migrate_persisted_test_scenario_evidence",
-    "normalize_test_scenario_evidence",
     "run_manifest_and_build_evidence_v2",
     "run_inline_replay_and_build_evidence_v2",
     "validate_replay_manifest",

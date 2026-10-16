@@ -1,0 +1,613 @@
+- generic [ref=f40e3]:
+  - banner [ref=f40e4]:
+    - generic [ref=f40e5]:
+      - generic [ref=f40e6]:
+        - button "Hide sidebar" [ref=f40e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f40e12]
+        - generic [ref=f40e13]: / My Board
+      - generic [ref=f40e14]:
+        - button "Refresh board" [ref=f40e15] [cursor=pointer]
+        - button [ref=f40e22] [cursor=pointer]
+  - generic [ref=f40e26]:
+    - complementary [ref=f40e27]:
+      - generic [ref=f40e28]:
+        - generic [ref=f40e30]:
+          - heading "Boards" [level=2] [ref=f40e31]
+          - button "New board" [ref=f40e32] [cursor=pointer]
+        - navigation [ref=f40e34]:
+          - generic [ref=f40e35]:
+            - heading "My Boards" [level=3] [ref=f40e36]
+            - list [ref=f40e37]:
+              - listitem [ref=f40e38]:
+                - button "My Board" [ref=f40e39] [cursor=pointer]
+    - main [ref=f40e46]:
+      - group "Board views" [ref=f40e47]:
+        - button "Stories" [ref=f40e48] [cursor=pointer]
+        - button "Ideations" [ref=f40e52] [cursor=pointer]
+        - button "Refinements" [ref=f40e55] [cursor=pointer]
+        - button "Specs" [ref=f40e60] [cursor=pointer]
+        - button "Tasks" [pressed] [ref=f40e65] [cursor=pointer]
+      - generic [ref=f40e2443]:
+        - generic [ref=f40e2444]:
+          - textbox "Search cards…" [ref=f40e2446]
+          - button "Unlinked" [ref=f40e2449] [cursor=pointer]
+          - button "Filter specs..." [ref=f40e2451] [cursor=pointer]
+          - button "Show archived" [ref=f40e2455] [cursor=pointer]
+        - generic [ref=f40e2456]:
+          - generic [ref=f40e2457]:
+            - generic [ref=f40e2458]:
+              - generic [ref=f40e2460]:
+                - generic [ref=f40e2461]:
+                  - generic [ref=f40e2462]:
+                    - heading "Not Started" [level=3] [ref=f40e2463]
+                    - generic "20 total cards" [ref=f40e2464]: "20"
+                  - generic [ref=f40e2465]:
+                    - button "0 task cards" [pressed] [ref=f40e2466] [cursor=pointer]:
+                      - generic [ref=f40e2467]: Task
+                      - generic [ref=f40e2472]: "0"
+                    - button "20 test cards" [pressed] [ref=f40e2473] [cursor=pointer]:
+                      - generic [ref=f40e2474]: Test
+                      - generic [ref=f40e2478]: "20"
+                    - button "0 bug cards" [pressed] [ref=f40e2479] [cursor=pointer]:
+                      - generic [ref=f40e2480]: Bug
+                      - generic [ref=f40e2491]: "0"
+                - button "Add card to Not Started" [ref=f40e2492] [cursor=pointer]
+              - generic [ref=f40e2494]:
+                - 'button "test [TEST] Disponibilidade e capacidade spec Plano de verificação da aplicação fictícia. Implementar e executar os cenários vinculados e registrar resultados observados; nenhum teste foi executado nesta etapa. T01 — Busca por intervalo: Salas Ipê6/Aurora10, com Ipê ocupada09h–10h em09/10 → Buscar09/10 09h–10h para4 pessoas → Somente Aurora retornada, sem dados de terceiros. T02 — Limites de capacidade: Sala capacidade6 e intervalo livre → Enviar participantes1,6,0,-1,1.5,7 → 1/6 aceitos; demais invalid_input, sem escrita. T10 — Vazio versus falha: Nenhuma sala livre; depois falha de leitura injetada → Consultar nos dois estados → Primeiro lista vazia;segundo unavailable, nunca vazio. 3 scenarios linked C: Codex" [ref=f40e2495]':
+                  - generic [ref=f40e2496]:
+                    - generic "Move card" [ref=f40e2497]
+                    - generic [ref=f40e2505] [cursor=pointer]:
+                      - generic [ref=f40e2506]:
+                        - generic [ref=f40e2507]: test
+                        - heading "[TEST] Disponibilidade e capacidade" [level=4] [ref=f40e2510]
+                        - generic "Linked to a spec" [ref=f40e2511]: spec
+                      - paragraph [ref=f40e2515]: "Plano de verificação da aplicação fictícia. Implementar e executar os cenários vinculados e registrar resultados observados; nenhum teste foi executado nesta etapa. T01 — Busca por intervalo: Salas Ipê6/Aurora10, com Ipê ocupada09h–10h em09/10 → Buscar09/10 09h–10h para4 pessoas → Somente Aurora retornada, sem dados de terceiros. T02 — Limites de capacidade: Sala capacidade6 e intervalo livre → Enviar participantes1,6,0,-1,1.5,7 → 1/6 aceitos; demais invalid_input, sem escrita. T10 — Vazio versus falha: Nenhuma sala livre; depois falha de leitura injetada → Consultar nos dois estados → Primeiro lista vazia;segundo unavailable, nunca vazio."
+                      - generic [ref=f40e2516]: 3 scenarios linked
+                      - 'generic "Creator: 2edcc8b9-2f64-479e-acb1-c49724f76ae3" [ref=f40e2522]': "C: Codex"
+                - 'button "test [TEST] Concorrência entre reservas spec Plano de verificação da aplicação fictícia. Recuperar os ACs e seus perfis pelo contexto full/all antes da execução. Implementar o método declarado, observar os oráculos e registrar evidência real; cenários ainda NÃO EXECUTADOS. T03 — Intervalos sobrepostos: Confirmed09h–10h na salaIpê → Tentar08h30–09h30,09h–10h,09h30–10h30,08h30–10h30 e10h–11h → Quatro sobrepostos recusados; adjacente10h–11h aceito. T04 — Salas independentes: Reserva09h–10h naIpê → Reservar mesmo horário naAurora → Confirmar Aurora sem alterarIpê. T12 — Criações concorrentes: Duas conexões e chaves distintas,mesmo intervalo/sala → Disparar dois comandos concorrentes → Exatamente uma confirmação,uma recusa; nenhuma sobreposição. 3 scenarios linked C: Codex" [ref=f40e2523]':
+                  - generic [ref=f40e2524]:
+                    - generic "Move card" [ref=f40e2525]
+                    - generic [ref=f40e2533] [cursor=pointer]:
+                      - generic [ref=f40e2534]:
+                        - generic [ref=f40e2535]: test
+                        - heading "[TEST] Concorrência entre reservas" [level=4] [ref=f40e2538]
+                        - generic "Linked to a spec" [ref=f40e2539]: spec
+                      - paragraph [ref=f40e2543]: "Plano de verificação da aplicação fictícia. Recuperar os ACs e seus perfis pelo contexto full/all antes da execução. Implementar o método declarado, observar os oráculos e registrar evidência real; cenários ainda NÃO EXECUTADOS. T03 — Intervalos sobrepostos: Confirmed09h–10h na salaIpê → Tentar08h30–09h30,09h–10h,09h30–10h30,08h30–10h30 e10h–11h → Quatro sobrepostos recusados; adjacente10h–11h aceito. T04 — Salas independentes: Reserva09h–10h naIpê → Reservar mesmo horário naAurora → Confirmar Aurora sem alterarIpê. T12 — Criações concorrentes: Duas conexões e chaves distintas,mesmo intervalo/sala → Disparar dois comandos concorrentes → Exatamente uma confirmação,uma recusa; nenhuma sobreposição."
+                      - generic [ref=f40e2544]: 3 scenarios linked
+                      - 'generic "Creator: 2edcc8b9-2f64-479e-acb1-c49724f76ae3" [ref=f40e2550]': "C: Codex"
+                - 'button "test [TEST] Calendário e precisão spec Plano de verificação da aplicação fictícia. Recuperar os ACs e seus perfis pelo contexto full/all antes da execução. Implementar o método declarado, observar os oráculos e registrar evidência real; cenários ainda NÃO EXECUTADOS. T05 — Duração: Intervalo futuro em dia útil → Tentar30min,4h,0,-30min,29min,4h30 → 30min/4h aceitos; demais recusados. T06 — Precisão e offset: Data útil e fusoAmerica/Sao_Paulo → Enviar09:15,09:00:01,micros ou offset incoerente → Recusar cada entrada sem arredondamento nem escrita. T07 — Expediente: Clock anterior à segunda-feira da fixture → Tentar seg08h–08h30,sex17h30–18h,07h30,fim18h30,virada de dia,sábado → Dois primeiros aceitos; demais recusados. 3 scenarios linked C: Codex" [ref=f40e2551]':
+                  - generic [ref=f40e2552]:
+                    - generic "Move card" [ref=f40e2553]
+                    - generic [ref=f40e2561] [cursor=pointer]:
+                      - generic [ref=f40e2562]:
+                        - generic [ref=f40e2563]: test
+                        - heading "[TEST] Calendário e precisão" [level=4] [ref=f40e2566]
+                        - generic "Linked to a spec" [ref=f40e2567]: spec
+                      - paragraph [ref=f40e2571]: "Plano de verificação da aplicação fictícia. Recuperar os ACs e seus perfis pelo contexto full/all antes da execução. Implementar o método declarado, observar os oráculos e registrar evidência real; cenários ainda NÃO EXECUTADOS. T05 — Duração: Intervalo futuro em dia útil → Tentar30min,4h,0,-30min,29min,4h30 → 30min/4h aceitos; demais recusados. T06 — Precisão e offset: Data útil e fusoAmerica/Sao_Paulo → Enviar09:15,09:00:01,micros ou offset incoerente → Recusar cada entrada sem arredondamento nem escrita. T07 — Expediente: Clock anterior à segunda-feira da fixture → Tentar seg08h–08h30,sex17h30–18h,07h30,fim18h30,virada de dia,sábado → Dois primeiros aceitos; demais recusados."
+                      - generic [ref=f40e2572]: 3 scenarios linked
+                      - 'generic "Creator: 2edcc8b9-2f64-479e-acb1-c49724f76ae3" [ref=f40e2578]': "C: Codex"
+                - 'button "test [TEST] Relógio e limites temporais spec Plano de verificação da aplicação fictícia. Recuperar os ACs e seus perfis pelo contexto full/all antes da execução. Implementar o método declarado, observar os oráculos e registrar evidência real; cenários ainda NÃO EXECUTADOS. T08 — Início futuro: Clock09h exato → Enviar início09h,08h30,09h30 → Igual/passado recusados;09h30 aceito. T09 — Horizonte: Clock2026-10-06 12h local; +30/+31 são dias úteis → Buscar/reservar05/11 e06/11 às09h → Dia+30 aceito;dia+31 recusado. T21 — Bloqueio temporal: Reserva inicia09h; Clock09h e depois09h01 → Cancelar nos dois instantes → reservation_locked,sem mutação. 3 scenarios linked C: Codex" [ref=f40e2579]':
+                  - generic [ref=f40e2580]:
+                    - generic "Move card" [ref=f40e2581]
+                    - generic [ref=f40e2589] [cursor=pointer]:
+                      - generic [ref=f40e2590]:
+                        - generic [ref=f40e2591]: test
+                        - heading "[TEST] Relógio e limites temporais" [level=4] [ref=f40e2594]
+                        - generic "Linked to a spec" [ref=f40e2595]: spec
+                      - paragraph [ref=f40e2599]: "Plano de verificação da aplicação fictícia. Recuperar os ACs e seus perfis pelo contexto full/all antes da execução. Implementar o método declarado, observar os oráculos e registrar evidência real; cenários ainda NÃO EXECUTADOS. T08 — Início futuro: Clock09h exato → Enviar início09h,08h30,09h30 → Igual/passado recusados;09h30 aceito. T09 — Horizonte: Clock2026-10-06 12h local; +30/+31 são dias úteis → Buscar/reservar05/11 e06/11 às09h → Dia+30 aceito;dia+31 recusado. T21 — Bloqueio temporal: Reserva inicia09h; Clock09h e depois09h01 → Cancelar nos dois instantes → reservation_locked,sem mutação."
+                      - generic [ref=f40e2600]: 3 scenarios linked
+                      - 'generic "Creator: 2edcc8b9-2f64-479e-acb1-c49724f76ae3" [ref=f40e2606]': "C: Codex"
+                - 'button "test [TEST] Confirmação e replay spec Plano de verificação da aplicação fictícia. Recuperar os ACs e seus perfis pelo contexto full/all antes da execução. Implementar o método declarado, observar os oráculos e registrar evidência real; cenários ainda NÃO EXECUTADOS. T11 — Criação atômica: Sala livre e sessãoA → Criar com chave inédita → Uma confirmedv1,um evento,um recibo; resposta após commit. T13 — Replay sequencial e concorrente: Mesma sessão/chave/carga → Enviar sequencialmente e em duas conexões → Mesmo reservation_id,um evento,um recibo; demais replayed=true. T14 — Chave com carga diferente: Recibo confirmado da chaveK → ReutilizarK mudando período → idempotency_conflict; estado anterior intacto. 3 scenarios linked C: Codex" [ref=f40e2607]':
+                  - generic [ref=f40e2608]:
+                    - generic "Move card" [ref=f40e2609]
+                    - generic [ref=f40e2617] [cursor=pointer]:
+                      - generic [ref=f40e2618]:
+                        - generic [ref=f40e2619]: test
+                        - heading "[TEST] Confirmação e replay" [level=4] [ref=f40e2622]
+                        - generic "Linked to a spec" [ref=f40e2623]: spec
+                      - paragraph [ref=f40e2627]: "Plano de verificação da aplicação fictícia. Recuperar os ACs e seus perfis pelo contexto full/all antes da execução. Implementar o método declarado, observar os oráculos e registrar evidência real; cenários ainda NÃO EXECUTADOS. T11 — Criação atômica: Sala livre e sessãoA → Criar com chave inédita → Uma confirmedv1,um evento,um recibo; resposta após commit. T13 — Replay sequencial e concorrente: Mesma sessão/chave/carga → Enviar sequencialmente e em duas conexões → Mesmo reservation_id,um evento,um recibo; demais replayed=true. T14 — Chave com carga diferente: Recibo confirmado da chaveK → ReutilizarK mudando período → idempotency_conflict; estado anterior intacto."
+                      - generic [ref=f40e2628]: 3 scenarios linked
+                      - 'generic "Creator: 2edcc8b9-2f64-479e-acb1-c49724f76ae3" [ref=f40e2634]': "C: Codex"
+                - 'button "test [TEST] Isolamento e sessão spec Plano de verificação da aplicação fictícia. Recuperar os ACs e seus perfis pelo contexto full/all antes da execução. Implementar o método declarado, observar os oráculos e registrar evidência real; cenários ainda NÃO EXECUTADOS. T15 — Isolamento de recibo: A confirmou comK;B autenticado → B usaK em comando próprio → Não retorna nem revela reciboA; intençãoB isolada. T26 — ID alheio e owner forjado: A/B com reservas distintas → A lê/altera/cancela/históricoB; envia owner_id → 404 paraB e inexistente; campo forjado recusado;nenhum vazamento. T27 — Sessão e CSRF: Sessão ausente,expirada,revogada ou CSRF inválido → Consultar/mutar e repetir recibo anterior → Sessão inválida401; CSRF bloqueia comando;zero mutações e cookies nunca em logs. 3 scenarios linked C: Codex" [ref=f40e2635]':
+                  - generic [ref=f40e2636]:
+                    - generic "Move card" [ref=f40e2637]
+                    - generic [ref=f40e2645] [cursor=pointer]:
+                      - generic [ref=f40e2646]:
+                        - generic [ref=f40e2647]: test
+                        - heading "[TEST] Isolamento e sessão" [level=4] [ref=f40e2650]
+                        - generic "Linked to a spec" [ref=f40e2651]: spec
+                      - paragraph [ref=f40e2655]: "Plano de verificação da aplicação fictícia. Recuperar os ACs e seus perfis pelo contexto full/all antes da execução. Implementar o método declarado, observar os oráculos e registrar evidência real; cenários ainda NÃO EXECUTADOS. T15 — Isolamento de recibo: A confirmou comK;B autenticado → B usaK em comando próprio → Não retorna nem revela reciboA; intençãoB isolada. T26 — ID alheio e owner forjado: A/B com reservas distintas → A lê/altera/cancela/históricoB; envia owner_id → 404 paraB e inexistente; campo forjado recusado;nenhum vazamento. T27 — Sessão e CSRF: Sessão ausente,expirada,revogada ou CSRF inválido → Consultar/mutar e repetir recibo anterior → Sessão inválida401; CSRF bloqueia comando;zero mutações e cookies nunca em logs."
+                      - generic [ref=f40e2656]: 3 scenarios linked
+                      - 'generic "Creator: 2edcc8b9-2f64-479e-acb1-c49724f76ae3" [ref=f40e2662]': "C: Codex"
+                - 'button "test [TEST] Alteração e CAS spec Plano de verificação da aplicação fictícia. Recuperar os ACs e seus perfis pelo contexto full/all antes da execução. Implementar o método declarado, observar os oráculos e registrar evidência real; cenários ainda NÃO EXECUTADOS. T16 — Alteração válida: ReservaA futura v1,novo intervalo livre → Alterar com expected_version1 → Versão2 e evento before/after corretos. T17 — Alteração conflitante: OriginalA confirmada; destino ocupado → Alterar para destino ocupado → Recusar; original,versão e histórico preservados. T18 — CAS concorrente: ReservaA v1,duas conexões → Alterar duas vezes com expected_version1 → Só uma vence; outra version_conflict,sem sobrescrita. 3 scenarios linked C: Codex" [ref=f40e2663]':
+                  - generic [ref=f40e2664]:
+                    - generic "Move card" [ref=f40e2665]
+                    - generic [ref=f40e2673] [cursor=pointer]:
+                      - generic [ref=f40e2674]:
+                        - generic [ref=f40e2675]: test
+                        - heading "[TEST] Alteração e CAS" [level=4] [ref=f40e2678]
+                        - generic "Linked to a spec" [ref=f40e2679]: spec
+                      - paragraph [ref=f40e2683]: "Plano de verificação da aplicação fictícia. Recuperar os ACs e seus perfis pelo contexto full/all antes da execução. Implementar o método declarado, observar os oráculos e registrar evidência real; cenários ainda NÃO EXECUTADOS. T16 — Alteração válida: ReservaA futura v1,novo intervalo livre → Alterar com expected_version1 → Versão2 e evento before/after corretos. T17 — Alteração conflitante: OriginalA confirmada; destino ocupado → Alterar para destino ocupado → Recusar; original,versão e histórico preservados. T18 — CAS concorrente: ReservaA v1,duas conexões → Alterar duas vezes com expected_version1 → Só uma vence; outra version_conflict,sem sobrescrita."
+                      - generic [ref=f40e2684]: 3 scenarios linked
+                      - 'generic "Creator: 2edcc8b9-2f64-479e-acb1-c49724f76ae3" [ref=f40e2690]': "C: Codex"
+                - 'button "test [TEST] Cancelamento concorrente spec Plano de verificação da aplicação fictícia. Recuperar os ACs e seus perfis pelo contexto full/all antes da execução. Implementar o método declarado, observar os oráculos e registrar evidência real; cenários ainda NÃO EXECUTADOS. T19 — Alterar versus cancelar: ReservaA v1 e comandos concorrentes → Enviar alteração e cancelamento expected_version1 → Só um commit na v1; nenhuma ressurreição/duplo incremento. T20 — Cancelamento válido: ReservaA futura confirmed → Cancelar com versão atual → Cancelled preservada,evento adicionado,intervalo disponível. T22 — Replay de cancelamento: Cancelamento já confirmado → Repetir mesma chave e depois usar chave nova → Replay sem evento extra; nova intenção reservation_locked. 3 scenarios linked C: Codex" [ref=f40e2691]':
+                  - generic [ref=f40e2692]:
+                    - generic "Move card" [ref=f40e2693]
+                    - generic [ref=f40e2701] [cursor=pointer]:
+                      - generic [ref=f40e2702]:
+                        - generic [ref=f40e2703]: test
+                        - heading "[TEST] Cancelamento concorrente" [level=4] [ref=f40e2706]
+                        - generic "Linked to a spec" [ref=f40e2707]: spec
+                      - paragraph [ref=f40e2711]: "Plano de verificação da aplicação fictícia. Recuperar os ACs e seus perfis pelo contexto full/all antes da execução. Implementar o método declarado, observar os oráculos e registrar evidência real; cenários ainda NÃO EXECUTADOS. T19 — Alterar versus cancelar: ReservaA v1 e comandos concorrentes → Enviar alteração e cancelamento expected_version1 → Só um commit na v1; nenhuma ressurreição/duplo incremento. T20 — Cancelamento válido: ReservaA futura confirmed → Cancelar com versão atual → Cancelled preservada,evento adicionado,intervalo disponível. T22 — Replay de cancelamento: Cancelamento já confirmado → Repetir mesma chave e depois usar chave nova → Replay sem evento extra; nova intenção reservation_locked."
+                      - generic [ref=f40e2712]: 3 scenarios linked
+                      - 'generic "Creator: 2edcc8b9-2f64-479e-acb1-c49724f76ae3" [ref=f40e2718]': "C: Codex"
+                - 'button "test [TEST] Rollback e recuperação spec Plano de verificação da aplicação fictícia. Recuperar os ACs e seus perfis pelo contexto full/all antes da execução. Implementar o método declarado, observar os oráculos e registrar evidência real; cenários ainda NÃO EXECUTADOS. T23 — Rollback injetado: Comando válido e falha após save antes de commit → Executar criar e alterar sob falha → Nenhuma escrita parcial em reserva/evento/recibo; original mantida. T24 — Resposta perdida e reinício: Commit confirmado; resposta descartada → Reiniciar e repetir mesma intenção → Mesmo resultado original;uma reserva eevento,sem duplicação. T25 — Busy limitado: Outra conexão mantém lock além2s → Submeter comando → 503 após orçamento de espera2s,sem escrita parcial; UI preserva entrada. 3 scenarios linked C: Codex" [ref=f40e2719]':
+                  - generic [ref=f40e2720]:
+                    - generic "Move card" [ref=f40e2721]
+                    - generic [ref=f40e2729] [cursor=pointer]:
+                      - generic [ref=f40e2730]:
+                        - generic [ref=f40e2731]: test
+                        - heading "[TEST] Rollback e recuperação" [level=4] [ref=f40e2734]
+                        - generic "Linked to a spec" [ref=f40e2735]: spec
+                      - paragraph [ref=f40e2739]: "Plano de verificação da aplicação fictícia. Recuperar os ACs e seus perfis pelo contexto full/all antes da execução. Implementar o método declarado, observar os oráculos e registrar evidência real; cenários ainda NÃO EXECUTADOS. T23 — Rollback injetado: Comando válido e falha após save antes de commit → Executar criar e alterar sob falha → Nenhuma escrita parcial em reserva/evento/recibo; original mantida. T24 — Resposta perdida e reinício: Commit confirmado; resposta descartada → Reiniciar e repetir mesma intenção → Mesmo resultado original;uma reserva eevento,sem duplicação. T25 — Busy limitado: Outra conexão mantém lock além2s → Submeter comando → 503 após orçamento de espera2s,sem escrita parcial; UI preserva entrada."
+                      - generic [ref=f40e2740]: 3 scenarios linked
+                      - 'generic "Creator: 2edcc8b9-2f64-479e-acb1-c49724f76ae3" [ref=f40e2746]': "C: Codex"
+                - 'button "test [TEST] Paginação e histórico spec Plano de verificação da aplicação fictícia. Recuperar os ACs e seus perfis pelo contexto full/all antes da execução. Implementar o método declarado, observar os oráculos e registrar evidência real; cenários ainda NÃO EXECUTADOS. T28 — Paginação: Dataset estável de101 reservas/eventos próprios e dadosB → Paginar default20,limites1/100/101 e cursor inválido → Ordem definida,sem duplicação/misturaB;101/cursor inválido recusados. T36 — Histórico imutável: Reserva criada,alterada,cancelada e replays → Ler todas páginas e comparar versões/snapshots → Eventos1..3 ordenados,before/after corretos,sem evento por replay/leitura e sem segredos. 2 scenarios linked C: Codex" [ref=f40e2747]':
+                  - generic [ref=f40e2748]:
+                    - generic "Move card" [ref=f40e2749]
+                    - generic [ref=f40e2757] [cursor=pointer]:
+                      - generic [ref=f40e2758]:
+                        - generic [ref=f40e2759]: test
+                        - heading "[TEST] Paginação e histórico" [level=4] [ref=f40e2762]
+                        - generic "Linked to a spec" [ref=f40e2763]: spec
+                      - paragraph [ref=f40e2767]: "Plano de verificação da aplicação fictícia. Recuperar os ACs e seus perfis pelo contexto full/all antes da execução. Implementar o método declarado, observar os oráculos e registrar evidência real; cenários ainda NÃO EXECUTADOS. T28 — Paginação: Dataset estável de101 reservas/eventos próprios e dadosB → Paginar default20,limites1/100/101 e cursor inválido → Ordem definida,sem duplicação/misturaB;101/cursor inválido recusados. T36 — Histórico imutável: Reserva criada,alterada,cancelada e replays → Ler todas páginas e comparar versões/snapshots → Eventos1..3 ordenados,before/after corretos,sem evento por replay/leitura e sem segredos."
+                      - generic [ref=f40e2768]: 2 scenarios linked
+                      - 'generic "Creator: 2edcc8b9-2f64-479e-acb1-c49724f76ae3" [ref=f40e2774]': "C: Codex"
+                - button "View all 20 cards from Not Started" [ref=f40e2775] [cursor=pointer]: View all (20) →
+            - generic [ref=f40e2776]:
+              - generic [ref=f40e2778]:
+                - generic [ref=f40e2779]:
+                  - generic [ref=f40e2780]:
+                    - heading "Started" [level=3] [ref=f40e2781]
+                    - generic "0 total cards" [ref=f40e2782]: "0"
+                  - generic [ref=f40e2783]:
+                    - button "0 task cards" [pressed] [ref=f40e2784] [cursor=pointer]:
+                      - generic [ref=f40e2785]: Task
+                      - generic [ref=f40e2790]: "0"
+                    - button "0 test cards" [pressed] [ref=f40e2791] [cursor=pointer]:
+                      - generic [ref=f40e2792]: Test
+                      - generic [ref=f40e2796]: "0"
+                    - button "0 bug cards" [pressed] [ref=f40e2797] [cursor=pointer]:
+                      - generic [ref=f40e2798]: Bug
+                      - generic [ref=f40e2809]: "0"
+                - button "Add card to Started" [ref=f40e2810] [cursor=pointer]
+              - generic [ref=f40e2812]: No cards
+            - generic [ref=f40e2814]:
+              - generic [ref=f40e2817]:
+                - generic [ref=f40e2818]:
+                  - heading "In Progress" [level=3] [ref=f40e2819]
+                  - generic "7 total cards" [ref=f40e2820]: "7"
+                - generic [ref=f40e2821]:
+                  - button "7 task cards" [pressed] [ref=f40e2822] [cursor=pointer]:
+                    - generic [ref=f40e2823]: Task
+                    - generic [ref=f40e2828]: "7"
+                  - button "0 test cards" [pressed] [ref=f40e2829] [cursor=pointer]:
+                    - generic [ref=f40e2830]: Test
+                    - generic [ref=f40e2834]: "0"
+                  - button "0 bug cards" [pressed] [ref=f40e2835] [cursor=pointer]:
+                    - generic [ref=f40e2836]: Bug
+                    - generic [ref=f40e2847]: "0"
+              - generic [ref=f40e2848]:
+                - 'button "Domínio — calendário e invariantes de reserva spec Implementar valores/invariantes puros: capacidade inteira, intervalos semiabertos, precisão, fuso, dias úteis, janela de 30 dias e bloqueio ao início. Clock é porta injetada; nenhum HTTP/SQL. Oráculos T02–T09/T21 e contratos de invariantes/Clock. Escopo conceitual: definir workspace antes de qualquer execução. Planejamento do exercício SDLC; execução não autorizada nesta etapa. Recuperar contratos e ACs correntes antes de implementar. Requisitos técnicos: tr_res_hex, tr_res_clock. Integrações: ir_res_rules, ir_res_clock_port. Delivery completeness 0% 0%, 0 of 17 obligations C: Codex" [ref=f40e2849]':
+                  - generic [ref=f40e2850]:
+                    - generic "Move card" [ref=f40e2851]
+                    - generic [ref=f40e2859] [cursor=pointer]:
+                      - generic [ref=f40e2860]:
+                        - heading "Domínio — calendário e invariantes de reserva" [level=4] [ref=f40e2861]
+                        - generic "Linked to a spec" [ref=f40e2862]: spec
+                      - paragraph [ref=f40e2866]: "Implementar valores/invariantes puros: capacidade inteira, intervalos semiabertos, precisão, fuso, dias úteis, janela de 30 dias e bloqueio ao início. Clock é porta injetada; nenhum HTTP/SQL. Oráculos T02–T09/T21 e contratos de invariantes/Clock. Escopo conceitual: definir workspace antes de qualquer execução. Planejamento do exercício SDLC; execução não autorizada nesta etapa. Recuperar contratos e ACs correntes antes de implementar. Requisitos técnicos: tr_res_hex, tr_res_clock. Integrações: ir_res_rules, ir_res_clock_port."
+                      - generic "0 of 17 obligations supported by current, complete implementation evidence." [ref=f40e2867]:
+                        - generic [ref=f40e2868]:
+                          - generic [ref=f40e2869]: Delivery completeness
+                          - generic [ref=f40e2870]: 0%
+                        - progressbar "Task delivery completeness" [ref=f40e3513]
+                      - 'generic "Creator: 2edcc8b9-2f64-479e-acb1-c49724f76ae3" [ref=f40e2874]': "C: Codex"
+                - 'button "Aplicação — comandos, consultas e replay spec Orquestrar autenticação por porta, leitura própria, criação/alteração/cancelamento por UoW, CAS, recibo por ator/operação/chave e replay do snapshot original. Erros de negócio sem status HTTP. Nenhum commit parcial. Consultas e DTOs v2 incluem rótulos das salas. T11–T22,T26,T28,T36 e paridade. Planejamento do exercício SDLC; execução não autorizada nesta etapa. Recuperar contratos e ACs correntes antes de implementar. Requisitos técnicos: tr_res_hex, tr_res_atomic. Integrações: ir_res_usecases, ir_res_uow. Delivery completeness 0% 0%, 0 of 25 obligations C: Codex" [ref=f40e2875]':
+                  - generic [ref=f40e2876]:
+                    - generic "Move card" [ref=f40e2877]
+                    - generic [ref=f40e2885] [cursor=pointer]:
+                      - generic [ref=f40e2886]:
+                        - heading "Aplicação — comandos, consultas e replay" [level=4] [ref=f40e2887]
+                        - generic "Linked to a spec" [ref=f40e2888]: spec
+                      - paragraph [ref=f40e2892]: "Orquestrar autenticação por porta, leitura própria, criação/alteração/cancelamento por UoW, CAS, recibo por ator/operação/chave e replay do snapshot original. Erros de negócio sem status HTTP. Nenhum commit parcial. Consultas e DTOs v2 incluem rótulos das salas. T11–T22,T26,T28,T36 e paridade. Planejamento do exercício SDLC; execução não autorizada nesta etapa. Recuperar contratos e ACs correntes antes de implementar. Requisitos técnicos: tr_res_hex, tr_res_atomic. Integrações: ir_res_usecases, ir_res_uow."
+                      - generic "0 of 25 obligations supported by current, complete implementation evidence." [ref=f40e2893]:
+                        - generic [ref=f40e2894]:
+                          - generic [ref=f40e2895]: Delivery completeness
+                          - generic [ref=f40e2896]: 0%
+                        - progressbar "Task delivery completeness" [ref=f40e3514]
+                      - 'generic "Creator: 2edcc8b9-2f64-479e-acb1-c49724f76ae3" [ref=f40e2900]': "C: Codex"
+                - 'button "Persistência — UoW SQLite atômica e recuperável spec Adaptador externo implementa UoW pública, reserva+evento+recibo na mesma transação, exclusão/CAS sob concorrência, busy limitado a 2s, rollback e recuperação após resposta perdida. Leitura de recibos/histórico tipada. Executar T12/T13/T18/T19/T23–T25 e contrato de persistência; nunca importar privados. Planejamento do exercício SDLC; execução não autorizada nesta etapa. Recuperar contratos e ACs correntes antes de implementar. Requisitos técnicos: tr_res_atomic, tr_res_recovery. Integrações: ir_res_storage. Delivery completeness 0% 0%, 0 of 15 obligations C: Codex" [ref=f40e2901]':
+                  - generic [ref=f40e2902]:
+                    - generic "Move card" [ref=f40e2903]
+                    - generic [ref=f40e2911] [cursor=pointer]:
+                      - generic [ref=f40e2912]:
+                        - heading "Persistência — UoW SQLite atômica e recuperável" [level=4] [ref=f40e2913]
+                        - generic "Linked to a spec" [ref=f40e2914]: spec
+                      - paragraph [ref=f40e2918]: "Adaptador externo implementa UoW pública, reserva+evento+recibo na mesma transação, exclusão/CAS sob concorrência, busy limitado a 2s, rollback e recuperação após resposta perdida. Leitura de recibos/histórico tipada. Executar T12/T13/T18/T19/T23–T25 e contrato de persistência; nunca importar privados. Planejamento do exercício SDLC; execução não autorizada nesta etapa. Recuperar contratos e ACs correntes antes de implementar. Requisitos técnicos: tr_res_atomic, tr_res_recovery. Integrações: ir_res_storage."
+                      - generic "0 of 15 obligations supported by current, complete implementation evidence." [ref=f40e2919]:
+                        - generic [ref=f40e2920]:
+                          - generic [ref=f40e2921]: Delivery completeness
+                          - generic [ref=f40e2922]: 0%
+                        - progressbar "Task delivery completeness" [ref=f40e3515]
+                      - 'generic "Creator: 2edcc8b9-2f64-479e-acb1-c49724f76ae3" [ref=f40e2926]': "C: Codex"
+                - 'button "HTTP — sessão e seis contratos de reserva spec Implementar os seis contratos HTTP, mapear erros de negócio somente no adaptador. Aplicar sessão, isolamento, CSRF e perfis local_test/https_runtime; GET em query/path, IDs de alteração/cancelamento no path. DTO v2 e cursor vinculado ao ator. Validar schemas e recusas por operação; T15/T26/T27 e contratos HTTP. Planejamento do exercício SDLC; execução não autorizada nesta etapa. Recuperar contratos e ACs correntes antes de implementar. Requisitos técnicos: tr_res_security. Integrações: ir_res_search, ir_res_create, ir_res_list, ir_res_change, ir_res_cancel, ir_res_history, ir_res_identity_port. Delivery completeness 0% 0%, 0 of 31 obligations C: Codex" [ref=f40e2927]':
+                  - generic [ref=f40e2928]:
+                    - generic "Move card" [ref=f40e2929]
+                    - generic [ref=f40e2937] [cursor=pointer]:
+                      - generic [ref=f40e2938]:
+                        - heading "HTTP — sessão e seis contratos de reserva" [level=4] [ref=f40e2939]
+                        - generic "Linked to a spec" [ref=f40e2940]: spec
+                      - paragraph [ref=f40e2944]: "Implementar os seis contratos HTTP, mapear erros de negócio somente no adaptador. Aplicar sessão, isolamento, CSRF e perfis local_test/https_runtime; GET em query/path, IDs de alteração/cancelamento no path. DTO v2 e cursor vinculado ao ator. Validar schemas e recusas por operação; T15/T26/T27 e contratos HTTP. Planejamento do exercício SDLC; execução não autorizada nesta etapa. Recuperar contratos e ACs correntes antes de implementar. Requisitos técnicos: tr_res_security. Integrações: ir_res_search, ir_res_create, ir_res_list, ir_res_change, ir_res_cancel, ir_res_history, ir_res_identity_port."
+                      - generic "0 of 31 obligations supported by current, complete implementation evidence." [ref=f40e2945]:
+                        - generic [ref=f40e2946]:
+                          - generic [ref=f40e2947]: Delivery completeness
+                          - generic [ref=f40e2948]: 0%
+                        - progressbar "Task delivery completeness" [ref=f40e3516]
+                      - 'generic "Creator: 2edcc8b9-2f64-479e-acb1-c49724f76ae3" [ref=f40e2952]': "C: Codex"
+                - 'button "Frontend — busca e confirmação H01/H02 spec Implementar H01/H02 conforme Design System v1: carregando/vazio/falha distintos, resultados acessíveis, formulário preservado, revisão da intenção, uma chave por intenção e confirmação somente após sucesso. DTO v2 fornece nome/local. Tests T29/T30/T33; não presumir scripts funcionais nos mockups estáticos. Planejamento do exercício SDLC; execução não autorizada nesta etapa. Recuperar contratos e ACs correntes antes de implementar. Requisitos técnicos: tr_res_ui. Integrações: . Delivery completeness 0% 0%, 0 of 7 obligations C: Codex" [ref=f40e2953]':
+                  - generic [ref=f40e2954]:
+                    - generic "Move card" [ref=f40e2955]
+                    - generic [ref=f40e2963] [cursor=pointer]:
+                      - generic [ref=f40e2964]:
+                        - heading "Frontend — busca e confirmação H01/H02" [level=4] [ref=f40e2965]
+                        - generic "Linked to a spec" [ref=f40e2966]: spec
+                      - paragraph [ref=f40e2970]: "Implementar H01/H02 conforme Design System v1: carregando/vazio/falha distintos, resultados acessíveis, formulário preservado, revisão da intenção, uma chave por intenção e confirmação somente após sucesso. DTO v2 fornece nome/local. Tests T29/T30/T33; não presumir scripts funcionais nos mockups estáticos. Planejamento do exercício SDLC; execução não autorizada nesta etapa. Recuperar contratos e ACs correntes antes de implementar. Requisitos técnicos: tr_res_ui. Integrações: ."
+                      - generic "0 of 7 obligations supported by current, complete implementation evidence." [ref=f40e2971]:
+                        - generic [ref=f40e2972]:
+                          - generic [ref=f40e2973]: Delivery completeness
+                          - generic [ref=f40e2974]: 0%
+                        - progressbar "Task delivery completeness" [ref=f40e3517]
+                      - 'generic "Creator: 2edcc8b9-2f64-479e-acb1-c49724f76ae3" [ref=f40e2978]': "C: Codex"
+                - 'button "Frontend — gestão e cancelamento H03/H04 spec Implementar listagem própria, paginação, alteração com versão, conflito sem perda de dados, confirmação de cancelamento e histórico. Recarregar após replay para ações atuais. Seguir mockups H03/H04 e Design System v1; verificar T31/T32/T33. Planejamento do exercício SDLC; execução não autorizada nesta etapa. Recuperar contratos e ACs correntes antes de implementar. Requisitos técnicos: tr_res_ui. Integrações: . Delivery completeness 0% 0%, 0 of 9 obligations C: Codex" [ref=f40e2979]':
+                  - generic [ref=f40e2980]:
+                    - generic "Move card" [ref=f40e2981]
+                    - generic [ref=f40e2989] [cursor=pointer]:
+                      - generic [ref=f40e2990]:
+                        - heading "Frontend — gestão e cancelamento H03/H04" [level=4] [ref=f40e2991]
+                        - generic "Linked to a spec" [ref=f40e2992]: spec
+                      - paragraph [ref=f40e2996]: "Implementar listagem própria, paginação, alteração com versão, conflito sem perda de dados, confirmação de cancelamento e histórico. Recarregar após replay para ações atuais. Seguir mockups H03/H04 e Design System v1; verificar T31/T32/T33. Planejamento do exercício SDLC; execução não autorizada nesta etapa. Recuperar contratos e ACs correntes antes de implementar. Requisitos técnicos: tr_res_ui. Integrações: ."
+                      - generic "0 of 9 obligations supported by current, complete implementation evidence." [ref=f40e2997]:
+                        - generic [ref=f40e2998]:
+                          - generic [ref=f40e2999]: Delivery completeness
+                          - generic [ref=f40e3000]: 0%
+                        - progressbar "Task delivery completeness" [ref=f40e3518]
+                      - 'generic "Creator: 2edcc8b9-2f64-479e-acb1-c49724f76ae3" [ref=f40e3004]': "C: Codex"
+                - 'button "Composição e observabilidade dos comandos spec Composição externa injeta Clock, IdentityProvider e UoW; nenhum mecanismo no domínio/aplicação. Emitir log seguro e um contador por tentativa, incluindo replay/falha, sem segredos ou duplicação. Validar fronteiras/paridade T34/T35, contrato de composição e dois cenários de observabilidade. Planejamento do exercício SDLC; execução não autorizada nesta etapa. Recuperar contratos e ACs correntes antes de implementar. Requisitos técnicos: tr_res_hex. Integrações: ir_res_wiring. Delivery completeness 0% 0%, 0 of 13 obligations C: Codex" [ref=f40e3005]':
+                  - generic [ref=f40e3006]:
+                    - generic "Move card" [ref=f40e3007]
+                    - generic [ref=f40e3015] [cursor=pointer]:
+                      - generic [ref=f40e3016]:
+                        - heading "Composição e observabilidade dos comandos" [level=4] [ref=f40e3017]
+                        - generic "Linked to a spec" [ref=f40e3018]: spec
+                      - paragraph [ref=f40e3022]: "Composição externa injeta Clock, IdentityProvider e UoW; nenhum mecanismo no domínio/aplicação. Emitir log seguro e um contador por tentativa, incluindo replay/falha, sem segredos ou duplicação. Validar fronteiras/paridade T34/T35, contrato de composição e dois cenários de observabilidade. Planejamento do exercício SDLC; execução não autorizada nesta etapa. Recuperar contratos e ACs correntes antes de implementar. Requisitos técnicos: tr_res_hex. Integrações: ir_res_wiring."
+                      - generic "0 of 13 obligations supported by current, complete implementation evidence." [ref=f40e3023]:
+                        - generic [ref=f40e3024]:
+                          - generic [ref=f40e3025]: Delivery completeness
+                          - generic [ref=f40e3026]: 0%
+                        - progressbar "Task delivery completeness" [ref=f40e3519]
+                      - 'generic "Creator: 2edcc8b9-2f64-479e-acb1-c49724f76ae3" [ref=f40e3030]': "C: Codex"
+            - generic [ref=f40e3031]:
+              - generic [ref=f40e3034]:
+                - generic [ref=f40e3035]:
+                  - heading "Validation" [level=3] [ref=f40e3036]
+                  - generic "0 total cards" [ref=f40e3037]: "0"
+                - generic [ref=f40e3038]:
+                  - button "0 task cards" [pressed] [ref=f40e3039] [cursor=pointer]:
+                    - generic [ref=f40e3040]: Task
+                    - generic [ref=f40e3045]: "0"
+                  - button "0 test cards" [pressed] [ref=f40e3046] [cursor=pointer]:
+                    - generic [ref=f40e3047]: Test
+                    - generic [ref=f40e3051]: "0"
+                  - button "0 bug cards" [pressed] [ref=f40e3052] [cursor=pointer]:
+                    - generic [ref=f40e3053]: Bug
+                    - generic [ref=f40e3064]: "0"
+              - generic [ref=f40e3065]: No cards
+            - generic [ref=f40e3067]:
+              - generic [ref=f40e3070]:
+                - generic [ref=f40e3071]:
+                  - heading "Rejected" [level=3] [ref=f40e3072]
+                  - generic "0 total cards" [ref=f40e3073]: "0"
+                - generic [ref=f40e3074]:
+                  - button "0 task cards" [pressed] [ref=f40e3075] [cursor=pointer]:
+                    - generic [ref=f40e3076]: Task
+                    - generic [ref=f40e3081]: "0"
+                  - button "0 bug cards" [pressed] [ref=f40e3082] [cursor=pointer]:
+                    - generic [ref=f40e3083]: Bug
+                    - generic [ref=f40e3094]: "0"
+              - generic [ref=f40e3095]: No cards requiring rework
+            - generic [ref=f40e3097]:
+              - generic [ref=f40e3100]:
+                - generic [ref=f40e3101]:
+                  - heading "On Hold" [level=3] [ref=f40e3102]
+                  - generic "0 total cards" [ref=f40e3103]: "0"
+                - generic [ref=f40e3104]:
+                  - button "0 task cards" [pressed] [ref=f40e3105] [cursor=pointer]:
+                    - generic [ref=f40e3106]: Task
+                    - generic [ref=f40e3111]: "0"
+                  - button "0 test cards" [pressed] [ref=f40e3112] [cursor=pointer]:
+                    - generic [ref=f40e3113]: Test
+                    - generic [ref=f40e3117]: "0"
+                  - button "0 bug cards" [pressed] [ref=f40e3118] [cursor=pointer]:
+                    - generic [ref=f40e3119]: Bug
+                    - generic [ref=f40e3130]: "0"
+              - generic [ref=f40e3131]: No cards
+            - generic [ref=f40e3133]:
+              - generic [ref=f40e3136]:
+                - generic [ref=f40e3137]:
+                  - heading "Done" [level=3] [ref=f40e3138]
+                  - generic "0 total cards" [ref=f40e3139]: "0"
+                - generic [ref=f40e3140]:
+                  - button "0 task cards" [pressed] [ref=f40e3141] [cursor=pointer]:
+                    - generic [ref=f40e3142]: Task
+                    - generic [ref=f40e3147]: "0"
+                  - button "0 test cards" [pressed] [ref=f40e3148] [cursor=pointer]:
+                    - generic [ref=f40e3149]: Test
+                    - generic [ref=f40e3153]: "0"
+                  - button "0 bug cards" [pressed] [ref=f40e3154] [cursor=pointer]:
+                    - generic [ref=f40e3155]: Bug
+                    - generic [ref=f40e3166]: "0"
+              - generic [ref=f40e3167]: No cards
+            - generic [ref=f40e3169]:
+              - generic [ref=f40e3172]:
+                - generic [ref=f40e3173]:
+                  - heading "Cancelled" [level=3] [ref=f40e3174]
+                  - generic "0 total cards" [ref=f40e3175]: "0"
+                - generic [ref=f40e3176]:
+                  - button "0 task cards" [pressed] [ref=f40e3177] [cursor=pointer]:
+                    - generic [ref=f40e3178]: Task
+                    - generic [ref=f40e3183]: "0"
+                  - button "0 test cards" [pressed] [ref=f40e3184] [cursor=pointer]:
+                    - generic [ref=f40e3185]: Test
+                    - generic [ref=f40e3189]: "0"
+                  - button "0 bug cards" [pressed] [ref=f40e3190] [cursor=pointer]:
+                    - generic [ref=f40e3191]: Bug
+                    - generic [ref=f40e3202]: "0"
+              - generic [ref=f40e3203]: No cards
+          - status [ref=f40e3205]
+        - generic [ref=f40e3214]:
+          - generic [ref=f40e3215]:
+            - generic [ref=f40e3216]:
+              - combobox "Card status" [ref=f40e3217]:
+                - option "In Progress" [selected]
+                - option "Started"
+                - option "Validation"
+                - option "On Hold"
+                - option "Cancelled"
+              - heading "Domínio — calendário e invariantes de reserva" [level=2] [ref=f40e3218]
+            - button "Reserva de salas — consistê..." [ref=f40e3219] [cursor=pointer]
+            - generic [ref=f40e3223]:
+              - button "Open lineage graph" [ref=f40e3224] [cursor=pointer]
+              - button "Export report" [ref=f40e3229] [cursor=pointer]
+              - button "Refresh card" [ref=f40e3233] [cursor=pointer]
+              - button "Expand" [ref=f40e3239] [cursor=pointer]
+              - button "Close card dialog" [ref=f40e3245] [cursor=pointer]
+          - generic [ref=f40e3249]:
+            - tablist "Card sections" [ref=f40e3250]:
+              - tab "Details" [ref=f40e3251] [cursor=pointer]
+              - tab "Implementation Targets" [ref=f40e3256] [cursor=pointer]
+              - tab "Delivery" [selected] [ref=f40e3262] [cursor=pointer]
+              - tab "Resources" [ref=f40e3267] [cursor=pointer]
+              - tab "Q&A" [ref=f40e3273] [cursor=pointer]
+              - tab "Comments 1" [ref=f40e3278] [cursor=pointer]:
+                - generic [ref=f40e3281]: Comments
+                - generic [ref=f40e3282]: "1"
+              - tab "References" [ref=f40e3283] [cursor=pointer]
+              - tab "Validation" [ref=f40e3288] [cursor=pointer]
+              - tab "Activity" [ref=f40e3292] [cursor=pointer]
+            - button "Scroll Card sections right" [ref=f40e3298] [cursor=pointer]
+          - tabpanel "Delivery" [ref=f40e3338]:
+            - region "Delivery evidence (Definition of Done)" [ref=f40e3339]:
+              - region "Delivery completeness" [ref=f40e3340]:
+                - generic [ref=f40e3341]:
+                  - heading "Delivery completeness" [level=3] [ref=f40e3342]
+                  - generic [ref=f40e3343]: 0%
+                - progressbar "Delivery completeness" [ref=f40e3344]
+                - paragraph [ref=f40e3345]: 0 of 17 obligations supported by current, complete implementation evidence.
+                - paragraph [ref=f40e3346]: Equal weight per obligation. Progress notes and partial contributions do not add credit. 100% does not approve or complete the task.
+              - region "Recorded progress" [ref=f40e3347]:
+                - generic [ref=f40e3348]:
+                  - heading "Recorded progress" [level=3] [ref=f40e3349]
+                  - paragraph [ref=f40e3350]: Declared work does not complete this card or satisfy delivery gates. Recovery is limited to confirmed records and material you can access.
+                - group [ref=f40e3351]:
+                  - generic "SIMULAÇÃO SDLC — marco 25% do roteiro. Valores de capacidade inteira, intervalo semiaberto e erros de negócio definidos no roteiro. Nenhum código, arquivo, commit ou teste real foi produzido. Registro de contexto para testar o Pulse; não é prova autenticada de implementação. Checkpoint" [ref=f40e3352] [cursor=pointer]:
+                    - generic "SIMULAÇÃO SDLC — marco 25% do roteiro. Valores de capacidade inteira, intervalo semiaberto e erros de negócio definidos no roteiro. Nenhum código, arquivo, commit ou teste real foi produzido. Registro de contexto para testar o Pulse; não é prova autenticada de implementação." [ref=f40e3353]
+                    - generic [ref=f40e3354]: Checkpoint
+                - group [ref=f40e3357]:
+                  - generic "SIMULAÇÃO SDLC — marco 50% do roteiro. Calendário seg–sex08h–18h, alinhamento30min e Clock injetado descritos como implementados apenas na simulação. Nenhum código, arquivo, commit ou teste real foi produzido. Registro de contexto para testar o Pulse; não é prova autenticada de implementação. Checkpoint" [ref=f40e3358] [cursor=pointer]:
+                    - generic "SIMULAÇÃO SDLC — marco 50% do roteiro. Calendário seg–sex08h–18h, alinhamento30min e Clock injetado descritos como implementados apenas na simulação. Nenhum código, arquivo, commit ou teste real foi produzido. Registro de contexto para testar o Pulse; não é prova autenticada de implementação." [ref=f40e3359]
+                    - generic [ref=f40e3360]: Checkpoint
+                - region "Progress history" [ref=f40e3363]:
+                  - button "Restart history" [ref=f40e3520] [cursor=pointer]
+                  - paragraph [ref=f40e3521]: Newest first. 2 saved checkpoints. Earlier pending work is not resolved by a newer note.
+                  - group [ref=f40e3522]:
+                    - generic "SIMULAÇÃO SDLC — marco 50% do roteiro. Calendário seg–sex08h–18h, alinhamento30min e Clock injetado descritos como implementados apenas na simulação. Nenhum código, arquivo, commit ou teste real foi produzido. Registro de contexto para testar o Pulse; não é prova autenticada de implementação. Checkpoint" [ref=f40e3523] [cursor=pointer]:
+                      - generic "SIMULAÇÃO SDLC — marco 50% do roteiro. Calendário seg–sex08h–18h, alinhamento30min e Clock injetado descritos como implementados apenas na simulação. Nenhum código, arquivo, commit ou teste real foi produzido. Registro de contexto para testar o Pulse; não é prova autenticada de implementação." [ref=f40e3524]
+                      - generic [ref=f40e3525]: Checkpoint
+                  - group [ref=f40e3528]:
+                    - generic "SIMULAÇÃO SDLC — marco 25% do roteiro. Valores de capacidade inteira, intervalo semiaberto e erros de negócio definidos no roteiro. Nenhum código, arquivo, commit ou teste real foi produzido. Registro de contexto para testar o Pulse; não é prova autenticada de implementação. Checkpoint" [ref=f40e3529] [cursor=pointer]:
+                      - generic "SIMULAÇÃO SDLC — marco 25% do roteiro. Valores de capacidade inteira, intervalo semiaberto e erros de negócio definidos no roteiro. Nenhum código, arquivo, commit ou teste real foi produzido. Registro de contexto para testar o Pulse; não é prova autenticada de implementação." [ref=f40e3530]
+                      - generic [ref=f40e3531]: Checkpoint
+                  - paragraph [ref=f40e3534]: End of this edition’s progress history.
+                - region "Accumulated delivery context" [ref=f40e3365]:
+                  - group [ref=f40e3366]:
+                    - generic "Read accumulated delivery context" [ref=f40e3367] [cursor=pointer]
+                  - region "Delivery record history" [ref=f40e3371]:
+                    - heading "Delivery record history" [level=4] [ref=f40e3372]
+                    - paragraph [ref=f40e3373]: Edition 4 · Current
+                    - button "Browse delivery records" [ref=f40e3374] [cursor=pointer]
+                    - group [ref=f40e3375]:
+                      - generic "Previous versions 3" [ref=f40e3376] [cursor=pointer]:
+                        - generic "Previous versions" [ref=f40e3377]
+                        - generic [ref=f40e3378]: "3"
+                - generic [ref=f40e3381]:
+                  - heading "New checkpoint" [level=4] [ref=f40e3382]
+                  - generic [ref=f40e3383]:
+                    - text: Work recorded
+                    - textbox "Work recorded" [ref=f40e3384]
+                  - generic [ref=f40e3385]:
+                    - text: Remaining work
+                    - textbox "Remaining work" [ref=f40e3386]
+                  - generic [ref=f40e3387]:
+                    - checkbox "Work is in an external dirty workspace" [ref=f40e3388]
+                    - text: Work is in an external dirty workspace
+                  - generic [ref=f40e3389]:
+                    - text: Code change in this checkpoint
+                    - combobox "Code change in this checkpoint" [ref=f40e3390]:
+                      - option "Select the effect on code…" [selected]
+                      - option "Context only — no code change"
+                      - option "Code changed for selected Targets"
+                      - option "Code changed; affected scope is unknown"
+                  - button "Save progress" [disabled] [ref=f40e3391]
+              - region "Accumulated impact claims" [ref=f40e3392]:
+                - heading "Accumulated impact claims" [level=4] [ref=f40e3393]
+                - paragraph [ref=f40e3394]: 0 active declarations. This view does not verify changes or approve delivery.
+                - paragraph [ref=f40e3395]: No incremental impact declarations.
+                - list
+                - list
+              - generic [ref=f40e3396]:
+                - generic [ref=f40e3397]:
+                  - heading "Delivery Evidence (Definition of Done)" [level=3] [ref=f40e3398]
+                  - generic [ref=f40e3399]: Blocking · 17 of 17 unproven
+                - list [ref=f40e3400]:
+                  - listitem [ref=f40e3401]:
+                    - generic [ref=f40e3402]:
+                      - generic [ref=f40e3403]: Relógio UTC substituível
+                      - generic [ref=f40e3404]:
+                        - text: AC
+                        - generic [ref=f40e3405]: (ac_ir_res_clock_port)
+                    - generic [ref=f40e3406]: ◌ No accepted proof
+                  - listitem [ref=f40e3407]:
+                    - generic [ref=f40e3408]:
+                      - generic [ref=f40e3409]: Invariantes sem infraestrutura
+                      - generic [ref=f40e3410]:
+                        - text: AC
+                        - generic [ref=f40e3411]: (ac_ir_res_rules)
+                    - generic [ref=f40e3412]: ◌ No accepted proof
+                  - listitem [ref=f40e3413]:
+                    - generic [ref=f40e3414]:
+                      - generic [ref=f40e3415]: Calendário e limites temporais
+                      - generic [ref=f40e3416]:
+                        - text: AC
+                        - generic [ref=f40e3417]: (ac_res_calendar)
+                    - generic [ref=f40e3418]: ◌ No accepted proof
+                  - listitem [ref=f40e3419]:
+                    - generic [ref=f40e3420]:
+                      - generic [ref=f40e3421]: Capacidade da sala
+                      - generic [ref=f40e3422]:
+                        - text: AC
+                        - generic [ref=f40e3423]: (ac_res_capacity)
+                    - generic [ref=f40e3424]: ◌ No accepted proof
+                  - listitem [ref=f40e3425]:
+                    - generic [ref=f40e3426]:
+                      - generic [ref=f40e3427]: Relógio após aquisição
+                      - generic [ref=f40e3428]:
+                        - text: AC
+                        - generic [ref=f40e3429]: (ac_res_clock)
+                    - generic [ref=f40e3430]: ◌ No accepted proof
+                  - listitem [ref=f40e3431]:
+                    - generic [ref=f40e3432]:
+                      - generic [ref=f40e3433]: Exclusão de sobreposição
+                      - generic [ref=f40e3434]:
+                        - text: BR
+                        - generic [ref=f40e3435]: (br_5278b8d5)
+                    - generic [ref=f40e3436]: ◌ No accepted proof
+                  - listitem [ref=f40e3437]:
+                    - generic [ref=f40e3438]:
+                      - generic [ref=f40e3439]: Ciclo de vida e versão
+                      - generic [ref=f40e3440]:
+                        - text: BR
+                        - generic [ref=f40e3441]: (br_61ffa7b7)
+                    - generic [ref=f40e3442]: ◌ No accepted proof
+                  - listitem [ref=f40e3443]:
+                    - generic [ref=f40e3444]:
+                      - generic [ref=f40e3445]: Calendário e capacidade
+                      - generic [ref=f40e3446]:
+                        - text: BR
+                        - generic [ref=f40e3447]: (br_f4101c5c)
+                    - generic [ref=f40e3448]: ◌ No accepted proof
+                  - listitem [ref=f40e3449]:
+                    - generic [ref=f40e3450]:
+                      - generic [ref=f40e3451]: Escopo conceitual do exercício
+                      - generic [ref=f40e3452]:
+                        - text: Decision
+                        - generic [ref=f40e3453]: (dec_1d23379a)
+                    - generic [ref=f40e3454]: ◌ No accepted proof
+                  - listitem [ref=f40e3455]:
+                    - generic [ref=f40e3456]:
+                      - generic [ref=f40e3457]: Cancelar reserva
+                      - generic [ref=f40e3458]:
+                        - text: FR
+                        - generic [ref=f40e3459]: (fr_res_cancel)
+                    - generic [ref=f40e3460]: ◌ No accepted proof
+                  - listitem [ref=f40e3461]:
+                    - generic [ref=f40e3462]:
+                      - generic [ref=f40e3463]: Alterar reserva
+                      - generic [ref=f40e3464]:
+                        - text: FR
+                        - generic [ref=f40e3465]: (fr_res_change)
+                    - generic [ref=f40e3466]: ◌ No accepted proof
+                  - listitem [ref=f40e3467]:
+                    - generic [ref=f40e3468]:
+                      - generic [ref=f40e3469]: Criar reserva
+                      - generic [ref=f40e3470]:
+                        - text: FR
+                        - generic [ref=f40e3471]: (fr_res_create)
+                    - generic [ref=f40e3472]: ◌ No accepted proof
+                  - listitem [ref=f40e3473]:
+                    - generic [ref=f40e3474]:
+                      - generic [ref=f40e3475]: Consultar salas disponíveis
+                      - generic [ref=f40e3476]:
+                        - text: FR
+                        - generic [ref=f40e3477]: (fr_res_search)
+                    - generic [ref=f40e3478]: ◌ No accepted proof
+                  - listitem [ref=f40e3479]:
+                    - generic [ref=f40e3480]:
+                      - generic [ref=f40e3481]: Clock
+                      - generic [ref=f40e3482]:
+                        - text: IR
+                        - generic [ref=f40e3483]: (ir_res_clock_port)
+                    - generic [ref=f40e3484]: ◌ No accepted proof
+                  - listitem [ref=f40e3485]:
+                    - generic [ref=f40e3486]:
+                      - generic [ref=f40e3487]: Contrato de invariantes
+                      - generic [ref=f40e3488]:
+                        - text: IR
+                        - generic [ref=f40e3489]: (ir_res_rules)
+                    - generic [ref=f40e3490]: ◌ No accepted proof
+                  - listitem [ref=f40e3491]:
+                    - generic [ref=f40e3492]:
+                      - generic [ref=f40e3493]: Tempo determinístico
+                      - generic [ref=f40e3494]:
+                        - text: TR
+                        - generic [ref=f40e3495]: (tr_res_clock)
+                    - generic [ref=f40e3496]: ◌ No accepted proof
+                  - listitem [ref=f40e3497]:
+                    - generic [ref=f40e3498]:
+                      - generic [ref=f40e3499]: Isolamento hexagonal
+                      - generic [ref=f40e3500]:
+                        - text: TR
+                        - generic [ref=f40e3501]: (tr_res_hex)
+                    - generic [ref=f40e3502]: ◌ No accepted proof
+                - paragraph [ref=f40e3503]: Test-phase verification is aggregated at the Spec rollup; this card's DoD requires implementation proof only.
+              - generic [ref=f40e3504]:
+                - generic [ref=f40e3505]: ⚠
+                - generic [ref=f40e3506]:
+                  - generic [ref=f40e3507]: Move to Done rejected — delivery_evidence_incomplete
+                  - generic [ref=f40e3508]:
+                    - text: 17 obligations lack accepted proof. Record delivery evidence for
+                    - strong [ref=f40e3509]: Relógio UTC substituível
+                    - text: and 16 more, or request a human waiver.
+              - generic [ref=f40e3510]:
+                - button "Record Delivery Evidence" [ref=f40e3511] [cursor=pointer]
+                - button "Request Waiver (human)" [ref=f40e3512] [cursor=pointer]
+          - button "Delete" [ref=f40e3327] [cursor=pointer]

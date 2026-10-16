@@ -1,5 +1,9 @@
 # Installed Community 0.3.3 E2E checkpoint — 2026-09-14
 
+Historical qualification: the v0.4.0 simplification removes the public `kg` CLI
+group, including migration/export/subtype commands described below. These results
+record the earlier version; see the README for current commands.
+
 The subsequent run on the newly created E2E board is documented in
 [New-board installed acceptance](E2E_NEW_BOARD_2026_09_14.md). It is a separate
 fixture and a partial acceptance, not a replacement of this historical record.

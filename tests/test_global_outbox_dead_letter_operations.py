@@ -264,3 +264,72 @@ async def test_guard_conflict_rolls_back_the_entire_multi_row_selection(tmp_path
             assert second.payload["_dlq_reprocess"] == {"reason": "winner"}
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["verify", "reprocess"])
+async def test_invalid_stored_counter_is_refused_without_conversion(tmp_path, operation):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'invalid-counter.db'}")
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    store = CommunitySqlAlchemyGlobalOutboxStore()
+    operations = GlobalOutboxDeadLetterOperations(store=store, clock=lambda: NOW)
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(GlobalUpdateOutbox.__table__.create)
+        async with sessions() as session:
+            session.add(_row("invalid", offset=0, retry_count=-2))
+            await session.commit()
+        async with sessions() as session:
+            with pytest.raises(ValueError, match="global_outbox_retry_count_invalid"):
+                if operation == "verify":
+                    await operations.verify(context=session, dead_letter_ids=["invalid"])
+                else:
+                    await operations.reprocess(context=session, dead_letter_ids=["invalid"],
+                                               reason="native_retry")
+            await session.commit()
+        async with sessions() as session:
+            row = await session.get(GlobalUpdateOutbox, "invalid")
+            assert row.retry_count == -2
+            assert row.processed_at is None
+            assert row.payload == {"artifact_id": "artifact-invalid"}
+            assert row.last_error == "graph_unavailable: failed to open global graph"
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_save_refuses_corrupted_current_state_and_rolls_back_whole_selection(tmp_path):
+    from sqlalchemy import update
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'invalid-save.db'}")
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    store = CommunitySqlAlchemyGlobalOutboxStore()
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(GlobalUpdateOutbox.__table__.create)
+        async with sessions() as session:
+            session.add_all([_row("first", offset=0, retry_count=0),
+                             _row("second", offset=1, retry_count=0)])
+            await session.commit()
+        async with sessions() as session:
+            records = await store.get_events_by_ids(context=session, ids=("first", "second"))
+        async with sessions() as session:
+            await session.execute(update(GlobalUpdateOutbox).where(
+                GlobalUpdateOutbox.id == "second").values(retry_count=-2))
+            await session.commit()
+        for record in records:
+            record.retry_count = 1
+            record.last_error = "new-error"
+        async with sessions() as session:
+            with pytest.raises(GlobalOutboxMutationConflict,
+                               match="global_outbox_save_selection_changed"):
+                await store.save_events(session, records)
+            await session.commit()
+        async with sessions() as session:
+            rows = {r.id: r for r in (await session.execute(select(GlobalUpdateOutbox))).scalars()}
+            assert rows["first"].retry_count == 0
+            assert rows["second"].retry_count == -2
+            assert all(r.last_error == "graph_unavailable: failed to open global graph"
+                       for r in rows.values())
+    finally:
+        await engine.dispose()

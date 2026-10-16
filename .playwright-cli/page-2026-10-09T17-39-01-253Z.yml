@@ -1,0 +1,278 @@
+- generic [ref=f39e3]:
+  - banner [ref=f39e4]:
+    - generic [ref=f39e5]:
+      - generic [ref=f39e6]:
+        - button "Hide sidebar" [ref=f39e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f39e12]
+        - generic [ref=f39e31]: / My Board
+      - generic [ref=f39e32]:
+        - button "Refresh board" [ref=f39e33] [cursor=pointer]
+        - button [ref=f39e40] [cursor=pointer]
+  - generic [ref=f39e13]:
+    - complementary [ref=f39e14]:
+      - generic [ref=f39e15]:
+        - generic [ref=f39e17]:
+          - heading "Boards" [level=2] [ref=f39e18]
+          - button "New board" [ref=f39e19] [cursor=pointer]
+        - navigation [ref=f39e21]:
+          - generic [ref=f39e22]:
+            - heading "My Boards" [level=3] [ref=f39e23]
+            - list [ref=f39e44]:
+              - listitem [ref=f39e45]:
+                - button "My Board" [ref=f39e46] [cursor=pointer]
+    - main [ref=f39e26]:
+      - group "Board views" [ref=f39e53]:
+        - button "Stories" [ref=f39e54] [cursor=pointer]
+        - button "Ideations" [ref=f39e58] [cursor=pointer]
+        - button "Refinements" [ref=f39e61] [cursor=pointer]
+        - button "Specs" [ref=f39e66] [cursor=pointer]
+        - button "Tasks" [active] [pressed] [ref=f39e71] [cursor=pointer]
+      - generic [ref=f39e213]:
+        - generic [ref=f39e214]:
+          - textbox "Search cards…" [ref=f39e216]
+          - button "Unlinked" [ref=f39e219] [cursor=pointer]
+          - button "Filter specs..." [ref=f39e221] [cursor=pointer]
+          - button "Show archived" [ref=f39e225] [cursor=pointer]
+        - generic [ref=f39e226]:
+          - generic [ref=f39e227]:
+            - generic [ref=f39e228]:
+              - generic [ref=f39e230]:
+                - generic [ref=f39e231]:
+                  - generic [ref=f39e232]:
+                    - heading "Not Started" [level=3] [ref=f39e233]
+                    - generic "27 total cards" [ref=f39e234]: "27"
+                  - generic [ref=f39e235]:
+                    - button "7 task cards" [pressed] [ref=f39e236] [cursor=pointer]:
+                      - generic [ref=f39e237]: Task
+                      - generic [ref=f39e242]: "7"
+                    - button "20 test cards" [pressed] [ref=f39e243] [cursor=pointer]:
+                      - generic [ref=f39e244]: Test
+                      - generic [ref=f39e248]: "20"
+                    - button "0 bug cards" [pressed] [ref=f39e249] [cursor=pointer]:
+                      - generic [ref=f39e250]: Bug
+                      - generic [ref=f39e261]: "0"
+                - button "Add card to Not Started" [ref=f39e262] [cursor=pointer]
+              - generic [ref=f39e264]:
+                - 'button "test [TEST] Disponibilidade e capacidade spec Plano de verificação da aplicação fictícia. Implementar e executar os cenários vinculados e registrar resultados observados; nenhum teste foi executado nesta etapa. T01 — Busca por intervalo: Salas Ipê6/Aurora10, com Ipê ocupada09h–10h em09/10 → Buscar09/10 09h–10h para4 pessoas → Somente Aurora retornada, sem dados de terceiros. T02 — Limites de capacidade: Sala capacidade6 e intervalo livre → Enviar participantes1,6,0,-1,1.5,7 → 1/6 aceitos; demais invalid_input, sem escrita. T10 — Vazio versus falha: Nenhuma sala livre; depois falha de leitura injetada → Consultar nos dois estados → Primeiro lista vazia;segundo unavailable, nunca vazio. 3 scenarios linked C: Codex" [ref=f39e265]':
+                  - generic [ref=f39e266]:
+                    - generic "Move card" [ref=f39e267]
+                    - generic [ref=f39e275] [cursor=pointer]:
+                      - generic [ref=f39e276]:
+                        - generic [ref=f39e277]: test
+                        - heading "[TEST] Disponibilidade e capacidade" [level=4] [ref=f39e280]
+                        - generic "Linked to a spec" [ref=f39e281]: spec
+                      - paragraph [ref=f39e285]: "Plano de verificação da aplicação fictícia. Implementar e executar os cenários vinculados e registrar resultados observados; nenhum teste foi executado nesta etapa. T01 — Busca por intervalo: Salas Ipê6/Aurora10, com Ipê ocupada09h–10h em09/10 → Buscar09/10 09h–10h para4 pessoas → Somente Aurora retornada, sem dados de terceiros. T02 — Limites de capacidade: Sala capacidade6 e intervalo livre → Enviar participantes1,6,0,-1,1.5,7 → 1/6 aceitos; demais invalid_input, sem escrita. T10 — Vazio versus falha: Nenhuma sala livre; depois falha de leitura injetada → Consultar nos dois estados → Primeiro lista vazia;segundo unavailable, nunca vazio."
+                      - generic [ref=f39e286]: 3 scenarios linked
+                      - 'generic "Creator: 2edcc8b9-2f64-479e-acb1-c49724f76ae3" [ref=f39e292]': "C: Codex"
+                - 'button "test [TEST] Concorrência entre reservas spec Plano de verificação da aplicação fictícia. Recuperar os ACs e seus perfis pelo contexto full/all antes da execução. Implementar o método declarado, observar os oráculos e registrar evidência real; cenários ainda NÃO EXECUTADOS. T03 — Intervalos sobrepostos: Confirmed09h–10h na salaIpê → Tentar08h30–09h30,09h–10h,09h30–10h30,08h30–10h30 e10h–11h → Quatro sobrepostos recusados; adjacente10h–11h aceito. T04 — Salas independentes: Reserva09h–10h naIpê → Reservar mesmo horário naAurora → Confirmar Aurora sem alterarIpê. T12 — Criações concorrentes: Duas conexões e chaves distintas,mesmo intervalo/sala → Disparar dois comandos concorrentes → Exatamente uma confirmação,uma recusa; nenhuma sobreposição. 3 scenarios linked C: Codex" [ref=f39e293]':
+                  - generic [ref=f39e294]:
+                    - generic "Move card" [ref=f39e295]
+                    - generic [ref=f39e303] [cursor=pointer]:
+                      - generic [ref=f39e304]:
+                        - generic [ref=f39e305]: test
+                        - heading "[TEST] Concorrência entre reservas" [level=4] [ref=f39e308]
+                        - generic "Linked to a spec" [ref=f39e309]: spec
+                      - paragraph [ref=f39e313]: "Plano de verificação da aplicação fictícia. Recuperar os ACs e seus perfis pelo contexto full/all antes da execução. Implementar o método declarado, observar os oráculos e registrar evidência real; cenários ainda NÃO EXECUTADOS. T03 — Intervalos sobrepostos: Confirmed09h–10h na salaIpê → Tentar08h30–09h30,09h–10h,09h30–10h30,08h30–10h30 e10h–11h → Quatro sobrepostos recusados; adjacente10h–11h aceito. T04 — Salas independentes: Reserva09h–10h naIpê → Reservar mesmo horário naAurora → Confirmar Aurora sem alterarIpê. T12 — Criações concorrentes: Duas conexões e chaves distintas,mesmo intervalo/sala → Disparar dois comandos concorrentes → Exatamente uma confirmação,uma recusa; nenhuma sobreposição."
+                      - generic [ref=f39e314]: 3 scenarios linked
+                      - 'generic "Creator: 2edcc8b9-2f64-479e-acb1-c49724f76ae3" [ref=f39e320]': "C: Codex"
+                - 'button "test [TEST] Calendário e precisão spec Plano de verificação da aplicação fictícia. Recuperar os ACs e seus perfis pelo contexto full/all antes da execução. Implementar o método declarado, observar os oráculos e registrar evidência real; cenários ainda NÃO EXECUTADOS. T05 — Duração: Intervalo futuro em dia útil → Tentar30min,4h,0,-30min,29min,4h30 → 30min/4h aceitos; demais recusados. T06 — Precisão e offset: Data útil e fusoAmerica/Sao_Paulo → Enviar09:15,09:00:01,micros ou offset incoerente → Recusar cada entrada sem arredondamento nem escrita. T07 — Expediente: Clock anterior à segunda-feira da fixture → Tentar seg08h–08h30,sex17h30–18h,07h30,fim18h30,virada de dia,sábado → Dois primeiros aceitos; demais recusados. 3 scenarios linked C: Codex" [ref=f39e321]':
+                  - generic [ref=f39e322]:
+                    - generic "Move card" [ref=f39e323]
+                    - generic [ref=f39e331] [cursor=pointer]:
+                      - generic [ref=f39e332]:
+                        - generic [ref=f39e333]: test
+                        - heading "[TEST] Calendário e precisão" [level=4] [ref=f39e336]
+                        - generic "Linked to a spec" [ref=f39e337]: spec
+                      - paragraph [ref=f39e341]: "Plano de verificação da aplicação fictícia. Recuperar os ACs e seus perfis pelo contexto full/all antes da execução. Implementar o método declarado, observar os oráculos e registrar evidência real; cenários ainda NÃO EXECUTADOS. T05 — Duração: Intervalo futuro em dia útil → Tentar30min,4h,0,-30min,29min,4h30 → 30min/4h aceitos; demais recusados. T06 — Precisão e offset: Data útil e fusoAmerica/Sao_Paulo → Enviar09:15,09:00:01,micros ou offset incoerente → Recusar cada entrada sem arredondamento nem escrita. T07 — Expediente: Clock anterior à segunda-feira da fixture → Tentar seg08h–08h30,sex17h30–18h,07h30,fim18h30,virada de dia,sábado → Dois primeiros aceitos; demais recusados."
+                      - generic [ref=f39e342]: 3 scenarios linked
+                      - 'generic "Creator: 2edcc8b9-2f64-479e-acb1-c49724f76ae3" [ref=f39e348]': "C: Codex"
+                - 'button "test [TEST] Relógio e limites temporais spec Plano de verificação da aplicação fictícia. Recuperar os ACs e seus perfis pelo contexto full/all antes da execução. Implementar o método declarado, observar os oráculos e registrar evidência real; cenários ainda NÃO EXECUTADOS. T08 — Início futuro: Clock09h exato → Enviar início09h,08h30,09h30 → Igual/passado recusados;09h30 aceito. T09 — Horizonte: Clock2026-10-06 12h local; +30/+31 são dias úteis → Buscar/reservar05/11 e06/11 às09h → Dia+30 aceito;dia+31 recusado. T21 — Bloqueio temporal: Reserva inicia09h; Clock09h e depois09h01 → Cancelar nos dois instantes → reservation_locked,sem mutação. 3 scenarios linked C: Codex" [ref=f39e349]':
+                  - generic [ref=f39e350]:
+                    - generic "Move card" [ref=f39e351]
+                    - generic [ref=f39e359] [cursor=pointer]:
+                      - generic [ref=f39e360]:
+                        - generic [ref=f39e361]: test
+                        - heading "[TEST] Relógio e limites temporais" [level=4] [ref=f39e364]
+                        - generic "Linked to a spec" [ref=f39e365]: spec
+                      - paragraph [ref=f39e369]: "Plano de verificação da aplicação fictícia. Recuperar os ACs e seus perfis pelo contexto full/all antes da execução. Implementar o método declarado, observar os oráculos e registrar evidência real; cenários ainda NÃO EXECUTADOS. T08 — Início futuro: Clock09h exato → Enviar início09h,08h30,09h30 → Igual/passado recusados;09h30 aceito. T09 — Horizonte: Clock2026-10-06 12h local; +30/+31 são dias úteis → Buscar/reservar05/11 e06/11 às09h → Dia+30 aceito;dia+31 recusado. T21 — Bloqueio temporal: Reserva inicia09h; Clock09h e depois09h01 → Cancelar nos dois instantes → reservation_locked,sem mutação."
+                      - generic [ref=f39e370]: 3 scenarios linked
+                      - 'generic "Creator: 2edcc8b9-2f64-479e-acb1-c49724f76ae3" [ref=f39e376]': "C: Codex"
+                - 'button "test [TEST] Confirmação e replay spec Plano de verificação da aplicação fictícia. Recuperar os ACs e seus perfis pelo contexto full/all antes da execução. Implementar o método declarado, observar os oráculos e registrar evidência real; cenários ainda NÃO EXECUTADOS. T11 — Criação atômica: Sala livre e sessãoA → Criar com chave inédita → Uma confirmedv1,um evento,um recibo; resposta após commit. T13 — Replay sequencial e concorrente: Mesma sessão/chave/carga → Enviar sequencialmente e em duas conexões → Mesmo reservation_id,um evento,um recibo; demais replayed=true. T14 — Chave com carga diferente: Recibo confirmado da chaveK → ReutilizarK mudando período → idempotency_conflict; estado anterior intacto. 3 scenarios linked C: Codex" [ref=f39e377]':
+                  - generic [ref=f39e378]:
+                    - generic "Move card" [ref=f39e379]
+                    - generic [ref=f39e387] [cursor=pointer]:
+                      - generic [ref=f39e388]:
+                        - generic [ref=f39e389]: test
+                        - heading "[TEST] Confirmação e replay" [level=4] [ref=f39e392]
+                        - generic "Linked to a spec" [ref=f39e393]: spec
+                      - paragraph [ref=f39e397]: "Plano de verificação da aplicação fictícia. Recuperar os ACs e seus perfis pelo contexto full/all antes da execução. Implementar o método declarado, observar os oráculos e registrar evidência real; cenários ainda NÃO EXECUTADOS. T11 — Criação atômica: Sala livre e sessãoA → Criar com chave inédita → Uma confirmedv1,um evento,um recibo; resposta após commit. T13 — Replay sequencial e concorrente: Mesma sessão/chave/carga → Enviar sequencialmente e em duas conexões → Mesmo reservation_id,um evento,um recibo; demais replayed=true. T14 — Chave com carga diferente: Recibo confirmado da chaveK → ReutilizarK mudando período → idempotency_conflict; estado anterior intacto."
+                      - generic [ref=f39e398]: 3 scenarios linked
+                      - 'generic "Creator: 2edcc8b9-2f64-479e-acb1-c49724f76ae3" [ref=f39e404]': "C: Codex"
+                - 'button "test [TEST] Isolamento e sessão spec Plano de verificação da aplicação fictícia. Recuperar os ACs e seus perfis pelo contexto full/all antes da execução. Implementar o método declarado, observar os oráculos e registrar evidência real; cenários ainda NÃO EXECUTADOS. T15 — Isolamento de recibo: A confirmou comK;B autenticado → B usaK em comando próprio → Não retorna nem revela reciboA; intençãoB isolada. T26 — ID alheio e owner forjado: A/B com reservas distintas → A lê/altera/cancela/históricoB; envia owner_id → 404 paraB e inexistente; campo forjado recusado;nenhum vazamento. T27 — Sessão e CSRF: Sessão ausente,expirada,revogada ou CSRF inválido → Consultar/mutar e repetir recibo anterior → Sessão inválida401; CSRF bloqueia comando;zero mutações e cookies nunca em logs. 3 scenarios linked C: Codex" [ref=f39e405]':
+                  - generic [ref=f39e406]:
+                    - generic "Move card" [ref=f39e407]
+                    - generic [ref=f39e415] [cursor=pointer]:
+                      - generic [ref=f39e416]:
+                        - generic [ref=f39e417]: test
+                        - heading "[TEST] Isolamento e sessão" [level=4] [ref=f39e420]
+                        - generic "Linked to a spec" [ref=f39e421]: spec
+                      - paragraph [ref=f39e425]: "Plano de verificação da aplicação fictícia. Recuperar os ACs e seus perfis pelo contexto full/all antes da execução. Implementar o método declarado, observar os oráculos e registrar evidência real; cenários ainda NÃO EXECUTADOS. T15 — Isolamento de recibo: A confirmou comK;B autenticado → B usaK em comando próprio → Não retorna nem revela reciboA; intençãoB isolada. T26 — ID alheio e owner forjado: A/B com reservas distintas → A lê/altera/cancela/históricoB; envia owner_id → 404 paraB e inexistente; campo forjado recusado;nenhum vazamento. T27 — Sessão e CSRF: Sessão ausente,expirada,revogada ou CSRF inválido → Consultar/mutar e repetir recibo anterior → Sessão inválida401; CSRF bloqueia comando;zero mutações e cookies nunca em logs."
+                      - generic [ref=f39e426]: 3 scenarios linked
+                      - 'generic "Creator: 2edcc8b9-2f64-479e-acb1-c49724f76ae3" [ref=f39e432]': "C: Codex"
+                - 'button "test [TEST] Alteração e CAS spec Plano de verificação da aplicação fictícia. Recuperar os ACs e seus perfis pelo contexto full/all antes da execução. Implementar o método declarado, observar os oráculos e registrar evidência real; cenários ainda NÃO EXECUTADOS. T16 — Alteração válida: ReservaA futura v1,novo intervalo livre → Alterar com expected_version1 → Versão2 e evento before/after corretos. T17 — Alteração conflitante: OriginalA confirmada; destino ocupado → Alterar para destino ocupado → Recusar; original,versão e histórico preservados. T18 — CAS concorrente: ReservaA v1,duas conexões → Alterar duas vezes com expected_version1 → Só uma vence; outra version_conflict,sem sobrescrita. 3 scenarios linked C: Codex" [ref=f39e433]':
+                  - generic [ref=f39e434]:
+                    - generic "Move card" [ref=f39e435]
+                    - generic [ref=f39e443] [cursor=pointer]:
+                      - generic [ref=f39e444]:
+                        - generic [ref=f39e445]: test
+                        - heading "[TEST] Alteração e CAS" [level=4] [ref=f39e448]
+                        - generic "Linked to a spec" [ref=f39e449]: spec
+                      - paragraph [ref=f39e453]: "Plano de verificação da aplicação fictícia. Recuperar os ACs e seus perfis pelo contexto full/all antes da execução. Implementar o método declarado, observar os oráculos e registrar evidência real; cenários ainda NÃO EXECUTADOS. T16 — Alteração válida: ReservaA futura v1,novo intervalo livre → Alterar com expected_version1 → Versão2 e evento before/after corretos. T17 — Alteração conflitante: OriginalA confirmada; destino ocupado → Alterar para destino ocupado → Recusar; original,versão e histórico preservados. T18 — CAS concorrente: ReservaA v1,duas conexões → Alterar duas vezes com expected_version1 → Só uma vence; outra version_conflict,sem sobrescrita."
+                      - generic [ref=f39e454]: 3 scenarios linked
+                      - 'generic "Creator: 2edcc8b9-2f64-479e-acb1-c49724f76ae3" [ref=f39e460]': "C: Codex"
+                - 'button "test [TEST] Cancelamento concorrente spec Plano de verificação da aplicação fictícia. Recuperar os ACs e seus perfis pelo contexto full/all antes da execução. Implementar o método declarado, observar os oráculos e registrar evidência real; cenários ainda NÃO EXECUTADOS. T19 — Alterar versus cancelar: ReservaA v1 e comandos concorrentes → Enviar alteração e cancelamento expected_version1 → Só um commit na v1; nenhuma ressurreição/duplo incremento. T20 — Cancelamento válido: ReservaA futura confirmed → Cancelar com versão atual → Cancelled preservada,evento adicionado,intervalo disponível. T22 — Replay de cancelamento: Cancelamento já confirmado → Repetir mesma chave e depois usar chave nova → Replay sem evento extra; nova intenção reservation_locked. 3 scenarios linked C: Codex" [ref=f39e461]':
+                  - generic [ref=f39e462]:
+                    - generic "Move card" [ref=f39e463]
+                    - generic [ref=f39e471] [cursor=pointer]:
+                      - generic [ref=f39e472]:
+                        - generic [ref=f39e473]: test
+                        - heading "[TEST] Cancelamento concorrente" [level=4] [ref=f39e476]
+                        - generic "Linked to a spec" [ref=f39e477]: spec
+                      - paragraph [ref=f39e481]: "Plano de verificação da aplicação fictícia. Recuperar os ACs e seus perfis pelo contexto full/all antes da execução. Implementar o método declarado, observar os oráculos e registrar evidência real; cenários ainda NÃO EXECUTADOS. T19 — Alterar versus cancelar: ReservaA v1 e comandos concorrentes → Enviar alteração e cancelamento expected_version1 → Só um commit na v1; nenhuma ressurreição/duplo incremento. T20 — Cancelamento válido: ReservaA futura confirmed → Cancelar com versão atual → Cancelled preservada,evento adicionado,intervalo disponível. T22 — Replay de cancelamento: Cancelamento já confirmado → Repetir mesma chave e depois usar chave nova → Replay sem evento extra; nova intenção reservation_locked."
+                      - generic [ref=f39e482]: 3 scenarios linked
+                      - 'generic "Creator: 2edcc8b9-2f64-479e-acb1-c49724f76ae3" [ref=f39e488]': "C: Codex"
+                - 'button "test [TEST] Rollback e recuperação spec Plano de verificação da aplicação fictícia. Recuperar os ACs e seus perfis pelo contexto full/all antes da execução. Implementar o método declarado, observar os oráculos e registrar evidência real; cenários ainda NÃO EXECUTADOS. T23 — Rollback injetado: Comando válido e falha após save antes de commit → Executar criar e alterar sob falha → Nenhuma escrita parcial em reserva/evento/recibo; original mantida. T24 — Resposta perdida e reinício: Commit confirmado; resposta descartada → Reiniciar e repetir mesma intenção → Mesmo resultado original;uma reserva eevento,sem duplicação. T25 — Busy limitado: Outra conexão mantém lock além2s → Submeter comando → 503 após orçamento de espera2s,sem escrita parcial; UI preserva entrada. 3 scenarios linked C: Codex" [ref=f39e489]':
+                  - generic [ref=f39e490]:
+                    - generic "Move card" [ref=f39e491]
+                    - generic [ref=f39e499] [cursor=pointer]:
+                      - generic [ref=f39e500]:
+                        - generic [ref=f39e501]: test
+                        - heading "[TEST] Rollback e recuperação" [level=4] [ref=f39e504]
+                        - generic "Linked to a spec" [ref=f39e505]: spec
+                      - paragraph [ref=f39e509]: "Plano de verificação da aplicação fictícia. Recuperar os ACs e seus perfis pelo contexto full/all antes da execução. Implementar o método declarado, observar os oráculos e registrar evidência real; cenários ainda NÃO EXECUTADOS. T23 — Rollback injetado: Comando válido e falha após save antes de commit → Executar criar e alterar sob falha → Nenhuma escrita parcial em reserva/evento/recibo; original mantida. T24 — Resposta perdida e reinício: Commit confirmado; resposta descartada → Reiniciar e repetir mesma intenção → Mesmo resultado original;uma reserva eevento,sem duplicação. T25 — Busy limitado: Outra conexão mantém lock além2s → Submeter comando → 503 após orçamento de espera2s,sem escrita parcial; UI preserva entrada."
+                      - generic [ref=f39e510]: 3 scenarios linked
+                      - 'generic "Creator: 2edcc8b9-2f64-479e-acb1-c49724f76ae3" [ref=f39e516]': "C: Codex"
+                - 'button "test [TEST] Paginação e histórico spec Plano de verificação da aplicação fictícia. Recuperar os ACs e seus perfis pelo contexto full/all antes da execução. Implementar o método declarado, observar os oráculos e registrar evidência real; cenários ainda NÃO EXECUTADOS. T28 — Paginação: Dataset estável de101 reservas/eventos próprios e dadosB → Paginar default20,limites1/100/101 e cursor inválido → Ordem definida,sem duplicação/misturaB;101/cursor inválido recusados. T36 — Histórico imutável: Reserva criada,alterada,cancelada e replays → Ler todas páginas e comparar versões/snapshots → Eventos1..3 ordenados,before/after corretos,sem evento por replay/leitura e sem segredos. 2 scenarios linked C: Codex" [ref=f39e517]':
+                  - generic [ref=f39e518]:
+                    - generic "Move card" [ref=f39e519]
+                    - generic [ref=f39e527] [cursor=pointer]:
+                      - generic [ref=f39e528]:
+                        - generic [ref=f39e529]: test
+                        - heading "[TEST] Paginação e histórico" [level=4] [ref=f39e532]
+                        - generic "Linked to a spec" [ref=f39e533]: spec
+                      - paragraph [ref=f39e537]: "Plano de verificação da aplicação fictícia. Recuperar os ACs e seus perfis pelo contexto full/all antes da execução. Implementar o método declarado, observar os oráculos e registrar evidência real; cenários ainda NÃO EXECUTADOS. T28 — Paginação: Dataset estável de101 reservas/eventos próprios e dadosB → Paginar default20,limites1/100/101 e cursor inválido → Ordem definida,sem duplicação/misturaB;101/cursor inválido recusados. T36 — Histórico imutável: Reserva criada,alterada,cancelada e replays → Ler todas páginas e comparar versões/snapshots → Eventos1..3 ordenados,before/after corretos,sem evento por replay/leitura e sem segredos."
+                      - generic [ref=f39e538]: 2 scenarios linked
+                      - 'generic "Creator: 2edcc8b9-2f64-479e-acb1-c49724f76ae3" [ref=f39e544]': "C: Codex"
+                - button "View all 27 cards from Not Started" [ref=f39e545] [cursor=pointer]: View all (27) →
+            - generic [ref=f39e546]:
+              - generic [ref=f39e548]:
+                - generic [ref=f39e549]:
+                  - generic [ref=f39e550]:
+                    - heading "Started" [level=3] [ref=f39e551]
+                    - generic "0 total cards" [ref=f39e552]: "0"
+                  - generic [ref=f39e553]:
+                    - button "0 task cards" [pressed] [ref=f39e554] [cursor=pointer]:
+                      - generic [ref=f39e555]: Task
+                      - generic [ref=f39e560]: "0"
+                    - button "0 test cards" [pressed] [ref=f39e561] [cursor=pointer]:
+                      - generic [ref=f39e562]: Test
+                      - generic [ref=f39e566]: "0"
+                    - button "0 bug cards" [pressed] [ref=f39e567] [cursor=pointer]:
+                      - generic [ref=f39e568]: Bug
+                      - generic [ref=f39e579]: "0"
+                - button "Add card to Started" [ref=f39e580] [cursor=pointer]
+              - generic [ref=f39e582]: No cards
+            - generic [ref=f39e584]:
+              - generic [ref=f39e587]:
+                - generic [ref=f39e588]:
+                  - heading "In Progress" [level=3] [ref=f39e589]
+                  - generic "0 total cards" [ref=f39e590]: "0"
+                - generic [ref=f39e591]:
+                  - button "0 task cards" [pressed] [ref=f39e592] [cursor=pointer]:
+                    - generic [ref=f39e593]: Task
+                    - generic [ref=f39e598]: "0"
+                  - button "0 test cards" [pressed] [ref=f39e599] [cursor=pointer]:
+                    - generic [ref=f39e600]: Test
+                    - generic [ref=f39e604]: "0"
+                  - button "0 bug cards" [pressed] [ref=f39e605] [cursor=pointer]:
+                    - generic [ref=f39e606]: Bug
+                    - generic [ref=f39e617]: "0"
+              - generic [ref=f39e618]: No cards
+            - generic [ref=f39e620]:
+              - generic [ref=f39e623]:
+                - generic [ref=f39e624]:
+                  - heading "Validation" [level=3] [ref=f39e625]
+                  - generic "0 total cards" [ref=f39e626]: "0"
+                - generic [ref=f39e627]:
+                  - button "0 task cards" [pressed] [ref=f39e628] [cursor=pointer]:
+                    - generic [ref=f39e629]: Task
+                    - generic [ref=f39e634]: "0"
+                  - button "0 test cards" [pressed] [ref=f39e635] [cursor=pointer]:
+                    - generic [ref=f39e636]: Test
+                    - generic [ref=f39e640]: "0"
+                  - button "0 bug cards" [pressed] [ref=f39e641] [cursor=pointer]:
+                    - generic [ref=f39e642]: Bug
+                    - generic [ref=f39e653]: "0"
+              - generic [ref=f39e654]: No cards
+            - generic [ref=f39e656]:
+              - generic [ref=f39e659]:
+                - generic [ref=f39e660]:
+                  - heading "Rejected" [level=3] [ref=f39e661]
+                  - generic "0 total cards" [ref=f39e662]: "0"
+                - generic [ref=f39e663]:
+                  - button "0 task cards" [pressed] [ref=f39e664] [cursor=pointer]:
+                    - generic [ref=f39e665]: Task
+                    - generic [ref=f39e670]: "0"
+                  - button "0 bug cards" [pressed] [ref=f39e671] [cursor=pointer]:
+                    - generic [ref=f39e672]: Bug
+                    - generic [ref=f39e683]: "0"
+              - generic [ref=f39e684]: No cards requiring rework
+            - generic [ref=f39e686]:
+              - generic [ref=f39e689]:
+                - generic [ref=f39e690]:
+                  - heading "On Hold" [level=3] [ref=f39e691]
+                  - generic "0 total cards" [ref=f39e692]: "0"
+                - generic [ref=f39e693]:
+                  - button "0 task cards" [pressed] [ref=f39e694] [cursor=pointer]:
+                    - generic [ref=f39e695]: Task
+                    - generic [ref=f39e700]: "0"
+                  - button "0 test cards" [pressed] [ref=f39e701] [cursor=pointer]:
+                    - generic [ref=f39e702]: Test
+                    - generic [ref=f39e706]: "0"
+                  - button "0 bug cards" [pressed] [ref=f39e707] [cursor=pointer]:
+                    - generic [ref=f39e708]: Bug
+                    - generic [ref=f39e719]: "0"
+              - generic [ref=f39e720]: No cards
+            - generic [ref=f39e722]:
+              - generic [ref=f39e725]:
+                - generic [ref=f39e726]:
+                  - heading "Done" [level=3] [ref=f39e727]
+                  - generic "0 total cards" [ref=f39e728]: "0"
+                - generic [ref=f39e729]:
+                  - button "0 task cards" [pressed] [ref=f39e730] [cursor=pointer]:
+                    - generic [ref=f39e731]: Task
+                    - generic [ref=f39e736]: "0"
+                  - button "0 test cards" [pressed] [ref=f39e737] [cursor=pointer]:
+                    - generic [ref=f39e738]: Test
+                    - generic [ref=f39e742]: "0"
+                  - button "0 bug cards" [pressed] [ref=f39e743] [cursor=pointer]:
+                    - generic [ref=f39e744]: Bug
+                    - generic [ref=f39e755]: "0"
+              - generic [ref=f39e756]: No cards
+            - generic [ref=f39e758]:
+              - generic [ref=f39e761]:
+                - generic [ref=f39e762]:
+                  - heading "Cancelled" [level=3] [ref=f39e763]
+                  - generic "0 total cards" [ref=f39e764]: "0"
+                - generic [ref=f39e765]:
+                  - button "0 task cards" [pressed] [ref=f39e766] [cursor=pointer]:
+                    - generic [ref=f39e767]: Task
+                    - generic [ref=f39e772]: "0"
+                  - button "0 test cards" [pressed] [ref=f39e773] [cursor=pointer]:
+                    - generic [ref=f39e774]: Test
+                    - generic [ref=f39e778]: "0"
+                  - button "0 bug cards" [pressed] [ref=f39e779] [cursor=pointer]:
+                    - generic [ref=f39e780]: Bug
+                    - generic [ref=f39e791]: "0"
+              - generic [ref=f39e792]: No cards
+          - status [ref=f39e794]

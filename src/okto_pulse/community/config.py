@@ -17,8 +17,9 @@ from okto_pulse.community.adapters.embedding import (
 from okto_pulse.community.adapters.telemetry_effect_config import (
     COMMUNITY_DEFAULT_METRICS_BEACON_URL,
 )
+from okto_pulse.community.adapters.package_version import default_core_version
 
-DataDirOrigin = Literal["explicit", "DATA_DIR", "OKTO_PULSE_HOME", "default"]
+DataDirOrigin = Literal["explicit", "DATA_DIR", "default"]
 GraphBackend = Literal["grafx"]
 GrafxDescriptorRevalidation = Literal["strict", "generation"]
 
@@ -78,6 +79,7 @@ class CommunitySettings(CoreSettings, BaseSettings):
     )
 
     debug: bool = False
+    app_version: str = Field(default_factory=default_core_version)
     environment: str = "development"
     host: str = "127.0.0.1"  # Community is local-only — bind to loopback
     port: int = 8100
@@ -89,7 +91,7 @@ class CommunitySettings(CoreSettings, BaseSettings):
     metrics_dir: str = ""
     metrics_beacon_url: str = COMMUNITY_DEFAULT_METRICS_BEACON_URL
     mcp_server_name: str = "okto-pulse"
-    mcp_server_version: str = "0.3.3"
+    mcp_server_version: str = Field(default_factory=default_core_version)
     mcp_port: int = 8101
     # MCP and API/UI share one event loop.  Keep tool-call bursts bounded while
     # leaving transport sessions, streams and every REST route outside the gate.
@@ -135,30 +137,18 @@ class CommunitySettings(CoreSettings, BaseSettings):
     # legacy runtime-settings API continues to govern the board pool unchanged.
     kg_decay_tick_batch_size: int = 200
     kg_write_barrier_mode: str = "soft"
-    mcp_legacy_coverage: bool = Field(
-        False,
-        validation_alias="OKTO_PULSE_LEGACY_COVERAGE",
-    )
-    mcp_legacy_offset: bool = Field(
-        False,
-        validation_alias="OKTO_PULSE_LEGACY_OFFSET",
-    )
 
     def __init__(self, **values: object) -> None:
         """Resolve the data-home path and its provenance as one identity.
 
-        The legacy ``OKTO_PULSE_HOME`` environment variable intentionally
-        outranks ``DATA_DIR`` loaded from dotenv. Resolve that cross-source
-        precedence before BaseSettings merges its sources, then pass the path
-        and provenance together as authoritative init values. Empty and
-        whitespace-only candidates are absent, and ``DATA_DIR_ORIGIN`` can
-        never spoof the result.
+        Explicit arguments take precedence over DATA_DIR from the environment
+        and dotenv, followed by the installation default. Empty candidates are
+        absent, and DATA_DIR_ORIGIN cannot spoof the resolved identity.
         """
 
         prepared = dict(values)
         supplied_data_dir = str(prepared.get("data_dir") or "").strip()
         environment_data_dir = (os.environ.get("DATA_DIR") or "").strip()
-        legacy_environment_home = (os.environ.get("OKTO_PULSE_HOME") or "").strip()
 
         env_file = prepared.get("_env_file", self.model_config.get("env_file"))
         env_file_encoding = prepared.get(
@@ -183,9 +173,6 @@ class CommunitySettings(CoreSettings, BaseSettings):
         elif environment_data_dir:
             origin = "DATA_DIR"
             resolved_data_dir = environment_data_dir
-        elif legacy_environment_home:
-            origin = "OKTO_PULSE_HOME"
-            resolved_data_dir = legacy_environment_home
         elif dotenv_data_dir:
             origin = "DATA_DIR"
             resolved_data_dir = dotenv_data_dir
@@ -259,9 +246,7 @@ class CommunitySettings(CoreSettings, BaseSettings):
                 "mcp_admission_max_queued"
             )
         if not self.data_dir:
-            self.data_dir = os.environ.get("OKTO_PULSE_HOME") or str(
-                Path.home() / ".okto-pulse"
-            )
+            self.data_dir = str(Path.home() / ".okto-pulse")
         data_path = Path(self.data_dir).expanduser().resolve()
         self.data_dir = str(data_path)
         # Only override if still unset or at the legacy core default value.

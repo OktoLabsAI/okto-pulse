@@ -35,23 +35,15 @@ describe('guided help telemetry adapter', () => {
     expect(onEmit).not.toHaveBeenCalled();
   });
 
-  it('emits a categorical payload via send when mode=local_only', async () => {
-    const send = vi.fn().mockResolvedValue(undefined);
+  it.each(['local_only', 'enable_beacon', 'unknown'])('does not send for an unsupported mode %s', async (mode) => {
+    const send = vi.fn();
     const onEmit = vi.fn();
     const adapter = createConsentAwareTelemetryAdapter({
-      getMode: () => 'local_only',
-      send,
-      onEmit,
+      getMode: () => mode as never, send, onEmit,
     });
-
     await adapter.emit(SAFE_EVENT);
-
-    expect(send).toHaveBeenCalledTimes(1);
-    const payload = send.mock.calls[0][0] as SanitizedGuidedHelpTelemetryPayload;
-    expect(payload.event_type).toBe('guided_help');
-    expect(payload.schema_version).toBe('1.0');
-    expect(payload.payload).toEqual(SAFE_EVENT);
-    expect(onEmit).toHaveBeenCalledWith(payload, 'local_only');
+    expect(send).not.toHaveBeenCalled();
+    expect(onEmit).not.toHaveBeenCalled();
   });
 
   it('emits the same categorical payload when mode=anonymous_beacon', async () => {
@@ -83,7 +75,7 @@ describe('guided help telemetry adapter', () => {
 
     const send = vi.fn().mockResolvedValue(undefined);
     const adapter = createConsentAwareTelemetryAdapter({
-      getMode: () => 'local_only',
+      getMode: () => 'anonymous_beacon',
       send,
     });
 
@@ -121,7 +113,7 @@ describe('guided help telemetry adapter', () => {
   it('swallows network errors so callers never block', async () => {
     const send = vi.fn().mockRejectedValue(new Error('network down'));
     const adapter = createConsentAwareTelemetryAdapter({
-      getMode: () => 'local_only',
+      getMode: () => 'anonymous_beacon',
       send,
     });
 

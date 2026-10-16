@@ -1,0 +1,194 @@
+- generic [ref=e31]:
+  - banner [ref=e32]:
+    - generic [ref=e33]:
+      - generic [ref=e34]:
+        - button "Hide sidebar" [ref=e35] [cursor=pointer]
+        - img "Okto Pulse" [ref=e40]
+        - generic [ref=e139]: / My Board
+      - generic [ref=e140]:
+        - button "Refresh board" [ref=e141] [cursor=pointer]
+        - button [ref=e148] [cursor=pointer]
+  - generic [ref=e41]:
+    - complementary [ref=e42]:
+      - generic [ref=e43]:
+        - generic [ref=e45]:
+          - heading "Boards" [level=2] [ref=e46]
+          - button "New board" [ref=e47] [cursor=pointer]
+        - navigation [ref=e49]:
+          - generic [ref=e50]:
+            - heading "My Boards" [level=3] [ref=e51]
+            - list [ref=e152]:
+              - listitem [ref=e153]:
+                - button "My Board" [ref=e154] [cursor=pointer]
+    - main [ref=e54]:
+      - group "Board views" [ref=e161]:
+        - button "Stories" [ref=e162] [cursor=pointer]
+        - button "Ideations" [ref=e166] [cursor=pointer]
+        - button "Refinements" [ref=e169] [cursor=pointer]
+        - button "Specs" [pressed] [ref=e174] [cursor=pointer]
+        - button "Tasks" [ref=e179] [cursor=pointer]
+      - generic [ref=e265]:
+        - generic [ref=e266]:
+          - generic [ref=e267]:
+            - heading "Specifications" [level=2] [ref=e268]
+            - generic [ref=e269]: (1 of 1)
+          - generic [ref=e270]:
+            - textbox "Search specs…" [ref=e272]
+            - group "View mode" [ref=e273]:
+              - button "List view" [pressed] [ref=e274] [cursor=pointer]
+              - button "Grid view" [ref=e276] [cursor=pointer]
+            - generic [ref=e282]: Group specs
+            - combobox "Group specs" [ref=e288]:
+              - option "None"
+              - option "Ideation"
+              - option "Refinement"
+              - option "Parents" [selected]
+            - button "New Spec" [ref=e289] [cursor=pointer]
+        - generic [ref=e291]:
+          - button "All" [ref=e292] [cursor=pointer]
+          - button "Draft" [ref=e293] [cursor=pointer]
+          - button "Review" [ref=e294] [cursor=pointer]
+          - button "Approved" [ref=e295] [cursor=pointer]
+          - button "Validated" [ref=e296] [cursor=pointer]
+          - button "In Progress" [ref=e297] [cursor=pointer]
+          - button "Done" [ref=e298] [cursor=pointer]
+          - button "Show archived" [ref=e299] [cursor=pointer]
+        - generic [ref=e629] [cursor=pointer]:
+          - generic [ref=e630]:
+            - generic [ref=e631]:
+              - generic [ref=e632]: Draft
+              - generic "Edition 1" [ref=e636]
+            - heading "DV acceptance - isolated mock scope" [level=3] [ref=e637]
+            - paragraph [ref=e638]: This new native acceptance fixture documents only the local UI exercise; no production deployment is included.
+            - 'generic "Requirement lint: no current result · Edition 1; 0 previous results" [ref=e640]':
+              - generic [ref=e641]: Requirement lint
+              - strong [ref=e642]: Not assessed
+          - generic [ref=e643]:
+            - button "Open lineage graph" [ref=e644]
+            - button "Archive tree" [ref=e649]
+        - generic [ref=e331]:
+          - status [ref=e332]: Showing 1–1 of 1 matching. 1 overall. Page 1 of 1.
+          - generic [ref=e333]:
+            - generic [ref=e334]:
+              - generic [ref=e335]: Items per page
+              - combobox "Items per page" [ref=e336]:
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+            - navigation "Specifications pagination" [ref=e337]:
+              - generic [ref=e338]:
+                - button "Previous page" [disabled] [ref=e339]: Previous
+                - button "Page 1" [disabled] [ref=e340]: "1"
+                - button "Next page" [disabled] [ref=e341]: Next
+        - dialog [ref=e379]:
+          - generic [ref=e380]:
+            - generic [ref=e381]:
+              - generic [ref=e382]: Draft
+              - heading "DV acceptance - isolated mock scope" [level=2] [ref=e386]
+              - generic "Edition 1" [ref=e387]
+            - generic [ref=e388]:
+              - button "Open lineage graph" [ref=e389] [cursor=pointer]
+              - button "Export report" [ref=e394] [cursor=pointer]
+              - button "Refresh" [ref=e398] [cursor=pointer]
+              - button "Expand" [ref=e404] [cursor=pointer]
+              - button "Close spec" [ref=e410] [cursor=pointer]
+          - generic [ref=e655]:
+            - generic [ref=e656]: "Move to:"
+            - button "Review" [ref=e657] [cursor=pointer]
+            - button "Cancelled" [ref=e660] [cursor=pointer]
+          - generic [ref=e423]:
+            - tablist "Spec sections" [ref=e424]:
+              - tab "Details" [ref=e425] [cursor=pointer]
+              - tab "Coverage" [ref=e430] [cursor=pointer]
+              - tab "Project Structure" [ref=e436] [cursor=pointer]
+              - tab "Code Evidence Matrix" [ref=e443] [cursor=pointer]
+              - tab "Resources" [ref=e447] [cursor=pointer]
+              - tab "Requirements & Decisions" [selected] [ref=e451] [cursor=pointer]
+              - tab "Tests & Verifications" [ref=e456] [cursor=pointer]
+              - tab "Q&A" [ref=e460] [cursor=pointer]
+              - tab "Dependencies" [ref=e465] [cursor=pointer]
+              - tab "References" [ref=e471] [cursor=pointer]
+              - tab "KG Graph" [ref=e476] [cursor=pointer]
+              - tab "Validation" [ref=e483] [cursor=pointer]
+              - tab "Activity" [ref=e488] [cursor=pointer]
+            - button "Scroll Spec sections left" [ref=e529] [cursor=pointer]
+            - button "Scroll Spec sections right" [ref=e494] [cursor=pointer]
+          - tabpanel "Requirements & Decisions" [ref=e532]:
+            - generic [ref=e533]:
+              - tablist "Requirements and decisions sections" [ref=e534]:
+                - tab "Functional" [ref=e535] [cursor=pointer]
+                - tab "Business" [ref=e539] [cursor=pointer]
+                - tab "Integration" [ref=e545] [cursor=pointer]
+                - tab "Observability" [ref=e552] [cursor=pointer]
+                - tab "Technical" [ref=e557] [cursor=pointer]
+                - tab "Contracts" [ref=e562] [cursor=pointer]
+                - tab "Decisions 1" [selected] [ref=e663] [cursor=pointer]:
+                  - generic [ref=e574]: Decisions
+                  - generic [ref=e664]: "1"
+              - button "Scroll Requirements and decisions sections left" [ref=e588] [cursor=pointer]
+              - button "Scroll Requirements and decisions sections right" [ref=e575] [cursor=pointer]
+            - tabpanel "Decisions 1" [ref=e665]:
+              - generic [ref=e592]:
+                - generic [ref=e667]:
+                  - heading "Decision adherence (0/1)" [level=4] [ref=e668]
+                  - generic [ref=e669]: Incomplete / unavailable
+                - button "Refresh verification" [ref=e671] [cursor=pointer]
+                - generic [ref=e672]:
+                  - button "Local mock exercise only active Inspection pending" [expanded] [ref=e673] [cursor=pointer]:
+                    - generic [ref=e678]: Local mock exercise only
+                    - generic [ref=e679]: active
+                    - generic [ref=e680]: Inspection pending
+                    - button "Edit" [ref=e681]
+                    - button "Revoke (soft-delete)" [ref=e685]
+                  - generic [ref=e695]:
+                    - generic [ref=e696]:
+                      - heading "Verification plan" [level=4] [ref=e697]
+                      - paragraph [ref=e698]: The specification description limits this exercise to the local UI and excludes production deployment.
+                    - region "Decision verification" [ref=e699]:
+                      - heading "Inspection pending" [level=4] [ref=e700]
+                      - paragraph [ref=e701]: The specification description limits this exercise to the local UI and excludes production deployment.
+                      - group [ref=e702]:
+                        - generic "Observed scope" [ref=e703] [cursor=pointer]
+                      - group [ref=e704]:
+                        - generic "Record inspection" [active] [ref=e705] [cursor=pointer]
+                        - generic [ref=e710]:
+                          - paragraph [ref=e711]: Record what you inspected against this scope. Your authenticated observation is preserved; Pulse does not execute the inspection.
+                          - generic [ref=e712]:
+                            - text: Observed result
+                            - textbox "Observed result" [ref=e713]
+                          - generic [ref=e714]:
+                            - text: Conclusion
+                            - combobox "Inspection conclusion" [ref=e715]:
+                              - option "Inconclusive" [selected]
+                              - option "Passed"
+                              - option "Failed"
+                              - option "Unavailable"
+                              - option "Aborted"
+                          - button "Record observation" [disabled] [ref=e716]
+                    - generic [ref=e706]:
+                      - text: Rationale
+                      - paragraph [ref=e707]: Keep the acceptance exercise bounded to the isolated local instance.
+                    - button "Show impact" [ref=e709] [cursor=pointer]
+                - button "Add Decision" [ref=e691] [cursor=pointer]
+          - generic [ref=e525]:
+            - button "Delete spec" [ref=e526] [cursor=pointer]
+            - button "Close" [ref=e528] [cursor=pointer]
+  - 'status "Cognitive pipeline working: 0 running, 1 pending" [ref=e342]':
+    - generic [ref=e353]: processing · 1 pending
+  - status [ref=e354]:
+    - generic [ref=e355]:
+      - generic [ref=e356]: Consolidation in progress
+      - generic [ref=e357]: 0%
+    - generic [ref=e359]:
+      - generic [ref=e360]:
+        - generic [ref=e361]: Pending
+        - generic [ref=e362]: "1"
+      - generic [ref=e363]:
+        - generic [ref=e364]: Running
+        - generic [ref=e365]: "0"
+      - generic [ref=e366]:
+        - generic [ref=e367]: Processed
+        - generic [ref=e368]: "0"
+      - generic [ref=e369]:
+        - generic [ref=e370]: Paused
+        - generic [ref=e371]: "0"

@@ -59,6 +59,7 @@ tsconfig.tsbuildinfo
 *.tsbuildinfo
 *.png
 !frontend/tests/visual/**/*.png
+!src/okto_pulse/community/frontend_dist/assets/*.png
 .playwright-mcp/
 
 # Local editable-install virtualenv used for development server

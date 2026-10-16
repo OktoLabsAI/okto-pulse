@@ -73,7 +73,6 @@ const edgeDiagram: ArchitectureDiagram = {
         type: 'arrow',
         sourceElementId: 'box_1',
         targetElementId: 'box_2',
-        linkedInterfaceId: 'interface-1',
         linkedInterfaceIds: ['interface-1'],
         text: '',
         displayType: 'Edge',
@@ -274,7 +273,8 @@ describe('ArchitectureDiagramEditor', () => {
 
     const updated = onChange.mock.calls[onChange.mock.calls.length - 1][0] as ArchitectureDiagram;
     const payload = updated.adapter_payload as { elements: Array<{ id: string; linkedInterfaceIds?: string[] | null; connectionType?: string }> };
-    expect(payload.elements.find((item) => item.id === 'edge_1')).toMatchObject({ connectionType: 'elbow' });
+    expect(payload.elements.find((item) => item.id === 'edge_1')).toMatchObject({ connectionType: 'elbow', linkedInterfaceIds: ['interface-1'] });
+    expect(payload.elements.find((item) => item.id === 'edge_1')).not.toHaveProperty('linkedInterfaceId');
   });
 
   it('clears canvas selection when the empty canvas is clicked', () => {
@@ -360,6 +360,7 @@ describe('ArchitectureDiagramEditor', () => {
             name: 'Checkout API',
             entity_type: 'api',
             responsibility: 'Persists checkout commands.',
+            boundaries: ['Tenant data, isolated', 'Public ports only'],
           },
           {
             id: 'entity-db',
@@ -384,6 +385,8 @@ describe('ArchitectureDiagramEditor', () => {
     fireEvent.doubleClick(screen.getByTestId('architecture-element-box_1'));
     expect(screen.getByRole('dialog', { name: 'Entity details' })).toBeInTheDocument();
     expect(screen.getByText('Persists checkout commands.')).toBeInTheDocument();
+    expect(screen.getAllByRole('listitem').map((item) => item.textContent)).toContain('Tenant data, isolated');
+    expect(screen.getAllByRole('listitem').map((item) => item.textContent)).toContain('Public ports only');
 
     fireEvent.click(screen.getByText('Close'));
     fireEvent.doubleClick(screen.getByTestId('architecture-element-edge_1'));

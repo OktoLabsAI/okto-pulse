@@ -1,3 +1,4 @@
+import { taskValidationFixture } from '@/test/taskValidationFixture';
 import { renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -33,24 +34,25 @@ describe('task validation REST client', () => {
       recommendation: 'approve',
     };
     const response: ValidationEntry = {
-      id: 'val-1',
+      ...taskValidationFixture(),
+        id: 'val-1',
       card_id: 'card-1',
       board_id: 'board-1',
       reviewer_id: 'reviewer-1',
-      evaluator_id: 'reviewer-1',
+
       confidence: 91,
       confidence_justification: payload.confidence_justification,
       estimated_completeness: 94,
-      completeness: 94,
+
       completeness_justification: payload.completeness_justification,
       estimated_drift: 8,
-      drift: 8,
+
       drift_justification: payload.drift_justification,
       general_justification: payload.general_justification,
-      summary: payload.general_justification,
+
       recommendation: 'approve',
       outcome: 'success',
-      verdict: 'pass',
+
       threshold_violations: [],
       resolved_thresholds: {
         required: true,
@@ -62,7 +64,7 @@ describe('task validation REST client', () => {
           required: 'spec',
           min_confidence: 'board',
           min_completeness: 'board',
-          max_drift: 'sprint',
+          max_drift: 'spec',
         },
       },
       reviewer_separation: {
@@ -93,29 +95,49 @@ describe('task validation REST client', () => {
     expect(validation).toEqual(response);
   });
 
-  it('keeps legacy-only validation aliases representable', () => {
-    const legacyEntry: ValidationEntry = {
-      id: 'legacy-val-1',
-      reviewer_id: 'legacy-reviewer',
+  it('keeps native historical review fields representable', () => {
+    const historyEntry: ValidationEntry = {
+      ...taskValidationFixture(),
+        id: 'history-val-1',
+      reviewer_id: 'reviewer',
       confidence: 75,
       estimated_completeness: 82,
       estimated_drift: 20,
-      general_justification: 'Historical entry created before clean aliases were dual-written.',
+      general_justification: 'Historical entry created under the current validation contract.',
       recommendation: 'approve',
       outcome: 'success',
       threshold_violations: [],
       created_at: '2025-12-01T10:00:00Z',
     };
 
-    expect(legacyEntry.evaluator_id ?? legacyEntry.reviewer_id).toBe(
-      'legacy-reviewer',
+    expect(historyEntry.reviewer_id).toBe(
+      'reviewer',
     );
     expect(
-      legacyEntry.completeness ?? legacyEntry.estimated_completeness,
+      historyEntry.estimated_completeness,
     ).toBe(82);
-    expect(legacyEntry.drift ?? legacyEntry.estimated_drift).toBe(20);
-    expect(legacyEntry.summary ?? legacyEntry.general_justification).toContain(
+    expect(historyEntry.estimated_drift).toBe(20);
+    expect(historyEntry.general_justification).toContain(
       'Historical entry',
     );
   });
+
+  it.each(['reviewer_separation_required', 'task_validation_policy_conflict'])(
+    'propagates %s without retrying the rejected review', async code => {
+      const failure = new Error(code);
+      mockApiClient.fetchJson.mockRejectedValue(failure);
+      const { result } = renderHook(() => useDashboardApi());
+      const payload: TaskValidationSubmitPayload = {
+        expected_subject_version: 4, idempotency_key: 'policy-race',
+        confidence: 95, confidence_justification: 'Inspected work',
+        estimated_completeness: 100, completeness_justification: 'Complete scope',
+        estimated_drift: 0, drift_justification: 'Within scope',
+        general_justification: 'Review prepared before policy changed', recommendation: 'approve',
+      };
+      await expect(result.current.submitTaskValidation('card-1', payload)).rejects.toBe(failure);
+      expect(mockApiClient.fetchJson).toHaveBeenCalledExactlyOnceWith('/cards/card-1/validate', {
+        method: 'POST', body: JSON.stringify(payload),
+      });
+    },
+  );
 });

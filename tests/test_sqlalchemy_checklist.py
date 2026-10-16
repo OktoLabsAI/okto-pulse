@@ -39,6 +39,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     ChecklistExecutionHeadRow,
     ChecklistExecutionRow,
     ChecklistItemResultRow,
+    ChecklistValidationBindingSnapshotRow,
     DefaultBoardConfiguration,
     DomainEventHandlerExecution,
     DomainEventRow,
@@ -47,7 +48,6 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
 from okto_pulse.core.domain.checklist import (
     SPECIFY_CHECKLIST_ITEM_IDS,
     SPECIFY_CHECKLIST_TEMPLATE_V1,
-    ChecklistBinding,
     ChecklistItemOutcome,
     ChecklistItemResult,
     ChecklistMode,
@@ -58,6 +58,9 @@ from okto_pulse.core.domain.checklist import (
     ChecklistTargetType,
 )
 from okto_pulse.core.domain.enums import SpecStatus
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+from okto_pulse.core.domain.execution_contract import new_execution_contract
+from okto_pulse.core.domain.realm import LOCAL_REALM_ID
 from okto_pulse.core.domain.permissions import get_builtin_presets
 from okto_pulse.core.events import EventBus
 from okto_pulse.core.events.handlers.checklist_binding_audit import (
@@ -65,6 +68,12 @@ from okto_pulse.core.events.handlers.checklist_binding_audit import (
 )
 from okto_pulse.core.events.types import ChecklistBindingChanged
 from okto_pulse.core.application.use_cases.base import ActorContext
+from okto_pulse.core.application.use_cases.checklist import (
+    StartChecklistExecutionCommand,
+    StartChecklistExecutionUseCase,
+    SubmitChecklistExecutionCommand,
+    SubmitChecklistExecutionUseCase,
+)
 from okto_pulse.core.application.use_cases.admin_catalog import (
     DefaultBoardConfigCommand,
     GetBoardDefaultConfigDiffUseCase,
@@ -80,6 +89,7 @@ from okto_pulse.core.application.use_cases.mcp_board_crud import (
 from okto_pulse.core.models import BoardCreate
 from okto_pulse.core.ports.checklist import (
     ChecklistListQuery,
+    ChecklistPersistenceError,
     ChecklistSpecLifecycleConflict,
 )
 from okto_pulse.core.ports.default_board_configuration import (
@@ -158,12 +168,21 @@ async def session() -> AsyncSession:
                 id=BOARD_ID,
                 name="A3 checklist",
                 owner_id="owner-checklist",
+                realm_id=LOCAL_REALM_ID,
                 settings={},
             )
         )
         active.add(
             Spec(
                 id=SPEC_ID,
+                architecture_adoption=ArchitectureAdoptionScope(
+                    board_id=BOARD_ID, spec_id=SPEC_ID, adopted_in_edition=1,
+                    actor_id="owner-checklist", inherited_resource_ids=(),
+                ).model_dump(mode="json"),
+                execution_contract=new_execution_contract(
+                    board_id=BOARD_ID, spec_id=SPEC_ID, edition=1,
+                    actor_id="owner-checklist", origin="new_spec",
+                ),
                 board_id=BOARD_ID,
                 title="Curated checklist persistence",
                 created_by="owner-checklist",
@@ -195,8 +214,16 @@ async def _preflight(
         spec_id=SPEC_ID,
     )
     assert subject is not None
-    binding = await adapter.get_binding(
+    # These adapter fixtures seed directly in Approved. Explicitly model the
+    # snapshot normally created by the native lifecycle entry transaction.
+    await adapter.freeze_validation_binding(
+        board_id=BOARD_ID, spec_id=SPEC_ID, spec_edition=subject.spec_edition,
+        target_type=ChecklistTargetType.SPEC, phase=ChecklistPhase.SPEC_VALIDATION,
+    )
+    binding = await adapter.get_validation_binding(
         board_id=BOARD_ID,
+        spec_id=SPEC_ID,
+        spec_edition=subject.spec_edition,
         target_type=ChecklistTargetType.SPEC,
         phase=ChecklistPhase.SPEC_VALIDATION,
     )
@@ -205,6 +232,7 @@ async def _preflight(
         board_id=BOARD_ID,
         spec_id=SPEC_ID,
         phase=ChecklistPhase.SPEC_VALIDATION,
+        spec_edition=subject.spec_edition,
     )
     return ChecklistPreflight(
         subject=subject,
@@ -252,6 +280,102 @@ async def _complete(
         persistence=adapter,
     )
     return started, submission, committed
+
+
+async def test_native_application_commands_preserve_start_submit_and_replay(session):
+    from okto_pulse.core.application.use_cases.checklist import GetChecklistBindingCommand, GetChecklistBindingUseCase
+    register_relational_application_adapter(CommunityRelationalApplicationAdapter())
+    adapter = CommunitySqlAlchemyChecklist(session)
+    service = ChecklistService()
+    binding = service.prepare_binding(
+        board_id=BOARD_ID, mode=ChecklistMode.BLOCKING, current_binding=None,
+    )
+    await service.apply_binding(binding, previous_binding=None, persistence=adapter)
+    # Native validation entry freezes this binding before commands are admitted.
+    await adapter.freeze_validation_binding(
+        board_id=BOARD_ID, spec_id=SPEC_ID, spec_edition=1,
+        target_type=ChecklistTargetType.SPEC, phase=ChecklistPhase.SPEC_VALIDATION,
+    )
+    await session.commit()
+    actor = _full_control_actor("owner-checklist")
+    uow = CommunityUnitOfWork(session, actor=actor)
+    updated = service.prepare_binding(board_id=BOARD_ID, mode=ChecklistMode.OFF, current_binding=binding)
+    await service.apply_binding(updated, previous_binding=binding, persistence=adapter)
+    await session.commit()
+    read = GetChecklistBindingUseCase()
+    assert await read.execute(GetChecklistBindingCommand(BOARD_ID), actor=actor, uow=uow) == updated
+    effective = await read.execute(GetChecklistBindingCommand(BOARD_ID, SPEC_ID), actor=actor, uow=uow)
+    assert effective == binding
+    start = StartChecklistExecutionCommand(
+        board_id=BOARD_ID, spec_id=SPEC_ID, spec_edition=1,
+        expected_spec_version=1, binding_version=effective.version,
+    )
+    started = await StartChecklistExecutionUseCase().execute(start, actor=actor, uow=uow)
+    replay = await StartChecklistExecutionUseCase().execute(start, actor=actor, uow=uow)
+    assert replay.replayed and replay.execution.id == started.execution.id
+    assert await session.scalar(select(func.count(ChecklistExecutionRow.id))) == 1
+    submit = SubmitChecklistExecutionCommand(
+        board_id=BOARD_ID, spec_id=SPEC_ID, spec_edition=1,
+        expected_spec_version=1, execution_id=started.execution.id,
+        item_results=_passing_items(),
+    )
+    committed = await SubmitChecklistExecutionUseCase().execute(submit, actor=actor, uow=uow)
+    repeated = await SubmitChecklistExecutionUseCase().execute(submit, actor=actor, uow=uow)
+    assert repeated.replayed and repeated.receipt_id == committed.receipt_id
+    assert committed.spec_edition == repeated.spec_edition == 1
+    assert await session.scalar(select(func.count(ChecklistItemResultRow.item_id))) == 10
+    receipt = await adapter.get_receipt(board_id=BOARD_ID, receipt_id=committed.receipt_id)
+    assert receipt.items == _passing_items()
+    with pytest.raises(ChecklistConflictError, match="checklist_binding_conflict"):
+        await StartChecklistExecutionUseCase().execute(
+            StartChecklistExecutionCommand(
+                board_id=BOARD_ID, spec_id=SPEC_ID, spec_edition=1,
+                expected_spec_version=1, binding_version=binding.version + 1,
+            ), actor=actor, uow=uow,
+        )
+    assert await session.scalar(select(func.count(ChecklistExecutionRow.id))) == 1
+
+
+async def test_validation_snapshot_read_never_materializes_missing_policy(session):
+    adapter = CommunitySqlAlchemyChecklist(session)
+    identity = dict(board_id=BOARD_ID, spec_id=SPEC_ID, spec_edition=1,
+                    target_type=ChecklistTargetType.SPEC,
+                    phase=ChecklistPhase.SPEC_VALIDATION)
+    assert await adapter.get_validation_binding(**identity) is None
+    assert await session.scalar(select(func.count(ChecklistValidationBindingSnapshotRow.spec_id))) == 0
+    with pytest.raises(ChecklistPersistenceError, match="checklist_board_binding_missing"):
+        await adapter.freeze_validation_binding(**identity)
+    assert await session.scalar(select(func.count(ChecklistValidationBindingSnapshotRow.spec_id))) == 0
+    with pytest.raises(ChecklistPersistenceError, match="snapshot_missing"):
+        await adapter._require_validation_binding(**identity)
+    assert await session.scalar(select(func.count(ChecklistValidationBindingSnapshotRow.spec_id))) == 0
+
+
+async def test_validation_entry_freezes_once_and_historical_read_does_not_repair(session):
+    adapter = CommunitySqlAlchemyChecklist(session)
+    service = ChecklistService()
+    first = service.prepare_binding(board_id=BOARD_ID, mode=ChecklistMode.BLOCKING,
+                                    current_binding=None)
+    await service.apply_binding(first, previous_binding=None, persistence=adapter)
+    identity = dict(board_id=BOARD_ID, spec_id=SPEC_ID, spec_edition=1,
+                    target_type=ChecklistTargetType.SPEC,
+                    phase=ChecklistPhase.SPEC_VALIDATION)
+    frozen = await adapter.freeze_validation_binding(**identity)
+    off = service.prepare_binding(board_id=BOARD_ID, mode=ChecklistMode.OFF,
+                                  current_binding=first)
+    await service.apply_binding(off, previous_binding=first, persistence=adapter)
+    assert await adapter.freeze_validation_binding(**identity) == frozen
+    assert await adapter.get_validation_binding(**identity) == frozen
+    assert frozen.mode is ChecklistMode.BLOCKING
+    assert await session.scalar(select(func.count(ChecklistValidationBindingSnapshotRow.spec_id))) == 1
+    spec = await session.get(Spec, SPEC_ID)
+    spec.edition = 2
+    await session.flush()
+    assert await adapter.get_validation_binding(**identity) == frozen
+    identity["spec_edition"] = 2
+    assert await adapter.get_validation_binding(**identity) is None
+    assert await session.scalar(select(func.count(ChecklistValidationBindingSnapshotRow.spec_id))) == 1
+    assert (await adapter.freeze_validation_binding(**identity)).mode is ChecklistMode.OFF
 
 
 async def test_complete_receipts_gate_pagination_and_off_zero_write(
@@ -316,7 +440,7 @@ async def test_complete_receipts_gate_pagination_and_off_zero_write(
         persistence=adapter,
     )
     assert promoted_gate.allowed is True
-    assert promoted_gate.reason == "checklist_satisfied"
+    assert promoted_gate.reason == "checklist_advisory"
     assert promoted_gate.currentness is not None
     assert promoted_gate.currentness.current is True
     assert promoted_gate.currentness.stale_reasons == ()
@@ -337,7 +461,7 @@ async def test_complete_receipts_gate_pagination_and_off_zero_write(
         persistence=adapter,
     )
     assert current_gate.allowed is True
-    assert current_gate.reason == "checklist_satisfied"
+    assert current_gate.reason == "checklist_advisory"
 
     preflight = await _preflight(adapter)
     reset_ska_metric_samples_for_tests()
@@ -354,6 +478,7 @@ async def test_complete_receipts_gate_pagination_and_off_zero_write(
     )
     page = await service.list_executions(
         ChecklistListQuery(
+            current_spec_edition=1,
             board_id=BOARD_ID,
             spec_id=SPEC_ID,
             offset=0,
@@ -389,6 +514,7 @@ async def test_complete_receipts_gate_pagination_and_off_zero_write(
     )
     empty_page = await service.list_executions(
         ChecklistListQuery(
+            current_spec_edition=1,
             board_id=BOARD_ID,
             spec_id=SPEC_ID,
             offset=99,
@@ -419,6 +545,14 @@ async def test_complete_receipts_gate_pagination_and_off_zero_write(
         previous_binding=blocking,
         persistence=adapter,
     )
+    # Board OFF applies to the next admitted edition, not the current pin.
+    spec = await session.get(Spec, SPEC_ID)
+    spec.edition += 1
+    spec.version += 1
+    head = await session.get(ChecklistExecutionHeadRow,
+                             (BOARD_ID, SPEC_ID, ChecklistPhase.SPEC_VALIDATION.value))
+    await session.delete(head)
+    await session.flush()
     before = await session.scalar(select(func.count(ChecklistExecutionRow.id)))
     off_preflight = await _preflight(adapter)
     with pytest.raises(ChecklistConflictError, match="checklist_binding_off"):
@@ -514,6 +648,7 @@ async def test_current_head_refreshes_preloaded_identity(
         board_id=BOARD_ID,
         spec_id=SPEC_ID,
         phase=ChecklistPhase.SPEC_VALIDATION,
+        spec_edition=1,
     )
     assert current is not None
     assert current[1].revision == 7
@@ -557,6 +692,10 @@ async def test_new_spec_edition_resets_current_head_and_projects_prior_history(
     spec.status = SpecStatus.APPROVED
     spec.version += 1
     await session.flush()
+    await adapter.freeze_validation_binding(
+        board_id=BOARD_ID, spec_id=SPEC_ID, spec_edition=2,
+        target_type=ChecklistTargetType.SPEC, phase=ChecklistPhase.SPEC_VALIDATION,
+    )
 
     snapshot = await adapter.get_spec_snapshot(
         board_id=BOARD_ID,
@@ -722,15 +861,15 @@ async def test_mode_promotion_replays_open_execution_and_submits_without_reexecu
         receipt_id=committed.receipt_id,
     )
     assert receipt is not None
-    assert receipt.binding_version == 2
-    assert receipt.binding_mode is ChecklistMode.BLOCKING
+    assert receipt.binding_version == 1
+    assert receipt.binding_mode is ChecklistMode.ADVISORY
     gate = await service.evaluate_spec_gate(
         board_id=BOARD_ID,
         spec_id=SPEC_ID,
         persistence=adapter,
     )
     assert gate.allowed is True
-    assert gate.reason == "checklist_satisfied"
+    assert gate.reason == "checklist_advisory"
     assert gate.currentness is not None and gate.currentness.current is True
 
 
@@ -824,7 +963,7 @@ async def test_mode_revisions_racing_both_adapter_fences_remain_semantic(
         persistence=adapter,
     )
     assert gate.allowed is True
-    assert gate.reason == "checklist_satisfied"
+    assert gate.reason == "checklist_advisory"
     assert gate.currentness is not None and gate.currentness.current is True
 
 
@@ -833,15 +972,14 @@ async def test_persisted_off_v1_announces_revision_one_and_allows_next_cas(
 ) -> None:
     adapter = CommunitySqlAlchemyChecklist(session)
     service = ChecklistService()
-    synthetic = ChecklistBinding.synthetic_off(board_id=BOARD_ID)
     persisted_off = service.prepare_binding(
         board_id=BOARD_ID,
         mode=ChecklistMode.OFF,
-        current_binding=synthetic,
+        current_binding=None,
     )
     await service.apply_binding(
         persisted_off,
-        previous_binding=synthetic,
+        previous_binding=None,
         persistence=adapter,
     )
 
@@ -853,7 +991,6 @@ async def test_persisted_off_v1_announces_revision_one_and_allows_next_cas(
     assert reloaded_off is not None
     assert reloaded_off.mode is ChecklistMode.OFF
     assert reloaded_off.version == reloaded_off.revision == 1
-    assert reloaded_off.is_synthetic is False
 
     advisory = service.prepare_binding(
         board_id=BOARD_ID,

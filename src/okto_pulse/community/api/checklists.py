@@ -522,6 +522,8 @@ async def get_checklist_binding(
             actor=RESTAdapterContract.actor(user_id, realm_id=realm_id),
             uow=uow,
         )
+    except (ChecklistError, ChecklistContractError) as exc:
+        return _api07_error_response(exc)
     except EntityNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

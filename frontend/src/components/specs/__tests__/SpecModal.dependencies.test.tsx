@@ -10,6 +10,17 @@ import type {
   SpecDependencyReadiness,
 } from '@/types/spec-dependencies';
 import { SpecModal } from '../SpecModal';
+import { SpecDependenciesTab } from '../SpecDependenciesTab';
+
+const workspaceWatch = vi.hoisted(() => ({
+  options: null as null | Parameters<typeof import('@/hooks/useWorkspaceRevisions').useWorkspaceRevisions>[0],
+}));
+vi.mock('@/hooks/useWorkspaceRevisions', () => ({
+  useWorkspaceRevisions: (options: NonNullable<typeof workspaceWatch.options>) => {
+    workspaceWatch.options = options;
+    return 'current';
+  },
+}));
 
 const apiMock = vi.hoisted(() => ({
   getSpec: vi.fn(),
@@ -95,6 +106,8 @@ const readiness: SpecDependencyReadiness = {
 };
 
 const spec: Spec = {
+  execution_contract: { contract_version: 'spec-execution-contract/v1', board_id: 'board-1',
+    spec_id: 'spec-1', adopted_in_edition: 1, actor_id: 'author', origin: 'new_spec' },
   id: 'spec-1',
   board_id: 'board-1',
   ideation_id: 'ideation-1',
@@ -328,7 +341,7 @@ describe('SpecModal Dependencies workspace', () => {
       expect(screen.queryByText(staleSnapshot.title)).not.toBeInTheDocument();
       expect(onChanged).not.toHaveBeenCalled();
       expect(apiMock.getAllowedTransitions).toHaveBeenCalledTimes(2);
-      expect(apiMock.listSprints).toHaveBeenCalledTimes(2);
+      expect(apiMock.listSprints).not.toHaveBeenCalled();
     });
   }, 10_000);
 
@@ -476,7 +489,7 @@ describe('SpecModal Dependencies workspace', () => {
     )).toBeInTheDocument();
   });
 
-  it('refreshes the edition fence after validated-to-draft reentry without changing the idempotency key', async () => {
+  it('requires explicit review after edition conflict and uses a new key for the revised intent', async () => {
     const freshSpec = {
       ...spec,
       status: 'draft' as const,
@@ -537,14 +550,150 @@ describe('SpecModal Dependencies workspace', () => {
       idempotency_key: expect.any(String),
     });
 
+    await waitFor(() => expect(submit).toBeDisabled());
+    fireEvent.click(submit);
+    expect(apiMock.addSpecDependency).toHaveBeenCalledTimes(1);
+    fireEvent.click(within(addDialog).getByRole('button', { name: 'Review dependency base' }));
+    await waitFor(() => expect(submit).toBeEnabled());
+    apiMock.getSpec.mockResolvedValue({ ...freshSpec, version: 6 });
     fireEvent.click(submit);
     await waitFor(() => expect(apiMock.addSpecDependency).toHaveBeenCalledTimes(2));
     expect(apiMock.addSpecDependency.mock.calls[1][2]).toEqual({
       prerequisite_spec_id: 'spec-3',
       expected_spec_version: spec.version,
       expected_spec_edition: freshSpec.edition,
-      idempotency_key: firstRequest.idempotency_key,
+      idempotency_key: expect.any(String),
     });
+    expect(apiMock.addSpecDependency.mock.calls[1][2].idempotency_key).not.toBe(firstRequest.idempotency_key);
+    await waitFor(() => expect(addDialog).not.toBeInTheDocument());
+  });
+
+  it('refreshes a prerequisite change without a source version bump and preserves filters', async () => {
+    apiMock.listSpecDependencies.mockResolvedValue({ ...dependencyPage(), has_more: true, next_cursor: 'next-page' });
+    renderModal();
+    fireEvent.click(await screen.findByRole('tab', { name: /Dependencies/ }));
+    await screen.findByText('Platform prerequisite');
+    fireEvent.click(screen.getByRole('button', { name: 'Review blockers' }));
+    await waitFor(() => expect(apiMock.listSpecDependencies).toHaveBeenLastCalledWith('board-1', 'spec-1', expect.objectContaining({ satisfaction: 'unmet' })));
+    apiMock.listSpecDependencies.mockResolvedValue(dependencyPage());
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await screen.findByText(/Page 2/);
+    expect(workspaceWatch.options?.boardId).toBe('board-1');
+    apiMock.listSpecDependencies.mockResolvedValue(dependencyPage([{
+      ...dependencyItem, related_spec: { ...dependencyItem.related_spec, title: 'Changed by MCP', version: 4 },
+    }]));
+    await act(async () => workspaceWatch.options!.onChange({ subjects: [], initial: false, authorityChanged: false }));
+    expect(await screen.findByText('Changed by MCP')).toBeInTheDocument();
+    expect(apiMock.listSpecDependencies).toHaveBeenLastCalledWith('board-1', 'spec-1', expect.objectContaining({ satisfaction: 'unmet', cursor: undefined }));
+    expect(apiMock.addSpecDependency).not.toHaveBeenCalled();
+  });
+
+  it('retains a removal reason across watched refresh and submits only after reviewing the new base', async () => {
+    renderModal();
+    fireEvent.click(await screen.findByRole('tab', { name: /Dependencies/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove' }));
+    const dialog = await screen.findByRole('alertdialog', { name: 'Remove dependency' });
+    fireEvent.change(within(dialog).getByLabelText(/Removal reason/), { target: { value: 'Superseded after review' } });
+    apiMock.getSpec.mockResolvedValue({ ...spec, version: 5 });
+    await act(async () => workspaceWatch.options!.onChange({ subjects: [], initial: false, authorityChanged: false }));
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Review dependency base' })).toBeEnabled());
+    expect(within(dialog).getByLabelText(/Removal reason/)).toHaveValue('Superseded after review');
+    expect(within(dialog).getByRole('button', { name: 'Remove dependency' })).toBeDisabled();
+    expect(apiMock.removeSpecDependency).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Review dependency base' }));
+    apiMock.getSpec.mockResolvedValue({ ...spec, version: 6 });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove dependency' }));
+    await waitFor(() => expect(dialog).not.toBeInTheDocument());
+    expect(apiMock.removeSpecDependency).toHaveBeenCalledWith('board-1', 'spec-1', 'dependency-1', expect.objectContaining({ expected_spec_version: 5, reason: 'Superseded after review' }));
+  });
+
+  it('replays the exact uncertain add request after a watched version change', async () => {
+    apiMock.addSpecDependency.mockRejectedValueOnce(new Error('Connection lost after submission'));
+    renderModal();
+    fireEvent.click(await screen.findByRole('tab', { name: /Dependencies/ }));
+    await screen.findByText('Platform prerequisite');
+    fireEvent.click(screen.getByRole('button', { name: 'Add dependency' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Add dependency' });
+    fireEvent.click(await within(dialog).findByRole('radio', { name: /Done prerequisite/ }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add dependency' }));
+    await within(dialog).findByText('Connection lost after submission');
+    const original = apiMock.addSpecDependency.mock.calls[0][2];
+    apiMock.getSpec.mockResolvedValue({ ...spec, version: 7 });
+    await act(async () => workspaceWatch.options!.onChange({ subjects: [], initial: false, authorityChanged: false }));
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Retry original dependency request' })).toBeEnabled());
+    expect(within(dialog).getByRole('searchbox')).toBeDisabled();
+    expect(within(dialog).queryByRole('button', { name: 'Review dependency base' })).not.toBeInTheDocument();
+    // A replay receipt at v5 must not certify a read older than the observed v7.
+    apiMock.getSpec.mockResolvedValue({ ...spec, version: 6 });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Retry original dependency request' }));
+    const reload = await within(dialog).findByRole('button', { name: 'Reload saved dependency' });
+    await within(dialog).findByText(/Dependency change was saved/);
+    expect(apiMock.addSpecDependency).toHaveBeenCalledTimes(2);
+    expect(apiMock.addSpecDependency.mock.calls[1][2]).toEqual(original);
+    expect(original.expected_spec_version).toBe(4);
+    apiMock.getSpec.mockResolvedValue({ ...spec, version: 7 });
+    fireEvent.click(reload);
+    await waitFor(() => expect(dialog).not.toBeInTheDocument());
+    expect(apiMock.addSpecDependency).toHaveBeenCalledTimes(2);
+  });
+
+  it('recovers a confirmed write with a stale or failed full read without repeating it', async () => {
+    renderModal();
+    fireEvent.click(await screen.findByRole('tab', { name: /Dependencies/ }));
+    await screen.findByText('Platform prerequisite');
+    fireEvent.click(screen.getByRole('button', { name: 'Add dependency' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Add dependency' });
+    fireEvent.click(await within(dialog).findByRole('radio', { name: /Done prerequisite/ }));
+    // The write receipt says v5; the read still returns v4. This cannot certify recovery.
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add dependency' }));
+    const retry = await within(dialog).findByRole('button', { name: 'Reload saved dependency' });
+    await within(dialog).findByText(/Dependency change was saved/);
+    expect(apiMock.addSpecDependency).toHaveBeenCalledTimes(1);
+    apiMock.getSpec.mockRejectedValueOnce(new Error('Read unavailable'));
+    fireEvent.click(retry);
+    await waitFor(() => expect(retry).toBeEnabled());
+    expect(dialog).toBeInTheDocument();
+    expect(apiMock.addSpecDependency).toHaveBeenCalledTimes(1);
+    apiMock.getSpec.mockResolvedValue({ ...spec, version: 5 });
+    fireEvent.click(retry);
+    await waitFor(() => expect(dialog).not.toBeInTheDocument());
+    expect(apiMock.addSpecDependency).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['list', 'lookup'] as const)('removes protected dependency input when %s access is revoked', async (surface) => {
+    const onClose = vi.fn();
+    render(<SpecModal specId={spec.id} boardId={spec.board_id} onClose={onClose} onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('tab', { name: /Dependencies/ }));
+    await screen.findByText('Platform prerequisite');
+    fireEvent.click(screen.getByRole('button', { name: 'Add dependency' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Add dependency' });
+    fireEvent.click(await within(dialog).findByRole('radio', { name: /Done prerequisite/ }));
+    const deny = new AuthenticatedFetchError({ status: 403, code: 'forbidden', message: 'Access revoked' });
+    if (surface === 'list') apiMock.listSpecDependencies.mockRejectedValue(deny);
+    else apiMock.lookupSpecs.mockRejectedValue(deny);
+    await act(async () => workspaceWatch.options!.onChange({ subjects: [], initial: false, authorityChanged: false }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(dialog).not.toBeInTheDocument();
+    expect(screen.queryByText('Platform prerequisite')).not.toBeInTheDocument();
+    expect(apiMock.addSpecDependency).not.toHaveBeenCalled();
+  });
+
+  it('discards a late mutation completion after changing Spec identity', async () => {
+    const result = deferred<unknown>();
+    apiMock.removeSpecDependency.mockReturnValueOnce(result.promise);
+    const onMutated = vi.fn().mockResolvedValue(undefined);
+    const props = { boardId: spec.board_id, spec, readiness, readinessLoading: false, readinessError: null,
+      canAdd: true, canRemove: true, onRetryReadiness: vi.fn(), onOpenSpec: vi.fn(), onMutated };
+    const view = render(<SpecDependenciesTab {...props} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove' }));
+    const dialog = await screen.findByRole('alertdialog', { name: 'Remove dependency' });
+    fireEvent.change(within(dialog).getByLabelText(/Removal reason/), { target: { value: 'Authored reason' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove dependency' }));
+    await waitFor(() => expect(apiMock.removeSpecDependency).toHaveBeenCalledTimes(1));
+    view.rerender(<SpecDependenciesTab {...props} spec={{ ...spec, id: 'other-spec' }} />);
+    await act(async () => result.resolve({ dependency: dependencyItem, spec_version: 5, replayed: false }));
+    expect(dialog).not.toBeInTheDocument();
+    expect(onMutated).not.toHaveBeenCalled();
   });
 
   it('submits add with CAS/idempotency and requires a reason before removal', async () => {

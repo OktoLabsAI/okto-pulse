@@ -432,13 +432,15 @@ def validate_current_grafx_global_schema(
         raise mapped from exc
 
 
+
+
 def ensure_current_grafx_global_schema(
     database: Database,
     *,
     manifest: GrafxGlobalSchemaManifest = PULSE_GRAFX_GLOBAL_SCHEMA,
     revalidate_fence: MutationFence | None = None,
 ) -> GrafxGlobalBootstrapResult:
-    """Create missing Global objects, then activate the exact digest source index.
+    """Create an empty Global catalog, then activate the exact digest source index.
 
     The physical index has its own fenced transaction after durable schema
     creation. Existing databases receive it even when their schema is complete.
@@ -446,6 +448,16 @@ def ensure_current_grafx_global_schema(
 
     try:
         preflight = _preflight(database, manifest)
+        catalog = database.catalog.catalog
+        if not preflight.complete and (catalog.tables() or catalog.spaces()):
+            # Native logical schema creation commits atomically. A nonempty
+            # partial catalog is not an interrupted native index installation.
+            raise _failure(
+                "incomplete_existing_schema",
+                operation=_BOOTSTRAP_OPERATION,
+                spaces=tuple(space.name for space in preflight.missing_spaces),
+                tables=tuple(table.name for table in preflight.missing_tables),
+            )
         validate_grafx_global_digest_source_index(database)
         if preflight.complete:
             changed = ensure_grafx_global_digest_source_index(
@@ -1020,7 +1032,9 @@ def upsert_grafx_decision_digest_vector(
 ) -> str:
     """Upsert one healthy digest identity and replace its embedding atomically."""
 
-    if graph_layer not in {"canonical", "working"}:
+    # The current publication contract has exactly two artifact layers.
+    # Refuse invalid/retired input before vector lookup or opening a transaction.
+    if graph_layer not in ("canonical", "working"):
         raise _invalid_argument("graph_layer", graph_layer, operation=_WRITE_OPERATION)
     try:
         vector = _validated_vector(

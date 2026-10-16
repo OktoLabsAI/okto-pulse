@@ -11,12 +11,16 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import select, insert
+from sqlalchemy.exc import IntegrityError
 
 import okto_pulse.community.app as _community_app  # noqa: F401
 import okto_pulse.core.infra.database as database_module
 from okto_pulse.community.adapters.relational_application import (
     CommunityRelationalApplicationAdapter,
+)
+from okto_pulse.community.adapters.current_relational_schema import (
+    current_schema_contract, initialize_current_schema,
 )
 from okto_pulse.community.adapters.sqlalchemy_database import (
     get_engine,
@@ -25,12 +29,11 @@ from okto_pulse.community.adapters.sqlalchemy_database import (
 from okto_pulse.community.adapters.sqlalchemy_default_board_configuration import (
     CommunitySqlAlchemyDefaultBoardConfigurationStore,
 )
+from okto_pulse.core.domain.guideline_lifecycle import guideline_revision_content_digest_v2
 from okto_pulse.community.adapters.sqlalchemy_guideline_policy import (
     CommunitySqlAlchemyGuidelinePolicy,
-    guideline_revision_content_digest,
 )
 from okto_pulse.community.adapters.sqlalchemy_models import (
-    Base,
     Board,
     DefaultBoardConfiguration,
     GuidelineBoardBindingRow,
@@ -60,8 +63,7 @@ OWNER_ID = "actor-b11"
 
 async def _fresh_database(path: Path) -> None:
     database_module.create_database(f"sqlite+aiosqlite:///{path.as_posix()}")
-    async with get_engine().begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    await initialize_current_schema(get_engine(), current_schema_contract())
 
 
 def _revision(
@@ -85,7 +87,7 @@ def _revision(
         semantic_version=f"1.0.{number - 1}",
         title=title,
         content=content,
-        revision_digest=guideline_revision_content_digest(
+        revision_digest=guideline_revision_content_digest_v2(
             title=title,
             content=content,
             semantic_version=f"1.0.{number - 1}",
@@ -215,26 +217,6 @@ def test_b11_native_ref_is_closed_and_requires_an_exact_pin() -> None:
         with pytest.raises(ValidationError):
             api.GuidelineDefaultRefRequest.model_validate(invalid)
 
-    compatible = api._CompatibleGuidelineDefaultRefRequest.model_validate(
-        {
-            "guideline_id": "legacy-guideline",
-            "guideline_version": 7,
-            "legacy_version": 11,
-            "legacy_version_unresolvable": True,
-        }
-    )
-    assert compatible.revision_id is None
-    assert compatible.guideline_version == 7
-    assert compatible.model_dump(exclude_unset=True) == {
-        "guideline_id": "legacy-guideline",
-        "guideline_version": 7,
-        "legacy_version": 11,
-        "legacy_version_unresolvable": True,
-    }
-    with pytest.raises(ValidationError):
-        api._CompatibleGuidelineDefaultRefRequest.model_validate(
-            {"guideline_id": "legacy-guideline", "unknown_legacy_alias": 1}
-        )
 
 
 @pytest.mark.asyncio
@@ -308,7 +290,7 @@ async def test_b11_update_route_dumps_refs_and_rejects_duplicates_before_use_cas
 
 
 @pytest.mark.asyncio
-async def test_b11_board_config_import_preserves_only_supplied_compat_fields(
+async def test_b11_board_config_import_preserves_exact_pin(
     monkeypatch,
 ) -> None:
     captured: list[dict] = []
@@ -326,12 +308,13 @@ async def test_b11_board_config_import_preserves_only_supplied_compat_fields(
         )
 
     monkeypatch.setattr(api.ImportBoardConfigUseCase, "execute", execute)
-    legacy_ref = {
-        "guideline_id": "legacy-guideline",
+    native_ref = {
+        "guideline_id": "guideline-1",
         "priority": 3,
-        "guideline_version": 7,
-        "legacy_version": 11,
-        "legacy_version_unresolvable": True,
+        "revision_id": "revision-1",
+        "revision_number": 1,
+        "semantic_version": "1.0.0",
+        "revision_digest": "a" * 64,
     }
     response = await api.import_default_board_config(
         envelope={
@@ -341,7 +324,7 @@ async def test_b11_board_config_import_preserves_only_supplied_compat_fields(
             "items": [
                 {
                     "scope": "global",
-                    "guideline_default_refs": [legacy_ref],
+                    "guideline_default_refs": [native_ref],
                     "is_active": False,
                 }
             ],
@@ -352,8 +335,33 @@ async def test_b11_board_config_import_preserves_only_supplied_compat_fields(
     )
 
     assert response["dry_run"] is True
-    assert captured[0]["guideline_default_refs"] == [legacy_ref]
+    assert captured[0]["guideline_default_refs"] == [native_ref]
     assert captured[0]["activate"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("refs", [
+    [{"guideline_id": "old", "guideline_version": 7}],
+    [{"guideline_id": "incomplete"}],
+    [{"guideline_id": "old", "revision_id": "r", "revision_number": 1,
+      "semantic_version": "1.0.0", "revision_digest": "a" * 64,
+      "legacy_version": 1}],
+])
+async def test_b11_import_rejects_old_or_incomplete_pins_before_use_case(monkeypatch, refs):
+    async def forbidden(*args, **kwargs):
+        pytest.fail("Invalid pins must never enter the write use case")
+
+    monkeypatch.setattr(api.ImportBoardConfigUseCase, "execute", forbidden)
+    with pytest.raises(HTTPException) as caught:
+        await api.import_default_board_config(
+            envelope={"schema_version": "1", "kind": "board_config",
+                      "exported_at": NOW.isoformat(),
+                      "items": [{"scope": "global", "guideline_default_refs": refs}]},
+            dry_run=False, db=object(),
+            principal=Principal(subject=OWNER_ID, realm_id="local"),
+        )
+    assert caught.value.status_code == 400
+    assert caught.value.detail["created"] == 0
 
 
 def test_b11_candidate_rest_projection_is_closed_and_reasoned(monkeypatch) -> None:
@@ -378,11 +386,6 @@ def test_b11_candidate_rest_projection_is_closed_and_reasoned(monkeypatch) -> No
                 "guideline_id": "guideline-active",
                 "title": "Active",
                 "scope": "global",
-                "guideline_version": 2,
-                "revision_id": head["revision_id"],
-                "revision_number": head["revision_number"],
-                "semantic_version": head["semantic_version"],
-                "revision_digest": head["revision_digest"],
                 "head_revision": head,
                 "default_revision": default,
                 "retired": False,
@@ -395,11 +398,6 @@ def test_b11_candidate_rest_projection_is_closed_and_reasoned(monkeypatch) -> No
                 "guideline_id": "guideline-retired",
                 "title": "Retired",
                 "scope": "global",
-                "guideline_version": 2,
-                "revision_id": head["revision_id"],
-                "revision_number": head["revision_number"],
-                "semantic_version": head["semantic_version"],
-                "revision_digest": head["revision_digest"],
                 "head_revision": head,
                 "default_revision": None,
                 "retired": True,
@@ -583,9 +581,36 @@ async def test_b11_materialization_keeps_exact_pin_and_rolls_back_partial_batch(
             ).scalar_one()
             assert exact.revision_id == revision_1.revision_id
             assert exact.revision_id != revision_2.revision_id
-            assert exact.legacy_template_id == template.id
-            assert exact.legacy_template_version == template.version
-            assert exact.legacy_guideline_version == revision_1.revision_number
+            assert exact.materialized_template_id == template.id
+            assert exact.materialized_template_version == template.version
+            assert exact.materialized_revision_number == revision_1.revision_number
+            exported = await CommunitySqlAlchemyGuidelinePolicy(session).export_guideline_snapshot(
+                guideline_ids=(guideline_id,), owner_id=OWNER_ID,
+                board_id="board-b11-exact",
+            )
+            proof = exported.aggregates[0].bindings[0]
+            assert proof.materialized_template_id == template.id
+            assert proof.materialized_template_version == template.version
+            assert proof.materialized_revision_number == revision_1.revision_number
+
+            forged = {column.name: getattr(exact, column.name)
+                      for column in GuidelineBoardBindingRow.__table__.columns}
+
+        async with get_session_factory()() as session:
+            session.add(Board(id="board-forged-proof", name="Forged proof",
+                              owner_id=OWNER_ID, realm_id="local",
+                              default_config_snapshot={"template_id": template.id,
+                                                       "template_version": template.version}))
+            await session.commit()
+        async with get_session_factory()() as session:
+            forged.update(binding_id="binding-forged-proof", board_id="board-forged-proof",
+                          materialized_revision_number=99)
+            with pytest.raises(IntegrityError, match="guideline_impact_preview_required"):
+                await session.execute(insert(GuidelineBoardBindingRow).values(**forged))
+            await session.rollback()
+            assert (await session.execute(select(GuidelineBoardBindingRow).where(
+                GuidelineBoardBindingRow.board_id == "board-forged-proof"
+            ))).scalars().all() == []
 
         async with get_session_factory()() as session:
             rollback_template = DefaultBoardConfiguration(
@@ -595,7 +620,7 @@ async def test_b11_materialization_keeps_exact_pin_and_rolls_back_partial_batch(
                 is_active=False,
                 scope="global",
                 settings_payload={},
-                guideline_default_refs=[],
+                guideline_default_refs=[_pin(guideline_id, revision_1, priority=1)],
                 created_by=OWNER_ID,
             )
             rollback_board = Board(

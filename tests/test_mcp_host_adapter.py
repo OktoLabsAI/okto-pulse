@@ -329,13 +329,22 @@ async def test_community_host_narrows_live_policy_board_schema_only_locally() ->
         if getattr(tool.fn, "__mcp_closed_schema__", False)
     )
 
-    # Code Traceability adds twenty-one governed closed-schema commands to the
-    # original policy surface, plus two Delivery Evidence commands. Keep the
+    # Code Traceability adds twenty governed closed-schema commands to the
+    # original policy surface, plus two Delivery Evidence commands and one
+    # architecture classification command. Imported-history reads and legacy
+    # evidence classification are removed from the fresh-install contract. Keep the
     # inventory assertion explicit so a
     # schema silently falling back to FastMCP inference is still detected.
-    assert len(opted_in) == 43
-    assert {"okto_pulse_get_delivery_evidence", "okto_pulse_record_delivery_evidence"} <= {
+    # The Decision-review read/write pair also opts into the closed contract.
+    assert len(opted_in) == 46
+    assert {"okto_pulse_get_decision_reviews", "okto_pulse_record_decision_reviews"} <= {
         tool.name for tool in opted_in
+    }
+    assert {"okto_pulse_get_delivery_evidence", "okto_pulse_record_delivery_evidence", "okto_pulse_classify_architecture_candidates"} <= {
+        tool.name for tool in opted_in
+    }
+    assert not {"okto_pulse_get_historical_context", "okto_pulse_classify_legacy_code_evidence"} & {
+        tool.name for tool in server.mcp.iter_tools()
     }
 
     def assert_closed(value: object) -> None:
@@ -513,3 +522,143 @@ def test_host_adapter_does_not_import_core_mcp_server() -> None:
     }
 
     assert "okto_pulse.core.mcp.server" not in modules
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool_name", "parent_field"),
+    [
+        ("okto_pulse_add_choice_comment", "card_id"),
+        ("okto_pulse_ask_ideation_choice_question", "ideation_id"),
+        ("okto_pulse_ask_refinement_choice_question", "refinement_id"),
+        ("okto_pulse_ask_spec_choice_question", "spec_id"),
+    ],
+)
+async def test_native_choice_schema_rejects_old_inputs_before_handler(
+    monkeypatch, tool_name, parent_field,
+):
+    from unittest.mock import AsyncMock
+    from okto_pulse.core.mcp import server as core_server
+
+    auth = AsyncMock(return_value=None)
+    monkeypatch.setattr(core_server, "_get_agent_ctx", auth)
+    catalog = CoreMcpCatalog(name="native-choice-contract", version="0.4.0")
+    catalog.tool()(getattr(core_server, tool_name).fn)
+    frozen = _frozen_projection()
+    host = CommunityMcpHostProvider().materialize_catalog(
+        catalog, resource_catalog=frozen, projection_identity=frozen.identity,
+    )
+    base = {"board_id": "board-1", parent_field: "parent-1", "question": "Which?"}
+    async with Client(host) as client:
+        for options in (
+            "A|B", '[{"label":"A"}]', ["A"],
+            [{"label": "A", "recommended": "false"}],
+            [{"label": "A", "unexpected": True}],
+        ):
+            rejected = await client.call_tool(
+                tool_name, {**base, "options": options}, raise_on_error=False,
+            )
+            assert rejected.is_error is True
+        retired = await client.call_tool(
+            tool_name, {**base, "options_json": [{"label": "A"}]},
+            raise_on_error=False,
+        )
+        assert retired.is_error is True
+        mixed = await client.call_tool(
+            tool_name,
+            {**base, "options": [{"label": "A"}], "options_json": [{"label": "B"}]},
+            raise_on_error=False,
+        )
+        assert mixed.is_error is True
+        auth.assert_not_awaited()
+        await client.call_tool(
+            tool_name, {**base, "options": [{"label": "A, B | C", "recommended": False}]},
+            raise_on_error=False,
+        )
+        auth.assert_awaited_once_with("board-1")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool_name", "args", "field", "native"),
+    [
+        ("okto_pulse_add_api_contract", {"spec_id": "spec-1"}, "request_body_json", {}),
+        ("okto_pulse_add_api_contract", {"spec_id": "spec-1"}, "response_errors_json", []),
+        ("okto_pulse_update_spec_entity",
+         {"spec_id": "spec-1", "entity_type": "business_rule", "operation": "update"},
+         "payload_json", {}),
+        ("okto_pulse_validate_architecture_design_payload", {}, "entities", []),
+        ("okto_pulse_import_excalidraw_architecture_diagram",
+         {"design_id": "design-1", "title": "Scene"}, "payload_json", {}),
+        ("okto_pulse_add_ideation_knowledge",
+         {"ideation_id": "idea-1", "title": "Knowledge", "content": "body"},
+         "governance_metadata", {}),
+        ("okto_pulse_list_by_board", {"entity_type": "spec"}, "filters", {}),
+    ],
+)
+async def test_structured_mcp_inputs_refuse_json_strings_before_handler(
+    monkeypatch, tool_name, args, field, native,
+):
+    import json
+    from unittest.mock import AsyncMock
+    from okto_pulse.core.mcp import server as core_server
+
+    auth = AsyncMock(return_value=None)
+    monkeypatch.setattr(core_server, "_get_agent_ctx", auth)
+    catalog = CoreMcpCatalog(name="native-structured-contract", version="0.4.0")
+    catalog.tool()(getattr(core_server, tool_name).fn)
+    frozen = _frozen_projection()
+    host = CommunityMcpHostProvider().materialize_catalog(
+        catalog, resource_catalog=frozen, projection_identity=frozen.identity,
+    )
+    base = {"board_id": "board-1", **args}
+    async with Client(host) as client:
+        for invalid in (json.dumps(native), "", "null", False):
+            result = await client.call_tool(
+                tool_name, {**base, field: invalid}, raise_on_error=False,
+            )
+            assert result.is_error is True
+        auth.assert_not_awaited()
+        await client.call_tool(
+            tool_name, {**base, field: native}, raise_on_error=False,
+        )
+        auth.assert_awaited_once_with("board-1")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool_name", "args", "field"),
+    [
+        ("okto_pulse_list_my_mentions", {}, "include_seen"),
+        ("okto_pulse_get_task_context", {"card_id": "card-1"}, "include_knowledge"),
+        ("okto_pulse_add_choice_comment",
+         {"card_id": "card-1", "question": "Which?", "options": [{"label": "A"}]},
+         "allow_free_text"),
+        ("okto_pulse_list_spec_dependencies", {"spec_id": "spec-1"}, "retrospective"),
+    ],
+)
+async def test_boolean_mcp_inputs_have_no_string_or_numeric_path(
+    monkeypatch, tool_name, args, field,
+):
+    from unittest.mock import AsyncMock
+    from okto_pulse.core.mcp import server as core_server
+
+    auth = AsyncMock(return_value=None)
+    monkeypatch.setattr(core_server, "_get_agent_ctx", auth)
+    catalog = CoreMcpCatalog(name="native-boolean-contract", version="0.4.0")
+    catalog.tool()(getattr(core_server, tool_name).fn)
+    frozen = _frozen_projection()
+    host = CommunityMcpHostProvider().materialize_catalog(
+        catalog, resource_catalog=frozen, projection_identity=frozen.identity,
+    )
+    base = {"board_id": "board-1", **args}
+    async with Client(host) as client:
+        for invalid in ("true", "false", "yes", "no", "1", "0", "", 0, 1):
+            result = await client.call_tool(
+                tool_name, {**base, field: invalid}, raise_on_error=False,
+            )
+            assert result.is_error is True
+        auth.assert_not_awaited()
+        for native in (True, False):
+            await client.call_tool(tool_name, {**base, field: native}, raise_on_error=False)
+        assert auth.await_count == 2

@@ -133,15 +133,11 @@ def test_ts_bd58a427_golden_replay_resources_read_tooldoc_payload(
     assert len(classified) == len(specs)
     by_uri = {c["uri"]: c for c in classified}
 
-    # Every capability-tagged operational replacement is classified to a
-    # descriptor (AC3 — no relevant resource left silently unclassified): the four
-    # R11-B contaminated URIs (kg / errors / decision).
-    for uri in (
-        "okto-pulse://workflows/kg",
-        "okto-pulse://reference/errors",
-        "okto-pulse://reference/tool-docs/kg",
-        "okto-pulse://reference/tool-docs/decision",
-    ):
+    # Every edition-owned operational extension retains a descriptor. Shared
+    # errors/tool contracts are no longer duplicated as provider capabilities.
+    operational = [s for s in specs if s.edition == "community"]
+    assert {s.uri for s in operational} == {"okto-pulse://workflows/kg"}
+    for uri in (s.uri for s in operational):
         assert by_uri[uri]["classified"] is True, uri
         assert by_uri[uri]["descriptor_id"] is not None, uri
 

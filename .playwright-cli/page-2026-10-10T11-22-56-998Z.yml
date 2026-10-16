@@ -1,0 +1,116 @@
+- generic [ref=e1]:
+  - generic [ref=e31]:
+    - banner [ref=e32]:
+      - generic [ref=e33]:
+        - generic [ref=e34]:
+          - button "Hide sidebar" [ref=e35] [cursor=pointer]
+          - img "Okto Pulse" [ref=e40]
+          - generic [ref=e139]: / My Board
+        - generic [ref=e140]:
+          - button "Refresh board" [ref=e141] [cursor=pointer]
+          - button [ref=e148] [cursor=pointer]
+    - generic [ref=e41]:
+      - complementary [ref=e42]:
+        - generic [ref=e43]:
+          - generic [ref=e45]:
+            - heading "Boards" [level=2] [ref=e46]
+            - button "New board" [ref=e47] [cursor=pointer]
+          - navigation [ref=e49]:
+            - generic [ref=e50]:
+              - heading "My Boards" [level=3] [ref=e51]
+              - list [ref=e152]:
+                - listitem [ref=e153]:
+                  - button "My Board" [ref=e154] [cursor=pointer]
+      - main [ref=e54]:
+        - group "Board views" [ref=e161]:
+          - button "Stories" [ref=e162] [cursor=pointer]
+          - button "Ideations" [ref=e166] [cursor=pointer]
+          - button "Refinements" [ref=e169] [cursor=pointer]
+          - button "Specs" [pressed] [ref=e174] [cursor=pointer]
+          - button "Tasks" [ref=e179] [cursor=pointer]
+        - generic [ref=e265]:
+          - generic [ref=e266]:
+            - generic [ref=e267]:
+              - heading "Specifications" [level=2] [ref=e268]
+              - generic [ref=e269]: (1 of 1)
+            - generic [ref=e270]:
+              - textbox "Search specs…" [ref=e272]
+              - group "View mode" [ref=e273]:
+                - button "List view" [pressed] [ref=e274] [cursor=pointer]
+                - button "Grid view" [ref=e276] [cursor=pointer]
+              - generic [ref=e282]: Group specs
+              - combobox "Group specs" [ref=e288]:
+                - option "None"
+                - option "Ideation"
+                - option "Refinement"
+                - option "Parents" [selected]
+              - button "New Spec" [ref=e289] [cursor=pointer]
+          - generic [ref=e291]:
+            - button "All" [ref=e292] [cursor=pointer]
+            - button "Draft" [ref=e293] [cursor=pointer]
+            - button "Review" [ref=e294] [cursor=pointer]
+            - button "Approved" [ref=e295] [cursor=pointer]
+            - button "Validated" [ref=e296] [cursor=pointer]
+            - button "In Progress" [ref=e297] [cursor=pointer]
+            - button "Done" [ref=e298] [cursor=pointer]
+            - button "Show archived" [ref=e299] [cursor=pointer]
+          - generic [ref=e305] [cursor=pointer]:
+            - generic [ref=e306]:
+              - generic [ref=e307]:
+                - generic [ref=e308]: Draft
+                - generic "Edition 1" [ref=e312]
+              - heading "DV acceptance - isolated mock scope" [level=3] [ref=e313]
+              - paragraph [ref=e314]: This new native acceptance fixture documents only the local UI exercise; no production deployment is included.
+              - 'generic "Requirement lint: no current result · Edition 1; 0 previous results" [ref=e316]':
+                - generic [ref=e317]: Requirement lint
+                - strong [ref=e318]: Not assessed
+            - generic [ref=e319]:
+              - button "Open lineage graph" [ref=e320]
+              - button "Archive tree" [ref=e325]
+          - generic [ref=e331]:
+            - status [ref=e332]: Showing 1–1 of 1 matching. 1 overall. Page 1 of 1.
+            - generic [ref=e333]:
+              - generic [ref=e334]:
+                - generic [ref=e335]: Items per page
+                - combobox "Items per page" [ref=e336]:
+                  - option "25" [selected]
+                  - option "50"
+                  - option "100"
+              - navigation "Specifications pagination" [ref=e337]:
+                - generic [ref=e338]:
+                  - button "Previous page" [disabled] [ref=e339]: Previous
+                  - button "Page 1" [disabled] [ref=e340]: "1"
+                  - button "Next page" [disabled] [ref=e341]: Next
+    - 'status "Cognitive pipeline working: 0 running, 1 pending" [ref=e342]':
+      - generic [ref=e353]: processing · 1 pending
+    - status [ref=e354]:
+      - generic [ref=e355]:
+        - generic [ref=e356]: Consolidation in progress
+        - generic [ref=e357]: 0%
+      - generic [ref=e359]:
+        - generic [ref=e360]:
+          - generic [ref=e361]: Pending
+          - generic [ref=e362]: "1"
+        - generic [ref=e363]:
+          - generic [ref=e364]: Running
+          - generic [ref=e365]: "0"
+        - generic [ref=e366]:
+          - generic [ref=e367]: Processed
+          - generic [ref=e368]: "0"
+        - generic [ref=e369]:
+          - generic [ref=e370]: Paused
+          - generic [ref=e371]: "0"
+  - dialog [ref=e372]:
+    - generic [ref=e249]:
+      - paragraph [ref=e250]: Guided help
+      - paragraph [ref=e251]: 1 / 1
+    - heading "Use resources as first-class inputs" [level=2] [ref=e373]
+    - paragraph [ref=e253]: Rules, contracts, architecture, mockups, and knowledge entries keep implementation traceable.
+    - paragraph [ref=e374]: This step is available even when its anchor is not visible.
+    - generic [ref=e254]:
+      - generic [ref=e255]:
+        - button "Back" [disabled] [ref=e256]
+        - button "Skip step" [ref=e259] [cursor=pointer]
+      - generic [ref=e260]:
+        - button "Skip all" [ref=e261] [cursor=pointer]
+        - button "Done" [active] [ref=e375] [cursor=pointer]

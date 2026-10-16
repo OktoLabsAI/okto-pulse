@@ -18,6 +18,17 @@ describe('test scenario status API surface', () => {
     mockApiClient.fetch.mockReset();
   });
 
+  it('admits a report with escaped scope and no automatic receipt-producing retry', async () => {
+    const evidence = { evidence_class: 'verification_report', execution_receipt: 'opaque' };
+    mockApiClient.fetchJson.mockResolvedValue({ evidence });
+    const { result } = renderHook(() => useDashboardApi());
+    const report = { method: 'inspection' };
+    expect(await result.current.admitTestVerificationReport('spec/a', 'ts/b', report)).toEqual({ evidence });
+    expect(mockApiClient.fetchJson).toHaveBeenCalledExactlyOnceWith('/specs/spec%2Fa/scenarios/ts%2Fb/evidence/reports', {
+      method: 'POST', body: JSON.stringify({ report }), maxRetries: 0,
+    });
+  });
+
   it('uses the scoped PATCH without replacing the parent scenario list', async () => {
     mockApiClient.fetchJson.mockResolvedValue({
       id: 'spec-1',

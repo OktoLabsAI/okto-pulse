@@ -1,3 +1,4 @@
+import { workspaceItem, workspacePage } from '@/testFixtures/effectiveResources';
 // Spec 3a006f65 / card 0192f58d / FR6 — the mockup creation UI carries the Design
 // System consumption metadata (design_system_ref / version / evidence) into the saved
 // mockup, and the viewer surfaces a Design System badge. The server-side
@@ -19,9 +20,8 @@ vi.mock('@/services/api', () => ({
 describe('MockupsTab Design System fields', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    apiMock.getEffectiveResources.mockResolvedValue({
-      resources: { architecture: [], mockup: [], knowledge_base: [] },
-    });
+    apiMock.getEffectiveResources.mockImplementation((boardId, entityType, entityId, options) =>
+    Promise.resolve(workspacePage(boardId, entityType, entityId, options.resource_type, [], options.profile)));
   });
 
   it('includes design_system_ref + version + evidence in the created mockup', async () => {
@@ -83,35 +83,13 @@ describe('MockupsTab Design System fields', () => {
 
   it('renders inherited effective mockups as read-only with source provenance', async () => {
     const onUpdate = vi.fn().mockResolvedValue(undefined);
-    apiMock.getEffectiveResources.mockResolvedValue({
-      resources: {
-        architecture: [],
-        knowledge_base: [],
-        mockup: [
-          {
-            id: 'mock-parent-1',
-            title: 'Parent checkout',
-            resource_type: 'mockup',
-            attachment_kind: 'inherited_reference',
-            inherited: true,
-            read_only: true,
-            hydrated: true,
-            source_entity_type: 'ideation',
-            source_entity_id: 'idea-1',
-            source_entity_title: 'Source idea',
-            resource: {
-              id: 'mock-parent-1',
-              title: 'Parent checkout',
-              description: 'Inherited parent screen',
-              screen_type: 'page',
-              html_content: '<main>checkout</main>',
-              annotations: null,
-              order: 0,
-            },
-          },
-        ],
-      },
-    });
+    apiMock.getEffectiveResources.mockImplementation((boardId, entityType, entityId, options) =>
+      Promise.resolve(workspacePage(boardId, entityType, entityId, options.resource_type,
+        options.resource_type === 'mockup' ? [workspaceItem('mockup', 'mock-parent-1', 'Parent checkout', {
+          inherited: true, attachment_kind: 'inherited_reference', body: { id: 'mock-parent-1', title: 'Parent checkout', description: 'Inherited parent screen', screen_type: 'page', html_content: '<main>checkout</main>', annotations: null, order: 0 },
+          provenance: { source_entity_type: 'ideation', source_entity_id: 'idea-1',
+            source_entity_title: 'Source idea', origin_class: 'v2', source_revision: '1', source_content_sha256: null },
+        })] : [], options.profile)));
 
     render(
       <MockupsTab

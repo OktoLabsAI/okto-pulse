@@ -5,10 +5,15 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import pytest
-from sqlalchemy import event, select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import create_async_engine
 
-from okto_pulse.community.adapters.sqlalchemy_base import Base
+from okto_pulse.community.adapters.current_relational_schema import (
+    current_schema_contract, initialize_current_schema,
+)
+from okto_pulse.community.adapters.sqlalchemy_database import (
+    build_community_session_factory, install_community_sqlite_pragmas,
+)
 from okto_pulse.community.adapters.sqlalchemy_delivery_ledger import (
     CommunitySqlAlchemyDeliveryLedger,
 )
@@ -79,22 +84,9 @@ async def test_terminal_attempt_zero_tick_redrive_attempt_one_then_delivered(
         f"sqlite+aiosqlite:///{tmp_path / 'card7-outbox-integration.db'}"
     )
 
-    @event.listens_for(engine.sync_engine, "connect")
-    def _configure_sqlite(dbapi_connection, _connection_record):
-        cursor = dbapi_connection.cursor()
-        try:
-            cursor.execute("PRAGMA foreign_keys=ON")
-            cursor.execute("PRAGMA journal_mode=WAL")
-        finally:
-            cursor.close()
-
-    sessions = async_sessionmaker(
-        engine,
-        class_=AsyncSession,
-        expire_on_commit=False,
-    )
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    install_community_sqlite_pragmas(engine)
+    await initialize_current_schema(engine, current_schema_contract())
+    sessions = build_community_session_factory(engine)
 
     attempt_zero = DeliveryAttemptEnvelope(
         board_id=BOARD_ID,
@@ -105,7 +97,7 @@ async def test_terminal_attempt_zero_tick_redrive_attempt_one_then_delivered(
         attempt=0,
     )
     async with sessions() as session:
-        session.add(Board(id=BOARD_ID, name="Card 7 integrated", owner_id="tester"))
+        session.add(Board(id=BOARD_ID, realm_id="local", name="Card 7 integrated", owner_id="tester"))
         session.add(
             GlobalDiscoveryDeliveryLedger(
                 delivery_key=attempt_zero.delivery_key,
@@ -293,22 +285,9 @@ async def test_redrive_checkpoint_attempt_and_continuation_share_one_uow(
         f"sqlite+aiosqlite:///{tmp_path / 'card7-redrive-continuation.db'}"
     )
 
-    @event.listens_for(engine.sync_engine, "connect")
-    def _configure_sqlite(dbapi_connection, _connection_record):
-        cursor = dbapi_connection.cursor()
-        try:
-            cursor.execute("PRAGMA foreign_keys=ON")
-            cursor.execute("PRAGMA journal_mode=WAL")
-        finally:
-            cursor.close()
-
-    sessions = async_sessionmaker(
-        engine,
-        class_=AsyncSession,
-        expire_on_commit=False,
-    )
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    install_community_sqlite_pragmas(engine)
+    await initialize_current_schema(engine, current_schema_contract())
+    sessions = build_community_session_factory(engine)
 
     debts = [
         DeliveryAttemptEnvelope(
@@ -328,7 +307,7 @@ async def test_redrive_checkpoint_attempt_and_continuation_share_one_uow(
         )
     ]
     async with sessions() as session:
-        session.add(Board(id=BOARD_ID, name="Card 7 chain", owner_id="tester"))
+        session.add(Board(id=BOARD_ID, realm_id="local", name="Card 7 chain", owner_id="tester"))
         session.add_all(
             [
                 GlobalDiscoveryDeliveryLedger(

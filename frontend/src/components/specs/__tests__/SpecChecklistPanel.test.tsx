@@ -15,6 +15,37 @@ vi.mock('@/services/api', () => ({ useDashboardApi: () => apiMock }));
 
 import { SpecChecklistPanel } from '../SpecChecklistPanel';
 import { SubmitSpecValidationModal } from '../SubmitSpecValidationModal';
+import { AuthenticatedFetchError } from '@/lib/authFetch';
+import type { BoardSettings } from '@/types';
+
+const validationSettings: BoardSettings = {
+  max_scenarios_per_card: 3,
+  skip_test_coverage_global: false, skip_rules_coverage_global: false,
+  skip_trs_coverage_global: false, skip_contract_coverage_global: false,
+  skip_ir_coverage_global: false, skip_or_coverage_global: false,
+  skip_decisions_coverage_global: false,
+  require_task_validation: true, min_confidence: 80, min_completeness: 80, max_drift: 20,
+  require_spec_validation: true, min_spec_confidence: 70, min_spec_clarity: 80,
+  min_spec_assertiveness: 80, min_spec_decidability: 80, max_spec_ambiguity: 30,
+};
+
+function renderPlanningReview(canSubmitDecomposition = false) {
+  return render(<SubmitSpecValidationModal
+    specId="spec-1" specTitle="Planning review" boardId="board-1" specVersion={4}
+    settings={validationSettings} canReadChecklist canExecuteChecklist
+    canSubmitDecomposition={canSubmitDecomposition}
+    onClose={() => {}} onSubmitted={() => {}}
+  />);
+}
+
+function fillPlanningReview() {
+  for (const metric of ['Confidence', 'Clarity', 'Assertiveness', 'Decidability', 'Ambiguity']) {
+    fireEvent.change(screen.getByLabelText(`${metric} justification`), {
+      target: { value: `${metric} is supported by the inspected requirements.` },
+    });
+  }
+  fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+}
 
 const itemIds = [
   'chk_scope_boundaries',
@@ -139,20 +170,24 @@ describe('SpecChecklistPanel', () => {
     });
     apiMock.startChecklistExecution.mockResolvedValue({
       execution_id: 'execution-1',
-      items: template.items,
-      subject_digest: 'd'.repeat(64),
-      template_digest: template.digest,
+      spec_edition: 1,
+      status: 'started',
     });
     apiMock.submitChecklistExecution.mockResolvedValue({
-      receipt_id: 'receipt-1',
-      outcome: 'pass',
-      head_revision: 1,
+      result_id: 'receipt-1',
+      spec_edition: 1,
+      status: 'passed',
     });
     apiMock.getValidationCycle.mockResolvedValue({
       subject_type: 'spec',
       subject_id: 'spec-1',
       edition: 1,
       subject_status: 'approved',
+      planning_manifest: {
+        board_id: 'board-1', spec_id: 'spec-1', edition: 1, spec_version: 4,
+        subject_incarnation: 'a'.repeat(32), subject_revision: 1,
+        authority_incarnation: 'b'.repeat(32), authority_revision: 1,
+      },
       visible_sections: [
         'spec_validation',
         'curated_checklist',
@@ -177,6 +212,78 @@ describe('SpecChecklistPanel', () => {
     });
   });
 
+  it('preserves a complete draft on external changes and requires review before a fresh execution', async () => {
+    const props = { boardId: 'board-1', specId: 'spec-1', expectedSpecEdition: 1, expectedSpecVersion: 4 };
+    const view = render(<SpecChecklistPanel {...props} refreshKey={0} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Start checklist' }));
+    await screen.findByTestId('checklist-execution-form');
+    screen.getAllByRole('combobox').forEach(input => fireEvent.change(input, { target: { value: 'pass' } }));
+    screen.getAllByPlaceholderText('Required evidence anchor (FR/AC/section)').forEach((input, i) => {
+      fireEvent.change(input, { target: { value: `Observed FR-${i + 1}` } });
+    });
+    const changed = { ...incompleteState, subject: { ...incompleteState.subject, spec_version: 5, input_digest: 'f'.repeat(64) } };
+    apiMock.getSpecChecklistState.mockResolvedValue(changed);
+    view.rerender(<SpecChecklistPanel {...props} expectedSpecVersion={5} refreshKey={1} />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('draft is preserved');
+    expect(screen.getByDisplayValue('Observed FR-1')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Submit complete checklist' })).toBeDisabled();
+    expect(apiMock.submitChecklistExecution).not.toHaveBeenCalled();
+    apiMock.startChecklistExecution.mockResolvedValue({ execution_id: 'execution-2', spec_edition: 1, status: 'started' });
+    fireEvent.click(screen.getByRole('button', { name: 'I reviewed the current plan — keep my checklist draft' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Submit complete checklist' })).toBeEnabled());
+    expect(screen.getByDisplayValue('Observed FR-1')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Submit complete checklist' }));
+    await waitFor(() => expect(apiMock.submitChecklistExecution).toHaveBeenCalledWith('board-1', 'spec-1', expect.objectContaining({
+      expected_spec_version: 5, spec_edition: 1, execution_id: 'execution-2',
+    })));
+  });
+
+  it('does not silently transfer a draft to another edition', async () => {
+    const props = { boardId: 'board-1', specId: 'spec-1', expectedSpecEdition: 1, expectedSpecVersion: 4 };
+    const view = render(<SpecChecklistPanel {...props} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Start checklist' }));
+    await screen.findByTestId('checklist-execution-form');
+    fireEvent.change(screen.getAllByPlaceholderText('Required evidence anchor (FR/AC/section)')[0], { target: { value: 'Original edition evidence' } });
+    apiMock.getSpecChecklistState.mockResolvedValue({ ...incompleteState, subject: { ...incompleteState.subject, spec_edition: 2, spec_version: 5 } });
+    view.rerender(<SpecChecklistPanel {...props} expectedSpecEdition={2} expectedSpecVersion={5} />);
+    await screen.findByRole('alert');
+    expect(screen.getByDisplayValue('Original edition evidence')).toBeInTheDocument();
+    expect(screen.getByText(/Checklist in progress for Edition 1/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /I reviewed the current plan/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Submit complete checklist' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Discard checklist draft' }));
+    await screen.findByTestId('checklist-template-preview');
+    expect(screen.queryByDisplayValue('Original edition evidence')).not.toBeInTheDocument();
+  });
+
+  it('discards stale reads and clears protected drafts when access is revoked', async () => {
+    const props = { boardId: 'board-1', specId: 'spec-1', expectedSpecEdition: 1, expectedSpecVersion: 4 };
+    const view = render(<SpecChecklistPanel {...props} refreshKey={0} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Start checklist' }));
+    await screen.findByTestId('checklist-execution-form');
+    fireEvent.change(screen.getAllByPlaceholderText('Required evidence anchor (FR/AC/section)')[0], { target: { value: 'Protected draft' } });
+    let resolveOld!: (value: typeof incompleteState) => void;
+    apiMock.getSpecChecklistState.mockReturnValueOnce(new Promise(resolve => { resolveOld = resolve; }));
+    view.rerender(<SpecChecklistPanel {...props} refreshKey={1} />);
+    await waitFor(() => expect(apiMock.getSpecChecklistState).toHaveBeenCalledTimes(2));
+    apiMock.getSpecChecklistState.mockRejectedValueOnce(new AuthenticatedFetchError({ message: 'Access revoked', status: 403 }));
+    view.rerender(<SpecChecklistPanel {...props} refreshKey={2} />);
+    await screen.findByText(/Checklist readiness is unavailable/);
+    resolveOld(incompleteState);
+    await waitFor(() => expect(screen.queryByDisplayValue('Protected draft')).not.toBeInTheDocument());
+    expect(screen.queryByTestId('checklist-execution-form')).not.toBeInTheDocument();
+  });
+
+  it('defers external reads while the section is hidden', async () => {
+    const props = { boardId: 'board-1', specId: 'spec-1', expectedSpecEdition: 1, expectedSpecVersion: 4 };
+    const view = render(<SpecChecklistPanel {...props} active refreshKey={0} />);
+    await screen.findByTestId('checklist-template-preview');
+    view.rerender(<SpecChecklistPanel {...props} active={false} refreshKey={2} />);
+    expect(apiMock.getSpecChecklistState).toHaveBeenCalledTimes(1);
+    view.rerender(<SpecChecklistPanel {...props} active refreshKey={2} />);
+    await waitFor(() => expect(apiMock.getSpecChecklistState).toHaveBeenCalledTimes(2));
+  });
+
   it('shows all immutable checklist items on a draft before execution starts', async () => {
     apiMock.getSpecChecklistState.mockResolvedValue({
       ...incompleteState,
@@ -187,7 +294,7 @@ describe('SpecChecklistPanel', () => {
     });
 
     render(
-      <SpecChecklistPanel
+      <SpecChecklistPanel expectedSpecEdition={1}
         boardId="board-1"
         specId="spec-1"
         expectedSpecVersion={4}
@@ -217,7 +324,7 @@ describe('SpecChecklistPanel', () => {
     });
 
     render(
-      <SpecChecklistPanel
+      <SpecChecklistPanel expectedSpecEdition={1}
         boardId="board-1"
         specId="spec-1"
         expectedSpecVersion={4}
@@ -235,7 +342,7 @@ describe('SpecChecklistPanel', () => {
 
   it('submits exactly the ten ordered template items with required anchors', async () => {
     render(
-      <SpecChecklistPanel
+      <SpecChecklistPanel expectedSpecEdition={1}
         boardId="board-1"
         specId="spec-1"
         expectedSpecVersion={4}
@@ -243,9 +350,9 @@ describe('SpecChecklistPanel', () => {
     );
 
     expect(await screen.findByTestId('checklist-state-status')).toHaveTextContent(
-      'not_started',
+      'not started',
     );
-    expect(screen.getByText('checklist_receipt_required')).toBeInTheDocument();
+    expect(screen.getByText('Complete the checklist for this edition before submitting validation.')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Start checklist' }));
     await screen.findByTestId('checklist-execution-form');
@@ -296,15 +403,15 @@ describe('SpecChecklistPanel', () => {
       items: [{
         receipt: {
           ...currentReceipt,
-          id: 'legacy-checklist-receipt',
-          spec_edition: null,
+          id: 'previous-checklist-receipt',
+          spec_edition: 1,
         },
         is_head: false,
         currentness: { current: false, stale_reasons: [] },
         gate: {
           mode: 'blocking',
           allowed: false,
-          reason: 'legacy_history_only',
+          reason: 'checklist_receipt_stale',
           currentness: { current: false, stale_reasons: [] },
         },
       }],
@@ -319,7 +426,6 @@ describe('SpecChecklistPanel', () => {
         specId="spec-1"
         expectedSpecVersion={4}
         expectedSpecEdition={1}
-        presentationMode="lifecycle-edition"
         showHistory
       />,
     );
@@ -337,8 +443,8 @@ describe('SpecChecklistPanel', () => {
     const previousResults = await screen.findByTestId(
       'checklist-previous-results-content',
     );
-    expect(previousResults).toHaveTextContent('Legacy');
-    expect(previousResults).not.toHaveTextContent('Edition 1');
+    expect(previousResults).toHaveTextContent('Edition 1');
+    expect(previousResults).not.toHaveTextContent('Legacy');
     fireEvent.click(toggle);
     fireEvent.click(toggle);
 
@@ -372,7 +478,6 @@ describe('SpecChecklistPanel', () => {
         specId="spec-1"
         expectedSpecVersion={4}
         expectedSpecEdition={1}
-        presentationMode="lifecycle-edition"
         showHistory
       />,
     );
@@ -385,6 +490,86 @@ describe('SpecChecklistPanel', () => {
     expect(screen.queryByText(/head/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/revision/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/version/i)).not.toBeInTheDocument();
+  });
+
+  it.each([
+    { spec_edition: null, source: 'native' },
+    { spec_edition: 1, source: 'legacy_unverified' },
+  ])('refuses incompatible history instead of displaying Legacy: %j', async (invalid) => {
+    apiMock.listChecklistExecutions.mockResolvedValue({
+      items: [{ receipt: { ...currentReceipt, ...invalid }, is_head: false }],
+      total_filtered: 1, total_overall: 1, offset: 0, limit: 25,
+    });
+    render(
+      <SpecChecklistPanel boardId="board-1" specId="spec-1"
+        expectedSpecVersion={4} expectedSpecEdition={1} showHistory />,
+    );
+    await screen.findByTestId('checklist-template-preview');
+    fireEvent.click(screen.getByTestId('checklist-previous-results-toggle'));
+    expect(await screen.findByRole('alert')).toHaveTextContent('do not match this subject edition');
+    expect(screen.queryByText('Legacy')).not.toBeInTheDocument();
+    expect(apiMock.startChecklistExecution).not.toHaveBeenCalled();
+  });
+
+  it('keeps native history pagination and page-size selection', async () => {
+    apiMock.listChecklistExecutions.mockResolvedValue({
+      items: [{ receipt: currentReceipt, is_head: false }],
+      total_filtered: 51, total_overall: 51, offset: 0, limit: 25,
+    });
+    render(
+      <SpecChecklistPanel boardId="board-1" specId="spec-1"
+        expectedSpecVersion={4} expectedSpecEdition={1} showHistory />,
+    );
+    await screen.findByTestId('checklist-template-preview');
+    expect(apiMock.listChecklistExecutions).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('checklist-previous-results-toggle'));
+    await screen.findByText('Edition 1');
+    fireEvent.click(screen.getByRole('button', { name: 'Next checklist results page' }));
+    await waitFor(() => expect(apiMock.listChecklistExecutions).toHaveBeenLastCalledWith('board-1', 'spec-1', 25, 25));
+    fireEvent.change(screen.getByLabelText('Checklist history page size'), { target: { value: '50' } });
+    await waitFor(() => expect(apiMock.listChecklistExecutions).toHaveBeenLastCalledWith('board-1', 'spec-1', 0, 50));
+  });
+
+  it('does not assume edition 1 when the host supplies an invalid edition', async () => {
+    render(
+      <SpecChecklistPanel boardId="board-1" specId="spec-1"
+        expectedSpecVersion={4} expectedSpecEdition={0} />,
+    );
+    expect(await screen.findByText(/Checklist readiness is unavailable/)).toBeInTheDocument();
+    expect(apiMock.getSpecChecklistState).not.toHaveBeenCalled();
+    expect(apiMock.startChecklistExecution).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'Start checklist' })).not.toBeInTheDocument();
+  });
+
+  it('refuses an execution from another edition before opening the form', async () => {
+    apiMock.startChecklistExecution.mockResolvedValue({
+      execution_id: 'wrong-edition', status: 'started',
+      spec_edition: 2,
+    });
+    render(
+      <SpecChecklistPanel boardId="board-1" specId="spec-1"
+        expectedSpecVersion={4} expectedSpecEdition={1} />,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Start checklist' }));
+    await waitFor(() => expect(apiMock.getSpecChecklistState).toHaveBeenCalledTimes(2));
+    expect(screen.queryByTestId('checklist-execution-form')).not.toBeInTheDocument();
+    expect(apiMock.submitChecklistExecution).not.toHaveBeenCalled();
+  });
+
+  it.each(['permission', 'stage'] as const)('blocks an open execution when its %s is revoked', async (reason) => {
+    const props = { boardId: 'board-1', specId: 'spec-1', expectedSpecVersion: 4, expectedSpecEdition: 1 };
+    const { rerender } = render(<SpecChecklistPanel {...props} canExecute validationStageActive />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Start checklist' }));
+    await screen.findByTestId('checklist-execution-form');
+    screen.getAllByRole('combobox').forEach((select) => fireEvent.change(select, { target: { value: 'pass' } }));
+    screen.getAllByPlaceholderText('Required evidence anchor (FR/AC/section)').forEach((input, index) =>
+      fireEvent.change(input, { target: { value: `FR-${index + 1}` } }));
+    const submit = screen.getByRole('button', { name: 'Submit complete checklist' });
+    expect(submit).toBeEnabled();
+    rerender(<SpecChecklistPanel {...props} canExecute={reason !== 'permission'} validationStageActive={reason !== 'stage'} />);
+    expect(submit).toBeDisabled();
+    fireEvent.click(submit);
+    expect(apiMock.submitChecklistExecution).not.toHaveBeenCalled();
   });
 
   it('keeps Spec Validation fail-closed until a blocking receipt is current', async () => {
@@ -438,7 +623,7 @@ describe('SpecChecklistPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
 
     const submitButton = screen.getByRole('button', {
-      name: 'Submit Validation',
+      name: 'Conclude planning validation',
     });
     expect(submitButton).toBeDisabled();
 
@@ -455,6 +640,12 @@ describe('SpecChecklistPanel', () => {
     fireEvent.click(submitButton);
     await waitFor(() => expect(apiMock.submitSpecValidation).toHaveBeenCalledTimes(1));
     expect(apiMock.submitSpecValidation).toHaveBeenCalledWith('spec-1', {
+      idempotency_key: expect.any(String),
+      expected_planning_manifest: {
+        board_id: 'board-1', spec_id: 'spec-1', edition: 1, spec_version: 4,
+        subject_incarnation: 'a'.repeat(32), subject_revision: 1,
+        authority_incarnation: 'b'.repeat(32), authority_revision: 1,
+      },
       expected_validation_edition: 1,
       expected_spec_version: 4,
       expected_head_revision: 0,
@@ -529,7 +720,7 @@ describe('SpecChecklistPanel', () => {
       });
     }
     fireEvent.click(screen.getByRole('button', { name: 'Add pinpoint' }));
-    fireEvent.change(screen.getByLabelText('Pinpoint 1 metric'), {
+    fireEvent.change(screen.getByLabelText('Pinpoint 1 dimensions'), {
       target: { value: 'decidability' },
     });
     fireEvent.change(screen.getByLabelText('Pinpoint 1 location type'), {
@@ -541,8 +732,10 @@ describe('SpecChecklistPanel', () => {
     fireEvent.change(screen.getByLabelText('Pinpoint 1 detail'), {
       target: { value: 'The requirement does not establish a minimum capacity.' },
     });
+    fireEvent.change(screen.getByLabelText('Pinpoint 1 excerpt'), { target: { value: 'Original requirement' } });
+    fireEvent.change(screen.getByLabelText('Pinpoint 1 recommendation'), { target: { value: 'Specify capacity.' } });
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Submit Validation' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Conclude planning validation' }));
 
     await waitFor(() => expect(apiMock.submitSpecValidation).toHaveBeenCalledWith(
       'spec-1',
@@ -554,12 +747,142 @@ describe('SpecChecklistPanel', () => {
         ambiguity: 30,
         recommendation: 'approve',
         pinpoints: [{
-          metric: 'decidability',
+          metrics: ['decidability'], kind: 'problem', severity: 'medium',
+          excerpt: 'Original requirement', recommendation: 'Specify capacity.',
           anchor_type: 'structured_child',
           anchor_ref: 'fr-availability',
           detail: 'The requirement does not establish a minimum capacity.',
         }],
       }),
     ));
+  });
+
+  it('keeps the operation key on retry and replaces it only when the submitted content changes', async () => {
+    apiMock.getSpecChecklistState.mockResolvedValue(currentState);
+    apiMock.submitSpecValidation.mockRejectedValue(new Error('Connection interrupted'));
+    render(
+      <SubmitSpecValidationModal
+        specId="spec-1" specTitle="Retry review" boardId="board-1" specVersion={4}
+        settings={{
+          max_scenarios_per_card: 3,
+          skip_test_coverage_global: false, skip_rules_coverage_global: false,
+          skip_trs_coverage_global: false, skip_contract_coverage_global: false,
+          skip_ir_coverage_global: false, skip_or_coverage_global: false,
+          skip_decisions_coverage_global: false,
+          require_task_validation: true, min_confidence: 80, min_completeness: 80, max_drift: 20,
+          require_spec_validation: true, min_spec_confidence: 70, min_spec_clarity: 80,
+          min_spec_assertiveness: 80, min_spec_decidability: 80, max_spec_ambiguity: 30,
+        }} canReadChecklist canExecuteChecklist
+        onClose={() => {}} onSubmitted={() => {}}
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId('spec-validation-checklist-readiness')).toHaveTextContent('is ready'));
+    for (const metric of ['Confidence', 'Clarity', 'Assertiveness', 'Decidability', 'Ambiguity']) {
+      fireEvent.change(screen.getByLabelText(`${metric} justification`), {
+        target: { value: `${metric} is supported by the inspected requirements.` },
+      });
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    const submit = screen.getByRole('button', { name: 'Conclude planning validation' });
+    fireEvent.click(submit);
+    await waitFor(() => expect(apiMock.submitSpecValidation).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(submit).toBeEnabled());
+    fireEvent.click(submit);
+    await waitFor(() => expect(apiMock.submitSpecValidation).toHaveBeenCalledTimes(2));
+    expect(apiMock.submitSpecValidation.mock.calls[1][1]).toEqual(apiMock.submitSpecValidation.mock.calls[0][1]);
+    await waitFor(() => expect(submit).toBeEnabled());
+    fireEvent.change(screen.getByLabelText('Clarity justification'), {
+      target: { value: 'The glossary now explains the previously ambiguous term.' },
+    });
+    fireEvent.click(submit);
+    await waitFor(() => expect(apiMock.submitSpecValidation).toHaveBeenCalledTimes(3));
+    expect(apiMock.submitSpecValidation.mock.calls[2][1].idempotency_key)
+      .not.toEqual(apiMock.submitSpecValidation.mock.calls[0][1].idempotency_key);
+  });
+
+  it('includes a separately authored decomposition only when the evaluator opts in with permission', async () => {
+    apiMock.getSpecChecklistState.mockResolvedValue(currentState);
+    renderPlanningReview(true);
+    await waitFor(() => expect(screen.getByTestId('spec-validation-checklist-readiness')).toHaveTextContent('is ready'));
+    fillPlanningReview();
+    fireEvent.click(screen.getByLabelText('Include my decomposition opinion'));
+    const submit = screen.getByRole('button', { name: 'Conclude planning validation' });
+    expect(submit).toBeDisabled();
+    for (const name of ['Breakdown completeness', 'Granularity', 'Dependency coherence', 'Test coverage quality', 'Overall decomposition']) {
+      fireEvent.change(screen.getByLabelText(`${name} score`), { target: { value: '92' } });
+      fireEvent.change(screen.getByLabelText(`${name} justification`), { target: { value: `${name}: reviewed against the planned Tasks and Tests.` } });
+    }
+    fireEvent.change(screen.getByLabelText('Decomposition recommendation'), { target: { value: 'reject' } });
+    expect(submit).toBeEnabled(); // A valid negative opinion is still a recordable fact.
+    fireEvent.click(submit);
+    await waitFor(() => expect(apiMock.submitSpecValidation).toHaveBeenCalledWith('spec-1', expect.objectContaining({
+      recommendation: 'approve', decomposition: expect.objectContaining({ overall_score: 92, recommendation: 'reject' }),
+    })));
+    expect(apiMock.submitSpecValidation.mock.calls[0][1].decomposition).not.toHaveProperty('evaluator_id');
+  });
+
+  it('does not offer a decomposition contribution without its independent permission', async () => {
+    apiMock.getSpecChecklistState.mockResolvedValue(currentState);
+    renderPlanningReview();
+    await waitFor(() => expect(screen.getByTestId('spec-validation-checklist-readiness')).toHaveTextContent('is ready'));
+    expect(screen.queryByLabelText('Include my decomposition opinion')).not.toBeInTheDocument();
+    fillPlanningReview();
+    fireEvent.click(screen.getByRole('button', { name: 'Conclude planning validation' }));
+    await waitFor(() => expect(apiMock.submitSpecValidation).toHaveBeenCalled());
+    expect(apiMock.submitSpecValidation.mock.calls[0][1]).not.toHaveProperty('decomposition');
+  });
+
+  it.each(['missing', 'foreign-board', 'foreign-spec'])('refuses a %s planning basis', async (shape) => {
+    const cycle = await apiMock.getValidationCycle();
+    apiMock.getValidationCycle.mockResolvedValue({
+      ...cycle,
+      planning_manifest: shape === 'missing' ? undefined : {
+        ...cycle.planning_manifest,
+        ...(shape === 'foreign-board' ? { board_id: 'other-board' } : { spec_id: 'other-spec' }),
+      },
+    });
+    apiMock.getSpecChecklistState.mockResolvedValue(currentState);
+    renderPlanningReview();
+    await screen.findByText('The validation cycle changed. Refresh the Spec before submitting.');
+    fillPlanningReview();
+    expect(screen.getByRole('button', { name: 'Conclude planning validation' })).toBeDisabled();
+    expect(apiMock.submitSpecValidation).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('refreshes the basis only if the draft is clean (dirty=%s)', async (dirty) => {
+    const cycle = await apiMock.getValidationCycle();
+    apiMock.getSpecChecklistState.mockResolvedValue(currentState);
+    renderPlanningReview();
+    await waitFor(() => expect(screen.getByTestId('spec-validation-checklist-readiness')).toHaveTextContent('is ready'));
+    if (dirty) fillPlanningReview();
+    const newManifest = { ...cycle.planning_manifest, subject_revision: 2 };
+    apiMock.getValidationCycle.mockResolvedValue({ ...cycle, planning_manifest: newManifest });
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh validation readiness' }));
+    const submit = screen.getByRole('button', { name: 'Conclude planning validation' });
+    if (dirty) {
+      await screen.findByText(/Planning inputs changed while you were editing/);
+      expect(screen.getByLabelText('Clarity justification')).toHaveValue(
+        'Clarity is supported by the inspected requirements.',
+      );
+      expect(submit).toBeDisabled();
+      fireEvent.click(screen.getByRole('button', { name: 'Refresh validation readiness' }));
+      await screen.findByText(/Planning inputs changed while you were editing/);
+      expect(submit).toBeDisabled();
+      expect(apiMock.submitSpecValidation).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole('button', { name: 'I reviewed the current plan — use this basis' }));
+      await waitFor(() => expect(submit).toBeEnabled());
+      fireEvent.click(submit);
+      await waitFor(() => expect(apiMock.submitSpecValidation).toHaveBeenCalledWith('spec-1',
+        expect.objectContaining({ expected_planning_manifest: newManifest }),
+      ));
+    } else {
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh validation readiness' })).toBeEnabled());
+      fillPlanningReview();
+      await waitFor(() => expect(submit).toBeEnabled());
+      fireEvent.click(submit);
+      await waitFor(() => expect(apiMock.submitSpecValidation).toHaveBeenCalledWith('spec-1',
+        expect.objectContaining({ expected_planning_manifest: newManifest }),
+      ));
+    }
   });
 });

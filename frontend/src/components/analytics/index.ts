@@ -14,10 +14,6 @@ export type {
   BoardKgAnalyticsResponse,
 } from './analyticsCanonicalTypes';
 export type {
-  SprintAnalyticsItem,
-  SprintAnalyticsResponse,
-  SprintForecastProjection,
-  DeliveryForecastResponse,
   DeliveryIntelligenceFilters,
   DeliveryIntelligenceResponse,
 } from './analyticsDeliveryTypes';

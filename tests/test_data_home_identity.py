@@ -23,78 +23,61 @@ def _clear_data_home_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DATA_DIR_ORIGIN", raising=False)
 
 
-def test_data_home_origin_precedence_is_resolved_once(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_data_home_origin_precedence_is_resolved_once(tmp_path, monkeypatch):
+    _clear_data_home_env(monkeypatch)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "user")
     explicit = tmp_path / "explicit"
     data_dir = tmp_path / "data-dir"
-    legacy_home = tmp_path / "legacy-home"
+    retired = tmp_path / "retired-home"
     monkeypatch.setenv("DATA_DIR", str(data_dir))
-    monkeypatch.setenv("OKTO_PULSE_HOME", str(legacy_home))
+    monkeypatch.setenv("OKTO_PULSE_HOME", str(retired))
 
-    explicit_settings = CommunitySettings(data_dir=str(explicit), _env_file=None)
-    assert explicit_settings.data_dir == str(explicit.resolve())
-    assert explicit_settings.data_dir_origin == "explicit"
-
-    data_dir_settings = CommunitySettings(_env_file=None)
-    assert data_dir_settings.data_dir == str(data_dir.resolve())
-    assert data_dir_settings.data_dir_origin == "DATA_DIR"
+    settings = CommunitySettings(data_dir=str(explicit), _env_file=None)
+    assert settings.data_dir == str(explicit.resolve())
+    assert settings.data_dir_origin == "explicit"
+    settings = CommunitySettings(_env_file=None)
+    assert settings.data_dir == str(data_dir.resolve())
+    assert settings.data_dir_origin == "DATA_DIR"
 
     monkeypatch.delenv("DATA_DIR")
-    legacy_settings = CommunitySettings(_env_file=None)
-    assert legacy_settings.data_dir == str(legacy_home.resolve())
-    assert legacy_settings.data_dir_origin == "OKTO_PULSE_HOME"
-
-    monkeypatch.delenv("OKTO_PULSE_HOME")
-    default_settings = CommunitySettings(_env_file=None)
-    assert default_settings.data_dir_origin == "default"
+    settings = CommunitySettings(_env_file=None)
+    assert settings.data_dir == str((tmp_path / "user/.okto-pulse").resolve())
+    assert settings.data_dir_origin == "default"
+    assert not retired.exists()
 
 
-def test_explicit_empty_data_dir_does_not_masquerade_as_data_dir_env(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_explicit_empty_data_dir_uses_default_without_old_alias(tmp_path, monkeypatch):
     _clear_data_home_env(monkeypatch)
-    monkeypatch.setenv("DATA_DIR", " \t ")
-    monkeypatch.setenv("OKTO_PULSE_HOME", str(tmp_path / "legacy-home"))
-
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "user")
+    monkeypatch.setenv("DATA_DIR", "   ")
+    retired = tmp_path / "retired-home"
+    monkeypatch.setenv("OKTO_PULSE_HOME", str(retired))
     settings = CommunitySettings(data_dir="", _env_file=None)
+    assert settings.data_dir == str((tmp_path / "user/.okto-pulse").resolve())
+    assert settings.data_dir_origin == "default"
+    assert not retired.exists()
 
-    assert settings.data_dir == str((tmp_path / "legacy-home").resolve())
-    assert settings.data_dir_origin == "OKTO_PULSE_HOME"
 
-
-def test_explicit_empty_data_dir_falls_through_to_data_dir_before_legacy_home(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_explicit_empty_data_dir_uses_current_environment(tmp_path, monkeypatch):
+    _clear_data_home_env(monkeypatch)
     data_dir = tmp_path / "data-dir"
-    legacy_home = tmp_path / "legacy-home"
     monkeypatch.setenv("DATA_DIR", str(data_dir))
-    monkeypatch.setenv("OKTO_PULSE_HOME", str(legacy_home))
-
-    settings = CommunitySettings(data_dir=" \t ", _env_file=None)
-
+    settings = CommunitySettings(data_dir="   ", _env_file=None)
     assert settings.data_dir == str(data_dir.resolve())
     assert settings.data_dir_origin == "DATA_DIR"
 
 
-def test_os_legacy_home_precedes_dotenv_data_dir(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_retired_home_does_not_override_dotenv_data_dir(tmp_path, monkeypatch):
     _clear_data_home_env(monkeypatch)
-    legacy_home = tmp_path / "legacy-env"
+    retired = tmp_path / "retired-home"
     dotenv_data = tmp_path / "dotenv-data"
     dotenv_path = tmp_path / ".env"
     dotenv_path.write_text(f"DATA_DIR={dotenv_data}\n", encoding="utf-8")
-    monkeypatch.setenv("OKTO_PULSE_HOME", str(legacy_home))
-
+    monkeypatch.setenv("OKTO_PULSE_HOME", str(retired))
     settings = CommunitySettings(_env_file=dotenv_path)
-
-    assert settings.data_dir == str(legacy_home.resolve())
-    assert settings.data_dir_origin == "OKTO_PULSE_HOME"
+    assert settings.data_dir == str(dotenv_data.resolve())
+    assert settings.data_dir_origin == "DATA_DIR"
+    assert not retired.exists()
 
 
 def test_dotenv_data_dir_equal_to_default_keeps_source_provenance(
@@ -129,7 +112,7 @@ def test_default_uninitialized_home_fails_before_creating_any_path(
     assert not data_home.exists()
 
 
-@pytest.mark.parametrize("origin", ["explicit", "DATA_DIR", "OKTO_PULSE_HOME"])
+@pytest.mark.parametrize("origin", ["explicit", "DATA_DIR"])
 def test_non_default_origins_allow_a_new_home(tmp_path: Path, origin: str) -> None:
     data_home = tmp_path / origin
     settings = SimpleNamespace(data_dir=str(data_home), data_dir_origin=origin)

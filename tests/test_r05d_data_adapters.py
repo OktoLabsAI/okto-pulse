@@ -214,7 +214,7 @@ async def _seed_board(board_id: str) -> None:
     from okto_pulse.community.adapters.sqlalchemy_models import Board
 
     async with _db_mod.get_session_factory()() as session:
-        session.add(Board(id=board_id, name=f"seed-{board_id}", owner_id="test-owner"))
+        session.add(Board(realm_id="local", id=board_id, name=f"seed-{board_id}", owner_id="test-owner"))
         await session.commit()
 
 
@@ -430,9 +430,10 @@ def test_r07_community_kg_config_preserves_object_reference_snapshot(tmp_path):
         _config.configure_settings(original)
 
 
-def test_r07_community_kg_base_dir_uses_community_settings_normalization(tmp_path):
+def test_r07_community_kg_base_dir_uses_community_settings_normalization(tmp_path, monkeypatch):
     from okto_pulse.community.adapters.data import CommunityKGConfig
 
+    monkeypatch.delenv("KG_BASE_DIR", raising=False)
     data_dir = tmp_path / "home"
     default_settings = CommunitySettings(data_dir=str(data_dir))
     custom_settings = CommunitySettings(

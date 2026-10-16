@@ -10,6 +10,7 @@ import stat
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from okto_pulse.community.adapters.filesystem_observation import FilesystemObservationBudget
 from typing import Any
 
 from okto_grafx import Database, Timestamp, VectorValue
@@ -109,17 +110,17 @@ def core_error_code(failure: BaseException) -> str:
     return code if type(code) is str and code else "graph_error"
 
 
-def resolved_global_graph_path(legacy_path: Path) -> Path:
-    legacy = Path(legacy_path)
-    active = read_safe_active_generation(legacy)
-    return active.graph_path if active is not None else legacy
+def resolved_global_graph_path(anchor_path: Path) -> Path:
+    anchor = Path(anchor_path)
+    active = read_safe_active_generation(anchor)
+    return active.graph_path if active is not None else anchor
 
 
-def safe_global_generation_dir(legacy_path: Path, generation_id: str) -> Path:
+def safe_global_generation_dir(anchor_path: Path, generation_id: str) -> Path:
     """Resolve a generation lexically after refusing alias traversal."""
 
     safe_id = validate_generation_id(generation_id)
-    root = Path(os.path.abspath(generations_root(Path(legacy_path))))
+    root = Path(os.path.abspath(generations_root(Path(anchor_path))))
     reject_filesystem_alias_ancestry(root.parent)
     if is_filesystem_alias(root):
         raise OSError("linked_global_discovery_generations_root")
@@ -129,21 +130,24 @@ def safe_global_generation_dir(legacy_path: Path, generation_id: str) -> Path:
 
 
 def safe_global_generation_graph_path(
-    legacy_path: Path,
+    anchor_path: Path,
     generation_id: str,
 ) -> Path:
-    legacy = Path(legacy_path)
-    return safe_global_generation_dir(legacy, generation_id) / legacy.name
+    anchor = Path(anchor_path)
+    return safe_global_generation_dir(anchor, generation_id) / anchor.name
 
 
-def _plain_json_document(path: Path, *, reason: str) -> dict[str, object]:
+def _plain_json_document(path: Path, *, reason: str, observation: FilesystemObservationBudget | None = None) -> dict[str, object]:
     try:
         reject_filesystem_alias_ancestry(path.parent)
         metadata = path.lstat()
         if is_filesystem_alias(path) or not stat.S_ISREG(metadata.st_mode):
             raise OSError(reason)
-        with path.open("r", encoding="utf-8") as stream:
-            raw = json.load(stream)
+        if observation is not None:
+            raw = json.loads(observation.read_text(path, max_file_bytes=4 * 1024 * 1024))
+        else:
+            with path.open("r", encoding="utf-8") as stream:
+                raw = json.load(stream)
     except FileNotFoundError:
         raise
     except (OSError, ValueError, TypeError) as exc:
@@ -153,15 +157,16 @@ def _plain_json_document(path: Path, *, reason: str) -> dict[str, object]:
     return raw
 
 
-def read_safe_active_generation(legacy_path: Path) -> ActiveGeneration | None:
+def read_safe_active_generation(anchor_path: Path, *, observation: FilesystemObservationBudget | None = None) -> ActiveGeneration | None:
     """Authenticate pointer and manifest without following filesystem aliases."""
 
-    legacy = Path(legacy_path)
-    pointer = active_pointer_path(legacy)
+    anchor = Path(anchor_path)
+    pointer = active_pointer_path(anchor)
     try:
         pointer_document = _plain_json_document(
             pointer,
             reason="active_pointer_unreadable",
+            observation=observation,
         )
     except FileNotFoundError:
         return None
@@ -180,12 +185,13 @@ def read_safe_active_generation(legacy_path: Path) -> ActiveGeneration | None:
     if re.fullmatch(r"[0-9a-f]{64}", manifest_sha) is None:
         raise GlobalDiscoveryLayoutError("active_pointer_manifest_hash_invalid")
     manifest_path = (
-        safe_global_generation_graph_path(legacy, generation_id).parent
+        safe_global_generation_graph_path(anchor, generation_id).parent
         / GENERATION_MANIFEST_FILENAME
     )
     manifest = _plain_json_document(
         manifest_path,
         reason="generation_manifest_unreadable",
+        observation=observation,
     )
     supplied_manifest_sha = str(manifest.get("manifest_sha256") or "")
     manifest_binding = {
@@ -198,9 +204,11 @@ def read_safe_active_generation(legacy_path: Path) -> ActiveGeneration | None:
         or manifest.get("generation_id") != generation_id
     ):
         raise GlobalDiscoveryLayoutError("generation_manifest_hash_mismatch")
+    if observation is not None:
+        observation.check()
     return ActiveGeneration(
         generation_id=generation_id,
-        graph_path=safe_global_generation_graph_path(legacy, generation_id),
+        graph_path=safe_global_generation_graph_path(anchor, generation_id),
         manifest_sha256=manifest_sha,
     )
 
@@ -220,19 +228,19 @@ def has_grafx_identity(path: Path) -> bool:
     return not is_filesystem_alias(identity_path) and stat.S_ISREG(identity.st_mode)
 
 
-def global_layout_targets(legacy_path: Path) -> tuple[Path, ...]:
+def global_layout_targets(anchor_path: Path, *, observation: FilesystemObservationBudget | None = None) -> tuple[Path, ...]:
     """Return the exact layout artifacts owned by one Global Discovery anchor."""
 
-    legacy = Path(legacy_path)
-    candidates = [legacy, active_pointer_path(legacy), generations_root(legacy)]
+    anchor = Path(anchor_path)
+    candidates = [anchor, active_pointer_path(anchor), generations_root(anchor)]
     try:
-        reject_filesystem_alias_ancestry(legacy.parent)
+        reject_filesystem_alias_ancestry(anchor.parent)
         candidates.extend(
             sorted(
                 (
                     child
-                    for child in legacy.parent.iterdir()
-                    if child.name.startswith(f"{legacy.name}.")
+                    for child in (observation.children(anchor.parent) if observation is not None else anchor.parent.iterdir())
+                    if child.name.startswith(f"{anchor.name}.")
                 ),
                 key=lambda child: child.name,
             )
@@ -275,12 +283,12 @@ def validate_plain_global_artifact(path: Path) -> None:
     _regular_files(Path(path))
 
 
-def _live_snapshot_files(legacy_path: Path) -> tuple[Path, tuple[Path, ...]]:
+def _live_snapshot_files(anchor_path: Path) -> tuple[Path, tuple[Path, ...]]:
     """Resolve only the active generation set and its authenticated manifest."""
 
-    legacy = Path(legacy_path)
-    pointer = active_pointer_path(legacy)
-    active = read_safe_active_generation(legacy)
+    anchor = Path(anchor_path)
+    pointer = active_pointer_path(anchor)
+    active = read_safe_active_generation(anchor)
     if active is not None:
         graph_path = active.graph_path
         if not has_grafx_identity(graph_path):
@@ -297,19 +305,19 @@ def _live_snapshot_files(legacy_path: Path) -> tuple[Path, tuple[Path, ...]]:
 
     graph_files: tuple[Path, ...] = ()
     try:
-        legacy.lstat()
+        anchor.lstat()
     except FileNotFoundError:
         pass
     else:
-        graph_files = _regular_files(legacy)
+        graph_files = _regular_files(anchor)
     sidecars: list[Path] = []
     try:
-        reject_filesystem_alias_ancestry(legacy.parent)
+        reject_filesystem_alias_ancestry(anchor.parent)
         siblings = sorted(
             (
                 child
-                for child in legacy.parent.iterdir()
-                if child.name.startswith(f"{legacy.name}.")
+                for child in anchor.parent.iterdir()
+                if child.name.startswith(f"{anchor.name}.")
             ),
             key=lambda child: child.name,
         )
@@ -317,11 +325,11 @@ def _live_snapshot_files(legacy_path: Path) -> tuple[Path, tuple[Path, ...]]:
         siblings = []
     for sibling in siblings:
         sidecars.extend(_regular_files(sibling))
-    return legacy, (*graph_files, *sidecars)
+    return anchor, (*graph_files, *sidecars)
 
 
 def snapshot_global_artifact(
-    legacy_path: Path,
+    anchor_path: Path,
     *,
     fence_check: Callable[[], None] | None = None,
 ) -> GlobalDiscoveryArtifactSnapshot:
@@ -332,8 +340,8 @@ def snapshot_global_artifact(
             fence_check()
 
     fenced()
-    active_path, files = _live_snapshot_files(Path(legacy_path))
-    base = Path(os.path.abspath(Path(legacy_path).parent))
+    active_path, files = _live_snapshot_files(Path(anchor_path))
+    base = Path(os.path.abspath(Path(anchor_path).parent))
     digest = hashlib.sha256()
     total = 0
     for candidate in files:

@@ -1,0 +1,23 @@
+- main [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e4]:
+      - heading "Reserva de salas" [level=1] [ref=e5]
+      - text: Exercício local · America/Sao_Paulo · dados fictícios
+    - button "Ativar sessão de teste A" [active] [ref=e6] [cursor=pointer]
+  - navigation "Reservas" [ref=e7]:
+    - button "Buscar salas" [ref=e8] [cursor=pointer]
+    - button "Minhas reservas" [ref=e9] [cursor=pointer]
+  - status [ref=e10]: Sessão de teste A ativada.
+  - generic [ref=e11]:
+    - heading "H01 · Buscar sala" [level=2] [ref=e12]
+    - generic [ref=e13]:
+      - generic [ref=e14]:
+        - text: Início (America/Sao_Paulo)
+        - textbox "Início (America/Sao_Paulo)" [ref=e15]: 2026-10-09T09:00
+      - generic [ref=e16]:
+        - text: Fim (America/Sao_Paulo)
+        - textbox "Fim (America/Sao_Paulo)" [ref=e17]: 2026-10-09T10:00
+      - generic [ref=e18]:
+        - text: Participantes
+        - spinbutton "Participantes" [ref=e19]: "4"
+      - button "Buscar disponibilidade" [ref=e21] [cursor=pointer]

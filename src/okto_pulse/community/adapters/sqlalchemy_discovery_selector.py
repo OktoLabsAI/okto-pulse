@@ -40,7 +40,6 @@ def _card_fact(row: Any) -> SelectorCardFact:
         priority=row.priority,
         card_type=row.card_type,
         spec_id=str(row.spec_id) if row.spec_id else None,
-        sprint_id=str(row.sprint_id) if row.sprint_id else None,
         position=row.position,
     )
 

@@ -40,9 +40,11 @@ describe('KG Health overview', () => {
     expect(screen.getByRole('link')).toHaveAttribute('href', '#kg-health-diagnostics');
   });
 
-  it.each(['recovery_needed', 'quarantined', 'corrupted', 'failed'])('exposes the recovery review for %s without executing anything', (overallState) => {
+  it.each(['recovery_needed', 'quarantined', 'corrupted', 'failed'])('reports the component limitation for %s without a recovery workflow', (overallState) => {
     render(<KGHealthOverview health={{ ...snapshot, overall_state: overallState }} stale={false} />);
-    expect(screen.getByRole('link', { name: 'Review recovery' })).toHaveAttribute('href', '#kg-health-recovery');
+    expect(screen.getByRole('heading', { name: 'Component unavailable' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'View diagnostics' })).toHaveAttribute('href', '#kg-health-diagnostics');
+    expect(screen.getByText(/this view cannot repair the graph/)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /rebuild|recover/i })).not.toBeInTheDocument();
   });
 

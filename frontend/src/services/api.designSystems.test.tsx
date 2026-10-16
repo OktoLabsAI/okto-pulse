@@ -45,6 +45,29 @@ describe('Design System API projections', () => {
     expect(secondUrl.searchParams.get('cursor')).toBe('cursor-2');
   });
 
+  it.each([[], [{ id: 'old-ds' }], null, { items: [] }].map((response) => ({ response })))(
+    'refuses incompatible catalog response $response without returning converted items',
+    async ({ response }) => {
+      fetchJson.mockResolvedValue(response);
+      const { result } = renderHook(() => useDashboardApi());
+      await expect(result.current.listDesignSystems()).rejects.toThrow(
+        'Design System catalog response is incompatible with this release.',
+      );
+      expect(fetchJson).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('refuses an incompatible second page without returning a partial catalog', async () => {
+    fetchJson.mockResolvedValueOnce({
+      items: [{ id: 'current-ds' }], count: 1, next_cursor: 'cursor-2', profile: 'summary',
+    }).mockResolvedValueOnce([{ id: 'old-ds' }]);
+    const { result } = renderHook(() => useDashboardApi());
+    await expect(result.current.listDesignSystems()).rejects.toThrow(
+      'Design System catalog response is incompatible with this release.',
+    );
+    expect(fetchJson).toHaveBeenCalledTimes(2);
+  });
+
   it('propagates the requested detail/full profile on item reads', async () => {
     fetchJson.mockResolvedValue({ id: 'ds-a', payload: { tokens: {} } });
     const { result } = renderHook(() => useDashboardApi());

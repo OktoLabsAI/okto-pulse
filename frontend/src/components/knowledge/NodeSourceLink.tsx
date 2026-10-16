@@ -34,7 +34,10 @@ function ScopedSource({ node, boardId }: { node: KGNode; boardId?: string }) {
     return () => controller.abort();
   }, [boardId, node.id, attempt]);
 
-  const target = result?.status === 'resolved' && result.target?.board_id === boardId ? result.target : null;
+  // A stale graph response may still name a retired entity. Preserve its source
+  // reference below without offering an operational Sprint link.
+  const target = result?.status === 'resolved' && result.target && result.target.board_id === boardId
+    && ['spec', 'refinement', 'ideation', 'story', 'card'].includes(result.target.entity_type) ? result.target : null;
   const open = () => {
     if (!target || !stack) return;
     const top = stack.stack[stack.stack.length - 1];

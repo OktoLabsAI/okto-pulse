@@ -1,0 +1,173 @@
+- generic [ref=f47e3]:
+  - banner [ref=f47e4]:
+    - generic [ref=f47e5]:
+      - generic [ref=f47e6]:
+        - button "Hide sidebar" [ref=f47e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f47e12]
+        - generic [ref=f47e31]: / My Board
+      - generic [ref=f47e32]:
+        - button "Refresh board" [ref=f47e33] [cursor=pointer]
+        - button [ref=f47e40] [cursor=pointer]
+  - generic [ref=f47e13]:
+    - complementary [ref=f47e14]:
+      - generic [ref=f47e15]:
+        - generic [ref=f47e17]:
+          - heading "Boards" [level=2] [ref=f47e18]
+          - button "New board" [ref=f47e19] [cursor=pointer]
+        - navigation [ref=f47e21]:
+          - generic [ref=f47e22]:
+            - heading "My Boards" [level=3] [ref=f47e23]
+            - list [ref=f47e44]:
+              - listitem [ref=f47e45]:
+                - button "My Board" [ref=f47e46] [cursor=pointer]
+    - main [ref=f47e26]:
+      - group "Board views" [ref=f47e53]:
+        - button "Stories" [ref=f47e54] [cursor=pointer]
+        - button "Ideations" [ref=f47e58] [cursor=pointer]
+        - button "Refinements" [ref=f47e61] [cursor=pointer]
+        - button "Specs" [pressed] [ref=f47e66] [cursor=pointer]
+        - button "Tasks" [ref=f47e71] [cursor=pointer]
+      - generic [ref=f47e243]:
+        - generic [ref=f47e244]:
+          - generic [ref=f47e245]:
+            - heading "Specifications" [level=2] [ref=f47e246]
+            - generic [ref=f47e247]: (1 of 1)
+          - generic [ref=f47e248]:
+            - textbox "Search specs…" [ref=f47e250]
+            - group "View mode" [ref=f47e251]:
+              - button "List view" [pressed] [ref=f47e252] [cursor=pointer]
+              - button "Grid view" [ref=f47e254] [cursor=pointer]
+            - generic [ref=f47e260]: Group specs
+            - combobox "Group specs" [ref=f47e266]:
+              - option "None"
+              - option "Ideation"
+              - option "Refinement"
+              - option "Parents" [selected]
+            - button "New Spec" [ref=f47e267] [cursor=pointer]
+        - generic [ref=f47e269]:
+          - button "All" [ref=f47e270] [cursor=pointer]
+          - button "Draft" [ref=f47e271] [cursor=pointer]
+          - button "Review" [ref=f47e272] [cursor=pointer]
+          - button "Approved" [ref=f47e273] [cursor=pointer]
+          - button "Validated" [ref=f47e274] [cursor=pointer]
+          - button "In Progress" [ref=f47e275] [cursor=pointer]
+          - button "Done" [ref=f47e276] [cursor=pointer]
+          - button "Show archived" [ref=f47e277] [cursor=pointer]
+        - generic [ref=f47e280]:
+          - generic [ref=f47e281] [cursor=pointer]:
+            - 'heading "Refinement: Reserva de salas — consistência das reservas e contratos hexagonais" [level=3] [ref=f47e288]'
+            - generic [ref=f47e289]: (1)
+          - generic [ref=f47e293] [cursor=pointer]:
+            - generic [ref=f47e294]:
+              - generic [ref=f47e295]:
+                - generic [ref=f47e296]: In Progress
+                - generic "Edition 4" [ref=f47e300]
+              - heading "Reserva de salas — consistência das reservas e contratos hexagonais" [level=3] [ref=f47e301]
+              - paragraph [ref=f47e302]: "Especificação conceitual H01–H04: consultar, criar, alterar e cancelar reservas próprias com consistência, idempotência, histórico e arquitetura hexagonal. Exercício de testes do Pulse; nenhuma implementação real solicitada."
+              - 'generic "Requirement lint: 0 (0–360) · Edition 4" [ref=f47e304]':
+                - generic [ref=f47e305]: Requirement lint
+                - strong [ref=f47e306]: "0"
+              - generic [ref=f47e307]:
+                - generic [ref=f47e308]: mock
+                - generic [ref=f47e309]: reserva-de-salas
+                - generic [ref=f47e310]: teste-sdlc
+            - generic [ref=f47e311]:
+              - button "Open lineage graph" [ref=f47e312]
+              - button "Archive tree" [ref=f47e317]
+        - generic [ref=f47e323]:
+          - status [ref=f47e324]: Showing 1–1 of 1 matching. 1 overall. Page 1 of 1.
+          - generic [ref=f47e325]:
+            - generic [ref=f47e326]:
+              - generic [ref=f47e327]: Items per page
+              - combobox "Items per page" [ref=f47e328]:
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+            - navigation "Specifications pagination" [ref=f47e329]:
+              - generic [ref=f47e330]:
+                - button "Previous page" [disabled] [ref=f47e331]: Previous
+                - button "Page 1" [disabled] [ref=f47e332]: "1"
+                - button "Next page" [disabled] [ref=f47e333]: Next
+        - dialog [ref=f47e338]:
+          - generic [ref=f47e337]:
+            - generic [ref=f47e339]:
+              - generic [ref=f47e340]: In Progress
+              - heading "Reserva de salas — consistência das reservas e contratos hexagonais" [level=2] [ref=f47e344]
+              - generic "Edition 4" [ref=f47e345]
+            - generic [ref=f47e346]:
+              - button "Open lineage graph" [ref=f47e347] [cursor=pointer]
+              - button "Export report" [ref=f47e352] [cursor=pointer]
+              - button "Refresh" [ref=f47e356] [cursor=pointer]
+              - button "Expand" [ref=f47e362] [cursor=pointer]
+              - button "Close spec" [ref=f47e368] [cursor=pointer]
+          - generic [ref=f47e372]:
+            - generic [ref=f47e373]: "Move to:"
+            - button "Validated" [ref=f47e374] [cursor=pointer]
+            - button "Draft" [ref=f47e377] [cursor=pointer]
+            - button "Cancelled" [ref=f47e380] [cursor=pointer]
+          - generic [ref=f47e383]:
+            - generic [ref=f47e384]: "From:"
+            - button "Reserva de salas — teste do SDLC v24" [ref=f47e385] [cursor=pointer]:
+              - text: Reserva de salas — teste do SDLC
+              - generic [ref=f47e388]: v24
+            - button "Reserva de salas — consistência das reservas e contratos hexagonais v39" [ref=f47e391] [cursor=pointer]:
+              - text: Reserva de salas — consistência das reservas e contratos hexagonais
+              - generic [ref=f47e396]: v39
+          - generic [ref=f47e398]:
+            - tablist "Spec sections" [ref=f47e399]:
+              - tab "Details" [ref=f47e400] [cursor=pointer]
+              - tab "Coverage" [ref=f47e405] [cursor=pointer]
+              - tab "Project Structure" [active] [selected] [ref=f47e411] [cursor=pointer]
+              - tab "Code Evidence Matrix" [ref=f47e418] [cursor=pointer]
+              - tab "Resources" [ref=f47e422] [cursor=pointer]
+              - tab "Requirements & Decisions" [ref=f47e426] [cursor=pointer]
+              - tab "Tests & Verifications" [ref=f47e431] [cursor=pointer]
+              - tab "Q&A 9" [ref=f47e435] [cursor=pointer]:
+                - generic [ref=f47e439]: Q&A
+                - generic [ref=f47e440]: "9"
+              - tab "Dependencies" [ref=f47e441] [cursor=pointer]
+              - tab "References 27" [ref=f47e447] [cursor=pointer]:
+                - generic [ref=f47e451]: References
+                - generic [ref=f47e452]: "27"
+              - tab "KG Graph" [ref=f47e453] [cursor=pointer]
+              - tab "Validation" [ref=f47e460] [cursor=pointer]
+              - tab "Activity" [ref=f47e465] [cursor=pointer]
+            - button "Scroll Spec sections right" [ref=f47e471] [cursor=pointer]
+          - tabpanel "Project Structure" [ref=f47e708]:
+            - tabpanel [ref=f47e476]:
+              - generic [ref=f47e709]:
+                - generic [ref=f47e710]:
+                  - generic [ref=f47e711]:
+                    - heading "Project structure" [level=3] [ref=f47e712]
+                    - paragraph [ref=f47e713]: Each node keeps its single canonical note directly below its name and metadata. Revision 0.
+                  - generic [ref=f47e714]:
+                    - group "Project structure mode" [ref=f47e715]:
+                      - button "View" [pressed] [ref=f47e716] [cursor=pointer]
+                      - button "Edit" [ref=f47e717] [cursor=pointer]
+                    - button "Refresh" [ref=f47e718] [cursor=pointer]
+                - generic [ref=f47e724]:
+                  - paragraph [ref=f47e727]: No project structure has been authored
+                  - paragraph [ref=f47e728]: This is optional. Add a root only when a concrete folder, file or artifact view improves delivery clarity.
+                - paragraph [ref=f47e729]: "Keyboard: ↑/↓ navigates; ←/→ collapses or expands."
+          - generic [ref=f47e704]:
+            - button "Delete spec" [ref=f47e705] [cursor=pointer]
+            - button "Close" [ref=f47e707] [cursor=pointer]
+  - 'status "Cognitive pipeline working: 1 running, 0 pending" [ref=f47e334]':
+    - generic [ref=f47e224]: 1 running
+  - status [ref=f47e225]:
+    - generic [ref=f47e226]:
+      - generic [ref=f47e227]: Consolidation in progress
+      - generic [ref=f47e228]: 0%
+    - generic [ref=f47e230]:
+      - generic [ref=f47e231]:
+        - generic [ref=f47e232]: Pending
+        - generic [ref=f47e233]: "0"
+      - generic [ref=f47e234]:
+        - generic [ref=f47e235]: Running
+        - generic [ref=f47e236]: "1"
+      - generic [ref=f47e237]:
+        - generic [ref=f47e238]: Processed
+        - generic [ref=f47e239]: "0"
+      - generic [ref=f47e240]:
+        - generic [ref=f47e241]: Paused
+        - generic [ref=f47e242]: "0"

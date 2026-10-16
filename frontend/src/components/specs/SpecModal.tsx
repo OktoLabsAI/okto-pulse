@@ -9,7 +9,19 @@ import {
   useRef,
   useState,
 } from 'react';
-import { DeliveryEvidencePanel } from '@/components/code-traceability/DeliveryEvidencePanel';
+import { SpecCoveragePanel } from './SpecCoveragePanel';
+import type { ReadinessSpecTab } from '@/components/code-traceability/readinessNavigation';
+import { useNativeReferenceFocus } from '@/components/shared/useNativeReferenceFocus';
+import { useWorkspaceRevisions } from '@/hooks/useWorkspaceRevisions';
+import { MissingLinkNotice } from '@/components/shared/MissingLinkNotice';
+import { TextRequirementsTab, type TextRequirementDraft } from './TextRequirementsTab';
+import { specEntityMutationError } from './specEntityErrors';
+import { CriterionVerificationDetails } from './CriterionVerificationPanel';
+import { RequirementVerificationPanel } from './RequirementVerificationPanel';
+import { ScenarioVerificationMethodEditor } from './ScenarioVerificationMethodEditor';
+import { VerificationReportDetails } from './VerificationReportDetails';
+import { ScenarioReceiptDetails } from './ScenarioReceiptDetails';
+import { verificationRequirementOptions } from './criterionVerificationOptions';
 import {
   X,
   ChevronRight,
@@ -42,7 +54,6 @@ import {
   Network,
   ShieldCheck,
   Gauge,
-  Pencil,
   Grid3X3,
   AlertTriangle,
   FolderTree,
@@ -50,6 +61,7 @@ import {
 import toast from 'react-hot-toast';
 import { EntityExportButton } from '@/components/export';
 import { getErrorMessage } from '@/lib/getErrorMessage';
+import { answerErrorMessage, submitQaAnswerWithRetry } from '@/lib/qaAnswerSubmit';
 import { AuthenticatedFetchError } from '@/lib/authFetch';
 import { useDashboardApi } from '@/services/api';
 import { useCurrentBoard } from '@/store/dashboard';
@@ -61,7 +73,6 @@ import type {
   ObservabilityRequirement,
   Spec,
   SpecStatus,
-  SprintSummary,
   SpecQAItem,
   SpecHistoryEntry,
   SpecStructuredEntityOperation,
@@ -85,9 +96,11 @@ import {
   TestScenarioPolicyCompliance,
   TestScenarioStatusBadge,
 } from './TestScenarioPolicyCompliance';
-import { persistTestScenariosWithWriteGuard } from './scenarioWriteGuard';
+import { inspectScenarioWrite, persistTestScenariosWithWriteGuard, ScenarioAuthoringInputError, type ScenarioWriteAttempt } from './scenarioWriteGuard';
 import {
   hasPermissionWithState,
+  hasEffectivePermission,
+  refreshBoardPermissions,
   usePermissions,
 } from '@/hooks/usePermissions';
 import { MockupsTab } from './MockupsTab';
@@ -96,6 +109,7 @@ import { ContractsTab } from './ContractsTab';
 import { TechnicalRequirementsTab } from './TechnicalRequirementsTab';
 import { DecisionsTab } from './DecisionsTab';
 import { IntegrationRequirementsTab } from './IntegrationRequirementsTab';
+import { ArchitectureClassificationsPanel } from './ArchitectureClassificationsPanel';
 import { ObservabilityRequirementsTab } from './ObservabilityRequirementsTab';
 import { KGValidationTab } from './KGValidationTab';
 import { SpecValidationPanel } from './SpecValidationPanel';
@@ -108,15 +122,12 @@ import {
   type PolicyTransitionPreviewLoadState,
 } from '@/components/policy-compliance';
 import { ValidationErrorDisplay } from './ValidationErrorDisplay';
-import { SprintSuggestionModal } from '@/components/sprints/SprintSuggestionModal';
 import { SPEC_STATUSES, SPEC_STATUS_LABELS } from '@/types';
 import { MentionInput, type Mentionable } from '@/components/shared/MentionInput';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
 import { CancellationDetails, CancellationReasonDialog } from '@/components/shared/CancellationReasonDialog';
 import { IdeationModal } from '@/components/ideations/IdeationModal';
 import { RefinementModal } from '@/components/refinements/RefinementModal';
-import { EditableField } from '@/components/shared/EditableField';
-import { ValidationGateOverride } from '@/components/shared/ValidationGateOverride';
 import { ActivityHistoryList } from '@/components/shared/ActivityHistoryList';
 import { SpecEditionLabel } from './SpecEditionLabel';
 import { ArchitectureTab } from '@/components/architecture';
@@ -126,7 +137,7 @@ import {
   normalizeAcceptanceCriteria,
 } from './acceptanceCriteriaCoverage';
 import { ResourceGateDisclosure } from '@/components/resources/ResourceGateDisclosure';
-import { KnowledgeWorkspace } from '@/components/resources/KnowledgeWorkspace';
+import { SpecKnowledgeResources } from './SpecKnowledgeResources';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import { useOptionalModalStack } from '@/contexts/ModalStackContext';
 import { openContextualHelp } from '@/components/help';
@@ -140,7 +151,6 @@ import {
 } from '@/components/code-traceability';
 import { SpecDependenciesTab } from './SpecDependenciesTab';
 import type { SpecDependencyDirection } from '@/types/spec-dependencies';
-import { QABadge } from '@/components/shared/QABadge';
 import {
   ProjectStructureErrorBoundary,
   ProjectStructureTab,
@@ -154,8 +164,9 @@ import {
 interface SpecModalProps {
   specId: string;
   boardId: string;
-  initialTab?: 'evidence-matrix' | 'project-structure';
+  initialTab?: 'evidence-matrix' | 'project-structure' | ReadinessSpecTab;
   focusProjectNodeId?: string | null;
+  focusReadinessRef?: string | null;
   onClose: () => void;
   onEscape?: () => void;
   onChanged: () => void;
@@ -163,8 +174,12 @@ interface SpecModalProps {
 
 type ModalTab =
   | 'details'
+  | 'frs'
+  | 'acs'
+  | 'requirements'
+  | 'tests-verifications'
   | 'evidence-matrix'
-  | 'delivery-evidence'
+  | 'coverage'
   | 'project-structure'
   | 'tests'
   | 'rules'
@@ -177,7 +192,6 @@ type ModalTab =
   | 'resources'
   | 'qa'
   | 'references'
-  | 'sprints'
   | 'kg'
   | 'validation'
   | 'activity';
@@ -189,6 +203,7 @@ interface SpecSnapshotReloadOptions {
   includeRelated: boolean;
   notifyChanged: boolean;
   showLoading: boolean;
+  minimumVersion?: number;
 }
 
 const STATUS_ICON: Record<SpecStatus, React.ReactNode> = {
@@ -243,269 +258,6 @@ function requiresSpecValidationSubmission(
   );
 }
 
-function EditableRequirementsList({
-  title,
-  icon,
-  items,
-  onUpdate,
-  placeholder,
-  renderItemExtra,
-  canAdd = true,
-  canEdit = true,
-  canRemove = true,
-  onAddItem,
-  onEditItem,
-  onOpenItemEditor,
-}: {
-  title: string;
-  icon: React.ReactNode;
-  items: string[] | null;
-  onUpdate: (items: string[]) => void;
-  placeholder: string;
-  renderItemExtra?: (item: string, index: number) => React.ReactNode;
-  canAdd?: boolean;
-  canEdit?: boolean;
-  canRemove?: boolean;
-  onAddItem?: () => void;
-  onEditItem?: (index: number, value: string) => void | Promise<void>;
-  onOpenItemEditor?: (index: number) => void;
-}) {
-  const [draft, setDraft] = useState('');
-  const [editing, setEditing] = useState(false);
-  const [editingIndex, setEditingIndex] = useState<number | null>(null);
-  const [editDraft, setEditDraft] = useState('');
-
-  const add = () => {
-    const trimmed = draft.trim();
-    if (trimmed) {
-      onUpdate([...(items || []), trimmed]);
-      setDraft('');
-    }
-  };
-
-  const remove = (idx: number) => {
-    onUpdate((items || []).filter((_, i) => i !== idx));
-  };
-
-  const startEdit = (idx: number, value: string) => {
-    setEditingIndex(idx);
-    setEditDraft(value);
-  };
-
-  const cancelEdit = () => {
-    setEditingIndex(null);
-    setEditDraft('');
-  };
-
-  const saveEdit = async () => {
-    if (editingIndex === null) return;
-    const trimmed = editDraft.trim();
-    if (!trimmed) return;
-    if (onEditItem) {
-      await onEditItem(editingIndex, trimmed);
-    } else {
-      onUpdate((items || []).map((item, index) => (index === editingIndex ? trimmed : item)));
-    }
-    cancelEdit();
-  };
-
-  const hasItems = items && items.length > 0;
-
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-2">
-        <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 flex items-center gap-1.5">
-          {icon} {title}
-          {hasItems && <span className="text-xs font-normal text-gray-400">({items.length})</span>}
-        </h4>
-        {!editing && canAdd && (
-          <button
-            onClick={() => {
-              if (onAddItem) {
-                onAddItem();
-              } else {
-                setEditing(true);
-              }
-            }}
-            className="text-xs text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-0.5"
-          >
-            <Plus size={12} /> Add
-          </button>
-        )}
-      </div>
-
-      {hasItems ? (
-        <ol className="space-y-1.5 ml-1">
-          {items.map((item, i) => (
-            <li key={i} className="flex items-start gap-2 text-sm text-gray-600 dark:text-gray-400 group">
-              <span className="text-xs text-gray-400 mt-0.5 w-4 shrink-0">{i + 1}.</span>
-              {editingIndex === i ? (
-                <div className="flex-1 flex gap-2">
-                  <input
-                    type="text"
-                    value={editDraft}
-                    onChange={(event) => setEditDraft(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') void saveEdit();
-                      if (event.key === 'Escape') {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        cancelEdit();
-                      }
-                    }}
-                    className="flex-1 px-2 py-1 border border-gray-300 rounded-md text-sm dark:bg-gray-700 dark:border-gray-600"
-                    autoFocus
-                  />
-                  <button onClick={() => void saveEdit()} disabled={!editDraft.trim()} className="btn btn-primary text-xs">Save</button>
-                  <button onClick={cancelEdit} className="btn btn-secondary text-xs">Cancel</button>
-                </div>
-              ) : (
-                <>
-                  <span className="flex-1">{item}</span>
-                  {renderItemExtra?.(item, i)}
-                  {canEdit && (
-                    <button
-                      onClick={() => {
-                        if (onOpenItemEditor) {
-                          onOpenItemEditor(i);
-                        } else {
-                          startEdit(i, item);
-                        }
-                      }}
-                      className="opacity-0 group-hover:opacity-100 p-0.5 text-blue-400 hover:text-blue-600 transition-opacity"
-                      title={onOpenItemEditor ? 'Edit details' : 'Edit'}
-                    >
-                      <Pencil size={12} />
-                    </button>
-                  )}
-                  {canRemove && (
-                    <button
-                      onClick={() => remove(i)}
-                      className="opacity-0 group-hover:opacity-100 p-0.5 text-red-400 hover:text-red-600 transition-opacity"
-                      title="Remove"
-                    >
-                      <Trash2 size={12} />
-                    </button>
-                  )}
-                </>
-              )}
-            </li>
-          ))}
-        </ol>
-      ) : (
-        <p className="text-xs text-gray-400 dark:text-gray-500 italic ml-1">
-          No {title.toLowerCase()} defined yet
-        </p>
-      )}
-
-      {editing && (
-        <div className="flex gap-2 mt-2">
-          <input
-            type="text"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') add();
-              if (e.key === 'Escape') {
-                e.preventDefault();
-                e.stopPropagation();
-                setEditing(false);
-                setDraft('');
-              }
-            }}
-            placeholder={placeholder}
-            className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600"
-            autoFocus
-          />
-          <button onClick={add} disabled={!draft.trim()} className="btn btn-primary text-xs">Add</button>
-          <button onClick={() => { setEditing(false); setDraft(''); }} className="btn btn-secondary text-xs">Done</button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function newRequirementId(prefix: 'ir' | 'or'): string {
-  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-}
-
-function requirementDisplayText(item: { title?: string; description?: string }): string {
-  return (item.title || item.description || '').trim();
-}
-
-function reconcileIntegrationRequirements(
-  current: IntegrationRequirement[] | null,
-  items: string[],
-): IntegrationRequirement[] {
-  const existing = current || [];
-  const active = existing.filter((item) => item.status === 'active');
-  const inactive = existing.filter((item) => item.status !== 'active');
-  const byText = new Map(active.map((item) => [requirementDisplayText(item), item]));
-
-  return [
-    ...inactive,
-    ...items.map((text) => {
-      const trimmed = text.trim();
-      const prior = byText.get(trimmed);
-      if (prior) return prior;
-      const next: IntegrationRequirement = {
-        id: newRequirementId('ir'),
-        title: trimmed,
-        integration_type: 'other',
-        description: trimmed,
-        provider: null,
-        consumer: null,
-        contract_ref: null,
-        endpoint: null,
-        method: null,
-        data_contract: null,
-        linked_requirements: null,
-        linked_api_contracts: null,
-        linked_task_ids: null,
-        status: 'active',
-        notes: null,
-      };
-      return next;
-    }),
-  ];
-}
-
-function reconcileObservabilityRequirements(
-  current: ObservabilityRequirement[] | null,
-  items: string[],
-): ObservabilityRequirement[] {
-  const existing = current || [];
-  const active = existing.filter((item) => item.status === 'active');
-  const inactive = existing.filter((item) => item.status !== 'active');
-  const byText = new Map(active.map((item) => [requirementDisplayText(item), item]));
-
-  return [
-    ...inactive,
-    ...items.map((text) => {
-      const trimmed = text.trim();
-      const prior = byText.get(trimmed);
-      if (prior) return prior;
-      const next: ObservabilityRequirement = {
-        id: newRequirementId('or'),
-        title: trimmed,
-        signal_type: 'other',
-        description: trimmed,
-        target: null,
-        metric_name: null,
-        threshold: null,
-        severity: null,
-        owner: null,
-        linked_requirements: null,
-        linked_integration_requirements: null,
-        linked_task_ids: null,
-        status: 'active',
-        notes: null,
-      };
-      return next;
-    }),
-  ];
-}
-
 type StructuredObjectEntity =
   | BusinessRule
   | ApiContract
@@ -531,41 +283,53 @@ const STRUCTURED_ENTITY_BY_FIELD: Record<StructuredCollectionField, SpecStructur
   decisions: 'decision',
 };
 
-function normalizeTextEntity(item: unknown, index: number): { id: string; text: string; status: string } {
-  if (item && typeof item === 'object') {
-    const record = item as Record<string, unknown>;
-    return {
-      id: String(record.id || index),
-      text: String(record.text || record.title || ''),
-      status: String(record.status || 'active'),
-    };
-  }
-  return { id: String(index), text: String(item || ''), status: 'active' };
-}
-
 function stableEntityPayload(item: StructuredObjectEntity): Record<string, unknown> {
   return JSON.parse(JSON.stringify(item)) as Record<string, unknown>;
 }
 
 function TestScenariosTab({
   spec,
+  focusReceipt,
   onUpdate,
   onSpecUpdate,
-  onSpecRefreshed,
+  onReload,
   canReadPolicyCompliance,
   policyRefreshKey,
+  readCurrent,
 }: {
   spec: Spec;
-  onUpdate: (scenarios: TestScenario[]) => void;
+  focusReceipt?: string | null;
+  onUpdate: (scenarios: TestScenario[], expectedVersion: number, expectedSnapshot: string) => Promise<void>;
   onSpecUpdate: (data: Record<string, unknown>) => Promise<void>;
-  onSpecRefreshed: (updated: Spec) => void;
+  onReload: () => Promise<Spec>;
   canReadPolicyCompliance: boolean;
   policyRefreshKey: number;
+  readCurrent: boolean;
 }) {
   const api = useDashboardApi();
+  const scenarioPermissions = usePermissions(spec.board_id);
   const [adding, setAdding] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [linkingScenarioId, setLinkingScenarioId] = useState<string | null>(null);
+  const [scenarioSaving, setScenarioSaving] = useState(false);
+  const [scenarioError, setScenarioError] = useState('');
+  const [scenarioBase, setScenarioBase] = useState<{ version: number; edition: number; snapshot?: string } | null>(null);
+  const [scenarioConflictVersion, setScenarioConflictVersion] = useState<string | null>(null);
+  const [scenarioReadPending, setScenarioReadPending] = useState(false);
+  const [scenarioReadFailed, setScenarioReadFailed] = useState(false);
+  const [uncertainWrite, setUncertainWrite] = useState<ScenarioWriteAttempt | null>(null);
+  const [writeObservation, setWriteObservation] = useState<'unchecked' | 'unchanged' | 'changed'>('unchecked');
+  const [methodDrafts, setMethodDrafts] = useState<Record<string, TestScenario>>({});
+  const [reportDrafts, setReportDrafts] = useState<Record<string, TestScenario>>({});
+  const [operationPending, setOperationPending] = useState(false);
+  const [operationNeedsRead, setOperationNeedsRead] = useState(false);
+  const operating = useRef(false);
+  const scenarioWritePending = useRef(false);
+  const scenarioEditorMounted = useRef(true);
+  useEffect(() => {
+    scenarioEditorMounted.current = true;
+    return () => { scenarioEditorMounted.current = false; };
+  }, []);
 
   // New scenario form
   const [newTitle, setNewTitle] = useState('');
@@ -578,8 +342,103 @@ function TestScenariosTab({
 
   const scenarios = spec.test_scenarios || [];
   const criteria = normalizeAcceptanceCriteria((spec.acceptance_criteria || []) as unknown[]);
+  const scenarioBaseChanged = scenarioBase !== null
+    && (scenarioBase.version !== spec.version || scenarioBase.edition !== spec.edition
+      || scenarioBase.snapshot !== spec.scenario_snapshot);
+  const scenarioReadCurrent = readCurrent && !scenarioReadPending && !scenarioReadFailed
+    && typeof spec.scenario_snapshot === 'string' && /^[0-9a-f]{64}$/.test(spec.scenario_snapshot);
 
-  const handleAdd = () => {
+  const runScenarioOperation = async (write: () => Promise<unknown>, message: string) => {
+    if (operating.current || operationNeedsRead || !scenarioReadCurrent) return;
+    operating.current = true; setOperationPending(true); setScenarioError('');
+    let confirmed = false;
+    try {
+      await write(); confirmed = true;
+      if (!scenarioEditorMounted.current) return;
+      setLinkingScenarioId(null);
+      await reloadScenarios();
+      if (scenarioEditorMounted.current) toast.success(message);
+    } catch (error) {
+      if (!scenarioEditorMounted.current) return;
+      const rejected = error instanceof AuthenticatedFetchError && error.status >= 400 && error.status < 500 && error.status !== 408;
+      setOperationNeedsRead(confirmed || !rejected);
+      setScenarioError(confirmed ? 'The change was saved, but its current state could not be loaded. Reload; do not submit it again.'
+        : error instanceof Error ? error.message : 'Could not confirm the scenario change.');
+      if (error instanceof AuthenticatedFetchError && [401, 403, 404].includes(error.status)) {
+        try { await reloadScenarios(); } catch { /* Parent removes denied content. */ }
+      }
+    } finally { operating.current = false; if (scenarioEditorMounted.current) setOperationPending(false); }
+  };
+
+  const reloadScenarios = async () => {
+    setScenarioReadPending(true);
+    try {
+      const updated = await onReload();
+      if (updated.id !== spec.id || updated.board_id !== spec.board_id || !updated.scenario_snapshot) {
+        throw new Error('The current scenario collection could not be verified. Reload before continuing.');
+      }
+      if (scenarioEditorMounted.current) { setScenarioReadFailed(false); setScenarioError(''); }
+      return updated;
+    } catch (error) {
+      if (scenarioEditorMounted.current) {
+        setScenarioReadFailed(true);
+        setScenarioError(error instanceof Error ? error.message : 'Could not load current scenarios. Your draft is preserved.');
+      }
+      throw error;
+    } finally {
+      if (scenarioEditorMounted.current) setScenarioReadPending(false);
+    }
+  };
+
+  const finishScenarioWrite = (attempt: ScenarioWriteAttempt) => {
+    setUncertainWrite(null); setWriteObservation('unchecked'); setScenarioError('');
+    if (attempt.kind === 'create') {
+      setAdding(false); setScenarioBase(null);
+      setNewTitle(''); setNewType('integration'); setNewGiven(''); setNewWhen(''); setNewThen(''); setNewNotes(''); setNewCriteria([]);
+    }
+  };
+
+  const saveScenarioAttempt = async (attempt: ScenarioWriteAttempt) => {
+    if (scenarioWritePending.current || operationPending || operationNeedsRead || !scenarioReadCurrent) return false;
+    scenarioWritePending.current = true;
+    setScenarioSaving(true); setScenarioError('');
+    try {
+      await onUpdate(attempt.next, attempt.expectedVersion, attempt.expectedSnapshot);
+      if (scenarioEditorMounted.current) finishScenarioWrite(attempt);
+      return scenarioEditorMounted.current;
+    } catch (error) {
+      if (scenarioEditorMounted.current) {
+        setScenarioError(error instanceof Error ? error.message : 'Could not save the scenario. Your draft is preserved.');
+        const definiteRejection = error instanceof ScenarioAuthoringInputError
+          || (error instanceof AuthenticatedFetchError && error.status >= 400 && error.status < 500 && error.status !== 408);
+        setUncertainWrite(definiteRejection ? null : attempt);
+        setWriteObservation('unchecked');
+        if (error instanceof AuthenticatedFetchError && error.status === 409
+          && ['spec_version_conflict', 'scenario_snapshot_conflict'].includes(error.message)) {
+          setScenarioConflictVersion(`${attempt.expectedVersion}:${attempt.expectedSnapshot}`);
+        }
+      }
+      return false;
+    } finally {
+      scenarioWritePending.current = false;
+      if (scenarioEditorMounted.current) setScenarioSaving(false);
+    }
+  };
+
+  const checkScenarioWrite = async () => {
+    if (!uncertainWrite || scenarioReadPending || scenarioWritePending.current) return;
+    setWriteObservation('unchecked');
+    try {
+      const current = await reloadScenarios();
+      if (!scenarioEditorMounted.current) return;
+      const result = inspectScenarioWrite(uncertainWrite, current);
+      if (result === 'observed') finishScenarioWrite(uncertainWrite);
+      else setWriteObservation(result);
+    } catch { /* Reload keeps the draft and the unresolved request. */ }
+  };
+
+  const handleAdd = async () => {
+    if (!scenarioBase?.snapshot || scenarioBaseChanged || scenarioConflictVersion !== null || uncertainWrite) return;
     if (!newTitle.trim() || !newGiven.trim() || !newWhen.trim() || !newThen.trim()) return;
     const id = `ts_${Date.now()}`;
     const scenario: TestScenario = {
@@ -594,13 +453,14 @@ function TestScenariosTab({
       status: 'draft',
       linked_task_ids: null,
     };
-    onUpdate([...scenarios, scenario]);
-    setAdding(false);
-    setNewTitle(''); setNewType('integration'); setNewGiven(''); setNewWhen(''); setNewThen(''); setNewNotes(''); setNewCriteria([]);
+    await saveScenarioAttempt({ next: JSON.parse(JSON.stringify([...scenarios, scenario])) as TestScenario[],
+      expectedVersion: scenarioBase.version, expectedSnapshot: scenarioBase.snapshot, kind: 'create', scenarioId: id });
   };
 
-  const handleRemove = (id: string) => {
-    onUpdate(scenarios.filter((s) => s.id !== id));
+  const handleRemove = async (id: string) => {
+    if (uncertainWrite || !spec.scenario_snapshot) return;
+    await saveScenarioAttempt({ next: JSON.parse(JSON.stringify(scenarios.filter((s) => s.id !== id))) as TestScenario[],
+      expectedVersion: spec.version, expectedSnapshot: spec.scenario_snapshot, kind: 'remove', scenarioId: id });
   };
 
   // Coverage matrix
@@ -615,6 +475,40 @@ function TestScenariosTab({
 
   return (
     <div className="space-y-4">
+      {scenarioError && <p role="alert" className="text-sm text-red-600 dark:text-red-400">{scenarioError}</p>}
+      {!readCurrent && <p role="status" className="text-sm text-amber-600">Current scenarios could not be verified. Your drafts are preserved; reload before another write.</p>}
+      {operationNeedsRead && <div role="status" className="text-sm text-amber-600">
+        <p>Check the current scenario state before another action. No operation will be repeated automatically.</p>
+        <button type="button" className="btn btn-secondary text-xs" disabled={scenarioReadPending || operationPending}
+          onClick={() => { void reloadScenarios().then(() => { if (scenarioEditorMounted.current) setOperationNeedsRead(false); }).catch(() => {}); }}>Reload scenario state</button>
+      </div>}
+      {uncertainWrite && <div role="status" className="rounded-lg border border-amber-300 p-3 text-sm text-amber-700 dark:text-amber-300 space-y-2">
+        <p>The write response was lost. The operation may have been saved. Check the current scenarios before doing anything again.</p>
+        {writeObservation === 'changed' && <p>The collection changed and the requested result could not be confirmed. Inspect the current scenarios; this operation will not be repeated over a new base.</p>}
+        {writeObservation === 'unchanged' && <p>The original collection is still current. You can retry the exact request with its original identity and preconditions.</p>}
+        <button type="button" className="btn btn-secondary text-xs" disabled={scenarioReadPending || scenarioSaving}
+          onClick={() => void checkScenarioWrite()}>{scenarioReadPending ? 'Checking scenario write…' : 'Check scenario write'}</button>
+        {writeObservation === 'unchanged' && <button type="button" className="btn btn-primary text-xs ml-2"
+          disabled={!scenarioReadCurrent || scenarioSaving} onClick={() => void saveScenarioAttempt(uncertainWrite)}>Retry original write</button>}
+        {writeObservation === 'changed' && <button type="button" className="btn btn-secondary text-xs ml-2"
+          disabled={!scenarioReadCurrent || scenarioSaving} onClick={() => { setUncertainWrite(null); setWriteObservation('unchecked'); setAdding(false); setScenarioBase(null); setScenarioError(''); }}>Discard unresolved operation</button>}
+      </div>}
+      {adding && (scenarioBaseChanged || scenarioConflictVersion !== null) && (
+        <div role="status" className="rounded-lg border border-amber-300 p-3 text-sm text-amber-700 dark:text-amber-300">
+          <p>The Spec changed while you were writing. Your draft is preserved. Review the current scenarios and criteria before saving.</p>
+          <button type="button" className="btn btn-secondary text-xs mt-2"
+            disabled={scenarioSaving || Boolean(uncertainWrite) || !scenarioReadCurrent || scenarioConflictVersion === `${spec.version}:${spec.scenario_snapshot}`}
+            onClick={() => { setScenarioBase({ version: spec.version, edition: spec.edition, snapshot: spec.scenario_snapshot }); setScenarioConflictVersion(null); setScenarioError(''); }}>
+            Review scenario base
+          </button>
+        </div>
+      )}
+      {!operationNeedsRead && (!readCurrent || scenarioConflictVersion !== null || scenarioReadFailed || !spec.scenario_snapshot) && (
+        <button type="button" className="btn btn-secondary text-xs" disabled={scenarioSaving || scenarioReadPending}
+          onClick={() => { void reloadScenarios().catch(() => { /* Inline error preserves the draft. */ }); }}>
+          {scenarioReadPending ? 'Loading scenarios…' : 'Reload scenarios'}
+        </button>
+      )}
       {/* Coverage summary */}
       {criteria.length > 0 && (() => {
         const coveredCount = criteria.length - uncoveredCriteria.length;
@@ -668,12 +562,16 @@ function TestScenariosTab({
           <p className="text-[10px] text-gray-400">Allow moving spec to Done without full test coverage</p>
         </div>
         <button
-          onClick={() => onSpecUpdate({ skip_test_coverage: !spec.skip_test_coverage })}
+          aria-label="Skip test coverage requirement"
+          disabled={operationPending || operationNeedsRead || !scenarioReadCurrent}
+          onClick={() => void runScenarioOperation(() => onSpecUpdate({ skip_test_coverage: !spec.skip_test_coverage }), 'Coverage setting saved')}
           className={`relative w-10 h-5 rounded-full transition-colors ${spec.skip_test_coverage ? 'bg-amber-500' : 'bg-gray-300 dark:bg-gray-600'}`}
         >
           <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${spec.skip_test_coverage ? 'translate-x-5' : ''}`} />
         </button>
       </div>
+
+      {focusReceipt && <ScenarioReceiptDetails scenarios={scenarios} receipt={focusReceipt} />}
 
       {/* Scenarios list */}
       {scenarios.length === 0 && !adding && (
@@ -684,17 +582,20 @@ function TestScenariosTab({
         </div>
       )}
 
-      {scenarios.map((scenario) => {
+      {[...scenarios, ...Object.values({ ...methodDrafts, ...reportDrafts }).filter(draft => !scenarios.some(item => item.id === draft.id))].map((scenario) => {
+        const missing = !scenarios.some(item => item.id === scenario.id);
         const isExpanded = expandedId === scenario.id;
         const linkedCards = scenario.linked_task_ids?.length || 0;
         return (
-          <div key={scenario.id} className={`border rounded-lg overflow-hidden ${linkedCards > 0 ? 'border-gray-200 dark:border-gray-700' : 'border-amber-300 dark:border-amber-700 border-dashed'}`}>
+          <div key={scenario.id} data-readiness-ref={`scenario:${scenario.id}`} tabIndex={-1} className={`border rounded-lg overflow-hidden focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500 ${linkedCards > 0 ? 'border-gray-200 dark:border-gray-700' : 'border-amber-300 dark:border-amber-700 border-dashed'}`}>
             <div
               className={`flex items-center gap-2 px-3 py-2 cursor-pointer ${linkedCards > 0 ? 'bg-gray-50 dark:bg-gray-700/50' : 'bg-amber-50/50 dark:bg-amber-900/10'}`}
               onClick={() => setExpandedId(isExpanded ? null : scenario.id)}
+              data-readiness-expand aria-expanded={isExpanded}
             >
               <FlaskConical size={14} className={linkedCards > 0 ? 'text-violet-500 shrink-0' : 'text-amber-500 shrink-0'} />
               <span className="text-sm font-medium text-gray-900 dark:text-white truncate flex-1">{scenario.title}</span>
+              {missing && <span className="text-xs text-amber-600">Removed · retained draft</span>}
               <ScenarioTypeBadge scenarioType={scenario.scenario_type} />
               <TestScenarioStatusBadge status={scenario.status} />
               <EvidenceBadge scenario={scenario} />
@@ -710,16 +611,33 @@ function TestScenariosTab({
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  handleRemove(scenario.id);
+                  void handleRemove(scenario.id);
                 }}
+                disabled={missing || scenarioSaving || operationPending || operationNeedsRead || Boolean(uncertainWrite) || adding || !scenarioReadCurrent}
                 className="p-0.5 text-gray-400 hover:text-red-500"
                 aria-label={`Delete test scenario ${scenario.title}`}
               >
                 <Trash2 size={12} />
               </button>
             </div>
-            {isExpanded && (
-              <div className="px-3 py-2 space-y-2 text-sm">
+            {(isExpanded || Boolean(methodDrafts[scenario.id]) || Boolean(reportDrafts[scenario.id])) && (
+              <div hidden={!isExpanded && !missing} className="px-3 py-2 space-y-2 text-sm">
+                <ScenarioVerificationMethodEditor boardId={spec.board_id} specId={spec.id} version={spec.version} scenario={scenario}
+                  canEdit={!spec.archived && spec.status === 'draft' && hasPermissionWithState(scenarioPermissions.has, 'spec.tests.edit', 'spec', spec.status)}
+                  readCurrent={scenarioReadCurrent && !uncertainWrite && !operationPending && !operationNeedsRead}
+                  missing={missing}
+                  onDraftChange={dirty => setMethodDrafts(current => {
+                    if (dirty) return current[scenario.id] ? current : { ...current, [scenario.id]: scenario };
+                    if (!current[scenario.id]) return current;
+                    const next = { ...current }; delete next[scenario.id]; return next;
+                  })}
+                  onReload={reloadScenarios}
+                  onSaved={async () => { await reloadScenarios(); }} />
+                {missing && <button type="button" className="btn btn-secondary text-xs" onClick={() => setMethodDrafts(current => {
+                  const next = { ...current }; delete next[scenario.id]; return next;
+                })}>Discard removed scenario draft</button>}
+                {!missing && isExpanded && <>
+                <VerificationReportDetails evidence={scenario.evidence} />
                 <div className="grid grid-cols-3 gap-3">
                   <div>
                     <span className="text-[10px] font-semibold text-green-600 uppercase">Given</span>
@@ -755,6 +673,7 @@ function TestScenariosTab({
                   <div className="flex items-center justify-between mb-1">
                     <span className="text-[10px] text-gray-400">Linked tasks:</span>
                     <button
+                      disabled={operationPending || operationNeedsRead || !scenarioReadCurrent}
                       onClick={() => setLinkingScenarioId(linkingScenarioId === scenario.id ? null : scenario.id)}
                       className="text-[10px] text-blue-500 hover:text-blue-600 dark:text-blue-400"
                     >
@@ -779,14 +698,8 @@ function TestScenariosTab({
                                 </span>
                               )}
                               <button
-                                onClick={async () => {
-                                  try {
-                                    await api.unlinkTaskFromScenario(spec.id, scenario.id, taskId);
-                                    const updated = await api.getSpec(spec.id);
-                                    onSpecRefreshed(updated);
-                                    toast.success('Task unlinked');
-                                  } catch { toast.error('Failed to unlink'); }
-                                }}
+                                disabled={operationPending || operationNeedsRead || !scenarioReadCurrent}
+                                onClick={() => void runScenarioOperation(() => api.unlinkTaskFromScenario(spec.id, scenario.id, taskId), 'Task unlinked')}
                                 className="p-0.5 text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
                                 title="Unlink task"
                               >
@@ -809,15 +722,8 @@ function TestScenariosTab({
                         .map((c) => (
                           <button
                             key={c.id}
-                            onClick={async () => {
-                              try {
-                                await api.linkTaskToScenario(spec.id, scenario.id, c.id);
-                                const updated = await api.getSpec(spec.id);
-                                onSpecRefreshed(updated);
-                                setLinkingScenarioId(null);
-                                toast.success('Task linked');
-                              } catch { toast.error('Failed to link'); }
-                            }}
+                            disabled={operationPending || operationNeedsRead || !scenarioReadCurrent}
+                            onClick={() => void runScenarioOperation(() => api.linkTaskToScenario(spec.id, scenario.id, c.id), 'Task linked')}
                             className="w-full text-left px-2 py-1 rounded text-[11px] text-gray-600 dark:text-gray-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 truncate flex items-center gap-1"
                           >
                             <Link size={9} className="shrink-0 text-gray-400" />
@@ -830,15 +736,24 @@ function TestScenariosTab({
                     </div>
                   )}
                 </div>
-                <TestScenarioPolicyCompliance
+                </>}
+                {(isExpanded || Boolean(reportDrafts[scenario.id])) && <TestScenarioPolicyCompliance
+                  readCurrent={scenarioReadCurrent && !operationPending && !operationNeedsRead && !uncertainWrite}
+                  missing={missing}
+                  onReportDraftChange={dirty => setReportDrafts(current => {
+                    if (dirty) return current[scenario.id] ? current : { ...current, [scenario.id]: scenario };
+                    if (!current[scenario.id]) return current;
+                    const next = { ...current }; delete next[scenario.id]; return next;
+                  })}
+                  canSubmitVerificationReport={scenarioPermissions.has('spec.tests.execute')}
                   boardId={spec.board_id}
                   specId={spec.id}
                   specArchived={Boolean(spec.archived)}
                   scenario={scenario}
                   canReadPolicyCompliance={canReadPolicyCompliance}
                   refreshKey={policyRefreshKey}
-                  onSpecRefreshed={onSpecRefreshed}
-                />
+                  onReload={reloadScenarios}
+                />}
               </div>
             )}
           </div>
@@ -847,7 +762,7 @@ function TestScenariosTab({
 
       {/* Add scenario form */}
       {adding ? (
-        <div className="border border-violet-200 dark:border-violet-700 rounded-lg p-3 space-y-2 bg-violet-50/50 dark:bg-violet-900/10">
+        <fieldset disabled={scenarioSaving || operationPending || operationNeedsRead || Boolean(uncertainWrite)} className="border border-violet-200 dark:border-violet-700 rounded-lg p-3 space-y-2 bg-violet-50/50 dark:bg-violet-900/10">
           <div className="flex gap-2">
             <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Scenario title" className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600" autoFocus />
             <select
@@ -898,11 +813,11 @@ function TestScenariosTab({
           )}
           <div className="flex justify-end gap-2">
             <button onClick={() => setAdding(false)} className="btn btn-secondary text-xs">Cancel</button>
-            <button onClick={handleAdd} disabled={!newTitle.trim() || !newGiven.trim() || !newWhen.trim() || !newThen.trim()} className="btn btn-primary text-xs">Add Scenario</button>
+            <button onClick={() => void handleAdd()} disabled={scenarioSaving || !scenarioReadCurrent || scenarioBaseChanged || scenarioConflictVersion !== null || !newTitle.trim() || !newGiven.trim() || !newWhen.trim() || !newThen.trim()} className="btn btn-primary text-xs">{scenarioSaving ? 'Saving scenario…' : 'Add Scenario'}</button>
           </div>
-        </div>
+        </fieldset>
       ) : (
-        <button onClick={() => setAdding(true)} className="flex items-center gap-1 text-sm text-violet-600 dark:text-violet-400 hover:text-violet-800 dark:hover:text-violet-300">
+        <button disabled={scenarioSaving || Boolean(uncertainWrite) || !scenarioReadCurrent} onClick={() => { setAdding(true); setScenarioError(''); setScenarioConflictVersion(null); setScenarioBase({ version: spec.version, edition: spec.edition, snapshot: spec.scenario_snapshot }); }} className="flex items-center gap-1 text-sm text-violet-600 dark:text-violet-400 hover:text-violet-800 dark:hover:text-violet-300">
           <Plus size={14} /> Add Test Scenario
         </button>
       )}
@@ -974,10 +889,13 @@ function ChoiceAnswerForm({
   qa,
   onAnswer,
   onCancel,
+  submitting = false,
 }: {
   qa: SpecQAItem;
   onAnswer: (qaId: string, answer: string | null, selected: string[] | null) => void;
   onCancel: () => void;
+  /** True while an answer for this question is in flight; blocks double submits. */
+  submitting?: boolean;
 }) {
   const [sel, setSel] = useState<string[]>([]);
   const [freeText, setFreeText] = useState('');
@@ -1029,7 +947,7 @@ function ChoiceAnswerForm({
         <button onClick={onCancel} className="btn btn-secondary text-xs">Cancel</button>
         <button
           onClick={() => onAnswer(qa.id, freeText.trim() || null, sel.length > 0 ? sel : null)}
-          disabled={!canSubmit}
+          disabled={!canSubmit || submitting}
           className="btn btn-primary text-xs"
         >
           Submit
@@ -1039,7 +957,7 @@ function ChoiceAnswerForm({
   );
 }
 
-function QATab({
+export function QATab({
   specId,
   mentionables,
   onChanged,
@@ -1053,6 +971,11 @@ function QATab({
   const [loading, setLoading] = useState(true);
   const [answeringId, setAnsweringId] = useState<string | null>(null);
   const [answerDraft, setAnswerDraft] = useState('');
+  // Single-in-flight guard, keyed by qa_id. The ref is the authority (it is
+  // updated synchronously, so two clicks in the same tick cannot both pass the
+  // guard); the state exists only to drive the disabled rendering.
+  const [answeringInFlight, setAnsweringInFlight] = useState<string | null>(null);
+  const answeringInFlightRef = useRef<string | null>(null);
 
   // Ask question form
   const [askMode, setAskMode] = useState<'text' | 'choice'>('text');
@@ -1101,14 +1024,26 @@ function QATab({
   };
 
   const handleAnswer = async (qaId: string, answer: string | null, selected: string[] | null) => {
+    // Ignore a second submit for the same question while one is in flight.
+    if (answeringInFlightRef.current === qaId) return;
+    answeringInFlightRef.current = qaId;
+    setAnsweringInFlight(qaId);
     try {
-      await api.answerSpecQuestion(specId, qaId, answer || '', selected);
+      await submitQaAnswerWithRetry({
+        send: () => api.answerSpecQuestion(specId, qaId, answer || '', selected),
+        reload: load,
+      });
       setAnsweringId(null);
       setAnswerDraft('');
       toast.success('Answer posted');
       await load();
       onChanged();
-    } catch { toast.error('Failed to post answer'); }
+    } catch (err) {
+      toast.error(answerErrorMessage(err));
+    } finally {
+      answeringInFlightRef.current = null;
+      setAnsweringInFlight(null);
+    }
   };
 
   const handleTextAnswer = async (qaId: string) => {
@@ -1239,7 +1174,7 @@ function QATab({
                 </div>
                 {answeringId === qa.id ? (
                   qa.question_type !== 'text' ? (
-                    <ChoiceAnswerForm qa={qa} onAnswer={handleAnswer} onCancel={() => setAnsweringId(null)} />
+                    <ChoiceAnswerForm qa={qa} onAnswer={handleAnswer} onCancel={() => setAnsweringId(null)} submitting={answeringInFlight === qa.id} />
                   ) : (
                     <div className="mt-2 flex gap-2">
                       <MentionInput
@@ -1251,7 +1186,7 @@ function QATab({
                         className="flex-1"
                         autoFocus
                       />
-                      <button onClick={() => handleTextAnswer(qa.id)} disabled={!answerDraft.trim()} className="btn btn-primary text-xs">Answer</button>
+                      <button onClick={() => handleTextAnswer(qa.id)} disabled={!answerDraft.trim() || answeringInFlight === qa.id} className="btn btn-primary text-xs">Answer</button>
                       <button onClick={() => { setAnsweringId(null); setAnswerDraft(''); }} className="btn btn-secondary text-xs">Cancel</button>
                     </div>
                   )
@@ -1310,148 +1245,9 @@ function QATab({
   );
 }
 
-function SpecSprintsTab({ sprints, api }: { sprints: SprintSummary[]; api: ReturnType<typeof useDashboardApi> }) {
-  const [details, setDetails] = useState<Record<string, any>>({});
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    if (sprints.length === 0) { setLoading(false); return; }
-    Promise.all(sprints.map(s => api.getSprint(s.id).catch(() => null)))
-      .then(results => {
-        const map: Record<string, any> = {};
-        for (const r of results) { if (r) map[r.id] = r; }
-        setDetails(map);
-      })
-      .finally(() => setLoading(false));
-  }, [sprints.length]);
-
-  if (loading) return <p className="text-sm text-gray-400 text-center py-6">Loading sprints...</p>;
-  if (sprints.length === 0) return <p className="text-sm text-gray-400 text-center py-6">No sprints linked to this spec</p>;
-
-  return (
-    <div className="space-y-3">
-      {sprints.map((sprint) => {
-        const detail = details[sprint.id];
-        const cards = detail?.cards || [];
-        const total = cards.length;
-        const done = cards.filter((c: any) => c.status === 'done').length;
-        const pct = total > 0 ? Math.round((done / total) * 100) : 0;
-        return (
-          <div key={sprint.id} className="p-3 bg-gray-50 dark:bg-gray-700/50 rounded-lg">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2">
-                <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium text-white ${
-                  sprint.status === 'closed' ? 'bg-green-500' :
-                  sprint.status === 'active' ? 'bg-blue-500' :
-                  sprint.status === 'review' ? 'bg-amber-500' :
-                  sprint.status === 'cancelled' ? 'bg-red-500' : 'bg-gray-500'
-                }`}>{sprint.status}</span>
-                <span className="text-sm font-medium text-gray-900 dark:text-white">{sprint.title}</span>
-                <QABadge count={sprint.open_qa_count} />
-              </div>
-              <span className="text-xs font-bold text-gray-600 dark:text-gray-300">{pct}%</span>
-            </div>
-            <div className="w-full bg-gray-200 dark:bg-gray-600 rounded-full h-2 mb-1">
-              <div
-                className={`h-2 rounded-full transition-all ${pct === 100 ? 'bg-green-500' : pct >= 50 ? 'bg-blue-500' : 'bg-amber-500'}`}
-                style={{ width: `${pct}%` }}
-              />
-            </div>
-            <div className="flex items-center justify-between mt-1">
-              <p className="text-[10px] text-gray-400">{done}/{total} cards done · v{sprint.version}</p>
-              {sprint.objective && <p className="text-[10px] text-gray-500 truncate max-w-[60%]">{sprint.objective}</p>}
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 /* ============================================================
    Knowledge Base Tab
    ============================================================ */
-
-function KnowledgeTab({
-  specId,
-  boardId,
-  onChanged,
-}: {
-  specId: string;
-  boardId: string;
-  onChanged?: () => void;
-}) {
-  const api = useDashboardApi();
-  const [refreshGeneration, setRefreshGeneration] = useState(0);
-  const [adding, setAdding] = useState(false);
-
-  // Add form
-  const [newTitle, setNewTitle] = useState('');
-  const [newDesc, setNewDesc] = useState('');
-  const [newContent, setNewContent] = useState('');
-
-  const refreshWorkspace = () => {
-    setRefreshGeneration((current) => current + 1);
-  };
-
-  const handleAdd = async () => {
-    if (!newTitle.trim() || !newContent.trim()) return;
-    try {
-      await api.createSpecKnowledge(specId, {
-        title: newTitle.trim(),
-        description: newDesc.trim() || undefined,
-        content: newContent.trim(),
-      });
-      toast.success('Knowledge base item added');
-      setAdding(false);
-      setNewTitle(''); setNewDesc(''); setNewContent('');
-      refreshWorkspace();
-      onChanged?.();
-    } catch { toast.error('Failed to add knowledge'); }
-  };
-
-  const handleDelete = async (knowledgeId: string) => {
-    if (!confirm('Delete this knowledge base item?')) return false;
-    try {
-      await api.deleteSpecKnowledge(specId, knowledgeId);
-      toast.success('Deleted');
-      onChanged?.();
-      return true;
-    } catch {
-      toast.error('Failed to delete');
-      return false;
-    }
-  };
-
-  return (
-    <div className="space-y-3">
-      <KnowledgeWorkspace
-        boardId={boardId}
-        entityType="spec"
-        entityId={specId}
-        refreshKey={refreshGeneration}
-        loadFallbackDetail={(id) => api.getSpecKnowledge(specId, id)}
-        onDelete={handleDelete}
-      />
-
-      {adding ? (
-        <div className="border border-amber-200 dark:border-amber-700 rounded-lg p-3 space-y-2 bg-amber-50/50 dark:bg-amber-900/10">
-          <input type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Title" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600" />
-          <input type="text" value={newDesc} onChange={(e) => setNewDesc(e.target.value)} placeholder="Description (optional)" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600" />
-          <textarea value={newContent} onChange={(e) => setNewContent(e.target.value)} placeholder="Content (markdown, text, JSON...)" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600" rows={6} />
-          <div className="flex justify-end gap-2">
-            <button onClick={() => setAdding(false)} className="btn btn-secondary text-xs">Cancel</button>
-            <button onClick={handleAdd} disabled={!newTitle.trim() || !newContent.trim()} className="btn btn-primary text-xs">Add</button>
-          </div>
-        </div>
-      ) : (
-        <button onClick={() => setAdding(true)} className="flex items-center gap-1 text-sm text-amber-600 dark:text-amber-400 hover:text-amber-800 dark:hover:text-amber-300">
-          <Plus size={14} /> Add Knowledge
-        </button>
-      )}
-    </div>
-  );
-}
 
 /* ============================================================
    Validation Error Display — parses gate errors into readable items
@@ -1466,6 +1262,7 @@ export function SpecModal({
   boardId: _boardId,
   initialTab,
   focusProjectNodeId,
+  focusReadinessRef,
   onClose,
   onEscape,
   onChanged,
@@ -1493,7 +1290,10 @@ export function SpecModal({
   const canReadChecklist = perms.has('spec.checklist.read');
   const canExecuteChecklist = perms.has('spec.checklist.execute');
   const canReadSpecValidation = perms.has('spec.validation.read');
+  const canReadDecomposition = perms.has('spec.evaluations.read');
   const canReadDependencies = perms.has('spec.entity.read');
+  const canReadCoverage = ['board.read', 'spec.entity.read', 'card.entity.read', 'spec.tests.read',
+    'spec.integration_requirements.read', 'spec.observability_requirements.read'].every(flag => perms.has(flag));
   const canReadProjectStructure = perms.has('spec.entity.read');
   const canReadPolicyCompliance = perms.has(
     'guidelines.assessments.read',
@@ -1533,12 +1333,8 @@ export function SpecModal({
   // Evidence changes alter the authored AS-IS boundary and remain Draft-only.
   const canLinkProjectStructureEvidence = canMutateProjectStructure('link_evidence');
   const canUnlinkProjectStructureEvidence = canMutateProjectStructure('unlink_evidence');
-  // An absent structure can only be authored by creating its first node.
-  const canAuthorProjectStructure = canCreateProjectStructure;
   const showProjectStructure = shouldShowProjectStructureTab(
     canReadProjectStructure,
-    canAuthorProjectStructure,
-    spec?.project_structure,
   );
   const canEditCodeEvidenceCoverage = !spec?.archived && spec?.status === 'draft' && hasPermissionWithState(
     perms.has,
@@ -1656,6 +1452,13 @@ export function SpecModal({
   const currentSpecId = useRef(specId);
   currentSpecId.current = specId;
   const [activeTab, setActiveTab] = useState<ModalTab>(initialTab ?? 'details');
+  const nativeReferenceRoot = useRef<HTMLDivElement>(null);
+  const [readinessReference, setReadinessReference] = useState(focusReadinessRef);
+  useNativeReferenceFocus(nativeReferenceRoot, readinessReference, `${specId}:${loading}:${activeTab}`);
+  useEffect(() => {
+    const origin = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    return () => { if (origin?.isConnected) origin.focus(); };
+  }, [specId]);
   const [resourceTab, setResourceTab] =
     useState<ResourceSubTab>('mockups');
   const [referenceTab, setReferenceTab] =
@@ -1676,8 +1479,6 @@ export function SpecModal({
   const [showValidateModal, setShowValidateModal] = useState(false);
   const [validateResult, setValidateResult] = useState<{ success: boolean; error: string | null }>({ success: false, error: null });
   const [validating, setValidating] = useState(false);
-  const [sprintSuggestions, setSprintSuggestions] = useState<any[] | null>(null);
-  const [linkedSprints, setLinkedSprints] = useState<SprintSummary[]>([]);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [validationHistoryRefreshKey, setValidationHistoryRefreshKey] =
     useState(0);
@@ -1694,7 +1495,8 @@ export function SpecModal({
       canReadQuality
       || canReadPolicyCompliance
       || canReadChecklist
-      || canReadSpecValidation;
+      || canReadSpecValidation
+      || canReadDecomposition;
     if (
       activeTab === 'validation' &&
       !validationAvailable
@@ -1707,6 +1509,7 @@ export function SpecModal({
     canReadPolicyCompliance,
     canReadQuality,
     canReadSpecValidation,
+    canReadDecomposition,
   ]);
 
   useEffect(() => {
@@ -1867,6 +1670,7 @@ export function SpecModal({
     includeRelated,
     notifyChanged,
     showLoading,
+    minimumVersion = 0,
   }: SpecSnapshotReloadOptions): Promise<Spec | null> => {
     const requestedSpecId = specId;
     const generation = specReloadGeneration.current + 1;
@@ -1881,6 +1685,13 @@ export function SpecModal({
       const data = await api.getSpec(requestedSpecId);
       if (!isCurrent()) {
         return null;
+      }
+      const expectedBoardId = _boardId || (spec?.id === requestedSpecId ? spec.board_id : undefined);
+      if (data.id !== requestedSpecId || (expectedBoardId && data.board_id !== expectedBoardId)) {
+        throw new Error('The Spec response does not match the requested identity.');
+      }
+      if (data.version < minimumVersion) {
+        throw new Error('The Spec response predates the confirmed change. Reload the current Spec.');
       }
       setSpec(data);
       await loadAllowedTransitions(data, isCurrent);
@@ -1912,14 +1723,6 @@ export function SpecModal({
           }
         } else {
           setParentRefinement(null);
-        }
-        try {
-          const sprints = await api.listSprints(data.board_id, data.id);
-          if (!isCurrent()) return null;
-          setLinkedSprints(sprints);
-        } catch {
-          if (!isCurrent()) return null;
-          setLinkedSprints([]);
         }
       }
 
@@ -1957,12 +1760,9 @@ export function SpecModal({
     showLoading: false,
   });
 
-  const reloadSpecAfterDependencyMutation = async () => {
-    await reloadSpecSnapshot({
-      includeRelated: false,
-      notifyChanged: true,
-      showLoading: false,
-    });
+  const reloadSpecAfterDependencyMutation = async (minimumVersion?: number) => {
+    await reloadWorkspaceSnapshot(minimumVersion);
+    onChanged();
   };
 
   const applyImpactAwareOperation = async (
@@ -2011,118 +1811,47 @@ export function SpecModal({
         ack_token: ackToken,
       });
       if (!acknowledged.success) {
-        throw new Error(acknowledged.error_message || 'Structured operation failed');
+        throw specEntityMutationError(acknowledged, 'Structured operation failed');
       }
       return acknowledged.spec_version;
     }
 
     if (!result.success) {
-      throw new Error(result.error_message || 'Structured operation failed');
+      throw specEntityMutationError(result, 'Structured operation failed');
     }
     return result.spec_version;
   };
 
-  const syncTextEntityList = async (
-    entityType: Extract<SpecStructuredEntityType, 'functional_requirement' | 'acceptance_criterion'>,
-    currentItems: unknown[] | null,
-    nextTexts: string[],
+  const saveTextRequirement = async (
+    entityType: 'functional_requirement' | 'acceptance_criterion',
+    id: string | null,
+    draft: TextRequirementDraft,
+    expectedVersion: number,
   ) => {
-    if (!spec) return;
-    try {
-      let version: number | null = spec.version;
-      const currentEntries = (currentItems || [])
-        .map(normalizeTextEntity)
-        .filter((item) => item.status === 'active');
-
-      const nextCounts = new Map<string, number>();
-      for (const text of nextTexts.map((item) => item.trim()).filter(Boolean)) {
-        nextCounts.set(text, (nextCounts.get(text) || 0) + 1);
-      }
-
-      const keptCounts = new Map<string, number>();
-      const entriesToRevoke: typeof currentEntries = [];
-      for (const entry of currentEntries) {
-        const allowed = nextCounts.get(entry.text) || 0;
-        const seen = keptCounts.get(entry.text) || 0;
-        if (seen < allowed) {
-          keptCounts.set(entry.text, seen + 1);
-          continue;
-        }
-        entriesToRevoke.push(entry);
-      }
-      entriesToRevoke.sort((a, b) => {
-        const ai = Number(a.id);
-        const bi = Number(b.id);
-        return Number.isInteger(ai) && Number.isInteger(bi) ? bi - ai : 0;
-      });
-      for (const entry of entriesToRevoke) {
-        version = await applyImpactAwareOperation(entityType, entry.id, 'revoke', version);
-      }
-
-      const currentCounts = new Map<string, number>();
-      for (const entry of currentEntries) {
-        currentCounts.set(entry.text, (currentCounts.get(entry.text) || 0) + 1);
-      }
-      const createdCounts = new Map<string, number>();
-      for (const text of nextTexts.map((item) => item.trim()).filter(Boolean)) {
-        const existing = currentCounts.get(text) || 0;
-        const created = createdCounts.get(text) || 0;
-        if (created < existing) {
-          createdCounts.set(text, created + 1);
-          continue;
-        }
-        const result = await api.createSpecEntity(specId, entityType, { text }, version);
-        if (!result.success) throw new Error(result.error_message || 'Structured create failed');
-        version = result.spec_version;
-        createdCounts.set(text, created + 1);
-      }
-
-      await reloadSpecAfterStructuredEdit();
-    } catch (error) {
-      if ((error as Error).message !== 'Operation cancelled') {
-        toast.error((error as Error).message || 'Failed to update');
-      }
-    }
-  };
-
-  const updateTextEntityAtIndex = async (
-    entityType: Extract<SpecStructuredEntityType, 'functional_requirement' | 'acceptance_criterion'>,
-    currentItems: unknown[] | null,
-    index: number,
-    text: string,
-  ) => {
-    if (!spec) return;
-    const entry = (currentItems || [])
-      .map(normalizeTextEntity)
-      .filter((item) => item.status === 'active')[index];
-    if (!entry) return;
-    const result = await api.updateSpecEntity(specId, entityType, entry.id, { text }, spec.version);
-    if (!result.success) throw new Error(result.error_message || 'Structured update failed');
-    await reloadSpecAfterStructuredEdit();
-  };
-
-  const updateStructuredEntityAtIndex = async (
-    entityType: SpecStructuredEntityType,
-    items: StructuredObjectEntity[] | null,
-    index: number,
-    payload: Record<string, unknown>,
-  ) => {
-    if (!spec) return;
-    const entry = (items || []).filter((item) => ((item as any).status || 'active') === 'active')[index] as any;
-    if (!entry?.id) return;
-    const result = await api.updateSpecEntity(specId, entityType, entry.id, payload, spec.version);
-    if (!result.success) throw new Error(result.error_message || 'Structured update failed');
-    await reloadSpecAfterStructuredEdit();
+    if (!spec) throw new Error('Current Spec is unavailable.');
+    const result = id
+      ? await api.updateSpecEntity(specId, entityType, id, { ...draft }, expectedVersion)
+      : await api.createSpecEntity(specId, entityType, { ...draft }, expectedVersion);
+    if (!result.success) throw specEntityMutationError(result, 'Could not save requirement');
+    if (currentSpecId.current !== specId) return;
+    // The write already succeeded. A read failure must not offer a duplicate create.
+    try { await reloadSpecAfterStructuredEdit(); }
+    catch { toast.error('Requirement saved. Refresh the Spec to see its current state.'); }
   };
 
   const syncStructuredCollection = async (
     field: StructuredCollectionField,
     currentItems: StructuredObjectEntity[] | null,
     nextItems: StructuredObjectEntity[],
+    expectedVersion: number,
   ) => {
-    if (!spec) return;
+    if (!spec) throw new Error('Current Spec is unavailable.');
+    if (spec.version !== expectedVersion) {
+      throw Object.assign(new Error('The Spec changed. Review the current base before saving.'), { code: 'version_conflict' });
+    }
+    const completed: string[] = [];
     try {
-      let version: number | null = spec.version;
+      let version: number | null = expectedVersion;
       const entityType = STRUCTURED_ENTITY_BY_FIELD[field];
       const currentById = new Map((currentItems || []).map((item) => [item.id, item]));
       const nextById = new Map(nextItems.map((item) => [item.id, item]));
@@ -2134,6 +1863,7 @@ export function SpecModal({
         }
         if (!nextById.has(current.id)) {
           version = await applyImpactAwareOperation(entityType, current.id, 'revoke', version);
+          completed.push(`revoke ${current.id}`);
         }
       }
 
@@ -2141,8 +1871,9 @@ export function SpecModal({
         const current = currentById.get(next.id);
         if (!current) {
           const result = await api.createSpecEntity(specId, entityType, stableEntityPayload(next), version);
-          if (!result.success) throw new Error(result.error_message || 'Structured create failed');
+          if (!result.success) throw specEntityMutationError(result, 'Structured create failed');
           version = result.spec_version;
+          completed.push(`create ${next.id}`);
           continue;
         }
 
@@ -2161,17 +1892,19 @@ export function SpecModal({
             const result = await api.operateSpecEntity(specId, entityType, next.id, 'restore', {
               expected_spec_version: version,
             });
-            if (!result.success) throw new Error(result.error_message || 'Structured restore failed');
+            if (!result.success) throw specEntityMutationError(result, 'Structured restore failed');
             version = result.spec_version;
           }
+          completed.push(`${nextStatus} ${next.id}`);
           delete currentPayload.status;
           delete nextPayload.status;
         }
 
         if (JSON.stringify(currentPayload) !== JSON.stringify(nextPayload)) {
           const result = await api.updateSpecEntity(specId, entityType, next.id, nextPayload, version);
-          if (!result.success) throw new Error(result.error_message || 'Structured update failed');
+          if (!result.success) throw specEntityMutationError(result, 'Structured update failed');
           version = result.spec_version;
+          completed.push(`update ${next.id}`);
         }
       }
 
@@ -2183,19 +1916,108 @@ export function SpecModal({
         version = await applyImpactAwareOperation(entityType, '__collection__', 'reorder', version, {
           ordered_entity_ids: nextIds,
         });
+        completed.push('reorder');
       }
 
-      await reloadSpecAfterStructuredEdit();
     } catch (error) {
-      if ((error as Error).message !== 'Operation cancelled') {
-        toast.error((error as Error).message || 'Failed to update');
+      if (completed.length) {
+        try { await reloadSpecAfterStructuredEdit(); } catch { /* Preserve the confirmed write report even if reading fails. */ }
+        throw Object.assign(new Error(`Some changes were saved (${completed.join(', ')}). ${error instanceof Error ? error.message : 'The remaining change failed.'} Your draft is preserved. Refresh and reopen the editor to review the saved state before another submission.`), { code: 'partial_collection_write' });
       }
+      throw error;
     }
+    // Writes succeeded. A subsequent read failure must never offer another create.
+    if (currentSpecId.current !== specId) return;
+    try { await reloadSpecAfterStructuredEdit(); }
+    catch { toast.error('Changes saved. Refresh the Spec to see its current state.'); }
   };
 
   const boardSettings = (currentBoard?.settings || {}) as BoardSettings;
   const requireSpecValidation = boardSettings.require_spec_validation ?? true;
   const [showSubmitValidationModal, setShowSubmitValidationModal] = useState(false);
+  const [permissionCheckPending, setPermissionCheckPending] = useState(false);
+  const [workspaceSyncError, setWorkspaceSyncError] = useState<string | null>(null);
+  const [workspaceReadPending, setWorkspaceReadPending] = useState(false);
+  const workspaceLoadGeneration = useRef(0);
+  const validationLive = ['validation', 'frs', 'acs', 'rules', 'contracts', 'ors', 'trs', 'irs', 'decisions', 'tests', 'project-structure', 'coverage', 'references', 'dependencies', 'resources'].includes(activeTab) || showSubmitValidationModal;
+  useEffect(() => {
+    setPermissionCheckPending(false);
+    setWorkspaceReadPending(false);
+    return () => {
+      workspaceLoadGeneration.current += 1;
+      specReloadGeneration.current += 1;
+    };
+  }, [specId, validationLive]);
+  const syncState = useWorkspaceRevisions({
+    boardId: validationLive ? spec?.board_id : undefined,
+    subjects: [{ subject_type: 'spec', subject_id: specId }],
+    onAccessLost: () => {
+      workspaceLoadGeneration.current += 1;
+      specReloadGeneration.current += 1;
+      setSpec(null);
+      setShowSubmitValidationModal(false);
+      onClose();
+    },
+    onChange: async ({ authorityChanged }) => {
+      if (!spec) return;
+      const generation = ++workspaceLoadGeneration.current;
+      const id = spec.id;
+      const current = () => generation === workspaceLoadGeneration.current && currentSpecId.current === id;
+      try {
+        setWorkspaceSyncError(null);
+        setWorkspaceReadPending(true);
+        if (authorityChanged) {
+          setPermissionCheckPending(true);
+          const permissions = await refreshBoardPermissions(spec.board_id);
+          if (!current()) return;
+          if (permissions.board_id !== spec.board_id) throw new Error('Permission response does not match the Board.');
+          if (!hasEffectivePermission(permissions, 'spec.entity.read')) {
+            setSpec(null); setShowSubmitValidationModal(false); onClose(); return;
+          }
+        }
+        await reloadSpecSnapshot({ includeRelated: activeTab === 'references', notifyChanged: false, showLoading: false });
+        if (!current()) return;
+        setValidationHistoryRefreshKey(value => value + 1);
+        setTestScenarioPolicyRefreshKey(value => value + 1);
+        setResourceGateRefreshKey(value => value + 1);
+      } catch (error) {
+        if (!current()) return;
+        if (authorityChanged || (error instanceof AuthenticatedFetchError && [401, 403, 404].includes(error.status))) {
+          setSpec(null); setShowSubmitValidationModal(false); onClose();
+        } else setWorkspaceSyncError('The Spec changed, but its current data could not be loaded. Refresh to retry.');
+      } finally {
+        if (current()) { setPermissionCheckPending(false); setWorkspaceReadPending(false); }
+      }
+    },
+  });
+  const reloadWorkspaceSnapshot = async (minimumVersion = spec?.version ?? 0) => {
+    const generation = ++workspaceLoadGeneration.current;
+    const id = specId;
+    const current = () => generation === workspaceLoadGeneration.current && currentSpecId.current === id;
+    setWorkspaceReadPending(true);
+    try {
+      const updated = await reloadSpecSnapshot({ includeRelated: activeTab === 'references', notifyChanged: false, showLoading: false, minimumVersion: Math.max(minimumVersion, spec?.version ?? 0) });
+      if (!updated || !current()) throw new Error('The workspace reload was superseded. Refresh to confirm its current state.');
+      setWorkspaceSyncError(null);
+    } catch (error) {
+      if (current()) {
+        if (error instanceof AuthenticatedFetchError && [401, 403, 404].includes(error.status)) {
+          setSpec(null); onClose();
+        } else setWorkspaceSyncError('The current Spec could not be loaded. Unsaved input is preserved; refresh to retry.');
+      }
+      throw error;
+    } finally {
+      if (current()) setWorkspaceReadPending(false);
+    }
+  };
+  const reloadResources = async (minimumVersion?: number) => {
+    const origin = specId;
+    await reloadWorkspaceSnapshot(minimumVersion);
+    if (currentSpecId.current !== origin) throw new Error('The resource owner changed during reload.');
+    setResourceGateRefreshKey(value => value + 1);
+    onChanged();
+  };
+  const resourcesReadCurrent = !permissionCheckPending && !workspaceReadPending && !workspaceSyncError && syncState === 'current';
   const specValidationSubmissionRequired = (
     policyTransitionPreview.status === 'ready'
     && policyTransitionPreview.transitions.some(
@@ -2237,16 +2059,6 @@ export function SpecModal({
         await loadAllowedTransitions(updated);
         onChanged();
         setValidateResult({ success: true, error: null });
-        if (updated.cards && updated.cards.length >= 6) {
-          try {
-            const result = await api.suggestSprints(updated.board_id, specId);
-            if (result.suggestions && result.suggestions.length > 1) {
-              setSprintSuggestions(result.suggestions);
-            }
-          } catch {
-            // Suggestion is optional, don't block on failure
-          }
-        }
       } catch (err: any) {
         setValidateResult({ success: false, error: err?.message || 'Validation failed' });
         await loadAllowedTransitions(spec);
@@ -2339,10 +2151,6 @@ export function SpecModal({
     nextStatuses.includes('validated')
     || specValidationSubmissionRequired
   );
-  const openDetailsStructuredEditor = (tab: ModalTab, mode: 'add' | 'edit', entityId?: string) => {
-    setDetailsStructuredEditor({ tab, mode, entityId, token: Date.now() });
-    setActiveTab(tab);
-  };
   const clearDetailsStructuredEditor = () => setDetailsStructuredEditor(null);
 
   const unansweredQA = spec.qa_items?.filter((q) => !q.answered_at).length || 0;
@@ -2350,22 +2158,26 @@ export function SpecModal({
     canReadQuality
     || canReadPolicyCompliance
     || canReadChecklist
-    || canReadSpecValidation;
+    || canReadSpecValidation
+    || canReadDecomposition;
   const allTabs: { id: ModalTab; label: string; icon: React.ReactNode; count?: number; highlight?: boolean; permission?: string }[] = [
     { id: 'details', label: 'Details', icon: <FileText size={14} /> },
+    ...((canReadCoverage || canReadCodeTraceability) ? [{ id: 'coverage' as ModalTab, label: 'Coverage', icon: <GitBranch size={14} /> }] : []),
     ...(canReadCodeTraceability
-      ? [{ id: 'evidence-matrix' as ModalTab, label: 'Code Evidence Matrix', icon: <Grid3X3 size={14} /> }, { id: 'delivery-evidence' as ModalTab, label: 'Delivery evidence', icon: <ShieldCheck size={14} /> }]
+      ? [{ id: 'evidence-matrix' as ModalTab, label: 'Code Evidence Matrix', icon: <Grid3X3 size={14} /> }]
       : []),
     ...(showProjectStructure
       ? [{
         id: 'project-structure' as ModalTab,
-        label: 'Project structure',
+        label: 'Project Structure',
         icon: <FolderTree size={14} />,
         count: spec.project_structure?.filter((node) => node.status === 'active').length || undefined,
       }]
       : []),
+    { id: 'frs', label: 'Functional', icon: <Circle size={14} />, count: spec.functional_requirements?.length || 0 },
+    { id: 'acs', label: 'AC', icon: <Target size={14} />, count: spec.acceptance_criteria?.length || 0 },
     { id: 'tests', label: 'Tests', icon: <FlaskConical size={14} />, count: spec.test_scenarios?.length || 0 },
-    { id: 'rules', label: 'Rules', icon: <Scale size={14} />, count: spec.business_rules?.length || 0 },
+    { id: 'rules', label: 'Business', icon: <Scale size={14} />, count: spec.business_rules?.length || 0 },
     ...(canReadDependencies
       ? [{
         id: 'dependencies' as ModalTab,
@@ -2376,14 +2188,13 @@ export function SpecModal({
       }]
       : []),
     { id: 'contracts', label: 'Contracts', icon: <FileCode size={14} />, count: spec.api_contracts?.length || 0 },
-    { id: 'irs', label: 'IRs', icon: <Network size={14} />, count: spec.integration_requirements?.length || 0, permission: 'spec.integration_requirements.read' },
-    { id: 'ors', label: 'ORs', icon: <Gauge size={14} />, count: spec.observability_requirements?.length || 0, permission: 'spec.observability_requirements.read' },
-    { id: 'trs', label: 'TRs', icon: <Settings size={14} />, count: spec.technical_requirements?.length || 0 },
+    { id: 'irs', label: 'Integration', icon: <Network size={14} />, count: spec.integration_requirements?.length || 0, permission: 'spec.integration_requirements.read' },
+    { id: 'ors', label: 'Observability', icon: <Gauge size={14} />, count: spec.observability_requirements?.length || 0, permission: 'spec.observability_requirements.read' },
+    { id: 'trs', label: 'Technical', icon: <Settings size={14} />, count: spec.technical_requirements?.length || 0 },
     { id: 'decisions', label: 'Decisions', icon: <GitBranch size={14} />, count: spec.decisions?.length || 0 },
     { id: 'resources', label: 'Resources', icon: <BookOpen size={14} /> },
     { id: 'qa', label: 'Q&A', icon: <MessageCircleQuestion size={14} />, count: spec.qa_items?.length || 0, highlight: unansweredQA > 0 },
     { id: 'references', label: 'References', icon: <Link2 size={14} />, count: spec.cards?.length || 0 },
-    { id: 'sprints', label: 'Sprints', icon: <Layers size={14} />, count: linkedSprints.length },
     { id: 'kg', label: 'KG Graph', icon: <Network size={14} /> },
     ...(showValidationTab
       ? [{ id: 'validation' as ModalTab, label: 'Validation', icon: <ShieldCheck size={14} /> }]
@@ -2391,11 +2202,28 @@ export function SpecModal({
     { id: 'activity', label: 'Activity', icon: <History size={14} /> },
   ];
   const tabs = allTabs.filter((tab) => !tab.permission || perms.has(tab.permission));
+  const requirementSections: ModalTab[] = ['frs', 'rules', 'irs', 'ors', 'trs', 'contracts', 'decisions'];
+  const verificationSections: ModalTab[] = ['tests', 'acs'];
+  const requirementTabs = requirementSections.flatMap(id => tabs.filter(tab => tab.id === id));
+  const verificationTabs = verificationSections.flatMap(id => tabs.filter(tab => tab.id === id));
+  const primaryTab: ModalTab = requirementSections.includes(activeTab) ? 'requirements'
+    : verificationSections.includes(activeTab) ? 'tests-verifications' : activeTab;
+  const primaryTabs = tabs.filter(tab => !requirementSections.includes(tab.id) && !verificationSections.includes(tab.id));
+  primaryTabs.splice(1, 0,
+    { id: 'requirements', label: 'Requirements & Decisions', icon: <FileText size={14} /> },
+    { id: 'tests-verifications', label: 'Tests & Verifications', icon: <FlaskConical size={14} /> });
+  const primaryOrder: ModalTab[] = ['details', 'coverage', 'project-structure', 'evidence-matrix', 'resources', 'requirements', 'tests-verifications', 'qa', 'dependencies', 'references', 'kg', 'validation', 'activity'];
+  primaryTabs.sort((a, b) => primaryOrder.indexOf(a.id) - primaryOrder.indexOf(b.id));
+  const subTabs = primaryTab === 'requirements' ? requirementTabs : primaryTab === 'tests-verifications' ? verificationTabs : [];
+
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+      style={permissionCheckPending ? { visibility: 'hidden' } : undefined}>
+      {permissionCheckPending && <div role="status" style={{ visibility: 'visible' }} className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50 text-sm text-white">Rechecking Board access…</div>}
       <div
         role="dialog"
+        ref={nativeReferenceRoot}
         aria-modal="true"
         aria-labelledby={`spec-${spec.id}-title`}
         className={`bg-white dark:bg-gray-800 rounded-xl shadow-xl w-full ${expanded ? 'max-w-[95vw] h-[95vh]' : 'max-w-3xl h-[90vh]'} flex flex-col`}
@@ -2525,27 +2353,41 @@ export function SpecModal({
           <AccessibleTabList
             idBase={`spec-${specId}`}
             ariaLabel="Spec sections"
-            items={tabs.map((tab) => ({
+            items={primaryTabs.map((tab) => ({
               id: tab.id,
               label: tab.label,
               icon: tab.icon,
               count: tab.count,
               attention: tab.highlight,
             }))}
-            value={activeTab}
-            onValueChange={setActiveTab}
+            value={primaryTab}
+            onValueChange={id => setActiveTab(id === 'requirements' ? requirementTabs[0].id
+              : id === 'tests-verifications' ? verificationTabs[0].id : id)}
             className="px-6 pt-3 scrollbar-hide"
           />
         </div>
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto px-6 py-4">
+          <MissingLinkNotice context={spec.missing_link_context} />
+          {['coverage', 'references', 'dependencies'].includes(activeTab) && (workspaceSyncError || ['offline', 'unavailable'].includes(syncState)) && (
+            <div role="status" className="mb-3 rounded-lg border border-amber-300 p-3 text-xs text-amber-700 dark:text-amber-300">
+              <p>{workspaceSyncError || 'Live updates are unavailable. Displayed data may be out of date.'}</p>
+              <button type="button" className="btn btn-secondary mt-2 text-xs" disabled={workspaceReadPending || permissionCheckPending}
+                onClick={() => { void reloadWorkspaceSnapshot().then(() => setValidationHistoryRefreshKey(value => value + 1)).catch(() => { /* Keep the visible recovery state. */ }); }}>Reload current workspace</button>
+            </div>
+          )}
           <AccessibleTabPanel
             idBase={`spec-${specId}`}
-            tabId={activeTab}
-            value={activeTab}
+            tabId={primaryTab}
+            value={primaryTab}
             className="outline-none"
           >
+          {subTabs.length > 0 && <AccessibleTabList idBase={`spec-${specId}-${primaryTab}`}
+            ariaLabel={primaryTab === 'requirements' ? 'Requirements and decisions sections' : 'Tests and verifications sections'}
+            items={subTabs} value={activeTab} onValueChange={setActiveTab} variant="secondary" className="mb-4" />}
+          <AccessibleTabPanel idBase={subTabs.length ? `spec-${specId}-${primaryTab}` : `spec-${specId}-content`}
+            tabId={activeTab} value={activeTab} className="space-y-4">
           {activeTab === 'details' && (
             <div className="space-y-5">
               {spec.status === 'cancelled' && (
@@ -2559,232 +2401,12 @@ export function SpecModal({
               )}
               <div>
                 <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1">Description</h4>
-                <EditableField
-                  value={spec.description || ''}
-                  onSave={async (val) => {
-                    const updated = await api.updateSpec(specId, { description: val });
-                    setSpec(updated);
-                  }}
-                  multiline
-                  renderView={(v) => <MarkdownContent content={v} />}
-                  placeholder="No description"
-                />
+                <MarkdownContent content={spec.description || 'No description'} />
               </div>
               <div>
                 <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1">Context</h4>
-                <EditableField
-                  value={spec.context || ''}
-                  onSave={async (val) => {
-                    const updated = await api.updateSpec(specId, { context: val });
-                    setSpec(updated);
-                  }}
-                  multiline
-                  renderView={(v) => <MarkdownContent content={v} />}
-                  placeholder="No context"
-                />
+                <MarkdownContent content={spec.context || 'No context'} />
               </div>
-              <EditableRequirementsList
-                title="Functional Requirements"
-                icon={<Circle size={14} />}
-                items={((spec.functional_requirements || []) as unknown[])
-                  .map(normalizeTextEntity)
-                  .filter((item) => item.status === 'active')
-                  .map((item) => item.text)}
-                placeholder="Add a functional requirement..."
-                canAdd={canStructured('functional_requirement', 'create')}
-                canEdit={canStructured('functional_requirement', 'update')}
-                canRemove={canStructured('functional_requirement', 'revoke')}
-                onEditItem={async (index, text) => {
-                  await updateTextEntityAtIndex('functional_requirement', spec.functional_requirements as unknown[] | null, index, text);
-                }}
-                onUpdate={async (items) => {
-                  await syncTextEntityList('functional_requirement', spec.functional_requirements as unknown[] | null, items);
-                }}
-              />
-              {canReadIR && (
-                <EditableRequirementsList
-                  title="Integration Requirements"
-                  icon={<Network size={14} />}
-                  items={(spec.integration_requirements || [])
-                    .filter((item) => item.status === 'active')
-                    .map(requirementDisplayText)
-                    .filter(Boolean)}
-                  placeholder="Add an integration requirement..."
-                  canAdd={canCreateIR}
-                  canEdit={canEditIR}
-                  canRemove={canDeleteIR}
-                  onAddItem={() => openDetailsStructuredEditor('irs', 'add')}
-                  onOpenItemEditor={(index) => {
-                    const item = (spec.integration_requirements || []).filter((entry) => entry.status === 'active')[index];
-                    if (item) openDetailsStructuredEditor('irs', 'edit', item.id);
-                  }}
-                  onEditItem={async (index, text) => {
-                    const item = (spec.integration_requirements || []).filter((entry) => entry.status === 'active')[index];
-                    await updateStructuredEntityAtIndex(
-                      'integration_requirement',
-                      spec.integration_requirements || [],
-                      index,
-                      { title: text, description: item?.description || text },
-                    );
-                  }}
-                  onUpdate={async (items) => {
-                    await syncStructuredCollection(
-                      'integration_requirements',
-                      spec.integration_requirements || [],
-                      reconcileIntegrationRequirements(spec.integration_requirements, items),
-                    );
-                  }}
-                />
-              )}
-              {canReadOR && (
-                <EditableRequirementsList
-                  title="Observability Requirements"
-                  icon={<Gauge size={14} />}
-                  items={(spec.observability_requirements || [])
-                    .filter((item) => item.status === 'active')
-                    .map(requirementDisplayText)
-                    .filter(Boolean)}
-                  placeholder="Add an observability requirement..."
-                  canAdd={canCreateOR}
-                  canEdit={canEditOR}
-                  canRemove={canDeleteOR}
-                  onAddItem={() => openDetailsStructuredEditor('ors', 'add')}
-                  onOpenItemEditor={(index) => {
-                    const item = (spec.observability_requirements || []).filter((entry) => entry.status === 'active')[index];
-                    if (item) openDetailsStructuredEditor('ors', 'edit', item.id);
-                  }}
-                  onEditItem={async (index, text) => {
-                    const item = (spec.observability_requirements || []).filter((entry) => entry.status === 'active')[index];
-                    await updateStructuredEntityAtIndex(
-                      'observability_requirement',
-                      spec.observability_requirements || [],
-                      index,
-                      { title: text, description: item?.description || text },
-                    );
-                  }}
-                  onUpdate={async (items) => {
-                    await syncStructuredCollection(
-                      'observability_requirements',
-                      spec.observability_requirements || [],
-                      reconcileObservabilityRequirements(spec.observability_requirements, items),
-                    );
-                  }}
-                />
-              )}
-              <EditableRequirementsList
-                title="Technical Requirements"
-                icon={<Settings size={14} />}
-                items={(spec.technical_requirements || [])
-                  .filter((tr) => typeof tr === 'string' || ((tr as TechnicalRequirement).status || 'active') === 'active')
-                  .map((tr) => (typeof tr === 'string' ? tr : (tr as TechnicalRequirement).text || ''))}
-                placeholder="Add a technical constraint..."
-                canAdd={canStructured('technical_requirement', 'create')}
-                canEdit={canStructured('technical_requirement', 'update')}
-                canRemove={canStructured('technical_requirement', 'revoke')}
-                onAddItem={() => openDetailsStructuredEditor('trs', 'add')}
-                onOpenItemEditor={(index) => {
-                  const item = (spec.technical_requirements || [])
-                    .map((tr, trIndex) =>
-                      typeof tr === 'string'
-                        ? { id: `tr_legacy_${trIndex}`, text: tr, linked_task_ids: null }
-                        : tr
-                    )
-                    .filter((tr) => (tr.status || 'active') === 'active')[index] as TechnicalRequirement | undefined;
-                  if (item) openDetailsStructuredEditor('trs', 'edit', item.id);
-                }}
-                onEditItem={async (index, text) => {
-                  const existingTRs = (spec.technical_requirements || []).map((tr, trIndex) =>
-                    typeof tr === 'string'
-                      ? { id: `tr_legacy_${trIndex}`, text: tr, linked_task_ids: null }
-                      : tr
-                  ).filter((tr) => (tr.status || 'active') === 'active') as TechnicalRequirement[];
-                  await updateStructuredEntityAtIndex('technical_requirement', existingTRs as any, index, { text });
-                }}
-                onUpdate={async (items) => {
-                  const existingTRs = (spec.technical_requirements || []).map((tr, index) =>
-                    typeof tr === 'string'
-                      ? { id: `tr_legacy_${index}`, text: tr, linked_task_ids: null }
-                      : tr
-                  ).filter((tr) => (tr.status || 'active') === 'active') as TechnicalRequirement[];
-                  const byText = new Map(existingTRs.map((tr) => [tr.text, tr]));
-                  const nextTRs = items.map((text) => byText.get(text) || {
-                    id: `tr_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-                    text,
-                    linked_task_ids: null,
-                  });
-                  await syncStructuredCollection('technical_requirements', existingTRs, nextTRs);
-                }}
-              />
-              <EditableRequirementsList
-                title="Acceptance Criteria"
-                icon={<Target size={14} />}
-                items={((spec.acceptance_criteria || []) as unknown[])
-                  .map(normalizeTextEntity)
-                  .filter((item) => item.status === 'active')
-                  .map((item) => item.text)}
-                placeholder="Add an acceptance criterion..."
-                canAdd={canStructured('acceptance_criterion', 'create')}
-                canEdit={canStructured('acceptance_criterion', 'update')}
-                canRemove={canStructured('acceptance_criterion', 'revoke')}
-                onEditItem={async (index, text) => {
-                  await updateTextEntityAtIndex('acceptance_criterion', spec.acceptance_criteria as unknown[] | null, index, text);
-                }}
-                onUpdate={async (items) => {
-                  await syncTextEntityList('acceptance_criterion', spec.acceptance_criteria as unknown[] | null, items);
-                }}
-              />
-              {/* Decisions — contextual choices, same bulleted pattern as FR/AC.
-                  Only active decisions show in the list; supersedence/revocation
-                  happens via MCP tools + KG. Text is mapped to Decision.title
-                  (and rationale mirrors it by default). */}
-              <EditableRequirementsList
-                title="Decisions"
-                icon={<Lightbulb size={14} />}
-                items={(spec.decisions || [])
-                  .filter((d) => d.status === 'active')
-                  .map((d) => d.title)}
-                placeholder="Add a decision (e.g. 'Use embedded graph storage over an external graph database')..."
-                canAdd={canStructured('decision', 'create')}
-                canEdit={canStructured('decision', 'update')}
-                canRemove={canStructured('decision', 'revoke')}
-                onAddItem={() => openDetailsStructuredEditor('decisions', 'add')}
-                onOpenItemEditor={(index) => {
-                  const item = (spec.decisions || []).filter((decision) => decision.status === 'active')[index];
-                  if (item) openDetailsStructuredEditor('decisions', 'edit', item.id);
-                }}
-                onEditItem={async (index, text) => {
-                  await updateStructuredEntityAtIndex('decision', spec.decisions || [], index, { title: text });
-                }}
-                onUpdate={async (items) => {
-                  const existing = spec.decisions || [];
-                  const byTitle = new Map(
-                    existing.filter((d) => d.status === 'active').map((d) => [d.title, d]),
-                  );
-                  const keptTitles = new Set(items);
-                  const next: Decision[] = existing
-                    .filter((d) => d.status !== 'active')
-                    .map((d) => ({ ...d }));
-                  for (const text of items) {
-                    const prior = byTitle.get(text);
-                    next.push(prior || {
-                      id: `dec_${Date.now().toString(16).slice(-8)}${Math.random().toString(16).slice(2, 4)}`,
-                      title: text,
-                      rationale: text,
-                      context: null,
-                      alternatives_considered: null,
-                      supersedes_decision_id: null,
-                      linked_requirements: null,
-                      linked_task_ids: null,
-                      status: 'active',
-                      notes: null,
-                    });
-                  }
-                  for (const [title, d] of byTitle) {
-                    if (!keptTitles.has(title)) next.push({ ...d, status: 'revoked' });
-                  }
-                  await syncStructuredCollection('decisions', existing, next);
-                }}
-              />
               {spec.labels && spec.labels.length > 0 && (
                 <div className="flex flex-wrap gap-1">
                   {spec.labels.map((label, i) => (
@@ -2793,36 +2415,76 @@ export function SpecModal({
                 </div>
               )}
 
-              {/* Validation Gate Override */}
-              <ValidationGateOverride
-                title="Task Validation Gate"
-                description="Controls whether cards derived from this spec must pass Task Validation. These settings do not change the Spec Validation Gate."
-                requireValue={spec.require_task_validation ?? null}
-                minConfidence={spec.validation_min_confidence ?? null}
-                minCompleteness={spec.validation_min_completeness ?? null}
-                maxDrift={spec.validation_max_drift ?? null}
-                parentLabel="Board default"
-                onUpdate={async (patch) => {
-                  try {
-                    const updated = await api.updateSpec(specId, patch);
-                    setSpec(updated);
-                  } catch { toast.error('Failed to update validation gate'); }
-                }}
-              />
+              <section aria-label="Task Validation Gate" className="space-y-2">
+                <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300">Task Validation Gate</h4>
+                <p className="text-xs text-gray-500">Controls whether cards derived from this spec must pass Task Validation. These settings do not change the Spec Validation Gate.</p>
+                <dl className="grid grid-cols-2 gap-3 text-xs">
+                  {[
+                    ['Validation', spec.require_task_validation == null ? 'Board default' : spec.require_task_validation ? 'Required' : 'Disabled'],
+                    ['Minimum confidence', spec.validation_min_confidence ?? 'Board default'],
+                    ['Minimum completeness', spec.validation_min_completeness ?? 'Board default'],
+                    ['Maximum drift', spec.validation_max_drift ?? 'Board default'],
+                  ].map(([label, value]) => <div key={label}><dt className="text-gray-500">{label}</dt><dd className="mt-1 text-gray-700 dark:text-gray-300">{value}</dd></div>)}
+                </dl>
+              </section>
 
-              {/* Sprints summary — details in Sprints tab */}
-              {linkedSprints.length > 0 && (
-                <button
-                  onClick={() => setActiveTab('sprints')}
-                  className="text-xs text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1"
-                >
-                  <Layers size={12} />
-                  {linkedSprints.length} sprint{linkedSprints.length > 1 ? 's' : ''} linked — view details
-                </button>
-              )}
             </div>
           )}
 
+          {(activeTab === 'frs' || activeTab === 'acs') && (() => {
+            const type = activeTab === 'frs' ? 'functional_requirement' : 'acceptance_criterion';
+            return <TextRequirementsTab
+              key={`${spec.id}:${type}:${canStructured(type, 'create')}:${canStructured(type, 'update')}:${canStructured(type, 'revoke')}`}
+              version={spec.version}
+              readCurrent={!permissionCheckPending && !workspaceReadPending && !workspaceSyncError && syncState === 'current'}
+              kind={activeTab === 'frs' ? 'FR' : 'AC'}
+              items={(activeTab === 'frs' ? spec.functional_requirements : spec.acceptance_criteria) || []}
+              canCreate={canStructured(type, 'create')}
+              canEdit={canStructured(type, 'update')}
+              canRevoke={canStructured(type, 'revoke')}
+              renderDetails={activeTab === 'acs' && perms.has('spec.entity.read') ? item => <>
+                <CriterionVerificationDetails
+                  specId={spec.id} version={spec.version} value={item}
+                  readCurrent={!permissionCheckPending && !workspaceReadPending && !workspaceSyncError && syncState === 'current'}
+                  options={verificationRequirementOptions(spec, canReadIR, canReadOR)}
+                  canEdit={!spec.archived && spec.status === 'draft'
+                    && hasPermissionWithState(perms.has, 'spec.structured_entity.acceptance_criterion.update', 'spec', spec.status)}
+                  onSaved={async () => { await reloadSpecAfterStructuredEdit(); }}
+                />
+                {perms.has('spec.tests.read') && <section aria-label="Verification scenarios" className="space-y-2 border-t border-gray-200 pt-3 dark:border-gray-700">
+                  <div className="flex items-center justify-between gap-2"><h4 className="font-semibold">How to verify</h4>
+                    <button type="button" className="text-blue-600 hover:underline dark:text-blue-400" onClick={() => setActiveTab('tests')}>Manage scenarios</button></div>
+                  {(spec.test_scenarios || []).filter(scenario => scenario.linked_criteria?.includes(item.id)).map(scenario => <div key={scenario.id} className="rounded-lg bg-gray-50 p-2 dark:bg-gray-900/40">
+                    <p className="font-medium">{scenario.title}</p>
+                    <p>Method: {scenario.verification_method || 'Not defined'}</p>
+                    <p className="whitespace-pre-wrap">Expected observation: {scenario.then}</p>
+                  </div>)}
+                  {!(spec.test_scenarios || []).some(scenario => scenario.linked_criteria?.includes(item.id)) && <p>No scenario linked. Define how this condition will be observed in Tests.</p>}
+                  <p className="text-gray-500">Execution evidence and current verification results are available in Coverage → Implementation.</p>
+                </section>}
+              </> : undefined}
+              onSave={(id, draft, expectedVersion) => saveTextRequirement(type, id, draft, expectedVersion)}
+              onRevoke={async id => {
+                await applyImpactAwareOperation(type, id, 'revoke', spec.version);
+                await reloadSpecAfterStructuredEdit();
+              }}
+            />;
+          })()}
+          {activeTab === 'acs' && <div className="mt-6">
+              <RequirementVerificationPanel
+                key={JSON.stringify([spec.board_id, spec.id, spec.status, spec.archived, perms.has('spec.entity.read'), canReadIR, canReadOR,
+                  ...(['functional_requirement', 'technical_requirement', 'integration_requirement', 'observability_requirement', 'business_rule'] as const).map(type => canStructured(type, 'update'))])}
+                scope={{ boardId: spec.board_id, specId: spec.id, version: spec.version, edition: spec.edition }}
+                readCurrent={!permissionCheckPending && !workspaceReadPending && !workspaceSyncError && syncState === 'current'}
+                canRead={perms.has('spec.entity.read') && canReadIR && canReadOR}
+                canReadPlanning={perms.has('spec.tests.read') && perms.has('card.entity.read')}
+                canEdit={type => !spec.archived && spec.status === 'draft'
+                  && hasPermissionWithState(perms.has, `spec.structured_entity.${type}.update`, 'spec', spec.status)}
+                options={verificationRequirementOptions(spec, canReadIR, canReadOR)}
+                criteria={(spec.acceptance_criteria || []) as unknown[]}
+                onSaved={async () => { await reloadSpecAfterStructuredEdit(); }}
+              />
+          </div>}
           {activeTab === 'evidence-matrix' && spec && canReadCodeTraceability && (
             <EvidenceMatrixPanel
               boardId={spec.board_id}
@@ -2846,20 +2508,40 @@ export function SpecModal({
               }}
             />
           )}
-          {activeTab === 'delivery-evidence' && spec && canReadCodeTraceability && (
-            <DeliveryEvidencePanel boardId={spec.board_id} specId={spec.id}
-              canRecord={!spec.archived && perms.has('code_traceability.target.execution_submit')}
-              canTest={!spec.archived && perms.has('spec.tests.execute')}
-              canCreateWaiver={!spec.archived && perms.has('code_traceability.waiver.create')}
-              canClearWaiver={!spec.archived && perms.has('code_traceability.waiver.clear')}
-              onChanged={() => void loadSpec()}
-            />
+          {activeTab === 'coverage' && spec.id === specId && (canReadCoverage || canReadCodeTraceability) && (
+            <SpecCoveragePanel boardId={spec.board_id} specId={spec.id} revision={`${spec.edition}:${spec.version}:${spec.updated_at}:${validationHistoryRefreshKey}`}
+              focusExceptionId={readinessReference?.startsWith('exception:') ? readinessReference.slice('exception:'.length) : null}
+              canReadSummary={canReadCoverage} canReadImplementation={canReadCodeTraceability}
+              skipDeliveryEvidence={spec.skip_delivery_evidence}
+              onSkipDeliveryEvidenceChange={canEditCodeEvidenceCoverage && !permissionCheckPending && !workspaceReadPending && !workspaceSyncError && syncState === 'current' ? async (value) => {
+                try {
+                  const updated = await api.updateSpec(specId, { skip_delivery_evidence: value } as any);
+                  if (currentSpecId.current === specId && updated.id === specId && updated.board_id === spec.board_id) setSpec(updated);
+                } catch (err) {
+                  toast.error(err instanceof Error && err.message ? err.message : 'Failed to update spec');
+                }
+              } : undefined}
+              onOpenSection={setActiveTab}
+              onOpenReadinessSpec={location => { setReadinessReference(location.ref); setActiveTab(location.tab); }}
+              canCorrect={!spec.archived && spec.status === 'draft' ? [
+                ...(hasPermissionWithState(perms.has, 'spec.tests.edit', 'spec', spec.status) ? ['tests' as const] : []),
+                ...(hasPermissionWithState(perms.has, 'spec.structured_entity.business_rule.update', 'spec', spec.status) ? ['rules' as const] : []),
+              ] : []} />
           )}
           {activeTab === 'project-structure' && spec && showProjectStructure && (
             <ProjectStructureErrorBoundary>
               <ProjectStructureTab
                 boardId={spec.board_id || _boardId}
                 spec={spec}
+                refreshKey={validationHistoryRefreshKey}
+                readCurrent={!permissionCheckPending && !workspaceReadPending && !workspaceSyncError && syncState === 'current'}
+                onReload={() => reloadWorkspaceSnapshot()}
+                onAccessLost={() => {
+                  if (currentSpecId.current !== spec.id) return;
+                  workspaceLoadGeneration.current += 1;
+                  specReloadGeneration.current += 1;
+                  setSpec(null); onClose();
+                }}
                 focusNodeId={focusProjectNodeId}
                 canCreate={canCreateProjectStructure}
                 canUpdate={canUpdateProjectStructure}
@@ -2874,15 +2556,22 @@ export function SpecModal({
                 canUnlinkEvidence={canUnlinkProjectStructureEvidence}
                 canReadEvidence={canReadCodeTraceability}
                 onStructureChange={({ nodes, specVersion, structureRevision, source }) => {
-                  setSpec((current) => current
+                  if (currentSpecId.current !== spec.id) return;
+                  // A tree snapshot is not a full Spec snapshot. A new version
+                  // must reload the workspace rather than certify cached fields.
+                  if (source === 'mutation' || specVersion > spec.version) {
+                    if (source === 'mutation') onChanged();
+                    void reloadWorkspaceSnapshot(specVersion).catch(() => { /* Read failure is shown; never repeat the confirmed mutation. */ });
+                    return;
+                  }
+                  setSpec((current) => current && current.id === spec.id && current.board_id === spec.board_id
+                    && current.version === specVersion && (current.project_structure_revision ?? 0) <= (structureRevision ?? 0)
                     ? {
                       ...current,
                       project_structure: nodes,
                       project_structure_revision: structureRevision,
-                      version: specVersion,
                     }
                     : current);
-                  if (source === 'mutation') onChanged();
                 }}
               />
             </ProjectStructureErrorBoundary>
@@ -2890,50 +2579,67 @@ export function SpecModal({
 
           {activeTab === 'tests' && spec && (
             <TestScenariosTab
+              key={`${spec.board_id}:${spec.id}`}
+              focusReceipt={readinessReference?.startsWith('receipt:') ? readinessReference.slice('receipt:'.length) : null}
               spec={spec}
               canReadPolicyCompliance={canReadPolicyCompliance}
               policyRefreshKey={testScenarioPolicyRefreshKey}
-              onUpdate={async (scenarios) => {
+              readCurrent={!permissionCheckPending && !workspaceReadPending && !workspaceSyncError && syncState === 'current'}
+              onUpdate={async (scenarios, expectedVersion, expectedSnapshot) => {
+                const generation = ++specReloadGeneration.current;
                 try {
                   const updated = await persistTestScenariosWithWriteGuard(
                     api.updateSpec,
                     specId,
-                    spec.test_scenarios || [],
                     scenarios,
+                    expectedVersion,
+                    expectedSnapshot,
                   );
-                  setSpec(updated);
+                  if (currentSpecId.current !== specId) return;
+                  if (updated.id !== specId || updated.board_id !== spec.board_id) throw new Error('The scenario write response does not match its Spec. Reload to check the result.');
+                  if (generation === specReloadGeneration.current) setSpec(updated);
+                  else await reloadSpecSnapshot({ includeRelated: false, notifyChanged: false, showLoading: false });
                   setTestScenarioPolicyRefreshKey((value) => value + 1);
-                  onChanged();
+                  try { onChanged(); } catch { toast.error('Scenario saved. Refresh to update related views.'); }
                 } catch (err) {
                   // Surface the backend validation message (e.g. the strict
                   // scenario_type contract) instead of a generic string so a
                   // stale client/agent can correct the request (spec ac16b3c9).
-                  toast.error(err instanceof Error && err.message ? err.message : 'Failed to update test scenarios');
+                  if (currentSpecId.current === specId) toast.error(err instanceof Error && err.message ? err.message : 'Failed to update test scenarios');
+                  if (currentSpecId.current === specId && err instanceof AuthenticatedFetchError && [401, 403, 404].includes(err.status)) {
+                    setSpec(null); onClose();
+                  }
+                  throw err;
                 }
               }}
-              onSpecRefreshed={(updated) => {
-                setSpec(updated);
-                setTestScenarioPolicyRefreshKey((value) => value + 1);
-                onChanged();
+              onReload={async () => {
+                try {
+                  const updated = await reloadSpecSnapshot({ includeRelated: false, notifyChanged: false, showLoading: false });
+                  if (!updated) throw new Error('The scenario reload was superseded. Reload to confirm the current base.');
+                  setTestScenarioPolicyRefreshKey(value => value + 1);
+                  setWorkspaceSyncError(null);
+                  return updated;
+                } catch (error) {
+                  if (currentSpecId.current === specId && error instanceof AuthenticatedFetchError && [401, 403, 404].includes(error.status)) {
+                    setSpec(null); onClose();
+                  }
+                  throw error;
+                }
               }}
               onSpecUpdate={async (data) => {
-                try {
-                  const updated = await api.updateSpec(specId, data as any);
-                  setSpec(updated);
-                } catch (err) {
-                  toast.error(err instanceof Error && err.message ? err.message : 'Failed to update spec');
-                }
+                await api.updateSpec(specId, data);
               }}
             />
           )}
           {activeTab === 'rules' && spec && (
             <RulesTab
               spec={spec}
+              readCurrent={!permissionCheckPending && !workspaceReadPending && !workspaceSyncError && syncState === 'current'}
               canCreate={canStructured('business_rule', 'create')}
               canEdit={canStructured('business_rule', 'update')}
               canDelete={canStructured('business_rule', 'revoke')}
-              onUpdate={async (rules) => {
-                await syncStructuredCollection('business_rules', spec.business_rules || [], rules);
+              onUpdate={async (rules, expectedVersion) => {
+                await syncStructuredCollection('business_rules', spec.business_rules || [], rules, expectedVersion);
               }}
               onSpecUpdate={async (patch) => {
                 try {
@@ -2946,6 +2652,14 @@ export function SpecModal({
           {activeTab === 'dependencies' && spec && canReadDependencies && (
             <SpecDependenciesTab
               boardId={spec.board_id}
+              refreshKey={validationHistoryRefreshKey}
+              readCurrent={!permissionCheckPending && !workspaceReadPending && !workspaceSyncError && syncState === 'current'}
+              onAccessLost={() => {
+                if (currentSpecId.current !== spec.id) return;
+                workspaceLoadGeneration.current += 1;
+                specReloadGeneration.current += 1;
+                setSpec(null); onClose();
+              }}
               spec={{
                 id: spec.id,
                 title: spec.title,
@@ -2970,7 +2684,7 @@ export function SpecModal({
               canRemove={canManageDependencies}
               requestedDirection={dependencyDirectionRequest.direction}
               directionRequestToken={dependencyDirectionRequest.token}
-              onRetryReadiness={() => void loadSpec()}
+              onRetryReadiness={() => { void reloadWorkspaceSnapshot().catch(() => { /* Workspace retains its visible recovery state. */ }); }}
               onOpenSpec={openSpecReference}
               onMutated={reloadSpecAfterDependencyMutation}
             />
@@ -2978,12 +2692,13 @@ export function SpecModal({
           {activeTab === 'contracts' && spec && (
             <ContractsTab
               spec={spec}
+              readCurrent={!permissionCheckPending && !workspaceReadPending && !workspaceSyncError && syncState === 'current'}
               canCreate={canStructured('api_contract', 'create')}
               canEdit={canStructured('api_contract', 'update')}
               canDelete={canStructured('api_contract', 'revoke')}
               canLinkTask={canStructured('api_contract', 'link_task')}
-              onUpdate={async (contracts) => {
-                await syncStructuredCollection('api_contracts', spec.api_contracts || [], contracts);
+              onUpdate={async (contracts, expectedVersion) => {
+                await syncStructuredCollection('api_contracts', spec.api_contracts || [], contracts, expectedVersion);
               }}
               onSpecUpdate={async (data) => {
                 try {
@@ -3003,8 +2718,10 @@ export function SpecModal({
             />
           )}
           {activeTab === 'irs' && spec && canReadIR && (
+            <>
             <IntegrationRequirementsTab
               spec={spec}
+              readCurrent={!permissionCheckPending && !workspaceReadPending && !workspaceSyncError && syncState === 'current'}
               canCreate={canCreateIR}
               canEdit={canEditIR}
               canDelete={canDeleteIR}
@@ -3013,8 +2730,8 @@ export function SpecModal({
               focusEditId={detailsStructuredEditor?.tab === 'irs' && detailsStructuredEditor.mode === 'edit' ? detailsStructuredEditor.entityId || null : null}
               focusCreateToken={detailsStructuredEditor?.tab === 'irs' && detailsStructuredEditor.mode === 'add' ? detailsStructuredEditor.token : null}
               onFocusHandled={clearDetailsStructuredEditor}
-              onUpdate={async (requirements) => {
-                await syncStructuredCollection('integration_requirements', spec.integration_requirements || [], requirements);
+              onUpdate={async (requirements, expectedVersion) => {
+                await syncStructuredCollection('integration_requirements', spec.integration_requirements || [], requirements, expectedVersion);
               }}
               onSpecUpdate={async (patch) => {
                 try {
@@ -3032,10 +2749,29 @@ export function SpecModal({
                 setSpec(updated);
               } : undefined}
             />
+            <ArchitectureClassificationsPanel integrated
+              boardId={spec.board_id}
+              specId={spec.id}
+              specVersion={spec.version}
+              readCurrent={!permissionCheckPending && !workspaceReadPending && !workspaceSyncError && syncState === 'current'}
+              canRead={canReadIR && perms.has('spec.architecture.read') && perms.has('spec.entity.read')}
+              authoring={{
+                canClassify: !spec.archived && spec.status === 'draft' && canReadIR
+                  && perms.has('spec.architecture.read') && perms.has('spec.entity.read')
+                  && hasPermissionWithState(perms.has, 'spec.entity.edit_fields', 'spec', spec.status),
+                canPromote: hasPermissionWithState(perms.has, 'spec.structured_entity.integration_requirement.create', 'spec', spec.status),
+                canAssociate: hasPermissionWithState(perms.has, 'spec.structured_entity.integration_requirement.update', 'spec', spec.status),
+                specEdition: spec.edition,
+                requirements: spec.integration_requirements || [],
+                onApplied: async () => { await reloadSpecAfterStructuredEdit(); },
+              }}
+            />
+            </>
           )}
           {activeTab === 'ors' && spec && canReadOR && (
             <ObservabilityRequirementsTab
               spec={spec}
+              readCurrent={!permissionCheckPending && !workspaceReadPending && !workspaceSyncError && syncState === 'current'}
               canCreate={canCreateOR}
               canEdit={canEditOR}
               canDelete={canDeleteOR}
@@ -3044,8 +2780,8 @@ export function SpecModal({
               focusEditId={detailsStructuredEditor?.tab === 'ors' && detailsStructuredEditor.mode === 'edit' ? detailsStructuredEditor.entityId || null : null}
               focusCreateToken={detailsStructuredEditor?.tab === 'ors' && detailsStructuredEditor.mode === 'add' ? detailsStructuredEditor.token : null}
               onFocusHandled={clearDetailsStructuredEditor}
-              onUpdate={async (requirements) => {
-                await syncStructuredCollection('observability_requirements', spec.observability_requirements || [], requirements);
+              onUpdate={async (requirements, expectedVersion) => {
+                await syncStructuredCollection('observability_requirements', spec.observability_requirements || [], requirements, expectedVersion);
               }}
               onSpecUpdate={async (patch) => {
                 try {
@@ -3067,6 +2803,7 @@ export function SpecModal({
           {activeTab === 'trs' && spec && (
             <TechnicalRequirementsTab
               spec={spec}
+              readCurrent={!permissionCheckPending && !workspaceReadPending && !workspaceSyncError && syncState === 'current'}
               canCreate={canStructured('technical_requirement', 'create')}
               canEdit={canStructured('technical_requirement', 'update')}
               canDelete={canStructured('technical_requirement', 'revoke')}
@@ -3074,13 +2811,9 @@ export function SpecModal({
               focusEditId={detailsStructuredEditor?.tab === 'trs' && detailsStructuredEditor.mode === 'edit' ? detailsStructuredEditor.entityId || null : null}
               focusCreateToken={detailsStructuredEditor?.tab === 'trs' && detailsStructuredEditor.mode === 'add' ? detailsStructuredEditor.token : null}
               onFocusHandled={clearDetailsStructuredEditor}
-              onUpdate={async (trs) => {
-                const currentTRs = (spec.technical_requirements || []).map((tr, index) =>
-                  typeof tr === 'string'
-                    ? { id: `tr_legacy_${index}`, text: tr, linked_task_ids: null }
-                    : tr
-                ).filter((tr) => (tr.status || 'active') === 'active') as TechnicalRequirement[];
-                await syncStructuredCollection('technical_requirements', currentTRs, trs);
+              onUpdate={async (trs, expectedVersion) => {
+                const currentTRs = spec.technical_requirements || [];
+                await syncStructuredCollection('technical_requirements', currentTRs, trs, expectedVersion);
               }}
               specCards={spec.cards || []}
               onLinkTask={async (trId, cardId) => {
@@ -3102,15 +2835,20 @@ export function SpecModal({
           {activeTab === 'decisions' && spec && (
             <DecisionsTab
               spec={spec}
+              readCurrent={!permissionCheckPending && !workspaceReadPending && !workspaceSyncError && syncState === 'current'}
+              focusInspectionId={readinessReference?.startsWith('inspection:') ? readinessReference.slice('inspection:'.length) : null}
               canCreate={canStructured('decision', 'create')}
               canEdit={canStructured('decision', 'update')}
               canDelete={canStructured('decision', 'revoke')}
               canLinkTask={canStructured('decision', 'link_task')}
+              canReview={!perms.isLoading && !perms.error && perms.has('spec.validation.submit')
+                && perms.has('spec.entity.read') && perms.has('code_traceability.evidence.read')
+                && perms.has(`spec.interact_in.${spec.status}`)}
               focusEditId={detailsStructuredEditor?.tab === 'decisions' && detailsStructuredEditor.mode === 'edit' ? detailsStructuredEditor.entityId || null : null}
               focusCreateToken={detailsStructuredEditor?.tab === 'decisions' && detailsStructuredEditor.mode === 'add' ? detailsStructuredEditor.token : null}
               onFocusHandled={clearDetailsStructuredEditor}
-              onUpdate={async (decisions) => {
-                await syncStructuredCollection('decisions', spec.decisions || [], decisions);
+              onUpdate={async (decisions, expectedVersion) => {
+                await syncStructuredCollection('decisions', spec.decisions || [], decisions, expectedVersion);
               }}
               onSpecUpdate={async (patch) => {
                 try {
@@ -3131,11 +2869,17 @@ export function SpecModal({
           )}
           {activeTab === 'resources' && spec && (
             <div className="space-y-4" data-testid="spec-resources-panel">
+              {!resourcesReadCurrent && <div role="status" className="space-y-2 rounded-lg border border-amber-300 p-3 text-sm dark:border-amber-800">
+                <p>{workspaceSyncError || 'Checking current resources. Unsaved input is preserved; writes wait for an authorized current read.'}</p>
+                <button type="button" className="btn btn-secondary text-xs" disabled={workspaceReadPending || permissionCheckPending}
+                  onClick={() => { void reloadResources().catch(() => undefined); }}>Reload resource workspace</button>
+              </div>}
               <ResourceGateDisclosure
                 boardId={spec.board_id || _boardId}
                 entityType="spec"
                 entityId={specId}
                 refreshKey={resourceGateRefreshKey}
+                active={resourcesReadCurrent}
               />
               <AccessibleTabList
                 idBase={`spec-${specId}-resources`}
@@ -3183,10 +2927,20 @@ export function SpecModal({
                     entityType="spec"
                     entityId={specId}
                     expanded={expanded}
-                    onUpdate={async (mockups) => {
-                      const updated = await api.updateSpec(specId, { screen_mockups: mockups });
-                      setSpec(updated);
-                      setResourceGateRefreshKey((value) => value + 1);
+                    version={spec.version}
+                    snapshot={spec.mockup_snapshot}
+                    revision={resourceGateRefreshKey}
+                    active={resourceTab === 'mockups'}
+                    readCurrent={resourcesReadCurrent && Boolean(spec.mockup_snapshot)}
+                    onReload={reloadResources}
+                    onUpdate={async (mockups, base) => {
+                      if (!base?.expectedVersion || !base.expectedSnapshot) throw new Error('Reload the Spec before editing mockups.');
+                      const origin = specId;
+                      const updated = await api.updateSpec(origin, { screen_mockups: mockups, expected_spec_version: base.expectedVersion,
+                        expected_mockup_snapshot: base.expectedSnapshot });
+                      if (currentSpecId.current !== origin) throw new Error('The mockup owner changed during save.');
+                      setSpec(current => current?.id === origin && current.version <= updated.version ? updated : current);
+                      return { version: updated.version };
                     }}
                   />
               </AccessibleTabPanel>
@@ -3196,13 +2950,13 @@ export function SpecModal({
                 value={resourceTab}
                 mount="lazy-keep"
               >
-                  <KnowledgeTab
+                  <SpecKnowledgeResources
                     specId={specId}
                     boardId={spec.board_id}
-                    onChanged={() => {
-                      setResourceGateRefreshKey((value) => value + 1);
-                      void loadSpec();
-                    }}
+                    revision={resourceGateRefreshKey}
+                    active={resourceTab === 'knowledge'}
+                    readCurrent={resourcesReadCurrent}
+                    onReload={reloadResources}
                   />
               </AccessibleTabPanel>
               <AccessibleTabPanel
@@ -3220,19 +2974,30 @@ export function SpecModal({
                     expanded={expanded}
                     locked={['validated', 'in_progress', 'done'].includes(spec.status)}
                     screenMockups={spec.screen_mockups || []}
-                    onChanged={(items) => {
-                      setSpec((current) => current
-                        ? { ...current, architecture_designs: items }
-                        : current);
-                      setResourceGateRefreshKey((value) => value + 1);
-                      void loadSpec();
-                    }}
+                    revision={resourceGateRefreshKey}
+                    active={resourceTab === 'architecture'}
+                    readCurrent={resourcesReadCurrent}
+                    onChanged={async () => { await reloadResources(); }}
                   />
               </AccessibleTabPanel>
             </div>
           )}
           {activeTab === 'validation' && spec && (
+            <>
+            {(workspaceSyncError || ['offline', 'unavailable'].includes(syncState)) && <p role="status" className="mx-4 mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200">
+              {workspaceSyncError || 'Live updates are unavailable. Displayed results may be out of date; reconnect or refresh before concluding validation.'}
+            </p>}
             <SpecValidationPanel
+              onReviewPlanningComponent={key => {
+                const destinations: Record<string, ModalTab> = {
+                  acceptance_coverage: 'acs', test_card_coverage: 'tests', business_coverage: 'frs',
+                  technical_coverage: 'trs', contract_coverage: 'contracts', integration_coverage: 'irs',
+                  observability_coverage: 'ors', task_requirement_links: 'coverage',
+                  decision_verification: 'decisions', code_evidence: 'evidence-matrix',
+                  architecture: 'resources', resource_coverage: 'resources',
+                };
+                if (destinations[key]) setActiveTab(destinations[key]);
+              }}
               anchorTexts={specAnchorTexts}
               boardId={spec.board_id}
               specId={specId}
@@ -3242,6 +3007,8 @@ export function SpecModal({
               canReadChecklist={canReadChecklist}
               canExecuteChecklist={canExecuteChecklist}
               canReadValidation={canReadSpecValidation}
+              canReadDecomposition={canReadDecomposition}
+              canSubmitDecomposition={hasPermissionWithState(perms.has, 'spec.evaluations.submit', 'spec', spec.status)}
               canReadQuality={canReadQuality}
               canReadPolicyCompliance={canReadPolicyCompliance}
               policyTransitionPreview={policyTransitionPreview}
@@ -3264,6 +3031,7 @@ export function SpecModal({
               onSubmitValidation={() =>
                 void handleMoveSpec('validated' as SpecStatus)}
             />
+            </>
           )}
           {activeTab === 'kg' && spec && (
             <KGValidationTab boardId={spec.board_id} specId={specId} />
@@ -3277,9 +3045,7 @@ export function SpecModal({
             />
           )}
 
-          {activeTab === 'sprints' && (
-            <SpecSprintsTab sprints={linkedSprints} api={api} />
-          )}
+
 
           {activeTab === 'references' && (
             <div className="space-y-4" data-testid="spec-references-panel">
@@ -3314,7 +3080,7 @@ export function SpecModal({
                     <div className="rounded-xl border border-dashed border-gray-300 px-4 py-8 text-center dark:border-gray-700">
                       <GitBranch size={28} className="mx-auto mb-2 text-gray-300 dark:text-gray-600" />
                       <p className="text-sm text-gray-500 dark:text-gray-400">
-                        No origin is registered for this spec.
+                        {spec.ideation_id || spec.refinement_id ? 'The registered origin could not be loaded.' : 'No origin is registered for this spec.'}
                       </p>
                     </div>
                   ) : (
@@ -3383,7 +3149,7 @@ export function SpecModal({
                         <button
                           key={card.id}
                           type="button"
-                          onClick={() => modalStack.push({ type: 'card', id: card.id })}
+                          onClick={() => modalStack.push({ type: 'card', id: card.id, boardId: spec.board_id })}
                           className="flex w-full items-center justify-between gap-3 rounded bg-gray-50 px-2 py-1.5 text-left hover:bg-blue-50 dark:bg-gray-700/50 dark:hover:bg-blue-950/20"
                         >
                           {content}
@@ -3398,6 +3164,7 @@ export function SpecModal({
               </AccessibleTabPanel>
             </div>
           )}
+          </AccessibleTabPanel>
           </AccessibleTabPanel>
         </div>
 
@@ -3417,25 +3184,6 @@ export function SpecModal({
               >
                 <CheckCircle2 size={16} />
                 {validating ? 'Validating...' : 'Validate'}
-              </button>
-            )}
-            {['validated', 'in_progress'].includes(spec.status) && (spec.cards?.length || 0) >= 4 && (
-              <button
-                onClick={async () => {
-                  try {
-                    const result = await api.suggestSprints(spec.board_id, specId);
-                    if (result.suggestions?.length > 1) {
-                      setSprintSuggestions(result.suggestions);
-                    } else {
-                      toast('Not enough tasks to split into sprints', { icon: 'ℹ️' });
-                    }
-                  } catch { toast.error('Failed to generate suggestions'); }
-                }}
-                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors
-                  bg-indigo-50 text-indigo-700 hover:bg-indigo-100 dark:bg-indigo-900/30 dark:text-indigo-300 dark:hover:bg-indigo-900/50"
-              >
-                <Layers size={14} />
-                Suggest Sprints
               </button>
             )}
             <button onClick={onClose} className="btn btn-secondary">Close</button>
@@ -3467,18 +3215,6 @@ export function SpecModal({
           onClose={() => setViewingSpecId(null)}
           onEscape={() => setViewingSpecId(null)}
           onChanged={loadSpec}
-        />
-      )}
-
-      {/* Sprint Suggestion Modal */}
-      {sprintSuggestions && spec && (
-        <SprintSuggestionModal
-          boardId={spec.board_id}
-          specId={specId}
-          suggestions={sprintSuggestions}
-          onClose={() => setSprintSuggestions(null)}
-          onSkip={() => setSprintSuggestions(null)}
-          onCreated={() => { setSprintSuggestions(null); loadSpec(); }}
         />
       )}
 
@@ -3537,8 +3273,9 @@ export function SpecModal({
       )}
 
       {/* Spec Validation Gate — submission modal (opens when board opts in and user clicks Validate) */}
-      {showSubmitValidationModal && spec && (
+      {showSubmitValidationModal && spec && perms.has('spec.validation.submit') && (
         <SubmitSpecValidationModal
+          refreshKey={validationHistoryRefreshKey}
           specId={spec.id}
           specTitle={spec.title}
           boardId={spec.board_id}
@@ -3547,6 +3284,7 @@ export function SpecModal({
           settings={boardSettings}
           canReadChecklist={canReadChecklist}
           canExecuteChecklist={canExecuteChecklist}
+          canSubmitDecomposition={hasPermissionWithState(perms.has, 'spec.evaluations.submit', 'spec', spec.status)}
           onClose={() => setShowSubmitValidationModal(false)}
           onSubmitted={async () => {
             setShowSubmitValidationModal(false);

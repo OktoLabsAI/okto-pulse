@@ -32,7 +32,8 @@ def close_all_graphs_on_shutdown(*, runtime: Any | None = None) -> dict[str, int
         summary["boards_failed"] = 1
     else:
         board_root = composition.binding_store.root / "boards"
-        pools = (composition.grafx_pool, *composition.board.grafx_read_pools)
+        pools = (composition.grafx_pool, *composition.board.grafx_read_pools,
+                 *composition.board.grafx_query_pools)
 
         def paths():
             return {

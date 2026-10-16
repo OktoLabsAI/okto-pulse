@@ -18,7 +18,9 @@ whole engine scope.
 from __future__ import annotations
 
 import os
+import math
 import threading
+import time
 from okto_pulse.community.adapters.grafx_read_lanes import GrafxReadLanes
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, nullcontext
@@ -39,6 +41,12 @@ from okto_pulse.core.kg.interfaces.graph_lifecycle import (
     RebuildReport,
 )
 from okto_pulse.core.kg.interfaces.graph_recovery import WalRecoveryReport
+from okto_pulse.core.kg.interfaces.graph_health_observation import GraphHealthObservation
+from okto_pulse.core.kg.interfaces.graph_query_execution import GraphQueryExecution
+from okto_pulse.community.adapters.grafx_query_execution import CommunityGraphQueryExecution
+from okto_pulse.community.adapters.grafx_foreground_query_limits import (
+    FOREGROUND_READER_BUFFER_MB, foreground_query_options,
+)
 from okto_pulse.core.kg.interfaces.graph_runtime_store import (
     GraphPurgeResult,
 )
@@ -79,10 +87,7 @@ from okto_pulse.community.adapters.grafx_schema_bootstrap import (
 from okto_pulse.community.adapters.graph_backend_binding import (
     CommunityGraphBackendBindingStore,
 )
-from okto_pulse.community.adapters.graph_rollout_journal import (
-    CommunityGraphRolloutJournal,
-    CommunityGraphRolloutMutationRecorder,
-)
+
 from okto_pulse.community.adapters.graph_route_resolver import (
     CommunityGraphRouteCandidate,
     CommunityGraphRouteResolver,
@@ -110,17 +115,7 @@ from okto_pulse.community.config import (
 
 GrafxConnector = Callable[..., Any]
 _SessionStatus = Literal["unresolved", "missing", "snapshot"]
-_ROLLOUT_ADMIN_MUTATION_PHASES = frozenset(
-    {
-        "graph_schema_ensure_bootstrapped",
-        "graph_schema_migrate",
-        "graph_lifecycle_rebuild",
-        "graph_lifecycle_purge",
-        "purge_board_graph",
-        "graph_recovery_grafx",
-    }
-)
-_ROLLOUT_INSPECT_ONLY_ADMIN_PHASES = frozenset(
+_INSPECT_ONLY_ADMIN_PHASES = frozenset(
     {"graph_recovery_grafx"}
 )
 
@@ -366,11 +361,11 @@ class _GrafxBoardAccess:
         resolver: CommunityBoardRouteSessionResolver,
         pool: CommunityGrafxDatabasePool,
         binding_store: CommunityGraphBackendBindingStore,
-        rollout_mutation_recorder: CommunityGraphRolloutMutationRecorder,
         *,
         configured_page_size: int,
         connect: GrafxConnector | None,
         read_pools: tuple[CommunityGrafxDatabasePool, ...] | None = None,
+        query_pools: tuple[CommunityGrafxDatabasePool, ...] | None = None,
     ) -> None:
         self.resolver = resolver
         self.pool = pool
@@ -380,14 +375,62 @@ class _GrafxBoardAccess:
         ):
             raise ValueError("Grafx Board read pools must be non-empty and read-only")
         self.read_pools = selected_read_pools
+        self.query_pools = query_pools or ()
+        if self.query_pools and (
+            len(self.query_pools) != len(selected_read_pools)
+            or any(not pool.read_only for pool in self.query_pools)
+        ):
+            raise ValueError('foreground_query_pools_require_matching_read_only_lanes')
         self._read_lanes = GrafxReadLanes(len(selected_read_pools) or 1)
         self._read_pool_lock = threading.Lock()
         self._read_join_lock = threading.Lock()
         self._next_read_pool = 0
         self.binding_store = binding_store
-        self.rollout_mutation_recorder = rollout_mutation_recorder
         self.configured_page_size = validate_grafx_page_size(configured_page_size)
         self.connect = connect
+        self._health_observation: ContextVar[float | None] = ContextVar(
+            "grafx_board_health_observation", default=None
+        )
+        self.query_execution = CommunityGraphQueryExecution()
+
+    def query_timeout(self, board_id: str) -> float | None:
+        query_left = self.query_execution.remaining(board_id)
+        health_left = self.health_query_timeout(board_id)
+        if query_left is None:
+            return health_left
+        return query_left if health_left is None else min(query_left, health_left)
+
+    @contextmanager
+    def scope(self, board_id: str, *, timeout_seconds: float = 0.35) -> Iterator[None]:
+        """Implement the Health observation port without widening authority."""
+        if (
+            type(timeout_seconds) not in (int, float)
+            or not math.isfinite(timeout_seconds)
+            or not 0 < timeout_seconds <= 5
+        ):
+            raise ValueError("invalid_graph_health_observation_timeout")
+        deadline = time.monotonic() + timeout_seconds
+        parent = self._health_observation.get()
+        token = self._health_observation.set(
+            deadline if parent is None else min(parent, deadline)
+        )
+        try:
+            yield
+        finally:
+            self._health_observation.reset(token)
+
+    def _refuse_health_mutation(self, board_id: str) -> None:
+        if self._health_observation.get() is not None:
+            raise _route_failure("graph_health_maintenance_forbidden", board_id=board_id)
+
+    def health_query_timeout(self, board_id: str) -> float | None:
+        deadline = self._health_observation.get()
+        if deadline is None:
+            return None
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise _route_failure("graph_health_deadline_exceeded", board_id=board_id)
+        return remaining
 
     def _snapshot(
         self,
@@ -408,6 +451,8 @@ class _GrafxBoardAccess:
         return snapshot
 
     def database(self, board_id: str):
+        if self._health_observation.get() is not None:
+            return self.read_database(board_id)
         snapshot = self._snapshot(board_id, require_physical=True)
         assert snapshot.page_size is not None
         database = self.pool.get(
@@ -435,16 +480,22 @@ class _GrafxBoardAccess:
         block either lane, and a retry resolves the other lane automatically.
         """
 
+        self.query_timeout(board_id)
         snapshot = self._snapshot(board_id, require_physical=True)
         assert snapshot.page_size is not None
-        if not self.read_pools:
+        query_active = self.query_execution.remaining(board_id) is not None
+        pools = self.query_pools if query_active else self.read_pools
+        if query_active and not pools:
+            raise GraphCapabilityUnavailable('Foreground query readers are not configured.')
+        if not pools:
+            self._refuse_health_mutation(board_id)
             # Backward-compatible narrow construction used by isolated tests;
             # the production composition always supplies dedicated lanes.
             return self.database(board_id)
         with self._read_pool_lock:
             selected = self._next_read_pool if _lane is None else _lane
-            self._next_read_pool = (selected + 1) % len(self.read_pools)
-        pool = self.read_pools[selected]
+            self._next_read_pool = (selected + 1) % len(pools)
+        pool = pools[selected]
         try:
             database = pool.get(
                 snapshot.active_path,
@@ -456,7 +507,7 @@ class _GrafxBoardAccess:
                 isinstance(cause, GrafxUnsupportedOperation)
                 and cause.details.get("field") == "read_only_consistency"
             )
-            if not read_join_requires_checkpoint:
+            if not read_join_requires_checkpoint or self._health_observation.get() is not None:
                 raise
             # A new read-only participant can join only a checkpoint-complete
             # durable image.  First recheck under a single-flight lock: another
@@ -508,16 +559,14 @@ class _GrafxBoardAccess:
         )
 
     def write_fence(self, board_id: str, phase: str) -> None:
+        self._refuse_health_mutation(board_id)
         revalidate_board_graph_write_lease(board_id, failure_phase=phase)
         snapshot = self._snapshot(board_id, require_physical=True)
         self.resolver.revalidate_snapshot(snapshot, require_physical=True)
-        self.rollout_mutation_recorder.close_rollback_before_write_if_active(
-            board_id,
-            snapshot.binding_sha256,
-            snapshot.backend,
-        )
+
 
     def runtime_fence(self, board_id: str, phase: str) -> None:
+        self._refuse_health_mutation(board_id)
         revalidate_board_graph_write_lease(board_id, failure_phase=phase)
         snapshot = self.resolver.revalidate_session_authority(
             board_id,
@@ -528,7 +577,7 @@ class _GrafxBoardAccess:
             raise _route_failure("board_route_backend_invalid", board_id=board_id)
 
     def _all_pools(self) -> tuple[CommunityGrafxDatabasePool, ...]:
-        return (*self.read_pools, self.pool)
+        return (*self.query_pools, *self.read_pools, self.pool)
 
     def _board_pool_paths(
         self, board_id: str
@@ -625,26 +674,17 @@ class CommunityRoutedBoardGraphComposition:
     ranked_graph_search: Any | None = None
     graph_history: Any | None = None
     graph_analytics: Any | None = None
+    graph_health_observation: GraphHealthObservation | None = None
+    graph_query_execution: GraphQueryExecution | None = None
+    grafx_query_pools: tuple[CommunityGrafxDatabasePool, ...] = ()
+    # Community-only wiring for the shared Board/Global diagnostic context.
+    observation_timeout: Callable[[], float | None] | None = None
 
     def _require_route_materialization_allowed(self, board_id: str) -> None:
-        """Refuse every route-creation door while privacy erasure is durable."""
+        """Refuse retired rollout storage before route creation or recovery."""
 
-        journal = CommunityGraphRolloutJournal(
-            self.binding_store.root,
-            board_id,
-        )
-        # Preserve the route resolver's existing empty-board and filesystem
-        # alias diagnostics when no rollout storage exists. ``lexists`` still
-        # sends a broken/aliased rollout root through the journal's fail-closed
-        # layout validation instead of treating it as finalized absence.
-        if not os.path.lexists(journal.rollout_root):
-            return
-        rollout = journal.read_if_exists()
-        if rollout is not None and rollout.state == "erased":
-            raise _route_failure(
-                "graph_rollout_privacy_tombstone_active",
-                board_id=board_id,
-            )
+        self.binding_store.require_current_board_storage(board_id)
+
 
     def initialize_board_route(self, board_id: str) -> CommunityGraphRouteSnapshot:
         """Create/adopt and publish one Board route, only when explicitly called."""
@@ -698,11 +738,13 @@ class CommunityRoutedBoardGraphComposition:
         return snapshot
 
     def registry_providers(self) -> dict[str, Any]:
-        """Return only the unchanged Core Board registry slots."""
+        """Return the public Core Board registry providers."""
 
         return {
             "graph_store": self.graph_store,
             "cypher_executor": self.cypher_executor,
+            "graph_health_observation": self.graph_health_observation,
+            "graph_query_execution": self.graph_query_execution,
             "graph_transaction": self.graph_transaction,
             "graph_schema_manager": self.graph_schema_manager,
             "graph_lifecycle": self.graph_lifecycle,
@@ -825,9 +867,7 @@ def build_community_routed_board_graph_composition(
         raise ValueError(
             "the shared Grafx pool constructor options must match settings"
         )
-    rollout_mutation_recorder = CommunityGraphRolloutMutationRecorder(
-        binding_store.root
-    )
+
     if getattr(resolver, "_board_backend", None) != board_backend:
         raise ValueError("shared resolver Board backend does not match settings")
     if getattr(resolver, "_global_backend", None) != global_backend:
@@ -857,15 +897,28 @@ def build_community_routed_board_graph_composition(
         )
         for _lane in range(read_participants)
     )
+    # Lazy, bounded foreground participants share the existing scheduling lanes.
+    # Background readers retain configured scan semantics. Keep additional page
+    # caches small; native query working memory has its own independent ceiling.
+    grafx_query_pools = tuple(
+        CommunityGrafxDatabasePool(
+            binding_store.root, connect=connector, max_entries=None,
+            descriptor_revalidation=configured_descriptor_revalidation,
+            read_only=True,
+            buffer_pool_mb=min(configured_buffer_pool_mb, FOREGROUND_READER_BUFFER_MB),
+            constructor_options=foreground_query_options(getattr(settings, 'kg_grafx_options', {})),
+        ) for _lane in range(read_participants)
+    )
     access = _GrafxBoardAccess(
         resolver,
         grafx_pool,
         binding_store,
-        rollout_mutation_recorder,
         configured_page_size=configured_page_size,
         connect=connector,
         read_pools=grafx_read_pools,
+        query_pools=grafx_query_pools,
     )
+    resolver.bind_observation_timeout(lambda: access.health_query_timeout("global"))
     if shared_store is None:
         local_adoption_opener[0] = access.open_for_adoption
     else:
@@ -873,15 +926,15 @@ def build_community_routed_board_graph_composition(
         # adoption door is rebound to the exact shared pool supplied here.
         resolver._open_grafx_database = access.open_for_adoption
 
-    def rollout_administrative_write_fence(
+    def administrative_write_fence(
         board_id: str,
         phase: str,
         snapshot: CommunityGraphRouteSnapshot | None = None,
     ) -> None:
-        """Fence non-logical mutations against a stale rollout checkpoint."""
+        """Fence native administrative mutations against stale route authority."""
 
         revalidate_board_graph_write_lease(board_id, failure_phase=phase)
-        require_physical = phase not in _ROLLOUT_INSPECT_ONLY_ADMIN_PHASES
+        require_physical = phase not in _INSPECT_ONLY_ADMIN_PHASES
         observed = snapshot or resolver.current_board_snapshot(
             board_id,
             require_physical=require_physical,
@@ -892,74 +945,9 @@ def build_community_routed_board_graph_composition(
             observed,
             require_physical=require_physical,
         )
-        if phase not in _ROLLOUT_ADMIN_MUTATION_PHASES:
-            return
-        if observed.backend == "grafx":
-            rollout_mutation_recorder.close_rollback_before_write_if_active(
-                board_id,
-                observed.binding_sha256,
-                "grafx",
-            )
-            return
+        if observed.backend != "grafx":
+            raise _route_failure("graph_backend_retired_files_preserved", board_id=board_id)
 
-        raise _route_failure("graph_backend_retired_files_preserved", board_id=board_id)
-
-    def invalidate_rollout_for_privacy(
-        board_id: str,
-        *,
-        reason: str,
-    ) -> GraphPurgeResult:
-        """Persist the privacy tombstone before either backend is touched."""
-
-        revalidate_board_graph_write_lease(
-            board_id,
-            failure_phase="privacy_invalidate_graph_rollout",
-        )
-        journal = CommunityGraphRolloutJournal(binding_store.root, board_id)
-        current = journal.read_if_exists()
-        if current is None:
-            return GraphPurgeResult(
-                board_id=board_id,
-                removed=False,
-                not_found=True,
-                status="not_found",
-                reason=reason,
-                backend="rollout",
-            )
-        already_invalidated = current.state == "erased"
-        journal.close_for_privacy(expected_version=current.state_version)
-        return GraphPurgeResult(
-            board_id=board_id,
-            removed=not already_invalidated,
-            not_found=already_invalidated,
-            status="not_found" if already_invalidated else "erased",
-            reason=reason,
-            backend="rollout",
-        )
-
-    def finalize_rollout_privacy_storage(
-        board_id: str,
-        *,
-        reason: str,
-    ) -> GraphPurgeResult:
-        """Remove rollout bytes only after both physical erasures succeeded."""
-
-        journal = CommunityGraphRolloutJournal(binding_store.root, board_id)
-        proof = journal.erase_privacy_storage(
-            before_mutation=lambda: revalidate_board_graph_write_lease(
-                board_id,
-                failure_phase="privacy_finalize_graph_rollout",
-            )
-        )
-        removed = proof.files_removed > 0 or proof.directories_removed > 0
-        return GraphPurgeResult(
-            board_id=board_id,
-            removed=removed,
-            not_found=not removed,
-            status="erased" if removed else "not_found",
-            reason=reason,
-            backend="rollout",
-        )
 
     @contextmanager
     def board_route_session(board_id: str) -> Iterator[None]:
@@ -1001,6 +989,7 @@ def build_community_routed_board_graph_composition(
         access.write_fence,
         read_database_resolver=access.read_database,
         read_database_scope=access.read_database_scope,
+        query_timeout=access.query_timeout,
     )
     from okto_pulse.community.adapters.grafx_ranked_search import CommunityGrafxRankedSearch
     from okto_pulse.community.adapters.grafx_observations import CommunityGrafxHistory, CommunityGrafxAnalytics
@@ -1008,19 +997,19 @@ def build_community_routed_board_graph_composition(
     from okto_pulse.community.adapters.routed_graph_exploration import CommunityRoutedRankedSearch
 
     def observations(provider):
-        return CommunityRoutedObservations(resolver, provider, operation_window=operation_window,
-                                          mutation_window=mutation_window, close=access.close)
-    history = observations(CommunityGrafxHistory(access.database, access.write_fence, read_database_scope=access.read_database_scope))
+        return CommunityRoutedObservations(resolver, provider, operation_window=operation_window)
+    history = observations(CommunityGrafxHistory(access.database, read_database_scope=access.read_database_scope))
     analytics = observations(CommunityGrafxAnalytics(access.read_database_scope))
     ranked_search = CommunityRoutedRankedSearch(
         resolver,
-        CommunityGrafxRankedSearch(access.database, access.write_fence,
+        CommunityGrafxRankedSearch(access.database,
                                   read_database_scope=access.read_database_scope),
-        operation_window=operation_window, mutation_window=mutation_window, close=access.close,
+        operation_window=operation_window,
     )
     grafx_cypher = CommunityGrafxCypherExecutor(
         access.read_database,
         read_database_scope=access.read_database_scope,
+        query_timeout=access.query_timeout,
     )
     grafx_schema = CommunityGrafxGraphSchemaManager(
         access.database,
@@ -1044,6 +1033,7 @@ def build_community_routed_board_graph_composition(
         access.runtime_fence,
         board_storage_root_resolver=access.board_root,
         budget_snapshot_provider=lambda: runtime_budget,
+        observation_timeout=access.health_query_timeout,
     )
     grafx_recovery = CommunityGrafxGraphRecovery(
         quarantine_root=binding_store.root / "quarantine",
@@ -1116,7 +1106,7 @@ def build_community_routed_board_graph_composition(
         snapshot = resolver.current_board_snapshot(board_id, require_physical=False)
         if snapshot is None:
             raise _route_failure("board_route_required", board_id=board_id)
-        rollout_administrative_write_fence(
+        administrative_write_fence(
             board_id,
             "graph_recovery_grafx",
             snapshot,
@@ -1136,7 +1126,6 @@ def build_community_routed_board_graph_composition(
         revalidate_write_fence=lambda board_id, phase: (
             revalidate_board_graph_write_lease(board_id, failure_phase=phase)
         ),
-        mutation_recorder=rollout_mutation_recorder,
     )
     cypher_executor = CommunityRoutedCypherExecutor(
         resolver,
@@ -1147,7 +1136,7 @@ def build_community_routed_board_graph_composition(
         resolver,
         grafx=grafx_schema,
         operation_window=operation_window,
-        revalidate_write_fence=rollout_administrative_write_fence,
+        revalidate_write_fence=administrative_write_fence,
     )
     graph_transaction = CommunityRoutedGraphTransaction(
         resolver,
@@ -1160,13 +1149,12 @@ def build_community_routed_board_graph_composition(
         # revalidate their immutable snapshot explicitly, so retain only the
         # thread-neutral physical close guard for their full lifetime.
         operation_window=kg_runtime.board_graph_operation_window,
-        mutation_recorder=rollout_mutation_recorder,
     )
     graph_lifecycle = CommunityRoutedGraphLifecycle(
         resolver,
         operation_window=operation_window,
         mutation_window_unguarded=lifecycle_mutation_window,
-        revalidate_write_fence=rollout_administrative_write_fence,
+        revalidate_write_fence=administrative_write_fence,
         grafx_open_unguarded=grafx_open,
         grafx_close_unguarded=grafx_close,
         grafx_rebuild_unguarded=grafx_rebuild,
@@ -1181,9 +1169,7 @@ def build_community_routed_board_graph_composition(
         mutation_window=mutation_window,
         grafx_purge_unguarded=grafx_runtime.purge_board_graph,
         grafx_erase_unguarded=grafx_erase,
-        rollout_erase_unguarded=invalidate_rollout_for_privacy,
-        rollout_finalize_erase_unguarded=finalize_rollout_privacy_storage,
-        rollout_write_fence=rollout_administrative_write_fence,
+        revalidate_write_fence=administrative_write_fence,
     )
     graph_recovery = CommunityRoutedGraphRecovery(
         resolver,
@@ -1244,6 +1230,10 @@ def build_community_routed_board_graph_composition(
         ranked_graph_search=ranked_search,
         graph_history=history,
         graph_analytics=analytics,
+        graph_health_observation=access,
+        graph_query_execution=access.query_execution,
+        grafx_query_pools=grafx_query_pools,
+        observation_timeout=lambda: access.health_query_timeout("global"),
     )
 
 

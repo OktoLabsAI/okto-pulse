@@ -42,6 +42,7 @@ import type {
 } from '@/types/knowledge-graph';
 import {
   EDGE_TYPE_CONFIG,
+  kgEdgeDisplayLabel,
   kgNodeDisplayType,
   kgNodeVisualConfig,
 } from '@/types/knowledge-graph';
@@ -529,7 +530,7 @@ export function GraphCanvas({
         const cfg = EDGE_TYPE_CONFIG[e.edge_type];
         graph.addEdgeWithKey(e.id || `${e.source}|${e.edge_type}|${e.target}`, e.source, e.target, {
           type: 'line',
-          label: e.edge_type,
+          label: kgEdgeDisplayLabel(e),
           // `contradicts` is always-noisy by spec (S4.3): thicker + its
           // own red so conflicts stay visible without animation.
           size: e.edge_type === 'contradicts' ? 2.2 : 1.2,
@@ -707,6 +708,12 @@ export function GraphCanvas({
       data-empty-state="populated"
       data-renderer={webglOk ? 'sigma' : 'fallback'}
     >
+      {filteredEdges.some((edge) => edge.edge_type === 'violates' && edge.assertion_basis === 'origin_proxy') && (
+        <div role="note" data-testid="kg-origin-proxy-note"
+          className="absolute top-3 left-3 z-20 max-w-xs rounded border border-gray-200 bg-white/95 px-3 py-2 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-900/95 dark:text-gray-300">
+          Origin association (inferred). Shared cause not established.
+        </div>
+      )}
       {webglOk ? (
         <>
           {/* sigma mounts here — lifecycle bound to the container element */}

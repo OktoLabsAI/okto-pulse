@@ -19,9 +19,6 @@ from sqlalchemy.orm import Session, object_session
 
 from okto_pulse.core.application.use_cases.base import ActorContext
 from okto_pulse.core.domain.guideline_policy import PolicyEntityType
-from okto_pulse.core.domain.guideline_semantic_assessment import (
-    LEGACY_UNKNOWN_SEMANTIC_EDITOR_ID,
-)
 from okto_pulse.core.domain.quality_canonicalization import canonical_sha256
 from okto_pulse.core.services.code_traceability_gate import is_evidence_citation_only_change
 
@@ -35,8 +32,6 @@ from .sqlalchemy_models import (
     Ideation,
     IdeationKnowledgeBase,
     IdeationQAItem,
-    PolicyWaiverEventRow,
-    PolicyWaiverRow,
     QAItem,
     Refinement,
     RefinementKnowledgeBase,
@@ -44,8 +39,6 @@ from .sqlalchemy_models import (
     Spec,
     SpecKnowledgeBase,
     SpecQAItem,
-    Sprint,
-    SprintQAItem,
 )
 
 
@@ -61,7 +54,6 @@ _SEMANTIC_ENTITY_BY_MODEL: dict[type, str] = {
     Ideation: "ideation",
     Refinement: "refinement",
     Spec: "spec",
-    Sprint: "sprint",
     Card: "card",
 }
 
@@ -75,6 +67,7 @@ _CARD_NON_SEMANTIC_OPERATIONAL_FIELDS = frozenset(
         "conclusions",
         "validations",
         "rejection_records",
+        "learning_closeout_bindings",
         "current_rejection_kind",
         "current_rejection_id",
         "current_rejection_code",
@@ -104,7 +97,6 @@ _PROTECTED_SEMANTIC_MODELS: tuple[type, ...] = (
     Ideation,
     Refinement,
     Spec,
-    Sprint,
     Card,
     CardDependency,
     Attachment,
@@ -113,13 +105,10 @@ _PROTECTED_SEMANTIC_MODELS: tuple[type, ...] = (
     IdeationQAItem,
     RefinementQAItem,
     SpecQAItem,
-    SprintQAItem,
     QAItem,
     IdeationKnowledgeBase,
     RefinementKnowledgeBase,
     SpecKnowledgeBase,
-    PolicyWaiverRow,
-    PolicyWaiverEventRow,
 )
 
 
@@ -174,8 +163,6 @@ def bind_semantic_subject_actor(
     )
     if actor is not None and not actor_id:
         raise ValueError("semantic_subject_bridge_actor_id_required")
-    if actor_id == LEGACY_UNKNOWN_SEMANTIC_EDITOR_ID:
-        raise ValueError("semantic_subject_bridge_actor_id_reserved")
     sync_session = session.sync_session
     if sync_session.info.get(_SEMANTIC_BRIDGE_ENABLED_KEY):
         current_actor_id = sync_session.info.get(_SEMANTIC_ACTOR_ID_KEY)
@@ -518,17 +505,15 @@ def _before_flush(
         Ideation: set(),
         Refinement: set(),
         Spec: set(),
-        Sprint: set(),
     }
     card_ids: set[str] = set()
-    sprint_ids: set[str] = set()
     scenario_spec_ids: set[str] = set()
 
     for instance in tuple(session.dirty):
         changed = _changed_attribute_names(instance)
         if not changed:
             continue
-        if isinstance(instance, (Ideation, Refinement, Spec, Sprint)):
+        if isinstance(instance, (Ideation, Refinement, Spec)):
             semantic_changes = changed - {
                 "version",
                 "updated_at",
@@ -558,8 +543,6 @@ def _before_flush(
                         )
                     ).scalars()
                     card_ids.update(str(value) for value in dependent_ids)
-            if {"status", "sprint_id", "test_scenario_ids"} & changed:
-                sprint_ids.update(_history_values(instance, "sprint_id"))
             if {"spec_id", "test_scenario_ids"} & changed:
                 scenario_spec_ids.update(_history_values(instance, "spec_id"))
 
@@ -567,8 +550,6 @@ def _before_flush(
         if isinstance(instance, Card):
             if instance.id:
                 card_ids.add(str(instance.id))
-            if instance.sprint_id:
-                sprint_ids.add(str(instance.sprint_id))
             if instance.spec_id and instance.test_scenario_ids:
                 scenario_spec_ids.add(str(instance.spec_id))
 
@@ -614,14 +595,6 @@ def _before_flush(
             ):
                 continue
             direct_version_targets[Spec].update(_history_values(relation, "spec_id"))
-        elif isinstance(relation, SprintQAItem):
-            if relation in session.dirty and not (
-                _changed_attribute_names(relation) - {"created_at"}
-            ):
-                continue
-            direct_version_targets[Sprint].update(
-                _history_values(relation, "sprint_id")
-            )
         elif isinstance(relation, QAItem):
             if relation in session.dirty and not (
                 _changed_attribute_names(relation) - {"created_at"}
@@ -674,7 +647,6 @@ def _before_flush(
         identities=scenario_spec_ids,
         field_name="test_scenario_policy_epoch",
     )
-    direct_version_targets[Sprint].update(sprint_ids)
     for model, identities in direct_version_targets.items():
         _bump_many(
             session,
@@ -706,10 +678,7 @@ def _before_flush(
         Ideation,
         Refinement,
         Spec,
-        Sprint,
         Card,
-        PolicyWaiverRow,
-        PolicyWaiverEventRow,
     )
     board_ids = {
         str(instance.board_id)

@@ -23,8 +23,8 @@ from okto_pulse.community.adapters.board_source_reader import (
     CommunityBoardSourceReader,
     read_realm_source_snapshot,
 )
-from okto_pulse.community.adapters.graph_ddl import COMMON_NODE_ATTRIBUTES
-from okto_pulse.community.adapters.relational_schema_steps import (
+from okto_pulse.community.adapters.graph_ddl import COMMON_NODE_COLUMNS
+from okto_pulse.community.adapters.current_schema_guards import (
     code_traceability_sqlite_trigger_manifest,
 )
 from okto_pulse.community.adapters.sqlalchemy_kg_governance import (
@@ -41,6 +41,10 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     Base,
 )
 from okto_pulse.core.domain import code_traceability as domain
+from okto_pulse.community.adapters.sqlalchemy_knowledge_propagation import CommunitySqlAlchemyKnowledgePropagationStore
+from okto_pulse.community.adapters.sqlalchemy_resource_gate_service import CommunitySqlAlchemyResourceGateAdapter
+from okto_pulse.core.ports.knowledge_propagation import register_knowledge_propagation_port
+from okto_pulse.core.ports.relational_services import register_resource_gate_adapter_factory
 from okto_pulse.core.ports.code_investigation import (
     CodeInvestigationHeadConflict,
     CodeInvestigationRequestCreateResult,
@@ -73,6 +77,14 @@ _E = "e" * 64
 _F = "f" * 64
 
 
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+
+_NATIVE_ARCHITECTURE = ArchitectureAdoptionScope(
+    board_id="board-1", spec_id="spec-1", adopted_in_edition=1,
+    actor_id="owner-1", inherited_resource_ids=(),
+).model_dump_json()
+
+
 def test_source_census_is_exact_and_every_manifest_is_closed() -> None:
     assert len(CODE_TRACEABILITY_SOURCE_MANIFESTS) == 12
     assert set(CODE_TRACEABILITY_SOURCE_MANIFESTS).issubset(
@@ -88,7 +100,7 @@ def test_source_census_is_exact_and_every_manifest_is_closed() -> None:
 
 def test_graph_ddl_declares_only_contract_owned_traceability_columns() -> None:
     for column_name, column_type in CODE_TRACEABILITY_COLUMNS:
-        assert f"{column_name} {column_type}" in COMMON_NODE_ATTRIBUTES
+        assert (column_name, column_type) in COMMON_NODE_COLUMNS
 
 
 def test_open_request_admission_is_atomic_for_quota_and_replay(
@@ -492,10 +504,11 @@ def _attestation_bundle(
         request_payload_sha256=_C,
         idempotency_key="request-idempotency-1",
     )
-    observation_sha256 = domain.code_investigation_observation_sha256(
+    observation_sha256 = domain.code_investigation_observation_sha256_v2(
         source_ref=request.source_ref,
         selector_scope_digest=request.selector_scope_digest,
-        outcome=domain.CodeInvestigationOutcome.ACCESSIBLE,
+        delivery_context=domain.DeliveryContext.BROWNFIELD,
+        outcome=domain.ContextualInvestigationOutcomeV2.EVIDENCE_APPLICABLE,
         capabilities=capabilities,
         source_identity_digest=_A,
         declared_revision=workspace.declared_revision,
@@ -514,7 +527,9 @@ def _attestation_bundle(
         predecessor_receipt_id=None,
         trust_level=domain.CodeInvestigationTrustLevel.SINGLE_ATTESTATION,
         acceptance_status=domain.CodeInvestigationAcceptanceStatus.ACCEPTED,
-        outcome=domain.CodeInvestigationOutcome.ACCESSIBLE,
+        delivery_context=domain.DeliveryContext.BROWNFIELD,
+        context_contract_version=2,
+        contextual_outcome=domain.ContextualInvestigationOutcomeV2.EVIDENCE_APPLICABLE,
         capabilities=capabilities,
         source_ref=request.source_ref,
         source_identity_digest=_A,
@@ -604,6 +619,15 @@ def test_spec_context_keeps_active_v3_evidence_in_v4_snapshot_denominator(
             received_at=now + timedelta(seconds=2),
             payload_sha256=_E,
             idempotency_key="evidence-refinement-v3",
+            source_role=domain.CodeEvidenceSourceRole.CURRENT_IMPLEMENTATION,
+            context_contract_version=2,
+            relevance_summary="Current implementation behavior.",
+            scope_relation="same delivery scope",
+            source_origin="repository baseline",
+            baseline_provenance=domain.CodeEvidenceBaselineProvenance(
+                presence=domain.CodeEvidenceBaselinePresence.COMMITTED_SNAPSHOT,
+                workspace_state_id=workspace.workspace_state_id,
+            ),
         )
         manifest = json.dumps(
             [
@@ -656,12 +680,11 @@ def test_spec_context_keeps_active_v3_evidence_in_v4_snapshot_denominator(
                 ),
             )
             await connection.exec_driver_sql(
-                "INSERT INTO specs "
-                "(id, board_id, ideation_id, refinement_id, "
-                "source_refinement_snapshot_id, source_refinement_version, "
-                "title, status, edition, version, created_by) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                'INSERT INTO specs (architecture_adoption, id, board_id, ideation_id, refinement_id, '
+                'source_refinement_snapshot_id, source_refinement_version, title, status, edition, '
+                'version, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                 (
+                    _NATIVE_ARCHITECTURE,
                     "spec-1",
                     "board-1",
                     "ideation-1",
@@ -748,10 +771,9 @@ def test_resolution_snapshot_is_unique_under_real_sqlite_race(
                 ("board-1", "Board", "owner-1", "local"),
             )
             await connection.exec_driver_sql(
-                "INSERT INTO specs "
-                "(id, board_id, title, status, version, created_by) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                ("spec-1", "board-1", "Spec", "draft", 4, "owner-1"),
+                'INSERT INTO specs (architecture_adoption, id, board_id, title, status, version, '
+                'created_by) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                (_NATIVE_ARCHITECTURE, "spec-1", "board-1", "Spec", "draft", 4, "owner-1"),
             )
             await connection.exec_driver_sql(
                 "INSERT INTO cards "
@@ -911,8 +933,10 @@ def test_resolution_snapshot_is_unique_under_real_sqlite_race(
     asyncio.run(exercise())
 
 
+@pytest.mark.parametrize("other_card", [False, True])
 def test_evidence_racing_a_newer_preflight_fails_closed_without_busy_error(
     tmp_path: Path,
+    other_card: bool,
 ) -> None:
     async def exercise() -> None:
         database_path = tmp_path / "code-traceability-evidence-head-race.sqlite3"
@@ -933,6 +957,7 @@ def test_evidence_racing_a_newer_preflight_fails_closed_without_busy_error(
         request_2 = replace(
             request,
             id="request-new-head",
+            subject_id="card-2" if other_card else request.subject_id,
             expected_head_generation=1,
             expected_predecessor_receipt_id=receipt.id,
             challenge_token_hash=_E,
@@ -947,6 +972,7 @@ def test_evidence_racing_a_newer_preflight_fails_closed_without_busy_error(
         receipt_2 = replace(
             receipt,
             id="receipt-new-head",
+            subject_id=request_2.subject_id,
             request_id=request_2.id,
             generation=2,
             predecessor_receipt_id=receipt.id,
@@ -997,6 +1023,15 @@ def test_evidence_racing_a_newer_preflight_fails_closed_without_busy_error(
             received_at=now + timedelta(seconds=2),
             payload_sha256=_D,
             idempotency_key="evidence-losing-race",
+            source_role=domain.CodeEvidenceSourceRole.CURRENT_IMPLEMENTATION,
+            context_contract_version=2,
+            relevance_summary="Current implementation behavior.",
+            scope_relation="same delivery scope",
+            source_origin="repository baseline",
+            baseline_provenance=domain.CodeEvidenceBaselineProvenance(
+                presence=domain.CodeEvidenceBaselinePresence.COMMITTED_SNAPSHOT,
+                workspace_state_id=workspace.workspace_state_id,
+            ),
         )
         async with sessions() as session:
             investigations = (
@@ -1066,6 +1101,14 @@ def test_evidence_racing_a_newer_preflight_fails_closed_without_busy_error(
             )
             assert int(evidence_count or 0) == 0
             assert current_head == head_2
+            # The stale head CAS above still fails even for identical source.
+            # Preserved read currentness never relaxes the write-head fence.
+            store = CommunityRelationalApplicationAdapter().code_traceability(session)
+            with pytest.raises(CodeTraceabilityRevisionConflict):
+                await store._lock_current_receipt(
+                    board_id="board-1", source_ref=receipt.source_ref,
+                    receipt_id=receipt.id, expected_head_revision=2,
+                )
         await engine.dispose()
 
     asyncio.run(exercise())
@@ -1115,10 +1158,9 @@ def test_transaction_bound_stores_persist_only_submitted_attestations(
                 ),
             )
             await connection.exec_driver_sql(
-                "INSERT INTO specs "
-                "(id, board_id, title, status, version, created_by) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                ("spec-1", "board-1", "Spec", "draft", 1, "owner-1"),
+                'INSERT INTO specs (architecture_adoption, id, board_id, title, status, version, '
+                'created_by) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                (_NATIVE_ARCHITECTURE, "spec-1", "board-1", "Spec", "draft", 1, "owner-1"),
             )
             await connection.exec_driver_sql(
                 "UPDATE cards SET spec_id = ? WHERE board_id = ?",
@@ -1126,6 +1168,8 @@ def test_transaction_bound_stores_persist_only_submitted_attestations(
             )
 
         sessions = async_sessionmaker(engine, expire_on_commit=False)
+        register_knowledge_propagation_port(CommunitySqlAlchemyKnowledgePropagationStore(sessions))
+        register_resource_gate_adapter_factory(CommunitySqlAlchemyResourceGateAdapter)
         now = datetime.now(timezone.utc).replace(microsecond=0)
         request, consumed, receipt, head, workspace = _attestation_bundle(now)
         async with sessions() as session:
@@ -1197,6 +1241,15 @@ def test_transaction_bound_stores_persist_only_submitted_attestations(
                 received_at=now + timedelta(seconds=2),
                 payload_sha256=_A,
                 idempotency_key="evidence-idempotency-1",
+                source_role=domain.CodeEvidenceSourceRole.CURRENT_IMPLEMENTATION,
+                context_contract_version=2,
+                relevance_summary="Current implementation behavior.",
+                scope_relation="same delivery scope",
+                source_origin="repository baseline",
+                baseline_provenance=domain.CodeEvidenceBaselineProvenance(
+                    presence=domain.CodeEvidenceBaselinePresence.COMMITTED_SNAPSHOT,
+                    workspace_state_id=workspace.workspace_state_id,
+                ),
             )
             assert (
                 await traceability.create_evidence(
@@ -1545,7 +1598,7 @@ def test_transaction_bound_stores_persist_only_submitted_attestations(
                 "declared_revision": receipt.declared_revision,
                 "workspace_state_id": workspace.workspace_state_id,
                 "trust_level": receipt.trust_level.value,
-                "outcome": receipt.outcome.value,
+                "contextual_outcome": receipt.contextual_outcome.value,
                 "generation": receipt.generation,
                 "payload_sha256": receipt.payload_sha256,
                 "content_hash": receipt.payload_sha256,

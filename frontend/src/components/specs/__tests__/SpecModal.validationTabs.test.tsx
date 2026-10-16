@@ -1,4 +1,5 @@
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -7,22 +8,52 @@ import {
 } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { Spec, SpecStatus } from '@/types';
+import type { ProjectStructureNode, Spec, SpecStatus } from '@/types';
+import { workspacePage } from '@/testFixtures/effectiveResources';
 
 import { SpecModal } from '../SpecModal';
 
+const workspaceWatch = vi.hoisted(() => ({
+  options: null as null | Parameters<typeof import('@/hooks/useWorkspaceRevisions').useWorkspaceRevisions>[0],
+}));
+vi.mock('@/hooks/useWorkspaceRevisions', () => ({
+  useWorkspaceRevisions: (options: NonNullable<typeof workspaceWatch.options>) => {
+    workspaceWatch.options = options;
+    return 'current';
+  },
+}));
+
 const apiMock = vi.hoisted(() => ({
   getSpec: vi.fn(),
+  getIdeation: vi.fn(),
+  getRefinement: vi.fn(),
+  getProjectStructure: vi.fn(),
+  mutateProjectStructure: vi.fn(),
+  getCodeTraceabilityProjection: vi.fn(),
   getAllowedTransitions: vi.fn(),
   getValidationCycle: vi.fn(),
   getValidationTechnicalAudit: vi.fn(),
   getSpecChecklistState: vi.fn(),
   getCurrentSpecValidation: vi.fn(),
+  listSpecEvaluations: vi.fn(),
   listSprints: vi.fn(),
+  getArchitectureCandidates: vi.fn(),
+  getArchitectureClassifications: vi.fn(),
+  getRequirementVerification: vi.fn(),
+  updateSpecEntity: vi.fn(),
+  createSpecEntity: vi.fn(),
+  previewSpecEntityImpact: vi.fn(),
+  operateSpecEntity: vi.fn(),
+  getDecisionReviews: vi.fn(),
+  updateSpec: vi.fn(),
+  getEffectiveResources: vi.fn(),
+  createSpecKnowledge: vi.fn(),
+  listSpecKnowledge: vi.fn(),
 }));
 const permissionMock = vi.hoisted(() => ({
   allowAll: true,
   allowed: new Set<string>(),
+  refresh: vi.fn(),
 }));
 const boardSettingsMock = vi.hoisted(() => ({
   requireSpecValidation: true,
@@ -48,6 +79,7 @@ vi.mock('@/hooks/usePermissions', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/hooks/usePermissions')>();
   return {
     ...actual,
+    refreshBoardPermissions: permissionMock.refresh,
     usePermissions: () => ({
       preset: null,
       isLoading: false,
@@ -164,11 +196,21 @@ vi.mock('../SpecValidationHistoryPanel', () => ({
   ),
 }));
 
+vi.mock('../SpecCoveragePanel', () => ({
+  SpecCoveragePanel: ({ revision, onSkipDeliveryEvidenceChange }: { revision: string; onSkipDeliveryEvidenceChange?: (value: boolean) => void }) => (
+    <div data-testid="coverage-panel" data-revision={revision}>
+      {onSkipDeliveryEvidenceChange && <button onClick={() => onSkipDeliveryEvidenceChange(true)}>Skip delivery gate</button>}
+    </div>
+  ),
+}));
+
 vi.mock('react-hot-toast', () => ({
   default: { error: vi.fn(), success: vi.fn() },
 }));
 
 const baseSpec: Spec = {
+  execution_contract: { contract_version: 'spec-execution-contract/v1', board_id: 'board-1',
+    spec_id: 'spec-validation-tabs', adopted_in_edition: 1, actor_id: 'author', origin: 'new_spec' },
   id: 'spec-validation-tabs',
   board_id: 'board-1',
   ideation_id: null,
@@ -186,6 +228,7 @@ const baseSpec: Spec = {
   observability_requirements: [],
   decisions: [],
   screen_mockups: [],
+  mockup_snapshot: 'a'.repeat(64),
   architecture_designs: [],
   skip_test_coverage: false,
   skip_code_evidence_coverage: false,
@@ -234,9 +277,499 @@ function blockedPolicyDecision() {
   };
 }
 
+async function openCriteria() {
+  fireEvent.click(await screen.findByRole('tab', { name: 'Tests & Verifications' }));
+  fireEvent.click(screen.getByRole('tab', { name: /^AC(?:\s|$)/ }));
+  const row = screen.queryByRole('article');
+  if (row) fireEvent.click(within(row).getAllByRole('button')[0]);
+}
+
 describe('SpecModal validation navigation', () => {
+  it('refreshes Resources without replacing hidden drafts and saves mockups on the reviewed snapshot', async () => {
+    apiMock.getSpec.mockResolvedValue(baseSpec);
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('tab', { name: 'Resources' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Add Mockup' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Add Mockup' }));
+    fireEvent.change(screen.getByPlaceholderText('e.g. Login Page'), { target: { value: 'Local mockup' } });
+    fireEvent.change(document.querySelector('textarea')!, { target: { value: '<main>Local</main>' } });
+    fireEvent.click(screen.getByRole('tab', { name: /^Knowledge/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add Knowledge' }));
+    fireEvent.change(screen.getByLabelText('Knowledge title'), { target: { value: 'Local KB' } });
+    const external = { ...baseSpec, mockup_snapshot: 'b'.repeat(64), screen_mockups: [{ id: 'external', title: 'MCP screen', description: null, screen_type: 'page' as const, html_content: '<main>External</main>', order: 0, annotations: null }] };
+    apiMock.getSpec.mockResolvedValue(external);
+    expect(workspaceWatch.options?.boardId).toBe(baseSpec.board_id);
+    await act(async () => workspaceWatch.options!.onChange({ subjects: [], initial: false, authorityChanged: false }));
+    expect(screen.getByLabelText('Knowledge title')).toHaveValue('Local KB');
+    fireEvent.click(screen.getByRole('tab', { name: /^Mockups/ }));
+    expect(screen.getByPlaceholderText('e.g. Login Page')).toHaveValue('Local mockup');
+    expect(screen.getByRole('button', { name: 'Add Mockup' })).toBeDisabled();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Review mockup base' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Review mockup base' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Use reviewed mockup base' }));
+    apiMock.updateSpec.mockImplementation(async (_id, payload) => {
+      const saved = { ...external, screen_mockups: payload.screen_mockups, mockup_snapshot: 'c'.repeat(64) };
+      apiMock.getSpec.mockResolvedValue(saved);
+      return saved;
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Mockup' }));
+    await waitFor(() => expect(apiMock.updateSpec).toHaveBeenCalledOnce());
+    expect(apiMock.updateSpec.mock.calls[0][1]).toMatchObject({ expected_spec_version: baseSpec.version, expected_mockup_snapshot: 'b'.repeat(64),
+      screen_mockups: [external.screen_mockups[0], expect.objectContaining({ title: 'Local mockup' })] });
+    await waitFor(() => expect(screen.queryByPlaceholderText('e.g. Login Page')).not.toBeInTheDocument());
+    fireEvent.click(screen.getByRole('tab', { name: /^Knowledge/ }));
+    expect(screen.getByLabelText('Knowledge title')).toHaveValue('Local KB');
+  }, 15000);
+
+  it('keeps a confirmed mockup write pending when the complete parent read fails', async () => {
+    apiMock.getSpec.mockResolvedValue(baseSpec);
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('tab', { name: 'Resources' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Add Mockup' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Add Mockup' }));
+    fireEvent.change(screen.getByPlaceholderText('e.g. Login Page'), { target: { value: 'Confirmed mockup' } });
+    fireEvent.change(document.querySelector('textarea')!, { target: { value: '<main>Confirmed</main>' } });
+    apiMock.updateSpec.mockResolvedValue({ ...baseSpec, mockup_snapshot: 'b'.repeat(64) });
+    apiMock.getSpec.mockRejectedValue(new Error('Parent unavailable'));
+    fireEvent.click(screen.getByRole('button', { name: 'Add Mockup' }));
+    await screen.findByText('Mockup changes were saved. Reload the saved result before another change.');
+    await screen.findByText('Parent unavailable');
+    expect(screen.getByPlaceholderText('e.g. Login Page')).toHaveValue('Confirmed mockup');
+    apiMock.getSpec.mockResolvedValue({ ...baseSpec, mockup_snapshot: 'b'.repeat(64) });
+    fireEvent.click(screen.getByRole('button', { name: 'Reload saved mockups' }));
+    await waitFor(() => expect(screen.queryByPlaceholderText('e.g. Login Page')).not.toBeInTheDocument());
+    expect(apiMock.updateSpec).toHaveBeenCalledOnce();
+  });
+
+  it('awaits Knowledge parent recovery and preserves input without duplicating its native create', async () => {
+    apiMock.getSpec.mockResolvedValue(baseSpec);
+    apiMock.createSpecKnowledge.mockResolvedValue({ id: 'kb-new' });
+    apiMock.listSpecKnowledge.mockResolvedValue([{ id: 'kb-new', title: 'Local KB' }]);
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('tab', { name: 'Resources' }));
+    fireEvent.click(screen.getByRole('tab', { name: /^Knowledge/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add Knowledge' }));
+    fireEvent.change(screen.getByLabelText('Knowledge title'), { target: { value: 'Local KB' } });
+    fireEvent.change(screen.getByLabelText('Knowledge content'), { target: { value: 'Local content' } });
+    apiMock.getSpec.mockRejectedValue(new Error('Parent unavailable'));
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    await screen.findByText('Parent unavailable');
+    expect(screen.getByLabelText('Knowledge content')).toHaveValue('Local content');
+    apiMock.getSpec.mockResolvedValue(baseSpec);
+    fireEvent.click(screen.getByRole('button', { name: 'Reload saved knowledge' }));
+    await waitFor(() => expect(screen.queryByLabelText('Knowledge content')).not.toBeInTheDocument());
+    expect(apiMock.createSpecKnowledge).toHaveBeenCalledOnce();
+  });
+
+  it('invalidates Coverage after a watched Card change without a Spec version or timestamp bump', async () => {
+    renderSpec('draft');
+    fireEvent.click(await screen.findByRole('tab', { name: 'Coverage' }));
+    const panel = screen.getByTestId('coverage-panel');
+    const previous = panel.getAttribute('data-revision');
+    expect(workspaceWatch.options?.boardId).toBe(baseSpec.board_id);
+    await act(async () => workspaceWatch.options!.onChange({ subjects: [{ subject_type: 'spec', subject_id: baseSpec.id }], initial: false, authorityChanged: false }));
+    expect(panel.getAttribute('data-revision')).not.toBe(previous);
+    expect(screen.getByRole('tab', { name: 'Coverage' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('makes stale Coverage visible and withholds its override until the workspace recovers', async () => {
+    renderSpec('draft');
+    fireEvent.click(await screen.findByRole('tab', { name: 'Coverage' }));
+    expect(screen.getByRole('button', { name: 'Skip delivery gate' })).toBeInTheDocument();
+    apiMock.getSpec.mockRejectedValueOnce(new Error('Read failed'));
+    await act(async () => workspaceWatch.options!.onChange({ subjects: [], initial: false, authorityChanged: false }));
+    expect(screen.queryByRole('button', { name: 'Skip delivery gate' })).not.toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('current data could not be loaded');
+    fireEvent.click(screen.getByRole('button', { name: 'Reload current workspace' }));
+    await screen.findByRole('button', { name: 'Skip delivery gate' });
+    expect(apiMock.updateSpec).not.toHaveBeenCalled();
+  });
+
+  it('refreshes derived Card references and origin after an external change without changing the open subtab', async () => {
+    const card = { id: 'card-live', title: 'Original Card title', status: 'not_started', priority: 'none', assignee_id: null };
+    const initial = { ...baseSpec, ideation_id: 'idea-live', cards: [card] };
+    apiMock.getSpec.mockResolvedValue(initial);
+    apiMock.getIdeation.mockResolvedValue({ id: 'idea-live', title: 'Original origin', version: 1 });
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('tab', { name: /^References/ }));
+    const references = within(screen.getByTestId('spec-references-panel'));
+    await references.findByText('Original origin');
+    fireEvent.click(screen.getByRole('tab', { name: /^Derived cards/ }));
+    await screen.findByText('Original Card title');
+    apiMock.getSpec.mockResolvedValue({ ...initial, cards: [{ ...card, title: 'Card changed through MCP' }] });
+    apiMock.getIdeation.mockResolvedValue({ id: 'idea-live', title: 'Current origin', version: 2 });
+    await act(async () => workspaceWatch.options!.onChange({ subjects: [], initial: false, authorityChanged: false }));
+    await screen.findByText('Card changed through MCP');
+    expect(screen.getByRole('tab', { name: /^Derived cards/ })).toHaveAttribute('aria-selected', 'true');
+    fireEvent.click(screen.getByRole('tab', { name: 'Origin' }));
+    await references.findByText('Current origin');
+    expect(screen.queryByText('Original origin')).not.toBeInTheDocument();
+  });
+
+  const treeNode: ProjectStructureNode = {
+    id: 'psn_live', name: 'src', note: 'Original project note', kind: 'folder', parent_id: null, position: 0,
+    classification: 'to_be', state: 'planned', status: 'active', interpretation_limit: null,
+    task_references: [], test_references: [], evidence_ids: [],
+  };
+  const treeSnapshot = (version: number, note = treeNode.note) => ({
+    contract_version: 'project-structure/v1', state: 'authored', authored: true,
+    spec_id: baseSpec.id, spec_version: version, structure_revision: version,
+    digest: 'a'.repeat(64), nodes: [{ ...treeNode, note }],
+  });
+
+  it('refreshes Project Structure through the watcher without replacing its authored base', async () => {
+    apiMock.getSpec.mockResolvedValue({ ...baseSpec, project_structure: [treeNode], project_structure_revision: 4 });
+    apiMock.getProjectStructure.mockResolvedValue(treeSnapshot(4));
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('tab', { name: /^Project Structure/ }));
+    const tree = within(await screen.findByTestId('project-structure-tab'));
+    await waitFor(() => expect(tree.getByRole('button', { name: 'Refresh' })).toBeEnabled());
+    fireEvent.click(tree.getByRole('button', { name: 'Edit' }));
+    fireEvent.click(tree.getByRole('button', { name: 'Edit src' }));
+    fireEvent.change(tree.getByLabelText(/Note \/ Description/), { target: { value: 'Local authored note' } });
+    expect(workspaceWatch.options?.boardId).toBe(baseSpec.board_id);
+    apiMock.getSpec.mockResolvedValue({ ...baseSpec, version: 5, project_structure_revision: 5, project_structure: [{ ...treeNode, note: 'MCP note' }] });
+    apiMock.getProjectStructure.mockResolvedValue(treeSnapshot(5, 'MCP note'));
+    await act(async () => workspaceWatch.options!.onChange({ subjects: [], initial: false, authorityChanged: false }));
+    await waitFor(() => expect(tree.getByRole('button', { name: 'Review current structure' })).toBeEnabled());
+    expect(tree.getByLabelText(/Note \/ Description/)).toHaveValue('Local authored note');
+    expect(tree.getByRole('button', { name: 'Save' })).toBeDisabled();
+    fireEvent.click(tree.getByRole('button', { name: 'Review current structure' }));
+    apiMock.mutateProjectStructure.mockResolvedValue({ replayed: false, spec_version: 6, structure_revision: 6, affected_node_ids: [treeNode.id], nodes: [{ ...treeNode, note: 'Local authored note' }] });
+    apiMock.getSpec.mockResolvedValue({ ...baseSpec, version: 6, project_structure_revision: 6, project_structure: [{ ...treeNode, note: 'Local authored note' }] });
+    fireEvent.click(tree.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(apiMock.mutateProjectStructure).toHaveBeenCalledWith(baseSpec.board_id, baseSpec.id, expect.objectContaining({ expected_spec_version: 5, expected_structure_revision: 5 })));
+    await waitFor(() => expect(tree.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument());
+    await waitFor(() => expect(apiMock.getSpec).toHaveBeenCalledTimes(3));
+  });
+
+  it('recovers a failed full Spec read after confirmed tree mutation without repeating the write', async () => {
+    apiMock.getSpec.mockResolvedValueOnce({ ...baseSpec, project_structure: [treeNode], project_structure_revision: 4 })
+      .mockRejectedValue(new Error('Full Spec unavailable'));
+    apiMock.getProjectStructure.mockResolvedValue(treeSnapshot(4));
+    apiMock.mutateProjectStructure.mockResolvedValue({ replayed: false, spec_version: 5, structure_revision: 5, affected_node_ids: [treeNode.id], nodes: [{ ...treeNode, note: 'Confirmed note' }] });
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('tab', { name: /^Project Structure/ }));
+    const tree = within(await screen.findByTestId('project-structure-tab'));
+    await waitFor(() => expect(tree.getByRole('button', { name: 'Refresh' })).toBeEnabled());
+    fireEvent.click(tree.getByRole('button', { name: 'Edit' }));
+    fireEvent.click(tree.getByRole('button', { name: 'Edit src' }));
+    fireEvent.change(tree.getByLabelText(/Note \/ Description/), { target: { value: 'Confirmed note' } });
+    fireEvent.click(tree.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(tree.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument());
+    expect(tree.getByRole('button', { name: 'Add root' })).toBeDisabled();
+    apiMock.getSpec.mockResolvedValue({ ...baseSpec, title: 'Current full Spec', version: 5, project_structure_revision: 5, project_structure: [{ ...treeNode, note: 'Confirmed note' }] });
+    apiMock.getProjectStructure.mockResolvedValue(treeSnapshot(5, 'Confirmed note'));
+    fireEvent.click(tree.getByRole('button', { name: 'Refresh' }));
+    await screen.findByText('Current full Spec');
+    await waitFor(() => expect(tree.getByRole('button', { name: 'Add root' })).toBeEnabled());
+    expect(apiMock.mutateProjectStructure).toHaveBeenCalledOnce();
+  });
+
+  it.each(['Decisions'])('subscribes %s after protecting its inspection writer', async tab => {
+    apiMock.getSpec.mockResolvedValue(baseSpec);
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('tab', { name: 'Requirements & Decisions' }));
+    fireEvent.click(screen.getByRole('tab', { name: tab }));
+    expect(workspaceWatch.options?.boardId).toBe(baseSpec.board_id);
+  });
+
+  it('subscribes Integration after protecting its classification writer', async () => {
+    apiMock.getSpec.mockResolvedValue(baseSpec);
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('tab', { name: 'Requirements & Decisions' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Integration' }));
+    expect(workspaceWatch.options?.boardId).toBe(baseSpec.board_id);
+  });
+
+  it('preserves a Business draft after a native refusal and reviews a watched base before retrying', async () => {
+    const rule = { id: 'br-live', title: 'Saved rule', rule: 'Normative condition', when: 'Requested', then: 'Return orders', status: 'active' as const };
+    const initial = { ...baseSpec, business_rules: [rule] };
+    apiMock.getSpec.mockResolvedValue(initial);
+    apiMock.updateSpecEntity.mockResolvedValueOnce({ success: false, error_code: 'version_conflict', error_message: 'Native business version conflict' })
+      .mockResolvedValue({ success: true, spec_version: 6 });
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('tab', { name: 'Requirements & Decisions' }));
+    fireEvent.click(screen.getByRole('tab', { name: /^Business/ }));
+    expect(workspaceWatch.options?.boardId).toBe(baseSpec.board_id);
+    fireEvent.click(screen.getByTitle('Edit'));
+    fireEvent.change(screen.getByPlaceholderText('Rule title'), { target: { value: 'Local rule draft' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await screen.findByText('Native business version conflict');
+    expect(screen.getByDisplayValue('Local rule draft')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    apiMock.getSpec.mockResolvedValue({ ...initial, version: 5, business_rules: [{ ...rule, title: 'Remote saved rule' }] });
+    await act(async () => workspaceWatch.options!.onChange({ subjects: [], initial: false, authorityChanged: false }));
+    expect(screen.getByDisplayValue('Local rule draft')).toBeInTheDocument();
+    expect(screen.getByText(/Remote saved rule/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Review current base' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(apiMock.updateSpecEntity).toHaveBeenCalledTimes(2));
+    expect(apiMock.updateSpecEntity).toHaveBeenLastCalledWith(baseSpec.id, 'business_rule', rule.id, expect.objectContaining({ title: 'Local rule draft' }), 5);
+  });
+
+  it('does not offer another Business create when only the confirmed-write refresh fails', async () => {
+    apiMock.getSpec.mockResolvedValueOnce(baseSpec).mockRejectedValue(new Error('Read unavailable'));
+    apiMock.createSpecEntity.mockResolvedValue({ success: true, spec_version: 5 });
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('tab', { name: 'Requirements & Decisions' }));
+    fireEvent.click(screen.getByRole('tab', { name: /^Business/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add Business Rule' }));
+    for (const [placeholder, value] of [['Rule title', 'New rule'], ['Rule description — what must be enforced', 'Guard'], ['When: condition...', 'Requested'], ['Then: action/result...', 'Result']]) {
+      fireEvent.change(screen.getByPlaceholderText(placeholder), { target: { value } });
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Add Rule' }));
+    await waitFor(() => expect(screen.queryByDisplayValue('New rule')).not.toBeInTheDocument());
+    expect(apiMock.createSpecEntity).toHaveBeenCalledOnce();
+    expect(apiMock.createSpecEntity).toHaveBeenCalledWith(baseSpec.id, 'business_rule', expect.objectContaining({ title: 'New rule' }), 4);
+  });
+
+  it('reports confirmed supersession without retrying a failed Decision create', async () => {
+    const decision = { id: 'dec-live', title: 'Existing choice', rationale: 'Reason', status: 'active' as const };
+    apiMock.getSpec.mockResolvedValue({ ...baseSpec, decisions: [decision] });
+    apiMock.getDecisionReviews.mockResolvedValue({ board_id: baseSpec.board_id, spec_id: baseSpec.id, decisions: [], complete: true });
+    apiMock.previewSpecEntityImpact.mockResolvedValue({ impact_report: { impacted_refs: [] } });
+    apiMock.operateSpecEntity.mockResolvedValue({ success: true, spec_version: 5 });
+    apiMock.createSpecEntity.mockResolvedValue({ success: false, error_code: 'version_conflict', error_message: 'Changed during create' });
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('tab', { name: 'Requirements & Decisions' }));
+    fireEvent.click(screen.getByRole('tab', { name: /^Decisions/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add Decision' }));
+    fireEvent.change(screen.getByPlaceholderText("Decision title — e.g. 'Use embedded graph storage over an external graph database'"), { target: { value: 'Successor' } });
+    fireEvent.change(screen.getByPlaceholderText('Rationale — why this choice was made'), { target: { value: 'New information' } });
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: decision.id } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Decision' }));
+    await screen.findByText(/Some changes were saved \(superseded dec-live\)/);
+    expect(screen.getByDisplayValue('Successor')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add Decision' })).toBeDisabled();
+    expect(apiMock.operateSpecEntity).toHaveBeenCalledOnce();
+    expect(apiMock.createSpecEntity).toHaveBeenCalledOnce();
+    expect(apiMock.createSpecEntity).toHaveBeenCalledWith(baseSpec.id, 'decision', expect.objectContaining({ title: 'Successor' }), 5);
+  });
+
+  it.each(['draft', 'review', 'approved', 'validated', 'in_progress', 'done'] as SpecStatus[])(
+    'offers delivery override only in authorized Draft: %s', async status => {
+      apiMock.updateSpec.mockResolvedValue({ ...baseSpec, skip_delivery_evidence: true });
+      renderSpec(status);
+      fireEvent.click(await screen.findByRole('tab', { name: 'Coverage' }));
+      await screen.findByTestId('coverage-panel');
+      expect(Boolean(screen.queryByRole('button', { name: 'Skip delivery gate' }))).toBe(status === 'draft');
+      if (status === 'draft') {
+        fireEvent.click(screen.getByRole('button', { name: 'Skip delivery gate' }));
+        await waitFor(() => expect(apiMock.updateSpec).toHaveBeenCalledWith(baseSpec.id, { skip_delivery_evidence: true }));
+      }
+    },
+  );
+
+  it.each(['spec.entity.edit_coverage_flags', 'spec.interact_in.draft', 'archived'])(
+    'hides delivery override without authority: %s', async missing => {
+      permissionMock.allowAll = false;
+      permissionMock.allowed = new Set(['board.read', 'spec.entity.read', 'card.entity.read', 'spec.tests.read',
+        'spec.integration_requirements.read', 'spec.observability_requirements.read', 'code_traceability.evidence.read',
+        'spec.entity.edit_coverage_flags', 'spec.interact_in.draft'].filter(flag => flag !== missing));
+      apiMock.getSpec.mockResolvedValue({ ...baseSpec, archived: missing === 'archived' });
+      render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+      fireEvent.click(await screen.findByRole('tab', { name: 'Coverage' }));
+      await screen.findByTestId('coverage-panel');
+      expect(screen.queryByRole('button', { name: 'Skip delivery gate' })).not.toBeInTheDocument();
+    },
+  );
+
+  it('groups requirement and verification editors without duplicating the old top-level tabs', async () => {
+    renderSpec('draft');
+    await screen.findByText(baseSpec.title);
+    const mainTabs = within(screen.getByRole('tablist', { name: 'Spec sections' }));
+    expect(mainTabs.queryByRole('tab', { name: 'Rules' })).not.toBeInTheDocument();
+    expect(mainTabs.queryByRole('tab', { name: 'Tests' })).not.toBeInTheDocument();
+    fireEvent.click(mainTabs.getByRole('tab', { name: 'Requirements & Decisions' }));
+    const requirements = within(screen.getByRole('tablist', { name: 'Requirements and decisions sections' }));
+    expect(requirements.getAllByRole('tab').map(tab => tab.textContent)).toEqual([
+      'Functional', 'Business', 'Integration', 'Observability', 'Technical', 'Contracts', 'Decisions',
+    ]);
+    expect(screen.getByText('Functional requirements')).toBeInTheDocument();
+    fireEvent.click(requirements.getByRole('tab', { name: 'Technical' }));
+    expect(mainTabs.queryByRole('tab', { name: 'Technical' })).not.toBeInTheDocument();
+    fireEvent.click(mainTabs.getByRole('tab', { name: 'Tests & Verifications' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'AC' }));
+    expect(screen.getByRole('region', { name: 'Acceptance criteria' })).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Criterion verification' })).not.toBeInTheDocument();
+    await openCriteria();
+    expect(screen.getByRole('region', { name: 'Acceptance criteria' })).toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Criterion verification' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Functional requirements')).not.toBeInTheDocument();
+  }, 15_000); // This case traverses several full editors, not a latency budget.
+  it.each(['draft', 'review', 'approved', 'validated', 'in_progress', 'done'] as SpecStatus[])(
+    'allows requirement qualification authoring only in an unarchived authorized Draft: %s', async status => {
+      apiMock.getRequirementVerification.mockResolvedValue({
+        execution_contract: baseSpec.execution_contract,
+        contract_version: 'requirement-verification/v1', board_id: baseSpec.board_id, spec_id: baseSpec.id,
+        spec_version: baseSpec.version, spec_edition: baseSpec.edition, population_complete: true,
+        population_total: 1, resolved_count: 0, issue_count: 0, next_offset: null,
+        items: [{ requirement_type: 'functional_requirement', requirement_id: 'fr-plan', title: 'Block access',
+          verification: null, default_proposal: null, criteria_paths: [], blockers: [] }],
+      });
+      renderSpec(status);
+      await openCriteria();
+      fireEvent.click(await screen.findByRole('button', { name: 'Review requirement qualification' }));
+      await screen.findByRole('heading', { name: 'Block access' });
+      expect(Boolean(screen.queryByRole('button', { name: 'Edit qualification fr-plan' }))).toBe(status === 'draft');
+    });
+
+  it.each(['spec.structured_entity.functional_requirement.update', 'spec.interact_in.draft', 'archived'])(
+    'keeps requirement qualification read-only when authority is absent: %s', async missing => {
+      permissionMock.allowAll = false;
+      permissionMock.allowed = new Set(['spec.entity.read', 'spec.integration_requirements.read', 'spec.observability_requirements.read', 'spec.structured_entity.functional_requirement.update', 'spec.interact_in.draft'].filter(flag => flag !== missing));
+      apiMock.getSpec.mockResolvedValue({ ...baseSpec, archived: missing === 'archived' });
+      apiMock.getRequirementVerification.mockResolvedValue({
+        execution_contract: baseSpec.execution_contract,
+        contract_version: 'requirement-verification/v1', board_id: baseSpec.board_id, spec_id: baseSpec.id,
+        spec_version: baseSpec.version, spec_edition: baseSpec.edition, population_complete: true,
+        population_total: 1, resolved_count: 0, issue_count: 0, next_offset: null,
+        items: [{ requirement_type: 'functional_requirement', requirement_id: 'fr-plan', title: 'Block access',
+          verification: null, default_proposal: null, criteria_paths: [], blockers: [] }],
+      });
+      render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+      await openCriteria();
+      fireEvent.click(await screen.findByRole('button', { name: 'Review requirement qualification' }));
+      await screen.findByRole('heading', { name: 'Block access' });
+      expect(screen.queryByRole('button', { name: 'Edit qualification fr-plan' })).not.toBeInTheDocument();
+    });
+
+  it('authors criterion verification through the existing versioned structured writer', async () => {
+    apiMock.getSpec.mockResolvedValue({ ...baseSpec,
+      acceptance_criteria: [{ id: 'ac-plan', text: 'Five attempts block access' }],
+      functional_requirements: [{ id: 'fr-plan', text: 'Block access' }],
+    });
+    apiMock.updateSpecEntity.mockResolvedValue({ success: true, spec_version: 5 });
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    await openCriteria();
+      fireEvent.click(await screen.findByRole('button', { name: 'Edit verification ac-plan' }));
+    fireEvent.change(screen.getByLabelText('Verification profile'), { target: { value: 'functional' } });
+    fireEvent.change(screen.getByLabelText('Requirement to link'), { target: { value: JSON.stringify(['functional_requirement', 'fr-plan']) } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add link' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save verification plan' }));
+    await waitFor(() => expect(apiMock.updateSpecEntity).toHaveBeenCalledWith(baseSpec.id, 'acceptance_criterion', 'ac-plan', {
+      verification_profile: 'functional', requirement_links: [{ requirement_type: 'functional_requirement', requirement_id: 'fr-plan', aspect: null }],
+    }, 4));
+    await waitFor(() => expect(apiMock.getSpec).toHaveBeenCalledTimes(2));
+  });
+
+  it('keeps a Functional draft across a watched Spec reload and submits only after explicit base review', async () => {
+    const initial = { ...baseSpec, functional_requirements: [{ id: 'fr-live', title: 'Original title', text: 'Original content' }] };
+    apiMock.getSpec.mockResolvedValue(initial);
+    apiMock.updateSpecEntity.mockResolvedValue({ success: true, spec_version: 6 });
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('tab', { name: 'Requirements & Decisions' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit fr-live' }));
+    fireEvent.change(screen.getByLabelText('Content'), { target: { value: 'Local unsaved content' } });
+    expect(workspaceWatch.options?.boardId).toBe(baseSpec.board_id);
+    apiMock.getSpec.mockResolvedValue({ ...initial, version: 5, functional_requirements: [{ ...initial.functional_requirements[0], text: 'Remote content' }] });
+    await act(async () => workspaceWatch.options!.onChange({ subjects: [], initial: false, authorityChanged: false }));
+    expect(screen.getByLabelText('Content')).toHaveValue('Local unsaved content');
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    expect(apiMock.updateSpecEntity).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Review requirement base' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(apiMock.updateSpecEntity).toHaveBeenCalledWith(baseSpec.id, 'functional_requirement', 'fr-live', { title: 'Original title', text: 'Local unsaved content' }, 5));
+  });
+
+  it('preserves a structured failure code through the Functional writer', async () => {
+    apiMock.getSpec.mockResolvedValue({ ...baseSpec, functional_requirements: [{ id: 'fr-live', title: 'Original title', text: 'Original content' }] });
+    apiMock.updateSpecEntity.mockResolvedValue({ success: false, error_code: 'version_conflict', error_message: 'Native version refusal' });
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('tab', { name: 'Requirements & Decisions' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit fr-live' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await screen.findByText('Native version refusal');
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Review requirement base' })).toBeDisabled();
+    expect(apiMock.getSpec).toHaveBeenCalledOnce();
+  });
+
+  it('keeps an expanded AC verification draft across a watched version change', async () => {
+    const initial = { ...baseSpec, acceptance_criteria: [{ id: 'ac-live', title: 'Observable condition', text: 'Initial condition' }],
+      functional_requirements: [{ id: 'fr-live', title: 'Obligation', text: 'Initial obligation' }] };
+    apiMock.getSpec.mockResolvedValue(initial);
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    await openCriteria();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit verification ac-live' }));
+    fireEvent.change(screen.getByLabelText('Verification profile'), { target: { value: 'technical' } });
+    apiMock.getSpec.mockResolvedValue({ ...initial, version: 5 });
+    await act(async () => workspaceWatch.options!.onChange({ subjects: [], initial: false, authorityChanged: false }));
+    expect(screen.getByLabelText('Verification profile')).toHaveValue('technical');
+    expect(screen.getByRole('button', { name: 'Save verification plan' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Review verification base' })).toBeEnabled();
+    expect(apiMock.updateSpecEntity).not.toHaveBeenCalled();
+  });
+
+  it('shows the assigned method and expected observation inside the AC without another criterion list', async () => {
+    apiMock.getSpec.mockResolvedValue({ ...baseSpec,
+      acceptance_criteria: [{ id: 'ac-plan', title: 'Public boundary', text: 'No private imports' }],
+      test_scenarios: [
+        { id: 'ts-plan', title: 'Inspect imports', linked_criteria: ['ac-plan'], verification_method: 'inspection', then: 'Only public ports' },
+        { id: 'ts-other', title: 'Unrelated scenario', linked_criteria: ['ac-other'], verification_method: 'automated_test', then: 'Other outcome' },
+      ],
+    });
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    await openCriteria();
+    expect(screen.getAllByRole('article')).toHaveLength(1);
+    expect(screen.getByText('Method: inspection')).toBeInTheDocument();
+    expect(screen.getByText('Expected observation: Only public ports')).toBeInTheDocument();
+    expect(screen.queryByText('Unrelated scenario')).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Criterion verification' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Manage scenarios' }));
+    expect(within(screen.getByRole('tablist', { name: 'Tests and verifications sections' })).getByRole('tab', { name: /^Tests(?:\s|$)/ })).toHaveAttribute('aria-selected', 'true');
+    expect(apiMock.updateSpecEntity).not.toHaveBeenCalled();
+  });
+
+  it('does not reveal scenario methods without test read permission', async () => {
+    permissionMock.allowAll = false;
+    permissionMock.allowed = new Set(['spec.entity.read']);
+    apiMock.getSpec.mockResolvedValue({ ...baseSpec,
+      acceptance_criteria: [{ id: 'ac-plan', text: 'Condition' }],
+      test_scenarios: [{ id: 'ts-plan', title: 'Restricted scenario', linked_criteria: ['ac-plan'], verification_method: 'inspection', then: 'Restricted observation' }],
+    });
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    await openCriteria();
+    expect(screen.queryByRole('region', { name: 'Verification scenarios' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Restricted observation')).not.toBeInTheDocument();
+  });
+
+  it.each(['review', 'approved', 'validated', 'in_progress', 'done'] as SpecStatus[])('keeps criterion qualification read-only in %s', async status => {
+    apiMock.getSpec.mockResolvedValue({ ...baseSpec, status,
+      acceptance_criteria: [{ id: 'ac-plan', text: 'Five attempts block access' }],
+    });
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    await openCriteria();
+      await screen.findByRole('region', { name: 'AC verification' });
+    expect(screen.queryByRole('button', { name: 'Edit verification ac-plan' })).not.toBeInTheDocument();
+  });
+
+  it.each(['spec.structured_entity.acceptance_criterion.update', 'spec.interact_in.draft'])(
+    'keeps criterion qualification read-only without %s', async missing => {
+      permissionMock.allowAll = false;
+      permissionMock.allowed = new Set(['spec.entity.read', 'spec.structured_entity.acceptance_criterion.update', 'spec.interact_in.draft'].filter(flag => flag !== missing));
+      apiMock.getSpec.mockResolvedValue({ ...baseSpec, acceptance_criteria: [{ id: 'ac-plan', text: 'Condition' }] });
+      render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+      await openCriteria();
+      await screen.findByRole('region', { name: 'AC verification' });
+      expect(screen.queryByRole('button', { name: 'Edit verification ac-plan' })).not.toBeInTheDocument();
+    },
+  );
+
+  it('keeps archived Draft criterion qualification read-only', async () => {
+    apiMock.getSpec.mockResolvedValue({ ...baseSpec, archived: true, acceptance_criteria: [{ id: 'ac-plan', text: 'Condition' }] });
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    await openCriteria();
+      await screen.findByRole('region', { name: 'AC verification' });
+    expect(screen.queryByRole('button', { name: 'Edit verification ac-plan' })).not.toBeInTheDocument();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
+    apiMock.getEffectiveResources.mockImplementation((board, type, id, options) => Promise.resolve(workspacePage(board, type, id, options.resource_type, [], options.profile)));
+    apiMock.getCodeTraceabilityProjection.mockResolvedValue({ evidence: [] });
+    permissionMock.refresh.mockReset();
     permissionMock.allowAll = true;
     permissionMock.allowed = new Set();
     boardSettingsMock.requireSpecValidation = true;
@@ -278,6 +811,7 @@ describe('SpecModal validation navigation', () => {
       remaining_actions: [],
     });
     apiMock.getValidationTechnicalAudit.mockResolvedValue(null);
+    apiMock.listSpecEvaluations.mockResolvedValue({ current_edition: 1, active_count: 0, previous_count: 0, evaluations: [] });
     apiMock.getCurrentSpecValidation.mockResolvedValue({
       spec_id: baseSpec.id,
       edition: 1,
@@ -286,7 +820,160 @@ describe('SpecModal validation navigation', () => {
       previous_count: 0,
     });
     apiMock.listSprints.mockResolvedValue([]);
+    apiMock.getArchitectureCandidates.mockResolvedValue({
+      contract_version: 'architecture-candidates/v1',
+      board_id: baseSpec.board_id, spec_id: baseSpec.id,
+      spec_version: baseSpec.version, spec_edition: baseSpec.edition,
+      source_complete: true, population_state: 'complete', total: 0,
+      total_variants: 0, offset: 0, limit: 25, has_more: false,
+      profile: 'summary', candidates: [], issues: [], issue_counts: {}, issues_truncated: false,
+    });
   });
+
+  it('refreshes the open validation workspace after an external revision without changing tabs', async () => {
+    renderSpec('approved');
+    await screen.findByText(baseSpec.title);
+    expect(workspaceWatch.options?.boardId).toBeUndefined();
+    fireEvent.click(screen.getByRole('tab', { name: 'Validation' }));
+    await screen.findByTestId('spec-validation-current');
+    expect(workspaceWatch.options?.boardId).toBe(baseSpec.board_id);
+    const before = apiMock.getValidationCycle.mock.calls.length;
+    apiMock.getSpec.mockResolvedValue({ ...baseSpec, status: 'approved', version: baseSpec.version + 1, title: 'Updated through MCP' });
+    await act(async () => { await workspaceWatch.options!.onChange({ subjects: [{ subject_type: 'spec', subject_id: baseSpec.id }], authorityChanged: false, initial: false }); });
+    await screen.findByText('Updated through MCP');
+    expect(screen.getByRole('tab', { name: 'Validation' })).toHaveAttribute('aria-selected', 'true');
+    await waitFor(() => expect(apiMock.getValidationCycle.mock.calls.length).toBeGreaterThan(before));
+    expect(apiMock.getAllowedTransitions).toHaveBeenLastCalledWith(baseSpec.board_id, { entity_type: 'spec', entity_id: baseSpec.id });
+  });
+
+  it('removes the Spec and pending editors when the revision endpoint denies access', async () => {
+    const onClose = vi.fn();
+    apiMock.getSpec.mockResolvedValue({ ...baseSpec, status: 'approved' });
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={onClose} onChanged={vi.fn()} />);
+    await screen.findByText(baseSpec.title);
+    fireEvent.click(screen.getByRole('tab', { name: 'Validation' }));
+    act(() => workspaceWatch.options!.onAccessLost());
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(screen.queryByText(baseSpec.title)).not.toBeInTheDocument();
+  });
+
+  it('conceals protected content during authority refresh and preserves an authorized review draft', async () => {
+    let resolve!: (value: unknown) => void;
+    permissionMock.refresh.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    apiMock.getAllowedTransitions.mockResolvedValue({ allowed_transitions: [{
+      to_status: 'validated', label: 'Validated', gate: 'spec_validation', blocked_reason: null,
+      policy_compliance: false, reason_codes: [], preconditions: [], capabilities: ['validate'], effects: ['status_changed'],
+    }] });
+    renderSpec('approved');
+    await screen.findByText(baseSpec.title);
+    fireEvent.click(screen.getByRole('tab', { name: 'Validation' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Conclude planning validation' }));
+    const input = await screen.findByLabelText('Confidence justification');
+    fireEvent.change(input, { target: { value: 'An authored review that must survive reauthorization.' } });
+    let update!: Promise<void>;
+    act(() => { update = Promise.resolve(workspaceWatch.options!.onChange({ subjects: [], authorityChanged: true, initial: false })); });
+    expect(input).not.toBeVisible();
+    expect(screen.getByRole('status')).toHaveTextContent('Rechecking Board access');
+    await act(async () => {
+      resolve({ board_id: baseSpec.board_id, flags: { spec: { entity: { read: true } } } });
+      await update;
+    });
+    expect(screen.getByLabelText('Confidence justification')).toHaveValue('An authored review that must survive reauthorization.');
+    expect(screen.getByLabelText('Confidence justification')).toBeVisible();
+  });
+
+  it('removes the workspace when reverified authority denies Spec reading', async () => {
+    const onClose = vi.fn();
+    permissionMock.refresh.mockResolvedValueOnce({ board_id: baseSpec.board_id, flags: { spec: { entity: { read: false } } } });
+    apiMock.getSpec.mockResolvedValue({ ...baseSpec, status: 'approved' });
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={onClose} onChanged={vi.fn()} />);
+    await screen.findByText(baseSpec.title);
+    fireEvent.click(screen.getByRole('tab', { name: 'Validation' }));
+    await act(async () => { await workspaceWatch.options!.onChange({ subjects: [], authorityChanged: true, initial: false }); });
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(screen.queryByText(baseSpec.title)).not.toBeInTheDocument();
+  });
+
+  it('loads one candidate classification population only when Integration opens', async () => {
+    apiMock.getArchitectureClassifications.mockRejectedValue(new Error('Isolated transport error'));
+    renderSpec('draft');
+    await screen.findByText(baseSpec.title);
+    expect(apiMock.getArchitectureClassifications).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('tab', { name: 'Requirements & Decisions' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Integration' }));
+    await screen.findByText('Classification review could not be loaded. Its completeness is unknown.');
+    expect(apiMock.getArchitectureCandidates).not.toHaveBeenCalled();
+    expect(apiMock.getArchitectureClassifications).toHaveBeenCalledExactlyOnceWith(
+      baseSpec.board_id, baseSpec.id, expect.any(AbortSignal), { offset: 0, limit: 25 },
+    );
+  });
+
+  it('offers decomposition within Validation to an evaluation-only reader without reading quality', async () => {
+    permissionMock.allowAll = false;
+    permissionMock.allowed = new Set(['spec.entity.read', 'spec.evaluations.read']);
+    renderSpec('draft');
+    await screen.findByText(baseSpec.title);
+    expect(apiMock.listSpecEvaluations).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('tab', { name: 'Validation' }));
+    await screen.findByRole('tab', { name: 'Task decomposition' });
+    expect(screen.queryByRole('tab', { name: 'Spec Validation' })).not.toBeInTheDocument();
+    expect(apiMock.getCurrentSpecValidation).not.toHaveBeenCalled();
+  });
+
+  it('keeps decomposition lazy inside Validation instead of restoring the isolated evaluations panel', async () => {
+    renderSpec('draft');
+    await screen.findByText(baseSpec.title);
+    fireEvent.click(screen.getByRole('tab', { name: 'Validation' }));
+    await screen.findByTestId('spec-validation-current');
+    expect(screen.queryByRole('region', { name: 'Decomposition evaluations' })).not.toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Task decomposition' })).toBeInTheDocument();
+    expect(apiMock.listSpecEvaluations).not.toHaveBeenCalled();
+  });
+
+  it.each(['review', 'approved', 'validated', 'in_progress', 'done'] as SpecStatus[])(
+    'keeps classification authoring unavailable in %s while retaining review', async status => {
+      renderSpec(status);
+      await screen.findByText(baseSpec.title);
+      fireEvent.click(screen.getByRole('tab', { name: 'Requirements & Decisions' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Integration' }));
+      expect(screen.getByText(/Classification authoring requires an unarchived Draft Spec/)).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Save queued classifications' })).not.toBeInTheDocument();
+    },
+  );
+
+  it.each(['spec.entity.edit_fields', 'spec.interact_in.draft'])(
+    'keeps Draft classification read-only when %s is missing', async missing => {
+      permissionMock.allowAll = false;
+      permissionMock.allowed = new Set(['spec.entity.read', 'spec.architecture.read', 'spec.integration_requirements.read', 'spec.entity.edit_fields', 'spec.interact_in.draft'].filter(flag => flag !== missing));
+      renderSpec('draft');
+      await screen.findByText(baseSpec.title);
+      fireEvent.click(screen.getByRole('tab', { name: 'Requirements & Decisions' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Integration' }));
+      expect(screen.queryByRole('button', { name: 'Save queued classifications' })).not.toBeInTheDocument();
+      expect(screen.getByText(/Classification authoring requires an unarchived Draft Spec/)).toBeInTheDocument();
+    },
+  );
+
+  it.each(['spec.entity.read', 'spec.architecture.read', 'spec.integration_requirements.read'])(
+    'does not load architecture candidates when %s is missing', async (missing) => {
+      permissionMock.allowAll = false;
+      permissionMock.allowed = new Set([
+        'spec.entity.read', 'spec.architecture.read', 'spec.integration_requirements.read',
+      ].filter(permission => permission !== missing));
+      renderSpec('draft');
+      await screen.findByText(baseSpec.title);
+      fireEvent.click(screen.getByRole('tab', { name: 'Requirements & Decisions' }));
+      const irTab = screen.queryByRole('tab', { name: 'Integration' });
+      if (missing === 'spec.integration_requirements.read') {
+        expect(irTab).not.toBeInTheDocument();
+      } else {
+        fireEvent.click(irTab!);
+        expect(screen.getByText('Spec, architecture and IR read permissions are required.')).toBeInTheDocument();
+      }
+      expect(apiMock.getArchitectureCandidates).not.toHaveBeenCalled();
+      expect(apiMock.getArchitectureClassifications).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     ['draft', true],
@@ -314,7 +1001,7 @@ describe('SpecModal validation navigation', () => {
     },
   );
 
-  it('presents four ordered, lazy validation subtabs', async () => {
+  it('presents the independent assessments as ordered, lazy validation subtabs', async () => {
     renderSpec('approved');
 
     await screen.findByText(baseSpec.title);
@@ -328,6 +1015,7 @@ describe('SpecModal validation navigation', () => {
       name: 'Spec validation sections',
     })).getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
       'Spec Validation',
+      'Task decomposition',
       'Checklist',
       'Requirement lint',
       'Policy Compliance',
@@ -494,7 +1182,7 @@ describe('SpecModal validation navigation', () => {
     );
 
     expect(
-      await screen.findByRole('heading', { name: 'Validate Spec' }),
+      await screen.findByRole('heading', { name: 'Conclude planning validation' }),
     ).toBeInTheDocument();
     await waitFor(() => {
       expect(apiMock.getSpecChecklistState).toHaveBeenCalledWith(

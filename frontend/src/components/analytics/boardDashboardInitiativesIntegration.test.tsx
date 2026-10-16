@@ -65,12 +65,6 @@ vi.mock('./FlowHealthSummary', () => ({
     <section data-testid="flow-summary"><h3>Flow Health</h3><button type="button" onClick={onOpenFullView}>Open full view</button></section>
   ),
 }));
-vi.mock('./DeliveryForecastPanel', () => ({
-  DeliveryForecastPanel: ({ onOpenFullView }: { onOpenFullView?: () => void }) => (
-    <section data-testid="delivery-summary"><h3>Delivery Intelligence</h3><button type="button" onClick={onOpenFullView}>Open full view</button></section>
-  ),
-}));
-
 import { BoardDashboard } from './BoardDashboard';
 
 const funnel = {
@@ -192,6 +186,9 @@ describe('Board dashboard A3-A6 integration', () => {
     await waitFor(() => expect(screen.getByTestId('canonical-summary')).toBeInTheDocument());
     fireEvent.click(within(screen.getByTestId('canonical-summary')).getByRole('button', { name: 'Open full view' }));
     fireEvent.click(within(screen.getByTestId('flow-summary')).getByRole('button', { name: 'Open full view' }));
+    expect(apiMock.getBoardDeliveryForecast).not.toHaveBeenCalled();
+    expect(apiMock.getBoardAnalyticsSprints).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('delivery-forecast-panel')).not.toBeInTheDocument();
     fireEvent.click(within(screen.getByTestId('delivery-summary')).getByRole('button', { name: 'Open full view' }));
     fireEvent.click(within(screen.getByTestId('kg-summary')).getByRole('button', { name: 'Open full view' }));
 

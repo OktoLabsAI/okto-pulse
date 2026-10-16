@@ -1,20 +1,21 @@
 """Community SQLAlchemy adapter for the cognitive durable-source ledger.
 
-``kg_cognitive_sources`` is the immutable revision-zero compatibility table.
+``kg_cognitive_sources`` stores each native source's immutable birth (revision zero).
 Later full snapshots are appended to ``kg_cognitive_source_revisions``.  The
-adapter keeps the relational write outside the Ladybug writer scope and uses
+adapter keeps the relational write outside the Grafx writer scope and uses
 one short transaction for the complete batch.
 """
 
 from __future__ import annotations
 
 import logging
+import json
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from sqlalchemy import select, text, tuple_
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy import false, select, text, tuple_, update, or_
+from sqlalchemy.exc import IntegrityError, InterfaceError, OperationalError, SQLAlchemyError
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
     KGCognitiveSource,
@@ -23,16 +24,23 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
 from okto_pulse.core.ports.kg_cognitive_source import (
     CognitiveSourceConflict,
     CognitiveSourceError,
+    CognitiveSourceUnavailable,
     CognitiveSourcePersistedRevision,
     CognitiveSourceRecord,
     canonical_cognitive_source_fingerprint,
     decide_cognitive_source_append,
     latest_cognitive_source_records,
+    require_cognitive_source_head,
 )
 
 logger = logging.getLogger("okto_pulse.community.kg_cognitive_source")
 
 SemanticKey = tuple[str, int]
+
+
+def _source_io_error(reason: str, *, cause: SQLAlchemyError, **scope) -> CognitiveSourceError:
+    error = CognitiveSourceUnavailable if isinstance(cause, (OperationalError, InterfaceError)) else CognitiveSourceError
+    return error(reason, **scope)
 
 
 def _committed_at(raw: str | None) -> datetime:
@@ -176,8 +184,8 @@ def _enumeration_values(
     if revision is not None:
         fingerprint = str(revision.record_fingerprint)
         if not fingerprint:
-            # The generic selector permits an absent digest on a raw base row.
-            # A persisted revision never has that compatibility exemption.
+            # Birth rows are hashed from their content; appended revisions must
+            # additionally match their persisted fingerprint.
             raise CognitiveSourceConflict(
                 "cognitive_source_fingerprint_mismatch",
                 board_id=str(base.board_id),
@@ -233,25 +241,26 @@ def _new_revision_row(
 async def _load_base_rows(
     session: Any,
     keys: tuple[SemanticKey, ...],
+    *, for_update: bool = False,
 ) -> dict[SemanticKey, KGCognitiveSource]:
     if not keys:
         return {}
-    rows = (
-        await session.execute(
-            select(KGCognitiveSource).where(
+    statement = select(KGCognitiveSource).where(
                 tuple_(
                     KGCognitiveSource.node_id,
                     KGCognitiveSource.generation,
                 ).in_(keys)
-            )
-        )
-    ).scalars().all()
+            ).order_by(KGCognitiveSource.node_id, KGCognitiveSource.generation)
+    if for_update:
+        statement = statement.with_for_update()
+    rows = (await session.execute(statement)).scalars().all()
     return {_row_key(row): row for row in rows}
 
 
 async def _load_revision_rows(
     session: Any,
     source_ids: tuple[str, ...],
+    *, limit: int | None = None,
 ) -> tuple[KGCognitiveSourceRevision, ...]:
     if not source_ids:
         return ()
@@ -262,7 +271,7 @@ async def _load_revision_rows(
             .order_by(
                 KGCognitiveSourceRevision.cognitive_source_id.asc(),
                 KGCognitiveSourceRevision.source_revision.asc(),
-            )
+            ).limit(limit)
         )
     ).scalars().all()
     return tuple(rows)
@@ -334,11 +343,10 @@ class CommunitySqlAlchemyCognitiveSourceStore:
         fingerprints = tuple(_record_fingerprint(record) for record in records)
         semantic_keys = tuple(dict.fromkeys(_record_key(record) for record in records))
 
-        # Fail before touching the compatibility base when startup has not
-        # yet installed the additive revision ledger.
+        # Require the complete current ledger before staging any birth row.
         await session.execute(select(KGCognitiveSourceRevision.id).limit(1))
 
-        bases = await _load_base_rows(session, semantic_keys)
+        bases = await _load_base_rows(session, semantic_keys, for_update=True)
         seed_by_key: dict[SemanticKey, CognitiveSourceRecord] = {}
         for record in records:
             seed_by_key.setdefault(_record_key(record), record)
@@ -427,6 +435,231 @@ class CommunitySqlAlchemyCognitiveSourceStore:
         await session.flush()
         return tuple(resolved_ids)
 
+    async def read_capture_history_in_context(
+        self, context: object, *, board_id: str, bug_id: str,
+        cursor: str | None = None, limit: int = 20,
+    ):
+        from okto_pulse.core.ports.learning_capture import (
+            LearningCaptureHistoryPage, validate_learning_capture_payload,
+        )
+        if (type(limit) is not int or not 1 <= limit <= 50
+                or (cursor is not None and (type(cursor) is not str or not 1 <= len(cursor) <= 4096))):
+            raise ValueError('learning_capture_page_invalid')
+
+        def matches(payload):
+            return (payload['source']['bug_id'].as_string() == bug_id) & (
+                payload['capture_format'].as_string().is_not(None))
+
+        try:
+            revised = select(KGCognitiveSourceRevision.cognitive_source_id).where(
+                matches(KGCognitiveSourceRevision.payload))
+            query = select(KGCognitiveSource).where(
+                KGCognitiveSource.board_id == board_id, KGCognitiveSource.node_type == 'Learning',
+                or_(matches(KGCognitiveSource.payload), KGCognitiveSource.id.in_(revised)))
+            if cursor is not None:
+                query = query.where(KGCognitiveSource.id > cursor)
+            bases = list((await context.execute(query.order_by(KGCognitiveSource.id).limit(limit + 1)
+                .execution_options(populate_existing=True))).scalars().all())
+            more = len(bases) > limit
+            bases = bases[:limit]
+            if not bases:
+                return LearningCaptureHistoryPage((), None)
+            by_id = {str(base.id): base for base in bases}
+            revisions = list((await context.execute(select(KGCognitiveSourceRevision).where(
+                KGCognitiveSourceRevision.cognitive_source_id.in_(tuple(by_id)))
+                .order_by(KGCognitiveSourceRevision.cognitive_source_id, KGCognitiveSourceRevision.source_revision)
+                .limit(201).execution_options(populate_existing=True))).scalars().all())
+            if len(bases) + len(revisions) > 200:
+                raise CognitiveSourceError('learning_capture_history_limit', board_id=board_id)
+            history = tuple([_base_record(base) for base in bases] + [
+                _revision_record(by_id[str(row.cognitive_source_id)], row) for row in revisions])
+            # Audit the complete selected history, not just matching captures.
+            latest_cognitive_source_records(history)
+            captures = []
+            size = 0
+            for record in history:
+                payload = dict(record.payload)
+                if not validate_learning_capture_payload(payload, board_id=board_id,
+                        node_type=record.node_type, node_id=record.node_id, generation=record.generation,
+                        evidence_refs=record.evidence_refs):
+                    continue
+                if payload['source']['bug_id'] != bug_id:
+                    continue
+                size += len(json.dumps(payload, ensure_ascii=False).encode('utf-8'))
+                if size > 8 * 1024 * 1024:
+                    raise CognitiveSourceError('learning_capture_history_limit', board_id=board_id)
+                captures.append(record)
+            captures.sort(key=lambda row: (row.node_id, row.generation, row.source_revision))
+            return LearningCaptureHistoryPage(tuple(captures), str(bases[-1].id) if more else None)
+        except CognitiveSourceError:
+            raise
+        except SQLAlchemyError as exc:
+            raise CognitiveSourceError('learning_capture_history_unavailable', board_id=board_id) from exc
+
+    async def reserve_capture_identity_in_context(
+        self, context: object, *, board_id: str, author_id: str, capture_id: str,
+    ) -> CognitiveSourceRecord | None:
+        from okto_pulse.core.ports.learning_capture import validate_learning_capture_payload
+
+        if any(type(value) is not str or not value.strip() or len(value) > 4096
+               for value in (board_id, author_id, capture_id)):
+            raise ValueError('learning_capture_identity_invalid')
+        try:
+            dialect = str(context.get_bind().dialect.name)
+            if dialect == 'sqlite':
+                await context.execute(update(KGCognitiveSource).where(false()).values(id=KGCognitiveSource.id))
+            else:
+                raise CognitiveSourceError('learning_capture_identity_reservation_unsupported', board_id=board_id)
+
+            def matches(payload):
+                return ((payload['author_id'].as_string() == author_id)
+                    & (payload['capture_id'].as_string() == capture_id)
+                    & payload['capture_format'].as_string().is_not(None))
+
+            revised = select(KGCognitiveSourceRevision.cognitive_source_id).where(
+                matches(KGCognitiveSourceRevision.payload))
+            rows = list((await context.execute(select(KGCognitiveSource).where(
+                KGCognitiveSource.board_id == board_id,
+                or_(matches(KGCognitiveSource.payload), KGCognitiveSource.id.in_(revised)))
+                .limit(2).execution_options(populate_existing=True))).scalars().all())
+            if len(rows) > 1:
+                raise CognitiveSourceConflict('learning_capture_identity_ambiguous', board_id=board_id)
+            if not rows:
+                return None
+            base, = rows
+            history = await self._read_scoped_history(context, board_id=board_id,
+                node_id=str(base.node_id), generation=int(base.generation))
+            captures = []
+            for record in history:
+                payload = dict(record.payload)
+                captured = validate_learning_capture_payload(payload, board_id=board_id,
+                    node_type=record.node_type, node_id=record.node_id, generation=record.generation,
+                    evidence_refs=record.evidence_refs)
+                if captured and payload['author_id'] == author_id and payload['capture_id'] == capture_id:
+                    captures.append(record)
+            if len(captures) != 1:
+                raise CognitiveSourceConflict('learning_capture_identity_ambiguous', board_id=board_id)
+            return captures[0]
+        except CognitiveSourceError:
+            raise
+        except SQLAlchemyError as exc:
+            raise _source_io_error('learning_capture_identity_reservation_failed', cause=exc, board_id=board_id) from exc
+
+    async def read_latest_in_context(
+        self, context: object, *, board_id: str, node_id: str, generation: int,
+    ) -> CognitiveSourceRecord | None:
+        history = await self._read_scoped_history(context, board_id=board_id,
+            node_id=node_id, generation=generation)
+        if not history:
+            return None
+        latest, = latest_cognitive_source_records(history)
+        return latest
+
+    async def read_revision_in_context(
+        self, context: object, *, board_id: str, node_id: str, generation: int,
+        source_revision: int,
+    ) -> CognitiveSourceRecord | None:
+        if type(source_revision) is not int or source_revision < 0:
+            raise ValueError('cognitive_source_revision_invalid')
+        history = await self._read_scoped_history(context, board_id=board_id,
+            node_id=node_id, generation=generation)
+        return next((record for record in history if record.source_revision == source_revision), None)
+
+    async def read_history_in_context(
+        self, context: object, *, board_id: str, node_id: str, generation: int,
+    ) -> tuple[CognitiveSourceRecord, ...]:
+        if (any(type(value) is not str or not value.strip() or len(value) > 4096
+                for value in (board_id, node_id))
+                or type(generation) is not int or generation < 0):
+            raise ValueError('cognitive_source_history_selection_invalid')
+        history = await self._read_scoped_history(context, board_id=board_id,
+            node_id=node_id, generation=generation)
+        return tuple(sorted(history, key=lambda record: record.source_revision))
+
+    async def read_fingerprint_in_context(
+        self, context: object, *, board_id: str, node_id: str, generation: int,
+        fingerprint: str,
+    ) -> CognitiveSourceRecord | None:
+        if (any(type(value) is not str or not value.strip() or len(value) > 4096
+                for value in (board_id, node_id))
+                or type(generation) is not int or generation < 0
+                or type(fingerprint) is not str or len(fingerprint) != 64
+                or any(char not in '0123456789abcdef' for char in fingerprint)):
+            raise ValueError('cognitive_source_fingerprint_selection_invalid')
+        history = await self._read_scoped_history(context, board_id=board_id,
+            node_id=node_id, generation=generation)
+        matches = [record for record in history if record.record_fingerprint == fingerprint]
+        if len(matches) > 1:
+            raise CognitiveSourceConflict('cognitive_source_fingerprint_ambiguous',
+                board_id=board_id, node_id=node_id)
+        return matches[0] if matches else None
+
+    async def read_bounded_history_in_context(self, context, *, board_id, node_id, generation, max_records):
+        if (any(type(value) is not str or not value.strip() or len(value) > 4096 for value in (board_id, node_id))
+                or type(generation) is not int or generation < 0
+                or type(max_records) is not int or not 1 <= max_records <= 200):
+            raise ValueError('cognitive_source_history_selection_invalid')
+        return await self._read_scoped_history(context, board_id=board_id, node_id=node_id,
+            generation=generation, max_records=max_records)
+
+    async def _read_scoped_history(self, context, *, board_id, node_id, generation, max_records=None):
+        try:
+            bases = await _load_base_rows(context, ((node_id, generation),))
+            base = bases.get((node_id, generation))
+            if base is None:
+                return ()
+            if str(base.board_id) != board_id:
+                raise CognitiveSourceConflict('cognitive_source_scope_conflict', board_id=board_id, node_id=node_id)
+            history = [_base_record(base)]
+            revisions = await _load_revision_rows(context, (str(base.id),), limit=max_records)
+            # One base plus max_records revisions is the bounded overflow probe.
+            # Do not interpret or present that partial result as verified history.
+            if max_records is not None and len(revisions) >= max_records:
+                raise CognitiveSourceUnavailable('cognitive_source_history_limit', board_id=board_id, node_id=node_id)
+            for row in revisions:
+                history.append(_revision_record(base, row))
+            latest_cognitive_source_records(tuple(history))
+            return tuple(history)
+        except (OperationalError, InterfaceError) as exc:
+            raise CognitiveSourceUnavailable('cognitive_source_read_unavailable',
+                board_id=board_id, node_id=node_id) from exc
+
+    async def append_many_if_current_in_context(
+        self, context: object, records: tuple[CognitiveSourceRecord, ...], *,
+        expected_fingerprints: tuple[str | None, ...],
+    ) -> tuple[str, ...]:
+        """Serialize head comparison with append, within the caller's UOW."""
+        if (type(records) is not tuple or type(expected_fingerprints) is not tuple
+                or len(records) != len(expected_fingerprints)
+                or len({_record_key(record) for record in records}) != len(records)):
+            raise ValueError('cognitive_source_precondition_batch_invalid')
+        if not records:
+            return ()
+        try:
+            dialect = str(context.get_bind().dialect.name)
+            if dialect == 'sqlite':
+                # Acquire the writer slot even when the caller has already
+                # started a deferred/read transaction. Unlike BEGIN IMMEDIATE,
+                # this never nests a transaction; the false predicate changes
+                # no immutable row and fires no row-level update trigger.
+                await context.execute(update(KGCognitiveSource).where(false()).values(id=KGCognitiveSource.id))
+            bases = await _load_base_rows(context, tuple(_record_key(record) for record in records), for_update=True)
+            histories = {key: [_base_record(base)] for key, base in bases.items()}
+            by_id = {str(base.id): base for base in bases.values()}
+            for row in await _load_revision_rows(context, tuple(by_id)):
+                base = by_id[str(row.cognitive_source_id)]
+                histories[_row_key(base)].append(_revision_record(base, row))
+            # Verify the entire batch before staging any source row.
+            for record, expected in zip(records, expected_fingerprints, strict=True):
+                require_cognitive_source_head(record, expected_fingerprint=expected,
+                    history=tuple(histories.get(_record_key(record), ())))
+            return await self.append_many_in_context(context, records)
+        except CognitiveSourceError:
+            raise
+        except SQLAlchemyError as exc:
+            raise _source_io_error('cognitive_source_conditional_write_failed', cause=exc,
+                board_id=records[0].board_id, node_id=records[0].node_id) from exc
+
     async def append_many_in_context(
         self,
         context: object,
@@ -454,12 +687,12 @@ class CommunitySqlAlchemyCognitiveSourceStore:
         except SQLAlchemyError as exc:
             if _is_missing_revision_ledger(exc):
                 raise CognitiveSourceError(
-                    "cognitive_source_schema_upgrade_required",
+                    "cognitive_source_storage_incompatible",
                     board_id=first.board_id,
                     node_id=first.node_id,
                     remediation=(
-                        "Run the Community relational schema lifecycle before "
-                        "accepting cognitive writes."
+                        "Select storage created by the current Community schema; "
+                        "incompatible storage is not converted."
                     ),
                 ) from exc
             logger.error(
@@ -471,8 +704,8 @@ class CommunitySqlAlchemyCognitiveSourceStore:
                 len(records),
                 type(exc).__name__,
             )
-            raise CognitiveSourceError(
-                "cognitive_source_append_failed",
+            raise _source_io_error(
+                "cognitive_source_append_failed", cause=exc,
                 board_id=first.board_id,
                 node_id=first.node_id,
                 remediation=(
@@ -503,8 +736,8 @@ class CommunitySqlAlchemyCognitiveSourceStore:
         try:
             rows = await _load_base_rows(context, tuple(by_semantic))
         except SQLAlchemyError as exc:
-            raise CognitiveSourceError(
-                "cognitive_source_birth_lookup_failed",
+            raise _source_io_error(
+                "cognitive_source_birth_lookup_failed", cause=exc,
                 board_id=board_id,
                 remediation=(
                     "Check the application relational database; consolidation "
@@ -559,12 +792,12 @@ class CommunitySqlAlchemyCognitiveSourceStore:
         except SQLAlchemyError as exc:
             if _is_missing_revision_ledger(exc):
                 raise CognitiveSourceError(
-                    "cognitive_source_schema_upgrade_required",
+                    "cognitive_source_storage_incompatible",
                     board_id=first.board_id,
                     node_id=first.node_id,
                     remediation=(
-                        "Run the Community relational schema lifecycle before "
-                        "accepting cognitive writes."
+                        "Select storage created by the current Community schema; "
+                        "incompatible storage is not converted."
                     ),
                 ) from exc
             logger.error(
@@ -576,8 +809,8 @@ class CommunitySqlAlchemyCognitiveSourceStore:
                 len(records),
                 type(exc).__name__,
             )
-            raise CognitiveSourceError(
-                "cognitive_source_append_failed",
+            raise _source_io_error(
+                "cognitive_source_append_failed", cause=exc,
                 board_id=first.board_id,
                 node_id=first.node_id,
                 remediation=(
@@ -585,24 +818,6 @@ class CommunitySqlAlchemyCognitiveSourceStore:
                     "was compensated and the complete append can be retried."
                 ),
             ) from exc
-
-    async def _enumerate_base_only(
-        self,
-        board_id: str,
-    ) -> tuple[CognitiveSourceRecord, ...]:
-        async with self._session_factory() as session:
-            rows = (
-                await session.execute(
-                    select(KGCognitiveSource)
-                    .where(KGCognitiveSource.board_id == board_id)
-                    .order_by(
-                        KGCognitiveSource.committed_at.asc(),
-                        KGCognitiveSource.node_id.asc(),
-                        KGCognitiveSource.generation.asc(),
-                    )
-                )
-            ).scalars().all()
-            return tuple(_base_record(row) for row in rows)
 
     async def enumerate(self, board_id: str) -> tuple[CognitiveSourceRecord, ...]:
         return await self._enumerate(board_id, latest_only=False)
@@ -630,8 +845,7 @@ class CommunitySqlAlchemyCognitiveSourceStore:
                     )
                 ).scalars().all()
                 if not bases:
-                    # Still touch the ledger so a pre-migration database has
-                    # the same explicit read-compatibility path.
+                    # An empty Board still requires the complete current ledger.
                     await session.execute(
                         select(KGCognitiveSourceRevision.id).limit(1)
                     )
@@ -671,22 +885,13 @@ class CommunitySqlAlchemyCognitiveSourceStore:
         except CognitiveSourceError:
             raise
         except SQLAlchemyError as exc:
-            if _is_missing_revision_ledger(exc):
-                try:
-                    records = await self._enumerate_base_only(board_id)
-                    return (
-                        latest_cognitive_source_records(records)
-                        if latest_only else records
-                    )
-                except SQLAlchemyError as fallback_exc:
-                    exc = fallback_exc
             logger.error(
                 "kg.cognitive_source.enumerate_failed board_id=%s error=%s",
                 board_id,
                 type(exc).__name__,
             )
-            raise CognitiveSourceError(
-                "cognitive_source_enumerate_failed",
+            raise _source_io_error(
+                "cognitive_source_enumerate_failed", cause=exc,
                 board_id=board_id,
                 remediation=(
                     "Check the application relational database; rebuild never "

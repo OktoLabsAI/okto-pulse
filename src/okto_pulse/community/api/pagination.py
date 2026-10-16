@@ -5,8 +5,8 @@ REST-only page-size menu ``{25, 50, 100}`` (FR0 — the Core accepts 1..200;
 the menu is UX policy), assembles the mandatory scope (identity anchor +
 archived policy), wraps the request in the PRODUCTIVE ``statement_budget``
 cap (TR1 — list routes declare 6) and executes through the catalog contract
-``uow.services.entity_pages``. Legacy calls without ``offset``/``limit``
-never enter this module (DR9: byte-identical legacy shapes).
+``uow.services.entity_pages``. Omitted windows use offset=0 and limit=25;
+every call uses the same envelope and validation.
 """
 
 from __future__ import annotations
@@ -40,9 +40,6 @@ _INTEGER_QUERY = TypeAdapter(int)
 _BOOLEAN_QUERY = TypeAdapter(bool)
 
 
-def _raw_pagination_requested(request: Request) -> bool:
-    """Return whether the opt-in window is present in the raw query."""
-    return "offset" in request.query_params or "limit" in request.query_params
 
 
 def validate_pagination_query(request: Request) -> None:
@@ -51,12 +48,10 @@ def validate_pagination_query(request: Request) -> None:
     FastAPI normally reports malformed ``int``/``bool`` query values as 422.
     TR7 deliberately assigns these transport errors to 400, so this dependency
     inspects the raw query before route-parameter validation.  The accepted
-    boolean spellings match FastAPI/Pydantic's compatibility vocabulary.
+    boolean spellings match FastAPI/Pydantic's HTTP query vocabulary.
     Bounds and the REST page-size menu remain the responsibility of
     :func:`resolve_window` after typed parsing.
     """
-    if not _raw_pagination_requested(request):
-        return
     for name in ("offset", "limit"):
         raw = request.query_params.get(name)
         if raw is None:
@@ -85,12 +80,9 @@ def validate_story_pagination_query(request: Request) -> None:
     """Apply the common guard plus the Story-only boolean filters.
 
     ``linked`` and ``converted`` belong only to the Story surface.  Keeping
-    them out of the shared dependency preserves DR9 on the other legacy
-    routes, where unknown query parameters continue to be ignored.
+    them out of the shared dependency keeps unrelated route filters separate.
     """
     validate_pagination_query(request)
-    if not _raw_pagination_requested(request):
-        return
     for name in ("linked", "converted"):
         raw = request.query_params.get(name)
         if raw is None:
@@ -113,8 +105,6 @@ def validate_ideation_pagination_query(request: Request) -> None:
     filters.
     """
     validate_pagination_query(request)
-    if not _raw_pagination_requested(request):
-        return
     raw = request.query_params.get("derivation_pending")
     if raw is None:
         return
@@ -127,9 +117,6 @@ def validate_ideation_pagination_query(request: Request) -> None:
         )
 
 
-def pagination_requested(offset: int | None, limit: int | None) -> bool:
-    """The envelope is OPT-IN: any of offset/limit present activates it."""
-    return offset is not None or limit is not None
 
 
 def resolve_window(offset: int | None, limit: int | None) -> tuple[int, int]:

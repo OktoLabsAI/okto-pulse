@@ -1,7 +1,7 @@
 // Path B amendment-lineage remediation panel (spec be089cd3 / card b002b7ca).
 //
 // Sibling of BugWorkflowRemediationPanel: that panel summarizes the gate +
-// candidate scenarios; THIS panel shows Path A / Path B / Path C as DISTINCT
+// candidate scenarios; THIS panel shows Path A / Path B as DISTINCT
 // concepts, the amendment lineage + coverage states, reason codes, and the SAFE
 // remediation actions (create amendment / associate revision / open resolver
 // details). It NEVER offers a skip/bypass/override — the gate is only remediated.
@@ -102,8 +102,9 @@ export function PathBRemediationPanel({
   const pathBRequired =
     revisions.length > 0 ||
     (remediation?.remediation_path === 'path_b_semantic_gap') ||
+    (remediation?.remediation_path === 'path_b_amendment_lineage') ||
     (bugRegressionPreview?.semantic_gap_required ?? false);
-  const activePath: 'A' | 'B' | 'C' = pathBRequired ? 'B' : 'A';
+  const activePath: 'A' | 'B' = pathBRequired ? 'B' : 'A';
 
   const coverage = coverageView(pathBResolution?.coverage_state);
   const missingLinks = pathBResolution?.missing_links ?? [];
@@ -115,15 +116,11 @@ export function PathBRemediationPanel({
       data-testid="path-b-remediation-panel"
       className="rounded-lg border border-gray-200 dark:border-gray-700 p-4 space-y-3"
     >
-      {/* Path A / B / C as DISTINCT concepts (FR3) */}
-      <div className="grid grid-cols-3 gap-2">
+      {/* Path A / B as DISTINCT concepts (FR3) */}
+      <div className="grid grid-cols-2 gap-2">
         <PathConcept label="Path A" active={activePath === 'A'} description="Same-spec regression scenario" />
         <PathConcept label="Path B" active={activePath === 'B'} description="Amendment lineage (cross-spec)" />
-        <PathConcept label="Path C" active={false} description="Hotfix execution lane" />
       </div>
-      <p className="text-[10px] text-gray-500 dark:text-gray-400" data-testid="path-c-not-substitute-note">
-        Path C (hotfix lane) is only an execution lane. It does NOT replace Path B amendment lineage.
-      </p>
 
       {!pathBRequired ? (
         <div

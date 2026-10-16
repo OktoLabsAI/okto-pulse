@@ -12,8 +12,11 @@ import { PRIORITY_COLORS, PRIORITY_LABELS, BUG_SEVERITY_LABELS, BUG_SEVERITY_COL
 import type { KGCognitivePendingBadgeView } from '@/services/kg-health-api';
 import { CognitivePendingBadge } from '@/components/knowledge/CognitivePendingBadge';
 import { QABadge } from '@/components/shared/QABadge';
+import { DeliveryReadinessView, type DeliveryReadinessState } from '@/components/code-traceability/DeliveryReadinessView';
+import { useDashboardStore } from '@/store/dashboard';
 
 interface KanbanCardProps {
+  deliveryReadiness?: DeliveryReadinessState;
   card: CardSummary;
   onClick: (cardId: string) => void;
   nameMap: Record<string, string>;
@@ -31,18 +34,15 @@ function displayName(id: string, nameMap: Record<string, string>): string {
 }
 
 function validationFailed(validation: NonNullable<CardSummary['validations']>[number]): boolean {
-  if (validation.verdict) return validation.verdict === 'fail';
-  if (validation.outcome) return validation.outcome === 'failed';
-  return validation.recommendation === 'reject';
+  return validation.outcome === 'failed';
 }
 
 function validationPassed(validation: NonNullable<CardSummary['validations']>[number]): boolean {
-  if (validation.verdict) return validation.verdict === 'pass';
-  if (validation.outcome) return validation.outcome === 'success';
-  return validation.recommendation === 'approve';
+  return validation.outcome === 'success';
 }
 
-export function KanbanCard({ card, onClick, nameMap, canDrag = true, cognitiveBadge }: KanbanCardProps) {
+export function KanbanCard({ card, onClick, nameMap, canDrag = true, cognitiveBadge, deliveryReadiness }: KanbanCardProps) {
+  const openCardModal = useDashboardStore(state => state.openCardModal);
   const {
     attributes,
     listeners,
@@ -191,6 +191,7 @@ export function KanbanCard({ card, onClick, nameMap, canDrag = true, cognitiveBa
           ) : null}
 
           {/* Test card: scenario count */}
+          {deliveryReadiness && <DeliveryReadinessView {...deliveryReadiness} compact onInspect={() => openCardModal(card.id, { tab: 'delivery', focusDiagnosis: true })} />}
           {isTest && card.test_scenario_ids && card.test_scenario_ids.length > 0 && (
             <div className="flex gap-1 mt-1.5">
               <span className="text-[9px] px-1.5 py-0.5 rounded font-medium bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300 inline-flex items-center gap-0.5">
@@ -233,11 +234,11 @@ export function KanbanCard({ card, onClick, nameMap, canDrag = true, cognitiveBa
               <span className="text-[9px] px-1.5 py-0.5 rounded font-medium bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300" title={`Confidence: ${passedEntry.confidence}%`}>
                 Conf: {passedEntry.confidence}%
               </span>
-              <span className="text-[9px] px-1.5 py-0.5 rounded font-medium bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300" title={`Completeness: ${passedEntry.completeness}%`}>
-                Compl: {passedEntry.completeness}%
+              <span className="text-[9px] px-1.5 py-0.5 rounded font-medium bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300" title={`Completeness: ${passedEntry.estimated_completeness}%`}>
+                Compl: {passedEntry.estimated_completeness}%
               </span>
-              <span className="text-[9px] px-1.5 py-0.5 rounded font-medium bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300" title={`Drift: ${passedEntry.drift}%`}>
-                Drift: {passedEntry.drift}%
+              <span className="text-[9px] px-1.5 py-0.5 rounded font-medium bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300" title={`Drift: ${passedEntry.estimated_drift}%`}>
+                Drift: {passedEntry.estimated_drift}%
               </span>
             </div>
           )}

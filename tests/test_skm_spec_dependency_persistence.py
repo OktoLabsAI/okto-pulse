@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
 from sqlalchemy import event, func, select, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -102,6 +103,13 @@ async def _database(path: Path):
         sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
+    from okto_pulse.community.adapters.sqlalchemy_knowledge_propagation import CommunitySqlAlchemyKnowledgePropagationStore
+    from okto_pulse.core.ports.knowledge_propagation import register_knowledge_propagation_port
+    from okto_pulse.community.adapters.sqlalchemy_resource_gate_service import CommunitySqlAlchemyResourceGateAdapter
+    from okto_pulse.core.ports.relational_services import register_resource_gate_adapter_factory
+
+    register_knowledge_propagation_port(CommunitySqlAlchemyKnowledgePropagationStore(factory))
+    register_resource_gate_adapter_factory(CommunitySqlAlchemyResourceGateAdapter)
     return engine, factory
 
 
@@ -113,7 +121,7 @@ def _spec(
     archived: bool = False,
     ideation_id: str | None = None,
 ) -> Spec:
-    return Spec(
+    return Spec(architecture_adoption=ArchitectureAdoptionScope(board_id=BOARD_ID, spec_id=spec_id, adopted_in_edition=1, actor_id="owner", inherited_resource_ids=()).model_dump(mode="json"),
         id=spec_id,
         board_id=BOARD_ID,
         title=title,
@@ -605,10 +613,11 @@ async def test_mutation_ledger_replays_exact_actor_type_and_preserves_audit(
 
 
 @pytest.mark.asyncio
-async def test_legacy_mutation_receipt_without_satisfaction_remains_replayable(
-    tmp_path: Path,
+@pytest.mark.parametrize("satisfaction", ["missing", None, 1, "true"])
+async def test_incompatible_mutation_receipt_is_refused_without_repair(
+    tmp_path: Path, satisfaction,
 ) -> None:
-    engine, factory = await _database(tmp_path / "skm-legacy-receipt.db")
+    engine, factory = await _database(tmp_path / "skm-incompatible-receipt.db")
     await _seed(factory)
     _register_effect_ports()
 
@@ -632,40 +641,58 @@ async def test_legacy_mutation_receipt_without_satisfaction_remains_replayable(
             )
         )
         assert current is not None
-        legacy_payload = dict(current.result_payload)
-        assert legacy_payload.pop("satisfied") is True
+        incompatible_payload = dict(current.result_payload)
+        assert incompatible_payload.pop("satisfied") is True
+        if satisfaction != "missing":
+            incompatible_payload["satisfied"] = satisfaction
         session.add(
             SpecDependencyOperation(
-                id="legacy-operation",
+                id="incompatible-operation",
                 board_id=current.board_id,
                 dependent_spec_ref=current.dependent_spec_ref,
                 dependency_ref=current.dependency_ref,
                 operation=current.operation,
-                idempotency_key="legacy-key",
+                idempotency_key="incompatible-key",
                 request_digest=current.request_digest,
                 actor_id=current.actor_id,
                 actor_type=current.actor_type,
                 actor_name=current.actor_name,
                 expected_spec_version=current.expected_spec_version,
                 resulting_spec_version=current.resulting_spec_version,
-                result_payload=legacy_payload,
+                result_payload=incompatible_payload,
                 created_at=current.created_at,
             )
         )
         await session.flush()
 
-        replayed = await adapter.lookup_mutation_replay(
-            board_id=BOARD_ID,
-            operation="add",
-            idempotency_key="legacy-key",
-            actor_id="same-id",
-            actor_type="user",
+        counts_before = [
+            await session.scalar(select(func.count()).select_from(model))
+            for model in (SpecDependency, SpecDependencyOperation, SpecHistory, ActivityLog, DomainEventRow)
+        ]
+        with pytest.raises(ValueError, match="spec_dependency_receipt_satisfaction_invalid"):
+            await adapter.lookup_mutation_replay(
+                board_id=BOARD_ID, operation="add", idempotency_key="incompatible-key",
+                actor_id="same-id", actor_type="user",
+            )
+        assert [
+            await session.scalar(select(func.count()).select_from(model))
+            for model in (SpecDependency, SpecDependencyOperation, SpecHistory, ActivityLog, DomainEventRow)
+        ] == counts_before
+        native = await adapter.lookup_mutation_replay(
+            board_id=BOARD_ID, operation="add", idempotency_key="current-key",
+            actor_id="same-id", actor_type="user",
         )
+        assert native is not None and native.dependency == added.dependency
+        assert native.satisfied is True
 
-        assert replayed is not None
-        assert replayed.dependency == added.dependency
-        assert replayed.satisfied is True
-
+    # The caller committed after refusal; incompatible durable bytes remain intact.
+    async with factory() as observer:
+        stored = await observer.get(SpecDependencyOperation, "incompatible-operation")
+        assert stored.result_payload == incompatible_payload
+        original = await observer.scalar(select(SpecDependencyOperation).where(
+            SpecDependencyOperation.idempotency_key == "current-key",
+        ))
+        assert original.result_payload["satisfied"] is True
     await engine.dispose()
 
 

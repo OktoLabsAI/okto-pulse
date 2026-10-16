@@ -135,7 +135,7 @@ jobs:
             "$GITHUB_WORKSPACE/okto-pulse-core/tests/test_f05_domain_event_delivery.py" \
             "$GITHUB_WORKSPACE/okto-pulse-core/tests/test_f05_queue_health_policy.py" \
             "$GITHUB_WORKSPACE/okto-pulse-core/tests/test_f05_service_ownership.py" \
-            "$GITHUB_WORKSPACE/okto-pulse-core/tests/test_f05_spec_materialization_policy.py" \
+            "$GITHUB_WORKSPACE/okto-pulse-core/tests/test_retired_kg_cli_contracts.py" \
             "$GITHUB_WORKSPACE/okto-pulse-core/tests/test_f06_rebuild_processor.py" \
             "$GITHUB_WORKSPACE/okto-pulse-core/tests/test_f09_graph_neutral_ports.py" \
             "$GITHUB_WORKSPACE/okto-pulse-core/tests/test_f10_worker_processor_boundary.py" \

@@ -1,0 +1,523 @@
+- generic [ref=f10e3]:
+  - banner [ref=f10e4]:
+    - generic [ref=f10e5]:
+      - generic [ref=f10e6]:
+        - button "Hide sidebar" [ref=f10e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f10e12]
+        - generic [ref=f10e31]: / My Board
+      - generic [ref=f10e32]:
+        - button "Refresh board" [ref=f10e33] [cursor=pointer]
+        - button [ref=f10e40] [cursor=pointer]
+  - generic [ref=f10e13]:
+    - complementary [ref=f10e14]:
+      - generic [ref=f10e15]:
+        - generic [ref=f10e17]:
+          - heading "Boards" [level=2] [ref=f10e18]
+          - button "New board" [ref=f10e19] [cursor=pointer]
+        - navigation [ref=f10e21]:
+          - generic [ref=f10e22]:
+            - heading "My Boards" [level=3] [ref=f10e23]
+            - list [ref=f10e44]:
+              - listitem [ref=f10e45]:
+                - button "My Board" [ref=f10e46] [cursor=pointer]
+    - main [ref=f10e26]:
+      - group "Board views" [ref=f10e53]:
+        - button "Stories" [ref=f10e54] [cursor=pointer]
+        - button "Ideations" [ref=f10e58] [cursor=pointer]
+        - button "Refinements" [ref=f10e61] [cursor=pointer]
+        - button "Specs" [pressed] [ref=f10e66] [cursor=pointer]
+        - button "Tasks" [ref=f10e71] [cursor=pointer]
+      - generic [ref=f10e213]:
+        - generic [ref=f10e214]:
+          - generic [ref=f10e215]:
+            - heading "Specifications" [level=2] [ref=f10e216]
+            - generic [ref=f10e217]: (1 of 1)
+          - generic [ref=f10e218]:
+            - textbox "Search specs…" [ref=f10e220]
+            - group "View mode" [ref=f10e221]:
+              - button "List view" [pressed] [ref=f10e222] [cursor=pointer]
+              - button "Grid view" [ref=f10e224] [cursor=pointer]
+            - generic [ref=f10e230]: Group specs
+            - combobox "Group specs" [ref=f10e236]:
+              - option "None"
+              - option "Ideation"
+              - option "Refinement"
+              - option "Parents" [selected]
+            - button "New Spec" [ref=f10e237] [cursor=pointer]
+        - generic [ref=f10e239]:
+          - button "All" [ref=f10e240] [cursor=pointer]
+          - button "Draft" [ref=f10e241] [cursor=pointer]
+          - button "Review" [ref=f10e242] [cursor=pointer]
+          - button "Approved" [ref=f10e243] [cursor=pointer]
+          - button "Validated" [ref=f10e244] [cursor=pointer]
+          - button "In Progress" [ref=f10e245] [cursor=pointer]
+          - button "Done" [ref=f10e246] [cursor=pointer]
+          - button "Show archived" [ref=f10e247] [cursor=pointer]
+        - generic [ref=f10e250]:
+          - generic [ref=f10e251] [cursor=pointer]:
+            - 'heading "Refinement: Reserva de salas — consistência das reservas e contratos hexagonais" [level=3] [ref=f10e258]'
+            - generic [ref=f10e259]: (1)
+          - generic [ref=f10e263] [cursor=pointer]:
+            - generic [ref=f10e264]:
+              - generic [ref=f10e265]:
+                - generic [ref=f10e266]: Draft
+                - generic "Edition 1" [ref=f10e270]
+              - heading "Reserva de salas — consistência das reservas e contratos hexagonais" [level=3] [ref=f10e271]
+              - paragraph [ref=f10e272]: "Especificação conceitual H01–H04: consultar, criar, alterar e cancelar reservas próprias com consistência, idempotência, histórico e arquitetura hexagonal. Exercício de testes do Pulse; nenhuma implementação real solicitada."
+              - 'generic "Requirement lint: no current result · Edition 1; 0 previous results" [ref=f10e274]':
+                - generic [ref=f10e275]: Requirement lint
+                - strong [ref=f10e276]: Not assessed
+              - generic [ref=f10e277]:
+                - generic [ref=f10e278]: mock
+                - generic [ref=f10e279]: reserva-de-salas
+                - generic [ref=f10e280]: teste-sdlc
+            - generic [ref=f10e281]:
+              - button "Open lineage graph" [ref=f10e282]
+              - button "Archive tree" [ref=f10e287]
+        - generic [ref=f10e293]:
+          - status [ref=f10e294]: Showing 1–1 of 1 matching. 1 overall. Page 1 of 1.
+          - generic [ref=f10e295]:
+            - generic [ref=f10e296]:
+              - generic [ref=f10e297]: Items per page
+              - combobox "Items per page" [ref=f10e298]:
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+            - navigation "Specifications pagination" [ref=f10e299]:
+              - generic [ref=f10e300]:
+                - button "Previous page" [disabled] [ref=f10e301]: Previous
+                - button "Page 1" [disabled] [ref=f10e302]: "1"
+                - button "Next page" [disabled] [ref=f10e303]: Next
+        - dialog [ref=f10e305]:
+          - generic [ref=f10e306]:
+            - generic [ref=f10e307]:
+              - generic [ref=f10e308]: Draft
+              - heading "Reserva de salas — consistência das reservas e contratos hexagonais" [level=2] [ref=f10e312]
+              - generic "Edition 1" [ref=f10e313]
+            - generic [ref=f10e314]:
+              - button "Open lineage graph" [ref=f10e315] [cursor=pointer]
+              - button "Export report" [ref=f10e320] [cursor=pointer]
+              - button "Refresh" [ref=f10e324] [cursor=pointer]
+              - button "Expand" [ref=f10e330] [cursor=pointer]
+              - button "Close spec" [ref=f10e336] [cursor=pointer]
+          - generic [ref=f10e340]:
+            - generic [ref=f10e341]: "Move to:"
+            - button "Review" [ref=f10e342] [cursor=pointer]
+            - button "Cancelled" [ref=f10e345] [cursor=pointer]
+          - generic [ref=f10e348]:
+            - generic [ref=f10e349]: "From:"
+            - button "Reserva de salas — teste do SDLC v24" [ref=f10e350] [cursor=pointer]:
+              - text: Reserva de salas — teste do SDLC
+              - generic [ref=f10e353]: v24
+            - button "Reserva de salas — consistência das reservas e contratos hexagonais v39" [ref=f10e356] [cursor=pointer]:
+              - text: Reserva de salas — consistência das reservas e contratos hexagonais
+              - generic [ref=f10e361]: v39
+          - generic [ref=f10e363]:
+            - tablist "Spec sections" [ref=f10e364]:
+              - tab "Details" [ref=f10e365] [cursor=pointer]
+              - tab "Requirements & Decisions" [ref=f10e370] [cursor=pointer]
+              - tab "Tests & Verifications" [selected] [ref=f10e375] [cursor=pointer]
+              - tab "Coverage" [ref=f10e379] [cursor=pointer]
+              - tab "Code Evidence Matrix" [ref=f10e385] [cursor=pointer]
+              - tab "Project structure" [ref=f10e389] [cursor=pointer]
+              - tab "Dependencies" [ref=f10e396] [cursor=pointer]
+              - tab "Resources" [ref=f10e402] [cursor=pointer]
+              - tab "Q&A 9" [ref=f10e406] [cursor=pointer]:
+                - generic [ref=f10e410]: Q&A
+                - generic [ref=f10e411]: "9"
+              - tab "References" [ref=f10e412] [cursor=pointer]
+              - tab "KG Graph" [ref=f10e417] [cursor=pointer]
+              - tab "Validation" [ref=f10e424] [cursor=pointer]
+              - tab "Activity" [ref=f10e429] [cursor=pointer]
+            - button "Scroll Spec sections right" [ref=f10e435] [cursor=pointer]
+          - tabpanel "Tests & Verifications" [ref=f10e1031]:
+            - tablist "Tests and verifications sections" [ref=f10e1032]:
+              - tab "Tests 51" [ref=f10e1033] [cursor=pointer]:
+                - generic [ref=f10e1036]: Tests
+                - generic [ref=f10e1037]: "51"
+              - tab "AC 31" [active] [selected] [ref=f10e1038] [cursor=pointer]:
+                - generic [ref=f10e1043]: AC
+                - generic [ref=f10e1044]: "31"
+              - tab "Criterion verification" [ref=f10e1045] [cursor=pointer]
+            - tabpanel "AC 31" [ref=f10e1803]:
+              - region "Acceptance criteria" [ref=f10e1804]:
+                - generic [ref=f10e1805]:
+                  - heading "Acceptance criteria 31" [level=3] [ref=f10e1806]:
+                    - text: Acceptance criteria
+                    - generic [ref=f10e1810]: "31"
+                  - button "Add AC" [ref=f10e1811] [cursor=pointer]
+                - article "AC 1" [ref=f10e1813]:
+                  - generic [ref=f10e1814]:
+                    - generic [ref=f10e1815]:
+                      - generic [ref=f10e1816]: AC 1
+                      - heading "Title not defined" [level=4] [ref=f10e1817]
+                    - generic [ref=f10e1818]:
+                      - button "Edit ac_res_search" [ref=f10e1819] [cursor=pointer]: Edit
+                      - button "Revoke ac_res_search" [ref=f10e1823] [cursor=pointer]: Revoke
+                  - generic [ref=f10e1827]:
+                    - paragraph [ref=f10e1829]: Busca retorna somente salas com capacidade>=participantes e sem confirmed sobreposta; intervalos adjacentes permitidos; falha de leitura é erro, nunca lista vazia.
+                    - group [ref=f10e1830]:
+                      - generic "Reference" [ref=f10e1831] [cursor=pointer]
+                - article "AC 2" [ref=f10e1832]:
+                  - generic [ref=f10e1833]:
+                    - generic [ref=f10e1834]:
+                      - generic [ref=f10e1835]: AC 2
+                      - heading "Title not defined" [level=4] [ref=f10e1836]
+                    - generic [ref=f10e1837]:
+                      - button "Edit ac_res_calendar" [ref=f10e1838] [cursor=pointer]: Edit
+                      - button "Revoke ac_res_calendar" [ref=f10e1842] [cursor=pointer]: Revoke
+                  - generic [ref=f10e1846]:
+                    - paragraph [ref=f10e1848]: Aceitar apenas seg–sex08h–18h, mesmo dia local, início futuro em:00/:30 e até data local+30; duração30min–4h em múltiplos30, sem segundos/micros; recusar cada limite violado sem mutação.
+                    - group [ref=f10e1849]:
+                      - generic "Reference" [ref=f10e1850] [cursor=pointer]
+                - article "AC 3" [ref=f10e1851]:
+                  - generic [ref=f10e1852]:
+                    - generic [ref=f10e1853]:
+                      - generic [ref=f10e1854]: AC 3
+                      - heading "Title not defined" [level=4] [ref=f10e1855]
+                    - generic [ref=f10e1856]:
+                      - button "Edit ac_res_capacity" [ref=f10e1857] [cursor=pointer]: Edit
+                      - button "Revoke ac_res_capacity" [ref=f10e1861] [cursor=pointer]: Revoke
+                  - generic [ref=f10e1865]:
+                    - paragraph [ref=f10e1867]: Participantes deve ser inteiro>=1 e<=capacidade da sala existente; zero,negativo,fracionário e excesso são recusados sem escrita.
+                    - group [ref=f10e1868]:
+                      - generic "Reference" [ref=f10e1869] [cursor=pointer]
+                - article "AC 4" [ref=f10e1870]:
+                  - generic [ref=f10e1871]:
+                    - generic [ref=f10e1872]:
+                      - generic [ref=f10e1873]: AC 4
+                      - heading "Title not defined" [level=4] [ref=f10e1874]
+                    - generic [ref=f10e1875]:
+                      - button "Edit ac_res_create" [ref=f10e1876] [cursor=pointer]: Edit
+                      - button "Revoke ac_res_create" [ref=f10e1880] [cursor=pointer]: Revoke
+                  - generic [ref=f10e1884]:
+                    - paragraph [ref=f10e1886]: Primeira criação válida produz exatamente1 reserva confirmed versão1,1 evento e1 recibo; resposta somente após commit.
+                    - group [ref=f10e1887]:
+                      - generic "Reference" [ref=f10e1888] [cursor=pointer]
+                - article "AC 5" [ref=f10e1889]:
+                  - generic [ref=f10e1890]:
+                    - generic [ref=f10e1891]:
+                      - generic [ref=f10e1892]: AC 5
+                      - heading "Title not defined" [level=4] [ref=f10e1893]
+                    - generic [ref=f10e1894]:
+                      - button "Edit ac_res_list" [ref=f10e1895] [cursor=pointer]: Edit
+                      - button "Revoke ac_res_list" [ref=f10e1899] [cursor=pointer]: Revoke
+                  - generic [ref=f10e1903]:
+                    - paragraph [ref=f10e1905]: Lista/histórico só incluem o ator; default20,max100; cursor inválido e limite101 são recusados; páginas não duplicam itens em dataset estável.
+                    - group [ref=f10e1906]:
+                      - generic "Reference" [ref=f10e1907] [cursor=pointer]
+                - article "AC 6" [ref=f10e1908]:
+                  - generic [ref=f10e1909]:
+                    - generic [ref=f10e1910]:
+                      - generic [ref=f10e1911]: AC 6
+                      - heading "Title not defined" [level=4] [ref=f10e1912]
+                    - generic [ref=f10e1913]:
+                      - button "Edit ac_res_change" [ref=f10e1914] [cursor=pointer]: Edit
+                      - button "Revoke ac_res_change" [ref=f10e1918] [cursor=pointer]: Revoke
+                  - generic [ref=f10e1922]:
+                    - paragraph [ref=f10e1924]: Alteração válida incrementa versão exatamente1 e gera evento; conflito/versão incorreta preservam before e não criam recibo de sucesso.
+                    - group [ref=f10e1925]:
+                      - generic "Reference" [ref=f10e1926] [cursor=pointer]
+                - article "AC 7" [ref=f10e1927]:
+                  - generic [ref=f10e1928]:
+                    - generic [ref=f10e1929]:
+                      - generic [ref=f10e1930]: AC 7
+                      - heading "Title not defined" [level=4] [ref=f10e1931]
+                    - generic [ref=f10e1932]:
+                      - button "Edit ac_res_cancel" [ref=f10e1933] [cursor=pointer]: Edit
+                      - button "Revoke ac_res_cancel" [ref=f10e1937] [cursor=pointer]: Revoke
+                  - generic [ref=f10e1941]:
+                    - paragraph [ref=f10e1943]: Cancelamento válido mantém reserva cancelled e histórico e libera intervalo; no início/depois ou nova intenção em cancelled é recusado; replay não cria evento.
+                    - group [ref=f10e1944]:
+                      - generic "Reference" [ref=f10e1945] [cursor=pointer]
+                - article "AC 8" [ref=f10e1946]:
+                  - generic [ref=f10e1947]:
+                    - generic [ref=f10e1948]:
+                      - generic [ref=f10e1949]: AC 8
+                      - heading "Title not defined" [level=4] [ref=f10e1950]
+                    - generic [ref=f10e1951]:
+                      - button "Edit ac_res_history" [ref=f10e1952] [cursor=pointer]: Edit
+                      - button "Revoke ac_res_history" [ref=f10e1956] [cursor=pointer]: Revoke
+                  - generic [ref=f10e1960]:
+                    - paragraph [ref=f10e1962]: Histórico retorna eventos ordenados versão asc, before=null somente na criação, after explícito, sem mutação por leitura ou replay.
+                    - group [ref=f10e1963]:
+                      - generic "Reference" [ref=f10e1964] [cursor=pointer]
+                - article "AC 9" [ref=f10e1965]:
+                  - generic [ref=f10e1966]:
+                    - generic [ref=f10e1967]:
+                      - generic [ref=f10e1968]: AC 9
+                      - heading "Title not defined" [level=4] [ref=f10e1969]
+                    - generic [ref=f10e1970]:
+                      - button "Edit ac_res_replay" [ref=f10e1971] [cursor=pointer]: Edit
+                      - button "Revoke ac_res_replay" [ref=f10e1975] [cursor=pointer]: Revoke
+                  - generic [ref=f10e1979]:
+                    - paragraph [ref=f10e1981]: Mesmo ator/operação/chave/carga retorna resultado original com replayed=true; chave/carga diferente recusa; outro ator não reutiliza nem observa recibo alheio.
+                    - group [ref=f10e1982]:
+                      - generic "Reference" [ref=f10e1983] [cursor=pointer]
+                - article "AC 10" [ref=f10e1984]:
+                  - generic [ref=f10e1985]:
+                    - generic [ref=f10e1986]:
+                      - generic [ref=f10e1987]: AC 10
+                      - heading "Title not defined" [level=4] [ref=f10e1988]
+                    - generic [ref=f10e1989]:
+                      - button "Edit ac_res_atomic" [ref=f10e1990] [cursor=pointer]: Edit
+                      - button "Revoke ac_res_atomic" [ref=f10e1994] [cursor=pointer]: Revoke
+                  - generic [ref=f10e1998]:
+                    - paragraph [ref=f10e2000]: Duas conexões concorrentes não confirmam sobreposição nem duas alterações com mesmo expected_version; falha entre reserva e commit reverte reserva,histórico e recibo.
+                    - group [ref=f10e2001]:
+                      - generic "Reference" [ref=f10e2002] [cursor=pointer]
+                - article "AC 11" [ref=f10e2003]:
+                  - generic [ref=f10e2004]:
+                    - generic [ref=f10e2005]:
+                      - generic [ref=f10e2006]: AC 11
+                      - heading "Title not defined" [level=4] [ref=f10e2007]
+                    - generic [ref=f10e2008]:
+                      - button "Edit ac_res_hex" [ref=f10e2009] [cursor=pointer]: Edit
+                      - button "Revoke ac_res_hex" [ref=f10e2013] [cursor=pointer]: Revoke
+                  - generic [ref=f10e2017]:
+                    - paragraph [ref=f10e2019]: Teste estático detecta imports de mecanismo/reach-in privado; domínio/aplicação testáveis com fakes sem infraestrutura; nenhuma porta interna contém http_status.
+                    - group [ref=f10e2020]:
+                      - generic "Reference" [ref=f10e2021] [cursor=pointer]
+                - article "AC 12" [ref=f10e2022]:
+                  - generic [ref=f10e2023]:
+                    - generic [ref=f10e2024]:
+                      - generic [ref=f10e2025]: AC 12
+                      - heading "Title not defined" [level=4] [ref=f10e2026]
+                    - generic [ref=f10e2027]:
+                      - button "Edit ac_res_security" [ref=f10e2028] [cursor=pointer]: Edit
+                      - button "Revoke ac_res_security" [ref=f10e2032] [cursor=pointer]: Revoke
+                  - generic [ref=f10e2036]:
+                    - paragraph [ref=f10e2038]: Sessão ausente/expirada, ID alheio, owner_id forjado e CSRF inválido são recusados sem escrita e sem vazamento; logs excluem segredos.
+                    - group [ref=f10e2039]:
+                      - generic "Reference" [ref=f10e2040] [cursor=pointer]
+                - article "AC 13" [ref=f10e2041]:
+                  - generic [ref=f10e2042]:
+                    - generic [ref=f10e2043]:
+                      - generic [ref=f10e2044]: AC 13
+                      - heading "Title not defined" [level=4] [ref=f10e2045]
+                    - generic [ref=f10e2046]:
+                      - button "Edit ac_res_clock" [ref=f10e2047] [cursor=pointer]: Edit
+                      - button "Revoke ac_res_clock" [ref=f10e2051] [cursor=pointer]: Revoke
+                  - generic [ref=f10e2055]:
+                    - paragraph [ref=f10e2057]: Com Clock controlado, comando bloqueado pela transação usa now obtido após aquisição; UTC e fuso local produzem os mesmos limites, sem relógio global no domínio.
+                    - group [ref=f10e2058]:
+                      - generic "Reference" [ref=f10e2059] [cursor=pointer]
+                - article "AC 14" [ref=f10e2060]:
+                  - generic [ref=f10e2061]:
+                    - generic [ref=f10e2062]:
+                      - generic [ref=f10e2063]: AC 14
+                      - heading "Title not defined" [level=4] [ref=f10e2064]
+                    - generic [ref=f10e2065]:
+                      - button "Edit ac_res_recovery" [ref=f10e2066] [cursor=pointer]: Edit
+                      - button "Revoke ac_res_recovery" [ref=f10e2070] [cursor=pointer]: Revoke
+                  - generic [ref=f10e2074]:
+                    - paragraph [ref=f10e2076]: Busy esgota orçamento2s e retorna503 sem escrita parcial; após commit e perda da resposta, reinício+replay recupera mesma reserva/evento únicos.
+                    - group [ref=f10e2077]:
+                      - generic "Reference" [ref=f10e2078] [cursor=pointer]
+                - article "AC 15" [ref=f10e2079]:
+                  - generic [ref=f10e2080]:
+                    - generic [ref=f10e2081]:
+                      - generic [ref=f10e2082]: AC 15
+                      - heading "Title not defined" [level=4] [ref=f10e2083]
+                    - generic [ref=f10e2084]:
+                      - button "Edit ac_res_ux" [ref=f10e2085] [cursor=pointer]: Edit
+                      - button "Revoke ac_res_ux" [ref=f10e2089] [cursor=pointer]: Revoke
+                  - generic [ref=f10e2093]:
+                    - paragraph [ref=f10e2095]: H01–H04 apresentam loading/vazio/erro/sucesso/conflicto/incerto distintos, preservam entrada/chave correta e exibem fuso; dupla submissão não cria nova intenção.
+                    - group [ref=f10e2096]:
+                      - generic "Reference" [ref=f10e2097] [cursor=pointer]
+                - article "AC 16" [ref=f10e2098]:
+                  - generic [ref=f10e2099]:
+                    - generic [ref=f10e2100]:
+                      - generic [ref=f10e2101]: AC 16
+                      - heading "Title not defined" [level=4] [ref=f10e2102]
+                    - generic [ref=f10e2103]:
+                      - button "Edit ac_res_a11y" [ref=f10e2104] [cursor=pointer]: Edit
+                      - button "Revoke ac_res_a11y" [ref=f10e2108] [cursor=pointer]: Revoke
+                  - generic [ref=f10e2112]:
+                    - paragraph [ref=f10e2114]: Em320px e zoom200% fluxo principal sem overflow horizontal; modal inicia em Manter, contém foco, Escape não cancela, devolve foco; resultados e erros possuem nome/anúncio acessível.
+                    - group [ref=f10e2115]:
+                      - generic "Reference" [ref=f10e2116] [cursor=pointer]
+                - article "AC 17" [ref=f10e2117]:
+                  - generic [ref=f10e2118]:
+                    - generic [ref=f10e2119]:
+                      - generic [ref=f10e2120]: AC 17
+                      - heading "Title not defined" [level=4] [ref=f10e2121]
+                    - generic [ref=f10e2122]:
+                      - button "Edit ac_ir_res_storage" [ref=f10e2123] [cursor=pointer]: Edit
+                      - button "Revoke ac_ir_res_storage" [ref=f10e2127] [cursor=pointer]: Revoke
+                  - generic [ref=f10e2131]:
+                    - paragraph [ref=f10e2133]: No contrato ir_res_storage, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                    - group [ref=f10e2134]:
+                      - generic "Reference" [ref=f10e2135] [cursor=pointer]
+                - article "AC 18" [ref=f10e2136]:
+                  - generic [ref=f10e2137]:
+                    - generic [ref=f10e2138]:
+                      - generic [ref=f10e2139]: AC 18
+                      - heading "Title not defined" [level=4] [ref=f10e2140]
+                    - generic [ref=f10e2141]:
+                      - button "Edit ac_ir_res_change" [ref=f10e2142] [cursor=pointer]: Edit
+                      - button "Revoke ac_ir_res_change" [ref=f10e2146] [cursor=pointer]: Revoke
+                  - generic [ref=f10e2150]:
+                    - paragraph [ref=f10e2152]: No contrato ir_res_change, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                    - group [ref=f10e2153]:
+                      - generic "Reference" [ref=f10e2154] [cursor=pointer]
+                - article "AC 19" [ref=f10e2155]:
+                  - generic [ref=f10e2156]:
+                    - generic [ref=f10e2157]:
+                      - generic [ref=f10e2158]: AC 19
+                      - heading "Title not defined" [level=4] [ref=f10e2159]
+                    - generic [ref=f10e2160]:
+                      - button "Edit ac_ir_res_rules" [ref=f10e2161] [cursor=pointer]: Edit
+                      - button "Revoke ac_ir_res_rules" [ref=f10e2165] [cursor=pointer]: Revoke
+                  - generic [ref=f10e2169]:
+                    - paragraph [ref=f10e2171]: No contrato ir_res_rules, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                    - group [ref=f10e2172]:
+                      - generic "Reference" [ref=f10e2173] [cursor=pointer]
+                - article "AC 20" [ref=f10e2174]:
+                  - generic [ref=f10e2175]:
+                    - generic [ref=f10e2176]:
+                      - generic [ref=f10e2177]: AC 20
+                      - heading "Title not defined" [level=4] [ref=f10e2178]
+                    - generic [ref=f10e2179]:
+                      - button "Edit ac_ir_res_history" [ref=f10e2180] [cursor=pointer]: Edit
+                      - button "Revoke ac_ir_res_history" [ref=f10e2184] [cursor=pointer]: Revoke
+                  - generic [ref=f10e2188]:
+                    - paragraph [ref=f10e2190]: No contrato ir_res_history, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                    - group [ref=f10e2191]:
+                      - generic "Reference" [ref=f10e2192] [cursor=pointer]
+                - article "AC 21" [ref=f10e2193]:
+                  - generic [ref=f10e2194]:
+                    - generic [ref=f10e2195]:
+                      - generic [ref=f10e2196]: AC 21
+                      - heading "Title not defined" [level=4] [ref=f10e2197]
+                    - generic [ref=f10e2198]:
+                      - button "Edit ac_ir_res_identity_port" [ref=f10e2199] [cursor=pointer]: Edit
+                      - button "Revoke ac_ir_res_identity_port" [ref=f10e2203] [cursor=pointer]: Revoke
+                  - generic [ref=f10e2207]:
+                    - paragraph [ref=f10e2209]: No contrato ir_res_identity_port, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                    - group [ref=f10e2210]:
+                      - generic "Reference" [ref=f10e2211] [cursor=pointer]
+                - article "AC 22" [ref=f10e2212]:
+                  - generic [ref=f10e2213]:
+                    - generic [ref=f10e2214]:
+                      - generic [ref=f10e2215]: AC 22
+                      - heading "Title not defined" [level=4] [ref=f10e2216]
+                    - generic [ref=f10e2217]:
+                      - button "Edit ac_ir_res_create" [ref=f10e2218] [cursor=pointer]: Edit
+                      - button "Revoke ac_ir_res_create" [ref=f10e2222] [cursor=pointer]: Revoke
+                  - generic [ref=f10e2226]:
+                    - paragraph [ref=f10e2228]: No contrato ir_res_create, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                    - group [ref=f10e2229]:
+                      - generic "Reference" [ref=f10e2230] [cursor=pointer]
+                - article "AC 23" [ref=f10e2231]:
+                  - generic [ref=f10e2232]:
+                    - generic [ref=f10e2233]:
+                      - generic [ref=f10e2234]: AC 23
+                      - heading "Title not defined" [level=4] [ref=f10e2235]
+                    - generic [ref=f10e2236]:
+                      - button "Edit ac_ir_res_usecases" [ref=f10e2237] [cursor=pointer]: Edit
+                      - button "Revoke ac_ir_res_usecases" [ref=f10e2241] [cursor=pointer]: Revoke
+                  - generic [ref=f10e2245]:
+                    - paragraph [ref=f10e2247]: No contrato ir_res_usecases, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                    - group [ref=f10e2248]:
+                      - generic "Reference" [ref=f10e2249] [cursor=pointer]
+                - article "AC 24" [ref=f10e2250]:
+                  - generic [ref=f10e2251]:
+                    - generic [ref=f10e2252]:
+                      - generic [ref=f10e2253]: AC 24
+                      - heading "Title not defined" [level=4] [ref=f10e2254]
+                    - generic [ref=f10e2255]:
+                      - button "Edit ac_ir_res_search" [ref=f10e2256] [cursor=pointer]: Edit
+                      - button "Revoke ac_ir_res_search" [ref=f10e2260] [cursor=pointer]: Revoke
+                  - generic [ref=f10e2264]:
+                    - paragraph [ref=f10e2266]: No contrato ir_res_search, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                    - group [ref=f10e2267]:
+                      - generic "Reference" [ref=f10e2268] [cursor=pointer]
+                - article "AC 25" [ref=f10e2269]:
+                  - generic [ref=f10e2270]:
+                    - generic [ref=f10e2271]:
+                      - generic [ref=f10e2272]: AC 25
+                      - heading "Title not defined" [level=4] [ref=f10e2273]
+                    - generic [ref=f10e2274]:
+                      - button "Edit ac_ir_res_list" [ref=f10e2275] [cursor=pointer]: Edit
+                      - button "Revoke ac_ir_res_list" [ref=f10e2279] [cursor=pointer]: Revoke
+                  - generic [ref=f10e2283]:
+                    - paragraph [ref=f10e2285]: No contrato ir_res_list, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                    - group [ref=f10e2286]:
+                      - generic "Reference" [ref=f10e2287] [cursor=pointer]
+                - article "AC 26" [ref=f10e2288]:
+                  - generic [ref=f10e2289]:
+                    - generic [ref=f10e2290]:
+                      - generic [ref=f10e2291]: AC 26
+                      - heading "Title not defined" [level=4] [ref=f10e2292]
+                    - generic [ref=f10e2293]:
+                      - button "Edit ac_ir_res_cancel" [ref=f10e2294] [cursor=pointer]: Edit
+                      - button "Revoke ac_ir_res_cancel" [ref=f10e2298] [cursor=pointer]: Revoke
+                  - generic [ref=f10e2302]:
+                    - paragraph [ref=f10e2304]: No contrato ir_res_cancel, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                    - group [ref=f10e2305]:
+                      - generic "Reference" [ref=f10e2306] [cursor=pointer]
+                - article "AC 27" [ref=f10e2307]:
+                  - generic [ref=f10e2308]:
+                    - generic [ref=f10e2309]:
+                      - generic [ref=f10e2310]: AC 27
+                      - heading "Title not defined" [level=4] [ref=f10e2311]
+                    - generic [ref=f10e2312]:
+                      - button "Edit ac_ir_res_wiring" [ref=f10e2313] [cursor=pointer]: Edit
+                      - button "Revoke ac_ir_res_wiring" [ref=f10e2317] [cursor=pointer]: Revoke
+                  - generic [ref=f10e2321]:
+                    - paragraph [ref=f10e2323]: No contrato ir_res_wiring, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                    - group [ref=f10e2324]:
+                      - generic "Reference" [ref=f10e2325] [cursor=pointer]
+                - article "AC 28" [ref=f10e2326]:
+                  - generic [ref=f10e2327]:
+                    - generic [ref=f10e2328]:
+                      - generic [ref=f10e2329]: AC 28
+                      - heading "Title not defined" [level=4] [ref=f10e2330]
+                    - generic [ref=f10e2331]:
+                      - button "Edit ac_ir_res_clock_port" [ref=f10e2332] [cursor=pointer]: Edit
+                      - button "Revoke ac_ir_res_clock_port" [ref=f10e2336] [cursor=pointer]: Revoke
+                  - generic [ref=f10e2340]:
+                    - paragraph [ref=f10e2342]: No contrato ir_res_clock_port, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                    - group [ref=f10e2343]:
+                      - generic "Reference" [ref=f10e2344] [cursor=pointer]
+                - article "AC 29" [ref=f10e2345]:
+                  - generic [ref=f10e2346]:
+                    - generic [ref=f10e2347]:
+                      - generic [ref=f10e2348]: AC 29
+                      - heading "Title not defined" [level=4] [ref=f10e2349]
+                    - generic [ref=f10e2350]:
+                      - button "Edit ac_ir_res_uow" [ref=f10e2351] [cursor=pointer]: Edit
+                      - button "Revoke ac_ir_res_uow" [ref=f10e2355] [cursor=pointer]: Revoke
+                  - generic [ref=f10e2359]:
+                    - paragraph [ref=f10e2361]: No contrato ir_res_uow, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                    - group [ref=f10e2362]:
+                      - generic "Reference" [ref=f10e2363] [cursor=pointer]
+                - article "AC 30" [ref=f10e2364]:
+                  - generic [ref=f10e2365]:
+                    - generic [ref=f10e2366]:
+                      - generic [ref=f10e2367]: AC 30
+                      - heading "Title not defined" [level=4] [ref=f10e2368]
+                    - generic [ref=f10e2369]:
+                      - button "Edit ac_res_observe_0" [ref=f10e2370] [cursor=pointer]: Edit
+                      - button "Revoke ac_res_observe_0" [ref=f10e2374] [cursor=pointer]: Revoke
+                  - generic [ref=f10e2378]:
+                    - paragraph [ref=f10e2380]: Cada tentativa tem registro com request_id,operação,resultado,replayed,duração_ms; inspeção dos logs encontra zero cookie,senha,SQL ou payload de reserva.
+                    - group [ref=f10e2381]:
+                      - generic "Reference" [ref=f10e2382] [cursor=pointer]
+                - article "AC 31" [ref=f10e2383]:
+                  - generic [ref=f10e2384]:
+                    - generic [ref=f10e2385]:
+                      - generic [ref=f10e2386]: AC 31
+                      - heading "Title not defined" [level=4] [ref=f10e2387]
+                    - generic [ref=f10e2388]:
+                      - button "Edit ac_res_observe_1" [ref=f10e2389] [cursor=pointer]: Edit
+                      - button "Revoke ac_res_observe_1" [ref=f10e2393] [cursor=pointer]: Revoke
+                  - generic [ref=f10e2397]:
+                    - paragraph [ref=f10e2399]: Contador reservation_commands_total aumenta exatamente1 por tentativa no rótulo operação/resultado correto; replay/conflitos/unavailable distinguíveis, sem criar SLO.
+                    - group [ref=f10e2400]:
+                      - generic "Reference" [ref=f10e2401] [cursor=pointer]
+          - generic [ref=f10e671]:
+            - button "Delete spec" [ref=f10e672] [cursor=pointer]
+            - button "Close" [ref=f10e674] [cursor=pointer]

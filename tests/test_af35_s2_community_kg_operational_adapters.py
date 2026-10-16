@@ -3,6 +3,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+from okto_pulse.core.domain.realm import RealmScope
+
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -62,7 +65,7 @@ async def test_af35_s2_community_kg_operational_adapters_register_and_persist(
         engine,
         class_=AsyncSession,
         sync_session_class=CommunitySemanticSession,
-        expire_on_commit=False,
+        expire_on_commit=False, info={"realm_scope": RealmScope.local()},
     )
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -80,9 +83,10 @@ async def test_af35_s2_community_kg_operational_adapters_register_and_persist(
     now = datetime.now(timezone.utc)
 
     async with factory() as session:
-        session.add(Board(id=board_id, name="AF35-S2", owner_id="agent"))
+        session.add(Board(realm_id="local", id=board_id, name="AF35-S2", owner_id="agent"))
         session.add(
             Spec(
+                architecture_adoption=ArchitectureAdoptionScope(board_id=board_id, spec_id="spec-tree", adopted_in_edition=1, actor_id="agent", inherited_resource_ids=()).model_dump(mode="json"),
                 id="spec-tree",
                 board_id=board_id,
                 title="Tree Spec",
@@ -224,9 +228,6 @@ async def test_af35_s2_community_kg_operational_adapters_register_and_persist(
             "claimed": 2,
             "pending": 1,
         }
-        tree = await read_model.build_pending_tree(session, board_id=board_id, depth=4)
-        assert tree["total_pending"] == 1
-        assert tree["tree"][0]["id"] == "spec-tree"
         assert await read_model.graph_node_ref_operation_counts(
             session,
             board_id=board_id,
@@ -260,12 +261,6 @@ async def test_af35_s2_community_kg_operational_adapters_register_and_persist(
             ),
             errors=[{"attempt": 2, "message": "final"}],
         )
-        retry_result = await queue.retry_pending_entry(
-            session,
-            board_id=board_id,
-            queue_entry_id="queue-retry",
-            recursive=True,
-        )
         await get_kg_worker_audit_port().emit_outbox_event(
             session,
             event_id="evt-emitted",
@@ -290,17 +285,7 @@ async def test_af35_s2_community_kg_operational_adapters_register_and_persist(
         await session.commit()
 
         assert dlq_row.original_queue_id == "queue-dlq"
-        assert retry_result == {
-            "board_id": board_id,
-            "queue_entry_id": "queue-retry",
-            "recursive": True,
-            "reopened_count": 1,
-            "reopened_ids": ["queue-retry"],
-        }
         assert await session.get(ConsolidationQueue, "queue-dlq") is None
-        retry_row = await session.get(ConsolidationQueue, "queue-retry")
-        assert retry_row is not None and retry_row.status == "pending"
-        assert retry_row.source == "retry_from_ui"
         assert (
             await session.execute(
                 select(GlobalUpdateOutbox).where(
@@ -324,13 +309,13 @@ def test_af35_s2_community_kg_operational_boundary_is_ledgered() -> None:
 @pytest.mark.asyncio
 async def test_dlq_replay_classifies_and_deduplicates_active_claim(tmp_path):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'dlq_v2.db'}")
-    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False, info={"realm_scope": RealmScope.local()})
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
     board_id = "dlq-v2-board"
     async with factory() as session:
-        session.add(Board(id=board_id, name="DLQ V2", owner_id="agent"))
+        session.add(Board(realm_id="local", id=board_id, name="DLQ V2", owner_id="agent"))
         session.add(
             ConsolidationQueue(
                 id="active-queue",
@@ -414,7 +399,7 @@ async def test_code_traceability_dlq_replay_is_explicit_board_scoped_and_idempot
     tmp_path,
 ):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'ct_dlq.db'}")
-    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False, info={"realm_scope": RealmScope.local()})
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
@@ -423,8 +408,8 @@ async def test_code_traceability_dlq_replay_is_explicit_board_scoped_and_idempot
     async with factory() as session:
         session.add_all(
             [
-                Board(id=board_id, name="CT DLQ", owner_id="agent"),
-                Board(id=foreign_board_id, name="Foreign CT DLQ", owner_id="agent"),
+                Board(realm_id="local", id=board_id, name="CT DLQ", owner_id="agent"),
+                Board(realm_id="local", id=foreign_board_id, name="Foreign CT DLQ", owner_id="agent"),
                 ConsolidationDeadLetter(
                     id="dlq-ct-receipt-1",
                     board_id=board_id,

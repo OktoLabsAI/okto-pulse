@@ -8,15 +8,9 @@ import uuid
 import pytest
 from sqlalchemy import func, select
 
-from okto_pulse.community.adapters.sqlalchemy_models import (
-    Card,
-    SemanticSubjectVersionEventRow,
-    SemanticSubjectVersionRow,
-    Spec,
-    Sprint,
-)
-from okto_pulse.community.adapters.sqlalchemy_semantic_guideline_assessment import (
-    CommunitySqlAlchemySemanticGuidelineAssessment,
+from okto_pulse.community.adapters.sqlalchemy_models import Card, SemanticSubjectVersionEventRow, SemanticSubjectVersionRow, Spec
+from okto_pulse.community.adapters.sqlalchemy_semantic_guideline_v2 import (
+    CommunitySqlAlchemySemanticGuidelineAssessmentV2,
 )
 from okto_pulse.community.adapters.sqlalchemy_unit_of_work import (
     CommunityUnitOfWorkFactory,
@@ -117,7 +111,6 @@ async def _add_source_lane_bystanders(session, seed) -> tuple[str, str]:
                 id=bystander_b_id,
                 board_id=seed.board_id,
                 spec_id=seed.spec_id,
-                sprint_id=seed.sprint_id,
                 title="Source lane bystander B",
                 description="B remains semantically unchanged",
                 status=CardStatus.NOT_STARTED,
@@ -129,7 +122,6 @@ async def _add_source_lane_bystanders(session, seed) -> tuple[str, str]:
                 id=bystander_c_id,
                 board_id=seed.board_id,
                 spec_id=seed.spec_id,
-                sprint_id=seed.sprint_id,
                 title="Source lane bystander C",
                 description="C remains semantically unchanged",
                 status=CardStatus.NOT_STARTED,
@@ -204,9 +196,9 @@ async def test_cross_column_move_preserves_bystander_heads_and_receipt(tmp_path)
                 binding=binding,
                 expected_editor="baseline-author",
             )
-            receipt_before = await CommunitySqlAlchemySemanticGuidelineAssessment(
+            receipt_before = await CommunitySqlAlchemySemanticGuidelineAssessmentV2(
                 session
-            ).get_current_semantic_assessment_receipt(
+            ).get_current_semantic_assessment_v2(
                 board_id=seed.board_id,
                 entity_type=PolicyEntityType.CARD,
                 subject_id=bystander_b_id,
@@ -214,9 +206,9 @@ async def test_cross_column_move_preserves_bystander_heads_and_receipt(tmp_path)
             )
             assert receipt_before is not None
             moved_receipt_before = (
-                await CommunitySqlAlchemySemanticGuidelineAssessment(
+                await CommunitySqlAlchemySemanticGuidelineAssessmentV2(
                     session
-                ).get_current_semantic_assessment_receipt(
+                ).get_current_semantic_assessment_v2(
                     board_id=seed.board_id,
                     entity_type=PolicyEntityType.CARD,
                     subject_id=seed.card_id,
@@ -291,9 +283,9 @@ async def test_cross_column_move_preserves_bystander_heads_and_receipt(tmp_path)
                 == bystander_c_before
             )
 
-            receipt_after = await CommunitySqlAlchemySemanticGuidelineAssessment(
+            receipt_after = await CommunitySqlAlchemySemanticGuidelineAssessmentV2(
                 session
-            ).get_current_semantic_assessment_receipt(
+            ).get_current_semantic_assessment_v2(
                 board_id=seed.board_id,
                 entity_type=PolicyEntityType.CARD,
                 subject_id=bystander_b_id,
@@ -302,9 +294,9 @@ async def test_cross_column_move_preserves_bystander_heads_and_receipt(tmp_path)
             assert receipt_after is not None
             assert receipt_after.receipt_id == receipt_before.receipt_id
             moved_receipt_after = (
-                await CommunitySqlAlchemySemanticGuidelineAssessment(
+                await CommunitySqlAlchemySemanticGuidelineAssessmentV2(
                     session
-                ).get_current_semantic_assessment_receipt(
+                ).get_current_semantic_assessment_v2(
                     board_id=seed.board_id,
                     entity_type=PolicyEntityType.CARD,
                     subject_id=seed.card_id,
@@ -356,9 +348,9 @@ async def test_completion_audit_preserves_current_policy_receipt_for_every_card_
                 expected_editor="baseline-author",
             )
             receipt_before = (
-                await CommunitySqlAlchemySemanticGuidelineAssessment(
+                await CommunitySqlAlchemySemanticGuidelineAssessmentV2(
                     session
-                ).get_current_semantic_assessment_receipt(
+                ).get_current_semantic_assessment_v2(
                     board_id=seed.board_id,
                     entity_type=PolicyEntityType.CARD,
                     subject_id=seed.card_id,
@@ -404,9 +396,9 @@ async def test_completion_audit_preserves_current_policy_receipt_for_every_card_
                 == fence_before
             )
             receipt_after = (
-                await CommunitySqlAlchemySemanticGuidelineAssessment(
+                await CommunitySqlAlchemySemanticGuidelineAssessmentV2(
                     session
-                ).get_current_semantic_assessment_receipt(
+                ).get_current_semantic_assessment_v2(
                     board_id=seed.board_id,
                     entity_type=PolicyEntityType.CARD,
                     subject_id=seed.card_id,
@@ -522,41 +514,20 @@ async def test_same_column_reorder_is_operational_but_content_remains_semantic(
 
 
 @pytest.mark.asyncio
-async def test_sprint_and_test_scenario_propagation_survives_operational_filter(
+async def test_native_card_relation_propagates_to_scenario(
     tmp_path,
 ):
     engine, sessions = await _database(tmp_path / "card-related-propagation.db")
     try:
-        target_sprint_id = _id()
         async with sessions() as session, session.begin():
             seed = await _seed_subjects(session)
-            session.add(
-                Sprint(
-                    id=target_sprint_id,
-                    board_id=seed.board_id,
-                    spec_id=seed.spec_id,
-                    title="Target sprint",
-                    description="Receives the moved card",
-                    spec_version=1,
-                    status="draft",
-                    version=1,
-                    created_by="seed",
-                )
-            )
-            await session.flush()
 
         async with sessions() as session:
             card_before = await session.get(Card, seed.card_id)
-            source_sprint_before = await session.get(Sprint, seed.sprint_id)
-            target_sprint_before = await session.get(Sprint, target_sprint_id)
             spec_before = await session.get(Spec, seed.spec_id)
             assert card_before is not None
-            assert source_sprint_before is not None
-            assert target_sprint_before is not None
             assert spec_before is not None
             baseline_card_version = int(card_before.policy_version)
-            baseline_source_sprint_version = int(source_sprint_before.version)
-            baseline_target_sprint_version = int(target_sprint_before.version)
             baseline_scenario_epoch = int(spec_before.test_scenario_policy_epoch)
 
         factory = CommunityUnitOfWorkFactory(sessions)
@@ -567,22 +538,16 @@ async def test_sprint_and_test_scenario_propagation_survives_operational_filter(
                 record_id=seed.card_id,
             )
             assert record is not None
-            record.sprint_id = target_sprint_id
+            assert not hasattr(Card, "sprint_id")
             record.test_scenario_ids = [seed.scenario_id]
             await uow.commit()
 
         async with sessions() as session:
             card = await session.get(Card, seed.card_id)
-            source_sprint = await session.get(Sprint, seed.sprint_id)
-            target_sprint = await session.get(Sprint, target_sprint_id)
             spec = await session.get(Spec, seed.spec_id)
             assert card is not None
-            assert source_sprint is not None
-            assert target_sprint is not None
             assert spec is not None
             assert card.policy_version == baseline_card_version + 1
-            assert source_sprint.version == baseline_source_sprint_version + 1
-            assert target_sprint.version == baseline_target_sprint_version + 1
             assert spec.test_scenario_policy_epoch == baseline_scenario_epoch + 1
             assert (
                 await _semantic_event_count(
@@ -593,16 +558,6 @@ async def test_sprint_and_test_scenario_propagation_survives_operational_filter(
                 )
                 == 1
             )
-            for sprint_id in (seed.sprint_id, target_sprint_id):
-                assert (
-                    await _semantic_event_count(
-                        session,
-                        board_id=seed.board_id,
-                        entity_type=PolicyEntityType.SPRINT,
-                        subject_id=sprint_id,
-                    )
-                    == 1
-                )
             assert (
                 await _semantic_event_count(
                     session,

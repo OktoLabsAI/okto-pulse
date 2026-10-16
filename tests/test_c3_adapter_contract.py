@@ -27,7 +27,9 @@ from okto_pulse.community.adapters.sqlalchemy_application_persistence import (
     StatementBudgetExceeded,
     statement_budget,
 )
-from okto_pulse.community.adapters.sqlalchemy_models import Base
+from okto_pulse.community.adapters.current_relational_schema import (
+    current_schema_contract, initialize_current_schema,
+)
 from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
     CommunitySemanticSession,
 )
@@ -36,6 +38,7 @@ from okto_pulse.community.api.columns_pagination import (
     KANBAN_STATUSES,
 )
 from okto_pulse.core.domain.realm import RealmScope
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
 from okto_pulse.core.ports.application_persistence import (
     ApplicationFilter,
     ApplicationQuery,
@@ -53,8 +56,7 @@ REALM = RealmScope(realm_id="realm-1")
 async def _engine_with_real_schema(path: Path) -> AsyncEngine:
     path.parent.mkdir(parents=True, exist_ok=True)
     engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    await initialize_current_schema(engine, current_schema_contract())
     return engine
 
 
@@ -123,29 +125,30 @@ async def _seed(engine: AsyncEngine) -> None:
             )
         # Specs for the lookup shape (high mass for realistic planning).
         spec_rows = [
-            f"('sp{i:04d}', 'b1', 'Spec', 'draft', 'u', 1)" for i in range(300)
+            dict(id=f"sp{i:04d}", architecture_adoption=ArchitectureAdoptionScope(
+                board_id="b1", spec_id=f"sp{i:04d}", adopted_in_edition=1,
+                actor_id="u", inherited_resource_ids=(),
+            ).model_dump_json()) for i in range(300)
         ]
         for start in range(0, len(spec_rows), 150):
             await conn.execute(
                 text(
                     "INSERT INTO specs (id, board_id, title, status, created_by, "
-                    "version) VALUES " + ", ".join(spec_rows[start : start + 150])
-                )
+                    "version, architecture_adoption) VALUES "
+                    "(:id, 'b1', 'Spec', 'draft', 'u', 1, :architecture_adoption)"
+                ),
+                spec_rows[start : start + 150],
             )
         await conn.execute(text("ANALYZE"))
 
 
 @pytest.fixture
-async def rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    from okto_pulse.community.adapters import relational_schema_steps as steps
-
+async def rig(tmp_path: Path):
     engine = await _engine_with_real_schema(tmp_path / "data" / "pulse.db")
     adapter = CommunitySqlAlchemyApplicationPersistence()
     await _seed(engine)
-    # Apply the (approved C4) pagination migration so the covering indexes
-    # exist, then refresh planner statistics over the seeded mass.
-    monkeypatch.setattr(steps, "get_engine", lambda: engine)
-    await steps._migrate_pagination_indices_and_positions()
+    # Covering indexes are part of the native format. Refresh statistics
+    # over the seeded mass without rewriting authored positions.
     async with engine.begin() as conn:
         await conn.execute(text("ANALYZE"))
     try:

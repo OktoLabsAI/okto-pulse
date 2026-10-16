@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,7 +13,6 @@ from fastapi.testclient import TestClient
 
 from okto_pulse.community.api.auth_deps import require_principal
 from okto_pulse.community.api.deps import get_unit_of_work
-from okto_pulse.community.api.guidelines import router as legacy_guidelines_router
 from okto_pulse.community.api.policy_governance import (
     CorePolicyGovernanceFacade,
     GuidelineExportV3Request,
@@ -83,7 +81,6 @@ from okto_pulse.core.ports.guideline_policy import (
     GuidelinePolicyIdempotencyConflict,
     GuidelineRevisionListQuery,
 )
-from okto_pulse.core.services.main import GuidelineService
 
 
 class _Facade:
@@ -262,9 +259,6 @@ def _minimal_v3_envelope() -> dict:
                         "tags": [],
                         "published_head_revision": 1,
                         "published_head_updated_at": created_at,
-                        "legacy_version": None,
-                        "legacy_version_unresolvable": False,
-                        "legacy_tags": None,
                     }
                 ],
                 "head": {
@@ -278,7 +272,7 @@ def _minimal_v3_envelope() -> dict:
                 "retirement": None,
                 "bindings": [],
                 "history_status": "complete",
-                "migration_notes": [],
+                "import_notes": [],
             }
         ],
     }
@@ -383,6 +377,37 @@ def test_literal_governance_routes_are_registered_before_legacy_param_routes() -
     assert source.index("include_router(policy_governance_router") < source.index(
         "include_router(guidelines_router"
     )
+
+
+def test_revision_editor_shared_wire_contract() -> None:
+    """The frontend transport fixture must pass the actual closed REST boundary."""
+    fixture = json.loads(
+        (Path(__file__).parent / "fixtures/guideline_revision_editor_contract.json")
+        .read_text(encoding="utf-8")
+    )
+    facade = _Facade(results={"create_revision": fixture["response"]})
+    client, _ = _client(facade)
+    response = client.post(
+        "/api/v1/boards/board-b13/guidelines/guide-1/revisions",
+        json=fixture["request"],
+    )
+    assert response.status_code == 201, response.text
+    assert response.json() == fixture["response"]
+    assert facade.calls[-1][1]["patch"]["metrics"] == fixture["request"]["patch"]["metrics"]
+
+    before = len(facade.calls)
+    invalid = client.post(
+        "/api/v1/boards/board-b13/guidelines/guide-1/revisions",
+        json={
+            "expected_head_revision": 1,
+            "version_bump": "minor",
+            "content": {"title": "Architecture", "body": "Use ports"},
+            "metrics": fixture["request"]["patch"]["metrics"],
+        },
+    )
+    assert invalid.status_code == 400
+    assert invalid.json()["detail"]["code"] == "validation_failed"
+    assert len(facade.calls) == before
 
 
 def test_revision_projection_and_closed_body_plumb_to_one_facade() -> None:
@@ -558,8 +583,6 @@ def test_export_preserves_required_nullable_fields_for_import_roundtrip() -> Non
     aggregate["retirement"] = None
     revision = aggregate["revisions"][0]
     revision["parent_revision_id"] = None
-    revision["legacy_version"] = None
-    revision["legacy_tags"] = None
 
     export_route = next(
         route
@@ -1104,15 +1127,6 @@ def test_paginated_routes_preserve_required_nulls_and_omit_unset_projection_fiel
     assert all(route.response_model_exclude_none is False for route in page_routes)
 
 
-def test_legacy_patch_and_delete_delegate_immutable_append_and_retirement() -> None:
-    update_source = inspect.getsource(GuidelineService.update_guideline)
-    delete_source = inspect.getsource(GuidelineService.delete_guideline)
-
-    assert "GuidelineRevisionPatch" in update_source
-    assert "append_revision_cas" in update_source
-    assert "GuidelineRetirementCommand" in delete_source
-    assert "retire_guideline_cas" in delete_source
-    assert "session.delete" not in delete_source
 
 
 def test_projection_enum_remains_exactly_summary_and_detail() -> None:
@@ -1529,6 +1543,14 @@ def test_revision_under_bump_and_idempotency_conflict_are_structured(
     assert response.json()["detail"]["code"] == code
 
 
+@pytest.mark.parametrize("query", ["include_binding_history=false", "include_binding_history=true", "unknown=value"])
+def test_export_rejects_removed_and_unknown_query_parameters(query: str) -> None:
+    client, _ = _client(None)
+    response = client.get(f"/api/v1/boards/board-b13/guidelines/export?{query}")
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "validation_failed"
+
+
 def test_import_and_export_require_capabilities_before_uow_access() -> None:
     class PoisonUow:
         def __getattribute__(self, name: str):
@@ -1670,89 +1692,3 @@ def test_every_governance_success_schema_is_recursively_closed_and_exact() -> No
         create_responses["200"]["content"]["application/json"]["schema"]
         == create_responses["201"]["content"]["application/json"]["schema"]
     )
-
-
-def test_legacy_patch_delete_gate_then_delegate_append_retire(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from okto_pulse.core.application.use_cases.guidelines_crud import (
-        DeleteGuidelineUseCase,
-        UpdateGuidelineUseCase,
-    )
-
-    calls: list[str] = []
-    now = datetime(2026, 7, 29, 18, tzinfo=timezone.utc)
-
-    async def fake_update(self, command, *, actor, uow):
-        del self, command, actor, uow
-        calls.append("update")
-        return SimpleNamespace(
-            guideline={
-                "id": "guideline-b13",
-                "title": "Updated",
-                "content": "Immutable append.",
-                "tags": [],
-                "scope": "global",
-                "board_id": None,
-                "owner_id": "owner-b13",
-                "created_at": now,
-                "updated_at": now,
-            }
-        )
-
-    async def fake_delete(self, command, *, actor, uow):
-        del self, command, actor, uow
-        calls.append("delete")
-
-    monkeypatch.setattr(UpdateGuidelineUseCase, "execute", fake_update)
-    monkeypatch.setattr(DeleteGuidelineUseCase, "execute", fake_delete)
-
-    def legacy_client(permissions: dict) -> TestClient:
-        app = FastAPI()
-        app.include_router(legacy_guidelines_router, prefix="/api/v1")
-        principal = Principal(
-            subject="owner-b13",
-            realm_id=LOCAL_REALM_ID,
-            claims={"permissions": permissions},
-        )
-
-        async def override_uow():
-            yield object()
-
-        app.dependency_overrides[require_principal] = lambda: principal
-        app.dependency_overrides[get_unit_of_work] = override_uow
-        return TestClient(app, raise_server_exceptions=False)
-
-    denied = legacy_client({})
-    denied_patch = denied.patch(
-        "/api/v1/guidelines/guideline-b13",
-        json={"title": "Denied"},
-    )
-    denied_delete = denied.delete("/api/v1/guidelines/guideline-b13")
-    assert denied_patch.status_code == denied_delete.status_code == 403
-    assert denied_patch.json()["detail"]["code"] == "permission_denied"
-    assert denied_delete.json()["detail"]["code"] == "permission_denied"
-    assert calls == []
-
-    full_control = legacy_client(
-        {
-            "guidelines": {
-                "delete": True,
-                "revisions": {
-                    "create": True,
-                    "retire": True,
-                },
-            },
-            "spec": {"entity": {"edit_fields": True}},
-        }
-    )
-    updated = full_control.patch(
-        "/api/v1/guidelines/guideline-b13",
-        json={"title": "Updated"},
-    )
-    deleted = full_control.delete("/api/v1/guidelines/guideline-b13")
-
-    assert updated.status_code == 200
-    assert updated.json()["title"] == "Updated"
-    assert deleted.status_code == 204
-    assert calls == ["update", "delete"]

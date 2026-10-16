@@ -6,7 +6,8 @@ import logging
 from collections.abc import Mapping
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import false, select, update
+from sqlalchemy.exc import SQLAlchemyError
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
     AmendmentHotfixRevision,
@@ -19,6 +20,7 @@ from okto_pulse.core.ports.bug_cognitive_context import (
     BugLinkedTestTask,
     CanonicalBugNodeReadPort,
     freeze_mapping_sequence,
+    qualify_bug_semantic_context,
 )
 
 logger = logging.getLogger("okto_pulse.community.bug_cognitive_context")
@@ -42,6 +44,34 @@ class CommunityCanonicalBugNodeReader:
 
     def __init__(self, cypher_executor: Any | None = None) -> None:
         self._cypher_executor = cypher_executor
+
+    def resolve_current(self, *, board_id: str, bug_id: str) -> str | None:
+        """Bounded identity lookup for authored materialization, never first-match.
+
+        Keep the legacy exists probe separate: its consumers retain their
+        existing semantics while the new writer requires one active target.
+        """
+        cypher_executor = self._cypher_executor
+        if cypher_executor is None:
+            from okto_pulse.core.services.application_kg import get_current_provider_registry
+            cypher_executor = get_current_provider_registry().cypher_executor
+        result = cypher_executor.execute_read_only(board_id,
+            "MATCH (b:Bug) WHERE b.graph_layer = 'canonical' "
+            "AND (b.superseded_by IS NULL OR b.superseded_by = '') "
+            "AND (b.source_artifact_ref = $bug_ref OR b.source_artifact_ref = $card_ref "
+            "OR b.source_artifact_ref = $card_bug_ref) RETURN b.id LIMIT 2",
+            {'bug_ref': f'bug:{bug_id}', 'card_ref': f'card:{bug_id}',
+                'card_bug_ref': f'card:bug:{bug_id}'}, max_rows=2)
+        rows = result.get('rows')
+        if rows is None or result.get('truncated'):
+            raise ValueError('canonical_bug_identity_unavailable')
+        if len(rows) > 1:
+            raise ValueError('canonical_bug_identity_ambiguous')
+        if not rows:
+            return None
+        if len(rows[0]) != 1 or type(rows[0][0]) is not str or not rows[0][0].strip():
+            raise ValueError('canonical_bug_identity_unavailable')
+        return rows[0][0]
 
     async def exists(self, *, board_id: str, bug_id: str) -> bool:
         cypher_executor = self._cypher_executor
@@ -92,17 +122,55 @@ class CommunityBugCognitiveContextAssembler:
         board_id: str,
         bug_id: str,
     ) -> BugCognitiveContext:
-        card = await context.get(Card, bug_id)
+        return await self._assemble(context, board_id=board_id, bug_id=bug_id, include_projection=True)
+
+    async def assemble_semantic(
+        self, context: Any, *, board_id: str, bug_id: str,
+    ) -> BugCognitiveContext:
+        source = await self._assemble(context, board_id=board_id, bug_id=bug_id, include_projection=False)
+        return qualify_bug_semantic_context(source)
+
+    async def assemble_semantic_for_write(
+        self, context: Any, *, board_id: str, bug_id: str,
+    ) -> BugCognitiveContext:
+        if context.get_bind().dialect.name != 'sqlite':
+            # A Bug row lock cannot fence linked Test Cards, scenario changes,
+            # comments or lineage insertions. Qualify another edition mechanism
+            # explicitly instead of offering a weaker serialization contract.
+            raise RuntimeError('bug_semantic_source_serialization_unsupported')
+        try:
+            # SQLite's writer slot covers all relational sources until the
+            # caller commits/rolls back. Zero rows change and no row trigger
+            # fires. This works inside an existing deferred/read transaction;
+            # failed snapshot upgrades propagate instead of reading unguarded.
+            await context.execute(update(Card).where(false()).values(id=Card.id))
+        except SQLAlchemyError as exc:
+            raise RuntimeError('bug_semantic_source_serialization_failed') from exc
+        return await self.assemble_semantic(context, board_id=board_id, bug_id=bug_id)
+
+    async def _assemble(
+        self, context: Any, *, board_id: str, bug_id: str, include_projection: bool,
+    ) -> BugCognitiveContext:
+        contract_version = 'bug-cognitive-context/v1' if include_projection else 'bug-semantic-context/v1'
+        fresh = {} if include_projection else {'populate_existing': True}
+        if not include_projection:
+            # Semantic capture must see the caller's staged content and the
+            # current SQL snapshot, not objects retained by the identity map.
+            # Flush is not a commit; the enclosing UOW still owns rollback.
+            await context.flush()
+        card = await context.get(Card, bug_id, **fresh)
         if card is None or str(card.board_id) != str(board_id):
             return BugCognitiveContext(
                 board_id=board_id,
                 bug_id=bug_id,
                 card_exists=False,
                 provenance_refs=(f"sql:cards/{bug_id}",),
+                contract_version=contract_version,
             )
 
         comments_result = await context.execute(
             select(Comment)
+            .execution_options(**fresh)
             .where(Comment.card_id == bug_id)
             .order_by(Comment.created_at.asc(), Comment.id.asc())
         )
@@ -117,7 +185,7 @@ class CommunityBugCognitiveContextAssembler:
             for row in comments_result.scalars().all()
         )
 
-        spec = await context.get(Spec, card.spec_id) if card.spec_id else None
+        spec = await context.get(Spec, card.spec_id, **fresh) if card.spec_id else None
         if spec is not None and str(spec.board_id) != str(board_id):
             spec = None
         all_scenarios = _mapping_rows(
@@ -139,7 +207,7 @@ class CommunityBugCognitiveContextAssembler:
         rows_by_id: dict[str, Card] = {}
         if linked_ids:
             linked_result = await context.execute(
-                select(Card).where(
+                select(Card).execution_options(**fresh).where(
                     Card.board_id == board_id,
                     Card.id.in_(linked_ids),
                 )
@@ -159,6 +227,7 @@ class CommunityBugCognitiveContextAssembler:
 
         lineage_result = await context.execute(
             select(AmendmentHotfixRevision)
+            .execution_options(**fresh)
             .where(
                 AmendmentHotfixRevision.board_id == board_id,
                 AmendmentHotfixRevision.origin_bug_id == bug_id,
@@ -223,27 +292,33 @@ class CommunityBugCognitiveContextAssembler:
         )
 
         load_errors: list[str] = []
-        canonical_bug_present: bool | None
-        try:
-            canonical_bug_present = await self._canonical_bug_reader.exists(
-                board_id=board_id,
-                bug_id=bug_id,
-            )
-        except Exception as exc:  # the policy receives an explicit unknown state
-            canonical_bug_present = None
-            load_errors.append("canonical_bug_probe_failed")
-            logger.warning(
-                "bug_cognitive_context.canonical_probe_failed board=%s bug=%s error=%s",
-                board_id,
-                bug_id,
-                type(exc).__name__,
-                extra={
-                    "event": "bug_cognitive_context.canonical_probe_failed",
-                    "board_id": board_id,
-                    "bug_id": bug_id,
-                    "error_type": type(exc).__name__,
-                },
-            )
+        source_policy_version = card.policy_version
+        if not include_projection:
+            if card.spec_id and spec is None:
+                load_errors.append('bug_spec_source_unavailable')
+            if set(linked_ids) - rows_by_id.keys():
+                load_errors.append('bug_linked_test_source_unavailable')
+        canonical_bug_present: bool | None = None
+        if include_projection:
+            try:
+                canonical_bug_present = await self._canonical_bug_reader.exists(
+                    board_id=board_id,
+                    bug_id=bug_id,
+                )
+            except Exception as exc:  # the policy receives an explicit unknown state
+                load_errors.append("canonical_bug_probe_failed")
+                logger.warning(
+                    "bug_cognitive_context.canonical_probe_failed board=%s bug=%s error=%s",
+                    board_id,
+                    bug_id,
+                    type(exc).__name__,
+                    extra={
+                        "event": "bug_cognitive_context.canonical_probe_failed",
+                        "board_id": board_id,
+                        "bug_id": bug_id,
+                        "error_type": type(exc).__name__,
+                    },
+                )
 
         provenance = [f"sql:cards/{bug_id}"]
         if card.spec_id:
@@ -282,6 +357,8 @@ class CommunityBugCognitiveContextAssembler:
             canonical_bug_present=canonical_bug_present,
             provenance_refs=tuple(provenance),
             load_errors=tuple(load_errors),
+            contract_version=contract_version,
+            source_policy_version=source_policy_version,
         )
 
 

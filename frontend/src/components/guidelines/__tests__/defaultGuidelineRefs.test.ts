@@ -14,11 +14,6 @@ const candidate: DefaultGuidelineCandidate = {
   guideline_id: 'guideline-1',
   title: 'Guideline one',
   scope: 'global',
-  guideline_version: 2,
-  revision_id: 'revision-2',
-  revision_number: 2,
-  semantic_version: '2.0.0',
-  revision_digest: digest('b'),
   head_revision: {
     revision_id: 'revision-2',
     revision_number: 2,
@@ -39,6 +34,11 @@ const candidate: DefaultGuidelineCandidate = {
 };
 
 describe('default guideline exact revision pins', () => {
+  it('rejects old aliases instead of silently stripping them', () => {
+    const ref = { guideline_id: candidate.guideline_id, priority: 3, ...candidate.head_revision, guideline_version: 2 };
+    expect(() => canonicalDefaultGuidelineRef(ref)).toThrow('default_guideline_ref_invalid');
+  });
+
   it('preserves default_revision and never silently promotes it to head', () => {
     expect(currentDefaultGuidelineRefs([candidate])).toEqual([{
       guideline_id: 'guideline-1',

@@ -19,9 +19,6 @@ _BUDGET_ENV_VARS = (
 def _settings(tmp_path: Path, **overrides: int) -> CommunitySettings:
     values = {
         "data_dir": str(tmp_path),
-        "kg_kuzu_buffer_pool_mb": 256,
-        "kg_global_kuzu_buffer_pool_mb": 128,
-        "kg_kuzu_max_db_size_gb": 2,
         "kg_connection_pool_size": 2,
     }
     values.update(overrides)

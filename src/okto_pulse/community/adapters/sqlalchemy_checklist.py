@@ -65,6 +65,7 @@ from okto_pulse.core.ports.checklist import (
     ChecklistInputDigestConflict,
     ChecklistListQuery,
     ChecklistPersistenceError,
+    ChecklistBoardBindingMissing,
     ChecklistSpecLifecycleConflict,
     ChecklistSpecEditionConflict,
     ChecklistSpecVersionConflict,
@@ -287,8 +288,8 @@ class CommunitySqlAlchemyChecklist:
         spec_edition: int,
         target_type: ChecklistTargetType,
         phase: ChecklistPhase,
-    ) -> ChecklistBinding:
-        """Resolve or atomically pin checklist governance for one edition."""
+    ) -> ChecklistBinding | None:
+        """Read a validation snapshot without creating or repairing one."""
 
         identity = (
             board_id,
@@ -318,9 +319,26 @@ class CommunitySqlAlchemyChecklist:
                     "checklist_validation_binding_snapshot_corrupt"
                 ) from exc
 
-        # A missing historical pin must never be synthesized from today's
-        # governance. Only the live Spec edition is eligible for the migration
-        # fallback.
+        return None
+
+    async def _require_validation_binding(self, **identity) -> ChecklistBinding:
+        binding = await self.get_validation_binding(**identity)
+        if binding is None:
+            raise ChecklistPersistenceError(
+                "checklist_validation_binding_snapshot_missing"
+            )
+        return binding
+
+    async def freeze_validation_binding(
+        self,
+        *,
+        board_id: str,
+        spec_id: str,
+        spec_edition: int,
+        target_type: ChecklistTargetType,
+        phase: ChecklistPhase,
+    ) -> ChecklistBinding:
+        """Pin governance in the native validation-entry transaction only."""
         spec = (
             await self._session.execute(
                 select(Spec)
@@ -339,6 +357,13 @@ class CommunitySqlAlchemyChecklist:
                 details={"expected": spec_edition, "current": int(spec.edition)},
             )
 
+        existing = await self.get_validation_binding(
+            board_id=board_id, spec_id=spec_id, spec_edition=spec_edition,
+            target_type=target_type, phase=phase,
+        )
+        if existing is not None:
+            return existing
+
         head = (
             await self._session.execute(
                 select(ChecklistBindingHeadRow)
@@ -351,7 +376,7 @@ class CommunitySqlAlchemyChecklist:
             )
         ).scalar_one_or_none()
         if head is None:
-            binding = ChecklistBinding.synthetic_off(board_id=board_id)
+            raise ChecklistBoardBindingMissing()
         else:
             row = (
                 await self._session.execute(
@@ -415,10 +440,6 @@ class CommunitySqlAlchemyChecklist:
         expected_digest: str | None,
     ) -> ChecklistBinding:
         await self._ensure_template()
-        if binding.revision != binding.version:
-            raise ChecklistBindingConflict(
-                "checklist_binding_synthetic_persist_forbidden"
-            )
         head = (
             await self._session.execute(
                 select(ChecklistBindingHeadRow)
@@ -576,7 +597,7 @@ class CommunitySqlAlchemyChecklist:
             )
         if snapshot.input_digest != execution.input_digest:
             raise ChecklistInputDigestConflict("checklist_input_digest_mismatch")
-        binding = await self.get_validation_binding(
+        binding = await self._require_validation_binding(
             board_id=execution.board_id,
             spec_id=execution.spec_id,
             spec_edition=execution.spec_edition,
@@ -753,7 +774,6 @@ class CommunitySqlAlchemyChecklist:
                 source=receipt.source.value,
                 request_digest=receipt.request_digest,
                 idempotency_key=receipt.idempotency_key,
-                manual_checklist_ref=receipt.manual_checklist_ref,
                 predecessor_receipt_id=receipt.predecessor_receipt_id,
                 created_by=receipt.created_by,
                 created_at=receipt.created_at,
@@ -845,7 +865,7 @@ class CommunitySqlAlchemyChecklist:
         ):
             raise ChecklistTemplateConflict("checklist_template_fence_mismatch")
         await self._ensure_template()
-        binding = await self.get_validation_binding(
+        binding = await self._require_validation_binding(
             board_id=receipt.board_id,
             spec_id=receipt.spec_id,
             spec_edition=bundle.expected_spec_edition,
@@ -933,7 +953,7 @@ class CommunitySqlAlchemyChecklist:
         board_id: str,
         spec_id: str,
         phase: ChecklistPhase,
-        spec_edition: int | None = None,
+        spec_edition: int,
     ) -> tuple[ChecklistReceipt, ChecklistExecutionHead] | None:
         row = (
             await self._session.execute(
@@ -952,7 +972,7 @@ class CommunitySqlAlchemyChecklist:
         )
         if receipt is None:
             raise ChecklistPersistenceError("checklist_head_receipt_missing")
-        if spec_edition is not None and receipt.spec_edition != spec_edition:
+        if receipt.spec_edition != spec_edition:
             return None
         return (
             receipt,
@@ -1017,7 +1037,6 @@ class CommunitySqlAlchemyChecklist:
                 created_at=row.created_at,
                 head_revision=row.head_revision,
                 idempotency_key=row.idempotency_key,
-                manual_checklist_ref=row.manual_checklist_ref,
                 predecessor_receipt_id=row.predecessor_receipt_id,
             )
         except (TypeError, ValueError) as exc:
@@ -1070,7 +1089,7 @@ class CommunitySqlAlchemyChecklist:
         )
         if snapshot is None:
             raise ChecklistSpecVersionConflict("checklist_spec_missing")
-        binding = await self.get_validation_binding(
+        binding = await self._require_validation_binding(
             board_id=submission.board_id,
             spec_id=submission.spec_id,
             spec_edition=snapshot.spec_edition,
@@ -1109,50 +1128,37 @@ class CommunitySqlAlchemyChecklist:
             ChecklistReceiptRow.board_id == query.board_id,
             ChecklistReceiptRow.spec_id == query.spec_id,
         )
-        if query.state is ChecklistReceiptState.HISTORY_ONLY:
-            where += (ChecklistReceiptRow.spec_edition.is_(None),)
-        elif query.state is not None:
-            if query.current_spec_edition is None:
-                # No lifecycle edition can ever make an evidence row current.
+        if query.state is not None:
+            is_current_head = exists(
+                select(ChecklistExecutionHeadRow.receipt_id).where(
+                    ChecklistExecutionHeadRow.board_id
+                    == ChecklistReceiptRow.board_id,
+                    ChecklistExecutionHeadRow.spec_id
+                    == ChecklistReceiptRow.spec_id,
+                    ChecklistExecutionHeadRow.phase
+                    == ChecklistPhase.SPEC_VALIDATION.value,
+                    ChecklistExecutionHeadRow.receipt_id
+                    == ChecklistReceiptRow.id,
+                )
+            )
+            if query.state is ChecklistReceiptState.CURRENT:
                 where += (
-                    ChecklistReceiptRow.id.is_(None)
-                    if query.state is ChecklistReceiptState.CURRENT
-                    # ``previous`` is the human-facing complete history and
-                    # therefore deliberately includes legacy NULL editions.
-                    else ChecklistReceiptRow.id.is_not(None),
+                    ChecklistReceiptRow.spec_edition
+                    == query.current_spec_edition,
+                    is_current_head,
                 )
-            else:
-                is_current_head = exists(
-                    select(ChecklistExecutionHeadRow.receipt_id).where(
-                        ChecklistExecutionHeadRow.board_id
-                        == ChecklistReceiptRow.board_id,
-                        ChecklistExecutionHeadRow.spec_id
-                        == ChecklistReceiptRow.spec_id,
-                        ChecklistExecutionHeadRow.phase
-                        == ChecklistPhase.SPEC_VALIDATION.value,
-                        ChecklistExecutionHeadRow.receipt_id
-                        == ChecklistReceiptRow.id,
-                    )
-                )
-                if query.state is ChecklistReceiptState.CURRENT:
-                    where += (
+            elif query.state is ChecklistReceiptState.PREVIOUS:
+                where += (
+                    or_(
                         ChecklistReceiptRow.spec_edition
-                        == query.current_spec_edition,
-                        is_current_head,
-                    )
-                elif query.state is ChecklistReceiptState.PREVIOUS:
-                    where += (
-                        or_(
-                            ChecklistReceiptRow.spec_edition.is_(None),
+                        != query.current_spec_edition,
+                        and_(
                             ChecklistReceiptRow.spec_edition
-                            != query.current_spec_edition,
-                            and_(
-                                ChecklistReceiptRow.spec_edition
-                                == query.current_spec_edition,
-                                ~is_current_head,
-                            ),
+                            == query.current_spec_edition,
+                            ~is_current_head,
                         ),
-                    )
+                    ),
+                )
         total = int(
             (
                 await self._session.execute(

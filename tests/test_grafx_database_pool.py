@@ -105,6 +105,52 @@ def _pool(root: Path, connector: _Connector) -> CommunityGrafxDatabasePool:
     return CommunityGrafxDatabasePool(root, connect=connector)
 
 
+def test_observation_acquire_never_opens_or_finalizes_a_terminal_handle(root):
+    connector = _Connector()
+    pool = _pool(root, connector)
+    path = root / "observed"
+    with pytest.raises(GrafxDatabasePoolError) as absent:
+        pool.acquire_existing(path, page_size=PAGE_SIZE)
+    assert absent.value.reason == "pool_observation_participant_unavailable"
+    assert connector.calls == []
+    database = pool.get(path, page_size=PAGE_SIZE)
+    database.closed = True
+    database.close_complete = False
+    with pytest.raises(GrafxDatabasePoolError):
+        pool.acquire_existing(path, page_size=PAGE_SIZE)
+    assert len(connector.calls) == 1
+    assert database.close_calls == 0
+    assert pool.pin_count(path) == 0
+
+
+def test_observation_acquire_pins_existing_identity_without_another_open(root):
+    connector = _Connector()
+    pool = _pool(root, connector)
+    path = root / "observed"
+    database = pool.get(path, page_size=PAGE_SIZE)
+    with pool.acquire_existing(path, page_size=PAGE_SIZE) as lease:
+        assert lease.database is database
+        assert pool.pin_count(path) == 1
+        assert len(connector.calls) == 1
+        with pytest.raises(GrafxDatabasePoolError):
+            pool.close(path)
+    assert pool.pin_count(path) == 0
+    assert pool.close(path)
+
+
+def test_observation_acquire_refuses_geometry_mismatch_without_pinning(root):
+    connector = _Connector()
+    pool = _pool(root, connector)
+    path = root / "observed"
+    pool.get(path, page_size=PAGE_SIZE)
+    with pytest.raises(GrafxDatabasePoolError) as failure:
+        pool.acquire_existing(path, page_size=4096)
+    assert failure.value.reason == "pool_page_size_mismatch"
+    assert pool.pin_count(path) == 0
+    assert len(connector.calls) == 1
+    pool.close_all()
+
+
 def test_read_only_pool_opens_a_snapshot_participant(root: Path) -> None:
     calls: list[dict[str, object]] = []
 

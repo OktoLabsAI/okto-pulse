@@ -2,10 +2,22 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import pytest
 
 from okto_pulse.community.config import CommunitySettings
 from okto_pulse.community.cli import cmd_metrics, main
 from okto_pulse.core.telemetry.schema import CURRENT_SCHEMA_VERSION
+
+
+@pytest.fixture(autouse=True)
+def _isolated_metrics_paths(tmp_path, monkeypatch):
+    # Explicit inherited paths override DATA_DIR in Settings. Keep CLI writes,
+    # exports and purge inside this test even under the paired-suite launcher.
+    monkeypatch.chdir(tmp_path)
+    for key in ("METRICS_DIR", "KG_BASE_DIR", "DATABASE_URL", "UPLOAD_DIR"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "pulse-home"))
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "pulse-data"))
 
 
 class Args:
@@ -28,7 +40,7 @@ def test_community_settings_uses_okto_pulse_home_for_all_local_state(
 ) -> None:
     monkeypatch.delenv("DATA_DIR", raising=False)
     monkeypatch.delenv("KG_BASE_DIR", raising=False)
-    monkeypatch.setenv("OKTO_PULSE_HOME", str(tmp_path / "pulse-home"))
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "pulse-home"))
 
     settings = CommunitySettings()
 
@@ -114,7 +126,7 @@ def test_metrics_cli_enable_beacon_persists_acknowledgements(tmp_path: Path, mon
     assert persisted["acknowledged_items"] == expected_ack
 
 
-def test_metrics_cli_legacy_local_only_maps_to_off_export_and_purge(
+def test_metrics_cli_disable_export_and_purge(
     tmp_path: Path,
     monkeypatch,
     capsys,
@@ -123,21 +135,13 @@ def test_metrics_cli_legacy_local_only_maps_to_off_export_and_purge(
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "pulse-data"))
     caplog.set_level("INFO", logger="okto_pulse.community.metrics.cli")
 
-    cmd_metrics(Args(metrics_command="local-only"))
+    cmd_metrics(Args(metrics_command="disable"))
     state = json.loads(capsys.readouterr().out)
     assert state["mode"] == "disabled"
     assert state["ui_mode"] == "off"
-    assert state["legacy_alias"] == "local-only"
-    assert state["message"] == "The legacy local-only command is deprecated; metrics are now Off."
     persisted = json.loads((tmp_path / "pulse-data" / "metrics" / "state.json").read_text(encoding="utf-8"))
     assert persisted["mode"] == "disabled"
     assert "local_only" not in json.dumps({"mode": persisted["mode"]})
-    assert any(
-        record.__dict__.get("metric_name") == "metrics_cli_legacy_local_only_total"
-        and record.__dict__.get("outcome") == "mapped_to_disabled"
-        for record in caplog.records
-    )
-
     cmd_metrics(Args(metrics_command="export", output=None))
     exported = json.loads(capsys.readouterr().out)
     assert Path(exported["output_path"]).exists()

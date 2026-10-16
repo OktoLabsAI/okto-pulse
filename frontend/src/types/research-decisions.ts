@@ -120,5 +120,5 @@ export interface ResearchDecisionErrorDetails {
   [key: string]: unknown;
 }
 
-/** Explicit alias used by integration props to prevent mixing legacy strings. */
-export type LegacyRefinementDecision = string;
+/** Text note distinct from an immutable Research Decision Ledger entry. */
+export type RefinementDecisionNote = string;

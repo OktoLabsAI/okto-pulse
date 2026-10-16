@@ -306,7 +306,6 @@ pip install -e ".[dev]"
 okto-pulse init
 okto-pulse serve     # API+frontend :8100, MCP :8101
 okto-pulse status
-okto-pulse reset
 
 pytest -q
 pytest tests/test_specific.py::test_name -v

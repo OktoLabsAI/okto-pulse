@@ -24,12 +24,14 @@ export function EditableField({
 }: EditableFieldProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
+  const [base, setBase] = useState(value);
   const [saving, setSaving] = useState(false);
   const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null);
 
   useEffect(() => {
-    setDraft(value);
-  }, [value]);
+    if (!editing) { setDraft(value); setBase(value); }
+  }, [value, editing]);
+  const conflict = editing && base !== value;
 
   useEffect(() => {
     if (disabled) setEditing(false);
@@ -45,6 +47,8 @@ export function EditableField({
   }, [editing]);
 
   const handleSave = useCallback(async () => {
+    // A live update never silently replaces or rebases an authored draft.
+    if (disabled || conflict || saving) return;
     const trimmed = draft.trim();
     if (trimmed === value) {
       setEditing(false);
@@ -59,10 +63,11 @@ export function EditableField({
     } finally {
       setSaving(false);
     }
-  }, [draft, value, onSave]);
+  }, [draft, value, onSave, disabled, conflict, saving]);
 
   const handleCancel = useCallback(() => {
     setDraft(value);
+    setBase(value);
     setEditing(false);
   }, [value]);
 
@@ -120,13 +125,22 @@ export function EditableField({
         <p className="text-[10px] text-gray-400 mt-1">
           {multiline ? 'Ctrl+Enter to save, Esc to cancel' : 'Enter to save, Esc to cancel'}
         </p>
+        {conflict && <div role="alert" className="mt-2 rounded border border-amber-300 p-2 text-xs text-amber-800 dark:border-amber-700 dark:text-amber-200">
+          <p>The saved value changed while you were editing. Your draft has been preserved.</p>
+          <p className="mt-1 whitespace-pre-wrap break-words">Current value: {value || '(empty)'}</p>
+          <button type="button" className="btn btn-secondary mt-2" onClick={() => {
+            setBase(value);
+            inputRef.current?.focus();
+          }}>Keep my draft after reviewing this value</button>
+          <button type="button" className="btn btn-secondary mt-2 ml-2" onClick={handleCancel}>Use current value</button>
+        </div>}
       </div>
     );
   }
 
   return (
     <div
-      onClick={() => { if (!disabled) setEditing(true); }}
+      onClick={() => { if (!disabled) { setDraft(value); setBase(value); setEditing(true); } }}
       aria-disabled={disabled}
       className={`group relative rounded-lg border border-transparent transition-colors px-1 -mx-1 ${
         disabled

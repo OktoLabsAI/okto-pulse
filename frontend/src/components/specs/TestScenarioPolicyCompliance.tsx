@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, ArrowRight, LoaderCircle } from 'lucide-react';
 import toast from 'react-hot-toast';
 
@@ -7,6 +7,7 @@ import {
   usePolicyTransitionAuthority,
 } from '@/components/policy-compliance';
 import { useDashboardApi } from '@/services/api';
+import { VerificationReportSubmission } from './VerificationReportSubmission';
 import type {
   AllowedTransition,
   Spec,
@@ -64,8 +65,12 @@ export interface TestScenarioPolicyComplianceProps {
   specArchived: boolean;
   scenario: TestScenario;
   canReadPolicyCompliance: boolean;
+  canSubmitVerificationReport?: boolean;
+  readCurrent?: boolean;
+  missing?: boolean;
+  onReportDraftChange?: (dirty: boolean) => void;
   refreshKey: number;
-  onSpecRefreshed: (spec: Spec) => void;
+  onReload: () => Promise<Spec>;
 }
 
 /**
@@ -76,17 +81,30 @@ export interface TestScenarioPolicyComplianceProps {
  * manufactures authenticated evidence. Gated execution edges stay visible in
  * the authoritative preview but are not exposed as executable UI actions.
  */
-export function TestScenarioPolicyCompliance({
+export function TestScenarioPolicyCompliance(props: TestScenarioPolicyComplianceProps) {
+  return <ScenarioPolicySurface key={`${props.boardId}:${props.specId}:${props.scenario.id}`} {...props} />;
+}
+
+function ScenarioPolicySurface({
   boardId,
   specId,
   specArchived,
   scenario,
   canReadPolicyCompliance,
+  canSubmitVerificationReport = false,
+  readCurrent = true,
+  missing = false,
+  onReportDraftChange,
   refreshKey,
-  onSpecRefreshed,
+  onReload,
 }: TestScenarioPolicyComplianceProps) {
   const api = useDashboardApi();
   const [movingTo, setMovingTo] = useState<TestScenarioStatus | null>(null);
+  const [needsRead, setNeedsRead] = useState(false);
+  const [readError, setReadError] = useState('');
+  const moving = useRef(false);
+  const live = useRef(true);
+  useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
   const authority = usePolicyTransitionAuthority({
     boardId,
     entityType: 'test_scenario',
@@ -105,22 +123,35 @@ export function TestScenarioPolicyCompliance({
   );
 
   const refreshWholeSpec = async () => {
-    const updated = await api.getSpec(specId);
-    onSpecRefreshed(updated);
+    const updated = await onReload();
+    if (!live.current) return;
+    if (updated.id !== specId || updated.board_id !== boardId) throw new Error('The current Spec could not be verified.');
+    await authority.refresh();
+    if (live.current) { setNeedsRead(false); setReadError(''); }
   };
 
   const moveScenario = async (transition: AllowedTransition) => {
-    if (!isScenarioStatus(transition.to_status) || movingTo) return;
+    if (!isScenarioStatus(transition.to_status) || moving.current || needsRead || missing || !readCurrent) return;
     const target = transition.to_status;
     authority.clearRejection();
+    moving.current = true;
     setMovingTo(target);
+    let confirmed = false;
     try {
       await api.updateTestScenarioStatus(specId, scenario.id, {
         status: target,
       });
+      confirmed = true;
+      if (!live.current) return;
       await refreshWholeSpec();
-      toast.success(`Test scenario moved to ${transition.label}`);
+      if (live.current) toast.success(`Test scenario moved to ${transition.label}`);
     } catch (caught) {
+      if (!live.current) return;
+      if (confirmed) {
+        setNeedsRead(true);
+        setReadError('The transition was saved, but the current scenario could not be loaded. Reload without repeating it.');
+        return;
+      }
       const policyRejected = await authority.handleTransitionError(
         caught,
         target,
@@ -128,9 +159,9 @@ export function TestScenarioPolicyCompliance({
       try {
         await refreshWholeSpec();
       } catch {
-        // The transition error remains the primary diagnostic. The next modal
-        // refresh will recover the parent projection.
+        if (live.current) { setNeedsRead(true); setReadError('The scenario change could not be confirmed. Reload its current state before another action.'); }
       }
+      if (!live.current) return;
       toast.error(
         policyRejected
           ? 'Policy Compliance rejected this test scenario transition. Review the structured evidence below.'
@@ -139,7 +170,8 @@ export function TestScenarioPolicyCompliance({
             : 'Failed to update test scenario status',
       );
     } finally {
-      setMovingTo(null);
+      moving.current = false;
+      if (live.current) setMovingTo(null);
     }
   };
 
@@ -148,6 +180,12 @@ export function TestScenarioPolicyCompliance({
       className="space-y-3 border-t border-gray-200 pt-3 dark:border-gray-700"
       data-testid="test-scenario-policy-surface"
     >
+      {!missing && <>
+      {needsRead && <div role="status" className="text-xs text-amber-600">
+        <p>{readError}</p>
+        <button type="button" className="btn btn-secondary text-xs" disabled={movingTo !== null}
+          onClick={() => { void refreshWholeSpec().catch(() => { if (live.current) setReadError('Current scenario could not be loaded. Retry the read when connected.'); }); }}>Reload current scenario</button>
+      </div>}
       <div>
         <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
           Lifecycle actions
@@ -185,7 +223,7 @@ export function TestScenarioPolicyCompliance({
               key={transition.to_status}
               type="button"
               onClick={() => void moveScenario(transition)}
-              disabled={movingTo !== null}
+              disabled={movingTo !== null || needsRead || !readCurrent}
               className="inline-flex min-h-8 items-center gap-1.5 rounded-lg border border-blue-300 bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-blue-700 dark:bg-blue-950/30 dark:text-blue-200"
             >
               {movingTo === transition.to_status ? (
@@ -226,12 +264,30 @@ export function TestScenarioPolicyCompliance({
             {evidenceTransitions
               .map((transition) => transition.label)
               .join(', ')}
-            . These edges are preview-only here.
+            . A supported report can supply an external observation below.
           </span>
         </p>
       )}
 
-      {canReadPolicyCompliance && (
+      </>}
+      <VerificationReportSubmission specId={specId} scenario={scenario}
+        canSubmit={canSubmitVerificationReport && !specArchived}
+        readCurrent={movingTo === null && !needsRead && readCurrent}
+        missing={missing}
+        onDraftChange={onReportDraftChange}
+        onReload={onReload}
+        allowedResults={[
+          ...evidenceTransitions.map(transition => transition.to_status),
+          ...executableTransitions.filter(transition => transition.to_status === 'ready').map(transition => transition.to_status),
+          ...(scenario.status === 'ready' && authority.preview.status === 'ready' ? ['ready'] : []),
+        ]}
+        onSaved={refreshWholeSpec} onRejected={authority.handleTransitionError} />
+
+      {!missing && scenario.evidence?.verification_report && (
+        <p className="text-xs">Reported outcome: {scenario.evidence.verification_report.result}. {scenario.evidence.verification_report.conclusion}</p>
+      )}
+
+      {!missing && canReadPolicyCompliance && (
         <div
           className="space-y-3"
           data-testid="test-scenario-policy-compliance"
@@ -239,13 +295,14 @@ export function TestScenarioPolicyCompliance({
           <PolicyCompliancePanel
             boardId={boardId}
             entityType="test_scenario"
+            presentationMode="subject-version"
             subjectId={scenario.id}
             transitionPreview={authority.preview}
-            evaluationEnabled={!specArchived}
+            evaluationEnabled={!specArchived && readCurrent && !needsRead}
             evaluationUnavailableReason={
               specArchived
                 ? 'Restore the parent spec before evaluating this test scenario.'
-                : undefined
+                : !readCurrent || needsRead ? 'Reload the current scenario before evaluating.' : undefined
             }
             refreshKey={refreshKey}
             onEvaluated={() => {

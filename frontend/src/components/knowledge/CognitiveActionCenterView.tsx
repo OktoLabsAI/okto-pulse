@@ -22,7 +22,6 @@ import {
   useModalStack,
   type ModalStackEntry,
 } from "@/contexts/ModalStackContext";
-import { DeadLetterInspectorModal } from "./DeadLetterInspectorModal";
 import { ReadinessHelp } from "./ReadinessHelp";
 
 interface Props {
@@ -76,7 +75,7 @@ const primary = `${button} bg-violet-600 text-white border-violet-600 hover:bg-v
 const input =
   "rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-3 py-2 text-sm w-full";
 
-export function artifactTarget(
+function artifactTarget(
   item: CognitiveReadinessItem,
 ): ModalStackEntry | null {
   const [kind, ...rest] = item.artifact_id.split(":");
@@ -84,9 +83,9 @@ export function artifactTarget(
   if (!id) return null;
   if (["card", "task", "test", "bug"].includes(kind))
     return { type: "card", id };
-  if (["spec", "ideation", "refinement", "sprint", "story"].includes(kind))
+  if (["spec", "ideation", "refinement", "story"].includes(kind))
     return {
-      type: kind as "spec" | "ideation" | "refinement" | "sprint" | "story",
+      type: kind as "spec" | "ideation" | "refinement" | "story",
       id,
     };
   return null;
@@ -101,13 +100,13 @@ function advice(item: CognitiveReadinessItem) {
   if (item.signal === "dlq")
     return {
       label: "Processing failed",
-      text: "An attempt failed and was moved to the failed-processing queue. Inspect its error before deciding whether to retry. A waiver cannot fix this.",
+      text: "An attempt failed and was moved to the failed-processing queue. The affected graph update is unavailable. A waiver cannot fix this.",
       tone: "border-l-rose-500 dark:border-l-rose-400",
     };
   if (item.signal === "open_canonical_debt")
     return {
       label: "Graph update still pending",
-      text: "The authoritative graph update has not finished. Inspect Knowledge Graph Health and its recovery diagnostics; do not waive a technical failure.",
+      text: "The graph projection has not finished. Knowledge Graph Health shows status and observation limits. Recovery requires authorized external support; a waiver cannot resolve a technical failure.",
       tone: "border-l-rose-500 dark:border-l-rose-400",
     };
   if (item.readiness_effect === "blocking_technical")
@@ -150,7 +149,6 @@ function ActionCenter({ boardId, boardName, onClose, onOpenHealth }: Props) {
   const canRead = ready && permissions.has("kg.operations.cognitive.read");
   const canSkip = ready && permissions.has("kg.operations.cognitive.skip");
   const canClear = ready && permissions.has("kg.operations.cognitive.clear");
-  const canQueue = ready && permissions.has("kg.operations.queue.read");
   const canHealth = ready && permissions.has("kg.operations.health.read");
   const [data, setData] = useState<CognitiveReadinessListResponse | null>(null);
   const [metrics, setMetrics] = useState<CognitiveReadinessMetrics | null>(
@@ -165,7 +163,6 @@ function ActionCenter({ boardId, boardName, onClose, onOpenHealth }: Props) {
   const [metricsError, setMetricsError] = useState(false);
   const [updated, setUpdated] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
-  const [dlq, setDlq] = useState(false);
   const request = useRef<AbortController | null>(null);
   const api = useDashboardApi();
   const { push } = useModalStack();
@@ -230,7 +227,6 @@ function ActionCenter({ boardId, boardName, onClose, onOpenHealth }: Props) {
       spec: api.getSpec,
       ideation: api.getIdeation,
       refinement: api.getRefinement,
-      sprint: api.getSprint,
       story: api.getStory,
     };
     const worker = async () => {
@@ -285,7 +281,7 @@ function ActionCenter({ boardId, boardName, onClose, onOpenHealth }: Props) {
             Resolve knowledge gaps
           </h1>
           <p className="text-sm text-slate-600 dark:text-slate-400 dark:text-slate-400 mt-1 max-w-3xl">
-            Review what is missing, inspect failed processing, or explain why
+            Review what is missing, see processing limitations, or explain why
             consolidation is not needed. Nothing runs simply by opening this
             page.
           </p>
@@ -327,8 +323,8 @@ function ActionCenter({ boardId, boardName, onClose, onOpenHealth }: Props) {
                 <strong>Choose the next step.</strong>
                 <p className="mt-1">
                   Use an agent following the Pulse workflow for consolidation.
-                  For failures, inspect the failed-processing queue or KG Health
-                  before retrying.
+                  For failures, consult KG Health for component availability.
+                  Health does not authorize repair.
                 </p>
               </li>
               <li>
@@ -558,7 +554,6 @@ function ActionCenter({ boardId, boardName, onClose, onOpenHealth }: Props) {
                           ? () => openArtifact(item)
                           : undefined
                       }
-                      onQueue={canQueue ? () => setDlq(true) : undefined}
                       onHealth={canHealth ? onOpenHealth : undefined}
                     />
                   ))}
@@ -616,15 +611,7 @@ function ActionCenter({ boardId, boardName, onClose, onOpenHealth }: Props) {
           )}
         </div>
       </div>
-      {dlq && canQueue && (
-        <DeadLetterInspectorModal
-          boardId={boardId}
-          onClose={() => {
-            setDlq(false);
-            void fetchAll();
-          }}
-        />
-      )}
+
     </div>
   );
 }
@@ -637,7 +624,6 @@ function ReadinessCard({
   canClear,
   onChanged,
   onOpen,
-  onQueue,
   onHealth,
 }: {
   item: CognitiveReadinessItem;
@@ -647,7 +633,6 @@ function ReadinessCard({
   canClear: boolean;
   onChanged: (message: string) => void;
   onOpen?: () => void;
-  onQueue?: () => void;
   onHealth?: () => void;
 }) {
   const [action, setAction] = useState<"waive" | "reopen" | null>(null);
@@ -767,16 +752,11 @@ function ReadinessCard({
         <div className="flex flex-wrap lg:flex-col gap-2 lg:w-56 shrink-0">
           {(item.signal === "dlq" ||
             item.precedence_explanation.tier === "technical_dlq") &&
-            (onQueue ? (
-              <button className={primary} onClick={onQueue}>
-                Inspect failed processing
-              </button>
-            ) : (
-              <p className="text-sm text-slate-600 dark:text-slate-400">
-                Ask a board administrator with queue access to inspect this
-                failure.
-              </p>
-            ))}
+            <p className="text-sm text-slate-600 dark:text-slate-400">
+              Processing is unavailable for this artifact. The technical blocker
+              remains until the underlying failure is resolved.
+            </p>}
+
           {(item.signal === "open_canonical_debt" ||
             item.precedence_explanation.tier === "canonical_debt_open") &&
             (onHealth ? (
@@ -856,7 +836,7 @@ function ReadinessCard({
         </pre>
         <p className="mt-2">
           The category is not the full error report. Use the failed-processing
-          inspector or KG Health for diagnostics.
+          KG Health for component availability.
         </p>
       </details>
       {action && (

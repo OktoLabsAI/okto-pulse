@@ -1,0 +1,101 @@
+- generic [ref=f1e3]:
+  - banner [ref=f1e4]:
+    - generic [ref=f1e5]:
+      - generic [ref=f1e6]:
+        - button "Hide sidebar" [ref=f1e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f1e12]
+        - generic [ref=f1e31]: / My Board
+      - generic [ref=f1e32]:
+        - button "Refresh board" [ref=f1e33] [cursor=pointer]
+        - button [ref=f1e40] [cursor=pointer]
+  - generic [ref=f1e13]:
+    - complementary [ref=f1e14]:
+      - generic [ref=f1e15]:
+        - generic [ref=f1e17]:
+          - heading "Boards" [level=2] [ref=f1e18]
+          - button "New board" [ref=f1e19] [cursor=pointer]
+        - navigation [ref=f1e21]:
+          - generic [ref=f1e22]:
+            - heading "My Boards" [level=3] [ref=f1e23]
+            - list [ref=f1e44]:
+              - listitem [ref=f1e45]:
+                - button "My Board" [ref=f1e46] [cursor=pointer]
+    - main [ref=f1e26]:
+      - group "Board views" [ref=f1e53]:
+        - button "Stories" [ref=f1e54] [cursor=pointer]
+        - button "Ideations" [ref=f1e58] [cursor=pointer]
+        - button "Refinements" [ref=f1e61] [cursor=pointer]
+        - button "Specs" [active] [pressed] [ref=f1e66] [cursor=pointer]
+        - button "Tasks" [ref=f1e71] [cursor=pointer]
+      - generic [ref=f1e169]:
+        - generic [ref=f1e170]:
+          - generic [ref=f1e171]:
+            - heading "Specifications" [level=2] [ref=f1e172]
+            - generic [ref=f1e173]: (1 of 1)
+          - generic [ref=f1e174]:
+            - textbox "Search specs…" [ref=f1e176]
+            - group "View mode" [ref=f1e177]:
+              - button "List view" [pressed] [ref=f1e178] [cursor=pointer]
+              - button "Grid view" [ref=f1e180] [cursor=pointer]
+            - generic [ref=f1e186]: Group specs
+            - combobox "Group specs" [ref=f1e192]:
+              - option "None"
+              - option "Ideation"
+              - option "Refinement"
+              - option "Parents" [selected]
+            - button "New Spec" [ref=f1e193] [cursor=pointer]
+        - generic [ref=f1e195]:
+          - button "All" [ref=f1e196] [cursor=pointer]
+          - button "Draft" [ref=f1e197] [cursor=pointer]
+          - button "Review" [ref=f1e198] [cursor=pointer]
+          - button "Approved" [ref=f1e199] [cursor=pointer]
+          - button "Validated" [ref=f1e200] [cursor=pointer]
+          - button "In Progress" [ref=f1e201] [cursor=pointer]
+          - button "Done" [ref=f1e202] [cursor=pointer]
+          - button "Show archived" [ref=f1e203] [cursor=pointer]
+        - generic [ref=f1e209] [cursor=pointer]:
+          - generic [ref=f1e210]:
+            - generic [ref=f1e211]:
+              - generic [ref=f1e212]: Draft
+              - generic "Edition 1" [ref=f1e216]
+            - heading "DV acceptance - isolated mock scope" [level=3] [ref=f1e217]
+            - paragraph [ref=f1e218]: This new native acceptance fixture documents only the local UI exercise; no production deployment is included.
+            - 'generic "Requirement lint: no current result · Edition 1; 0 previous results" [ref=f1e220]':
+              - generic [ref=f1e221]: Requirement lint
+              - strong [ref=f1e222]: Not assessed
+          - generic [ref=f1e223]:
+            - button "Open lineage graph" [ref=f1e224]
+            - button "Archive tree" [ref=f1e229]
+        - generic [ref=f1e235]:
+          - status [ref=f1e236]: Showing 1–1 of 1 matching. 1 overall. Page 1 of 1.
+          - generic [ref=f1e237]:
+            - generic [ref=f1e238]:
+              - generic [ref=f1e239]: Items per page
+              - combobox "Items per page" [ref=f1e240]:
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+            - navigation "Specifications pagination" [ref=f1e241]:
+              - generic [ref=f1e242]:
+                - button "Previous page" [disabled] [ref=f1e243]: Previous
+                - button "Page 1" [disabled] [ref=f1e244]: "1"
+                - button "Next page" [disabled] [ref=f1e245]: Next
+  - 'status "Cognitive pipeline working: 0 running, 1 pending" [ref=f1e139]':
+    - generic [ref=f1e150]: processing · 1 pending
+  - status [ref=f1e151]:
+    - generic [ref=f1e152]:
+      - generic [ref=f1e153]: Consolidation in progress
+      - generic [ref=f1e154]: 0%
+    - generic [ref=f1e156]:
+      - generic [ref=f1e157]:
+        - generic [ref=f1e158]: Pending
+        - generic [ref=f1e159]: "1"
+      - generic [ref=f1e160]:
+        - generic [ref=f1e161]: Running
+        - generic [ref=f1e162]: "0"
+      - generic [ref=f1e163]:
+        - generic [ref=f1e164]: Processed
+        - generic [ref=f1e165]: "0"
+      - generic [ref=f1e166]:
+        - generic [ref=f1e167]: Paused
+        - generic [ref=f1e168]: "0"

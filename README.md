@@ -61,21 +61,21 @@ Okto Pulse is a local-first SDLC workbench built for teams that use AI coding ag
 Instead of sending an agent straight from a prompt to code, Okto Pulse keeps the work explicit:
 
 ```text
-Stories -> Ideation -> Refinement -> Spec -> Sprint -> Tasks / Tests / Bugs
+Stories -> Ideation -> Refinement -> Spec -> Tasks / Tests / Bugs
 ```
 
 Every stage has structured artifacts, lineage, status transitions and validation rules. Agents can create and update those artifacts through MCP tools, while humans can inspect and steer the same work in the web UI.
 
 ## Platform Surface
 
-Current 0.3.3 surface:
+Current `feature/v0.4.0` implementation surface:
 
 | Surface | Count |
 | --- | ---: |
-| Governance gates | 18 |
-| Core MCP tools | 340 |
+| Governance gates | See the Core governance families and canonical gate contracts |
+| Core MCP tools | 282 |
 | Community-only MCP tools | 0 |
-| MCP tools exposed by `okto-pulse serve` | 340 |
+| MCP tools exposed by `okto-pulse serve` | 282 |
 
 The community package materializes the full `okto-pulse-core` command catalog in
 its FastMCP host. That means installed community runtimes expose the complete
@@ -248,15 +248,10 @@ Operational health is visible through:
 - dead-letter and queue metrics
 - graph database runtime settings in the board settings panel
 
-`GET /health` is a constant-time liveness endpoint: it performs no storage
-scan and keeps the backward-compatible HTTP 200 and `status: "healthy"`
-contract while the process can answer requests. Relational integrity is
-available on the explicit, read-only `GET /health/integrity` diagnostic through
-`integrity_status` and `findings.sprint_origin_integrity`; do not use that
-storage-backed route as a recurring liveness probe. A missing sprint lineage
-foreign key with clean data is `degraded`; an invalid lineage row or a probe
-failure is `critical`. Direct SQL repair is unsupported; use application
-workflows or a verified backup/restore procedure.
+GET /health is a constant-time liveness endpoint: it performs no storage
+scan and returns HTTP 200 with status "healthy" while the process can answer
+requests. Use application workflows or a verified backup/restore procedure
+for recovery; direct SQL repair is unsupported.
 
 ## Architecture
 
@@ -270,7 +265,7 @@ closed** rather than falling back to a silent default.
 
 **→ [Architecture in full](docs/ARCHITECTURE.md)** — dependency owner matrix (AF-05/AF40),
 registration flow, the adapter source map, and the **port → adapter matrix** showing which core
-contract each of the 156 adapter modules implements.
+contract each adapter module implements.
 
 ## CLI Reference
 
@@ -292,20 +287,13 @@ contract each of the 156 adapter modules implements.
 | `okto-pulse metrics disable` | Turn metrics off. |
 | `okto-pulse metrics export [--output PATH]` | Export local metrics as JSONL. |
 | `okto-pulse metrics purge-local --yes` | Delete local metrics files after explicit confirmation. |
-| `okto-pulse api-key [--handoff-file PATH]` | Atomically consume a reveal-once bootstrap API-key handoff. |
-| `okto-pulse reset [-y]` | Delete SQLite, uploads and SQLite-owned board graph directories, then re-seed; offline and explicitly destructive. |
-| `okto-pulse verify-pipeline <board_id>` | Check all five Kanban-KG pipeline layers for a board. |
-| `okto-pulse kg dedup-entities <board_id>` | Run the idempotent KG entity deduplication migration for a board. |
-| `okto-pulse kg migrate-schema (--board <board_id> or --all-boards)` | Apply graph schema migrations manually. The runtime also auto-heals supported legacy schemas. |
-| `okto-pulse kg backfill <board_id> [--apply]` | Re-extract deterministic KG nodes and edges; dry-run by default. |
-| `okto-pulse kg proposals <board_id>` | List pending KG curation proposals. |
-| `okto-pulse kg unmerge <board_id> <record_id>` | Logically reverse a dedup equivalence record without re-pointing edges. |
-| `okto-pulse kg export <board_id> --output PATH` | Export a deterministic JSON-LD graph. |
-| `okto-pulse kg subtype declare <node_type> <kind_of>` | Declare a governed KG subtype. |
-| `okto-pulse kg restore <quarantine_id> [--apply]` | Plan or apply restoration of a quarantined KG snapshot. |
+| `okto-pulse api-key --handoff-file PATH` | Atomically consume a reveal-once bootstrap API-key handoff. |
 
-For exact JSON/error, graph-reset ownership and migration admission contracts,
-see [CLI corrections and safety](docs/CLI_ISSUE_CLOSEOUT_20260913.md).
+The former `reset`, `verify-pipeline` and `kg` command group are no longer accepted,
+including their help/options. The CLI returns the standard unknown-command
+error (exit 2) before accessing data. Use `status` for local observation; it
+does not certify KG health or perform recovery. See [health observations](docs/kg-health.md)
+and the [historical CLI corrections](docs/CLI_ISSUE_CLOSEOUT_20260913.md).
 
 ## Run with Docker
 
@@ -321,11 +309,10 @@ docker run -d --name okto-pulse \
   ghcr.io/oktolabsai/okto-pulse:latest
 ```
 
-Then open `http://localhost:8100` and retrieve the bootstrap API key:
-
-```bash
-docker exec okto-pulse okto-pulse api-key
-```
+Then open `http://localhost:8100`. The first startup prints the newly created
+bootstrap API key once. Persisted keys cannot be recovered; regenerate a key
+through the UI/API if needed. Automation can use `init --bootstrap-key-handoff`
+and consume that explicit file with `api-key --handoff-file`.
 
 ### Compose
 
@@ -349,7 +336,7 @@ docker compose up -d
 | --- | --- | --- |
 | `HOST` | `127.0.0.1` | API/UI bind host. Use `0.0.0.0` in containers. |
 | `MCP_HOST` | `127.0.0.1` | MCP bind host. Use `0.0.0.0` in containers. |
-| `DATA_DIR` | `~/.okto-pulse` | SQLite database, uploads, graph storage and terms-acceptance root. Takes precedence over legacy `OKTO_PULSE_HOME` in the environment. |
+| `DATA_DIR` | `~/.okto-pulse` | SQLite database, uploads, graph storage and terms-acceptance root. Resolved from the explicit setting, then `DATA_DIR` in the environment or dotenv. |
 | `CORS_ORIGINS` | `*` | Comma-separated allowed browser origins, e.g. `https://one.example,https://two.example`. Explicit values are preserved. Not authentication or a firewall. |
 | `KG_BASE_DIR` | derived from `DATA_DIR` | Per-board graph database location. |
 | `KG_GRAFX_DESCRIPTOR_REVALIDATION` | `generation` | Grafx process-local descriptor policy: `generation` or `strict`. |
@@ -383,11 +370,6 @@ Grafx pool and refuses a handle whose observed effective mode differs from confi
 whitelist and transition matrix are specified in Okto Grafx's
 `docs/architecture/ST2_DESCRIPTOR_REVALIDATION.md`.
 
-One-shot schema-migration and rollout builders continue to open their separate, unbound candidate
-paths with Grafx's `strict` default and close them before activation. They do not share the live
-pool or its path, so this conservative choice neither changes nor weakens the configured policy of
-the active Pulse database.
-
 MCP admission is intentionally scoped to tool execution. Saturated calls receive
 a bounded, retryable outcome with `next_action.rel=retry_after`; initialization,
 streaming, resources, prompts, and the API/UI listener do not enter this queue.
@@ -402,16 +384,20 @@ All default local state lives under `~/.okto-pulse/`:
 |   `-- pulse.db
 |-- boards/
 |   `-- {board-id}/
-|       `-- graph.lbug
+|       |-- graph_backend_binding.json
+|       `-- grafx/
+|           `-- {generation}/
 |-- global/
-|   `-- discovery.lbug
+|   |-- graph_backend_binding.json
+|   `-- grafx/
+|       `-- {generation}/
 |-- uploads/
 |   `-- {board-id}/
 `-- mcp_traces/
 ```
 
 > [!WARNING]
-> Do not delete graph database directories to "fix" graph errors. Use the KG migration and health tools so schema or runtime issues remain diagnosable.
+> Do not delete graph database directories to "fix" graph errors. Use the KG health and recovery tools so runtime issues remain diagnosable. Pulse 0.4.0 accepts only its current storage format; incompatible storage is refused without conversion or automatic deletion. Select a new storage location for a fresh installation.
 
 ## From Source
 
@@ -547,8 +533,8 @@ The executable ownership matrix is generated by `okto-pulse-saas-closure`. Every
 <!-- F16-SAAS-CLOSURE:BEGIN -->
 | F16 executable surface | Owner | Observed | Terminal target |
 | --- | --- | ---: | ---: |
-| Core import rows | Core | 7327 | classified |
-| Community-to-Core import rows | Community | 1222 | classified |
+| Core import rows | Core | 7861 | classified |
+| Community-to-Core import rows | Community | 1154 | classified |
 | Direct dependency rows | Distribution owner | 25 | classified |
 | `import_boundary_baseline` budget | `675c43ee-7d91-4cc3-8f87-44eeb293f90c` | 0 | 0 |
 | `singleton_baseline` budget | `675c43ee-7d91-4cc3-8f87-44eeb293f90c` | 0 | 0 |

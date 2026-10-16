@@ -160,22 +160,17 @@ async def get_effective_resources(
     entity_type: EntityType,
     entity_id: str,
     board_id: str = Query(...),
-    profile: str | None = Query(None),
+    profile: Literal["summary", "detail", "full"] = Query("summary"),
+    resource_type: Literal["knowledge_base", "architecture", "mockup"] = Query("knowledge_base"),
     cursor: str | None = Query(None),
     limit: int | None = Query(None),
     user_id: str = Depends(require_user),
     realm_id: str | None = Depends(get_realm_id),
     db: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
-    """Return a bounded Knowledge Workspace page.
-
-    Omitting ``profile`` preserves the historical hydrated ``resources`` map
-    during rolling upgrades.  Bounded workspace profiles are opt-in and never
-    mix that heavy payload into their response, so ``summary`` cannot
-    accidentally disclose bodies or exceed its byte budget.
-    """
+    """Return one bounded page of the selected effective resource kind."""
     started = time.perf_counter()
-    requested_profile = "legacy" if profile is None else profile
+    requested_profile = profile
     try:
         result = await GetEffectiveResourcesUseCase().execute(
             GetEffectiveResourcesCommand(
@@ -185,6 +180,7 @@ async def get_effective_resources(
                 requested_profile,
                 cursor,
                 limit,
+                resource_type,
             ),
             actor=RESTAdapterContract.actor(
                 user_id,

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   Check,
@@ -17,12 +17,15 @@ import type {
   ChecklistSpecState,
   QualityFindingAnchorType,
   SpecValidationMetric,
-  SpecValidationPinpoint,
+  SpecValidationPinpointInput,
   SpecValidationSubmitPayload,
   SpecValidationSubmitResponse,
+  SpecPlanningManifest,
+  SpecDecompositionInput,
   ValidationSubmissionFence,
 } from '@/types';
 import { ValidationErrorDisplay } from './ValidationErrorDisplay';
+import { decompositionReady, emptyDecomposition, SpecDecompositionFields } from './SpecDecompositionFields';
 
 interface SubmitSpecValidationModalProps {
   specId: string;
@@ -33,6 +36,8 @@ interface SubmitSpecValidationModalProps {
   settings: BoardSettings;
   canReadChecklist: boolean;
   canExecuteChecklist: boolean;
+  canSubmitDecomposition?: boolean;
+  refreshKey?: number;
   onClose: () => void;
   onSubmitted: (result: SpecValidationSubmitResponse) => void;
 }
@@ -106,14 +111,19 @@ interface MetricDraft {
   justification: string;
 }
 
-interface PinpointDraft extends SpecValidationPinpoint {
+interface PinpointDraft extends SpecValidationPinpointInput {
   key: string;
 }
 
 function newPinpoint(): PinpointDraft {
   return {
     key: `pinpoint-${crypto.randomUUID()}`,
-    metric: 'clarity',
+    metrics: ['clarity'],
+    kind: 'problem',
+    severity: 'medium',
+    excerpt: '',
+    recommendation: '',
+    rationale: '',
     anchor_type: 'whole_artifact',
     anchor_ref: null,
     detail: '',
@@ -129,6 +139,8 @@ export function SubmitSpecValidationModal({
   settings,
   canReadChecklist,
   canExecuteChecklist,
+  canSubmitDecomposition = false,
+  refreshKey = 0,
   onClose,
   onSubmitted,
 }: SubmitSpecValidationModalProps) {
@@ -148,12 +160,24 @@ export function SubmitSpecValidationModal({
   );
   const [pinpoints, setPinpoints] = useState<PinpointDraft[]>([]);
   const [recommendation, setRecommendation] = useState<'approve' | 'reject' | null>(null);
+  const [includeDecomposition, setIncludeDecomposition] = useState(false);
+  const [decomposition, setDecomposition] = useState<SpecDecompositionInput>(emptyDecomposition);
   const [submitting, setSubmitting] = useState(false);
+  const submissionAttempt = useRef<{ body: string; key: string } | null>(null);
   const [submissionError, setSubmissionError] = useState<string | null>(null);
   const [checklistState, setChecklistState] =
     useState<ChecklistSpecState | null>(null);
   const [submissionFence, setSubmissionFence] =
     useState<ValidationSubmissionFence | null>(null);
+  const planningManifest = useRef<SpecPlanningManifest | null>(null);
+  const draftDirty = useRef(false);
+  draftDirty.current = includeDecomposition || pinpoints.length > 0 || recommendation !== null
+    || METRIC_DEFINITIONS.some(({ metric }) => metrics[metric].justification.length > 0
+      || metrics[metric].score !== thresholds[metric]);
+  const [basisConflict, setBasisConflict] = useState(false);
+  const [pendingBasis, setPendingBasis] = useState<{
+    manifest: SpecPlanningManifest; fence: ValidationSubmissionFence; checklist: ChecklistSpecState;
+  } | null>(null);
   const [readinessLoading, setReadinessLoading] = useState(true);
   const [readinessRefreshKey, setReadinessRefreshKey] = useState(0);
 
@@ -164,6 +188,7 @@ export function SubmitSpecValidationModal({
     if (!canReadChecklist) {
       setChecklistState(null);
       setSubmissionFence(null);
+      planningManifest.current = null;
       setReadinessLoading(false);
       setSubmissionError(
         'Validation readiness cannot be verified with the current permissions.',
@@ -171,6 +196,7 @@ export function SubmitSpecValidationModal({
       return () => { cancelled = true; };
     }
     setReadinessLoading(true);
+    setPendingBasis(null);
     setSubmissionError(null);
     Promise.all([
       api.getSpecChecklistState(boardId, specId),
@@ -181,12 +207,18 @@ export function SubmitSpecValidationModal({
         const fence = cycle.subject_type === 'spec'
           ? cycle.submission_fence
           : undefined;
+        const manifest = cycle.subject_type === 'spec' ? cycle.planning_manifest : undefined;
         if (
           cycle.subject_type !== 'spec'
           || cycle.subject_id !== specId
           || cycle.edition !== currentSpecEdition
           || !cycle.visible_sections.includes('spec_validation')
           || !fence
+          || !manifest
+          || manifest.board_id !== boardId
+          || manifest.spec_id !== specId
+          || manifest.edition !== currentSpecEdition
+          || manifest.spec_version !== specVersion
           || fence.expected_validation_edition
             !== currentSpecEdition
           || fence.expected_subject_version !== specVersion
@@ -195,13 +227,26 @@ export function SubmitSpecValidationModal({
             'The validation cycle changed. Refresh the Spec before submitting.',
           );
         }
+        if (planningManifest.current && draftDirty.current
+            && JSON.stringify(planningManifest.current) !== JSON.stringify(manifest)) {
+          setPendingBasis({ manifest, fence, checklist: resolvedChecklist });
+          setBasisConflict(true);
+          setSubmissionError('Planning inputs changed while you were editing. Your draft has been preserved; review the current Spec before submitting.');
+          return;
+        }
         setChecklistState(resolvedChecklist);
         setSubmissionFence(fence);
+        planningManifest.current = manifest;
+        setBasisConflict(false);
       })
       .catch((error: unknown) => {
         if (cancelled) return;
         setChecklistState(null);
-        setSubmissionFence(null);
+        setBasisConflict(true);
+        if (!draftDirty.current) {
+          setSubmissionFence(null);
+          planningManifest.current = null;
+        }
         setSubmissionError(
           error instanceof Error
             ? error.message
@@ -218,6 +263,7 @@ export function SubmitSpecValidationModal({
     canReadChecklist,
     currentSpecEdition,
     readinessRefreshKey,
+    refreshKey,
     specId,
     specVersion,
   ]);
@@ -232,13 +278,16 @@ export function SubmitSpecValidationModal({
         && checklistState.gate.allowed
       )
     );
-  const fenceReady = submissionFence !== null;
+  const fenceReady = submissionFence !== null && planningManifest.current !== null && !basisConflict;
   const justificationsReady = METRIC_DEFINITIONS.every(
     ({ metric }) => metrics[metric].justification.trim().length
       >= MIN_JUSTIFICATION_LENGTH,
   );
   const pinpointsReady = pinpoints.every((pinpoint) => (
     pinpoint.detail.trim().length > 0
+    && pinpoint.metrics.length > 0
+    && pinpoint.excerpt.trim().length > 0
+    && pinpoint.recommendation.trim().length > 0
     && (
       pinpoint.anchor_type === 'whole_artifact'
       || Boolean(pinpoint.anchor_ref?.trim())
@@ -253,6 +302,7 @@ export function SubmitSpecValidationModal({
   const canSubmit =
     justificationsReady
     && pinpointsReady
+    && (!includeDecomposition || (canSubmitDecomposition && decompositionReady(decomposition)))
     && recommendation !== null
     && checklistReady
     && fenceReady
@@ -260,10 +310,11 @@ export function SubmitSpecValidationModal({
     && !submitting;
 
   const handleSubmit = async () => {
-    if (!canSubmit || !submissionFence) return;
+    if (!canSubmit || !submissionFence || !planningManifest.current) return;
     setSubmitting(true);
     setSubmissionError(null);
-    const payload: SpecValidationSubmitPayload = {
+    const authored: Omit<SpecValidationSubmitPayload, 'idempotency_key'> = {
+      expected_planning_manifest: planningManifest.current,
       expected_validation_edition:
         submissionFence.expected_validation_edition,
       expected_spec_version: submissionFence.expected_subject_version,
@@ -280,12 +331,21 @@ export function SubmitSpecValidationModal({
       ambiguity_justification: metrics.ambiguity.justification.trim(),
       pinpoints: pinpoints.map(({ key: _key, ...pinpoint }) => ({
         ...pinpoint,
+        rationale: pinpoint.rationale?.trim() || undefined,
         anchor_ref: pinpoint.anchor_type === 'whole_artifact'
           ? null
           : pinpoint.anchor_ref?.trim() || null,
         detail: pinpoint.detail.trim(),
       })),
       recommendation: recommendation!,
+      ...(includeDecomposition && canSubmitDecomposition ? { decomposition } : {}),
+    };
+    const body = JSON.stringify({ specId, ...authored });
+    if (submissionAttempt.current?.body !== body) {
+      submissionAttempt.current = { body, key: crypto.randomUUID() };
+    }
+    const payload: SpecValidationSubmitPayload = {
+      ...authored, idempotency_key: submissionAttempt.current.key,
     };
     try {
       const result = await api.submitSpecValidation(specId, payload);
@@ -294,7 +354,8 @@ export function SubmitSpecValidationModal({
           'The submitted validation was not accepted as the current edition result.',
         );
       }
-      toast.success('Spec validation recorded');
+      toast.success(result.spec_status === 'validated'
+        ? 'Planning validated' : 'Assessment recorded. Planning still needs attention.');
       onSubmitted(result);
       onClose();
     } catch (error: unknown) {
@@ -313,7 +374,7 @@ export function SubmitSpecValidationModal({
           <div>
             <h2 className="flex items-center gap-2 text-lg font-semibold text-gray-900 dark:text-white">
               <Shield size={16} aria-hidden="true" />
-              Validate Spec
+              Conclude planning validation
             </h2>
             <p className="mt-0.5 max-w-md truncate text-xs text-gray-500 dark:text-gray-400">
               {specTitle} · Edition {currentSpecEdition}
@@ -378,6 +439,21 @@ export function SubmitSpecValidationModal({
             </div>
           </section>
 
+          {basisConflict && <section role="alert" className="space-y-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+            <p>Your draft is preserved against its original planning inputs. Review the current plan and results before accepting the new basis.</p>
+            {typeof submissionError === 'string' && <p>{submissionError}</p>}
+            {pendingBasis && <>
+              <p>Current plan: Edition {pendingBasis.manifest.edition}. Your scores and justifications will not be changed automatically.</p>
+              <button type="button" className="btn btn-secondary" disabled={readinessLoading || submitting}
+                onClick={() => {
+                  planningManifest.current = pendingBasis.manifest;
+                  setSubmissionFence(pendingBasis.fence); setChecklistState(pendingBasis.checklist);
+                  setPendingBasis(null); setBasisConflict(false); setSubmissionError(null);
+                  submissionAttempt.current = null;
+                }}>I reviewed the current plan — use this basis</button>
+            </>}
+          </section>}
+
           <section className="space-y-3" aria-labelledby="spec-validation-metrics-title">
             <div>
               <h3 id="spec-validation-metrics-title" className="text-sm font-semibold text-gray-900 dark:text-white">
@@ -407,6 +483,16 @@ export function SubmitSpecValidationModal({
             </div>
           </section>
 
+          <section className="space-y-3 border-t border-gray-200 pt-4 dark:border-gray-700" aria-label="Decomposition contribution">
+            <p className="text-xs text-gray-600 dark:text-gray-300">Existing Current decomposition opinions retain their authors and are checked at conclusion. You do not need to repeat them.</p>
+            {canSubmitDecomposition && <label className="flex items-center gap-2 text-xs font-medium text-gray-800 dark:text-gray-100">
+              <input type="checkbox" checked={includeDecomposition} disabled={submitting}
+                onChange={event => setIncludeDecomposition(event.target.checked)} />
+              Include my decomposition opinion
+            </label>}
+            {includeDecomposition && canSubmitDecomposition && <SpecDecompositionFields value={decomposition} onChange={setDecomposition} disabled={submitting} />}
+          </section>
+
           <section className="space-y-3 border-t border-gray-200 pt-4 dark:border-gray-700" aria-labelledby="spec-validation-pinpoints-title">
             <div className="flex flex-wrap items-start justify-between gap-2">
               <div>
@@ -433,14 +519,14 @@ export function SubmitSpecValidationModal({
                 </legend>
                 <div className="grid gap-3 sm:grid-cols-3">
                   <label className="text-xs font-medium text-gray-700 dark:text-gray-200">
-                    Metric
-                    <select
-                      aria-label={`Pinpoint ${index + 1} metric`}
-                      value={pinpoint.metric}
+                    Dimensions
+                    <select multiple
+                      aria-label={`Pinpoint ${index + 1} dimensions`}
+                      value={pinpoint.metrics}
                       onChange={(event) => setPinpoints((current) => current.map((item) => item.key === pinpoint.key
-                        ? { ...item, metric: event.target.value as SpecValidationMetric }
+                        ? { ...item, metrics: Array.from(event.target.selectedOptions, option => option.value as SpecValidationMetric) }
                         : item))}
-                      className="mt-1 block min-h-9 w-full rounded border border-gray-300 bg-white px-2 text-xs text-gray-900 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100"
+                      className="mt-1 block w-full rounded border border-gray-300 bg-white px-2 text-xs text-gray-900 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100"
                     >
                       {METRIC_DEFINITIONS.map(({ metric, label }) => <option key={metric} value={metric}>{label}</option>)}
                     </select>
@@ -476,10 +562,26 @@ export function SubmitSpecValidationModal({
                     />
                   </label>
                 </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {(['kind', 'severity'] as const).map(field => <label key={field} className="text-xs font-medium capitalize">{field}
+                    <select aria-label={`Pinpoint ${index + 1} ${field}`} value={pinpoint[field]}
+                      onChange={event => setPinpoints(current => current.map(item => item.key === pinpoint.key ? { ...item, [field]: event.target.value } : item))}
+                      className="mt-1 block min-h-9 w-full rounded border border-gray-300 bg-white px-2 text-xs text-gray-900 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100">
+                      {(field === 'kind' ? ['problem', 'opportunity'] : ['low', 'medium', 'high', 'critical']).map(value => <option key={value} value={value}>{value}</option>)}
+                    </select>
+                  </label>)}
+                </div>
+                {(['excerpt', 'rationale', 'recommendation'] as const).map(field => <label key={field} className="block text-xs font-medium">
+                  {field === 'excerpt' ? 'Verbatim excerpt' : field === 'rationale' ? 'Rationale — why this matters and its impact' : 'Recommended action'}
+                  <textarea aria-label={`Pinpoint ${index + 1} ${field}`} value={pinpoint[field] ?? ''} maxLength={1000} rows={2}
+                    onChange={event => setPinpoints(current => current.map(item => item.key === pinpoint.key ? { ...item, [field]: event.target.value } : item))}
+                    className="mt-1 block w-full rounded border border-gray-300 bg-white p-2 text-xs text-gray-900 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100" />
+                </label>)}
                 <label className="block text-xs font-medium text-gray-700 dark:text-gray-200">
-                  Finding detail
+                  Identified issue
                   <textarea
                     aria-label={`Pinpoint ${index + 1} detail`}
+                    maxLength={1000}
                     value={pinpoint.detail}
                     onChange={(event) => setPinpoints((current) => current.map((item) => item.key === pinpoint.key
                       ? { ...item, detail: event.target.value }
@@ -534,7 +636,7 @@ export function SubmitSpecValidationModal({
               : 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/25 dark:text-amber-200'
           }`} aria-label="Validation outcome preview">
             <p className="font-semibold">
-              Outcome preview: {outcomePasses ? 'Pass' : 'Needs attention'}
+              Spec quality preview: {outcomePasses ? 'Pass' : 'Needs attention'}
             </p>
             {violations.length > 0 && (
               <ul className="mt-1 list-inside list-disc space-y-0.5">
@@ -554,10 +656,10 @@ export function SubmitSpecValidationModal({
           </section>
 
           <p className="text-[11px] text-gray-500 dark:text-gray-400">
-            This becomes the current result for Edition {currentSpecEdition}. Earlier results remain under Previous validations.
+            This records your assessment for Edition {currentSpecEdition}. Promotion also requires every applicable planning gate. Earlier results remain in history.
           </p>
 
-          {submissionError && <ValidationErrorDisplay error={submissionError} />}
+          {submissionError && !basisConflict && <ValidationErrorDisplay error={submissionError} />}
           {!checklistReady && !readinessLoading && (
             <div className="rounded border border-amber-200 bg-amber-50 p-2 text-[10px] text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
               Complete the blocking checklist for this edition before submitting validation.
@@ -581,7 +683,7 @@ export function SubmitSpecValidationModal({
             className="inline-flex items-center gap-1.5 rounded bg-violet-600 px-4 py-1.5 text-sm text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-gray-400"
           >
             <Check size={14} aria-hidden="true" />
-            {submitting ? 'Submitting…' : 'Submit Validation'}
+            {submitting ? 'Submitting…' : 'Conclude planning validation'}
           </button>
         </div>
       </div>

@@ -33,7 +33,7 @@ describe('policy compliance render telemetry', () => {
       recordPolicyComplianceRender({
         metric: 'pulse_policy_compliance_render_total',
         labels: {
-          contract_version: index < 8 ? 'v1' : 'v2',
+          contract_version: index < 8 ? 'none' : 'v2',
           outcome: 'current',
         },
       });

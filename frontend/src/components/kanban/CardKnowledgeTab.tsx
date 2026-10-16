@@ -1,3 +1,4 @@
+import { loadEffectiveResourceItems } from '@/services/effectiveResources';
 /**
  * CardKnowledgeTab - read-only Knowledge Base snapshots for a card/task.
  */
@@ -13,10 +14,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { useDashboardApi } from '@/services/api';
 import type {
   Card,
-  EffectiveResourceItem,
   KnowledgeAssignmentTechnicalProjection,
   KnowledgeTechnicalReadResponse,
-  KnowledgeWorkspaceItem,
 } from '@/types';
 import { AuthenticatedFetchError } from '@/lib/authFetch';
 import { KnowledgeWorkspace } from '@/components/resources/KnowledgeWorkspace';
@@ -24,7 +23,7 @@ import {
   KnowledgePropagationSelector,
 } from '@/components/shared/KnowledgePropagationSelector';
 import {
-  effectiveKnowledgeCandidate,
+  workspaceKnowledgeCandidate,
   mergeKnowledgePropagationCandidates,
   physicalKnowledgeCandidate,
   type KnowledgePropagationCandidate,
@@ -49,13 +48,12 @@ interface CardKnowledgeTabProps {
   onUpdate: () => Promise<void>;
   onBusyChange?: (busy: boolean) => void;
   readOnly?: boolean;
+  revision?: string | number;
+  active?: boolean;
 }
 
 const ORIGIN_CLASS_LABELS: Record<string, string> = {
   v2: 'v2',
-  legacy_all: 'legacy all',
-  selected_legacy: 'selected legacy',
-  legacy_unresolved: 'legacy unresolved',
 };
 
 function assignmentTitle(
@@ -66,16 +64,6 @@ function assignmentTitle(
     || assignment.root_knowledge_id;
 }
 
-function workspaceKnowledgeCandidate(
-  item: KnowledgeWorkspaceItem,
-): KnowledgePropagationCandidate {
-  return {
-    id: item.root_id,
-    title: item.title || item.root_id,
-    stale: item.stale,
-    origin_class: item.provenance.origin_class,
-  };
-}
 
 function mutationErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
@@ -97,12 +85,19 @@ function isKnowledgeConflict(error: unknown): boolean {
   return error instanceof Error && /revision|conflict/i.test(error.message);
 }
 
+function isKnowledgeReadDenied(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'status' in error
+    && [401, 403, 404].includes(Number(error.status));
+}
+
 export function CardKnowledgeTab({
   card,
   specKnowledgeBases,
   onUpdate,
   onBusyChange,
   readOnly = false,
+  revision = 0,
+  active = true,
 }: CardKnowledgeTabProps) {
   const api = useDashboardApi();
   const apiRef = useRef(api);
@@ -112,8 +107,19 @@ export function CardKnowledgeTab({
   const [technicalRead, setTechnicalRead] = useState<KnowledgeTechnicalReadResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [readDenied, setReadDenied] = useState(false);
   const [reloadGeneration, setReloadGeneration] = useState(0);
   const [mutationBusy, setMutationBusy] = useState(false);
+  const [draftRevision, setDraftRevision] = useState<number | null>(null);
+  const [revisionConflict, setRevisionConflict] = useState(false);
+  const [loadedKey, setLoadedKey] = useState<string | null>(null);
+  const scope = `${card.board_id}:${card.id}:${card.spec_id || ''}`;
+  const readKey = `${scope}:${revision}:${reloadGeneration}`;
+  const operationEpoch = useRef(0);
+  const currentScope = useRef(scope);
+  currentScope.current = scope;
+  const currentReadOnly = useRef(readOnly);
+  currentReadOnly.current = readOnly;
   const [refreshingRootId, setRefreshingRootId] = useState<string | null>(null);
   const [choice, setChoice] = useState<KnowledgePropagationChoice>(
     EMPTY_KNOWLEDGE_PROPAGATION_CHOICE,
@@ -150,6 +156,29 @@ export function CardKnowledgeTab({
   }, [sourceEffectiveCandidates, specKnowledgeBases, technicalRead]);
 
   const busy = mutationBusy || refreshingRootId !== null;
+  const readCurrent = active && !readDenied && !loading && !loadError && technicalRead !== null && loadedKey === readKey;
+  const baseChanged = draftRevision !== null && (revisionConflict
+    || (technicalRead !== null && draftRevision !== technicalRead.revision));
+  const missingSelection = choice.knowledgeIds.filter((id) => !candidates.some((item) => item.id === id));
+
+  useEffect(() => {
+    setChoice(EMPTY_KNOWLEDGE_PROPAGATION_CHOICE);
+    setDraftRevision(null);
+    setRevisionConflict(false);
+    setTechnicalRead(null);
+    setSourceEffectiveCandidates([]);
+    setLoadedKey(null);
+    setReadDenied(false);
+    setMutationIdempotencyKey(uuidv4());
+    refreshIntentRef.current = null;
+  }, [scope]);
+
+  useEffect(() => {
+    operationEpoch.current += 1;
+    setMutationBusy(false);
+    setRefreshingRootId(null);
+    return () => { operationEpoch.current += 1; };
+  }, [scope, readOnly]);
 
   useEffect(() => {
     onBusyChangeRef.current = onBusyChange;
@@ -173,6 +202,7 @@ export function CardKnowledgeTab({
   }, [api]);
 
   useEffect(() => {
+    if (!active) return;
     let cancelled = false;
     setLoading(true);
     setLoadError(null);
@@ -183,40 +213,23 @@ export function CardKnowledgeTab({
       ),
       Promise.resolve().then(async () => {
         if (!card.spec_id) return [] as KnowledgePropagationCandidate[];
-        const collected: KnowledgePropagationCandidate[] = [];
-        const consumedCursors = new Set<string>();
-        let cursor: string | null = null;
-        do {
-          const response = await apiRef.current.getEffectiveResources(
-            card.board_id,
-            'spec',
-            card.spec_id,
-            {
-              profile: 'summary',
-              limit: 25,
-              ...(cursor ? { cursor } : {}),
-            },
-          );
-          const pageCandidates = Array.isArray(response.items)
-            ? response.items
-              .filter((item) => item.resource_type === 'knowledge_base')
-              .map(workspaceKnowledgeCandidate)
-            : (response.resources?.knowledge_base || [])
-              .map((item: EffectiveResourceItem) => effectiveKnowledgeCandidate(item))
-              .filter((item): item is KnowledgePropagationCandidate => item !== null);
-          collected.push(...pageCandidates);
-          cursor = response.next_cursor || null;
-          if (cursor) {
-            if (consumedCursors.has(cursor)) {
-              throw new Error('Source spec Knowledge inventory returned a repeated cursor.');
-            }
-            consumedCursors.add(cursor);
-          }
-        } while (cursor);
-        return mergeKnowledgePropagationCandidates(collected);
+        const items = await loadEffectiveResourceItems(apiRef.current.getEffectiveResources,
+          card.board_id, 'spec', card.spec_id, 'knowledge_base');
+        return mergeKnowledgePropagationCandidates(items.map(workspaceKnowledgeCandidate));
       }),
     ]).then(([technicalResult, sourceResult]) => {
       if (cancelled) return;
+      if ([technicalResult, sourceResult].some((result) => result.status === 'rejected' && isKnowledgeReadDenied(result.reason))) {
+        setReadDenied(true);
+        setTechnicalRead(null);
+        setSourceEffectiveCandidates([]);
+        setChoice(EMPTY_KNOWLEDGE_PROPAGATION_CHOICE);
+        setDraftRevision(null);
+        setRevisionConflict(false);
+        setLoadedKey(null);
+        setLoadError('Knowledge access is no longer available.');
+        return;
+      }
       const errors: string[] = [];
       if (technicalResult.status === 'fulfilled') {
         setTechnicalRead(technicalResult.value);
@@ -232,6 +245,9 @@ export function CardKnowledgeTab({
       }
       if (errors.length > 0) {
         setLoadError(`Failed to load ${errors.join(' and ')}.`);
+      } else {
+        setReadDenied(false);
+        setLoadedKey(readKey);
       }
     }).finally(() => {
       if (!cancelled) setLoading(false);
@@ -240,10 +256,12 @@ export function CardKnowledgeTab({
     return () => {
       cancelled = true;
     };
-  }, [card.board_id, card.id, card.spec_id, reloadGeneration]);
+  }, [active, card.board_id, card.id, card.spec_id, readKey]);
 
   const updateChoice = (next: KnowledgePropagationChoice) => {
     const changed = JSON.stringify(next) !== JSON.stringify(choice);
+    if (!readCurrent || busy) return;
+    if (draftRevision === null) setDraftRevision(technicalRead!.revision);
     setChoice(next);
     if (changed) setMutationIdempotencyKey(uuidv4());
   };
@@ -252,12 +270,16 @@ export function CardKnowledgeTab({
 
   const resetMutation = () => {
     setChoice(EMPTY_KNOWLEDGE_PROPAGATION_CHOICE);
+    setDraftRevision(null);
+    setRevisionConflict(false);
     setMutationIdempotencyKey(uuidv4());
   };
 
   const handleSaveDecision = async () => {
     if (
       readOnly
+      || !readCurrent || busy || baseChanged || missingSelection.length > 0
+      || draftRevision === null
       ||
       !technicalRead
       || choice.action === 'omitted'
@@ -266,6 +288,8 @@ export function CardKnowledgeTab({
       return;
     }
     setMutationBusy(true);
+    const epoch = operationEpoch.current;
+    const isCurrent = () => epoch === operationEpoch.current && currentScope.current === scope && !currentReadOnly.current;
     try {
       if (choice.action === 'drop') {
         await apiRef.current.dropCardKnowledgeAssignments(card.id, {
@@ -273,7 +297,7 @@ export function CardKnowledgeTab({
           knowledge_ids: choice.knowledgeIds,
           justification: choice.justification.trim(),
           idempotency_key: mutationIdempotencyKey,
-          expected_revision: technicalRead.revision,
+          expected_revision: draftRevision,
         });
       } else {
         await apiRef.current.replaceCardKnowledgeAssignments(card.id, {
@@ -282,10 +306,11 @@ export function CardKnowledgeTab({
           mode: choice.action,
           justification: choice.justification.trim(),
           idempotency_key: mutationIdempotencyKey,
-          expected_revision: technicalRead.revision,
+          expected_revision: draftRevision,
           linkage: [],
         });
       }
+      if (!isCurrent()) return;
       toast.success(
         choice.action === 'drop'
           ? 'Knowledge drop decision saved'
@@ -293,21 +318,24 @@ export function CardKnowledgeTab({
       );
       resetMutation();
       await onUpdate();
-      reload();
+      if (isCurrent()) reload();
     } catch (error) {
+      if (!isCurrent()) return;
       const message = mutationErrorMessage(error);
       toast.error(message);
       if (isKnowledgeConflict(error)) {
-        resetMutation();
+        setRevisionConflict(true);
         reload();
       }
     } finally {
-      setMutationBusy(false);
+      if (isCurrent()) setMutationBusy(false);
     }
   };
 
   const handleRefresh = async (rootKnowledgeId: string) => {
-    if (readOnly || !technicalRead) return;
+    if (readOnly || !technicalRead || !readCurrent || busy) return;
+    const epoch = operationEpoch.current;
+    const isCurrent = () => epoch === operationEpoch.current && currentScope.current === scope && !currentReadOnly.current;
     const fingerprint = `${rootKnowledgeId}:${technicalRead.revision}`;
     if (refreshIntentRef.current?.fingerprint !== fingerprint) {
       refreshIntentRef.current = {
@@ -324,15 +352,17 @@ export function CardKnowledgeTab({
         idempotency_key: idempotencyKey,
         expected_revision: technicalRead.revision,
       });
+      if (!isCurrent()) return;
       refreshIntentRef.current = null;
       toast.success('Knowledge snapshot refreshed');
       await onUpdate();
-      reload();
+      if (isCurrent()) reload();
     } catch (error) {
+      if (!isCurrent()) return;
       toast.error(mutationErrorMessage(error));
       reload();
     } finally {
-      setRefreshingRootId(null);
+      if (isCurrent()) setRefreshingRootId(null);
     }
   };
 
@@ -423,7 +453,7 @@ export function CardKnowledgeTab({
                     <button
                       type="button"
                       onClick={() => void handleRefresh(assignment.root_knowledge_id)}
-                      disabled={refreshingRootId !== null || mutationBusy}
+                      disabled={!readCurrent || busy}
                       className="inline-flex items-center gap-1 rounded border border-amber-300 px-1.5 py-0.5 font-medium text-amber-800 hover:bg-amber-50 disabled:opacity-50 dark:border-amber-700 dark:text-amber-200 dark:hover:bg-amber-950/30"
                     >
                       <RefreshCw
@@ -444,21 +474,43 @@ export function CardKnowledgeTab({
         </section>
       )}
 
-      <KnowledgeWorkspace
+      {!readDenied && <KnowledgeWorkspace
         boardId={card.board_id}
         entityType="card"
         entityId={card.id}
-        refreshKey={reloadGeneration}
-        fallbackItems={card.knowledge_bases || []}
-      />
+        refreshKey={`${revision}:${reloadGeneration}`}
+        active={active}
+      />}
 
-      {!loading && technicalRead && !readOnly && (
+      {(technicalRead || draftRevision !== null) && !readOnly && (
         <>
+          {baseChanged && (
+            <div role="alert" className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+              <p>Knowledge changed while you were editing. Your draft is preserved. Review the current selection before using the new base.</p>
+              <div className="mt-2 flex gap-2">
+                <button type="button" className="btn btn-secondary text-xs" disabled={!readCurrent || busy || missingSelection.length > 0}
+                  onClick={() => {
+                    if (!readCurrent || busy || !technicalRead || missingSelection.length > 0) return;
+                    setDraftRevision(technicalRead.revision);
+                    setRevisionConflict(false);
+                    setMutationIdempotencyKey(uuidv4());
+                  }}>Review current base</button>
+                <button type="button" className="btn btn-secondary text-xs" disabled={busy} onClick={resetMutation}>Discard draft</button>
+              </div>
+            </div>
+          )}
+          {readCurrent && missingSelection.length > 0 && (
+            <div role="alert" className="rounded-lg border border-amber-300 p-3 text-sm">
+              <p>Selected Knowledge is no longer available. Update your selection before saving.</p>
+              <button type="button" className="btn btn-secondary mt-2 text-xs" disabled={busy}
+                onClick={() => updateChoice({ ...choice, knowledgeIds: choice.knowledgeIds.filter((id) => !missingSelection.includes(id)) })}>Remove unavailable selections</button>
+            </div>
+          )}
           <KnowledgePropagationSelector
             items={candidates}
             value={choice}
             onChange={updateChoice}
-            disabled={mutationBusy || refreshingRootId !== null}
+            disabled={!readCurrent || busy}
             title="Change propagation decision"
             description="The picker starts empty for every operation. Choose a mode and only the roots relevant to this card."
             testId="card-knowledge-propagation"
@@ -472,6 +524,8 @@ export function CardKnowledgeTab({
               onClick={() => void handleSaveDecision()}
               disabled={
                 mutationBusy
+                || !readCurrent || baseChanged || missingSelection.length > 0
+                || draftRevision === null
                 || refreshingRootId !== null
                 || choice.action === 'omitted'
                 || !isKnowledgePropagationChoiceValid(choice)

@@ -11,7 +11,7 @@ import type {
   CardType,
   Agent,
   ColumnPageResponse,
-  ColumnsOptInResponse,
+  ColumnsBatchResponse,
   KanbanColumnMeta,
 } from '@/types';
 import { CARD_STATUSES } from '@/types';
@@ -123,15 +123,17 @@ interface DashboardState {
   error: string | null;
   selectedCardId: string | null;
   isCardModalOpen: boolean;
+  cardModalTarget: import('@/components/code-traceability/readinessNavigation').ReadinessCardLocation | null;
 
   // Actions
   setBoards: (boards: BoardSummary[]) => void;
   addBoard: (board: BoardSummary) => void;
   setSharedBoards: (boards: BoardSummary[]) => void;
   setCurrentBoard: (board: Board | null) => void;
+  removeInaccessibleBoard: (boardId: string) => void;
   setColumns: (columns: Record<CardStatus, CardSummary[]>) => void;
   beginColumnsGeneration: (projection?: LoadedColumnsProjection) => number;
-  applyColumnsBatch: (generation: number, response: ColumnsOptInResponse) => boolean;
+  applyColumnsBatch: (generation: number, response: ColumnsBatchResponse) => boolean;
   beginColumnPage: (column: CardStatus, offset: number) => ColumnPageToken | null;
   applyColumnPage: (token: ColumnPageToken, response: ColumnPageResponse) => boolean;
   failColumnPage: (token: ColumnPageToken, error: string) => boolean;
@@ -141,7 +143,7 @@ interface DashboardState {
   
   // Card actions
   selectCard: (cardId: string | null) => void;
-  openCardModal: (cardId: string) => void;
+  openCardModal: (cardId: string, target?: import('@/components/code-traceability/readinessNavigation').ReadinessCardLocation) => void;
   closeCardModal: () => void;
   
   // Card CRUD in columns
@@ -178,11 +180,28 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   error: null,
   selectedCardId: null,
   isCardModalOpen: false,
+  cardModalTarget: null,
 
   // Setters
   setBoards: (boards) => set({ boards }),
   addBoard: (board) => set((state) => ({ boards: [board, ...state.boards] })),
   setSharedBoards: (sharedBoards) => set({ sharedBoards }),
+  removeInaccessibleBoard: (boardId) => set((state) => ({
+    boards: state.boards.filter(board => board.id !== boardId),
+    sharedBoards: state.sharedBoards.filter(board => board.id !== boardId),
+    ...(state.currentBoard?.id === boardId ? {
+      currentBoard: null,
+      columns: {} as Record<CardStatus, CardSummary[]>,
+      columnsMeta: {},
+      columnsProjection: null,
+      columnsGeneration: state.columnsGeneration + 1,
+      columnPageState: emptyColumnPageState(),
+      selectedCardId: null,
+      isCardModalOpen: false,
+      cardModalTarget: null,
+      error: 'Access to this Board is no longer available. Reload boards to check your current access.',
+    } : {}),
+  })),
   setCurrentBoard: (board) => set((state) => {
     if (state.currentBoard?.id === board?.id) return { currentBoard: board };
     return {
@@ -309,8 +328,8 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
 
   // Card selection
   selectCard: (cardId) => set({ selectedCardId: cardId }),
-  openCardModal: (cardId) => set({ selectedCardId: cardId, isCardModalOpen: true }),
-  closeCardModal: () => set({ isCardModalOpen: false, selectedCardId: null }),
+  openCardModal: (cardId, target) => set({ selectedCardId: cardId, isCardModalOpen: true, cardModalTarget: target ?? null }),
+  closeCardModal: () => set({ isCardModalOpen: false, selectedCardId: null, cardModalTarget: null }),
 
   // Card CRUD
   addCardToColumn: (card) => {

@@ -67,7 +67,7 @@ function waiver(
     subject_id: 'spec-1',
     subject_version: 7,
     validation_edition: null,
-    lifecycle_state: 'history_only',
+    lifecycle_state: 'current',
     finding_id: 'finding-1',
     receipt_id: 'receipt-1',
     guideline_id: 'guideline-1',
@@ -189,6 +189,27 @@ beforeEach(() => {
 });
 
 describe('PolicyWaiverPanel', () => {
+  it.each(['requested', 'approved', 'revoked', 'expired', 'rejected'] as const)(
+    'rejects an unsupported Sprint waiver %s without mutation actions',
+    async (status) => {
+      grant('guidelines.waiver.read', 'guidelines.waiver.review',
+        'guidelines.waiver.revoke', 'guidelines.waiver.revalidate');
+      policyApiMock.listSemanticMetricWaivers.mockResolvedValue(page([
+        { ...waiver({ status }), entity_type: 'sprint', subject_id: 'historical-sprint' } as unknown as SemanticWaiverFull,
+      ]));
+      render(<PolicyWaiverPanel boardId="board-1" />);
+      await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
+      expect(screen.queryByTestId('policy-waiver-waiver-1')).not.toBeInTheDocument();
+      expect(screen.queryByRole('option', { name: /sprint/i })).not.toBeInTheDocument();
+      for (const name of ['Approve', 'Reject', 'Revoke', 'Revalidate']) {
+        expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
+      }
+      expect(policyApiMock.reviewSemanticMetricWaiver).not.toHaveBeenCalled();
+      expect(policyApiMock.revokeSemanticMetricWaiver).not.toHaveBeenCalled();
+      expect(policyApiMock.revalidateSemanticMetricWaiver).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([
     {
       label: 'loading',

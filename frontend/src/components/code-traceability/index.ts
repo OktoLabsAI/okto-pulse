@@ -1,6 +1,7 @@
 export { CodeEvidencePanel } from './CodeEvidencePanel';
 export { EvidenceMatrixPanel } from './EvidenceMatrixPanel';
 export { ImplementationTargetsPanel } from './ImplementationTargetsPanel';
+export { CardDeliveryDoDPanel } from './CardDeliveryDoDPanel';
 export { ReceiptDetailModal } from './ReceiptDetailModal';
 export {
   TraceabilityBadge,

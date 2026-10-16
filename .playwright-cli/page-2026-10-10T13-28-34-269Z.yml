@@ -1,0 +1,196 @@
+- generic [ref=f6e3]:
+  - banner [ref=f6e4]:
+    - generic [ref=f6e5]:
+      - generic [ref=f6e6]:
+        - button "Hide sidebar" [ref=f6e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f6e12]
+        - generic [ref=f6e31]: / My Board
+      - generic [ref=f6e32]:
+        - button "Refresh board" [ref=f6e33] [cursor=pointer]
+        - button [ref=f6e40] [cursor=pointer]
+  - generic [ref=f6e13]:
+    - complementary [ref=f6e14]:
+      - generic [ref=f6e15]:
+        - generic [ref=f6e17]:
+          - heading "Boards" [level=2] [ref=f6e18]
+          - button "New board" [ref=f6e19] [cursor=pointer]
+        - navigation [ref=f6e21]:
+          - generic [ref=f6e22]:
+            - heading "My Boards" [level=3] [ref=f6e23]
+            - list [ref=f6e44]:
+              - listitem [ref=f6e45]:
+                - button "My Board" [ref=f6e46] [cursor=pointer]
+    - main [ref=f6e26]:
+      - group "Board views" [ref=f6e53]:
+        - button "Stories" [ref=f6e54] [cursor=pointer]
+        - button "Ideations" [ref=f6e58] [cursor=pointer]
+        - button "Refinements" [ref=f6e61] [cursor=pointer]
+        - button "Specs" [pressed] [ref=f6e66] [cursor=pointer]
+        - button "Tasks" [ref=f6e71] [cursor=pointer]
+      - generic [ref=f6e243]:
+        - generic [ref=f6e244]:
+          - generic [ref=f6e245]:
+            - heading "Specifications" [level=2] [ref=f6e246]
+            - generic [ref=f6e247]: (1 of 1)
+          - generic [ref=f6e248]:
+            - textbox "Search specs…" [ref=f6e250]
+            - group "View mode" [ref=f6e251]:
+              - button "List view" [pressed] [ref=f6e252] [cursor=pointer]
+              - button "Grid view" [ref=f6e254] [cursor=pointer]
+            - generic [ref=f6e260]: Group specs
+            - combobox "Group specs" [ref=f6e266]:
+              - option "None"
+              - option "Ideation"
+              - option "Refinement"
+              - option "Parents" [selected]
+            - button "New Spec" [ref=f6e267] [cursor=pointer]
+        - generic [ref=f6e269]:
+          - button "All" [ref=f6e270] [cursor=pointer]
+          - button "Draft" [ref=f6e271] [cursor=pointer]
+          - button "Review" [ref=f6e272] [cursor=pointer]
+          - button "Approved" [ref=f6e273] [cursor=pointer]
+          - button "Validated" [ref=f6e274] [cursor=pointer]
+          - button "In Progress" [ref=f6e275] [cursor=pointer]
+          - button "Done" [ref=f6e276] [cursor=pointer]
+          - button "Show archived" [ref=f6e277] [cursor=pointer]
+        - generic [ref=f6e280]:
+          - generic [ref=f6e281] [cursor=pointer]:
+            - 'heading "Ideation: Mock — Completude de cards: implementação e entrega verificada" [level=3] [ref=f6e288]'
+            - generic [ref=f6e289]: (1)
+          - generic [ref=f6e293] [cursor=pointer]:
+            - generic [ref=f6e294]:
+              - generic [ref=f6e295]:
+                - generic [ref=f6e296]: In Progress
+                - generic "Edition 3" [ref=f6e300]
+              - heading "Mock de completude — lista de compras local" [level=3] [ref=f6e301]
+              - paragraph [ref=f6e302]: Quatro comportamentos locais para testar as barras de implementação e entrega verificada do Pulse. Dados sintéticos; sem produto real ou integrações. As obrigações efetivas (FR, BR e AC) serão enumeradas por Card antes da prova; os dois comportamentos por história não implicam du…
+              - 'generic "Requirement lint: 0 (0–96) · Edition 3" [ref=f6e304]':
+                - generic [ref=f6e305]: Requirement lint
+                - strong [ref=f6e306]: "0"
+              - generic [ref=f6e307]:
+                - generic [ref=f6e308]: completude
+                - generic [ref=f6e309]: mock
+            - generic [ref=f6e310]:
+              - button "Open lineage graph" [ref=f6e311]
+              - button "Archive tree" [ref=f6e316]
+        - generic [ref=f6e322]:
+          - status [ref=f6e323]: Showing 1–1 of 1 matching. 1 overall. Page 1 of 1.
+          - generic [ref=f6e324]:
+            - generic [ref=f6e325]:
+              - generic [ref=f6e326]: Items per page
+              - combobox "Items per page" [ref=f6e327]:
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+            - navigation "Specifications pagination" [ref=f6e328]:
+              - generic [ref=f6e329]:
+                - button "Previous page" [disabled] [ref=f6e330]: Previous
+                - button "Page 1" [disabled] [ref=f6e331]: "1"
+                - button "Next page" [disabled] [ref=f6e332]: Next
+        - dialog [ref=f6e334]:
+          - generic [ref=f6e335]:
+            - generic [ref=f6e336]:
+              - generic [ref=f6e337]: In Progress
+              - heading "Mock de completude — lista de compras local" [level=2] [ref=f6e341]
+              - generic "Edition 3" [ref=f6e342]
+            - generic [ref=f6e343]:
+              - button "Open lineage graph" [ref=f6e344] [cursor=pointer]
+              - button "Export report" [ref=f6e349] [cursor=pointer]
+              - button "Refresh" [ref=f6e353] [cursor=pointer]
+              - button "Expand" [ref=f6e359] [cursor=pointer]
+              - button "Close spec" [ref=f6e365] [cursor=pointer]
+          - generic [ref=f6e369]:
+            - generic [ref=f6e370]: "Move to:"
+            - button "Validated" [ref=f6e371] [cursor=pointer]
+            - button "Draft" [ref=f6e374] [cursor=pointer]
+            - button "Cancelled" [ref=f6e377] [cursor=pointer]
+          - generic [ref=f6e380]:
+            - generic [ref=f6e381]: "From:"
+            - 'button "Mock — Completude de cards: implementação e entrega verificada v7" [ref=f6e382] [cursor=pointer]':
+              - text: "Mock — Completude de cards: implementação e entrega verificada"
+              - generic [ref=f6e385]: v7
+          - generic [ref=f6e387]:
+            - tablist "Spec sections" [ref=f6e388]:
+              - tab "Details" [ref=f6e389] [cursor=pointer]
+              - tab "Coverage" [selected] [ref=f6e394] [cursor=pointer]
+              - tab "Project Structure 2" [ref=f6e400] [cursor=pointer]:
+                - generic [ref=f6e406]: Project Structure
+                - generic [ref=f6e407]: "2"
+              - tab "Code Evidence Matrix" [ref=f6e408] [cursor=pointer]
+              - tab "Resources" [ref=f6e412] [cursor=pointer]
+              - tab "Requirements & Decisions" [ref=f6e416] [cursor=pointer]
+              - tab "Tests & Verifications" [ref=f6e421] [cursor=pointer]
+              - tab "Q&A" [ref=f6e425] [cursor=pointer]
+              - tab "Dependencies" [ref=f6e430] [cursor=pointer]
+              - tab "References 8" [ref=f6e436] [cursor=pointer]:
+                - generic [ref=f6e440]: References
+                - generic [ref=f6e441]: "8"
+              - tab "KG Graph" [ref=f6e442] [cursor=pointer]
+              - tab "Validation" [ref=f6e449] [cursor=pointer]
+              - tab "Activity" [ref=f6e454] [cursor=pointer]
+            - button "Scroll Spec sections right" [ref=f6e460] [cursor=pointer]
+          - tabpanel "Coverage" [ref=f6e511]:
+            - tabpanel [ref=f6e465]:
+              - region "Spec coverage" [ref=f6e512]:
+                - generic [ref=f6e513]:
+                  - generic [ref=f6e514]:
+                    - heading "Coverage" [level=3] [ref=f6e515]
+                    - paragraph [ref=f6e516]: Find planning gaps and track proof of delivery.
+                  - button "Reload coverage" [ref=f6e517] [cursor=pointer]
+                - tablist "Coverage views" [ref=f6e519]:
+                  - tab "Overview" [ref=f6e520] [cursor=pointer]
+                  - tab "Planning" [active] [selected] [ref=f6e522] [cursor=pointer]
+                  - tab "Implementation" [ref=f6e524] [cursor=pointer]
+                - paragraph [ref=f6e526]: Edition 3 · Informational view — this does not approve a gate.
+                - tabpanel "Planning" [ref=f6e568]:
+                  - region "Authoritative structural coverage" [ref=f6e569]:
+                    - generic [ref=f6e570]:
+                      - heading "Planning coverage" [level=4] [ref=f6e571]
+                      - paragraph [ref=f6e572]: Connect the Spec to rules, scenarios and Cards. A linked Test Card does not prove a passing run.
+                    - generic [ref=f6e573]:
+                      - article [ref=f6e574]:
+                        - heading "Acceptance criteria → scenarios" [level=5] [ref=f6e575]
+                        - paragraph [ref=f6e576]: 8 / 8 linked · 0 missing
+                        - progressbar "Acceptance criteria → scenarios" [ref=f6e577]
+                        - button "Open tests" [ref=f6e579] [cursor=pointer]
+                      - article [ref=f6e580]:
+                        - heading "Functional requirements → rules" [level=5] [ref=f6e581]
+                        - paragraph [ref=f6e582]: 4 / 4 linked · 0 missing
+                        - progressbar "Functional requirements → rules" [ref=f6e583]
+                        - button "Open rules" [ref=f6e585] [cursor=pointer]
+                      - article [ref=f6e586]:
+                        - heading "Scenarios → Test Cards" [level=5] [ref=f6e587]
+                        - paragraph [ref=f6e588]: 8 / 8 linked · 0 missing
+                        - progressbar "Scenarios → Test Cards" [ref=f6e589]
+                        - button "Open tests" [ref=f6e591] [cursor=pointer]
+                      - article [ref=f6e592]:
+                        - heading "Rules → Cards" [level=5] [ref=f6e593]
+                        - paragraph [ref=f6e594]: 4 / 4 linked · 0 missing
+                        - progressbar "Rules → Cards" [ref=f6e595]
+                        - button "Open rules" [ref=f6e597] [cursor=pointer]
+                      - article [ref=f6e598]:
+                        - heading "API contracts → Cards" [level=5] [ref=f6e599]
+                        - paragraph [ref=f6e600]: No items in scope
+                        - button "Open contracts" [ref=f6e601] [cursor=pointer]
+                      - article [ref=f6e602]:
+                        - heading "Technical requirements → Cards" [level=5] [ref=f6e603]
+                        - paragraph [ref=f6e604]: No items in scope
+                        - button "Open trs" [ref=f6e605] [cursor=pointer]
+                      - article [ref=f6e606]:
+                        - heading "Decision verification plans" [level=5] [ref=f6e607]
+                        - paragraph [ref=f6e608]: 1 / 1 linked · 0 missing
+                        - progressbar "Decision verification plans" [ref=f6e609]
+                        - button "Open decisions" [ref=f6e611] [cursor=pointer]
+                      - article [ref=f6e612]:
+                        - heading "Integration requirements → Cards" [level=5] [ref=f6e613]
+                        - paragraph [ref=f6e614]: No items in scope
+                        - button "Open irs" [ref=f6e615] [cursor=pointer]
+                      - article [ref=f6e616]:
+                        - heading "Observability requirements → Cards" [level=5] [ref=f6e617]
+                        - paragraph [ref=f6e618]: No items in scope
+                        - button "Open ors" [ref=f6e619] [cursor=pointer]
+                - group [ref=f6e565]:
+                  - generic "Technical diagnostics" [ref=f6e566] [cursor=pointer]
+          - generic [ref=f6e506]:
+            - button "Delete spec" [ref=f6e507] [cursor=pointer]
+            - button "Close" [ref=f6e509] [cursor=pointer]

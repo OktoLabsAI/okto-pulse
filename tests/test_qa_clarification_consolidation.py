@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -128,6 +130,10 @@ async def _rig(tmp_path: Path):
                     created_by="owner",
                 ),
                 Spec(
+                    architecture_adoption=ArchitectureAdoptionScope(
+                        board_id=BOARD_ID, spec_id=SPEC_ID, adopted_in_edition=1,
+                        actor_id="owner", inherited_resource_ids=(),
+                    ).model_dump(mode="json"),
                     id=SPEC_ID,
                     board_id=BOARD_ID,
                     refinement_id=REFINEMENT_ID,

@@ -1,0 +1,88 @@
+- generic [ref=e1]:
+  - generic [ref=e31]:
+    - banner [ref=e32]:
+      - generic [ref=e33]:
+        - generic [ref=e34]:
+          - button "Hide sidebar" [ref=e35] [cursor=pointer]
+          - img "Okto Pulse" [ref=e40]
+          - generic [ref=e139]: / My Board
+        - generic [ref=e140]:
+          - button "Refresh board" [ref=e141] [cursor=pointer]
+          - button [ref=e148] [cursor=pointer]
+    - generic [ref=e41]:
+      - complementary [ref=e42]:
+        - generic [ref=e43]:
+          - generic [ref=e45]:
+            - heading "Boards" [level=2] [ref=e46]
+            - button "New board" [ref=e47] [cursor=pointer]
+          - navigation [ref=e49]:
+            - generic [ref=e50]:
+              - heading "My Boards" [level=3] [ref=e51]
+              - list [ref=e152]:
+                - listitem [ref=e153]:
+                  - button "My Board" [ref=e154] [cursor=pointer]
+      - main [ref=e54]:
+        - group "Board views" [ref=e161]:
+          - button "Stories" [pressed] [ref=e162] [cursor=pointer]
+          - button "Ideations" [ref=e166] [cursor=pointer]
+          - button "Refinements" [ref=e169] [cursor=pointer]
+          - button "Specs" [ref=e174] [cursor=pointer]
+          - button "Tasks" [ref=e179] [cursor=pointer]
+        - generic [ref=e186]:
+          - generic [ref=e187]:
+            - generic [ref=e188]:
+              - heading "Stories" [level=2] [ref=e189]
+              - generic [ref=e190]: (0 of 0)
+            - generic [ref=e191]:
+              - textbox "Search stories..." [ref=e193]
+              - group "View mode" [ref=e194]:
+                - button "List view" [pressed] [ref=e195] [cursor=pointer]
+                - button "Grid view" [ref=e197] [cursor=pointer]
+              - button "New Story" [ref=e203] [cursor=pointer]
+          - generic [ref=e205]:
+            - button "All" [ref=e206] [cursor=pointer]
+            - button "Draft" [ref=e207] [cursor=pointer]
+            - button "Triage" [ref=e208] [cursor=pointer]
+            - button "Ready" [ref=e209] [cursor=pointer]
+            - button "Converted" [ref=e210] [cursor=pointer]
+            - button "Show archived" [ref=e211] [cursor=pointer]
+          - generic [ref=e212]:
+            - complementary [ref=e213]:
+              - generic [ref=e214]:
+                - generic [ref=e215]: Topics
+                - button "New Topic" [ref=e220] [cursor=pointer]
+              - button "All topics 0" [ref=e223] [cursor=pointer]:
+                - generic [ref=e224]: All topics
+                - generic [ref=e225]: "0"
+            - generic [ref=e226]:
+              - generic [ref=e228]:
+                - paragraph [ref=e233]: No topics yet
+                - button "New Topic" [ref=e234] [cursor=pointer]
+              - generic [ref=e236]:
+                - status [ref=e237]:
+                  - text: No stories match the active filters.
+                  - generic [ref=e238]: 0 overall.
+                - generic [ref=e239]:
+                  - generic [ref=e240]:
+                    - generic [ref=e241]: Items per page
+                    - combobox "Items per page" [ref=e242]:
+                      - option "25" [selected]
+                      - option "50"
+                      - option "100"
+                  - navigation "Stories pagination" [ref=e243]:
+                    - generic [ref=e244]:
+                      - button "Previous page" [disabled] [ref=e245]: Previous
+                      - button "Next page" [disabled] [ref=e246]: Next
+  - dialog [ref=e247]:
+    - generic [ref=e249]:
+      - paragraph [ref=e250]: Guided help
+      - paragraph [ref=e251]: 1 / 2
+    - heading "Move across work areas" [level=2] [ref=e252]
+    - paragraph [ref=e253]: Use the main tabs to switch between stories, ideations, refinements, specs, and task execution.
+    - generic [ref=e254]:
+      - generic [ref=e255]:
+        - button "Back" [disabled] [ref=e256]
+        - button "Skip step" [ref=e259] [cursor=pointer]
+      - generic [ref=e260]:
+        - button "Skip all" [ref=e261] [cursor=pointer]
+        - button "Next" [active] [ref=e262] [cursor=pointer]

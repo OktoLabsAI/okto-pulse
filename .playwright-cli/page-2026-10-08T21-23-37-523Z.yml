@@ -1,0 +1,65 @@
+- main [ref=f1e3]:
+  - region "Spec coverage" [ref=f1e4]:
+    - generic [ref=f1e5]:
+      - generic [ref=f1e6]:
+        - heading "Coverage" [level=3] [ref=f1e7]
+        - paragraph [ref=f1e8]: Find planning gaps and track proof of delivery.
+      - button "Reload coverage" [ref=f1e9] [cursor=pointer]
+    - navigation "Coverage views" [ref=f1e10]:
+      - button "Overview" [ref=f1e11] [cursor=pointer]
+      - button "Planning" [active] [ref=f1e12] [cursor=pointer]
+      - button "Implementation" [ref=f1e13] [cursor=pointer]
+      - button "Verification" [ref=f1e14] [cursor=pointer]
+    - paragraph [ref=f1e15]: Edition 1 · Informational view — this does not approve a gate.
+    - region "Authoritative structural coverage" [ref=f1e50]:
+      - generic [ref=f1e51]:
+        - heading "Planning coverage" [level=4] [ref=f1e52]
+        - paragraph [ref=f1e53]: Connect the Spec to rules, scenarios and Cards. A linked Test Card does not prove a passing run.
+      - generic [ref=f1e54]:
+        - article [ref=f1e55]:
+          - heading "Acceptance criteria → scenarios" [level=5] [ref=f1e56]
+          - paragraph [ref=f1e57]: 31 / 31 linked · 0 missing
+          - progressbar "Acceptance criteria → scenarios" [ref=f1e58]
+          - button "Open tests" [ref=f1e59] [cursor=pointer]
+        - article [ref=f1e60]:
+          - heading "Functional requirements → rules" [level=5] [ref=f1e61]
+          - paragraph [ref=f1e62]: 8 / 8 linked · 0 missing
+          - progressbar "Functional requirements → rules" [ref=f1e63]
+          - button "Open rules" [ref=f1e64] [cursor=pointer]
+        - article [ref=f1e65]:
+          - heading "Scenarios → Test Cards" [level=5] [ref=f1e66]
+          - paragraph [ref=f1e67]: 0 / 51 linked · 51 missing
+          - progressbar "Scenarios → Test Cards" [ref=f1e68]
+          - button "Open tests" [ref=f1e69] [cursor=pointer]
+        - article [ref=f1e70]:
+          - heading "Rules → Cards" [level=5] [ref=f1e71]
+          - paragraph [ref=f1e72]: 0 / 8 linked · 8 missing
+          - progressbar "Rules → Cards" [ref=f1e73]
+          - button "Open rules" [ref=f1e74] [cursor=pointer]
+        - article [ref=f1e75]:
+          - heading "API contracts → Cards" [level=5] [ref=f1e76]
+          - paragraph [ref=f1e77]: 0 / 6 linked · 6 missing
+          - progressbar "API contracts → Cards" [ref=f1e78]
+          - button "Open contracts" [ref=f1e79] [cursor=pointer]
+        - article [ref=f1e80]:
+          - heading "Technical requirements → Cards" [level=5] [ref=f1e81]
+          - paragraph [ref=f1e82]: 0 / 6 linked · 6 missing
+          - progressbar "Technical requirements → Cards" [ref=f1e83]
+          - button "Open trs" [ref=f1e84] [cursor=pointer]
+        - article [ref=f1e85]:
+          - heading "Decisions → Cards" [level=5] [ref=f1e86]
+          - paragraph [ref=f1e87]: 0 / 5 linked · 5 missing
+          - progressbar "Decisions → Cards" [ref=f1e88]
+          - button "Open decisions" [ref=f1e89] [cursor=pointer]
+        - article [ref=f1e90]:
+          - heading "Integration requirements → Cards" [level=5] [ref=f1e91]
+          - paragraph [ref=f1e92]: 0 / 13 linked · 13 missing
+          - progressbar "Integration requirements → Cards" [ref=f1e93]
+          - button "Open irs" [ref=f1e94] [cursor=pointer]
+        - article [ref=f1e95]:
+          - heading "Observability requirements → Cards" [level=5] [ref=f1e96]
+          - paragraph [ref=f1e97]: 0 / 2 linked · 2 missing
+          - progressbar "Observability requirements → Cards" [ref=f1e98]
+          - button "Open ors" [ref=f1e99] [cursor=pointer]
+    - group [ref=f1e48]:
+      - generic "Technical diagnostics" [ref=f1e49] [cursor=pointer]

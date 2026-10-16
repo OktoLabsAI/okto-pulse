@@ -4,6 +4,16 @@ import { PermissionDiffView } from './PermissionDiffView';
 import { getEntityTextClasses } from './permissionLabels';
 
 describe('PermissionDiffView', () => {
+  it('excludes retired Sprint differences from active permission counts', () => {
+    render(<PermissionDiffView
+      baseFlags={{ board: { read: true }, sprint: { entity: { read: true } } }}
+      effectiveFlags={{ board: { read: true }, sprint: { entity: { read: false } } }}
+    />);
+    expect(screen.getByTestId('permission-diff-summary')).toHaveTextContent('No effective changes');
+    // Summary, base and effective counts all exclude the retired leaf.
+    expect(screen.getAllByText('1/1')).toHaveLength(3);
+    expect(screen.queryByText(/sprint/i)).toBeNull();
+  });
   it('compares exact base and effective leaves even when enabled counts cancel', () => {
     render(
       <PermissionDiffView

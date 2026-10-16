@@ -13,6 +13,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import event, func, select, update
+from sqlalchemy.exc import IntegrityError
+from okto_pulse.core.kg.board_source_store import (SPEC_CONTENT_COLUMNS, canonical_content_hash, projected_root_content_hash)
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -32,7 +34,6 @@ from okto_pulse.community.adapters.relational_application import (
 )
 from okto_pulse.community.adapters.sqlalchemy_models import (
     ActivityLog,
-    Base,
     Board,
     DomainEventHandlerExecution,
     DomainEventRow,
@@ -53,6 +54,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
 )
 from okto_pulse.community.adapters.sqlalchemy_quality_assessment import (
     CommunitySqlAlchemyQualityAssessment,
+    CommunitySqlAlchemyQualityAssessmentPreflightReader,
 )
 from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
     CommunitySemanticSession,
@@ -60,6 +62,7 @@ from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
 from okto_pulse.community.adapters.sqlalchemy_consolidation import (
     CommunitySqlAlchemyConsolidationPersistence,
 )
+from okto_pulse.community.adapters.current_relational_schema import current_schema_contract, initialize_current_schema
 from okto_pulse.community.adapters.sqlalchemy_database import (
     install_community_sqlite_pragmas,
 )
@@ -67,6 +70,9 @@ from okto_pulse.community.api.quality_summary_projection import (
     load_quality_summaries_for_page,
     quality_summary_field,
 )
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+from okto_pulse.core.domain.realm import RealmScope
+from okto_pulse.core.domain.execution_contract import new_execution_contract
 from okto_pulse.core.domain.enums import (
     IdeationStatus,
     RefinementStatus,
@@ -113,22 +119,30 @@ from okto_pulse.core.ports.quality_assessment import (
     AssessmentSubjectVersionConflict,
     FindingListQuery,
     QualityAssessmentPersistencePort,
-)
-from okto_pulse.core.ports.requirement_lint import (
-    RequirementLintWriteCommand,
-    RequirementLintWriter,
+    QualityAssessmentPersistenceError,
 )
 from okto_pulse.core.ports.domain_event_delivery import StoredDomainEvent
-from okto_pulse.core.services.requirement_lint_assessment import (
-    RequirementLintAssessmentInput,
-    build_requirement_lint_assessment_bundle,
-)
 from okto_pulse.core.services.ska_observability import (
     reset_ska_metric_samples_for_tests,
     ska_metric_samples,
 )
 
 pytestmark = pytest.mark.asyncio
+
+
+@pytest.mark.parametrize("edition", [None, True, 0, -1, 1.0, "1"])
+async def test_current_rejects_invalid_edition_before_sql(edition):
+    session = SimpleNamespace(execute=AsyncMock())
+    adapter = CommunitySqlAlchemyQualityAssessment(session)
+    with pytest.raises(QualityAssessmentPersistenceError):
+        await adapter.get_current(
+            board_id=BOARD_ID,
+            subject_type=AssessmentSubjectType.SPEC,
+            subject_id=SPEC_ID,
+            assessment_kind=AssessmentKind.REQUIREMENT_LINT,
+            subject_edition=edition,
+        )
+    session.execute.assert_not_awaited()
 
 
 @pytest.fixture(autouse=True)
@@ -214,11 +228,11 @@ def _spec_payload() -> dict[str, Any]:
 def _lint_authority(actor: str = "agent-quality") -> AssessmentAuthoritySnapshot:
     return AssessmentAuthoritySnapshot(
         domain_write=True,
-        quality_assess=False,
+        quality_assess=True,
         qa_ask=False,
         reviewer_separation_satisfied=True,
         authority_digest=canonical_sha256(
-            {"authority": "semantic-writer", "actor": actor}
+            {"authority": "external-reviewer", "actor": actor}
         ),
     )
 
@@ -234,30 +248,52 @@ def _lint_bundle(
     head_receipt_id: str | None = None,
     now: datetime = NOW,
 ):
+    # Native external assessment input. These adapter tests inject authority and
+    # input resolution; they do not qualify the external preflight use case.
+    from okto_pulse.core.domain.requirement_lint import external_requirement_lint_digests_v1
     payload = _spec_payload() if payload is None else payload
-    command = RequirementLintWriteCommand(
-        board_id=BOARD_ID,
-        spec_id=SPEC_ID,
-        spec_version=spec_version,
-        actor_id=actor,
-        writer=RequirementLintWriter.BULK_UPDATE,
-        spec_status="in_progress",
-        spec_archived=False,
-        changed_fields=("functional_requirements",),
-        spec_payload=payload,
+    digests = external_requirement_lint_digests_v1(
+        content_digest=semantic_content_digest_v1(AssessmentSubjectType.SPEC, payload),
+        clarification_digest=clarification_digest_v1(()),
     )
-    return build_requirement_lint_assessment_bundle(
-        RequirementLintAssessmentInput(
-            command=command,
-            authority=_lint_authority(actor),
-            qa_items=(),
-            default_locale=locale,
-            current_head_revision=head_revision,
-            current_head_receipt_id=head_receipt_id,
+    category = "functional_scope_behavior"
+    finding = QualityFindingDraft(
+        finding_key="native-review", category_code=category,
+        severity=FindingSeverity.HIGH, confidence=0.91,
+        deterministic=False, blocking_eligible=False,
+        title="Clarify observable behavior", detail="The response is unspecified.",
+        remediation="Specify the response contract.", rule_code="external-review",
+        anchor=FindingAnchor(
+            board_id=BOARD_ID, subject_type=AssessmentSubjectType.SPEC,
+            subject_id=SPEC_ID, subject_version=spec_version,
+            input_digest=digests.input_digest, anchor_type=FindingAnchorType.STRUCTURED_CHILD,
+            anchor_ref="fr-vague", excerpt_hash=canonical_sha256("O fluxo deve ser fácil."),
         ),
-        quality_service=QualityAssessmentService(
-            id_factory=_Ids(namespace),
-            clock=lambda: now,
+    )
+    scale = AssessmentScale(AssessmentScaleKind.FINDING_COUNT, 0, 10, ScoreDirection.LOWER_BETTER)
+    submission = AssessmentSubmission(
+        board_id=BOARD_ID, subject_type=AssessmentSubjectType.SPEC, subject_id=SPEC_ID,
+        assessment_kind=AssessmentKind.REQUIREMENT_LINT,
+        idempotency_key=f"external-lint:{spec_version}:{locale.value}",
+        expected_subject_version=spec_version, expected_subject_edition=1,
+        expected_head_revision=head_revision, score=1, scale=scale,
+        justification=f"External assessment {locale.value}.", findings=(finding,),
+        proposed_questions=(),
+    )
+    return QualityAssessmentService(id_factory=_Ids(namespace), clock=lambda: now).prepare_submission(
+        submission, actor_id=actor,
+        preflight=AssessmentPreflight(
+            subject=AssessmentSubjectRef(
+                board_id=BOARD_ID, subject_type=AssessmentSubjectType.SPEC,
+                subject_id=SPEC_ID, subject_version=spec_version, subject_edition=1,
+            ),
+            status="approved", current_head_revision=head_revision,
+            current_head_receipt_id=head_receipt_id, channel="mcp",
+            expected_scale=scale, digests=digests,
+            versions=AssessmentVersionSet("external-lint/v1", "taxonomy/v1", "reviewer/v1", "policy/v1"),
+            anchors=AssessmentAnchorCatalog(structured_child_ids=frozenset({"fr-vague"})),
+            allowed_category_codes=frozenset({category}), authority=_lint_authority(actor),
+            origin=AssessmentOrigin.HUMAN_OR_AGENT,
         ),
     )
 
@@ -312,6 +348,7 @@ def _manual_bundle(
         subject_type=subject_type,
         subject_id=subject_id,
         subject_version=3,
+        subject_edition=1,
     )
     category = "functional_scope_behavior"
     finding_key = f"manual:{subject_type.value}:{subject_id}"
@@ -322,6 +359,7 @@ def _manual_bundle(
         assessment_kind=AssessmentKind.AMBIGUITY,
         idempotency_key=f"manual:{namespace}",
         expected_subject_version=3,
+        expected_subject_edition=1,
         expected_head_revision=0,
         score=2,
         justification="One pinpointed ambiguity remains.",
@@ -410,8 +448,7 @@ async def _schema_engine(path: Path) -> AsyncEngine:
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
 
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    await initialize_current_schema(engine, current_schema_contract())
     return engine
 
 
@@ -464,11 +501,13 @@ async def rig(tmp_path: Path):
                     id=BOARD_ID,
                     name="Quality",
                     owner_id="owner",
+                    realm_id="local",
                 ),
                 Board(
                     id=OTHER_BOARD_ID,
                     name="Other",
                     owner_id="owner",
+                    realm_id="local",
                 ),
                 Spec(
                     id=SPEC_ID,
@@ -485,9 +524,17 @@ async def rig(tmp_path: Path):
                     integration_requirements=payload["integration_requirements"],
                     observability_requirements=payload["observability_requirements"],
                     decisions=payload["decisions"],
-                    status=SpecStatus.IN_PROGRESS,
+                    status=SpecStatus.APPROVED,
                     version=7,
                     created_by="owner",
+                    architecture_adoption=ArchitectureAdoptionScope(
+                        board_id=BOARD_ID, spec_id=SPEC_ID, adopted_in_edition=1,
+                        actor_id="owner", inherited_resource_ids=(),
+                    ).model_dump(mode="json"),
+                    execution_contract=new_execution_contract(
+                        board_id=BOARD_ID, spec_id=SPEC_ID, edition=1,
+                        actor_id="owner", origin="new_spec",
+                    ),
                 ),
             ]
         )
@@ -577,6 +624,29 @@ async def _count(session: AsyncSession, model: type) -> int:
     )
 
 
+@pytest.mark.parametrize("field,value", [("origin", "legacy_import"), ("origin", "semantic_writer"), ("source", "legacy_migration")])
+async def test_schema_refuses_imported_quality_receipts_without_conversion(rig, field, value):
+    bundle = _lint_bundle(namespace="native-only")
+    async with rig() as session:
+        await _adapter(session).apply_bundle_cas(bundle)
+        await session.commit()
+    async with rig() as session:
+        row = await session.get(QualityAssessmentReceiptRow, bundle.receipt.id)
+        payload = {column.name: getattr(row, column.name) for column in row.__table__.columns}
+        for key in ("id", "event_id", "history_id", "outbox_id", "idempotency_key"):
+            payload[key] = f"incompatible-{key}"
+        payload[field] = value
+        session.add(QualityAssessmentReceiptRow(**payload))
+        with pytest.raises(IntegrityError, match=f"ck_quality_receipt_{field}"):
+            await session.flush()
+        await session.rollback()
+    async with rig() as session:
+        assert await session.scalar(select(func.count()).select_from(QualityAssessmentReceiptRow)) == 1
+        row = await session.get(QualityAssessmentReceiptRow, bundle.receipt.id)
+        assert row.source == "native"
+        assert row.origin == bundle.receipt.origin.value
+
+
 async def test_round_trip_audit_projection_pagination_and_board_isolation(
     rig,
 ) -> None:
@@ -638,24 +708,12 @@ async def test_round_trip_audit_projection_pagination_and_board_isolation(
         assert sample["value"] == 1
         assert sample["duration_ms"] >= 0
         assert sample["payload_bytes"] > 0
-        assert summaries == {
-            SPEC_ID: {
-                "requirement_lint": {
-                    "edition": 1,
-                    "state": "not_started",
-                    # The NULL-edition receipt is legacy history, never the
-                    # current lifecycle result.
-                    "previous_count": 1,
-                    "current_result": None,
-                },
-                "spec_validation": {
-                    "edition": 1,
-                    "state": "not_started",
-                    "previous_count": 0,
-                    "current_result": None,
-                },
-            }
-        }
+        lint_summary = summaries[SPEC_ID]["requirement_lint"]
+        assert lint_summary["edition"] == 1
+        assert lint_summary["state"] == "current"
+        assert lint_summary["previous_count"] == 0
+        assert lint_summary["current_result"]["score"] == first.receipt.score
+        assert summaries[SPEC_ID]["spec_validation"]["state"] == "not_started"
 
     async with rig() as session:
         adapter = _adapter(session)
@@ -682,10 +740,21 @@ async def test_round_trip_audit_projection_pagination_and_board_isolation(
             subject_type=AssessmentSubjectType.SPEC,
             subject_id=SPEC_ID,
             assessment_kind=AssessmentKind.REQUIREMENT_LINT,
+            subject_edition=1,
         )
         assert current is not None
         assert current[0] == second.receipt
         assert current[1] == second.next_head
+        assert await adapter.get_current(
+            board_id=BOARD_ID,
+            subject_type=AssessmentSubjectType.SPEC,
+            subject_id=SPEC_ID,
+            assessment_kind=AssessmentKind.REQUIREMENT_LINT,
+            subject_edition=2,
+        ) is None
+        assert await adapter.get_receipt(
+            board_id=BOARD_ID, receipt_id=second.receipt.id
+        ) == second.receipt
 
         page = await adapter.list_assessments(
             AssessmentListQuery(
@@ -696,8 +765,7 @@ async def test_round_trip_audit_projection_pagination_and_board_isolation(
                 ),
                 offset=0,
                 limit=1,
-                current_subject_version=7,
-                current_digests=second.receipt.digests,
+                current_subject_version=7, current_subject_edition=1,
             )
         )
         assert page.total_overall == page.total_filtered == 2
@@ -713,14 +781,13 @@ async def test_round_trip_audit_projection_pagination_and_board_isolation(
                     ),
                     offset=0,
                     limit=1,
-                    current_subject_version=7,
-                    current_digests=second.receipt.digests,
+                    current_subject_version=7, current_subject_edition=1,
                 ),
                 offset=1,
             )
         )
         assert adjacent.items[0].receipt.id == first.receipt.id
-        assert adjacent.items[0].state is AssessmentReceiptState.SUPERSEDED
+        assert adjacent.items[0].state is AssessmentReceiptState.PREVIOUS
 
         current_only = await adapter.list_assessments(
             AssessmentListQuery(
@@ -732,36 +799,18 @@ async def test_round_trip_audit_projection_pagination_and_board_isolation(
                 offset=0,
                 limit=10,
                 state=AssessmentReceiptState.CURRENT,
-                current_subject_version=7,
-                current_digests=second.receipt.digests,
+                current_subject_version=7, current_subject_edition=1,
             )
         )
         assert current_only.total_filtered == 1
         assert current_only.total_overall == 2
-        changed_digests = AssessmentDigestSet(
-            content_digest=canonical_sha256("changed semantic content"),
-            clarification_digest=second.receipt.digests.clarification_digest,
-            ruleset_digest=second.receipt.digests.ruleset_digest,
-            taxonomy_digest=second.receipt.digests.taxonomy_digest,
-            policy_digest=second.receipt.digests.policy_digest,
-        )
-        stale_only = await adapter.list_assessments(
-            AssessmentListQuery(
-                subject=AssessmentSubjectIdentity(
-                    board_id=BOARD_ID,
-                    subject_type=AssessmentSubjectType.SPEC,
-                    subject_id=SPEC_ID,
-                ),
-                offset=0,
-                limit=10,
-                state=AssessmentReceiptState.STALE,
-                current_subject_version=7,
-                current_digests=changed_digests,
-            )
-        )
-        assert stale_only.total_filtered == 1
-        assert stale_only.items[0].receipt.id == second.receipt.id
-        assert stale_only.items[0].freshness.stale_reasons
+        previous = await adapter.list_assessments(AssessmentListQuery(
+            subject=AssessmentSubjectIdentity(board_id=BOARD_ID, subject_type=AssessmentSubjectType.SPEC, subject_id=SPEC_ID),
+            offset=0, limit=10, state=AssessmentReceiptState.PREVIOUS,
+            current_subject_version=7, current_subject_edition=2,
+        ))
+        assert previous.total_filtered == 2
+        assert {item.receipt.id for item in previous.items} == {first.receipt.id, second.receipt.id}
 
         finding_page = await adapter.list_findings(
             FindingListQuery(
@@ -820,19 +869,13 @@ async def test_round_trip_audit_projection_pagination_and_board_isolation(
                 ),
                 offset=0,
                 limit=10,
-                current_subject_version=7,
-                current_digests=second.receipt.digests,
+                current_subject_version=7, current_subject_edition=1,
             )
         )
         assert isolated.total_overall == isolated.total_filtered == 0
 
-        qa_row = await session.get(
-            SpecQAItem,
-            first.proposed_questions[0].qa_id,
-        )
-        # Requirement Lint records proposed-question evidence, but Community
-        # must not materialize it as an owned Spec QA item automatically.
-        assert qa_row is None
+        assert first.proposed_questions == ()
+        assert await _count(session, SpecQAItem) == 0
         receipt_row = await session.get(
             QualityAssessmentReceiptRow,
             first.receipt.id,
@@ -876,6 +919,19 @@ async def test_idempotent_replay_and_fingerprint_conflict(rig) -> None:
         await _adapter(session).apply_bundle_cas(bundle)
         await session.commit()
 
+    reader = CommunitySqlAlchemyQualityAssessmentPreflightReader(rig)
+    replay = await reader.lookup_assessment_replay(
+        board_id=BOARD_ID, idempotency_key=bundle.idempotency_key,
+        actor_id=bundle.receipt.created_by, realm_scope=RealmScope.local(),
+    )
+    assert replay.replayed is True
+    assert replay.subject_edition == bundle.receipt.subject.subject_edition == 1
+    assert replay.receipt_id == bundle.receipt.id
+    assert await reader.lookup_assessment_replay(
+        board_id=BOARD_ID, idempotency_key=bundle.idempotency_key,
+        actor_id="another-actor", realm_scope=RealmScope.local(),
+    ) is None
+
     rebuilt = _lint_bundle(
         namespace="rebuilt",
         now=NOW + timedelta(hours=1),
@@ -884,7 +940,7 @@ async def test_idempotent_replay_and_fingerprint_conflict(rig) -> None:
     assert rebuilt.request_fingerprint == bundle.request_fingerprint
     assert rebuilt.receipt.id != bundle.receipt.id
     assert rebuilt.audit_intent.event_id != bundle.audit_intent.event_id
-    assert rebuilt.proposed_questions[0].qa_id != (bundle.proposed_questions[0].qa_id)
+    assert rebuilt.proposed_questions == bundle.proposed_questions == ()
     async with rig() as session:
         result = await _adapter(session).apply_bundle_cas(rebuilt)
         assert result.replayed
@@ -961,7 +1017,7 @@ async def test_fail_closed_authority_input_and_subject_fences(rig) -> None:
             await _adapter(session).apply_bundle_cas(bundle)
         await session.rollback()
         await session.execute(
-            update(Spec).where(Spec.id == SPEC_ID).values(status=SpecStatus.IN_PROGRESS)
+            update(Spec).where(Spec.id == SPEC_ID).values(status=SpecStatus.APPROVED)
         )
         await session.commit()
 
@@ -1001,7 +1057,7 @@ async def test_lifecycle_winner_rejects_stale_quality_writer_with_zero_rows(
     async with rig() as quality_session, rig() as lifecycle_session:
         preloaded = await quality_session.get(Spec, SPEC_ID)
         assert preloaded is not None
-        assert preloaded.status is SpecStatus.IN_PROGRESS
+        assert preloaded.status is SpecStatus.APPROVED
 
         # Hold the production-WAL writer mutex with the lifecycle winner while
         # the quality command, built from the preloaded state, reaches its own
@@ -1302,354 +1358,120 @@ async def test_relational_application_seam_returns_concrete_adapter(rig) -> None
         )
 
 
-async def test_consolidation_projection_loads_spec_inputs_in_three_bounded_queries(
-    rig,
-) -> None:
-    first = _lint_bundle(namespace="projection-first")
-    current_payload = _spec_payload()
-    current_payload["version"] = 8
-    current_payload["description"] = "Persist the current D0 projection contract."
-    second = _lint_bundle(
-        namespace="projection-second",
-        payload=current_payload,
-        spec_version=8,
-        head_revision=1,
-        head_receipt_id=first.receipt.id,
-        now=NOW + timedelta(seconds=1),
+async def _seed_projection_receipt(rig, *, edition=1):
+    """Author a native projection fixture, without running an old lint writer."""
+    digests = AssessmentDigestSet(
+        content_digest=canonical_sha256("native content"),
+        clarification_digest=canonical_sha256("native clarification"),
+        ruleset_digest=canonical_sha256("native rules"),
+        taxonomy_digest=canonical_sha256("native taxonomy"),
+        policy_digest=canonical_sha256("native policy"),
     )
     async with rig() as session:
-        await _adapter(session).apply_bundle_cas(first)
+        session.add(QualityAssessmentReceiptRow(
+            id="native-projection", board_id=BOARD_ID, subject_type="spec",
+            subject_id=SPEC_ID, subject_version=7, subject_edition=edition,
+            assessment_kind="requirement_lint", origin="human_or_agent", source="native",
+            channel="mcp", outcome="advisory", scale_kind="finding_count",
+            scale_minimum=0, scale_maximum=10, scale_direction="lower_better",
+            score=1, justification="External review of this edition.",
+            content_digest=digests.content_digest,
+            clarification_digest=digests.clarification_digest,
+            ruleset_digest=digests.ruleset_digest, taxonomy_digest=digests.taxonomy_digest,
+            policy_digest=digests.policy_digest, input_digest=digests.input_digest,
+            canonicalization_version=digests.canonicalization_version,
+            ruleset_version="requirement-lint/v1", taxonomy_version="ambiguity-taxonomy/v1",
+            analyzer_version="reviewer/v1", policy_version="quality-policy/v1",
+            run_identity_digest=canonical_sha256("native run"),
+            authority_digest=canonical_sha256("native authority"),
+            idempotency_key="native-projection", request_digest=canonical_sha256("native request"),
+            created_by="reviewer", created_at=NOW, predecessor_receipt_id=None,
+            contract_version="quality-assessment/v1", event_id="native-event",
+            history_id="native-history", outbox_id="native-outbox", head_revision=1,
+        ))
+        await session.flush()
+        session.add(QualityAssessmentHeadRow(
+            board_id=BOARD_ID, subject_type="spec", subject_id=SPEC_ID,
+            assessment_kind="requirement_lint", receipt_id="native-projection",
+            revision=1, updated_at=NOW,
+        ))
         await session.commit()
-    async with rig() as session:
-        await session.execute(
-            update(Spec)
-            .where(
-                Spec.id == SPEC_ID,
-                Spec.board_id == BOARD_ID,
-            )
-            .values(
-                version=8,
-                description=current_payload["description"],
-            )
-        )
-        await _adapter(session).apply_bundle_cas(second)
-        await session.commit()
+        return Path(str(session.bind.url.database))
 
+
+@pytest.mark.parametrize("change", ["none", "version", "clarification", "policy", "edition"])
+async def test_native_projection_and_rebuild_share_edition_selector_and_immutable_history(rig, change):
+    from okto_pulse.community.adapters.board_source_reader import (
+        CommunityBoardSourceReader, _current_quality_head_fingerprints,
+    )
+    database_path = await _seed_projection_receipt(rig)
+    async with rig() as session:
+        if change == "version":
+            await session.execute(update(Spec).where(Spec.id == SPEC_ID).values(version=8))
+        elif change == "clarification":
+            session.add(SpecQAItem(
+                id="native-qa", spec_id=SPEC_ID, question="Which result?",
+                question_type="open", asked_by="reviewer", answer="The accepted contract.",
+                answered_by="reviewer", answered_at=NOW,
+            ))
+        elif change == "policy":
+            await session.execute(update(Board).where(Board.id == BOARD_ID).values(settings={"max_spec_ambiguity": 25}))
+        elif change == "edition":
+            await session.execute(update(Spec).where(Spec.id == SPEC_ID).values(edition=2))
+        await session.commit()
     async with rig() as session:
         artifact = await session.get(Spec, SPEC_ID)
-        assert artifact is not None
-        statements: list[str] = []
-
-        def record_statement(
-            _connection,
-            _cursor,
-            statement,
-            _parameters,
-            _context,
-            _executemany,
-        ) -> None:
+        receipt = await session.get(QualityAssessmentReceiptRow, "native-projection")
+        before = {column.name: getattr(receipt, column.name) for column in receipt.__table__.columns}
+        statements = []
+        def record_statement(_connection, _cursor, statement, _parameters, _context, _executemany):
             statements.append(statement)
-
-        assert session.bind is not None
-        database_path = Path(str(session.bind.url.database))
-        event.listen(
-            session.bind.sync_engine,
-            "before_cursor_execute",
-            record_statement,
-        )
+        event.listen(session.bind.sync_engine, "before_cursor_execute", record_statement)
         try:
             projection = await CommunitySqlAlchemyConsolidationPersistence().load_projection_inputs(
-                session,
-                board_id=BOARD_ID,
-                artifact_type="spec",
-                artifact_id=SPEC_ID,
+                session, board_id=BOARD_ID, artifact_type="spec", artifact_id=SPEC_ID,
                 artifact=artifact,
             )
         finally:
-            event.remove(
-                session.bind.sync_engine,
-                "before_cursor_execute",
-                record_statement,
-            )
-
-        # The spec projection has three independent, bounded rowsets: the
-        # current quality heads, their board/Q&A context, and the complete
-        # dependency snapshot joined to prerequisite Specs.  Keeping the
-        # dependency load separate avoids a multiplicative head x Q&A x
-        # dependency join while still remaining constant for every page size.
+            event.remove(session.bind.sync_engine, "before_cursor_execute", record_statement)
+        # Heads, Board identity and dependency snapshot; no Q&A/content reload.
         assert len(statements) == 3
-        assert sum(
-            "from spec_dependencies" in " ".join(statement.lower().split())
-            for statement in statements
-        ) == 1
-        assert projection.research_decisions == ()
-        # Legacy editionless evidence remains navigable history but cannot be
-        # projected as current without inventing a human lifecycle edition.
-        assert projection.quality_assessments == ()
+        assert not any("spec_qa_items" in statement for statement in statements)
+        assert bool(projection.quality_assessments) is (change != "edition")
+        assert {column.name: getattr(receipt, column.name) for column in receipt.__table__.columns} == before
 
-    from okto_pulse.community.adapters.board_source_reader import (
-        _current_quality_head_fingerprints,
-    )
     with sqlite3.connect(database_path) as connection:
         connection.row_factory = sqlite3.Row
-        rebuild_fingerprints = _current_quality_head_fingerprints(
-            connection,
-            board_id=BOARD_ID,
+        fingerprints = _current_quality_head_fingerprints(connection, board_id=BOARD_ID)
+        key = (BOARD_ID, "spec", SPEC_ID)
+        assert (key in fingerprints) is (change != "edition")
+        row = connection.execute("SELECT * FROM specs WHERE id = ?", (SPEC_ID,)).fetchone()
+        expected_hash = projected_root_content_hash(
+            canonical_content_hash(row, SPEC_CONTENT_COLUMNS),
+            quality_head_fingerprints=fingerprints.get(key, ()),
         )
-    projection_key = (BOARD_ID, "spec", SPEC_ID)
-    assert projection_key not in rebuild_fingerprints
-
-
-async def test_consolidation_projection_omits_head_stale_by_subject_version(
-    rig,
-) -> None:
-    """A CAS head is not current after its owning subject version advances."""
-
-    bundle = _lint_bundle(namespace="projection-stale-subject-version")
+    snapshot = CommunityBoardSourceReader(database_path).fetch(BOARD_ID)
+    assert snapshot.complete
+    assert next(row["content_hash"] for row in snapshot.rows if row["source_ref"] == f"spec:{SPEC_ID}") == expected_hash
     async with rig() as session:
-        await _adapter(session).apply_bundle_cas(bundle)
-        await session.commit()
+        with pytest.raises(IntegrityError, match="quality_c7_row_immutable"):
+            await session.execute(update(QualityAssessmentReceiptRow).where(
+                QualityAssessmentReceiptRow.id == "native-projection",
+            ).values(justification="Attempt to rewrite history"))
+        await session.rollback()
+        receipt = await session.get(QualityAssessmentReceiptRow, "native-projection")
+        assert receipt.subject_edition == 1
+        assert receipt.justification == "External review of this edition."
+
+
+@pytest.mark.parametrize("edition", [None, 0, -1])
+async def test_storage_refuses_non_native_receipt_edition_without_repair(rig, edition):
+    expected_error = "NOT NULL" if edition is None else "validation_edition_invalid"
+    with pytest.raises(IntegrityError, match=expected_error):
+        await _seed_projection_receipt(rig, edition=edition)
     async with rig() as session:
-        await session.execute(
-            update(Spec)
-            .where(
-                Spec.id == SPEC_ID,
-                Spec.board_id == BOARD_ID,
-            )
-            .values(version=8)
-        )
-        await session.commit()
-
-    async with rig() as session:
-        artifact = await session.get(Spec, SPEC_ID)
-        assert artifact is not None
-        projection = (
-            await CommunitySqlAlchemyConsolidationPersistence().load_projection_inputs(
-                session,
-                board_id=BOARD_ID,
-                artifact_type="spec",
-                artifact_id=SPEC_ID,
-                artifact=artifact,
-            )
-        )
-
-    assert projection.quality_assessments == ()
-
-
-async def test_consolidation_projection_omits_head_stale_by_clarification_digest(
-    rig,
-) -> None:
-    """Answering a projected Q&A invalidates the assessment's input identity."""
-
-    bundle = _lint_bundle(namespace="projection-stale-clarification")
-    assert bundle.proposed_questions
-    question_id = bundle.proposed_questions[0].qa_id
-    async with rig() as session:
-        await _adapter(session).apply_bundle_cas(bundle)
-        await session.commit()
-    async with rig() as session:
-        await session.execute(
-            update(SpecQAItem)
-            .where(
-                SpecQAItem.id == question_id,
-                SpecQAItem.spec_id == SPEC_ID,
-            )
-            .values(
-                answer="The API returns a stable validation error.",
-                answered_by="reviewer-quality",
-                answered_at=NOW + timedelta(minutes=1),
-                revision=2,
-            )
-        )
-        await session.commit()
-
-    async with rig() as session:
-        artifact = await session.get(Spec, SPEC_ID)
-        assert artifact is not None
-        projection = (
-            await CommunitySqlAlchemyConsolidationPersistence().load_projection_inputs(
-                session,
-                board_id=BOARD_ID,
-                artifact_type="spec",
-                artifact_id=SPEC_ID,
-                artifact=artifact,
-            )
-        )
-
-    assert projection.quality_assessments == ()
-
-
-async def test_consolidation_projection_omits_head_stale_by_policy_digest(
-    rig,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A valid historical receipt under a retired policy is not current."""
-
-    from okto_pulse.core.domain.quality_assessment import AssessmentDigestSet
-    from okto_pulse.core.services import requirement_lint_assessment
-
-    current_digest_set = (
-        requirement_lint_assessment.requirement_lint_normative_digests_v1
-    )
-
-    def retired_policy_digest_set(**kwargs) -> AssessmentDigestSet:
-        current = current_digest_set(**kwargs)
-        return AssessmentDigestSet(
-            content_digest=current.content_digest,
-            clarification_digest=current.clarification_digest,
-            ruleset_digest=current.ruleset_digest,
-            taxonomy_digest=current.taxonomy_digest,
-            policy_digest=canonical_sha256("retired-requirement-lint-policy"),
-        )
-
-    monkeypatch.setattr(
-        requirement_lint_assessment,
-        "requirement_lint_normative_digests_v1",
-        retired_policy_digest_set,
-    )
-    bundle = _lint_bundle(namespace="projection-stale-policy")
-    monkeypatch.setattr(
-        requirement_lint_assessment,
-        "requirement_lint_normative_digests_v1",
-        current_digest_set,
-    )
-    assert (
-        bundle.receipt.digests.policy_digest
-        != current_digest_set(
-            content_digest=bundle.receipt.digests.content_digest,
-            clarification_digest=bundle.receipt.digests.clarification_digest,
-            default_locale=RequirementLocale.UNKNOWN,
-        ).policy_digest
-    )
-
-    async with rig() as session:
-        await _adapter(session).apply_bundle_cas(bundle)
-        await session.commit()
-
-    async with rig() as session:
-        artifact = await session.get(Spec, SPEC_ID)
-        assert artifact is not None
-        projection = (
-            await CommunitySqlAlchemyConsolidationPersistence().load_projection_inputs(
-                session,
-                board_id=BOARD_ID,
-                artifact_type="spec",
-                artifact_id=SPEC_ID,
-                artifact=artifact,
-            )
-        )
-
-    assert projection.quality_assessments == ()
-
-
-async def test_board_source_root_hash_ignores_subject_version_stale_quality_head(
-    rig,
-) -> None:
-    """Rebuild fingerprints must use the same current-only quality selector."""
-
-    from okto_pulse.community.adapters.board_source_reader import (
-        CommunityBoardSourceReader,
-    )
-
-    bundle = _lint_bundle(namespace="source-reader-stale-subject-version")
-    async with rig() as session:
-        await _adapter(session).apply_bundle_cas(bundle)
-        await session.execute(
-            update(Spec)
-            .where(
-                Spec.id == SPEC_ID,
-                Spec.board_id == BOARD_ID,
-            )
-            .values(version=8)
-        )
-        await session.commit()
-        assert session.bind is not None
-        database_path = Path(str(session.bind.url.database))
-
-    first_snapshot = CommunityBoardSourceReader(database_path).fetch(BOARD_ID)
-    assert first_snapshot.complete is True
-    first_root_hash = next(
-        row["content_hash"]
-        for row in first_snapshot.rows
-        if row["source_ref"] == f"spec:{SPEC_ID}"
-    )
-
-    async with rig() as session:
-        await session.execute(
-            update(QualityAssessmentReceiptRow)
-            .where(
-                QualityAssessmentReceiptRow.id == bundle.receipt.id,
-                QualityAssessmentReceiptRow.board_id == BOARD_ID,
-            )
-            .values(justification="Changed stale receipt must not rehash the root.")
-        )
-        await session.commit()
-
-    second_snapshot = CommunityBoardSourceReader(database_path).fetch(BOARD_ID)
-    assert second_snapshot.complete is True
-    second_root_hash = next(
-        row["content_hash"]
-        for row in second_snapshot.rows
-        if row["source_ref"] == f"spec:{SPEC_ID}"
-    )
-
-    assert second_root_hash == first_root_hash
-async def test_board_source_root_hash_ignores_clarification_stale_quality_head(
-    rig,
-) -> None:
-    """Rebuild projection must not retain a head invalidated only by Q&A."""
-
-    from okto_pulse.community.adapters.board_source_reader import (
-        CommunityBoardSourceReader,
-    )
-
-    bundle = _lint_bundle(namespace="source-reader-stale-clarification")
-    assert bundle.proposed_questions
-    async with rig() as session:
-        await _adapter(session).apply_bundle_cas(bundle)
-        await session.execute(
-            update(SpecQAItem)
-            .where(
-                SpecQAItem.id == bundle.proposed_questions[0].qa_id,
-                SpecQAItem.spec_id == SPEC_ID,
-            )
-            .values(
-                answer="Use the response contract defined by AC-1.",
-                answered_by="reviewer-quality",
-                answered_at=NOW + timedelta(minutes=1),
-                revision=2,
-            )
-        )
-        await session.commit()
-        assert session.bind is not None
-        database_path = Path(str(session.bind.url.database))
-
-    first_snapshot = CommunityBoardSourceReader(database_path).fetch(BOARD_ID)
-    assert first_snapshot.complete is True
-    first_root_hash = next(
-        row["content_hash"]
-        for row in first_snapshot.rows
-        if row["source_ref"] == f"spec:{SPEC_ID}"
-    )
-
-    async with rig() as session:
-        await session.execute(
-            update(QualityAssessmentReceiptRow)
-            .where(
-                QualityAssessmentReceiptRow.id == bundle.receipt.id,
-                QualityAssessmentReceiptRow.board_id == BOARD_ID,
-            )
-            .values(justification="A stale clarification receipt is historical.")
-        )
-        await session.commit()
-
-    second_snapshot = CommunityBoardSourceReader(database_path).fetch(BOARD_ID)
-    assert second_snapshot.complete is True
-    second_root_hash = next(
-        row["content_hash"]
-        for row in second_snapshot.rows
-        if row["source_ref"] == f"spec:{SPEC_ID}"
-    )
-
-    assert second_root_hash == first_root_hash
-    # End-to-end guard: legacy history must not perturb the current root hash.
+        assert await _count(session, QualityAssessmentReceiptRow) == 0
+        assert await _count(session, QualityAssessmentHeadRow) == 0
+        subject = await session.get(Spec, SPEC_ID)
+        assert subject.edition == 1
+        assert subject.version == 7

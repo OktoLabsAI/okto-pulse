@@ -8,7 +8,6 @@ import { measureValidationWorkspaceInteraction } from '@/services/validation-wor
 import type {
   SpecValidation,
   SpecValidationList,
-  SpecValidationPinpoint,
 } from '@/types';
 
 interface SpecValidationHistoryPanelProps {
@@ -26,7 +25,6 @@ function belongsToCurrentEdition(
   validation: SpecValidation,
   currentEdition?: number,
 ): boolean {
-  if (validation.edition == null) return false;
   if (currentEdition === undefined) return validation.active === true;
   return validation.edition === currentEdition
     && (
@@ -41,7 +39,6 @@ export function SpecValidationHistoryPanel({
   currentEdition,
   view = 'all',
   currentValidation,
-  anchorTexts,
 }: SpecValidationHistoryPanelProps) {
   const api = useDashboardApi();
   const apiRef = useRef(api);
@@ -50,6 +47,8 @@ export function SpecValidationHistoryPanel({
   const [loading, setLoading] = useState(true);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [offset, setOffset] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const [retryKey, setRetryKey] = useState(0);
 
   useEffect(() => {
     setOffset(0);
@@ -57,6 +56,7 @@ export function SpecValidationHistoryPanel({
   }, [currentEdition, specId, view]);
 
   useEffect(() => {
+    setError(null);
     if (view === 'current' && currentValidation !== undefined) {
       setData({
         spec_id: specId,
@@ -105,6 +105,7 @@ export function SpecValidationHistoryPanel({
       })
       .catch((error: unknown) => {
         if (!cancelled) {
+          setError(error instanceof Error ? error.message : 'Failed to load validation results');
           toast.error(
             error instanceof Error
               ? error.message
@@ -119,7 +120,7 @@ export function SpecValidationHistoryPanel({
       cancelled = true;
       controller.abort();
     };
-  }, [currentEdition, currentValidation, offset, refreshKey, specId, view]);
+  }, [currentEdition, currentValidation, offset, refreshKey, retryKey, specId, view]);
 
   if (loading && !data) {
     return (
@@ -127,6 +128,13 @@ export function SpecValidationHistoryPanel({
         Loading validation results…
       </p>
     );
+  }
+
+  if (error) {
+    return <div role="alert" className="rounded-lg border border-red-200 p-3 text-xs text-red-700 dark:border-red-800 dark:text-red-300">
+      <p>Validation results could not be loaded. {error}</p>
+      <button type="button" onClick={() => setRetryKey(value => value + 1)} className="mt-2 rounded border px-3 py-1.5 font-semibold">Retry validation results</button>
+    </div>;
   }
 
   const validations = data?.validations ?? [];
@@ -167,7 +175,6 @@ export function SpecValidationHistoryPanel({
           onToggleExpand={() => setExpandedId(
             expandedId === validation.id ? null : validation.id,
           )}
-          anchorTexts={anchorTexts}
         />
       ))}
       {view === 'previous' && data?.has_more && (
@@ -201,29 +208,14 @@ function ValidationRecord({
   attemptNumber,
   expanded,
   onToggleExpand,
-  anchorTexts,
 }: ValidationRecordProps) {
   const detailsId = useId();
-  const isSuccess = validation.outcome !== 'failed';
+  const isSuccess = validation.outcome === 'success';
   const thresholds = validation.resolved_thresholds;
-  const formalResult = typeof validation.score === 'number'
-    && Boolean(validation.summary?.trim());
-  const canonicalDimensions = typeof validation.confidence === 'number'
-    && typeof validation.clarity === 'number'
-    && typeof validation.assertiveness === 'number'
-    && typeof validation.decidability === 'number'
-    && typeof validation.ambiguity === 'number';
-  const legacyDimensions = typeof validation.completeness === 'number'
-    && typeof validation.assertiveness === 'number'
-    && typeof validation.ambiguity === 'number';
-  const editionLabel = validation.edition == null
-    ? 'Legacy'
-    : `Edition ${validation.edition}`;
+  const editionLabel = `Edition ${validation.edition}`;
   const historyLabel = current
     ? null
-    : validation.edition == null
-      ? 'Historical result'
-      : currentEdition !== undefined && validation.edition === currentEdition
+    : currentEdition !== undefined && validation.edition === currentEdition
         ? 'Superseded attempt'
         : 'Previous edition';
 
@@ -258,26 +250,11 @@ function ValidationRecord({
             {validation.reviewer_name || validation.reviewer_id}
           </p>
         </div>
-        {canonicalDimensions ? (
-          <span className="text-xs font-semibold text-violet-700 dark:text-violet-300">
-            Five-metric assessment
-          </span>
-        ) : formalResult ? (
-          <span className="text-xs font-semibold text-violet-700 dark:text-violet-300">
-            Score {validation.score}/100
-          </span>
-        ) : validation.recommendation ? (
-          <span className={`text-xs font-semibold ${
-            validation.recommendation === 'approve'
-              ? 'text-emerald-700 dark:text-emerald-300'
-              : 'text-red-700 dark:text-red-300'
-          }`}>
-            {validation.recommendation === 'approve' ? 'Approved' : 'Rejected'}
-          </span>
-        ) : null}
+        <span className="text-xs font-semibold text-violet-700 dark:text-violet-300">
+          Five-metric assessment
+        </span>
       </div>
 
-      {canonicalDimensions ? (
         <div className="my-4 grid grid-cols-2 gap-5 sm:grid-cols-3 lg:grid-cols-5">
           <ScoreCell
             dimension="confidence"
@@ -315,40 +292,6 @@ function ValidationRecord({
             direction="max"
           />
         </div>
-      ) : formalResult ? (
-        <div className="my-4 flex justify-center">
-          <ScoreCell
-            dimension="overall"
-            label="Validation score"
-            value={validation.score!}
-            direction="min"
-          />
-        </div>
-      ) : legacyDimensions ? (
-        <div className="my-4 grid grid-cols-1 gap-5 sm:grid-cols-3">
-          <ScoreCell
-            dimension="completeness"
-            label="Completeness"
-            value={validation.completeness!}
-            threshold={thresholds?.min_spec_completeness}
-            direction="min"
-          />
-          <ScoreCell
-            dimension="assertiveness"
-            label="Assertiveness"
-            value={validation.assertiveness!}
-            threshold={thresholds?.min_spec_assertiveness}
-            direction="min"
-          />
-          <ScoreCell
-            dimension="ambiguity"
-            label="Ambiguity"
-            value={validation.ambiguity!}
-            threshold={thresholds?.max_spec_ambiguity}
-            direction="max"
-          />
-        </div>
-      ) : null}
 
       {(validation.threshold_violations?.length ?? 0) > 0 && (
         <div className="mb-3 rounded-lg border border-red-200 bg-red-50 p-2.5 dark:border-red-800 dark:bg-red-950/25">
@@ -363,12 +306,7 @@ function ValidationRecord({
         </div>
       )}
 
-      {!canonicalDimensions && (formalResult || validation.general_justification) && (
-        <p className="border-l-2 border-surface-300 pl-3 text-xs italic text-surface-700 dark:border-surface-600 dark:text-surface-300">
-          {formalResult ? validation.summary : validation.general_justification}
-        </p>
-      )}
-      {(canonicalDimensions || legacyDimensions) && !current && (
+      {!current && (
         <>
           <button
             type="button"
@@ -389,30 +327,15 @@ function ValidationRecord({
               id={detailsId}
               className="mt-3 space-y-2 text-xs text-surface-600 dark:text-surface-300"
             >
-              {canonicalDimensions ? (
-                <>
-                  <div><dt className="font-semibold">Confidence</dt><dd>{validation.confidence_justification}</dd></div>
-                  <div><dt className="font-semibold">Clarity</dt><dd>{validation.clarity_justification}</dd></div>
-                  <div><dt className="font-semibold">Assertiveness</dt><dd>{validation.assertiveness_justification}</dd></div>
-                  <div><dt className="font-semibold">Decidability</dt><dd>{validation.decidability_justification}</dd></div>
-                  <div><dt className="font-semibold">Ambiguity</dt><dd>{validation.ambiguity_justification}</dd></div>
-                </>
-              ) : (
-                <>
-                  <div><dt className="font-semibold">Completeness</dt><dd>{validation.completeness_justification}</dd></div>
-                  <div><dt className="font-semibold">Assertiveness</dt><dd>{validation.assertiveness_justification}</dd></div>
-                  <div><dt className="font-semibold">Ambiguity</dt><dd>{validation.ambiguity_justification}</dd></div>
-                </>
-              )}
+              <MetricJustificationEntries validation={validation} />
             </dl>
           )}
         </>
       )}
-      {(canonicalDimensions || legacyDimensions) && current && (
-        <MetricJustifications
-          validation={validation}
-          canonicalDimensions={canonicalDimensions}
-        />
+      {current && (
+        <dl className="mt-3 space-y-2 text-xs text-surface-600 dark:text-surface-300">
+          <MetricJustificationEntries validation={validation} />
+        </dl>
       )}
 
       {(validation.pinpoints?.length ?? 0) > 0 && (
@@ -421,40 +344,30 @@ function ValidationRecord({
             Pinpoint findings
           </h4>
           <ol className="space-y-2">
-            {validation.pinpoints!.map((pinpoint, index) => {
-              const anchorReference = pinpoint.anchor_ref?.trim() || null;
-              const anchorText = resolvePinpointAnchorText(
-                pinpoint.anchor_type,
-                anchorReference,
-                anchorTexts,
-              );
-              return (
-              <li key={`${pinpoint.metric}-${pinpoint.anchor_type}-${pinpoint.anchor_ref ?? index}`} className="rounded-lg border border-surface-200 bg-white p-3 dark:border-surface-700 dark:bg-surface-900/50">
-                <div className="flex flex-wrap items-start gap-2">
-                  <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-semibold uppercase text-violet-700 dark:bg-violet-950/50 dark:text-violet-300">
-                    {pinpoint.metric}
-                  </span>
-                  <p
-                    data-testid="spec-validation-pinpoint-target"
-                    className="min-w-0 flex-1 whitespace-pre-wrap text-xs font-medium text-surface-800 dark:text-surface-100"
-                  >
-                    {anchorText}
-                    {anchorReference ? (
-                      <>
-                        {' '}
-                        <span className="font-mono text-[11px] font-normal text-surface-500 dark:text-surface-400">
-                          ({anchorReference})
-                        </span>
-                      </>
-                    ) : null}
-                  </p>
-                </div>
-                <p className="mt-2 whitespace-pre-wrap text-xs text-surface-700 dark:text-surface-300">
-                  {pinpoint.detail}
-                </p>
+            {validation.pinpoints!.map((pinpoint, index) => (
+              <li key={index}>
+                <details className="group rounded-lg border border-surface-200 bg-white dark:border-surface-700 dark:bg-surface-900/50">
+                  <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 p-3 text-xs [&::-webkit-details-marker]:hidden">
+                    <ChevronDown size={14} className="shrink-0 transition-transform group-open:rotate-180" aria-hidden="true" />
+                    <span className="min-w-0 flex-1 truncate font-medium text-surface-800 dark:text-surface-100">{pinpoint.detail.slice(0, 140)}</span>
+                    <span className={`rounded-full px-2.5 py-1 font-bold capitalize ${pinpoint.kind === 'opportunity' ? 'bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-200' : 'bg-orange-100 text-orange-900 dark:bg-orange-950 dark:text-orange-200'}`}>{pinpoint.kind ?? 'Not classified'}</span>
+                    {pinpoint.severity && <span className={`rounded px-2 py-1 font-semibold capitalize ${pinpoint.severity === 'critical' || pinpoint.severity === 'high' ? 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-200' : 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200'}`}>{pinpoint.severity}</span>}
+                    <span className="flex w-full flex-wrap gap-1 pl-5" aria-label="Associated dimensions">
+                      {(pinpoint.metrics ?? (pinpoint.metric ? [pinpoint.metric] : [])).map(metric => <span key={metric} className="rounded-full bg-violet-100 px-2 py-0.5 font-semibold capitalize text-violet-800 dark:bg-violet-950 dark:text-violet-200">{metric}</span>)}
+                    </span>
+                  </summary>
+                  <div className="space-y-3 border-t border-surface-200 p-3 text-xs text-surface-700 dark:border-surface-700 dark:text-surface-300">
+                    <p data-testid="spec-validation-pinpoint-target">{pinpoint.anchor_ref ?? 'Whole Spec'}</p>
+                    <div><h5 className="font-semibold">Verbatim excerpt</h5>
+                      {pinpoint.excerpt ? <blockquote className="mt-1 whitespace-pre-wrap border-l-2 border-violet-400 pl-3">{pinpoint.excerpt}</blockquote> : <p>No focused excerpt was recorded in this evaluation.</p>}
+                    </div>
+                    <div className="rounded-lg border-l-4 border-orange-400 bg-orange-50 p-3 text-orange-950 dark:bg-orange-950/30 dark:text-orange-100"><h5 className="font-bold text-orange-700 dark:text-orange-300">{pinpoint.kind === 'opportunity' ? 'Identified opportunity' : 'Identified issue'}</h5><p className="mt-1 whitespace-pre-wrap leading-relaxed">{pinpoint.detail}</p></div>
+                    <div className="rounded-lg border border-surface-200 bg-surface-50 p-3 dark:border-surface-700 dark:bg-surface-800"><h5 className="font-bold">Rationale — why this matters</h5><p className="mt-1 whitespace-pre-wrap leading-relaxed">{pinpoint.rationale ?? 'No separate rationale was recorded in this evaluation.'}</p></div>
+                    <div className="rounded-lg border-l-4 border-emerald-400 bg-emerald-50 p-3 text-emerald-950 dark:bg-emerald-950/30 dark:text-emerald-100"><h5 className="font-bold text-emerald-700 dark:text-emerald-300">Recommended action</h5><p className="mt-1 whitespace-pre-wrap leading-relaxed">{pinpoint.recommendation ?? 'No separate action was recorded in this evaluation.'}</p></div>
+                  </div>
+                </details>
               </li>
-              );
-            })}
+            ))}
           </ol>
         </section>
       )}
@@ -462,61 +375,22 @@ function ValidationRecord({
   );
 }
 
-function MetricJustifications({
-  validation,
-  canonicalDimensions,
-}: {
-  validation: SpecValidation;
-  canonicalDimensions: boolean;
-}) {
+function MetricJustificationEntries({ validation }: { validation: SpecValidation }) {
   return (
-    <dl className="mt-3 space-y-2 text-xs text-surface-600 dark:text-surface-300">
-      {canonicalDimensions ? (
-        <>
-          <div><dt className="font-semibold">Confidence</dt><dd>{validation.confidence_justification}</dd></div>
-          <div><dt className="font-semibold">Clarity</dt><dd>{validation.clarity_justification}</dd></div>
-          <div><dt className="font-semibold">Assertiveness</dt><dd>{validation.assertiveness_justification}</dd></div>
-          <div><dt className="font-semibold">Decidability</dt><dd>{validation.decidability_justification}</dd></div>
-          <div><dt className="font-semibold">Ambiguity</dt><dd>{validation.ambiguity_justification}</dd></div>
-        </>
-      ) : (
-        <>
-          <div><dt className="font-semibold">Completeness</dt><dd>{validation.completeness_justification}</dd></div>
-          <div><dt className="font-semibold">Assertiveness</dt><dd>{validation.assertiveness_justification}</dd></div>
-          <div><dt className="font-semibold">Ambiguity</dt><dd>{validation.ambiguity_justification}</dd></div>
-        </>
-      )}
-    </dl>
+    <>
+      <div><dt className="font-semibold">Confidence</dt><dd>{validation.confidence_justification}</dd></div>
+      <div><dt className="font-semibold">Clarity</dt><dd>{validation.clarity_justification}</dd></div>
+      <div><dt className="font-semibold">Assertiveness</dt><dd>{validation.assertiveness_justification}</dd></div>
+      <div><dt className="font-semibold">Decidability</dt><dd>{validation.decidability_justification}</dd></div>
+      <div><dt className="font-semibold">Ambiguity</dt><dd>{validation.ambiguity_justification}</dd></div>
+    </>
   );
-}
-
-function resolvePinpointAnchorText(
-  anchorType: SpecValidationPinpoint['anchor_type'],
-  anchorRef: string | null,
-  anchorTexts?: Readonly<Record<string, string>>,
-): string {
-  if (anchorType === 'whole_artifact') return 'Whole Spec';
-  if (!anchorRef) return 'Referenced Spec item';
-  const direct = anchorTexts?.[anchorRef];
-  if (direct) return direct;
-  const stableId = anchorRef.split('.').at(-1);
-  const qualified = stableId ? anchorTexts?.[stableId] : undefined;
-  if (qualified) return qualified;
-  if (anchorType === 'field') {
-    return anchorRef
-      .split('_')
-      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-      .join(' ');
-  }
-  return 'Referenced item is no longer available in the current Spec';
 }
 
 interface ScoreCellProps {
   dimension:
-    | 'overall'
     | 'confidence'
     | 'clarity'
-    | 'completeness'
     | 'assertiveness'
     | 'decidability'
     | 'ambiguity';

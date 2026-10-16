@@ -477,7 +477,7 @@ def test_ts_2b099962_audit_flags_synthetic_contamination(tmp_path):
 
 def test_ts_2b099962_deferred_adapters_not_physically_moved():
     # R05-B moved nothing physically; later refactor specs moved concrete
-    # relational, Kuzu/Ladybug, MCP auth context and ML provider adapters to
+    # relational, legacy graph runtime, MCP auth context and ML provider adapters to
     # Community.
     # Remaining deferred/out-of-scope core helpers still exist at their core paths.
     for rel in (

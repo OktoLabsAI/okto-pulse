@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from spec_validation_fixtures import native_validation
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -12,6 +14,7 @@ from pydantic import ValidationError
 from okto_pulse.community.api import specs
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.core.application.use_cases import ListSpecValidationsUseCase
+from okto_pulse.core.domain.spec_planning import SpecPlanningManifest
 from okto_pulse.core.application.use_cases.submit_spec_validation import (
     SubmitSpecValidationUseCase,
 )
@@ -19,6 +22,13 @@ from okto_pulse.core.application.use_cases.submit_spec_validation import (
 
 def _canonical_submit_payload() -> dict[str, object]:
     return {
+        "idempotency_key": "transport-validation",
+        # Synthetic basis for transport-only tests with a stubbed use case.
+        "expected_planning_manifest": SpecPlanningManifest(
+            board_id="board-1", spec_id="spec-1", edition=2, spec_version=7,
+            subject_incarnation="a" * 32, subject_revision=1,
+            authority_incarnation="b" * 32, authority_revision=1,
+        ).model_dump(mode="json"),
         "expected_validation_edition": 2,
         "expected_spec_version": 7,
         "expected_head_revision": 0,
@@ -34,7 +44,8 @@ def _canonical_submit_payload() -> dict[str, object]:
         "ambiguity_justification": "Only negligible ambiguity remains.",
         "pinpoints": [
             {
-                "metric": "decidability",
+                "metrics": ["decidability"], "kind": "problem", "severity": "medium",
+                "excerpt": "Original requirement", "recommendation": "Specify the expected measurable bounds.",
                 "anchor_type": "structured_child",
                 "anchor_ref": "fr_availability",
                 "detail": "State an availability target and scaling bounds.",
@@ -60,6 +71,24 @@ def _array_item_ref(schema: dict[str, object]) -> str:
         schema,
     )
     return array_schema["items"]["$ref"]
+
+
+def test_history_only_filter_is_refused_before_use_case(client, monkeypatch):
+    async def unexpected(*args, **kwargs):
+        raise AssertionError("removed history filter reached the use case")
+    monkeypatch.setattr(ListSpecValidationsUseCase, "execute", unexpected)
+    response = client.get("/api/v1/specs/spec-1/validations?lifecycle_state=history_only")
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("route", ["validations", "validations/current"])
+def test_incompatible_history_error_is_reported_without_conversion(client, monkeypatch, route):
+    async def refused(*args, **kwargs):
+        raise ValueError("spec_validation_edition_required")
+    monkeypatch.setattr(ListSpecValidationsUseCase, "execute", refused)
+    response = client.get(f"/api/v1/specs/spec-1/{route}")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "spec_validation_edition_required"
 
 
 def test_openapi_publishes_five_metric_input_and_typed_history(
@@ -89,6 +118,7 @@ def test_openapi_publishes_five_metric_input_and_typed_history(
     }
     assert canonical_fields <= set(request_schema["properties"])
     assert request_schema["additionalProperties"] is False
+    assert {"idempotency_key", "expected_planning_manifest"} <= set(request_schema["required"])
     assert {"completeness", "general_justification"}.isdisjoint(
         request_schema.get("required", ())
     )
@@ -98,7 +128,7 @@ def test_openapi_publishes_five_metric_input_and_typed_history(
         pinpoint_ref.rsplit("/", 1)[-1]
     ]
     assert pinpoint_schema["additionalProperties"] is False
-    assert pinpoint_schema["properties"]["metric"]["enum"] == [
+    assert pinpoint_schema["properties"]["metrics"]["items"]["enum"] == [
         "confidence",
         "clarity",
         "assertiveness",
@@ -107,7 +137,7 @@ def test_openapi_publishes_five_metric_input_and_typed_history(
     ]
     assert operation["responses"]["201"]["content"]["application/json"]["schema"][
         "$ref"
-    ].endswith("/SpecValidationAcceptedResponse")
+    ].endswith("/SpecValidationConclusionResponse")
     assert paths["/api/v1/specs/{spec_id}/validations"]["get"]["responses"]["200"][
         "content"
     ]["application/json"]["schema"]["$ref"].endswith(
@@ -127,7 +157,7 @@ def test_submit_schema_rejects_unknown_fields_and_normalizes_pinpoints() -> None
     assert parsed.clarity == 88
     assert parsed.decidability == 90
     assert parsed.pinpoints is not None
-    assert parsed.pinpoints[0].metric == "decidability"
+    assert parsed.pinpoints[0].metrics == ["decidability"]
 
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         specs.SpecValidationSubmit.model_validate(
@@ -135,7 +165,7 @@ def test_submit_schema_rejects_unknown_fields_and_normalizes_pinpoints() -> None
         )
 
 
-def test_submit_route_forwards_canonical_contract_and_returns_only_acknowledgement(
+def test_submit_route_forwards_canonical_contract_and_returns_composed_receipt(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -150,6 +180,11 @@ def test_submit_route_forwards_canonical_contract_and_returns_only_acknowledgeme
                 "validation_id": "val_current",
                 "validation_edition": 2,
                 "is_current": True,
+                "outcome": "success",
+                "spec_status": "approved",
+                "planning_result": "blocked",
+                "decomposition_ids": [],
+                "planning_blockers": ["decomposition_approval_missing"],
                 "confidence": 92,
                 "clarity": 88,
                 "decidability": 90,
@@ -169,14 +204,32 @@ def test_submit_route_forwards_canonical_contract_and_returns_only_acknowledgeme
         "validation_id": "val_current",
         "validation_edition": 2,
         "is_current": True,
+        "outcome": "success",
+        "spec_status": "approved",
+        "planning_result": "blocked",
+        "decomposition_ids": [],
+        "planning_blockers": ["decomposition_approval_missing"],
     }
 
 
-def test_history_keeps_v1_readable_without_inventing_five_metric_scores(
+@pytest.mark.parametrize('old_field', ['score', 'summary', 'completeness',
+                                     'general_justification', 'expected_spec_edition'])
+def test_removed_fields_are_refused_before_use_case(client, monkeypatch, old_field):
+    async def unexpected(*args, **kwargs):
+        raise AssertionError('incompatible input reached the use case')
+    monkeypatch.setattr(SubmitSpecValidationUseCase, 'execute', unexpected)
+    response = client.post('/api/v1/specs/spec-1/validation',
+                           json={**_canonical_submit_payload(), old_field: None})
+    assert response.status_code == 422, response.text
+    assert old_field in response.text
+
+
+def test_history_preserves_native_previous_edition(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     current = {
+        **native_validation("val_current", 2),
         "id": "val_current",
         "validation_id": "val_current",
         "validation_edition": 2,
@@ -197,21 +250,15 @@ def test_history_keeps_v1_readable_without_inventing_five_metric_scores(
         "pinpoints": _canonical_submit_payload()["pinpoints"],
         "recommendation": "approve",
     }
-    legacy = {
-        "id": "val_legacy",
-        "is_current": False,
-        "active": False,
-        "lifecycle_state": "history_only",
-        "completeness": 91,
-        "completeness_justification": "Legacy completeness evidence.",
-        "assertiveness": 83,
-        "assertiveness_justification": "Legacy assertiveness evidence.",
-        "ambiguity": 20,
-        "ambiguity_justification": "Legacy ambiguity evidence.",
-        "general_justification": "Historical V1 validation record.",
-        "recommendation": "approve",
-        "resolved_thresholds": {"min_spec_completeness": 80},
-    }
+    from okto_pulse.core.domain.spec_validation import SpecValidationPinpoint
+    from okto_pulse.core.domain.guideline_semantic_v2 import AnchorSnapshot, SemanticAnchorAvailability
+    current["pinpoints"] = [SpecValidationPinpoint.from_dict(item).seal(AnchorSnapshot(
+        label="Availability", excerpt="Original requirement", source_version="7",
+        availability_at_seal=SemanticAnchorAvailability.AVAILABLE,
+    )).to_dict() for item in current["pinpoints"]]
+    previous = {**current, "id": "val_previous", "validation_id": "val_previous", "receipt_id": "val_previous",
+                "validation_edition": 1, "edition": 1, "is_current": False,
+                "active": False, "lifecycle_state": "previous"}
 
     async def execute(self, command, *, actor, uow):
         del self, actor, uow
@@ -227,7 +274,7 @@ def test_history_keeps_v1_readable_without_inventing_five_metric_scores(
                 "offset": 0,
                 "lifecycle_state": "all",
                 "has_more": False,
-                "validations": [current, legacy],
+                "validations": [current, previous],
             }
         )
 
@@ -239,8 +286,7 @@ def test_history_keeps_v1_readable_without_inventing_five_metric_scores(
     body = response.json()
     assert body["current_validation"]["decidability"] == 90
     historical = body["validations"][1]
-    assert historical["completeness"] == 91
-    assert historical["resolved_thresholds"] == {"min_spec_completeness": 80}
-    assert {"confidence", "clarity", "decidability", "pinpoints"}.isdisjoint(
-        historical
-    )
+    assert historical["confidence"] == 92
+    assert historical["edition"] == 1
+    assert historical["is_current"] is False
+    assert historical["pinpoints"] == previous["pinpoints"]

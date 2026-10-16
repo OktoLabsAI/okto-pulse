@@ -250,9 +250,9 @@ def test_failure_after_durable_prefix_never_promotes_or_changes_live(
     )
     with pytest.raises(RuntimeError, match="second chunk interrupted"):
         recovery.rebuild_candidate_and_cutover(
-            run_id="run-batch",
+            run_id="gdr_batch",
             epoch=1,
-            attempt_id="attempt-batch",
+            attempt_id="gdr_batch/attempt-1",
             expected_live_sha256=before.sha256,
             boards=(seed,),
             fence_check=lambda: None,

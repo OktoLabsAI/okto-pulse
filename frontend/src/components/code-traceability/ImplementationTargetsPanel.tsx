@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   BookOpenCheck,
@@ -45,6 +45,8 @@ interface Props {
   subjectId: string;
   subjectVersion: number;
   specVersion?: number | null;
+  revision?: string | number;
+  active?: boolean;
   operationallyFrozen?: boolean;
   onCreateDependency?: () => void;
 }
@@ -410,7 +412,7 @@ function TargetCard({
   const resolvedSymbol = resolution?.resolved_qualified_symbol || target.qualified_symbol;
 
   return (
-    <article className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-800/70">
+    <article data-readiness-ref={`target:${target.id}`} tabIndex={-1} className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-800/70 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
@@ -508,6 +510,7 @@ function TargetCard({
             return (
               <article
                 key={execution.id}
+                data-readiness-ref={`execution:${execution.id}`} tabIndex={-1}
                 className="rounded-md border border-emerald-100 bg-emerald-50/40 px-3 py-2.5 dark:border-emerald-900/70 dark:bg-emerald-950/15"
               >
                 <div className="flex flex-wrap items-start justify-between gap-2">
@@ -595,11 +598,15 @@ function TargetCard({
 function AddTargetForm({
   projection,
   specVersion,
+  readCurrent,
+  onConflict,
   onCancel,
   onSubmit,
 }: {
   projection: CodeTraceabilityProjection;
   specVersion: number | null | undefined;
+  readCurrent: boolean;
+  onConflict: () => void;
   onCancel: () => void;
   onSubmit: (payload: ImplementationTargetCreateRequest) => Promise<void>;
 }) {
@@ -614,19 +621,29 @@ function AddTargetForm({
   const [qualifiedSymbol, setQualifiedSymbol] = useState('');
   const [required, setRequired] = useState(true);
   const [saving, setSaving] = useState(false);
+  const sourceBases = Object.fromEntries(projection.heads.map(head => [
+    head.source_ref, JSON.stringify([head.current_receipt_id, head.generation, head.state]),
+  ]));
+  // Freeze the form's native Spec fence and receipt identity; refresh must not
+  // silently turn an old intent into a write against a new planning base.
+  const [base, setBase] = useState(() => ({ specVersion, sources: sourceBases }));
+  const [conflict, setConflict] = useState(false);
+  const sourceMissing = !sourceRefs.includes(sourceRef);
+  const baseChanged = conflict || base.specVersion !== specVersion
+    || base.sources[sourceRef] !== sourceBases[sourceRef];
 
   const needsPath = selectorKind === 'file' || selectorKind === 'new_file';
   const needsSymbol = selectorKind === 'symbol';
   const valid = Boolean(
     sourceRef
     && intent.trim()
-    && specVersion
+    && base.specVersion && readCurrent && !sourceMissing && !baseChanged
     && (!needsPath || relativePath.trim())
     && (!needsSymbol || qualifiedSymbol.trim()),
   );
 
   const submit = async () => {
-    if (!valid || !specVersion) return;
+    if (!valid || !base.specVersion || saving) return;
     setSaving(true);
     try {
       await onSubmit({
@@ -640,13 +657,18 @@ function AddTargetForm({
         role,
         intent: intent.trim(),
         required,
-        expected_spec_version: specVersion,
+        expected_spec_version: base.specVersion,
         baseline_evidence_id: null,
         spec_links: [],
         evidence_links: [],
       });
-    } catch {
-      // The parent owns the user-facing error toast; keep the form open.
+    } catch (caught) {
+      // A typed conflict requires explicit base review even if the next read
+      // happens to return the same version. The parent owns the error toast.
+      if (typeof caught === 'object' && caught !== null && 'status' in caught && caught.status === 409) {
+        setConflict(true);
+        onConflict();
+      }
     } finally {
       setSaving(false);
     }
@@ -666,8 +688,21 @@ function AddTargetForm({
           A current agent-submitted preflight receipt is required before this target can be recorded.
         </div>
       )}
+      {baseChanged && (
+        <div role="alert" className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+          <p>The target planning base changed. Your draft is preserved; review the current Spec and source before saving.</p>
+          <button type="button" className="btn btn-secondary mt-2 text-xs"
+            disabled={!readCurrent || sourceMissing || saving || !specVersion}
+            onClick={() => { setBase({ specVersion, sources: sourceBases }); setConflict(false); }}>
+            Review target base
+          </button>
+        </div>
+      )}
+      {sourceMissing && sourceRef && <p role="alert" className="text-sm text-amber-700 dark:text-amber-300">
+        The selected source is no longer available. Choose a current source before saving.
+      </p>}
 
-      <div className="grid gap-3 sm:grid-cols-2">
+      <fieldset disabled={!readCurrent || saving} className="grid gap-3 sm:grid-cols-2">
         <label className="block text-[11px] font-medium text-gray-600 dark:text-gray-300">
           Logical source
           <select
@@ -676,6 +711,7 @@ function AddTargetForm({
             onChange={(event) => setSourceRef(event.target.value)}
             className="mt-1 w-full rounded-md border border-gray-300 bg-white px-2.5 py-2 font-mono text-xs dark:border-gray-700 dark:bg-gray-800"
           >
+            {sourceMissing && sourceRef && <option value={sourceRef} disabled>{sourceRef} (unavailable)</option>}
             {sourceRefs.length === 0 && <option value="">No current source receipt</option>}
             {sourceRefs.map((value) => <option key={value} value={value}>{value}</option>)}
           </select>
@@ -739,15 +775,15 @@ function AddTargetForm({
             className="mt-1 w-full resize-none rounded-md border border-gray-300 bg-white px-2.5 py-2 text-xs dark:border-gray-700 dark:bg-gray-800"
           />
         </label>
-      </div>
+      </fieldset>
 
       <label className="flex items-center gap-2 text-[11px] text-gray-600 dark:text-gray-300">
-        <input type="checkbox" checked={required} onChange={(event) => setRequired(event.target.checked)} />
+        <input type="checkbox" disabled={!readCurrent || saving} checked={required} onChange={(event) => setRequired(event.target.checked)} />
         Required for task completion
       </label>
 
       <div className="flex justify-end gap-2">
-        <button type="button" onClick={onCancel} className="btn btn-secondary text-xs">Cancel</button>
+        <button type="button" disabled={saving} onClick={onCancel} className="btn btn-secondary text-xs">Cancel</button>
         <button
           type="button"
           onClick={() => void submit()}
@@ -766,11 +802,14 @@ export function ImplementationTargetsPanel({
   subjectId,
   subjectVersion,
   specVersion,
+  revision = 0,
+  active = true,
   operationallyFrozen = false,
   onCreateDependency,
 }: Props) {
   const api = useDashboardApi();
   const {
+    canReadProjection,
     canCreateTarget,
     canAcknowledgeOverlap,
     canCreateWaiver,
@@ -782,53 +821,92 @@ export function ImplementationTargetsPanel({
   const [receiptId, setReceiptId] = useState<string | null>(null);
   const [showAddTarget, setShowAddTarget] = useState(false);
   const [showSubmissionGuide, setShowSubmissionGuide] = useState(false);
+  const [loadedKey, setLoadedKey] = useState<string | null>(null);
+  const scope = `${boardId}:${subjectId}`;
+  const readKey = `${scope}:${subjectVersion}:${specVersion}:${revision}`;
+  const readEpoch = useRef(0);
+  const current = useRef({ scope, active, canReadProjection, canCreateTarget, canAcknowledgeOverlap, canCreateWaiver, canClearWaiver, operationallyFrozen });
+  current.current = { scope, active, canReadProjection, canCreateTarget, canAcknowledgeOverlap, canCreateWaiver, canClearWaiver, operationallyFrozen };
+  const readCurrent = active && canReadProjection && !loading && !error && projection !== null && loadedKey === readKey;
+
+  useEffect(() => {
+    setProjection(null);
+    setLoadedKey(null);
+    setShowAddTarget(false);
+    setReceiptId(null);
+    setShowSubmissionGuide(false);
+  }, [scope, canReadProjection]);
+
+  useEffect(() => {
+    current.current.scope = scope;
+    return () => { current.current = { ...current.current, scope: '' }; };
+  }, [scope]);
 
   const load = useCallback(async (signal?: AbortSignal) => {
+    if (!active || !canReadProjection || !current.current.active || current.current.scope !== scope) return;
+    const epoch = ++readEpoch.current;
+    const isCurrent = () => !signal?.aborted && epoch === readEpoch.current && current.current.scope === scope && current.current.canReadProjection && current.current.active;
     setLoading(true);
     setError(null);
     try {
-      setProjection(await api.getCodeTraceabilityProjection(
+      const next = await api.getCodeTraceabilityProjection(
         boardId,
         'card',
         subjectId,
         subjectVersion,
         { profile: 'detail', signal },
-      ));
+      );
+      if (!isCurrent()) return;
+      setProjection(next);
+      setLoadedKey(readKey);
     } catch (caught) {
-      if (!signal?.aborted) {
-        setError(caught instanceof Error ? caught.message : 'Could not load implementation targets.');
-      }
+      if (!isCurrent()) return;
+      if (typeof caught === 'object' && caught !== null && 'status' in caught && [401, 403, 404].includes(Number(caught.status))) {
+        setProjection(null);
+        setLoadedKey(null);
+        setShowAddTarget(false);
+        setReceiptId(null);
+        setShowSubmissionGuide(false);
+        setError('Implementation targets access is no longer available.');
+      } else setError(caught instanceof Error ? caught.message : 'Could not load implementation targets.');
     } finally {
-      if (!signal?.aborted) setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
-  }, [api, boardId, subjectId, subjectVersion]);
+  }, [active, canReadProjection, api, boardId, subjectId, subjectVersion, scope, readKey]);
 
   useEffect(() => {
     const controller = new AbortController();
     void load(controller.signal);
-    return () => controller.abort();
+    return () => { controller.abort(); readEpoch.current += 1; };
   }, [load]);
 
   const targets = useMemo(() => projection?.targets ?? [], [projection]);
 
   const createTarget = async (payload: ImplementationTargetCreateRequest) => {
+    if (!readCurrent || !canCreateTarget || operationallyFrozen) return;
+    const isCurrent = () => current.current.scope === scope && current.current.canReadProjection && current.current.canCreateTarget && !current.current.operationallyFrozen;
     try {
       await api.createImplementationTarget(boardId, subjectId, payload);
+      if (!isCurrent()) return;
       toast.success('Semantic target added');
       setShowAddTarget(false);
       await load();
     } catch (caught) {
+      if (!isCurrent()) return;
       toast.error(caught instanceof Error ? caught.message : 'Could not add semantic target.');
       throw caught;
     }
   };
 
   const acknowledgeOverlap = async (payload: TargetOverlapAcknowledgementRequest) => {
+    if (!readCurrent || !canAcknowledgeOverlap || operationallyFrozen) return;
     try {
       await api.acknowledgeImplementationOverlap(boardId, subjectId, payload);
+      if (current.current.scope !== scope || !current.current.canReadProjection || !current.current.canAcknowledgeOverlap) return;
       toast.success('Overlap acknowledgement appended');
       await load();
     } catch (caught) {
+      if (current.current.scope !== scope || !current.current.canReadProjection) return;
       toast.error(caught instanceof Error ? caught.message : 'Could not acknowledge overlap.');
       throw caught;
     }
@@ -839,6 +917,7 @@ export function ImplementationTargetsPanel({
     reasonCode: CodeTraceabilityWaiverReason,
     justification: string,
   ) => {
+    if (!readCurrent || !canCreateWaiver || operationallyFrozen) return;
     const payload: CodeTraceabilityWaiverCreateRequest = {
       entity_type: 'card',
       entity_id: subjectId,
@@ -848,24 +927,31 @@ export function ImplementationTargetsPanel({
     };
     try {
       await api.createCodeTraceabilityWaiver(boardId, payload);
+      if (current.current.scope !== scope || !current.current.canReadProjection || !current.current.canCreateWaiver) return;
       toast.success('Human waiver recorded');
       await load();
     } catch (caught) {
+      if (current.current.scope !== scope || !current.current.canReadProjection) return;
       toast.error(caught instanceof Error ? caught.message : 'Could not record human waiver.');
       throw caught;
     }
   };
 
   const clearWaiver = async (waiverId: string) => {
+    if (!readCurrent || !canClearWaiver || operationallyFrozen) return;
     try {
       await api.clearCodeTraceabilityWaiver(boardId, waiverId);
+      if (current.current.scope !== scope || !current.current.canReadProjection || !current.current.canClearWaiver) return;
       toast.success('Human waiver cleared');
       await load();
     } catch (caught) {
+      if (current.current.scope !== scope || !current.current.canReadProjection) return;
       toast.error(caught instanceof Error ? caught.message : 'Could not clear human waiver.');
       throw caught;
     }
   };
+
+  if (!canReadProjection) return null;
 
   return (
     <div className="space-y-4" data-testid="card-implementation-targets-panel">
@@ -908,7 +994,7 @@ export function ImplementationTargetsPanel({
             <button
               type="button"
               onClick={() => setShowAddTarget((value) => !value)}
-              disabled={!projection || !specVersion}
+              disabled={!readCurrent || !specVersion}
               title={!specVersion ? 'The current Spec version is required' : undefined}
               className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-2.5 py-1.5 text-[11px] font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
@@ -930,6 +1016,7 @@ export function ImplementationTargetsPanel({
         </div>
       )}
       {projection && (
+        <fieldset disabled={!readCurrent}>
         <HumanWaiverSection
           waivers={projection.waivers ?? []}
           canCreate={canCreateWaiver && !operationallyFrozen}
@@ -937,12 +1024,16 @@ export function ImplementationTargetsPanel({
           onCreate={createWaiver}
           onClear={clearWaiver}
         />
+        </fieldset>
       )}
 
       {showAddTarget && canCreateTarget && !operationallyFrozen && projection && (
         <AddTargetForm
+          key={scope}
           projection={projection}
           specVersion={specVersion}
+          readCurrent={readCurrent}
+          onConflict={() => { void load(); }}
           onCancel={() => setShowAddTarget(false)}
           onSubmit={createTarget}
         />
@@ -953,6 +1044,8 @@ export function ImplementationTargetsPanel({
         <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300" role="alert">
           <AlertTriangle size={14} className="mt-0.5 shrink-0" />
           <span>{error}</span>
+          <button type="button" className="btn btn-secondary text-xs" disabled={loading || !active}
+            onClick={() => { void load(); }}>Retry target read</button>
         </div>
       )}
       {!loading && !error && projection && targets.length === 0 && (

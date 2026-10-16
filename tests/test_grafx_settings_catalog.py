@@ -1,5 +1,6 @@
 """Settings inventory, validation, persistence and actual constructor forwarding."""
 
+import json
 from dataclasses import fields
 from types import SimpleNamespace
 
@@ -20,11 +21,7 @@ from okto_pulse.community.adapters.grafx_settings_catalog import (
     validate_options,
 )
 from okto_pulse.community.adapters.sqlalchemy_models import AppSetting
-from okto_pulse.community.api.settings import (
-    RuntimeSettingsPayload,
-    RuntimeSettingsResponse,
-)
-from okto_pulse.community.config import CommunitySettings
+from okto_pulse.community.config import CommunitySettings, validate_grafx_page_size, validate_grafx_read_participants
 
 
 def test_every_native_config_option_has_one_reviewed_ui_policy_and_help():
@@ -74,13 +71,13 @@ def test_v005_memory_controls_are_editable_and_zero_cache_is_not_null():
 ])
 def test_v005_memory_controls_refuse_invalid_configuration(options):
     with pytest.raises(ValidationError):
-        RuntimeSettingsPayload(kg_grafx_options=options)
+        CommunitySettings(_env_file=None, kg_grafx_options=options)
 
 
 @pytest.mark.parametrize("value", [0, 9, -1, True, 2.0, "2"])
-def test_read_participant_api_refuses_invalid_or_coerced_values(value):
-    with pytest.raises(ValidationError):
-        RuntimeSettingsPayload(kg_grafx_read_participants=value)
+def test_read_participant_validator_refuses_invalid_or_coerced_values(value):
+    with pytest.raises(ValueError):
+        validate_grafx_read_participants(value)
 
 
 def test_read_participant_env_and_persistence_keep_bounded_integer_contract(monkeypatch):
@@ -113,7 +110,7 @@ def test_read_participant_env_and_persistence_keep_bounded_integer_contract(monk
 )
 def test_invalid_or_managed_options_are_refused_before_save(options):
     with pytest.raises(ValidationError):
-        RuntimeSettingsPayload(kg_grafx_options=options)
+        CommunitySettings(_env_file=None, kg_grafx_options=options)
     with pytest.raises(ValidationError):
         CommunitySettings(_env_file=None, kg_grafx_options=options)
 
@@ -133,9 +130,9 @@ def test_env_json_and_nullable_limits_are_validated(monkeypatch):
 
 
 @pytest.mark.parametrize("value", [True, False, 8192.0, 8192.5, "8192"])
-def test_page_geometry_requires_integer_json_without_coercion(value):
-    with pytest.raises(ValidationError):
-        RuntimeSettingsPayload(kg_grafx_page_size=value)
+def test_page_geometry_validator_requires_integer_without_coercion(value):
+    with pytest.raises(ValueError):
+        validate_grafx_page_size(value)
     if not isinstance(value, str):
         with pytest.raises(ValueError):
             service._validate_runtime_setting_value("kg_grafx_page_size", value)
@@ -143,13 +140,13 @@ def test_page_geometry_requires_integer_json_without_coercion(value):
 
 def test_page_geometry_persisted_text_keeps_its_integer_contract():
     assert service._validate_runtime_setting_value("kg_grafx_page_size", "8192") == 8192
-    assert RuntimeSettingsPayload(kg_grafx_page_size=8192).kg_grafx_page_size == 8192
+    assert CommunitySettings(_env_file=None, kg_grafx_page_size=8192).kg_grafx_page_size == 8192
     with pytest.raises(ValueError):
         service._validate_runtime_setting_value("kg_grafx_page_size", "8192.5")
 
 
 @pytest.mark.asyncio
-async def test_save_read_restart_and_clear_options_without_mutating_active_snapshot(
+async def test_boot_replays_persisted_options_into_native_constructor_lanes(
     monkeypatch, tmp_path
 ):
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -162,32 +159,17 @@ async def test_save_read_restart_and_clear_options_without_mutating_active_snaps
         service, "configure_settings", lambda value: configured.__setitem__(0, value)
     )
     monkeypatch.setattr(service, "get_session_factory", lambda: factory)
-    monkeypatch.setattr(service, "_validate_runtime_settings_via_port", lambda _: None)
-
-    async def effective():
-        return {key: getattr(configured[0], key) for key in service.RUNTIME_KEYS}
-
-    monkeypatch.setattr(service, "_read_effective_runtime_settings", effective)
-    monkeypatch.setattr(service, "_boot_snapshot", {})
     desired = {"max_result_rows": 900, "lease_timeout_seconds": 12.5}
     try:
         async with factory() as db:
-            response = await service.put_runtime_settings(
-                db,
-                {
-                    "kg_grafx_buffer_pool_mb": 128,
-                    "kg_grafx_read_participants": 3,
-                    "kg_grafx_options": desired,
-                },
-            )
-            RuntimeSettingsResponse(**response)
-            assert response["kg_grafx_options"] == {}
-            assert response["desired_values"]["kg_grafx_options"] == desired
-            assert response["restart_required"] is True
-            assert response["kg_grafx_read_participants"] == 2
-            assert response["desired_values"]["kg_grafx_read_participants"] == 3
-            saved = await db.get(AppSetting, "kg_grafx_options")
-            assert '"max_result_rows": 900' in saved.value
+            db.add_all([
+                AppSetting(key="kg_grafx_buffer_pool_mb", value="128"),
+                AppSetting(key="kg_grafx_read_participants", value="3"),
+                AppSetting(key="kg_grafx_options", value=json.dumps(desired)),
+            ])
+            await db.commit()
+            assert configured[0].kg_grafx_options == {}
+            assert configured[0].kg_grafx_read_participants == 2
         await service.apply_persisted_settings_to_core_settings()
         assert configured[0].kg_grafx_options == desired
         assert configured[0].kg_grafx_buffer_pool_mb == 128
@@ -217,11 +199,10 @@ async def test_save_read_restart_and_clear_options_without_mutating_active_snaps
             assert calls[-1]["buffer_budget_bytes"] == 128 * 1024**2
             pool.close_all()
         async with factory() as db:
-            response = await service.get_runtime_settings(db)
-            assert response["restart_required"] is False
-            response = await service.put_runtime_settings(db, {"kg_grafx_options": {}})
-            assert response["desired_values"]["kg_grafx_options"] == {}
-            assert response["kg_grafx_options"] == desired
+            row = await db.get(AppSetting, "kg_grafx_options")
+            row.value = "{}"
+            await db.commit()
+            assert configured[0].kg_grafx_options == desired
         await service.apply_persisted_settings_to_core_settings()
         assert configured[0].kg_grafx_options == {}
     finally:

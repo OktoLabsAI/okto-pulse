@@ -1,11 +1,31 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { ModalStackProvider, useModalStack } from '@/contexts/ModalStackContext';
+import { ModalStackProvider, useModalStack, type ModalStackEntry } from '@/contexts/ModalStackContext';
 import type { SpecSummary } from '@/types';
 import { RefinementEvidenceMatrixNavigation } from '@/components/refinements/RefinementModal';
 import { ModalStackRenderer } from '../ModalStackRenderer';
 
 const specModalSpy = vi.hoisted(() => vi.fn());
+const cardStore = vi.hoisted(() => ({ openCardModal: vi.fn(), closeCardModal: vi.fn() }));
+
+function OldLinkProbe() {
+  const { push, stack } = useModalStack();
+  return <>
+    <button onClick={() => push({ type: 'spec', id: 'current' })}>Current Spec</button>
+    <button onClick={() => push({ type: 'sprint', id: 'retired' } as unknown as ModalStackEntry)}>Old link</button>
+    <output data-testid="stack-depth">{stack.length}</output>
+  </>;
+}
+
+it('ignores a retired Sprint link without losing the current Spec or adding a modal', () => {
+  render(<ModalStackProvider><OldLinkProbe /><ModalStackRenderer boardId="board-1" /></ModalStackProvider>);
+  fireEvent.click(screen.getByText('Old link'));
+  expect(screen.getByTestId('stack-depth')).toHaveTextContent('0');
+  fireEvent.click(screen.getByText('Current Spec'));
+  fireEvent.click(screen.getByText('Old link'));
+  expect(screen.getByTestId('stack-depth')).toHaveTextContent('1');
+  expect(specModalSpy).toHaveBeenLastCalledWith(expect.objectContaining({ specId: 'current' }));
+});
 
 vi.mock('@/components/specs/SpecModal', () => ({
   SpecModal: (props: Record<string, unknown>) => {
@@ -20,16 +40,12 @@ vi.mock('@/components/refinements/RefinementModal', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/components/refinements/RefinementModal')>();
   return { ...actual, RefinementModal: () => null };
 });
-vi.mock('@/components/sprints/SprintModal', () => ({ SprintModal: () => null }));
 vi.mock('@/components/knowledge/NodeDetailModal', () => ({ NodeDetailModal: () => null }));
 vi.mock('@/services/api', () => ({
   useDashboardApi: () => ({ listTopics: vi.fn().mockResolvedValue([]) }),
 }));
 vi.mock('@/store/dashboard', () => ({
-  useDashboardStore: (selector: (state: Record<string, unknown>) => unknown) => selector({
-    openCardModal: vi.fn(),
-    closeCardModal: vi.fn(),
-  }),
+  useDashboardStore: (selector: (state: Record<string, unknown>) => unknown) => selector(cardStore),
 }));
 
 function spec(id: string, title: string): SpecSummary {
@@ -62,6 +78,29 @@ function activateFocusedButtonWithEnter(button: HTMLButtonElement) {
 }
 
 describe('ModalStackRenderer Spec tab routing', () => {
+  it('opens the exact referenced card and resynchronizes Back without caller store writes', () => {
+    function Navigation() {
+      const { push } = useModalStack();
+      return <>
+        <button onClick={() => push({ type: 'spec', id: 'source' })}>Spec</button>
+        <button onClick={() => push({ type: 'card', id: 'card-a' })}>First card</button>
+        <button onClick={() => push({ type: 'card', id: 'card-b' })}>Second card</button>
+      </>;
+    }
+    cardStore.openCardModal.mockClear();
+    cardStore.closeCardModal.mockClear();
+    render(<ModalStackProvider><Navigation /><ModalStackRenderer boardId="board-1" /></ModalStackProvider>);
+    fireEvent.click(screen.getByText('Spec'));
+    fireEvent.click(screen.getByText('First card'));
+    expect(cardStore.openCardModal).toHaveBeenLastCalledWith('card-a');
+    fireEvent.click(screen.getByText('Second card'));
+    expect(cardStore.openCardModal).toHaveBeenLastCalledWith('card-b');
+    fireEvent.click(screen.getByTestId('modal-stack-back'));
+    expect(cardStore.openCardModal).toHaveBeenLastCalledWith('card-a');
+    fireEvent.click(screen.getByTestId('modal-stack-back'));
+    expect(cardStore.closeCardModal).toHaveBeenCalled();
+    expect(specModalSpy).toHaveBeenLastCalledWith(expect.objectContaining({ specId: 'source' }));
+  });
   it('keeps a Discovery board across nested modals and Back without changing the active board', () => {
     function Navigation() {
       const { push } = useModalStack();

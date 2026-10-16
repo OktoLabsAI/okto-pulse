@@ -3,6 +3,93 @@ import { describe, expect, it } from 'vitest';
 import { ValidationErrorDisplay, parseValidationErrorMessage } from '../ValidationErrorDisplay';
 
 describe('ValidationErrorDisplay', () => {
+  it.each([
+    ['policy_compliance_receipt_missing', 'no accepted assessment'],
+    ['policy_compliance_blocked', 'does not satisfy its required criteria'],
+    ['policy_assessment_unavailable', 'does not count as approval'],
+  ])('renders the native policy diagnosis %s without a guessed enforcement mode', (code, copy) => {
+    const error = JSON.stringify({ detail: {
+      outcome: 'error', error: code, code, message: code,
+      reason_codes: [code], policy_compliance_required: true,
+      transition: { entity_type: 'spec', subject_id: 'spec-1', from_status: 'approved', to_status: 'validated' },
+    } });
+    const parsed = parseValidationErrorMessage(error);
+    expect(parsed.structured).toBe(true);
+    expect(parsed.enforcementMode).toBeNull();
+    expect(parsed.requiredTool).toBeNull();
+    render(<ValidationErrorDisplay error={error} />);
+    expect(screen.getByText('Policy Compliance')).toBeInTheDocument();
+    expect(screen.getByText(new RegExp(copy))).toBeInTheDocument();
+    expect(screen.getByText('approved->validated')).toBeInTheDocument();
+    expect(screen.getByText(/Open Policy Compliance in Validation/)).toBeInTheDocument();
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    {
+      code: 'spec_checklist_gate_required',
+      message: 'The blocking Spec checklist is not satisfied for the current Spec version.',
+      action: 'Complete and pass the current checklist before validating the Spec.',
+      mode: 'blocking',
+      tool: 'okto_pulse_submit_checklist_execution',
+    },
+    {
+      code: 'checklist_validation_binding_snapshot_missing',
+      message: 'The current Spec edition has no frozen Checklist configuration. Inspect the validation cycle and Board Checklist settings; an authorized reopening and admission is required before validation can continue.',
+      action: null,
+      mode: null,
+      tool: null,
+    },
+  ])('renders $code as the Checklist gate without inventing approval or repair', ({ code, message, action, mode, tool }) => {
+    const error = JSON.stringify({ detail: {
+      code, error: code, message,
+      details: {
+        gate_type: 'spec_checklist',
+        blocked_transition: 'approved->validated',
+        required_status: 'validated',
+        operator_action: action,
+        enforcement_mode: mode,
+        required_tool: tool,
+      },
+    } });
+    const parsed = parseValidationErrorMessage(error);
+    expect(parsed.structured).toBe(true);
+    expect(parsed.gateType).toBe('Spec Checklist');
+    expect(parsed.issue).toBe(message);
+    expect(parsed.blockedTransition).toBe('approved->validated');
+    expect(parsed.requiredTool).toBe(tool);
+    expect(parsed.enforcementMode).toBe(mode);
+    render(<ValidationErrorDisplay error={error} />);
+    expect(screen.getByText('Spec Checklist')).toBeInTheDocument();
+    expect(screen.getByText(message)).toBeInTheDocument();
+    if (action) expect(screen.getByText(action)).toBeInTheDocument();
+    if (tool) expect(screen.getByText(tool)).toBeInTheDocument();
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+  });
+
+  it('shows architecture blocker IDs, truncation and governed revision guidance', () => {
+    const error = JSON.stringify({detail: {
+      error: 'spec_architecture_classification_incomplete',
+      message: 'Review architecture classifications before first start.',
+      details: {
+        gate_type: 'spec_architecture_classification',
+        blocking_candidate_ids: ['candidate-page-2', null, 12],
+        blocking_candidates_truncated: true,
+        blocked_transition: 'in_progress',
+        operator_action: 'Reopen to Draft for an authorized revision, then revalidate.',
+        required_tool: 'okto_pulse_list_architecture_classifications',
+      },
+    }});
+    render(<ValidationErrorDisplay error={error} />);
+    expect(screen.getByText('Architecture Classification')).toBeInTheDocument();
+    expect(screen.getByText('candidate-page-2')).toBeInTheDocument();
+    expect(screen.getByText(/More candidates require review/)).toBeInTheDocument();
+    expect(screen.getByText(/Reopen to Draft/)).toBeInTheDocument();
+    expect(screen.getByText('okto_pulse_list_architecture_classifications')).toBeInTheDocument();
+    expect(parseValidationErrorMessage(error).blockingCandidateIds).toEqual(['candidate-page-2']);
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+  });
+
   it('renders structured Resource Gate uncovered resources', () => {
     const error = JSON.stringify({
       error: 'resource_gate_spec_task_coverage',

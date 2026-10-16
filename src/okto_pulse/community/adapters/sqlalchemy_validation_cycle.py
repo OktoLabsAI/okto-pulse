@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from .sqlalchemy_spec_planning_manifest import CommunitySpecPlanningManifest
+from .sqlalchemy_unit_of_work import begin_community_consistent_read
+
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -24,6 +27,9 @@ from sqlalchemy.orm import joinedload
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
     ActivityLog,
+    Board,
+    Card,
+    ValidationSourceRevisionRow,
     ChecklistExecutionHeadRow,
     ChecklistItemResultRow,
     ChecklistReceiptRow,
@@ -36,9 +42,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     QualityAssessmentReceiptRow,
     Refinement,
     SemanticGuidelineAssessmentV2Row,
-    SemanticGuidelineAssessmentReceiptRow,
     SemanticGuidelineBindingConfigurationRow,
-    SemanticGuidelineMetricResultRow,
     SemanticGuidelineMetricResultV2Row,
     SemanticGuidelineRevisionRow,
     SemanticGuidelineSkipRow,
@@ -50,9 +54,15 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
 from okto_pulse.community.adapters.sqlalchemy_quality_assessment import (
     _quality_actor_permissions,
 )
+from okto_pulse.core.models.schemas import SpecValidationResponse
+from okto_pulse.core.application.service_catalog import build_application_service_catalog
+from okto_pulse.core.domain.spec_validation import require_spec_validation_edition
 from okto_pulse.core.domain.quality_assessment import (
     AssessmentKind,
     AssessmentSubjectType,
+)
+from okto_pulse.core.domain.workspace_revisions import (
+    WorkspaceRevision, WorkspaceRevisionToken, WorkspaceRevisions, WorkspaceRevisionsQuery,
 )
 from okto_pulse.core.domain.human_validation_cycle import is_current_edition
 from okto_pulse.core.domain.realm import LOCAL_REALM_ID, RealmScope
@@ -73,6 +83,7 @@ from okto_pulse.core.ports.validation_cycle import (
     ValidationCycleReadAccessDenied,
     ValidationCycleResultNotFound,
     ValidationCycleSubjectNotFound,
+    WorkspaceRevisionsUnavailable,
 )
 from okto_pulse.core.services.ska_observability import (
     observe_validation_cycle_summary_selects,
@@ -190,7 +201,6 @@ class _PolicyAuthority:
 
 @dataclass(frozen=True, slots=True)
 class _PolicyReceiptEvidence:
-    contract: str
     recorded_at: datetime
     stable_id: str
     outcome: str
@@ -426,7 +436,7 @@ def _policy_union_statement(
     subject_ids: tuple[str, ...],
     binding_ids: tuple[str, ...],
 ):
-    """Build one cross-dialect SELECT for authority, v1/v2 evidence and skips."""
+    """Build one cross-dialect SELECT for authority, native evidence and skips."""
 
     def value(column: object, name: str):
         return cast(column, String).label(name)
@@ -494,7 +504,7 @@ def _policy_union_statement(
             value(GuidelineBoardBindingRow.state, "text_b"),
             value(GuidelineBoardBindingRow.enforcement, "text_c"),
             value(SemanticGuidelineBindingConfigurationRow.enforcement, "text_d"),
-            value(SemanticGuidelineRevisionRow.authority_state, "text_e"),
+            empty("text_e"),
             value(SemanticGuidelineRevisionRow.metrics, "json_a"),
             value(
                 SemanticGuidelineBindingConfigurationRow.metric_threshold_overrides,
@@ -556,71 +566,6 @@ def _policy_union_statement(
             ),
         )
         .where(authority_filter)
-    )
-
-    evidence_filter_v1 = (
-        SemanticGuidelineAssessmentReceiptRow.board_id.in_(board_ids)
-        & SemanticGuidelineAssessmentReceiptRow.subject_id.in_(subject_ids)
-        & SemanticGuidelineAssessmentReceiptRow.binding_id.in_(binding_ids)
-        if board_ids and subject_ids and binding_ids
-        else false()
-    )
-    v1 = (
-        select(
-            literal("v1").label("kind"),
-            value(SemanticGuidelineAssessmentReceiptRow.board_id, "board_id"),
-            value(SemanticGuidelineAssessmentReceiptRow.subject_id, "subject_id"),
-            value(SemanticGuidelineAssessmentReceiptRow.binding_id, "binding_id"),
-            value(
-                SemanticGuidelineAssessmentReceiptRow.binding_revision,
-                "binding_revision",
-            ),
-            value(
-                SemanticGuidelineAssessmentReceiptRow.guideline_id,
-                "guideline_id",
-            ),
-            value(SemanticGuidelineAssessmentReceiptRow.revision_id, "revision_id"),
-            value(
-                SemanticGuidelineAssessmentReceiptRow.revision_digest,
-                "revision_digest",
-            ),
-            value(
-                SemanticGuidelineAssessmentReceiptRow.configuration_digest,
-                "configuration_digest",
-            ),
-            value(SemanticGuidelineAssessmentReceiptRow.state, "text_a"),
-            value(SemanticGuidelineMetricResultRow.metric_id, "text_b"),
-            value(SemanticGuidelineMetricResultRow.outcome, "text_c"),
-            value(SemanticGuidelineMetricResultRow.metric_code, "text_d"),
-            empty("text_e"),
-            empty("json_a"),
-            empty("json_b"),
-            value(
-                SemanticGuidelineAssessmentReceiptRow.metric_result_count,
-                "int_a",
-            ),
-            value(
-                SemanticGuidelineAssessmentReceiptRow.failed_metric_count,
-                "int_b",
-            ),
-            value(
-                SemanticGuidelineAssessmentReceiptRow.validation_edition,
-                "int_c",
-            ),
-            value(SemanticGuidelineAssessmentReceiptRow.assessed_at, "time_a"),
-            value(SemanticGuidelineAssessmentReceiptRow.receipt_id, "id_a"),
-        )
-        .select_from(SemanticGuidelineAssessmentReceiptRow)
-        .outerjoin(
-            SemanticGuidelineMetricResultRow,
-            SemanticGuidelineMetricResultRow.receipt_id
-            == SemanticGuidelineAssessmentReceiptRow.receipt_id,
-        )
-        .where(
-            SemanticGuidelineAssessmentReceiptRow.subject_type == "spec",
-            SemanticGuidelineAssessmentReceiptRow.sealed.is_(True),
-            evidence_filter_v1,
-        )
     )
 
     evidence_filter_v2 = (
@@ -776,7 +721,7 @@ def _policy_union_statement(
         QualityAssessmentLifecycleTransitionRow.after_edition.is_not(None),
         scope_required_filter,
     )
-    statement = union_all(authority, v1, v2, skips, waivers, scope_required)
+    statement = union_all(authority, v2, skips, waivers, scope_required)
     # Defensive proof that future edits keep the UNION column contract aligned.
     if tuple(statement.selected_columns.keys()) != names:  # pragma: no cover
         raise RuntimeError("policy_validation_cycle_union_shape_invalid")
@@ -808,10 +753,6 @@ async def _load_policy_snapshot_data(
     receipt_rows: dict[
         tuple[str, str, int, str, str, str, str, str, int],
         list[_PolicyReceiptEvidence],
-    ] = {}
-    v1_groups: dict[
-        tuple[tuple[str, str, int, str, str, str, str, str, int], str],
-        dict[str, object],
     ] = {}
     v2_groups: dict[
         tuple[tuple[str, str, int, str, str, str, str, str, int], str],
@@ -880,9 +821,8 @@ async def _load_policy_snapshot_data(
             state = _policy_text(row["text_b"])
             legacy_enforcement = _policy_text(row["text_c"])
             enforcement = _policy_text(row["text_d"])
-            authority_state = _policy_text(row["text_e"])
             minimum_confidence = _policy_int(row["int_a"])
-            metrics, context_only = _policy_metric_details(row["json_a"], row["json_b"])
+            metrics, _ = _policy_metric_details(row["json_a"], row["json_b"])
             if (
                 title is None
                 or state not in {"active", "unlinked"}
@@ -891,7 +831,6 @@ async def _load_policy_snapshot_data(
                 or minimum_confidence is None
                 or not 0 <= minimum_confidence <= 100
                 or metrics is None
-                or (authority_state != "native" and not context_only)
             ):
                 inconsistent_authorities.add(authority_key)
                 continue
@@ -919,62 +858,7 @@ async def _load_policy_snapshot_data(
         if stable_id is None:
             inconsistent_evidence.add(evidence_key)
             continue
-        if kind == "v1":
-            recorded_at = _policy_time(row["time_a"])
-            state = _policy_text(row["text_a"])
-            metric_count = _policy_int(row["int_a"])
-            failed_count = _policy_int(row["int_b"])
-            if (
-                recorded_at is None
-                or state not in {"passed", "metric_threshold_failed"}
-                or metric_count is None
-                or failed_count is None
-                or metric_count < 0
-                or failed_count < 0
-                or failed_count > metric_count
-                or (state == "passed" and failed_count != 0)
-                or (state == "metric_threshold_failed" and failed_count == 0)
-            ):
-                inconsistent_evidence.add(evidence_key)
-                continue
-            group = v1_groups.setdefault(
-                (evidence_key, stable_id),
-                {
-                    "recorded_at": recorded_at,
-                    "state": state,
-                    "metric_count": metric_count,
-                    "failed_count": failed_count,
-                    "metrics": {},
-                },
-            )
-            if any(
-                group[field_name] != expected
-                for field_name, expected in (
-                    ("recorded_at", recorded_at),
-                    ("state", state),
-                    ("metric_count", metric_count),
-                    ("failed_count", failed_count),
-                )
-            ):
-                inconsistent_evidence.add(evidence_key)
-                continue
-            metric_id = _policy_text(row["text_b"])
-            outcome = _policy_text(row["text_c"])
-            if metric_id is None and metric_count == 0:
-                continue
-            if metric_id is None or outcome not in {"pass", "fail"}:
-                inconsistent_evidence.add(evidence_key)
-                continue
-            metric_results = group["metrics"]
-            if not isinstance(metric_results, dict):  # pragma: no cover
-                inconsistent_evidence.add(evidence_key)
-                continue
-            previous = metric_results.get(metric_id)
-            if previous is not None and previous != outcome:
-                inconsistent_evidence.add(evidence_key)
-                continue
-            metric_results[metric_id] = outcome
-        elif kind == "v2":
+        if kind == "v2":
             recorded_at = _policy_time(row["time_a"])
             if recorded_at is None:
                 inconsistent_evidence.add(evidence_key)
@@ -1035,49 +919,6 @@ async def _load_policy_snapshot_data(
                 (evidence_key, receipt_id, metric_id), set()
             ).add(stable_id)
 
-    for (evidence_key, stable_id), group in v1_groups.items():
-        metric_results = group["metrics"]
-        recorded_at = group["recorded_at"]
-        metric_count = group["metric_count"]
-        failed_count = group["failed_count"]
-        state = group["state"]
-        if (
-            evidence_key in inconsistent_evidence
-            or not isinstance(metric_results, dict)
-            or not isinstance(recorded_at, datetime)
-            or not isinstance(metric_count, int)
-            or not isinstance(failed_count, int)
-            or not isinstance(state, str)
-        ):
-            continue
-        normalized = tuple(
-            sorted(
-                (str(metric_id), str(outcome))
-                for metric_id, outcome in metric_results.items()
-            )
-        )
-        observed_failed = sum(
-            1 for _metric_id, outcome in normalized if outcome == "fail"
-        )
-        if (
-            len(normalized) != metric_count
-            or observed_failed != failed_count
-            or (state == "passed") != (observed_failed == 0)
-        ):
-            inconsistent_evidence.add(evidence_key)
-            continue
-        receipt_rows.setdefault(evidence_key, []).append(
-            _PolicyReceiptEvidence(
-                contract="v1",
-                recorded_at=recorded_at,
-                stable_id=stable_id,
-                outcome="failed" if observed_failed else "passed",
-                metric_count=metric_count,
-                failed_metric_count=failed_count,
-                metric_results=normalized,
-            )
-        )
-
     for (evidence_key, stable_id), group in v2_groups.items():
         metric_results = group["metrics"]
         recorded_at = group["recorded_at"]
@@ -1096,7 +937,6 @@ async def _load_policy_snapshot_data(
         failed_count = sum(1 for _metric_id, outcome in normalized if outcome == "fail")
         receipt_rows.setdefault(evidence_key, []).append(
             _PolicyReceiptEvidence(
-                contract="v2",
                 recorded_at=recorded_at,
                 stable_id=stable_id,
                 outcome="failed" if failed_count else "passed",
@@ -1246,7 +1086,6 @@ def _policy_check(
                         metric_id
                         for metric_id, outcome in latest.metric_results
                         if outcome == "fail"
-                        and latest.contract == "v1"
                         and (
                             item.evidence_key,
                             latest.stable_id,
@@ -1472,24 +1311,22 @@ def _current_quality_result(
 
 
 def _spec_result(record: Mapping[str, Any]) -> ValidationCycleResultSummary:
+    SpecValidationResponse.model_validate(record)
     return ValidationCycleResultSummary(
         result_id=str(record["id"]),
         result_type=ValidationCycleResultType.SPEC_VALIDATION,
-        subject_edition=(
-            None if record.get("edition") is None else int(record["edition"])
-        ),
+        subject_edition=require_spec_validation_edition(record),
         status=str(record.get("outcome") or "completed"),
         summary={
             key: record.get(key)
             for key in (
-                "score",
-                "summary",
-                "completeness",
+                "confidence",
+                "clarity",
+                "decidability",
                 "assertiveness",
                 "ambiguity",
                 "recommendation",
                 "outcome",
-                "general_justification",
                 "created_at",
             )
             if record.get(key) is not None
@@ -1500,6 +1337,9 @@ def _spec_result(record: Mapping[str, Any]) -> ValidationCycleResultSummary:
 def _current_spec_validation_record(subject: object) -> Mapping[str, Any] | None:
     """Resolve the pointer only when it names evidence for this edition."""
 
+    for record in (getattr(subject, "validations", None) or ()):
+        require_spec_validation_edition(record)
+        SpecValidationResponse.model_validate(record)
     pointer_id = getattr(subject, "current_validation_id", None)
     if not isinstance(pointer_id, str) or not pointer_id:
         return None
@@ -1574,6 +1414,8 @@ class CommunitySqlAlchemyValidationCycleReader:
         subject_type: AssessmentSubjectType,
         subject_id: str,
         actor_id: str,
+        board_id: str | None = None,
+        allow_planning: bool = False,
     ) -> tuple[object, _ValidationCycleAccess]:
         model = _SUBJECT_MODEL[subject_type]
         subject = (
@@ -1583,7 +1425,11 @@ class CommunitySqlAlchemyValidationCycleReader:
                 .where(model.id == subject_id)
             )
         ).scalar_one_or_none()
-        if subject is None:
+        if (
+            subject is None
+            or subject.board.realm_id != LOCAL_REALM_ID
+            or (board_id is not None and subject.board_id != board_id)
+        ):
             raise ValidationCycleSubjectNotFound()
         permissions, access_level = await _quality_actor_permissions(
             session,
@@ -1611,9 +1457,67 @@ class CommunitySqlAlchemyValidationCycleReader:
                 if permissions.has(f"{subject_type.value}.quality.read")
                 else ()
             )
-        if not visible_sections:
+        if not visible_sections and not (allow_planning and subject_type is AssessmentSubjectType.SPEC):
             raise ValidationCycleReadAccessDenied()
         return subject, _ValidationCycleAccess(permissions, visible_sections)
+
+    async def get_workspace_revisions(
+        self, query: WorkspaceRevisionsQuery, *, actor_id: str, realm_scope: RealmScope,
+    ) -> WorkspaceRevisions:
+        self._require_local(realm_scope)
+        async with self._session_factory() as session:
+            await begin_community_consistent_read(session)
+            revision = ValidationSourceRevisionRow
+            authority = (await session.execute(
+                select(Board.id, revision.incarnation, revision.revision)
+                .outerjoin(revision, (revision.scope_kind == "board") & (revision.scope_id == Board.id))
+                .where(Board.id == query.board_id, Board.realm_id == realm_scope.realm_id)
+            )).one_or_none()
+            if authority is None:
+                raise ValidationCycleSubjectNotFound()
+            permissions, access_level = await _quality_actor_permissions(
+                session, actor_id=actor_id, board_id=query.board_id,
+            )
+            if permissions is None or access_level is None or any(
+                not permissions.has(f"{item.subject_type.removesuffix('_collection')}.entity.read") for item in query.subjects
+            ):
+                raise ValidationCycleReadAccessDenied()
+            if authority.incarnation is None or authority.revision is None:
+                raise WorkspaceRevisionsUnavailable()
+            selects = []
+            collections = [item.subject_type for item in query.subjects if item.subject_type.endswith("_collection")]
+            if collections:
+                selects.append(select(
+                    revision.scope_kind.label("subject_type"), revision.scope_id.label("subject_id"),
+                    revision.incarnation, revision.revision,
+                ).where(revision.scope_kind.in_(collections), revision.scope_id == query.board_id))
+            for kind, model in (("spec", Spec), ("card", Card)):
+                ids = [item.subject_id for item in query.subjects if item.subject_type == kind]
+                if ids:
+                    selects.append(select(
+                        literal(kind).label("subject_type"), model.id.label("subject_id"),
+                        revision.incarnation, revision.revision,
+                    ).outerjoin(revision, (revision.scope_kind == kind) & (revision.scope_id == model.id))
+                      .where(model.board_id == query.board_id, model.id.in_(ids)))
+            # One bounded column projection regardless of the number of cards/specs.
+            rows = (await session.execute(union_all(*selects))).all()
+            tokens = {}
+            for row in rows:
+                if row.incarnation is None or row.revision is None:
+                    raise WorkspaceRevisionsUnavailable()
+                tokens[row.subject_type, row.subject_id] = WorkspaceRevisionToken(
+                    incarnation=row.incarnation, revision=row.revision,
+                )
+            if any((kind, query.board_id) not in tokens for kind in collections):
+                raise WorkspaceRevisionsUnavailable()
+            return WorkspaceRevisions(
+                board_id=query.board_id,
+                authority=WorkspaceRevisionToken(incarnation=authority.incarnation, revision=authority.revision),
+                subjects=tuple(WorkspaceRevision(
+                    subject_type=item.subject_type, subject_id=item.subject_id,
+                    token=tokens.get((item.subject_type, item.subject_id)),
+                ) for item in query.subjects),
+            )
 
     async def get_validation_cycle(
         self,
@@ -1625,9 +1529,13 @@ class CommunitySqlAlchemyValidationCycleReader:
         limit: int,
         actor_id: str,
         realm_scope: RealmScope,
+        board_id: str | None = None,
+        include_planning: bool = False,
     ) -> ValidationCycleSummary:
         self._require_local(realm_scope)
         async with self._session_factory() as session:
+            session.info["realm_scope"] = realm_scope
+            await begin_community_consistent_read(session)
             counter, connection, listener = await _count_session_selects(session)
             outcome = "error"
             try:
@@ -1636,6 +1544,8 @@ class CommunitySqlAlchemyValidationCycleReader:
                     subject_type=subject_type,
                     subject_id=subject_id,
                     actor_id=actor_id,
+                    board_id=board_id,
+                    allow_planning=include_planning,
                 )
                 if subject_type is AssessmentSubjectType.SPEC:
                     result = await self._spec_cycle(
@@ -1645,6 +1555,7 @@ class CommunitySqlAlchemyValidationCycleReader:
                         include_previous=include_previous,
                         offset=offset,
                         limit=limit,
+                        include_planning=include_planning,
                     )
                 else:
                     result = await self._ambiguity_cycle(
@@ -1672,6 +1583,7 @@ class CommunitySqlAlchemyValidationCycleReader:
         subjects: tuple[ValidationCycleSubjectRef, ...],
         actor_id: str,
         realm_scope: RealmScope,
+        board_id: str | None = None,
     ) -> tuple[ValidationCycleSummary, ...]:
         """Return bounded current-edition summaries with set-based reads.
 
@@ -1688,6 +1600,7 @@ class CommunitySqlAlchemyValidationCycleReader:
             raise ValueError("validation_cycle_batch_subject_duplicate")
 
         async with self._session_factory() as session:
+            await begin_community_consistent_read(session)
             counter, connection, listener = await _count_session_selects(session)
             outcome = "error"
             try:
@@ -1695,6 +1608,7 @@ class CommunitySqlAlchemyValidationCycleReader:
                     session,
                     refs=refs,
                     actor_id=actor_id,
+                    board_id=board_id,
                 )
                 outcome = "success"
                 return result
@@ -1718,6 +1632,7 @@ class CommunitySqlAlchemyValidationCycleReader:
         *,
         refs: tuple[ValidationCycleSubjectRef, ...],
         actor_id: str,
+        board_id: str | None = None,
     ) -> tuple[ValidationCycleSummary, ...]:
         loaded: dict[tuple[AssessmentSubjectType, str], object] = {}
         for subject_type, model in _SUBJECT_MODEL.items():
@@ -1742,6 +1657,12 @@ class CommunitySqlAlchemyValidationCycleReader:
             )
 
         if len(loaded) != len(refs):
+            raise ValidationCycleSubjectNotFound()
+        if any(
+            subject.board.realm_id != LOCAL_REALM_ID
+            or (board_id is not None and subject.board_id != board_id)
+            for subject in loaded.values()
+        ):
             raise ValidationCycleSubjectNotFound()
 
         permission_cache: dict[str, object] = {}
@@ -1863,6 +1784,18 @@ class CommunitySqlAlchemyValidationCycleReader:
             spec_rows,
             access_by_spec=spec_access,
         )
+        planning_manifests = {}
+        manifest_reader = CommunitySpecPlanningManifest(session, RealmScope.local())
+        for board_id in {str(subject.board_id) for subject in spec_rows}:
+            spec_ids = tuple(
+                str(subject.id) for subject in spec_rows
+                if str(subject.board_id) == board_id
+                and spec_access[str(subject.id)].can(ValidationCycleResultType.SPEC_VALIDATION)
+            )
+            if spec_ids:
+                planning_manifests.update((item.spec_id, item) for item in await manifest_reader.read_many(
+                    board_id=board_id, spec_ids=spec_ids,
+                ))
 
         results: list[ValidationCycleSummary] = []
         for ref in refs:
@@ -1939,6 +1872,7 @@ class CommunitySqlAlchemyValidationCycleReader:
                             actions if subject_status == "approved" else ()
                         ),
                         visible_sections=access.visible_sections,
+                        planning_manifest=planning_manifests.get(ref.subject_id),
                     )
                 )
                 continue
@@ -2104,6 +2038,7 @@ class CommunitySqlAlchemyValidationCycleReader:
         include_previous: bool,
         offset: int,
         limit: int,
+        include_planning: bool = False,
     ) -> ValidationCycleSummary:
         edition = int(subject.edition)
         validation_visible = access.can(ValidationCycleResultType.SPEC_VALIDATION)
@@ -2133,6 +2068,21 @@ class CommunitySqlAlchemyValidationCycleReader:
         )
         status = _value(subject.status)
         any_started = any(item.status not in {"not_started", "off"} for item in checks)
+        planning = None
+        if include_planning:
+            # The public catalog binds native judgments to this read snapshot.
+            # It does not create a UoW, register providers or own this transaction.
+            services = build_application_service_catalog(session)
+            native_spec = await services.specs.get_spec(subject.id)
+            native_board = await services.boards.get_board(subject.board_id)
+            planning = await services.specs.get_planning_readiness(
+                native_spec, native_board, can_read=access.has, can_act=access.has,
+            )
+        manifest = None
+        if validation_visible:
+            manifest, = await CommunitySpecPlanningManifest(session, RealmScope.local()).read_many(
+                board_id=str(subject.board_id), spec_ids=(str(subject.id),),
+            )
         return ValidationCycleSummary(
             subject_type=AssessmentSubjectType.SPEC,
             subject_id=subject.id,
@@ -2172,6 +2122,8 @@ class CommunitySqlAlchemyValidationCycleReader:
             checks=checks,
             remaining_actions=actions if status == "approved" else (),
             visible_sections=access.visible_sections,
+            planning_manifest=manifest,
+            planning_readiness=planning,
         )
 
     async def _batch_spec_checks(
@@ -2629,11 +2581,8 @@ class CommunitySqlAlchemyValidationCycleReader:
                         or not isinstance(record.get("digests"), dict)
                     ):
                         raise ValidationCycleResultNotFound()
-                    edition = (
-                        None
-                        if record.get("edition") is None
-                        else int(record["edition"])
-                    )
+                    edition = require_spec_validation_edition(record)
+                    SpecValidationResponse.model_validate(record)
                     details = ValidationTechnicalAuditDetails(
                         receipt_id=result_id,
                         subject_version=int(record["subject_version"]),

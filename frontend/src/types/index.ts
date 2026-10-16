@@ -6,6 +6,8 @@ import type {
   PolicyComplianceTransitionDecision,
   RedactedPolicyComplianceTransitionDecision,
 } from './policy-governance';
+import type { RequirementVerification } from './requirement-verification';
+import type { SpecExecutionContract } from './execution-contract';
 
 // Card status enum matching backend
 export type CardStatus =
@@ -82,7 +84,6 @@ export type LineageEntityType =
   | 'ideation'
   | 'refinement'
   | 'spec'
-  | 'sprint'
   | 'task'
   | 'test'
   | 'bug'
@@ -124,8 +125,7 @@ export interface LineageGraphEdge {
 
 export interface LineageGraphResponse {
   board_id: string;
-  /** Absent on rolling-upgrade servers, where lineage is the only view. */
-  view?: 'lineage' | 'dependency';
+  view: 'lineage' | 'dependency';
   /** Dependency projection scope; absent for origin/derivation responses. */
   dependency_scope?: 'selected' | 'lineage';
   /** Canonical IDs of the Spec/Card seeds represented by a lineage overlay. */
@@ -139,7 +139,8 @@ export interface LineageGraphResponse {
     entity_type: string;
     entity_id: string;
   };
-  root_ideation: {
+  root_entity: {
+    type: string;
     id: string;
     title: string;
     status?: string | null;
@@ -158,7 +159,6 @@ export type AllowedTransitionEntityType =
   | 'refinement'
   | 'spec'
   | 'card'
-  | 'sprint'
   | 'test_scenario';
 
 export interface AllowedTransition {
@@ -268,7 +268,7 @@ export interface EffectiveResourceItem extends ResourceGateRef {
   resource?: Record<string, unknown> | ArchitectureDesign | ScreenMockup | null;
 }
 
-export type KnowledgeWorkspaceProfile = 'summary' | 'detail' | 'full' | 'legacy';
+export type KnowledgeWorkspaceProfile = 'summary' | 'detail' | 'full';
 
 export interface KnowledgeWorkspacePhysicalAttachment {
   resource_id: string | null;
@@ -292,7 +292,6 @@ export interface KnowledgeWorkspaceItem {
   title: string | null;
   attachment_kind: string | null;
   inherited: boolean;
-  grandfathered: boolean;
   stale: boolean;
   superseded: boolean;
   provenance: {
@@ -315,35 +314,31 @@ export interface KnowledgeWorkspaceItem {
 }
 
 export interface EffectiveResourcesOptions {
+  resource_type?: ResourceGateResourceType;
   profile?: KnowledgeWorkspaceProfile;
   cursor?: string | null;
   limit?: number;
 }
 
 export interface EffectiveResourcesResponse {
-  contract_version?: number;
+  contract_version: 2;
   board_id: string;
   entity_type: ResourceGateEntityType;
   entity_id: string;
-  profile?: KnowledgeWorkspaceProfile;
-  items?: KnowledgeWorkspaceItem[];
-  count?: number;
-  total_count?: number;
-  next_cursor?: string | null;
-  truncated?: boolean;
-  unique_effective_count?: number;
-  raw_attachment_count?: number;
-  workspace_item_count?: number;
-  unique_root_version_count?: number;
-  response_bytes?: number;
-  /**
-   * Populated by the explicit `legacy` profile. Kept mandatory in the
-   * normalized client result so rolling upgrades do not break older callers.
-   */
-  resources: Record<ResourceGateResourceType, EffectiveResourceItem[]>;
-  lineage_counts?: Record<string, unknown>;
-  resource_lineage?: Record<string, unknown>;
+  resource_type: ResourceGateResourceType;
+  profile: KnowledgeWorkspaceProfile;
+  items: KnowledgeWorkspaceItem[];
+  count: number;
+  total_count: number;
+  next_cursor: string | null;
+  truncated: boolean;
+  unique_effective_count: number;
+  raw_attachment_count: number;
+  workspace_item_count: number;
+  unique_root_version_count: number;
+  response_bytes: number;
 }
+
 
 export interface MarkResourceNotApplicableRequest {
   resource_type: ResourceGateResourceType;
@@ -447,162 +442,13 @@ export interface CardSummaryForSpec {
   priority: CardPriority;
   assignee_id: string | null;
   card_type?: CardType;
-  sprint_id?: string | null;
 }
-
-// Sprint Status
-export type SprintStatus = 'draft' | 'active' | 'review' | 'closed' | 'cancelled';
-export type SprintLaneType = 'normal' | 'hotfix';
-
-export const SPRINT_STATUSES: SprintStatus[] = [
-  'draft', 'active', 'review', 'closed', 'cancelled',
-];
-
-export const SPRINT_STATUS_LABELS: Record<SprintStatus, string> = {
-  draft: 'Draft',
-  active: 'Active',
-  review: 'Review',
-  closed: 'Closed',
-  cancelled: 'Cancelled',
-};
-
-export const SPRINT_STATUS_COLORS: Record<SprintStatus, string> = {
-  draft: 'bg-gray-500',
-  active: 'bg-blue-500',
-  review: 'bg-amber-500',
-  closed: 'bg-green-500',
-  cancelled: 'bg-red-500',
-};
 
 export interface TaskValidationGateOverride {
   require_task_validation?: boolean | null;
   validation_min_confidence?: number | null;
   validation_min_completeness?: number | null;
   validation_max_drift?: number | null;
-}
-
-export interface Sprint extends TaskValidationGateOverride {
-  id: string;
-  spec_id: string;
-  board_id: string;
-  title: string;
-  description: string | null;
-  objective: string | null;
-  expected_outcome: string | null;
-  status: SprintStatus;
-  lane_type: SprintLaneType;
-  origin_sprint_id: string | null;
-  origin_bug_id: string | null;
-  normal_sprint_created: boolean;
-  spec_version: number;
-  start_date: string | null;
-  end_date: string | null;
-  test_scenario_ids: string[] | null;
-  business_rule_ids: string[] | null;
-  evaluations: any[] | null;
-  skip_test_coverage: boolean;
-  skip_rules_coverage: boolean;
-  skip_qualitative_validation: boolean;
-  validation_threshold: number | null;
-  version: number;
-  labels: string[] | null;
-  archived: boolean;
-  // Cancellation justification (set only while status === 'cancelled')
-  cancellation_reason?: string | null;
-  cancelled_at?: string | null;
-  cancelled_by?: string | null;
-  created_by: string;
-  created_at: string;
-  updated_at: string;
-  cards: CardSummaryForSpec[];
-  qa_items: SprintQAItem[];
-}
-
-export interface SprintSummary {
-  id: string;
-  open_qa_count?: number;
-  spec_id: string;
-  board_id: string;
-  title: string;
-  description: string | null;
-  objective?: string | null;
-  expected_outcome?: string | null;
-  status: SprintStatus;
-  lane_type: SprintLaneType;
-  origin_sprint_id: string | null;
-  origin_bug_id: string | null;
-  normal_sprint_created: boolean;
-  spec_version: number;
-  start_date: string | null;
-  end_date: string | null;
-  test_scenario_ids: string[] | null;
-  business_rule_ids: string[] | null;
-  version: number;
-  labels: string[] | null;
-  created_by: string;
-  created_at: string;
-  updated_at: string;
-  archived: boolean;
-  cancellation_reason?: string | null;
-  cancelled_at?: string | null;
-  cancelled_by?: string | null;
-}
-
-export interface SprintQAItem {
-  id: string;
-  sprint_id: string;
-  question: string;
-  question_type: string;
-  choices: any[] | null;
-  allow_free_text: boolean;
-  answer: string | null;
-  selected: string[] | null;
-  asked_by: string;
-  answered_by: string | null;
-  created_at: string;
-  answered_at: string | null;
-}
-
-export interface CreateSprintRequest {
-  title: string;
-  description?: string;
-  objective?: string;
-  expected_outcome?: string;
-  spec_id: string;
-  lane_type?: SprintLaneType;
-  origin_sprint_id?: string | null;
-  origin_bug_id?: string | null;
-  test_scenario_ids?: string[];
-  business_rule_ids?: string[];
-  start_date?: string;
-  end_date?: string;
-  labels?: string[];
-}
-
-export interface UpdateSprintRequest extends TaskValidationGateOverride {
-  title?: string;
-  description?: string | null;
-  objective?: string | null;
-  expected_outcome?: string | null;
-  lane_type?: SprintLaneType;
-  origin_sprint_id?: string | null;
-  origin_bug_id?: string | null;
-  test_scenario_ids?: string[];
-  business_rule_ids?: string[];
-  start_date?: string | null;
-  end_date?: string | null;
-  labels?: string[];
-  skip_test_coverage?: boolean;
-  skip_rules_coverage?: boolean;
-  skip_qualitative_validation?: boolean;
-  validation_threshold?: number | null;
-  expected_version?: number;
-}
-
-export interface MoveSprintRequest {
-  status: SprintStatus;
-  cancellation_reason?: string;
-  expected_version?: number;
 }
 
 // Ideation Status
@@ -654,20 +500,8 @@ export type QualityAssessmentKind =
 export type QualityCurrentness = 'current' | 'stale';
 /** Human lifecycle projection; does not expose technical staleness semantics. */
 export type QualityLifecycleState = 'current' | 'previous';
-export type QualityAssessmentStaleReason =
-  | 'content_changed'
-  | 'clarification_changed'
-  | 'ruleset_changed'
-  | 'taxonomy_changed'
-  | 'policy_changed'
-  | 'subject_version_changed';
-export type QualityAssessmentReceiptState =
-  | 'current'
-  | 'previous'
-  | 'history_only'
-  // Legacy technical values remain parseable outside lifecycle-edition mode.
-  | 'stale'
-  | 'superseded';
+export type QualityAssessmentStaleReason = 'subject_edition_changed';
+export type QualityAssessmentReceiptState = 'current' | 'previous';
 export type QualityFindingSeverity =
   | 'info'
   | 'low'
@@ -747,15 +581,12 @@ export interface QualityAssessmentReceipt {
   subject_type: QualitySubjectType;
   subject_id: string;
   subject_version: number;
-  /** Null is reserved for evidence created before lifecycle editions. */
-  subject_edition?: number | null;
+  subject_edition: number;
   assessment_kind: QualityAssessmentKind;
   origin:
     | 'human_or_agent'
-    | 'spec_validation'
-    | 'semantic_writer'
-    | 'legacy_import';
-  source: 'native' | 'legacy_migration';
+    | 'spec_validation';
+  source: 'native';
   channel: string;
   outcome: 'recorded' | 'advisory';
   scale: QualityReceiptScale;
@@ -902,7 +733,7 @@ export interface RecordAmbiguityAssessmentResponse {
   replayed: boolean;
   receipt_id: string;
   head_revision: number;
-  subject_edition?: number | null;
+  subject_edition: number;
   qa_id_map: Record<string, string>;
 }
 
@@ -1044,6 +875,49 @@ export interface QualityValidationCycleSummary
   subject_type: 'ideation' | 'refinement';
 }
 
+export interface SpecPlanningManifest {
+  board_id: string;
+  spec_id: string;
+  edition: number;
+  spec_version: number;
+  subject_incarnation: string;
+  subject_revision: number;
+  authority_incarnation: string;
+  authority_revision: number;
+}
+
+export interface WorkspaceSubjectRef {
+  subject_type: 'spec' | 'card' | 'spec_collection' | 'card_collection';
+  subject_id: string;
+}
+
+export interface WorkspaceRevisionToken {
+  incarnation: string;
+  revision: number;
+}
+
+export interface WorkspaceRevisions {
+  board_id: string;
+  authority: WorkspaceRevisionToken;
+  subjects: (WorkspaceSubjectRef & { token: WorkspaceRevisionToken | null })[];
+}
+
+export interface SpecPlanningReadiness {
+  state: 'ready' | 'blocked' | 'unavailable';
+  blocked_actions: string[];
+  components: Array<{
+    key: string;
+    state: 'ready' | 'blocked' | 'unavailable';
+    mode: 'off' | 'advisory' | 'blocking' | null;
+    applicable: boolean | null;
+    native_result: string | null;
+    result_ids: string[];
+    reason_codes: string[];
+    message: string | null;
+    next_action: string | null;
+  }>;
+}
+
 export interface SpecValidationCycleSummary
   extends ValidationCycleSummaryIdentity {
   subject_type: 'spec';
@@ -1057,6 +931,9 @@ export interface SpecValidationCycleSummary
   previous_results?: ValidationCycleResultSummary[];
   /** Present only when the actor can read Spec Validation results. */
   submission_fence?: ValidationSubmissionFence;
+  /** Technical submission basis; present only with Spec Validation read access. */
+  planning_manifest?: SpecPlanningManifest;
+  planning_readiness?: SpecPlanningReadiness;
   checks: ValidationCycleCheckSummary[];
   remaining_actions: string[];
 }
@@ -1338,6 +1215,7 @@ export interface RefinementSummary {
 
 // Business Rule
 export interface BusinessRule {
+  verification?: RequirementVerification | null;
   id: string;
   title: string;
   rule: string;
@@ -1353,6 +1231,7 @@ export interface BusinessRule {
 export type DecisionStatus = 'active' | 'superseded' | 'revoked';
 
 export interface Decision {
+  verification?: import('./decision-reviews').DecisionVerification | null;
   id: string;
   title: string;
   rationale: string;
@@ -1368,8 +1247,9 @@ export interface Decision {
 // API Contract
 export interface ApiContract {
   id: string;
-  method: string;
-  path: string;
+  contract_type: 'http' | 'in_process' | 'grpc' | 'event';
+  method: string | null;
+  path: string | null;
   description: string;
   request_body: Record<string, unknown> | null;
   response_success: Record<string, unknown> | null;
@@ -1393,6 +1273,7 @@ export type IntegrationRequirementType =
   | 'other';
 
 export interface IntegrationRequirement {
+  verification?: RequirementVerification | null;
   id: string;
   title: string;
   integration_type: IntegrationRequirementType;
@@ -1422,6 +1303,7 @@ export type ObservabilitySignalType =
   | 'other';
 
 export interface ObservabilityRequirement {
+  verification?: RequirementVerification | null;
   id: string;
   title: string;
   signal_type: ObservabilitySignalType;
@@ -1439,7 +1321,23 @@ export interface ObservabilityRequirement {
 }
 
 // Technical Requirement (structured)
+export interface SpecTextRequirement {
+  id: string;
+  title?: string | null;
+  text: string;
+  status?: 'active' | 'superseded' | 'revoked';
+  linked_task_ids?: string[] | null;
+  [key: string]: unknown;
+}
+
+export interface SpecRequirementWrite {
+  id?: string;
+  text: string;
+  [key: string]: unknown;
+}
+
 export interface TechnicalRequirement {
+  verification?: RequirementVerification | null;
   id: string;
   text: string;
   linked_task_ids: string[] | null;
@@ -1655,6 +1553,7 @@ export type TestScenarioType =
   | 'manual'
   | 'negative';
 export type TestScenarioStatus = 'draft' | 'ready' | 'automated' | 'passed' | 'failed';
+export type VerificationReportResult = 'passed' | 'failed' | 'inconclusive' | 'aborted' | 'unavailable';
 
 // Re-executable validation evidence contract (spec 9e0bf979).
 export type EvidenceClass =
@@ -1663,7 +1562,8 @@ export type EvidenceClass =
   | 'mcp_replay_manifest'
   | 'manual_checklist'
   | 'run_log'
-  | 'non_replayable_justified';
+  | 'non_replayable_justified'
+  | 'verification_report';
 
 export interface TestEvidenceAssertionV2 {
   name: string;
@@ -1681,10 +1581,12 @@ export interface TestEvidenceProvenanceV2 {
 }
 
 export interface TestExecutionAttestationV2 {
+  execution_basis?: { source_ref: string; revision: string; runner_ref: string; test_ids: string[] } | null;
   schema_version: 2;
   run_id: string;
   executed_at: string;
   scenario_id: string;
+  scenario_sha256: string;
   outcome: 'passed' | 'failed';
   product_runtime_exercised: boolean;
   manifest_sha256: string;
@@ -1694,18 +1596,19 @@ export interface TestExecutionAttestationV2 {
 }
 
 export interface TestScenarioEvidence {
-  // Legacy / minimal fields (NC-9).
+  /** External observation; receipt authenticates submission, not independent approval. */
+  verification_report?: { method: string; report_id: string; result: VerificationReportResult; conclusion: string; observed_at: string; observations: Array<{ criterion_id: string; expected: string; observed: string; observation_ref: string }> } | null;
+  report_author_id?: string | null;
+  scenario_sha256?: string | null;
+  // Current test pointers and execution logs.
   test_file_path?: string | null;
   test_function?: string | null;
   last_run_at?: string | null;
   test_run_id?: string | null;
   output_snippet?: string | null;
-  // Re-executable evidence contract (spec 9e0bf979). All optional; legacy
-  // evidence simply omits them.
+  // Fields required by the selected evidence class.
   evidence_class?: EvidenceClass | null;
   replay_command?: string | null;
-  /** @deprecated Reader-only legacy alias; it never satisfies Evidence V2. */
-  mcp_replay_manifest?: string | Record<string, unknown> | null;
   manifest_ref?: string | null;
   execution_attestation?: TestExecutionAttestationV2 | null;
   /** Opaque receipt authenticated by the local installation at write time. */
@@ -1722,6 +1625,7 @@ export interface TestScenario {
   linked_criteria: string[] | null;
   /** Raw read value; legacy rows may expose an unsupported historical type. */
   scenario_type: string;
+  verification_method?: string | null;
   given: string;
   when: string;
   then: string;
@@ -1730,7 +1634,6 @@ export interface TestScenario {
   linked_task_ids: string[] | null;
   created_at?: string;
   evidence?: TestScenarioEvidence | null;
-  latest_evidence?: TestScenarioEvidence | null;
 }
 
 export interface TestScenarioStatusUpdateRequest {
@@ -1890,7 +1793,7 @@ export interface ArchitectureEntity {
   name: string;
   entity_type?: string | null;
   responsibility?: string | null;
-  boundaries?: string | null;
+  boundaries?: string[];
   technologies?: string[];
   relationships?: string[];
   notes?: string | null;
@@ -1990,6 +1893,7 @@ export type CreateArchitectureDesignRequest = Pick<
 
 export type UpdateArchitectureDesignRequest = Partial<CreateArchitectureDesignRequest> & {
   change_summary?: string;
+  expected_version?: number;
 };
 
 export interface ArchitectureWarningAcknowledgementRequest {
@@ -2043,10 +1947,7 @@ export type KnowledgeAssignmentState =
   | 'dropped'
   | 'inactive';
 export type KnowledgeOriginClass =
-  | 'v2'
-  | 'legacy_all'
-  | 'selected_legacy'
-  | 'legacy_unresolved';
+  | 'v2';
 export type KnowledgeRelevanceEntityType =
   | 'functional_requirement'
   | 'acceptance_criterion'
@@ -2059,8 +1960,8 @@ export interface KnowledgeRelevanceLinkRequest {
 
 /**
  * Authoritative v2 selection envelope. Omitting the envelope itself preserves
- * the legacy v1 path; `selection_state: 'omitted'` is a distinct persisted v2
- * decision.
+ * no inherited selection. `selection_state: 'omitted'` remains distinct from
+ * an explicit empty decision.
  */
 export interface KnowledgePropagationEnvelopeV2 {
   contract_version?: 2;
@@ -2074,7 +1975,11 @@ export interface KnowledgePropagationEnvelopeV2 {
 }
 
 export interface DeriveSpecKnowledgeRequest {
-  knowledge_propagation: KnowledgePropagationEnvelopeV2;
+  knowledge_propagation?: KnowledgePropagationEnvelopeV2;
+}
+
+export interface DeriveIdeationSpecRequest extends DeriveSpecKnowledgeRequest {
+  delivery_context: DeliveryContext;
 }
 
 export interface KnowledgeAssignmentReplaceRequest {
@@ -2251,7 +2156,20 @@ export interface SpecKnowledgeSummary {
 }
 
 // Spec
+export interface MissingLinkContext {
+  status: 'available' | 'not_authorized' | 'unavailable';
+  mode?: 'advisory' | 'blocking' | null;
+  authority: 'relational_source';
+  would_block_done?: boolean | null;
+  finding_count?: number | null;
+  findings: { source_ref: string; field: string; target_ref: string;
+    reason: 'target_absent' | 'target_ambiguous' | 'target_out_of_scope'; correction_operation: string }[];
+  truncated: boolean;
+}
+
 export interface Spec extends TaskValidationGateOverride {
+  missing_link_context?: MissingLinkContext | null;
+  execution_contract: SpecExecutionContract;
   id: string;
   board_id: string;
   ideation_id: string | null;
@@ -2259,10 +2177,13 @@ export interface Spec extends TaskValidationGateOverride {
   title: string;
   description: string | null;
   context: string | null;
-  functional_requirements: string[] | null;
-  technical_requirements: (string | TechnicalRequirement)[] | null;
-  acceptance_criteria: string[] | null;
+  functional_requirements: SpecTextRequirement[] | null;
+  technical_requirements: TechnicalRequirement[] | null;
+  acceptance_criteria: SpecTextRequirement[] | null;
   test_scenarios: TestScenario[] | null;
+  /** Opaque authoring snapshot returned with the full scenario collection. */
+  scenario_snapshot?: string;
+  mockup_snapshot?: string;
   business_rules: BusinessRule[] | null;
   api_contracts: ApiContract[] | null;
   integration_requirements: IntegrationRequirement[] | null;
@@ -2275,6 +2196,7 @@ export interface Spec extends TaskValidationGateOverride {
   architecture_designs?: ArchitectureDesignSummary[];
   skip_test_coverage: boolean;
   skip_code_evidence_coverage: boolean;
+  skip_delivery_evidence?: boolean;
   skip_rules_coverage?: boolean;
   skip_decisions_coverage?: boolean;
   skip_contract_coverage?: boolean;
@@ -2449,13 +2371,40 @@ export interface RefinementAmbiguityGateSkipReceipt {
   edition?: number;
 }
 
+export type TaskValidationPolicySource = 'spec' | 'board' | 'default';
+
+/** Read-only policy resolved by Core for the current Card. */
+export interface TaskValidationConfig {
+  required: boolean;
+  min_confidence: number;
+  min_completeness: number;
+  max_drift: number;
+  resolved_from: TaskValidationPolicySource;
+  resolved_sources: Record<'required' | 'min_confidence' | 'min_completeness' | 'max_drift', TaskValidationPolicySource>;
+}
+
 // Card
 export interface Card {
+  missing_link_context?: MissingLinkContext | null;
+  scenario_reference_context?: {
+    contract_version: 'card-scenario-reference-context/v1';
+    status: 'available' | 'not_authorized' | 'unavailable';
+    source_fingerprint: string | null;
+    finding_count: number | null;
+    findings: {
+      finding_id: string;
+      source_selector: string;
+      target_ref: string | null;
+      reason_code: 'parent_absent' | 'target_absent' | 'target_ambiguous' | 'source_disagreement';
+      correction_surface: 'card_scenario_links' | 'spec_test_scenarios' | 'card_and_spec_scenario_links';
+    }[];
+    truncated: boolean;
+  } | null;
+  validation_config?: TaskValidationConfig | null;
   id: string;
   board_id: string;
   subject_version?: number;
   spec_id: string | null;
-  sprint_id: string | null;
   title: string;
   description: string | null;
   details: string | null;
@@ -2501,16 +2450,36 @@ export interface Card {
 
 export type TaskValidationRecommendation = 'approve' | 'reject';
 export type TaskValidationOutcome = 'success' | 'failed';
-export type TaskValidationVerdict = 'pass' | 'fail';
 
 /**
  * Payload accepted by POST /cards/{card_id}/validate.
  *
  * The API deliberately keeps the `estimated_*` names for the reviewer scores.
- * Do not send the clean read aliases (`completeness`, `drift`, `verdict`,
- * `summary`) here: those are response/history compatibility fields.
+ * Requests and history share the canonical reviewer and score names.
  */
+export interface LearningCaptureSelection {
+  learning_id: string;
+  generation: number;
+  fingerprint: string;
+}
+
+export type LearningIntentRequest = { kind: 'create' } | ({
+  target_node_id: string; target_generation: number; expected_fingerprint: string; reason: string;
+} & ({ kind: 'reuse' } | { kind: 'supersede'; scope: 'source_bug' }));
+
+export interface LearningSubmission {
+  capture_id: string;
+  expected_source_digest: string;
+  expected_source_version: number;
+  content: string;
+  context: string;
+  applicability: string;
+  scenario_ids: string[];
+  intent?: LearningIntentRequest;
+}
+
 export interface TaskValidationSubmitPayload {
+  learning_capture?: LearningCaptureSelection;
   expected_subject_version: number;
   idempotency_key: string;
   confidence: number;
@@ -2547,12 +2516,12 @@ export interface TaskValidationResolvedThresholds {
   min_confidence: number;
   min_completeness: number;
   max_drift: number;
-  resolved_from?: 'sprint' | 'spec' | 'board' | 'default';
+  resolved_from?: 'spec' | 'board' | 'default';
   resolved_sources?: {
-    required: 'sprint' | 'spec' | 'board' | 'default';
-    min_confidence: 'sprint' | 'spec' | 'board' | 'default';
-    min_completeness: 'sprint' | 'spec' | 'board' | 'default';
-    max_drift: 'sprint' | 'spec' | 'board' | 'default';
+    required: 'spec' | 'board' | 'default';
+    min_confidence: 'spec' | 'board' | 'default';
+    min_completeness: 'spec' | 'board' | 'default';
+    max_drift: 'spec' | 'board' | 'default';
   };
   /**
    * The submit response can contain the complete resolved board gate config.
@@ -2569,62 +2538,45 @@ export interface TaskValidationReviewerSeparation {
   source: string;
 }
 
-/**
- * Task-validation history entry.
- *
- * Current writes persist both the legacy API names and the clean UI aliases.
- * All aliases remain optional because cards created before the dual-write
- * migration may carry only one side of each pair.
- */
+/** Current Task Validation history contract. */
 export interface ValidationEntry {
   id: string;
-  card_id?: string;
-  board_id?: string;
+  card_id: string;
+  board_id: string;
 
-  // Reviewer identity: legacy name + clean UI alias.
-  reviewer_id?: string | null;
-  evaluator_id?: string | null;
-  reviewer_name?: string | null;
-  evaluator_name?: string | null;
+  reviewer_id: string;
+  reviewer_name: string;
 
   confidence: number;
-  confidence_justification?: string | null;
+  confidence_justification: string;
 
-  // Completeness: legacy name + clean UI alias.
-  estimated_completeness?: number;
-  completeness?: number;
-  completeness_justification?: string | null;
+  estimated_completeness: number;
+  completeness_justification: string;
 
-  // Drift: legacy name + clean UI alias.
-  estimated_drift?: number;
-  drift?: number;
-  drift_justification?: string | null;
+  estimated_drift: number;
+  drift_justification: string;
 
-  // General rationale: legacy name + clean UI alias.
-  general_justification?: string | null;
-  summary?: string | null;
+  general_justification: string;
 
-  recommendation?: TaskValidationRecommendation;
-  outcome?: TaskValidationOutcome;
-  verdict?: TaskValidationVerdict;
-  threshold_violations?: string[];
-  resolved_thresholds?: TaskValidationResolvedThresholds | null;
-  reviewer_separation?: TaskValidationReviewerSeparation | null;
-  expected_subject_version?: number;
-  idempotency_key?: string;
-  validation_outcome?: TaskValidationOutcome;
-  completion_outcome?: 'completed' | 'rejected';
-  completion_gate_failures?: Array<{
+  recommendation: TaskValidationRecommendation;
+  outcome: TaskValidationOutcome;
+  threshold_violations: string[];
+  resolved_thresholds: TaskValidationResolvedThresholds;
+  reviewer_separation: TaskValidationReviewerSeparation;
+  expected_subject_version: number;
+  validation_outcome: TaskValidationOutcome;
+  completion_outcome: 'completed' | 'rejected';
+  completion_gate_failures: Array<{
     code: string;
     summary: string;
     reason_codes?: string[];
   }>;
   rejection_cause?: CardRejectionCause | null;
-  subject_version?: number;
+  subject_version: number;
   replayed?: boolean;
 
   created_at: string;
-  card_status?: CardStatus | null;
+  card_status: 'done' | 'rejected';
 }
 
 /** Semantic alias for callers that expose the submit endpoint response. */
@@ -2681,7 +2633,7 @@ export interface KanbanColumnsMeta {
   };
 }
 
-export interface ColumnsOptInResponse {
+export interface ColumnsBatchResponse {
   board_id: string;
   columns: Record<CardStatus, CardSummary[]>;
   columns_meta: KanbanColumnsMeta;
@@ -2739,7 +2691,6 @@ export interface Agent {
   description: string | null;
   objective: string | null;
   is_active: boolean;
-  permissions: string[] | null;
   permission_flags: PermissionFlags | null;
   preset_id: string | null;
   created_by: string;
@@ -2784,7 +2735,7 @@ export type SpecResourceAutoDeriveType = 'knowledge_base' | 'architecture' | 'mo
 export type ReviewerSeparationMode = 'off' | 'warn' | 'enforce';
 
 export interface CodeTraceabilitySettings {
-  mode: 'off' | 'advisory' | 'blocking';
+  mode: 'advisory' | 'blocking';
   evidence_attestation: 'none' | 'preferred' | 'required';
   target_resolution: 'advisory' | 'required' | 'required_current_receipt';
   accepted_attestor_policy:
@@ -2811,16 +2762,9 @@ export type CodeEvidenceSourceRole =
   | 'current_implementation'
   | 'existing_scaffold'
   | 'existing_constraint'
-  | 'reference_pattern'
-  | 'uncategorized_legacy';
-export type AuthoredCodeEvidenceSourceRole = Exclude<
-  CodeEvidenceSourceRole,
-  'uncategorized_legacy'
->;
-export type CodeEvidenceContextOrigin =
-  | 'authored'
-  | 'human_legacy_classification'
-  | 'unclassified_legacy';
+  | 'reference_pattern';
+export type AuthoredCodeEvidenceSourceRole = CodeEvidenceSourceRole;
+export type CodeEvidenceContextOrigin = 'authored';
 export type CodeEvidenceBaselinePresence =
   | 'committed_snapshot'
   | 'preexisting_worktree';
@@ -2867,20 +2811,17 @@ export interface SourceContextRoleCountsV2 {
   existing_scaffold_count: number;
   existing_constraint_count: number;
   reference_pattern_count: number;
-  uncategorized_legacy_count: number;
+
 }
 
-export interface SourceContextClassificationStateV2 {
-  classified_count: number;
-  uncategorized_legacy_count: number;
-}
+
 
 export interface SourceContextSummaryV2 {
   delivery_context: DeliveryContext | null;
   delivery_context_provenance: DeliveryContextProvenance | null;
   investigation_outcome: ContextualInvestigationOutcomeV2 | null;
   role_counts: SourceContextRoleCountsV2;
-  classification_state: SourceContextClassificationStateV2;
+
   evidence_applicable: boolean | null;
   interpretation_rule: string;
   items_not_current_implementation_count: number;
@@ -2898,26 +2839,16 @@ export interface SourceContextEvidenceItemV2 {
   context_origin: CodeEvidenceContextOrigin;
   context_contract_version: 2 | null;
   evidence_applicable: boolean | null;
-  classification_revision?: number | null;
-  classification_sha256?: string | null;
-  classification_id?: string | null;
-  classified_by?: string | null;
-  classified_at?: string | null;
+
+
+
+
+
 }
 
-export interface SourceContextClassificationBaselineInputV2 {
-  presence: CodeEvidenceBaselinePresence;
-  workspace_state_id: string;
-  provenance_note: string | null;
-  provenance_note_required: boolean;
-}
 
-export interface SourceContextClassificationInputV2 {
-  evidence_id: string;
-  expected_evidence_payload_sha256: string;
-  expected_classification_revision: number;
-  baseline_provenance: SourceContextClassificationBaselineInputV2;
-}
+
+
 
 export interface ContextualEvidenceCoverage {
   total: number;
@@ -2925,7 +2856,7 @@ export interface ContextualEvidenceCoverage {
   dispositioned: number;
   pending: number;
   pending_ids: string[];
-  unresolved_applicability_count: number;
+
   coverage_pct: number | null;
   projection_complete: boolean;
 }
@@ -2942,57 +2873,13 @@ export interface ObligationEvidenceMapping {
   source_role: CodeEvidenceSourceRole | null;
 }
 
-export interface LegacyEvidenceClassificationItemRequest {
-  evidence_id: string;
-  expected_evidence_payload_sha256: string;
-  expected_classification_revision: number;
-  source_role: AuthoredCodeEvidenceSourceRole;
-  relevance_summary: string;
-  scope_relation: string;
-  source_origin: string;
-  interpretation_limit: string | null;
-  baseline_provenance: CodeEvidenceBaselineProvenance;
-}
 
-export interface LegacyEvidenceClassificationBatchRequest {
-  items: LegacyEvidenceClassificationItemRequest[];
-  justification: string;
-  idempotency_key: string;
-}
 
-export interface CodeEvidenceLegacyClassificationView {
-  id: string;
-  batch_id: string;
-  board_id: string;
-  evidence_id: string;
-  evidence_payload_sha256: string;
-  revision: number;
-  predecessor_classification_id?: string | null;
-  source_role: AuthoredCodeEvidenceSourceRole;
-  relevance_summary: string;
-  scope_relation: string;
-  source_origin: string;
-  interpretation_limit?: string | null;
-  baseline_provenance: CodeEvidenceBaselineProvenanceView;
-  classified_by: string;
-  classified_at: string;
-  justification: string;
-  request_sha256: string;
-  batch_item_count: number;
-  batch_item_index: number;
-  context_contract_version: 2;
-  classification_sha256: string;
-}
 
-export interface LegacyEvidenceClassificationBatchResult {
-  batch_id: string;
-  board_id: string;
-  classified_by: string;
-  classified_at: string;
-  request_sha256: string;
-  classifications: CodeEvidenceLegacyClassificationView[];
-  replayed: boolean;
-}
+
+
+
+
 
 export type CodeTraceabilityReceiptCurrentness =
   | 'current'
@@ -3025,7 +2912,6 @@ export interface CodeInvestigationReceipt {
   predecessor_receipt_id: string | null;
   trust_level: 'single_attestation' | 'corroborated' | 'conflicted' | string;
   acceptance_status: 'accepted' | 'rejected' | string;
-  outcome: 'accessible' | 'partial' | 'unavailable';
   capabilities: string[];
   source_ref: string;
   source_identity_digest: string | null;
@@ -3052,11 +2938,10 @@ export interface CodeInvestigationReceipt {
   expires_at: string;
   observation_sha256: string;
   payload_sha256: string;
-  /** Present on current Core projections; optional for legacy snapshots. */
-  idempotency_key?: string;
-  delivery_context?: DeliveryContext | null;
-  contextual_outcome?: ContextualInvestigationOutcomeV2 | null;
-  context_contract_version?: 2 | null;
+  idempotency_key: string;
+  delivery_context: DeliveryContext;
+  contextual_outcome: ContextualInvestigationOutcomeV2;
+  context_contract_version: 2;
 }
 
 export interface CodeInvestigationReceiptReadResult {
@@ -3298,13 +3183,13 @@ export interface CodeTraceabilityProjection {
   source_refinement_version?: number | null;
   source_context?: SourceContextSummaryV2 | null;
   source_context_items?: SourceContextEvidenceItemV2[];
-  source_context_classification_inputs?: SourceContextClassificationInputV2[];
+
   contextual_evidence_coverage?: ContextualEvidenceCoverage;
   obligation_evidence_mappings?: ObligationEvidenceMapping[];
   /** Current bounded receipts are included by contextual projections that expose omission detail. */
   current_receipts?: Array<Pick<
     CodeInvestigationReceipt,
-    'id' | 'outcome' | 'source_ref' | 'omission_manifest'
+    'id' | 'contextual_outcome' | 'source_ref' | 'omission_manifest'
   >>;
   evidence: CodeTraceabilityEvidence[];
   inherited_evidence_ids: string[];
@@ -3368,9 +3253,11 @@ export interface BoardSettings {
   skip_task_requirement_link_gate_global?: boolean;
   skip_decisions_coverage_global: boolean;
   skip_cognitive_consolidation?: boolean;
+  bug_learning_closeout?: 'advisory' | 'blocking';
+  missing_link_gate?: 'advisory' | 'blocking';
+  kg_query_timeout_ms?: number;
   allow_agent_self_answering?: boolean;
   require_full_context_for_critical_actions?: boolean;
-  qa_require_role_separation?: boolean;
   /**
    * Independent-review policy for task validation and sprint evaluation.
    * Missing legacy values resolve to `off`; newly created boards/templates
@@ -3387,7 +3274,6 @@ export interface BoardSettings {
   min_spec_clarity?: number;
   min_spec_decidability?: number;
   /** Legacy setting retained for reading older board snapshots. */
-  min_spec_completeness?: number;
   min_spec_assertiveness?: number;
   max_spec_ambiguity?: number;
   // Max ambiguity gate for ideation completion (spec 2485780b) — opt-in, default off.
@@ -3412,13 +3298,17 @@ export interface BoardSettings {
   // recorded in the activity log; require = gated moves reject a conclusion
   // without a minimally populated block.
   impact_evidence_mode?: 'off' | 'advisory' | 'require';
+  // Card-scoped delivery evidence gate (spec 793c43d0 / FR-5). One setting
+  // governs BOTH card→done and spec→done. Missing legacy values resolve to
+  // `blocking` server-side — the 0.3.3 spec gate was unconditional.
+  delivery_evidence_gate?: 'advisory' | 'blocking';
   // Requirement-lint language profiles exposed during preflight to an
   // external evaluating agent. Community persists the configuration and the
   // returned evidence; it does not perform the analysis. Empty/absent means
   // the agent receives only neutral signals (numbers, comparators and units).
   lint_languages?: LintLanguageCode[];
   /** Source-blind policy for observations submitted by authenticated agents. */
-  code_traceability?: CodeTraceabilitySettings | null;
+  code_traceability?: CodeTraceabilitySettings;
   /** Board-scoped analytics policy. Missing legacy values resolve to backend defaults. */
   analytics?: {
     version: 1;
@@ -3442,41 +3332,51 @@ export type SpecValidationMetric =
   | 'ambiguity';
 
 export interface SpecValidationPinpoint {
-  metric: SpecValidationMetric;
+  /** Present only in previously sealed native records. */
+  metric?: SpecValidationMetric;
+  metrics?: SpecValidationMetric[];
+  kind?: 'problem' | 'opportunity';
+  severity?: 'low' | 'medium' | 'high' | 'critical';
+  excerpt?: string;
+  recommendation?: string;
+  rationale?: string | null;
   anchor_type: QualityFindingAnchorType;
   anchor_ref?: string | null;
   detail: string;
 }
 
+export interface SpecValidationPinpointInput extends SpecValidationPinpoint {
+  metrics: SpecValidationMetric[];
+  kind: 'problem' | 'opportunity';
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  excerpt: string;
+  recommendation: string;
+  metric?: never;
+}
+
 export interface SpecValidation {
   id: string;
   validation_id?: string;
-  validation_edition?: number;
+  validation_edition: number;
   is_current?: boolean;
   spec_id: string;
   board_id: string;
   reviewer_id: string;
   reviewer_name?: string | null;
   /** Canonical human validation fields. */
-  score?: number | null;
-  summary?: string | null;
-  confidence?: number | null;
-  confidence_justification?: string | null;
-  clarity?: number | null;
-  clarity_justification?: string | null;
-  decidability?: number | null;
-  decidability_justification?: string | null;
+  confidence: number;
+  confidence_justification: string;
+  clarity: number;
+  clarity_justification: string;
+  decidability: number;
+  decidability_justification: string;
   pinpoints?: SpecValidationPinpoint[] | null;
-  /** Legacy dimension fields remain readable in immutable history. */
-  completeness?: number | null;
-  completeness_justification?: string | null;
-  assertiveness?: number | null;
-  assertiveness_justification?: string | null;
-  ambiguity?: number | null;
-  ambiguity_justification?: string | null;
-  general_justification?: string | null;
+  assertiveness: number;
+  assertiveness_justification: string;
+  ambiguity: number;
+  ambiguity_justification: string;
   recommendation?: 'approve' | 'reject' | null;
-  outcome?: 'success' | 'failed' | null;
+  outcome: 'success' | 'failed';
   threshold_violations?: string[] | null;
   resolved_thresholds?: {
     min_spec_confidence?: number;
@@ -3484,18 +3384,31 @@ export interface SpecValidation {
     min_spec_assertiveness?: number;
     min_spec_decidability?: number;
     max_spec_ambiguity?: number;
-    /** Legacy threshold retained for old immutable records. */
-    min_spec_completeness?: number;
-  } | null;
+    } | null;
   created_at: string;
   spec_status?: string | null;
   active?: boolean | null;
-  /** Null marks legacy evidence that is available only in previous results. */
-  edition?: number | null;
-  lifecycle_state?: 'current' | 'previous' | 'history_only' | null;
+  edition: number;
+  lifecycle_state?: 'current' | 'previous' | null;
+}
+
+export interface SpecDecompositionInput {
+  breakdown_completeness: number;
+  breakdown_justification: string;
+  granularity: number;
+  granularity_justification: string;
+  dependency_coherence: number;
+  dependency_justification: string;
+  test_coverage_quality: number;
+  test_coverage_justification: string;
+  overall_score: number;
+  overall_justification: string;
+  recommendation: 'approve' | 'request_changes' | 'reject';
 }
 
 export interface SpecValidationSubmitPayload {
+  expected_planning_manifest: SpecPlanningManifest;
+  idempotency_key: string;
   expected_validation_edition: number;
   expected_spec_version: number;
   expected_head_revision: number;
@@ -3509,17 +3422,20 @@ export interface SpecValidationSubmitPayload {
   decidability_justification: string;
   ambiguity: number;
   ambiguity_justification: string;
-  pinpoints: SpecValidationPinpoint[];
+  pinpoints: SpecValidationPinpointInput[];
   recommendation: 'approve' | 'reject';
+  decomposition?: SpecDecompositionInput;
 }
 
 export interface SpecValidationSubmitResponse {
   validation_id: string;
   validation_edition: number;
   is_current: boolean;
-  spec_status?: string | null;
-  outcome?: 'success' | 'failed' | null;
-  threshold_violations?: string[] | null;
+  spec_status: 'approved' | 'validated';
+  outcome: 'success' | 'failed';
+  planning_result: 'ready' | 'blocked';
+  decomposition_ids: string[];
+  planning_blockers: string[];
 }
 
 export interface SpecValidationList {
@@ -3597,7 +3513,7 @@ export interface ChecklistReceipt {
   board_id: string;
   spec_id: string;
   spec_version: number;
-  spec_edition?: number | null;
+  spec_edition: number;
   content_digest: string;
   input_digest: string;
   template_version_id: '/specify/v1';
@@ -3605,7 +3521,7 @@ export interface ChecklistReceipt {
   binding_version: number;
   binding_id: string;
   binding_mode: ChecklistMode;
-  source: 'native' | 'legacy_unverified';
+  source: 'native';
   request_digest: string;
   head_revision: number;
   predecessor_receipt_id: string | null;
@@ -3634,7 +3550,7 @@ export interface ChecklistSpecState {
     board_id: string;
     spec_id: string;
     spec_version: number;
-    spec_edition?: number;
+    spec_edition: number;
     content_digest: string;
     input_digest: string;
     status: string;
@@ -3648,10 +3564,8 @@ export interface ChecklistSpecState {
 
 export interface ChecklistExecutionStartResult {
   execution_id: string;
-  items: ChecklistTemplateItem[];
-  subject_digest: string;
-  template_digest: string;
-  spec_edition?: number;
+  spec_edition: number;
+  status: 'started';
 }
 
 export interface ChecklistExecutionStartRequest {
@@ -3668,9 +3582,9 @@ export interface ChecklistExecutionSubmitRequest {
 }
 
 export interface ChecklistExecutionSubmitResult {
-  receipt_id: string;
-  outcome: 'pass' | 'fail';
-  head_revision: number;
+  result_id: string;
+  spec_edition: number;
+  status: 'passed' | 'failed';
 }
 
 export interface ChecklistReceiptView {
@@ -3786,16 +3700,13 @@ export interface UpdateCardRequest {
   title?: string;
   description?: string;
   details?: string;
-  status?: CardStatus;
   priority?: CardPriority;
   position?: number;
   assignee_id?: string;
   due_date?: string;
   labels?: string[];
-  sprint_id?: string | null;
   test_scenario_ids?: string[];
   screen_mockups?: ScreenMockup[];
-  knowledge_bases?: CardKnowledgeBase[];
   // Bug card fields
   severity?: BugSeverity;
   expected_behavior?: string;
@@ -3873,6 +3784,7 @@ export interface ImpactEvidence {
 }
 
 export interface ConclusionEntry {
+  delivery_manifest?: import('./delivery-evidence').DeliverySelectionManifest | null;
   text: string;
   author_id: string;
   created_at: string;
@@ -3880,12 +3792,13 @@ export interface ConclusionEntry {
   completeness_justification: string;
   drift: number;
   drift_justification: string;
-  source?: 'move_to_validation' | 'move_to_done' | 'task_validation' | string;
-  validation_id?: string;
+  source: 'move_to_validation' | 'move_to_done';
   impact_evidence?: ImpactEvidence | null;
 }
 
 export interface MoveCardRequest {
+  learning_submission?: LearningSubmission;
+  delivery_selection?: import('./delivery-evidence').DeliverySelectionInput;
   status: CardStatus;
   position?: number | null;
   before_id?: string | null;
@@ -3905,24 +3818,14 @@ export interface MoveCardRequest {
 export type BugWorkflowRemediationPath =
   | 'path_a_reuse_existing_scenario'
   | 'path_b_semantic_gap'
-  | 'path_c_hotfix_lane'
-  | 'standard_sprint'
+  | 'path_b_amendment_lineage'
   | 'none';
 
 export type BugWorkflowNextAction =
   | 'create_regression_test_card'
   | 'escalate_semantic_gap'
-  | 'assign_hotfix_lane'
-  | 'activate_hotfix_lane'
-  | 'assign_sprint'
-  | 'activate_sprint'
+  | 'confirm_validator_coverage'
   | 'none';
-
-export type BugWorkflowHotfixLaneStatus =
-  | 'not_applicable'
-  | 'missing'
-  | 'inactive'
-  | 'ready';
 
 export interface BugWorkflowRemediationAction {
   action_id: BugWorkflowNextAction | string;
@@ -3937,7 +3840,6 @@ export interface BugWorkflowRemediationMessage {
   next_action: BugWorkflowNextAction;
   semantic_gap_required: boolean;
   eligible_scenarios_count: number;
-  hotfix_lane_status: BugWorkflowHotfixLaneStatus;
   message: string;
   detail: string;
   actions: BugWorkflowRemediationAction[];
@@ -4110,7 +4012,7 @@ export interface DefaultBoardConfigDiffField {
 
 export interface DefaultBoardConfigDiff {
   board_id: string;
-  snapshot_state: 'applied' | 'legacy_no_snapshot';
+  snapshot_state: 'applied' | 'no_template_snapshot';
   applied_template_id: string | null;
   applied_template_version: number | null;
   active_template_id: string | null;
@@ -4133,11 +4035,6 @@ export interface DefaultGuidelineCandidate {
   guideline_id: string;
   title: string;
   scope: string;
-  guideline_version: number;
-  revision_id: string;
-  revision_number: number;
-  semantic_version: string;
-  revision_digest: string;
   head_revision: DefaultGuidelineRevisionPin;
   default_revision: DefaultGuidelineRevisionPin | null;
   retired: boolean;
@@ -4221,7 +4118,6 @@ export interface CreateAgentRequest {
   name: string;
   description?: string;
   objective?: string;
-  permissions?: string[];
   preset_id?: string;
   permission_flags?: PermissionFlags;
 }
@@ -4231,7 +4127,6 @@ export interface UpdateAgentRequest {
   description?: string;
   objective?: string;
   is_active?: boolean;
-  permissions?: string[];
   preset_id?: string | null;
   permission_flags?: Record<string, unknown> | null;
 }
@@ -4283,11 +4178,12 @@ export interface UpdateShareRequest {
 // Spec request types
 export interface CreateSpecRequest {
   title: string;
+  delivery_context?: 'brownfield' | 'greenfield' | 'hybrid';
   description?: string;
   context?: string;
-  functional_requirements?: string[];
-  technical_requirements?: string[];
-  acceptance_criteria?: string[];
+  functional_requirements?: SpecRequirementWrite[];
+  technical_requirements?: SpecRequirementWrite[];
+  acceptance_criteria?: SpecRequirementWrite[];
   test_scenarios?: TestScenarioWrite[];
   decisions?: Decision[];
   integration_requirements?: IntegrationRequirement[];
@@ -4300,12 +4196,16 @@ export interface CreateSpecRequest {
 }
 
 export interface UpdateSpecRequest extends TaskValidationGateOverride {
+  /** Authored base for test_scenarios/screen_mockups; other Spec updates have no generic CAS. */
+  expected_spec_version?: number;
+  expected_scenario_snapshot?: string;
+  expected_mockup_snapshot?: string;
   title?: string;
   description?: string;
   context?: string;
-  functional_requirements?: string[];
-  technical_requirements?: string[];
-  acceptance_criteria?: string[];
+  functional_requirements?: SpecRequirementWrite[];
+  technical_requirements?: SpecRequirementWrite[];
+  acceptance_criteria?: SpecRequirementWrite[];
   test_scenarios?: TestScenarioWrite[];
   business_rules?: BusinessRule[];
   api_contracts?: ApiContract[];
@@ -4316,6 +4216,7 @@ export interface UpdateSpecRequest extends TaskValidationGateOverride {
   screen_mockups?: ScreenMockup[];
   skip_test_coverage?: boolean;
   skip_code_evidence_coverage?: boolean;
+  skip_delivery_evidence?: boolean;
   skip_contract_coverage?: boolean;
   skip_ir_coverage?: boolean;
   skip_or_coverage?: boolean;
@@ -4457,4 +4358,35 @@ export interface KanbanColumn {
   status: CardStatus;
   label: string;
   cards: CardSummary[];
+}
+
+export interface SpecEvaluationList {
+  spec_id: string;
+  spec_status: SpecStatus;
+  current_edition: number;
+  active_count: number;
+  previous_count: number;
+  total: number;
+  offset: number;
+  limit: number;
+  view: 'all' | 'current' | 'previous';
+  evaluations: SpecDecompositionOpinion[];
+}
+
+export interface SpecDecompositionOpinion {
+    id: string;
+    evaluator_name?: string;
+    evaluator_id: string;
+    evaluator_type: 'user' | 'agent';
+    spec_edition: number;
+    spec_version: number;
+    dimensions: Record<'breakdown_completeness' | 'granularity' | 'dependency_coherence' | 'test_coverage_quality', {
+      score: number;
+      justification: string;
+    }>;
+    overall_score: number;
+    overall_justification: string;
+    recommendation: SpecDecompositionInput['recommendation'];
+    lifecycle_state: 'current' | 'previous';
+    created_at: string;
 }

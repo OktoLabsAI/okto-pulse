@@ -2,7 +2,6 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CodeTraceabilityProjection } from '@/types';
 import { CodeEvidencePanel } from '../CodeEvidencePanel';
-import { sanitizeCodeEvidenceProjectionForAuthority } from '../codeEvidenceAuthority';
 
 const apiMock = vi.hoisted(() => ({
   getCodeTraceabilityProjection: vi.fn(),
@@ -36,17 +35,7 @@ function projection(): CodeTraceabilityProjection {
     subject_version: 2,
     profile: 'detail',
     context_scope: 'default',
-    source_context_classification_inputs: [{
-      evidence_id: 'evidence-1',
-      expected_evidence_payload_sha256: PROTECTED_PAYLOAD_SHA,
-      expected_classification_revision: 0,
-      baseline_provenance: {
-        presence: 'committed_snapshot',
-        workspace_state_id: PROTECTED_WORKSPACE_STATE,
-        provenance_note: null,
-        provenance_note_required: false,
-      },
-    }],
+
     evidence: [],
     inherited_evidence_ids: [],
     direct_evidence_ids: [],
@@ -146,7 +135,7 @@ describe('CodeEvidencePanel authority boundary', () => {
     expect(document.body).not.toHaveTextContent(PROTECTED_WORKSPACE_STATE);
   });
 
-  it('ts_007019f7 — preserves readable context while redacting protected CAS inputs without classify authority', async () => {
+  it('ts_007019f7 — preserves readable context without offering the removed classification action', async () => {
     const serverProjection = projection();
     apiMock.getCodeTraceabilityProjection.mockResolvedValueOnce(serverProjection);
 
@@ -157,15 +146,7 @@ describe('CodeEvidencePanel authority boundary', () => {
     expect(document.body).not.toHaveTextContent(PROTECTED_PAYLOAD_SHA);
     expect(document.body).not.toHaveTextContent(PROTECTED_WORKSPACE_STATE);
 
-    const sanitized = sanitizeCodeEvidenceProjectionForAuthority(
-      serverProjection,
-      false,
-    );
-    expect(sanitized).not.toBe(serverProjection);
-    expect(sanitized.source_context_classification_inputs).toEqual([]);
-    expect(serverProjection.source_context_classification_inputs).toHaveLength(1);
-    expect(sanitizeCodeEvidenceProjectionForAuthority(serverProjection, true))
-      .toBe(serverProjection);
+    expect(screen.queryByRole('button', { name: 'Review unclassified Evidence' })).not.toBeInTheDocument();
   });
 
   it('ts_007019f7 — removes a stale authorized projection immediately when read authority is lost', async () => {

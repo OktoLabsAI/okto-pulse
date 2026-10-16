@@ -19,6 +19,9 @@ from okto_pulse.core.application.use_cases.validation_cycle import (
     ValidationCycleReadUseCases,
 )
 from okto_pulse.core.domain.quality_assessment import AssessmentSubjectType
+from okto_pulse.core.domain.spec_planning import SpecPlanningManifest
+from okto_pulse.core.domain.workspace_revisions import WorkspaceRevisions, WorkspaceRevisionsQuery
+from okto_pulse.core.ports.spec_planning_manifest import SpecPlanningManifestUnavailable
 from okto_pulse.core.domain.validation_cycle import (
     ValidationCycleResultType,
     ValidationCycleState,
@@ -32,6 +35,7 @@ from okto_pulse.core.ports.validation_cycle import (
     ValidationCycleReadAccessDenied,
     ValidationCycleResultNotFound,
     ValidationCycleSubjectNotFound,
+    WorkspaceRevisionsUnavailable,
 )
 
 
@@ -63,6 +67,24 @@ class ValidationCycleCheckResponse(_ClosedResponseModel):
     details: dict[str, Any] = Field(default_factory=dict)
 
 
+class SpecPlanningComponentResponse(_ClosedResponseModel):
+    key: str
+    state: Literal["ready", "blocked", "unavailable"]
+    mode: Literal["off", "advisory", "blocking"] | None
+    applicable: bool | None
+    native_result: str | None
+    result_ids: list[str]
+    reason_codes: list[str]
+    message: str | None
+    next_action: str | None
+
+
+class SpecPlanningReadinessResponse(_ClosedResponseModel):
+    state: Literal["ready", "blocked", "unavailable"]
+    blocked_actions: list[str]
+    components: list[SpecPlanningComponentResponse]
+
+
 class SpecValidationCycleResponse(_ClosedResponseModel):
     subject_type: Literal["spec"]
     subject_id: str
@@ -74,6 +96,8 @@ class SpecValidationCycleResponse(_ClosedResponseModel):
     previous_result_count: int | None = Field(default=None, ge=0)
     previous_results: list[ValidationCycleResultResponse] | None = None
     submission_fence: ValidationSubmissionFenceResponse | None = None
+    planning_manifest: SpecPlanningManifest | None = None
+    planning_readiness: SpecPlanningReadinessResponse | None = None
     checks: list[ValidationCycleCheckResponse]
     remaining_actions: list[str]
 
@@ -128,6 +152,11 @@ def _http_error(
     *,
     subject_type: AssessmentSubjectType,
 ) -> HTTPException:
+    if isinstance(exc, (SpecPlanningManifestUnavailable, WorkspaceRevisionsUnavailable)):
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error_code": exc.code, "retryable": False},
+        )
     if isinstance(exc, ValidationCycleReadAccessDenied):
         return HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -154,6 +183,22 @@ def _http_error(
     raise exc
 
 
+@router.post("/workspace-revisions/query", response_model=WorkspaceRevisions)
+async def get_workspace_revisions(
+    query: WorkspaceRevisionsQuery,
+    user_id: str = Depends(require_user),
+    reader: CommunitySqlAlchemyValidationCycleReader = Depends(_reader),
+) -> WorkspaceRevisions:
+    try:
+        return await ValidationCycleReadUseCases(reader=reader).get_workspace_revisions(
+            query, actor=RESTAdapterContract.actor(user_id),
+        )
+    except ValidationCycleSubjectNotFound as exc:
+        raise HTTPException(status_code=404, detail={"error_code": "board_not_found", "retryable": False}) from exc
+    except Exception as exc:
+        raise _http_error(exc, subject_type=AssessmentSubjectType.SPEC) from exc
+
+
 async def _cycle(
     *,
     subject_type: AssessmentSubjectType,
@@ -163,6 +208,7 @@ async def _cycle(
     limit: int,
     user_id: str,
     reader: CommunitySqlAlchemyValidationCycleReader,
+    include_planning: bool = False,
 ) -> dict[str, Any]:
     try:
         result = await ValidationCycleReadUseCases(reader=reader).get_cycle(
@@ -172,6 +218,7 @@ async def _cycle(
                 include_previous=include_previous,
                 offset=offset,
                 limit=limit,
+                include_planning=include_planning,
             ),
             actor=RESTAdapterContract.actor(user_id),
         )
@@ -210,6 +257,7 @@ def _register_subject_routes(subject_type: AssessmentSubjectType) -> None:
     async def get_cycle(
         subject_id: str,
         include_previous: bool = Query(False),
+        include_planning: bool = Query(False),
         offset: int = Query(0, ge=0),
         limit: int = Query(25, ge=1, le=100),
         user_id: str = Depends(require_user),
@@ -219,6 +267,7 @@ def _register_subject_routes(subject_type: AssessmentSubjectType) -> None:
             subject_type=subject_type,
             subject_id=subject_id,
             include_previous=include_previous,
+            include_planning=include_planning,
             offset=offset,
             limit=limit,
             user_id=user_id,

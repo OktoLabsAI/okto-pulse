@@ -48,6 +48,14 @@ function pinpoint(
 }
 
 describe('ActionablePinpoint', () => {
+  it('presents sealed structured requirements as title and prose without transport metadata', () => {
+    const excerpt = JSON.stringify({id: 'tr-1', title: 'Hexagonal isolation', text: 'Use public ports.', linked_task_ids: ['task-private'], verification: {mode: 'explicit'}});
+    render(<ActionablePinpoint metricLabel="Architecture" policyState="positive_evidence"
+      pinpoint={pinpoint({locationLabel: 'Hexagonal isolation', excerpt})} />);
+    expect(screen.getByText(/Hexagonal isolation\s+Use public ports\./)).toBeInTheDocument();
+    expect(screen.queryByText(/linked_task_ids|task-private/)).not.toBeInTheDocument();
+    expect(excerpt).toContain('linked_task_ids');
+  });
   it('renders issue content in the ambiguity FindingItems hierarchy', () => {
     const { container } = render(
       <ActionablePinpoint
@@ -58,12 +66,12 @@ describe('ActionablePinpoint', () => {
     );
     const text = container.textContent ?? '';
     const ordered = [
+      'Persistence responsibility leaks into Core',
       'Boundary integrity',
       'high',
       'Structured item',
       'Current issue',
       'TR-2: Core creates and commits the SQLAlchemy session. (tr-secret-id)',
-      'Persistence responsibility leaks into Core',
       'The use case owns a Community transaction detail.',
       'Suggested remediation:',
       'Move session ownership to the Community adapter.',
@@ -72,6 +80,14 @@ describe('ActionablePinpoint', () => {
 
     expect(ordered.every((position) => position >= 0)).toBe(true);
     expect([...ordered].sort((left, right) => left - right)).toEqual(ordered);
+    const summary = screen.getByTestId('actionable-pinpoint-title').closest('summary')!;
+    expect(screen.getByTestId('actionable-pinpoint-detail')).not.toBeVisible();
+    expect(screen.getByTestId('actionable-pinpoint-metric')).toBeVisible();
+    fireEvent.click(summary);
+    expect(screen.getByTestId('actionable-pinpoint-detail')).toBeVisible();
+    expect(screen.getByTestId('actionable-pinpoint-remediation')).toBeVisible();
+    fireEvent.click(summary);
+    expect(screen.getByTestId('actionable-pinpoint-detail')).not.toBeVisible();
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
     expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
   });

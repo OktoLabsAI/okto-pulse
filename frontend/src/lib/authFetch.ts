@@ -1,6 +1,7 @@
 /**
  * Authenticated HTTP client with automatic token injection
  */
+import { notifyReadinessMutation } from './readinessEvents';
 
 export type TokenGetter = (options?: { skipCache?: boolean }) => Promise<string | null>;
 
@@ -68,6 +69,7 @@ export class AuthenticatedFetch {
       }
     }
 
+    notifyReadinessMutation(url, fetchOptions.method, response.ok);
     return response;
   }
 

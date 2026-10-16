@@ -59,6 +59,30 @@ describe('ChecklistBindingSettings', () => {
     });
   });
 
+  it('requires an explicit initial choice and creates using revision zero', async () => {
+    apiMock.getChecklistBinding.mockResolvedValue(null);
+    render(<ChecklistBindingSettings boardId="board-1" />);
+    await screen.findByText(/No checklist policy is configured/);
+    expect(screen.getByRole('button', { name: 'Save policy' })).toBeDisabled();
+    for (const radio of screen.getAllByRole('radio')) {
+      expect(radio).toHaveAttribute('aria-checked', 'false');
+    }
+    expect(apiMock.updateChecklistBinding).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('checklist-mode-blocking'));
+    fireEvent.click(screen.getByRole('button', { name: 'Save policy' }));
+    await waitFor(() => expect(apiMock.updateChecklistBinding).toHaveBeenCalledWith('board-1', {
+      mode: 'blocking', template_version_id: '/specify/v1', expected_revision: 0,
+    }));
+  });
+
+  it('does not offer policy creation after a read failure', async () => {
+    apiMock.getChecklistBinding.mockRejectedValue(new Error('Forbidden'));
+    render(<ChecklistBindingSettings boardId="board-1" />);
+    await screen.findByText('Checklist governance is unavailable.');
+    expect(screen.queryByRole('radio')).not.toBeInTheDocument();
+    expect(apiMock.updateChecklistBinding).not.toHaveBeenCalled();
+  });
+
   it('saves a human-selected mode with the immutable template and CAS revision', async () => {
     render(<ChecklistBindingSettings boardId="board-1" />);
 

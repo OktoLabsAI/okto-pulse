@@ -1,3 +1,4 @@
+import { resolveDeliveryGateMode } from './deliveryGateSettings';
 // Shared board-settings form. This is the single source of truth for the
 // validation-gate / coverage / governance layout so the Board Config screen
 // (Menu > Board, board-level mutation) and the Global Default template editor
@@ -14,7 +15,7 @@ import {
   REVIEWER_SEPARATION_MODES,
 } from '@/components/board/reviewerSeparationSettings';
 import {
-  normalizeCodeTraceabilitySettings,
+  resolveCodeTraceabilitySettings,
   type CodeTraceabilityEnforcementMode,
 } from '@/components/board/codeTraceabilitySettings';
 import type {
@@ -87,6 +88,32 @@ function SettingsSection({
       </div>
       <div className="space-y-3">{children}</div>
     </section>
+  );
+}
+
+function QueryTimeoutSetting({ value, onChange }: { value: number; onChange: (value: number) => void }) {
+  const [draft, setDraft] = useState(String(value));
+  useEffect(() => setDraft(String(value)), [value]);
+  return (
+    <input
+      aria-label="Graph query timeout (ms)"
+      type="number"
+      min={1}
+      max={30000}
+      step={1}
+      value={draft}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={() => {
+        const parsed = Number(draft);
+        if (draft.trim() && Number.isInteger(parsed) && parsed >= 1 && parsed <= 30000) {
+          if (parsed !== value) onChange(parsed);
+        } else {
+          setDraft(String(value));
+        }
+      }}
+      onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }}
+      className="w-24 rounded border border-gray-300 bg-transparent px-2 py-1 text-xs dark:border-gray-600"
+    />
   );
 }
 
@@ -164,12 +191,11 @@ const LINT_LANGUAGE_OPTIONS: Array<{
 export const IMPACT_EVIDENCE_MODES = ['off', 'advisory', 'require'] as const;
 export type ImpactEvidenceMode = (typeof IMPACT_EVIDENCE_MODES)[number];
 
-function normalizeImpactEvidenceMode(value: unknown): ImpactEvidenceMode {
-  // Mirrors the backend resolver: anything unknown reads as 'off' instead of
-  // failing the screen (invalid_value_fail_compat).
+export function resolveImpactEvidenceMode(value: unknown): ImpactEvidenceMode | null {
+  if (value === undefined) return 'off';
   return IMPACT_EVIDENCE_MODES.includes(value as ImpactEvidenceMode)
     ? (value as ImpactEvidenceMode)
-    : 'off';
+    : null;
 }
 
 export const DESIGN_SYSTEM_GATE_MODES = ['off', 'advisory', 'blocking'] as const;
@@ -247,9 +273,24 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
   };
 
   const lintLanguages = settings.lint_languages ?? [];
-  const codeTraceability = normalizeCodeTraceabilitySettings(
+  const codeTraceability = resolveCodeTraceabilitySettings(
     settings.code_traceability,
   );
+
+  if (!codeTraceability) {
+    return <div role="alert">Code Traceability settings are incompatible. Settings cannot be edited.</div>;
+  }
+
+  if (!normalizeReviewerSeparationMode(settings.reviewer_separation_mode)) {
+    return <div role="alert">Reviewer separation policy is incompatible. Settings cannot be edited.</div>;
+  }
+
+  if (!resolveDeliveryGateMode(settings.delivery_evidence_gate)) {
+    return <div role="alert">Delivery Evidence policy is incompatible. Settings cannot be edited.</div>;
+  }
+  if (!resolveImpactEvidenceMode(settings.impact_evidence_mode)) {
+    return <div role="alert">Impact Evidence policy is incompatible. Settings cannot be edited.</div>;
+  }
 
   const updateCodeTraceability = (
     patch: Partial<CodeTraceabilitySettings>,
@@ -295,6 +336,9 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
         description="Board-level limits used across validation flows."
         icon={<SlidersHorizontal size={12} />}
       >
+        <SettingRow label="Graph query timeout" description="Maximum query duration in milliseconds: 15,000 by default, up to 30,000. Calls may request a shorter duration. Only an authenticated human can change this limit.">
+          <QueryTimeoutSetting value={settings.kg_query_timeout_ms ?? 15000} onChange={(value) => onChange({ kg_query_timeout_ms: value })} />
+        </SettingRow>
         <div>
           <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">
             Max test scenarios per card
@@ -425,15 +469,29 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
             activeColor="amber"
           />
         </SettingRow>
-        <SettingRow label="Skip decisions coverage" description="Bypass active Decision to Task linkage for all specs.">
-          <SettingsToggle
-            checked={settings.skip_decisions_coverage_global}
-            onChange={() => onChange({ skip_decisions_coverage_global: !settings.skip_decisions_coverage_global })}
-            ariaLabel="Skip decisions coverage"
-            activeColor="amber"
-          />
+        <SettingRow label="Missing reference closeout" description="Advisory reports unresolved declared references. Blocking requires correction before completion. Optional associations and graph projection delays do not block. Only an authenticated human can change this policy.">
+          <select
+            aria-label="Missing reference closeout"
+            value={settings.missing_link_gate ?? 'advisory'}
+            onChange={(event) => onChange({ missing_link_gate: event.target.value as 'advisory' | 'blocking' })}
+            className="rounded border border-gray-300 bg-transparent px-2 py-1 text-xs dark:border-gray-600"
+          >
+            <option value="advisory">Advisory</option>
+            <option value="blocking">Blocking</option>
+          </select>
         </SettingRow>
-        <SettingRow label="Skip cognitive closeout" description="Allow done transitions even when cognitive consolidation is pending. Badges and KG Health pending lists remain visible.">
+        <SettingRow label="Bug Learning closeout" description="Advisory allows completion without Learning. Blocking requires a valid saved Learning capture; graph projection may follow later. Only an authenticated human can change this policy.">
+          <select
+            aria-label="Bug Learning closeout"
+            value={settings.bug_learning_closeout ?? 'advisory'}
+            onChange={(event) => onChange({ bug_learning_closeout: event.target.value as 'advisory' | 'blocking' })}
+            className="rounded border border-gray-300 bg-transparent px-2 py-1 text-xs dark:border-gray-600"
+          >
+            <option value="advisory">Advisory</option>
+            <option value="blocking">Blocking</option>
+          </select>
+        </SettingRow>
+        <SettingRow label="Skip cognitive closeout" description="Allow done transitions even when cognitive consolidation is pending. This does not waive the Bug Learning capture policy. Badges and KG Health pending lists remain visible.">
           <SettingsToggle
             checked={settings.skip_cognitive_consolidation ?? false}
             onChange={() => onChange({ skip_cognitive_consolidation: !(settings.skip_cognitive_consolidation ?? false) })}
@@ -537,7 +595,7 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
             })}
           </div>
           <p className="mt-2 text-[10px] leading-4 text-gray-400 dark:text-gray-500">
-            Enforce is the safe default for new boards. Legacy boards without a stored value remain Off until explicitly changed.
+            Enforce is the default. Off and Warn apply only when explicitly configured.
           </p>
         </div>
 
@@ -1035,11 +1093,11 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
           description="Blocking mode rejects a gated move whose conclusion has no populated evidence section."
         >
           <SettingsToggle
-            checked={normalizeImpactEvidenceMode(settings.impact_evidence_mode) === 'require'}
+            checked={resolveImpactEvidenceMode(settings.impact_evidence_mode) === 'require'}
             onChange={() =>
               onChange({
                 impact_evidence_mode:
-                  normalizeImpactEvidenceMode(settings.impact_evidence_mode) === 'require'
+                  resolveImpactEvidenceMode(settings.impact_evidence_mode) === 'require'
                     ? 'off'
                     : 'require',
               })
@@ -1055,7 +1113,7 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
           data-testid="impact-evidence-mode"
         >
           {IMPACT_EVIDENCE_MODES.map((mode) => {
-            const checked = normalizeImpactEvidenceMode(settings.impact_evidence_mode) === mode;
+            const checked = resolveImpactEvidenceMode(settings.impact_evidence_mode) === mode;
             const labels: Record<ImpactEvidenceMode, string> = {
               off: 'Off',
               advisory: 'Advisory',
@@ -1088,6 +1146,52 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
         <p className="text-[10px] leading-4 text-gray-400 dark:text-gray-500">
           Test cards and validator-approved completions stay exempt in every mode.
         </p>
+      </SettingsSection>
+
+      <SettingsSection
+        title="Delivery Evidence Gate"
+        description="Requires accepted delivery proof before a task or a Spec can be completed. Test cards authenticate via passed scenarios and stay exempt."
+        icon={<Shield size={12} />}
+      >
+        <SettingRow
+          label="Enforcement mode"
+          description="Governs both card → Done and Spec → Done. Default: Blocking."
+        >
+          {null}
+        </SettingRow>
+        <div
+          className="grid grid-cols-2 gap-2"
+          aria-label="Delivery evidence enforcement mode"
+          data-testid="delivery-evidence-gate-mode"
+        >
+          {(['advisory', 'blocking'] as const).map((mode) => {
+            const checked =
+              resolveDeliveryGateMode(settings.delivery_evidence_gate) === mode;
+            const titles: Record<'advisory' | 'blocking', string> = {
+              advisory:
+                'The coverage verdict is shown on the card and the Spec rollup without blocking completion.',
+              blocking:
+                'Card → Done and Spec → Done are rejected with delivery_evidence_incomplete until every obligation has accepted proof or a human waiver.',
+            };
+            return (
+              <button
+                key={mode}
+                type="button"
+                title={titles[mode]}
+                aria-pressed={checked}
+                data-testid={`delivery-evidence-gate-mode-${mode}`}
+                onClick={() => onChange({ delivery_evidence_gate: mode })}
+                className={`h-9 rounded border px-2 text-[11px] font-medium transition-colors ${
+                  checked
+                    ? 'border-violet-400 bg-violet-50 text-violet-700 dark:border-violet-500/70 dark:bg-violet-500/15 dark:text-violet-200'
+                    : 'border-gray-200 bg-gray-50 text-gray-500 hover:bg-gray-100 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700'
+                }`}
+              >
+                {mode === 'advisory' ? 'Advisory' : 'Blocking'}
+              </button>
+            );
+          })}
+        </div>
       </SettingsSection>
 
       <SettingsSection

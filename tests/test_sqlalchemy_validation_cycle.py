@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+from spec_validation_fixtures import native_validation
+
 import pytest
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+from okto_pulse.core.domain.execution_contract import new_execution_contract
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -16,7 +21,6 @@ from okto_pulse.community.adapters import sqlalchemy_validation_cycle
 from okto_pulse.community.adapters.sqlalchemy_models import (
     Base,
     Board,
-    ChecklistValidationBindingSnapshotRow,
     Guideline,
     GuidelineBoardBindingRow,
     GuidelineRevisionRow,
@@ -25,10 +29,8 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     QualityAssessmentLifecycleTransitionRow,
     QualityAssessmentReceiptRow,
     Refinement,
-    SemanticGuidelineAssessmentReceiptRow,
     SemanticGuidelineAssessmentV2Row,
     SemanticGuidelineBindingConfigurationRow,
-    SemanticGuidelineMetricResultRow,
     SemanticGuidelineMetricResultV2Row,
     SemanticGuidelineRevisionRow,
     SemanticGuidelineSkipRow,
@@ -40,8 +42,12 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
 from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
     CommunitySemanticSession,
 )
+from okto_pulse.community.adapters.sqlite_validation_revisions import install_validation_revision_triggers
 from okto_pulse.community.adapters.sqlalchemy_quality_assessment import (
     CommunitySqlAlchemyQualityAssessmentPreflightReader,
+)
+from okto_pulse.community.adapters.sqlalchemy_quality_assessment_lifecycle import (
+    CommunitySqlAlchemyQualityAssessmentLifecycle,
 )
 from okto_pulse.community.adapters.sqlalchemy_validation_cycle import (
     CommunitySqlAlchemyValidationCycleReader,
@@ -49,7 +55,16 @@ from okto_pulse.community.adapters.sqlalchemy_validation_cycle import (
 )
 from okto_pulse.core.domain.enums import IdeationStatus, RefinementStatus, SpecStatus
 from okto_pulse.core.domain.quality_assessment import (
+    AssessmentSubjectRef,
     AssessmentSubjectType,
+)
+from okto_pulse.core.domain.quality_assessment_lifecycle import (
+    AssessmentLifecycleAction,
+    AssessmentLifecycleSubjectSnapshot,
+    AssessmentLifecycleTransition,
+)
+from okto_pulse.core.services.quality_assessment_lifecycle import (
+    QualityAssessmentLifecycleService,
 )
 from okto_pulse.core.domain.realm import RealmScope
 from okto_pulse.core.domain.validation_cycle import (
@@ -100,6 +115,14 @@ def _permit_only(monkeypatch, *permissions: str) -> None:
 
 def _spec(index: int) -> Spec:
     return Spec(
+        architecture_adoption=ArchitectureAdoptionScope(
+            board_id=BOARD_ID, spec_id=f"spec-cycle-{index:02d}", adopted_in_edition=1,
+            actor_id="owner", inherited_resource_ids=(),
+        ).model_dump(mode="json"),
+        execution_contract=new_execution_contract(
+            board_id=BOARD_ID, spec_id=f"spec-cycle-{index:02d}", edition=1,
+            actor_id="owner", origin="new_spec",
+        ),
         id=f"spec-cycle-{index:02d}",
         board_id=BOARD_ID,
         title=f"Validation cycle {index}",
@@ -234,6 +257,7 @@ async def cycle_rig(tmp_path, monkeypatch):
     )
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
+        await connection.run_sync(lambda connection: install_validation_revision_triggers(connection, Base.metadata))
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
@@ -241,7 +265,7 @@ async def cycle_rig(tmp_path, monkeypatch):
         expire_on_commit=False,
     )
     async with factory() as session:
-        session.add(Board(id=BOARD_ID, name="Cycle", owner_id="owner"))
+        session.add(Board(realm_id="local", id=BOARD_ID, name="Cycle", owner_id="owner"))
         session.add_all(_spec(index) for index in range(50))
         await session.commit()
 
@@ -262,6 +286,76 @@ async def cycle_rig(tmp_path, monkeypatch):
         yield SimpleNamespace(engine=engine, factory=factory)
     finally:
         await engine.dispose()
+
+
+@pytest.mark.parametrize("receipt_edition", [1, 2])
+async def test_restore_reconciles_only_native_current_edition_and_keeps_history(
+    cycle_rig, receipt_edition
+):
+    subject_id = "ideation-restore-edition"
+    receipt_id = "restore-native-result"
+    async with cycle_rig.factory() as session:
+        session.add(Ideation(
+            id=subject_id, board_id=BOARD_ID, title="Restore edition",
+            created_by="owner", edition=2, version=9,
+        ))
+        session.add(_ambiguity_receipt(
+            receipt_id=receipt_id, subject_id=subject_id,
+            edition=receipt_edition, score=2, head_revision=3,
+        ))
+        await session.flush()
+        session.add(QualityAssessmentHeadRow(
+            board_id=BOARD_ID, subject_type="ideation", subject_id=subject_id,
+            assessment_kind="ambiguity", receipt_id=receipt_id,
+            revision=3, updated_at=NOW,
+        ))
+        await session.commit()
+
+    subject = AssessmentSubjectRef(
+        board_id=BOARD_ID, subject_type=AssessmentSubjectType.IDEATION,
+        subject_id=subject_id, subject_version=9, subject_edition=2,
+    )
+    before = AssessmentLifecycleSubjectSnapshot(
+        subject=subject, status="draft", archived=True,
+    )
+    transition = AssessmentLifecycleTransition(
+        action=AssessmentLifecycleAction.RESTORE,
+        before=before, after=replace(before, archived=False),
+        idempotency_key="restore-native-edition", actor_id="owner", occurred_at=NOW,
+    )
+    async with cycle_rig.factory() as session:
+        adapter = CommunitySqlAlchemyQualityAssessmentLifecycle(session)
+        heads, receipts = await adapter.load_lifecycle_state(
+            board_id=BOARD_ID, subject_type="ideation", subject_id=subject_id,
+        )
+        plan = QualityAssessmentLifecycleService().prepare_transition(
+            transition, heads=heads, receipts=receipts,
+        )
+        await adapter.apply_lifecycle_plan(plan)
+        await session.commit()
+
+    async with cycle_rig.factory() as session:
+        head = await session.get(QualityAssessmentHeadRow, (
+            BOARD_ID, "ideation", subject_id, "ambiguity",
+        ))
+        assert (head.receipt_id if head else None) == (
+            receipt_id if receipt_edition == 2 else None
+        )
+        if head:
+            assert head.revision == 3
+        receipt = await session.get(QualityAssessmentReceiptRow, receipt_id)
+        assert receipt.subject_edition == receipt_edition
+        assert receipt.subject_version == 7
+        audit = await session.get(
+            QualityAssessmentLifecycleTransitionRow, transition.transition_digest,
+        )
+        assert audit.head_rebuilds_json[0]["selected_state"] == (
+            "current" if receipt_edition == 2 else None
+        )
+        assert "stale_transition_key" not in audit.head_rebuilds_json[0]
+        # A retry uses the same transition and does not recreate a cleared head.
+        await CommunitySqlAlchemyQualityAssessmentLifecycle(session).apply_lifecycle_plan(plan)
+        await session.commit()
 
 
 async def _count_selects(engine, operation):
@@ -318,11 +412,346 @@ async def test_batch_of_fifty_is_summary_only_and_has_constant_select_budget(
 
     assert len(one_result) == 1
     assert len(fifty_result) == 50
-    assert len(fifty_selects) == len(one_selects) == 6
+    assert len(fifty_selects) == len(one_selects) == 7
+    assert sum("validation_source_revisions" in statement for statement in fifty_selects) == 1
+    assert all(item.planning_manifest is not None for item in fifty_result)
     assert all(item.previous_results == () for item in fifty_result)
     assert [item.subject_id for item in fifty_result] == [
         item.subject_id for item in fifty
     ]
+
+
+async def test_cycle_exposes_current_manifest_and_hides_it_without_validation_read(cycle_rig, monkeypatch):
+    reader = CommunitySqlAlchemyValidationCycleReader(cycle_rig.factory)
+    async def read():
+        return await reader.get_validation_cycle(
+            subject_type=AssessmentSubjectType.SPEC, subject_id="spec-cycle-00",
+            actor_id="owner", realm_scope=RealmScope.local(), include_previous=False, offset=0, limit=25,
+        )
+    initial = await read()
+    assert initial.planning_manifest.spec_id == initial.subject_id
+    assert initial.planning_manifest.spec_version == initial.submission_fence.expected_subject_version
+    assert project_validation_cycle(initial)["planning_manifest"] == initial.planning_manifest.model_dump(mode="json")
+    async with cycle_rig.factory() as session:
+        from sqlalchemy import text
+        await session.execute(text("UPDATE specs SET evaluations='[]' WHERE id='spec-cycle-00'"))
+        await session.commit()
+    changed = await read()
+    assert changed.planning_manifest.subject_revision > initial.planning_manifest.subject_revision
+    _permit_only(monkeypatch, "spec.entity.read", "spec.checklist.read")
+    hidden = await read()
+    assert hidden.planning_manifest is None
+    assert "planning_manifest" not in project_validation_cycle(hidden)
+
+
+@pytest.mark.parametrize("only_decomposition", [False, True])
+async def test_planning_read_keeps_providers_and_does_not_write(cycle_rig, monkeypatch, only_decomposition):
+    from okto_pulse.core.composition import isolated_runtime_provider_scope
+    from okto_pulse.core.runtime_context import current_runtime_values
+    from okto_pulse.core.ports.application_persistence import register_application_persistence_port
+    from okto_pulse.core.ports.relational_application import register_relational_application_adapter
+    from okto_pulse.community.adapters.sqlalchemy_application_persistence import CommunitySqlAlchemyApplicationPersistence
+    from okto_pulse.community.adapters.relational_application import CommunityRelationalApplicationAdapter
+    from okto_pulse.core.ports.relational_services import register_resource_gate_adapter_factory
+    from okto_pulse.community.adapters.sqlalchemy_resource_gate_service import CommunitySqlAlchemyResourceGateAdapter
+
+    statements = []
+    commits = []
+
+    def record(_conn, _cursor, statement, *_args):
+        statements.append(statement.lstrip().split()[0].upper())
+
+    def committed(_conn):
+        commits.append(True)
+
+    reader = CommunitySqlAlchemyValidationCycleReader(cycle_rig.factory)
+    arguments = dict(subject_type=AssessmentSubjectType.SPEC, subject_id="spec-cycle-00",
+                     actor_id="owner", realm_scope=RealmScope.local(),
+                     include_previous=False, offset=0, limit=25)
+    before = await reader.get_validation_cycle(**arguments)
+    original_permissions = sqlalchemy_validation_cycle._quality_actor_permissions
+    if only_decomposition:
+        _permit_only(monkeypatch, "spec.entity.read", "spec.evaluations.read")
+        with pytest.raises(ValidationCycleReadAccessDenied):
+            await reader.get_validation_cycle(**arguments)
+    with isolated_runtime_provider_scope():
+        register_application_persistence_port(CommunitySqlAlchemyApplicationPersistence())
+        register_relational_application_adapter(CommunityRelationalApplicationAdapter())
+        register_resource_gate_adapter_factory(CommunitySqlAlchemyResourceGateAdapter)
+        registry = current_runtime_values()
+        providers = registry.snapshot()
+        event.listen(cycle_rig.engine.sync_engine, "before_cursor_execute", record)
+        event.listen(cycle_rig.engine.sync_engine, "commit", committed)
+        try:
+            result = await reader.get_validation_cycle(**arguments, include_planning=True)
+        finally:
+            event.remove(cycle_rig.engine.sync_engine, "before_cursor_execute", record)
+            event.remove(cycle_rig.engine.sync_engine, "commit", committed)
+        assert current_runtime_values() is registry
+        assert all(registry.resolve(key) is value for key, value in providers.items())
+        # Native read observability may allocate its bounded sample buffer;
+        # composing the read must never install or replace runtime providers.
+        added = set(registry.snapshot()) - set(providers)
+        assert all(key.startswith("observability.samples.") for key in added)
+    components = {item.key: item for item in result.planning_readiness.components}
+    assert components["spec_validation"].native_result == (None if only_decomposition else "missing")
+    if only_decomposition:
+        assert result.visible_sections == ()
+        assert result.planning_manifest is None
+        assert "current_result" not in project_validation_cycle(result)
+    assert components["decomposition"].state == "blocked"
+    assert components["decision_verification"].native_result == "not_applicable"
+    if only_decomposition:
+        assert components["task_requirement_links"].state == "unavailable"
+    else:
+        assert components["task_requirement_links"].state != "unavailable"
+    assert not commits
+    assert not set(statements) & {"INSERT", "UPDATE", "DELETE", "REPLACE", "CREATE", "ALTER", "DROP"}
+    monkeypatch.setattr(sqlalchemy_validation_cycle, "_quality_actor_permissions", original_permissions)
+    after = await reader.get_validation_cycle(**arguments)
+    assert before == after
+    if not only_decomposition:
+        assert result.planning_manifest == before.planning_manifest
+
+
+async def test_workspace_metadata_is_bounded_and_tracks_card_changes_without_spec_version(cycle_rig):
+    from sqlalchemy import text
+    from okto_pulse.core.domain.workspace_revisions import WorkspaceRevisionsQuery
+    from okto_pulse.community.adapters.sqlalchemy_models import Card
+
+    async with cycle_rig.factory() as session:
+        session.add(Card(id="workspace-card", board_id=BOARD_ID, spec_id="spec-cycle-00",
+                         title="Before", created_by="owner"))
+        await session.commit()
+    reader = CommunitySqlAlchemyValidationCycleReader(cycle_rig.factory)
+    subjects = [{"subject_type": "spec", "subject_id": f"spec-cycle-{index:02d}"} for index in range(49)]
+    subjects.append({"subject_type": "card", "subject_id": "workspace-card"})
+    query = WorkspaceRevisionsQuery(board_id=BOARD_ID, subjects=subjects)
+    async def read(query):
+        return await reader.get_workspace_revisions(query, actor_id="owner", realm_scope=RealmScope.local())
+    before, statements = await _count_selects(cycle_rig.engine, read(query))
+    _, one_statements = await _count_selects(cycle_rig.engine, read(query.model_copy(update={"subjects": query.subjects[:1]})))
+    assert len(statements) == len(one_statements) == 2  # Permissions isolated by cycle_rig.
+    assert all("description" not in sql.lower() and "evaluations" not in sql.lower() for sql in statements)
+    async with cycle_rig.factory() as session:
+        await session.execute(text("UPDATE cards SET title='After' WHERE id='workspace-card'"))
+        await session.commit()
+    after = await read(query)
+    assert after.subjects[0].token.revision > before.subjects[0].token.revision
+    assert after.subjects[-1].token.revision > before.subjects[-1].token.revision
+    assert after.subjects[1:-1] == before.subjects[1:-1]
+    async with cycle_rig.factory() as session:
+        assert (await session.get(Spec, "spec-cycle-00")).version == 1
+        await session.execute(text("DELETE FROM cards WHERE id='workspace-card'"))
+        await session.commit()
+    deleted = await read(query)
+    assert deleted.subjects[-1].token is None
+
+
+@pytest.mark.parametrize("kind", ["spec", "card"])
+async def test_workspace_collection_detects_unknown_insert_edit_delete_and_rollback(cycle_rig, kind):
+    from sqlalchemy import text
+    from okto_pulse.core.domain.workspace_revisions import WorkspaceRevisionsQuery
+    from okto_pulse.community.adapters.sqlalchemy_models import Card
+
+    reader = CommunitySqlAlchemyValidationCycleReader(cycle_rig.factory)
+    query = WorkspaceRevisionsQuery(board_id=BOARD_ID, subjects=[
+        {"subject_type": kind + "_collection", "subject_id": BOARD_ID},
+    ])
+    async def read():
+        return await reader.get_workspace_revisions(query, actor_id="owner", realm_scope=RealmScope.local())
+
+    before, statements = await _count_selects(cycle_rig.engine, read())
+    assert len(statements) == 2  # Permission resolution isolated by cycle_rig.
+    assert all("description" not in sql.lower() and "evaluations" not in sql.lower() for sql in statements)
+    assert before.subjects[0].token is not None  # Even an empty Card collection.
+    identity = "spec-cycle-99" if kind == "spec" else "new-card-not-in-client"
+    async with cycle_rig.factory() as session:
+        session.add(_spec(99) if kind == "spec" else Card(
+            id=identity, board_id=BOARD_ID, spec_id="spec-cycle-00", title="New", created_by="owner",
+        ))
+        await session.commit()
+    inserted = await read()
+    assert inserted.authority == before.authority
+    assert inserted.subjects[0].token.revision > before.subjects[0].token.revision
+    async with cycle_rig.factory() as session:
+        await session.execute(text(f"UPDATE {kind}s SET title='Rolled back' WHERE id=:id"), {"id": identity})
+        await session.rollback()
+    assert await read() == inserted
+    async with cycle_rig.factory() as session:
+        await session.execute(text(f"UPDATE {kind}s SET title='Edited' WHERE id=:id"), {"id": identity})
+        await session.commit()
+    edited = await read()
+    assert edited.subjects[0].token.revision > inserted.subjects[0].token.revision
+    async with cycle_rig.factory() as session:
+        await session.execute(text(f"DELETE FROM {kind}s WHERE id=:id"), {"id": identity})
+        await session.commit()
+    deleted = await read()
+    assert deleted.subjects[0].token.revision > edited.subjects[0].token.revision
+    assert deleted.authority == before.authority
+
+
+@pytest.mark.parametrize("kind", ["spec", "card"])
+async def test_workspace_collection_requires_entity_read_and_existing_metadata(cycle_rig, monkeypatch, kind):
+    from sqlalchemy import text
+    from okto_pulse.core.domain.workspace_revisions import WorkspaceRevisionsQuery
+    from okto_pulse.core.ports.validation_cycle import WorkspaceRevisionsUnavailable
+
+    reader = CommunitySqlAlchemyValidationCycleReader(cycle_rig.factory)
+    query = WorkspaceRevisionsQuery(board_id=BOARD_ID, subjects=[
+        {"subject_type": kind + "_collection", "subject_id": BOARD_ID},
+    ])
+    _permit_only(monkeypatch, "spec.validation.read")
+    with pytest.raises(ValidationCycleReadAccessDenied):
+        await reader.get_workspace_revisions(query, actor_id="owner", realm_scope=RealmScope.local())
+    _permit_only(monkeypatch, kind + ".entity.read")
+    assert (await reader.get_workspace_revisions(query, actor_id="owner", realm_scope=RealmScope.local())).subjects[0].token
+    async with cycle_rig.engine.begin() as connection:
+        # Explicit damaged-store fixture; runtime never reconstructs this token.
+        await connection.execute(text("DROP TRIGGER validation_revision_no_delete"))
+        await connection.execute(text("DELETE FROM validation_source_revisions WHERE scope_kind=:kind AND scope_id=:board"),
+                                 {"kind": kind + "_collection", "board": BOARD_ID})
+    with pytest.raises(WorkspaceRevisionsUnavailable):
+        await reader.get_workspace_revisions(query, actor_id="owner", realm_scope=RealmScope.local())
+
+
+async def test_workspace_metadata_reauthorizes_and_hides_foreign_subjects(cycle_rig, monkeypatch):
+    from okto_pulse.core.domain.workspace_revisions import WorkspaceRevisionsQuery
+
+    reader = CommunitySqlAlchemyValidationCycleReader(cycle_rig.factory)
+    query = WorkspaceRevisionsQuery(board_id=BOARD_ID, subjects=[
+        {"subject_type": "spec", "subject_id": "spec-cycle-00"},
+        {"subject_type": "spec", "subject_id": "missing-or-other-board"},
+    ])
+    result = await reader.get_workspace_revisions(query, actor_id="owner", realm_scope=RealmScope.local())
+    assert result.subjects[0].token is not None and result.subjects[1].token is None
+    _permit_only(monkeypatch, "spec.validation.read")
+    with pytest.raises(ValidationCycleReadAccessDenied):
+        await reader.get_workspace_revisions(query, actor_id="owner", realm_scope=RealmScope.local())
+    _permit_only(monkeypatch, "spec.entity.read")
+    async with cycle_rig.factory() as session:
+        board = await session.get(Board, BOARD_ID)
+        board.realm_id = "another-realm"
+        await session.commit()
+    with pytest.raises(ValidationCycleSubjectNotFound):
+        await reader.get_workspace_revisions(query, actor_id="owner", realm_scope=RealmScope.local())
+
+
+async def test_workspace_authority_and_subject_tokens_share_a_snapshot(cycle_rig, monkeypatch):
+    from sqlalchemy import text
+    from okto_pulse.core.domain.workspace_revisions import WorkspaceRevisionsQuery
+
+    async with cycle_rig.engine.connect() as connection:
+        await connection.exec_driver_sql("PRAGMA journal_mode=WAL")
+    query = WorkspaceRevisionsQuery(board_id=BOARD_ID, subjects=[
+        {"subject_type": "spec", "subject_id": "spec-cycle-00"},
+    ])
+    reader = CommunitySqlAlchemyValidationCycleReader(cycle_rig.factory)
+    async def read():
+        return await reader.get_workspace_revisions(query, actor_id="owner", realm_scope=RealmScope.local())
+    before = await read()
+    reached, release = asyncio.Event(), asyncio.Event()
+    original = sqlalchemy_validation_cycle._quality_actor_permissions
+    async def hold(*args, **kwargs):
+        result = await original(*args, **kwargs)
+        reached.set()
+        await release.wait()
+        return result
+    monkeypatch.setattr(sqlalchemy_validation_cycle, "_quality_actor_permissions", hold)
+    pending = asyncio.create_task(read())
+    await asyncio.wait_for(reached.wait(), 5)
+    try:
+        async with cycle_rig.factory() as session:
+            await session.execute(text("UPDATE specs SET title='Changed concurrently' WHERE id='spec-cycle-00'"))
+            await session.execute(text("UPDATE boards SET settings='{}' WHERE id=:id"), {"id": BOARD_ID})
+            await session.commit()
+    finally:
+        release.set()
+    during = await asyncio.wait_for(pending, 5)
+    assert during == before
+    monkeypatch.setattr(sqlalchemy_validation_cycle, "_quality_actor_permissions", original)
+    after = await read()
+    assert after.subjects[0].token.revision > before.subjects[0].token.revision
+    assert after.authority.revision > before.authority.revision
+
+
+async def test_workspace_missing_revision_fails_closed(cycle_rig):
+    from sqlalchemy import text
+    from okto_pulse.core.domain.workspace_revisions import WorkspaceRevisionsQuery
+    from okto_pulse.core.ports.validation_cycle import WorkspaceRevisionsUnavailable
+
+    async with cycle_rig.engine.begin() as connection:
+        # Deliberate damaged-store fixture; normal runtime guards forbid this.
+        await connection.execute(text("DROP TRIGGER validation_revision_no_delete"))
+        await connection.execute(text("DELETE FROM validation_source_revisions WHERE scope_kind='spec' AND scope_id='spec-cycle-00'"))
+    query = WorkspaceRevisionsQuery(board_id=BOARD_ID, subjects=[
+        {"subject_type": "spec", "subject_id": "spec-cycle-00"},
+    ])
+    with pytest.raises(WorkspaceRevisionsUnavailable):
+        await CommunitySqlAlchemyValidationCycleReader(cycle_rig.factory).get_workspace_revisions(
+            query, actor_id="owner", realm_scope=RealmScope.local(),
+        )
+
+
+@pytest.mark.parametrize("foreign_realm", [False, True])
+async def test_single_and_batch_cycle_enforce_requested_board_and_realm(cycle_rig, foreign_realm):
+    # The fixture grants all read permissions: scope must be checked separately.
+    reader = CommunitySqlAlchemyValidationCycleReader(cycle_rig.factory)
+    if foreign_realm:
+        async with cycle_rig.factory() as session:
+            board = await session.get(Board, BOARD_ID)
+            board.realm_id = "other-realm"
+            await session.commit()
+    requested_board = BOARD_ID if foreign_realm else "different-board"
+    with pytest.raises(ValidationCycleSubjectNotFound):
+        await reader.get_validation_cycle(
+            subject_type=AssessmentSubjectType.SPEC, subject_id="spec-cycle-00",
+            actor_id="owner", realm_scope=RealmScope.local(), board_id=requested_board,
+            include_previous=False, offset=0, limit=25,
+        )
+    with pytest.raises(ValidationCycleSubjectNotFound):
+        await reader.get_validation_cycles(
+            subjects=(ValidationCycleSubjectRef(AssessmentSubjectType.SPEC, "spec-cycle-00"),),
+            actor_id="owner", realm_scope=RealmScope.local(), board_id=requested_board,
+        )
+
+
+async def test_cycle_manifest_shares_snapshot_with_results_during_concurrent_card_write(cycle_rig, monkeypatch):
+    from okto_pulse.community.adapters.sqlalchemy_models import Card
+
+    async with cycle_rig.engine.connect() as connection:
+        await connection.exec_driver_sql("PRAGMA journal_mode=WAL")
+    reader = CommunitySqlAlchemyValidationCycleReader(cycle_rig.factory)
+    arguments = dict(
+        subjects=(ValidationCycleSubjectRef(AssessmentSubjectType.SPEC, "spec-cycle-00"),),
+        actor_id="owner", realm_scope=RealmScope.local(),
+    )
+    before, = await reader.get_validation_cycles(**arguments)
+    reached = asyncio.Event()
+    release = asyncio.Event()
+    original = reader._batch_spec_checks
+
+    async def hold(*args, **kwargs):
+        checks = await original(*args, **kwargs)
+        reached.set()
+        await release.wait()
+        return checks
+
+    monkeypatch.setattr(reader, "_batch_spec_checks", hold)
+    pending = asyncio.create_task(reader.get_validation_cycles(**arguments))
+    await asyncio.wait_for(reached.wait(), 5)
+    try:
+        async with cycle_rig.factory() as session:
+            session.add(Card(id="concurrent-card", board_id=BOARD_ID, spec_id="spec-cycle-00",
+                             title="Added during read", created_by="owner"))
+            await session.commit()
+    finally:
+        release.set()
+    during, = await asyncio.wait_for(pending, 5)
+    assert during.planning_manifest == before.planning_manifest
+    monkeypatch.setattr(reader, "_batch_spec_checks", original)
+    after, = await reader.get_validation_cycles(**arguments)
+    assert after.planning_manifest.subject_revision > before.planning_manifest.subject_revision
 
 
 def _semantic_metric(
@@ -376,7 +805,6 @@ def _semantic_authority_rows(
             content=f"Frozen policy {suffix}",
             content_digest=source_digest,
             tags=[],
-            rules=[],
             created_by="owner",
             created_at=NOW,
             published_head_revision=1,
@@ -389,8 +817,6 @@ def _semantic_authority_rows(
             metrics=metrics,
             revision_digest=revision_digest,
             source_revision_digest=source_digest,
-            authority_state="native",
-            legacy_rules_digest=None,
             created_by="owner",
             created_at=NOW,
         ),
@@ -442,105 +868,17 @@ def _scope_item(suffix: str, *, enforcement: str) -> dict[str, object]:
     }
 
 
-def _v1_policy_receipt(
-    suffix: str,
-    *,
-    state: str,
-    assessed_at: datetime,
-    metric_count: int = 1,
-    failed_count: int | None = None,
-) -> SemanticGuidelineAssessmentReceiptRow:
-    failed = (
-        (0 if state == "passed" else metric_count)
-        if failed_count is None
-        else failed_count
-    )
-    digest = "a" * 64
-    return SemanticGuidelineAssessmentReceiptRow(
-        receipt_id=f"receipt-v1-{suffix}",
-        board_id=BOARD_ID,
-        subject_type="spec",
-        subject_id="spec-cycle-00",
-        subject_version=1,
-        validation_edition=1,
-        subject_content_digest=digest,
-        last_semantic_editor_id="author",
-        guideline_id=f"guideline-{suffix}",
-        revision_id=f"revision-{suffix}",
-        revision_digest=suffix[-1] * 64,
-        binding_id=f"binding-{suffix}",
-        binding_revision=1,
-        configuration_digest=("f" if suffix[-1] != "f" else "e") * 64,
-        policy_set_digest=digest,
-        binding_head_digest=digest,
-        enforcement="blocking" if suffix == "blocking" else "advisory",
-        minimum_confidence=80,
-        confidence=90,
-        confidence_admissible=True,
-        assessor_agent_id="assessor",
-        assessor_model_id=None,
-        assessor_independent=True,
-        state=state,
-        recorded_currentness="current",
-        input_digest=digest,
-        receipt_digest=digest,
-        metric_result_count=metric_count,
-        failed_metric_count=failed,
-        idempotency_key=f"v1-{suffix}",
-        request_digest=digest,
-        assessed_at=assessed_at,
-        sealed=True,
-    )
-
-
-def _v1_policy_result(
-    suffix: str,
-    *,
-    outcome: str,
-    metric_suffix: str | None = None,
-) -> SemanticGuidelineMetricResultRow:
-    digest = "a" * 64
-    resolved_metric_suffix = metric_suffix or suffix
-    return SemanticGuidelineMetricResultRow(
-        result_id=f"result-v1-{suffix}-{resolved_metric_suffix}",
-        receipt_id=f"receipt-v1-{suffix}",
-        board_id=BOARD_ID,
-        subject_type="spec",
-        subject_id="spec-cycle-00",
-        subject_version=1,
-        subject_content_digest=digest,
-        receipt_digest=digest,
-        guideline_id=f"guideline-{suffix}",
-        revision_id=f"revision-{suffix}",
-        revision_digest=suffix[-1] * 64,
-        binding_id=f"binding-{suffix}",
-        binding_revision=1,
-        configuration_digest=("f" if suffix[-1] != "f" else "e") * 64,
-        metric_id=f"metric-{resolved_metric_suffix}",
-        metric_code=f"policy.{resolved_metric_suffix}",
-        metric_definition_digest="d" * 64,
-        direction="minimum",
-        default_threshold=70,
-        effective_threshold=70,
-        threshold_source="default",
-        score=80 if outcome == "pass" else 60,
-        outcome=outcome,
-        rationale="Deterministic v1 metric result.",
-        evidence_refs=[],
-        pinpoints=[],
-        result_digest="e" * 64,
-        created_at=NOW,
-    )
-
-
 def _v2_policy_rows(
     suffix: str,
     *,
     outcome: str,
     recorded_at: datetime,
+    metric_suffix: str | None = None,
+    identity: str = "current",
 ) -> tuple[object, object]:
     digest = "b" * 64
-    receipt_id = f"receipt-v2-{suffix}"
+    metric_suffix = metric_suffix or suffix
+    receipt_id = f"receipt-v2-{suffix}-{identity}"
     receipt = SemanticGuidelineAssessmentV2Row(
         receipt_id=receipt_id,
         contract_version="semantic-guideline-assessment/v2",
@@ -558,21 +896,21 @@ def _v2_policy_rows(
         configuration_digest=("f" if suffix[-1] != "f" else "e") * 64,
         confidence=90,
         assessor_agent_id="assessor",
-        idempotency_key=f"v2-{suffix}",
+        idempotency_key=f"v2-{suffix}-{identity}",
         request_digest=digest,
         receipt_digest=digest,
         payload={},
         recorded_at=recorded_at,
     )
     result = SemanticGuidelineMetricResultV2Row(
-        result_id=f"result-v2-{suffix}",
+        result_id=f"result-v2-{suffix}-{metric_suffix}-{identity}",
         contract_version="semantic-metric-result/v2",
         receipt_id=receipt_id,
         board_id=BOARD_ID,
         subject_type="spec",
         subject_id="spec-cycle-00",
-        metric_id=f"metric-{suffix}",
-        metric_code=f"policy.{suffix}",
+        metric_id=f"metric-{metric_suffix}",
+        metric_code=f"policy.{metric_suffix}",
         outcome=outcome,
         result_digest=digest,
         payload={},
@@ -633,7 +971,7 @@ def _metric_waiver(
     expires_at: datetime | None = None,
 ) -> SemanticGuidelineWaiverRow:
     digest = "6" * 64
-    resolved_receipt_id = receipt_id or f"receipt-v1-{binding_suffix}"
+    resolved_receipt_id = receipt_id or f"receipt-v2-{binding_suffix}-current"
     reviewed = status != "requested"
     revoked = status == "revoked"
     expired = status == "expired"
@@ -647,7 +985,7 @@ def _metric_waiver(
         waiver_id=f"waiver-{binding_suffix}-{metric_suffix}-{status}",
         board_id=BOARD_ID,
         metric_result_id=(
-            f"result-v1-{binding_suffix}-{metric_suffix}"
+            f"result-v2-{binding_suffix}-{metric_suffix}-current"
             if receipt_id is None
             else f"result-stale-{binding_suffix}-{metric_suffix}"
         ),
@@ -657,8 +995,8 @@ def _metric_waiver(
         subject_id="spec-cycle-00",
         subject_version=1,
         validation_edition=validation_edition,
-        subject_content_digest="a" * 64,
-        receipt_digest="a" * 64,
+        subject_content_digest="b" * 64,
+        receipt_digest="b" * 64,
         guideline_id=f"guideline-{binding_suffix}",
         revision_id=f"revision-{binding_suffix}",
         revision_digest=binding_suffix[-1] * 64,
@@ -667,7 +1005,7 @@ def _metric_waiver(
         configuration_digest=("f" if binding_suffix[-1] != "f" else "e") * 64,
         metric_id=f"metric-{metric_suffix}",
         metric_code=f"policy.{metric_suffix}",
-        metric_result_digest="e" * 64,
+        metric_result_digest="b" * 64,
         finding_digest=digest,
         scope_digest=digest,
         justification="An independently approved bounded exception.",
@@ -794,7 +1132,7 @@ async def test_policy_summary_distinguishes_legacy_from_missing_frozen_scope(
         if check["result_type"] == "policy_compliance"
     )
 
-    assert len(statements) == 6
+    assert len(statements) == 7
     assert batch_policy == single_policy
     assert single_policy["status"] == "needs_attention"
     assert single_policy["summary"] == ("1 policy scope item could not be verified")
@@ -835,27 +1173,17 @@ async def test_policy_summary_is_snapshot_bound_deduplicated_and_human(
                 captured_at=NOW,
             )
         )
-        # Both contracts exist for two bindings. Only the deterministic latest
+        # Two native assessments exist for each binding. Only the latest
         # receipt contributes to each denominator item.
         session.add_all(
             (
-                _v1_policy_receipt(
-                    "blocking",
-                    state="metric_threshold_failed",
-                    assessed_at=NOW,
-                ),
-                _v1_policy_result("blocking", outcome="fail"),
+                *_v2_policy_rows("blocking", outcome="fail", recorded_at=NOW, identity="previous"),
                 *_v2_policy_rows(
                     "blocking",
                     outcome="pass",
                     recorded_at=NOW.replace(minute=1),
                 ),
-                _v1_policy_receipt(
-                    "advisory",
-                    state="passed",
-                    assessed_at=NOW,
-                ),
-                _v1_policy_result("advisory", outcome="pass"),
+                *_v2_policy_rows("advisory", outcome="pass", recorded_at=NOW, identity="previous"),
                 *_v2_policy_rows(
                     "advisory",
                     outcome="fail",
@@ -903,7 +1231,7 @@ async def test_policy_summary_is_snapshot_bound_deduplicated_and_human(
         if check["result_type"] == "policy_compliance"
     )
 
-    assert len(statements) == 6
+    assert len(statements) == 7
     assert batch_policy == single_policy
     assert single_policy["status"] == "advisory"
     assert single_policy["summary"] == (
@@ -1099,20 +1427,10 @@ async def test_policy_summary_applies_exact_current_metric_waivers(
             )
         )
         session.add(
-            _v1_policy_receipt(
-                binding_suffix,
-                state="metric_threshold_failed",
-                assessed_at=NOW,
-                metric_count=2,
-                failed_count=2,
-            )
+            _v2_policy_rows(binding_suffix, outcome="fail", recorded_at=NOW)[0]
         )
         session.add_all(
-            _v1_policy_result(
-                binding_suffix,
-                metric_suffix=metric_suffix,
-                outcome="fail",
-            )
+            _v2_policy_rows(binding_suffix, metric_suffix=metric_suffix, outcome="fail", recorded_at=NOW)[1]
             for metric_suffix in metric_suffixes
         )
         session.add_all(
@@ -1164,7 +1482,7 @@ async def test_policy_summary_applies_exact_current_metric_waivers(
 @pytest.mark.parametrize(
     ("case", "waiver_kwargs"),
     (
-        ("stale-receipt", {"receipt_id": "receipt-v1-stale-old"}),
+        ("stale-receipt", {"receipt_id": "receipt-v2-stale-old"}),
         ("wrong-edition", {"validation_edition": 2}),
         ("revoked", {"status": "revoked"}),
         ("expired", {"status": "expired"}),
@@ -1202,18 +1520,10 @@ async def test_policy_summary_ignores_non_current_metric_waivers(
             )
         )
         session.add(
-            _v1_policy_receipt(
-                binding_suffix,
-                state="metric_threshold_failed",
-                assessed_at=NOW,
-            )
+            _v2_policy_rows(binding_suffix, outcome="fail", recorded_at=NOW)[0]
         )
         session.add(
-            _v1_policy_result(
-                binding_suffix,
-                metric_suffix=metric_suffix,
-                outcome="fail",
-            )
+            _v2_policy_rows(binding_suffix, metric_suffix=metric_suffix, outcome="fail", recorded_at=NOW)[1]
         )
         session.add(
             _metric_waiver(
@@ -1332,28 +1642,32 @@ async def test_cycle_keeps_history_findings_and_audit_lazy(cycle_rig) -> None:
         spec.current_validation_id = "validation-current"
         spec.validations = [
             {
+                **native_validation("validation-previous", 1),
                 "id": "validation-previous",
                 "receipt_id": "validation-previous",
                 "edition": 1,
+                "validation_edition": 1,
                 "subject_version": 1,
                 "head_revision": 1,
-                "score": 72,
-                "summary": "Previous human assessment.",
+                "confidence": 72,
+                "confidence_justification": "Previous human assessment.",
                 "outcome": "success",
                 "digests": current_digest,
-                "findings": [{"large": "technical history" * 100}],
+                "clarity_justification": "technical history" * 100,
             },
             {
+                **native_validation("validation-current", 2),
                 "id": "validation-current",
                 "receipt_id": "validation-current",
                 "edition": 2,
+                "validation_edition": 2,
                 "subject_version": 3,
                 "head_revision": 2,
-                "score": 91,
-                "summary": "Current human assessment.",
+                "confidence": 91,
+                "confidence_justification": "Current human assessment.",
                 "outcome": "success",
                 "digests": current_digest,
-                "findings": [{"large": "technical current" * 100}],
+                "clarity_justification": "technical current" * 100,
             },
         ]
         await session.commit()
@@ -1378,6 +1692,8 @@ async def test_cycle_keeps_history_findings_and_audit_lazy(cycle_rig) -> None:
     assert payload["previous_results"] == []
     assert "digests" not in encoded
     assert "findings" not in encoded
+    assert "technical current" not in encoded
+    assert "technical history" not in encoded
     assert all("quality_findings" not in statement.lower() for statement in statements)
 
     audit = await reader.get_result_technical_audit(
@@ -1670,16 +1986,16 @@ async def test_requirement_lint_result_has_subject_scoped_technical_audit(
     assert audit.technical_audit.subject_version == 4
 
 
-async def test_legacy_null_edition_ambiguity_is_previous_only_and_auditable(
+async def test_native_previous_edition_ambiguity_is_previous_only_and_auditable(
     cycle_rig,
 ) -> None:
     digest = "b" * 64
     async with cycle_rig.factory() as session:
         session.add(
             Ideation(
-                id="ideation-legacy-ambiguity",
+                id="ideation-native-ambiguity",
                 board_id=BOARD_ID,
-                title="Legacy ambiguity",
+                title="Native ambiguity",
                 created_by="owner",
                 edition=2,
                 version=3,
@@ -1687,23 +2003,23 @@ async def test_legacy_null_edition_ambiguity_is_previous_only_and_auditable(
         )
         session.add(
             QualityAssessmentReceiptRow(
-                id="ambiguity-legacy-null",
+                id="ambiguity-previous",
                 board_id=BOARD_ID,
                 subject_type="ideation",
-                subject_id="ideation-legacy-ambiguity",
+                subject_id="ideation-native-ambiguity",
                 subject_version=1,
-                subject_edition=None,
+                subject_edition=1,
                 assessment_kind="ambiguity",
-                origin="legacy_import",
-                source="legacy_migration",
-                channel="migration",
+                origin="human_or_agent",
+                source="native",
+                channel="mcp",
                 outcome="recorded",
                 scale_kind="ambiguity_score",
                 scale_minimum=1,
                 scale_maximum=5,
                 scale_direction="lower_better",
                 score=2,
-                justification="Imported before lifecycle editions existed.",
+                justification="Recorded in the previous lifecycle edition.",
                 content_digest=digest,
                 clarification_digest=digest,
                 ruleset_digest=digest,
@@ -1713,19 +2029,19 @@ async def test_legacy_null_edition_ambiguity_is_previous_only_and_auditable(
                 canonicalization_version="quality-canonicalization/v1",
                 ruleset_version="ambiguity/v1",
                 taxonomy_version="ambiguity-taxonomy/v1",
-                analyzer_version="legacy-import",
+                analyzer_version="reviewer",
                 policy_version="quality-policy/v1",
                 run_identity_digest=digest,
                 authority_digest=digest,
-                idempotency_key="ambiguity-legacy-null",
+                idempotency_key="ambiguity-previous",
                 request_digest=digest,
-                created_by="legacy-import",
+                created_by="reviewer",
                 created_at=NOW,
                 predecessor_receipt_id=None,
                 contract_version="quality-assessment/v1",
-                event_id="ambiguity-legacy-event",
-                history_id="ambiguity-legacy-history",
-                outbox_id="ambiguity-legacy-outbox",
+                event_id="ambiguity-native-event",
+                history_id="ambiguity-native-history",
+                outbox_id="ambiguity-native-outbox",
                 head_revision=1,
             )
         )
@@ -1733,9 +2049,9 @@ async def test_legacy_null_edition_ambiguity_is_previous_only_and_auditable(
             QualityAssessmentHeadRow(
                 board_id=BOARD_ID,
                 subject_type="ideation",
-                subject_id="ideation-legacy-ambiguity",
+                subject_id="ideation-native-ambiguity",
                 assessment_kind="ambiguity",
-                receipt_id="ambiguity-legacy-null",
+                receipt_id="ambiguity-previous",
                 revision=1,
                 updated_at=NOW,
             )
@@ -1745,7 +2061,7 @@ async def test_legacy_null_edition_ambiguity_is_previous_only_and_auditable(
     reader = CommunitySqlAlchemyValidationCycleReader(cycle_rig.factory)
     cycle = await reader.get_validation_cycle(
         subject_type=AssessmentSubjectType.IDEATION,
-        subject_id="ideation-legacy-ambiguity",
+        subject_id="ideation-native-ambiguity",
         include_previous=True,
         offset=0,
         limit=25,
@@ -1756,7 +2072,7 @@ async def test_legacy_null_edition_ambiguity_is_previous_only_and_auditable(
         subjects=(
             ValidationCycleSubjectRef(
                 AssessmentSubjectType.IDEATION,
-                "ideation-legacy-ambiguity",
+                "ideation-native-ambiguity",
             ),
         ),
         actor_id="owner",
@@ -1765,132 +2081,53 @@ async def test_legacy_null_edition_ambiguity_is_previous_only_and_auditable(
 
     assert cycle.current_result is None
     assert cycle.previous_result_count == 1
-    assert cycle.previous_results[0].subject_edition is None
+    assert cycle.previous_results[0].subject_edition == 1
     assert batch[0].current_result is None
     assert batch[0].previous_result_count == 1
     assert (
         project_validation_cycle(cycle)["previous_results"][0]["subject_edition"]
-        is None
+        == 1
     )
 
     audit = await reader.get_result_technical_audit(
         subject_type=AssessmentSubjectType.IDEATION,
-        subject_id="ideation-legacy-ambiguity",
-        result_id="ambiguity-legacy-null",
+        subject_id="ideation-native-ambiguity",
+        result_id="ambiguity-previous",
         result_type=ValidationCycleResultType.AMBIGUITY_ASSESSMENT,
         actor_id="owner",
         realm_scope=RealmScope.local(),
     )
-    assert audit.subject_edition is None
+    assert audit.subject_edition == 1
     assert audit.technical_audit.exceptions == ()
-    assert project_validation_technical_audit(audit)["subject_edition"] is None
+    assert project_validation_technical_audit(audit)["subject_edition"] == 1
 
 
-async def test_legacy_null_edition_spec_validation_is_previous_only_and_auditable(
-    cycle_rig,
-) -> None:
-    digests = {
-        name: character * 64
-        for name, character in zip(
-            ("content", "clarification", "ruleset", "taxonomy", "policy", "input"),
-            "cdefab",
-            strict=True,
-        )
-    }
+async def test_null_edition_spec_validation_is_refused_without_repair(cycle_rig):
+    record = {"id": "incompatible", "receipt_id": "incompatible", "edition": None,
+        "validation_edition": None, "subject_version": 1, "head_revision": 1,
+        "outcome": "success", "digests": {}}
     async with cycle_rig.factory() as session:
         spec = await session.get(Spec, "spec-cycle-04")
-        assert spec is not None
-        spec.edition = 2
-        spec.version = 4
-        spec.current_validation_id = "validation-legacy-null"
-        spec.validations = [
-            {
-                "id": "validation-legacy-null",
-                "receipt_id": "validation-legacy-null",
-                "edition": None,
-                "subject_version": 1,
-                "head_revision": 1,
-                "score": 80,
-                "summary": "Imported before lifecycle editions existed.",
-                "outcome": "success",
-                "digests": digests,
-            }
-        ]
-        session.add_all(
-            (
-                _requirement_lint_receipt(
-                    receipt_id="lint-current-for-legacy-validation",
-                    spec_id=spec.id,
-                    edition=2,
-                ),
-                QualityAssessmentHeadRow(
-                    board_id=BOARD_ID,
-                    subject_type="spec",
-                    subject_id=spec.id,
-                    assessment_kind="requirement_lint",
-                    receipt_id="lint-current-for-legacy-validation",
-                    revision=1,
-                    updated_at=NOW,
-                ),
-                ChecklistValidationBindingSnapshotRow(
-                    board_id=BOARD_ID,
-                    spec_id=spec.id,
-                    spec_edition=2,
-                    target_type="spec",
-                    phase="spec_validation",
-                    template_version="checklist-off/v1",
-                    mode="off",
-                    binding_version=1,
-                    binding_revision=0,
-                    binding_digest="f" * 64,
-                    captured_at=NOW,
-                ),
-            )
-        )
+        spec.validations = [record]
+        spec.current_validation_id = "incompatible"
         await session.commit()
-
     reader = CommunitySqlAlchemyValidationCycleReader(cycle_rig.factory)
-    cycle = await reader.get_validation_cycle(
-        subject_type=AssessmentSubjectType.SPEC,
-        subject_id="spec-cycle-04",
-        include_previous=True,
-        offset=0,
-        limit=25,
-        actor_id="owner",
-        realm_scope=RealmScope.local(),
-    )
-    batch = await reader.get_validation_cycles(
-        subjects=(
-            ValidationCycleSubjectRef(
-                AssessmentSubjectType.SPEC,
-                "spec-cycle-04",
-            ),
-        ),
-        actor_id="owner",
-        realm_scope=RealmScope.local(),
-    )
-
-    assert cycle.current_result is None
-    assert cycle.previous_result_count == 1
-    assert cycle.previous_results[0].subject_edition is None
-    assert tuple(item.status for item in cycle.checks) == ("passed", "off", "off")
-    assert cycle.remaining_actions == ("submit_spec_validation",)
-    assert batch[0].current_result is None
-    assert batch[0].previous_result_count == 1
-    assert tuple(item.status for item in batch[0].checks) == ("passed", "off", "off")
-    assert batch[0].remaining_actions == ("submit_spec_validation",)
-
-    audit = await reader.get_result_technical_audit(
-        subject_type=AssessmentSubjectType.SPEC,
-        subject_id="spec-cycle-04",
-        result_id="validation-legacy-null",
-        result_type=ValidationCycleResultType.SPEC_VALIDATION,
-        actor_id="owner",
-        realm_scope=RealmScope.local(),
-    )
-    assert audit.subject_edition is None
-    assert audit.technical_audit.exceptions == ()
-    assert project_validation_technical_audit(audit)["subject_edition"] is None
+    for include_previous in (False, True):
+        with pytest.raises(ValueError, match="spec_validation_edition_required"):
+            await reader.get_validation_cycle(subject_type=AssessmentSubjectType.SPEC,
+                subject_id="spec-cycle-04", include_previous=include_previous, offset=0, limit=25,
+                actor_id="owner", realm_scope=RealmScope.local())
+    with pytest.raises(ValueError, match="spec_validation_edition_required"):
+        await reader.get_validation_cycles(subjects=(ValidationCycleSubjectRef(
+            AssessmentSubjectType.SPEC, "spec-cycle-04"),), actor_id="owner", realm_scope=RealmScope.local())
+    with pytest.raises(ValueError, match="spec_validation_edition_required"):
+        await reader.get_result_technical_audit(subject_type=AssessmentSubjectType.SPEC,
+            subject_id="spec-cycle-04", result_id="incompatible",
+            result_type=ValidationCycleResultType.SPEC_VALIDATION, actor_id="owner", realm_scope=RealmScope.local())
+    async with cycle_rig.factory() as session:
+        spec = await session.get(Spec, "spec-cycle-04")
+        assert spec.validations == [record]
+        assert spec.current_validation_id == "incompatible"
 
 
 async def test_requirement_lint_preflight_closes_transaction_before_agent_wait(
@@ -1982,14 +2219,16 @@ async def _seed_authorization_results(cycle_rig, spec_id: str) -> None:
         spec.current_validation_id = f"{spec_id}-validation"
         spec.validations = [
             {
+                **native_validation(f"{spec_id}-validation", 2),
                 "id": f"{spec_id}-validation",
                 "receipt_id": f"{spec_id}-validation",
                 "edition": 2,
+                "validation_edition": 2,
                 "subject_version": 4,
                 "head_revision": 1,
-                "score": 91,
+                "confidence": 91,
                 "outcome": "success",
-                "general_justification": "Restricted validation justification.",
+                "confidence_justification": "Restricted validation justification.",
                 "digests": digests,
             }
         ]
@@ -2207,9 +2446,8 @@ async def test_single_spec_cycle_projects_only_the_authorized_leaf(
     }
     if primary_visible:
         assert primary_keys <= payload.keys()
-        assert payload["current_result"]["summary"]["general_justification"] == (
-            "Restricted validation justification."
-        )
+        assert payload["current_result"]["summary"]["confidence"] == 91
+        assert "general_justification" not in payload["current_result"]["summary"]
     else:
         assert primary_keys.isdisjoint(payload)
         assert "Restricted validation justification." not in json.dumps(payload)

@@ -90,9 +90,7 @@ function RefinementKnowledgeTab({
         entityType="refinement"
         entityId={refinementId}
         refreshKey={refreshGeneration}
-        loadFallbackDetail={(id) =>
-          api.getRefinementKnowledge(refinementId, id)
-        }
+
         onDelete={handleDelete}
       />
       {adding ? (

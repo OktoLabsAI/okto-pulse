@@ -195,12 +195,13 @@ async def test_analytics_search_treats_like_metacharacters_as_literals(
     reader = CommunitySqlAlchemyAnalyticsReader()
     try:
         async with factory() as session:
-            await session.execute(
-                text(
-                    "INSERT INTO boards (id, name, owner_id) "
-                    "VALUES ('board-literals', 'Literal search', 'owner')"
-                )
+            await CommunitySqlAlchemyApplicationPersistence().add(
+                session,
+                ApplicationRecord(entity="board", values={
+                    "id": "board-literals", "name": "Literal search", "owner_id": "owner",
+                }),
             )
+            await session.flush()
             for row_id, title in (
                 ("percent-alpha", "Percent % alpha"),
                 ("percent-beta", "Percent % beta"),

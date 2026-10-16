@@ -26,7 +26,7 @@ from okto_pulse.core.ports.permission_policy import (
     explicit_permission_overrides,
     flatten_permission_flags,
     get_permission_flag,
-    legacy_permissions_to_flags,
+    resolve_agent_permission_facts,
     resolve_preset_lineage,
     set_permission_flag,
 )
@@ -51,7 +51,6 @@ from okto_pulse.community.adapters.sqlalchemy_repositories import (
 )
 from okto_pulse.community.adapters.permission_policy import (
     CommunityPermissionPolicyAdapter,
-    direct_permission_review,
 )
 from okto_pulse.community.adapters.sqlalchemy_quality_assessment import (
     AuthorityDigestResolver,
@@ -119,81 +118,31 @@ class CommunityPermissionPresetGateway:
     async def get_effective_permissions(
         self, *, user_id: str, board_id: str
     ) -> EffectivePermissions:
-        result = await self._session.execute(
+        agent = (await self._session.execute(
             select(Agent).where(Agent.created_by == user_id).limit(1)
-        )
-        agent = result.scalar_one_or_none()
-        agent_flags: Any = None
-        preset_flags: dict[str, Any] | None = None
-        preset_name: str | None = None
-        owner_review_required = False
-        review_reason: str | None = None
-        board_overrides: dict[str, Any] | None = None
-
+        )).scalar_one_or_none()
+        preset_rows, binding = [], None
         if agent is not None:
-            if agent.permission_flags is not None:
-                agent_flags = copy.deepcopy(agent.permission_flags)
-                (
-                    owner_review_required,
-                    review_reason,
-                ) = direct_permission_review(
-                    agent_flags,
-                    preset_id=agent.preset_id,
-                )
-            elif isinstance(agent.permissions, list):
-                agent_flags = legacy_permissions_to_flags(agent.permissions)
-
             if agent.preset_id:
-                preset_rows = list(
-                    (
-                        await self._session.execute(
-                            select(PermissionPreset).order_by(PermissionPreset.id)
-                        )
-                    )
-                    .scalars()
-                    .all()
-                )
-                lineage = resolve_preset_lineage(
-                    agent.preset_id,
-                    _lineage_nodes(preset_rows),
-                )
-                preset_flags = lineage.flags
-                owner_review_required = lineage.owner_review_required
-                review_reason = lineage.review_reason
-                preset_row = next(
-                    (row for row in preset_rows if row.id == agent.preset_id),
-                    None,
-                )
-                if preset_row is not None:
-                    preset_name = preset_row.name
-
-            agent_board = (
-                await self._session.execute(
-                    select(AgentBoard).where(
-                        AgentBoard.agent_id == agent.id,
-                        AgentBoard.board_id == board_id,
-                    )
-                )
-            ).scalar_one_or_none()
-            if agent_board is not None:
-                board_overrides = agent_board.permission_overrides
-
-        permission_set = self._permission_policy.resolve(
-            agent_flags=agent_flags,
-            preset_flags=preset_flags,
-            board_overrides=board_overrides,
-            owner_review_required=owner_review_required,
-            review_reason=review_reason,
+                preset_rows = list((await self._session.execute(
+                    select(PermissionPreset).order_by(PermissionPreset.id)
+                )).scalars().all())
+            binding = (await self._session.execute(select(AgentBoard).where(
+                AgentBoard.agent_id == agent.id, AgentBoard.board_id == board_id,
+            ))).scalar_one_or_none()
+        permission_set = resolve_agent_permission_facts(
+            agent_flags=agent.permission_flags if agent is not None else None,
+            preset_id=agent.preset_id if agent is not None else None,
+            presets=_lineage_nodes(preset_rows),
+            board_overrides=binding.permission_overrides if binding is not None else None,
+            policy=self._permission_policy,
         )
+        preset_name = next((row.name for row in preset_rows if row.id == agent.preset_id), None)
         if preset_name is None:
             preset_name = builtin_preset_name(permission_set.flags)
-        return EffectivePermissions(
-            board_id=board_id,
-            preset_name=preset_name,
-            flags=permission_set.flags,
-            owner_review_required=permission_set.owner_review_required,
-            review_reason=permission_set.review_reason,
-        )
+        return EffectivePermissions(board_id=board_id, preset_name=preset_name,
+            flags=permission_set.flags, owner_review_required=permission_set.owner_review_required,
+            review_reason=permission_set.review_reason)
 
     async def list_presets(self, *, user_id: str) -> list[PermissionPresetView]:
         result = await self._session.execute(
@@ -433,13 +382,16 @@ class CommunityAgentAuthenticationGateway:
         agent = result.scalar_one_or_none()
         if agent is None:
             return None
+        context = await self.resolve_agent_permission_context(agent.id)
+        if context is None:
+            return None
         return AgentAuthSession(
             agent_id=agent.id,
             agent_name=agent.name,
             is_active=True,
             description=agent.description,
             objective=agent.objective,
-            permissions=agent.permissions,
+            permissions=context.permissions,
             created_at=agent.created_at,
             last_used_at=agent.last_used_at,
             metadata={
@@ -483,51 +435,16 @@ class CommunityAgentAuthenticationGateway:
             agent_board = result.scalar_one_or_none()
             if agent_board is None:
                 return None
-        direct_flags = getattr(agent, "permission_flags", None)
-        agent_flags: Any
-        owner_review_required = False
-        review_reason = None
-        if direct_flags is not None:
-            agent_flags = copy.deepcopy(direct_flags)
-            (
-                owner_review_required,
-                review_reason,
-            ) = direct_permission_review(
-                agent_flags,
-                preset_id=agent.preset_id,
-            )
-        elif isinstance(agent.permissions, list):
-            agent_flags = legacy_permissions_to_flags(agent.permissions)
-        else:
-            agent_flags = None
-
-        preset_flags = None
+        preset_rows = []
         if agent.preset_id:
-            preset_rows = list(
-                (
-                    await self._session.execute(
-                        select(PermissionPreset).order_by(PermissionPreset.id)
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            lineage = resolve_preset_lineage(
-                agent.preset_id,
-                _lineage_nodes(preset_rows),
-            )
-            preset_flags = lineage.flags
-            owner_review_required = lineage.owner_review_required
-            review_reason = lineage.review_reason
-        board_overrides = (
-            agent_board.permission_overrides if agent_board is not None else None
-        )
-        permissions = self._permission_policy.resolve(
-            agent_flags,
-            preset_flags,
-            board_overrides,
-            owner_review_required=owner_review_required,
-            review_reason=review_reason,
+            preset_rows = list((await self._session.execute(
+                select(PermissionPreset).order_by(PermissionPreset.id)
+            )).scalars().all())
+        permissions = resolve_agent_permission_facts(
+            agent_flags=agent.permission_flags,
+            preset_id=agent.preset_id, presets=_lineage_nodes(preset_rows),
+            board_overrides=agent_board.permission_overrides if agent_board is not None else None,
+            policy=self._permission_policy,
         )
         return AgentPermissionContext(
             agent_id=agent.id,
@@ -720,14 +637,20 @@ class CommunityRelationalApplicationAdapter:
 
         return CommunityDeliveryEvidenceStore(session)
 
-    def delivery_forecast_read(self, session: AsyncSession):
-        """Bind board-scoped Sprint commitment evidence for forecasting."""
-
-        from okto_pulse.community.adapters.sqlalchemy_analytics_evidence import (
-            CommunitySqlAlchemyDeliveryForecastEvidence,
+    def delivery_readiness_read(self, session: AsyncSession):
+        from sqlalchemy.ext.asyncio import AsyncConnection
+        from okto_pulse.community.adapters.sqlalchemy_delivery_readiness import (
+            CommunityDeliveryReadinessReader, CommunityReadinessClock,
         )
+        engine = session.bind.engine if isinstance(session.bind, AsyncConnection) else session.bind
+        return CommunityDeliveryReadinessReader(engine, clock=CommunityReadinessClock())
 
-        return CommunitySqlAlchemyDeliveryForecastEvidence(session)
+    def delivery_readiness_cursor(self, session: AsyncSession):
+        from okto_pulse.core import get_settings
+        from okto_pulse.community.adapters.delivery_readiness_cursor import CommunityReadinessCursorCodec
+
+        return CommunityReadinessCursorCodec.from_settings(get_settings())
+
 
     def board_kg_analytics_read(self, session: AsyncSession):
         """Bind read-only relational/KG evidence for Analytics v2."""
@@ -737,6 +660,14 @@ class CommunityRelationalApplicationAdapter:
         )
 
         return CommunitySqlAlchemyBoardKgAnalyticsEvidence(session)
+
+    def bug_clusters_read(self, session: AsyncSession):
+        from okto_pulse.community.adapters.sqlalchemy_bug_clusters import CommunityBugClustersReader
+        return CommunityBugClustersReader(session)
+
+    def spec_coverage_read(self, session: AsyncSession):
+        from okto_pulse.community.adapters.sqlalchemy_spec_coverage import CommunitySpecCoverageReader
+        return CommunitySpecCoverageReader(session)
 
     def guideline_policy(self, session: AsyncSession):
         """Bind the SK-B policy authority to the caller-owned transaction."""

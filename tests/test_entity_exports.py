@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from dataclasses import replace
+from copy import deepcopy
 import json
+from spec_validation_fixtures import native_validation
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -13,26 +16,14 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from okto_pulse.community.adapters.sqlalchemy_entity_export import (
     CommunityEntityExportLimitError,
+    CommunityEntityExportRequestError,
     CommunitySqlAlchemyEntityExportReader,
 )
 from okto_pulse.community.adapters.sqlalchemy_database import (
     build_community_session_factory,
 )
-from okto_pulse.community.adapters.sqlalchemy_models import (
-    ArchitectureDesign,
-    ArchitectureDiagramPayload,
-    Base,
-    Board,
-    Card,
-    CardDependency,
-    Ideation,
-    Refinement,
-    Spec,
-    SpecQAItem,
-    Sprint,
-    Story,
-    Topic,
-)
+from okto_pulse.community.adapters.sqlalchemy_models import ArchitectureDesign, ArchitectureDiagramPayload, Board, Card, CardDependency, Ideation, Refinement, Spec, SpecQAItem, Story, Topic
+from okto_pulse.community.adapters.sqlalchemy_models import Base
 from okto_pulse.community.api import entity_exports as api
 from okto_pulse.community.api.auth_deps import require_principal
 from okto_pulse.community.api.deps import get_unit_of_work_factory
@@ -58,6 +49,26 @@ from okto_pulse.core.ports.authentication import Principal
 
 
 _NOW = datetime(2026, 8, 13, 12, 0, tzinfo=timezone.utc)
+
+
+def test_architecture_boundaries_render_as_individual_list_items():
+    bundle = _bundle()
+    section = EntityExportSection(
+        section_key="architecture", schema_version="entity-export-architecture/v1",
+        payload={"records": {"architecture_designs": [{"title": "Checkout runtime", "entities": [
+            {"name": "Checkout API", "boundaries": ["Tenant data, isolated", "Public ports only", "<script>alert(1)</script>"]},
+        ]}]}},
+    )
+    manifest_entry = replace(bundle.manifest.entries[0], section_key=section.section_key, schema_version=section.schema_version)
+    bundle = replace(bundle, sections=(section,), manifest=replace(bundle.manifest, entries=(manifest_entry,)))
+    html = render_entity_export_html(bundle.to_dict())
+    markdown = render_entity_export_markdown(bundle.to_dict())
+    assert "<li>Tenant data, isolated</li>" in html
+    assert "<li>Public ports only</li>" in html
+    assert "- Tenant data, isolated" in markdown
+    assert "- Public ports only" in markdown
+    assert "<script>alert(1)</script>" not in html
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
 
 
 def _bundle(
@@ -117,7 +128,7 @@ def _bundle(
 
 
 @pytest.mark.asyncio
-async def test_reader_supports_six_types_and_fences_realm_and_related_rows() -> None:
+async def test_reader_supports_five_types_and_fences_realm_and_related_rows() -> None:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
@@ -144,20 +155,13 @@ async def test_reader_supports_six_types_and_fences_realm_and_related_rows() -> 
                     title="Refinement",
                     created_by="u",
                 ),
-                Spec(
+                Spec(architecture_adoption={'contract_version': 'architecture-adoption/v1', 'board_id': 'b1', 'spec_id': 'spec', 'adopted_in_edition': 1, 'actor_id': 'u', 'inherited_resource_ids': []},
                     id="spec",
                     board_id="b1",
                     title="Spec",
                     created_by="u",
                     test_scenarios=[{"id": "secret-scenario", "title": "Secret"}],
                     validations=[{"id": "old-validation", "edition": 1}],
-                ),
-                Sprint(
-                    id="sprint",
-                    board_id="b1",
-                    spec_id="spec",
-                    title="Sprint",
-                    created_by="u",
                 ),
                 Card(id="card", board_id="b1", title="Card", created_by="u"),
                 Card(id="foreign-card", board_id="b2", title="Foreign", created_by="u"),
@@ -175,7 +179,6 @@ async def test_reader_supports_six_types_and_fences_realm_and_related_rows() -> 
             (EntityExportType.IDEATION, "ideation"),
             (EntityExportType.REFINEMENT, "refinement"),
             (EntityExportType.SPEC, "spec"),
-            (EntityExportType.SPRINT, "sprint"),
             (EntityExportType.CARD, "card"),
         )
         for entity_type, entity_id in cases:
@@ -230,6 +233,59 @@ async def test_reader_supports_six_types_and_fences_realm_and_related_rows() -> 
 
 
 @pytest.mark.asyncio
+async def test_native_spec_and_card_exports_are_read_only_and_refuse_retired_sections():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    statements = []
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        sessions = build_community_session_factory(engine)
+        async with sessions() as session:
+            session.add_all([
+                Board(id="board", name="Board", owner_id="owner", realm_id="realm"),
+                Spec(architecture_adoption={'contract_version': 'architecture-adoption/v1', 'board_id': 'board', 'spec_id': 'spec', 'adopted_in_edition': 1, 'actor_id': 'owner', 'inherited_resource_ids': []}, id="spec", board_id="board", title="Spec", created_by="owner"),
+                Card(id="card", board_id="board", spec_id="spec",
+                     title="Card remains exportable", created_by="owner"),
+            ])
+            await session.commit()
+
+        def capture(_connection, _cursor, statement, _parameters, _context, _executemany):
+            statements.append(statement.lower())
+
+        event.listen(engine.sync_engine, "before_cursor_execute", capture)
+        async with sessions() as session:
+            reader = CommunitySqlAlchemyEntityExportReader(session, clock=lambda: _NOW)
+            for entity_type, identity in ((EntityExportType.SPEC, "spec"), (EntityExportType.CARD, "card")):
+                bundle = await reader.build_bundle(
+                    request=EntityExportRequest(board_id="board", entity_type=entity_type, entity_id=identity),
+                    disclosure=EntityExportDisclosure(frozenset({"spec.entity.read", "card.entity.read"})),
+                    actor_id="owner", realm_scope=RealmScope.tenant("realm"),
+                )
+                raw = bundle.to_dict()
+                assert "sprints" not in {entry["section_key"] for entry in raw["manifest"]["entries"]}
+                base = next(section["payload"]["record"] for section in raw["sections"] if section["section_key"] == "base")
+                assert "sprint_id" not in base
+                if identity == "spec":
+                    cards = next(section for section in raw["sections"] if section["section_key"] == "cards")
+                    assert cards["payload"]["records"]["cards"][0]["title"] == "Card remains exportable"
+            assert not any("from sprints" in sql or "join sprints" in sql for sql in statements)
+            assert not any(sql.lstrip().startswith(("insert ", "update ", "delete ")) for sql in statements)
+            statements.clear()
+            with pytest.raises(CommunityEntityExportRequestError, match="sections_unknown:sprints"):
+                await reader.build_bundle(
+                    request=EntityExportRequest(board_id="board", entity_type=EntityExportType.SPEC, entity_id="spec"),
+                    disclosure=EntityExportDisclosure(frozenset(), ("sprints",)),
+                    actor_id="owner", realm_scope=RealmScope.tenant("realm"),
+                )
+            assert statements == []
+        event.remove(engine.sync_engine, "before_cursor_execute", capture)
+        async with sessions() as session:
+            assert (await session.get(Card, "card")).title == "Card remains exportable"
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_denied_section_is_not_selected_or_counted_and_current_does_not_leak() -> (
     None
 ):
@@ -249,13 +305,13 @@ async def test_denied_section_is_not_selected_or_counted_and_current_does_not_le
         session.add_all(
             [
                 Board(id="b", name="Board", owner_id="u", realm_id="realm"),
-                Spec(
+                Spec(architecture_adoption={'contract_version': 'architecture-adoption/v1', 'board_id': 'b', 'spec_id': 'spec', 'adopted_in_edition': 1, 'actor_id': 'u', 'inherited_resource_ids': []},
                     id="spec",
                     board_id="b",
                     title="Spec",
                     created_by="u",
                     test_scenarios=[{"id": "must-not-leak"}],
-                    validations=[{"id": "prior", "edition": 1, "score": 80}],
+                    validations=[native_validation("prior", 1, confidence=80)],
                     edition=2,
                 ),
             ]
@@ -344,7 +400,7 @@ async def test_explicit_section_limit_fails_without_truncation(monkeypatch) -> N
         session.add_all(
             [
                 Board(id="b", name="Board", owner_id="u", realm_id="realm"),
-                Spec(
+                Spec(architecture_adoption={'contract_version': 'architecture-adoption/v1', 'board_id': 'b', 'spec_id': 'spec', 'adopted_in_edition': 1, 'actor_id': 'u', 'inherited_resource_ids': []},
                     id="spec",
                     board_id="b",
                     title="Spec",
@@ -384,7 +440,7 @@ async def test_reader_projects_cards_and_qa_for_human_consumption() -> None:
         session.add_all(
             [
                 Board(id="b", name="Board", owner_id="u", realm_id="realm"),
-                Spec(id="spec", board_id="b", title="Spec", created_by="u"),
+                Spec(architecture_adoption={'contract_version': 'architecture-adoption/v1', 'board_id': 'b', 'spec_id': 'spec', 'adopted_in_edition': 1, 'actor_id': 'u', 'inherited_resource_ids': []}, id="spec", board_id="b", title="Spec", created_by="u"),
                 Card(
                     id="test-card",
                     board_id="b",
@@ -491,7 +547,7 @@ async def test_card_rejection_export_separates_current_cause_from_history() -> N
                             "id": "validation-current",
                             "card_id": "card",
                             "board_id": "b",
-                            "evaluator_id": "reviewer-1",
+                            "reviewer_id": "reviewer-1",
                             "reviewer_name": "Clara Reviewer",
                             "confidence": 91,
                             "confidence_justification": "Evidence was reproducible.",
@@ -553,8 +609,8 @@ async def test_card_rejection_export_separates_current_cause_from_history() -> N
                     validations=[
                         {
                             "id": "validation-gate",
-                            "evaluator_id": "agent-opaque-2",
-                            "evaluator_name": "Gate Evaluation Agent",
+                            "reviewer_id": "agent-opaque-2",
+                            "reviewer_name": "Gate Evaluation Agent",
                             "confidence": 96,
                             "confidence_justification": "The implementation is clear.",
                             "completeness": 100,
@@ -785,7 +841,7 @@ async def test_reader_counts_and_emits_only_human_reportable_support_records() -
                     title="Refinement",
                     created_by="u",
                 ),
-                Spec(
+                Spec(architecture_adoption={'contract_version': 'architecture-adoption/v1', 'board_id': 'b', 'spec_id': 'spec', 'adopted_in_edition': 1, 'actor_id': 'u', 'inherited_resource_ids': []},
                     id="spec",
                     board_id="b",
                     refinement_id="refinement",
@@ -893,7 +949,9 @@ async def test_reader_counts_and_emits_only_human_reportable_support_records() -
                 "generation": 1,
                 "trust_level": "single_attestation",
                 "acceptance_status": "accepted",
-                "outcome": "accessible",
+                "delivery_context": "brownfield",
+                "contextual_outcome": "evidence_applicable",
+                "context_contract_version": 2,
                 "capabilities": ["file_read", "secret_scan"],
                 "source_ref": "source-main",
                 "canonicalization_profile": "code-investigation/v1",
@@ -1056,6 +1114,14 @@ def test_human_projection_removes_validation_storage_noise() -> None:
     assert "requirement_lint_validation_snapshots" not in requirement_tables
     assert "semantic_guideline_validation_scopes" not in policy_tables
     assert "policy_compliance_adopted_revisions" not in policy_tables
+    assert policy_tables == {
+        "semantic_guideline_assessments_v2", "guideline_revisions",
+        "semantic_guideline_metric_results_v2", "semantic_guideline_findings_v2",
+        "semantic_guideline_skips",
+    }
+    assert {query.table_name for query in spec_definitions["policy_waivers"].queries} == {
+        "semantic_guideline_waivers", "semantic_guideline_waiver_events",
+    }
     revision_query = next(
         query
         for query in spec_definitions["policy_compliance"].queries
@@ -1092,7 +1158,7 @@ def test_human_projection_removes_validation_storage_noise() -> None:
     }
 
     policy = _human_row_payload(
-        "semantic_guideline_assessment_receipts",
+        "semantic_guideline_assessments_v2",
         {
             "receipt_id": "receipt-secret",
             "subject_type": "spec",
@@ -1109,11 +1175,7 @@ def test_human_projection_removes_validation_storage_noise() -> None:
             "state": "passed",
         },
     )
-    assert policy == {
-        "minimum_confidence": 80,
-        "confidence": 97,
-        "state": "passed",
-    }
+    assert policy == {"confidence": 97}
 
     lint_finding = _human_row_payload(
         "quality_findings",
@@ -1173,7 +1235,7 @@ def test_metric_codes_are_humanized_instead_of_exposing_storage_punctuation() ->
     raw = _bundle(title="Metric report").to_dict()
     raw["sections"][0]["payload"] = {
         "records": {
-            "semantic_guideline_metric_results": [
+            "semantic_guideline_metric_results_v2": [
                 {
                     "metric_code": "architecture.failClosedSeams",
                     "score": 97,
@@ -1318,7 +1380,7 @@ def test_html_report_omits_validation_storage_noise() -> None:
         "records": {
             "requirement_lint_validation_snapshots": [{"id": "snapshot-secret"}],
             "semantic_guideline_validation_scopes": [{"id": "scope-secret"}],
-            "semantic_guideline_assessment_receipts": [
+            "semantic_guideline_assessments_v2": [
                 {
                     "confidence": 97,
                     "minimum_confidence": 80,
@@ -1402,7 +1464,7 @@ def test_policy_pinpoint_uses_human_target_from_same_sealed_bundle() -> None:
             "schema_version": "entity-export-section/v1",
             "payload": {
                 "records": {
-                    "semantic_guideline_metric_results": [
+                    "semantic_guideline_metric_results_v2": [
                         {
                             "metric_code": "spec.verifiability",
                             "outcome": "pass",
@@ -1429,9 +1491,9 @@ def test_policy_pinpoint_uses_human_target_from_same_sealed_bundle() -> None:
 
 @pytest.mark.parametrize(
     "entity_type",
-    ["story", "ideation", "refinement", "spec", "sprint", "card"],
+    ["story", "ideation", "refinement", "spec", "card"],
 )
-def test_preflight_wire_contract_supports_all_six_types(
+def test_preflight_wire_contract_supports_all_five_types(
     monkeypatch, entity_type: str
 ) -> None:
     bundle = _bundle(entity_type=EntityExportType(entity_type), title="Report")
@@ -1458,6 +1520,48 @@ def test_preflight_wire_contract_supports_all_six_types(
     assert body["scope"] == "complete"
     assert body["sections"][0]["state"] == "included"
     assert body["snapshot_fingerprint"] == bundle.snapshot_fingerprint
+
+
+@pytest.mark.parametrize("operation", ["preflight", "download"])
+def test_retired_sprint_export_is_not_materialized(monkeypatch, operation):
+    async def forbidden(**kwargs):
+        raise AssertionError("Retired export reached persistence")
+
+    monkeypatch.setattr(api, "_materialize_bundle", forbidden)
+    app = FastAPI()
+    app.include_router(api.router, prefix="/api/v1")
+    app.dependency_overrides[require_principal] = lambda: Principal(
+        subject="user", realm_id="realm", actor_kind="human"
+    )
+    app.dependency_overrides[get_unit_of_work_factory] = lambda: object()
+    body = {"scope": "complete"}
+    if operation == "download":
+        body.update(format="markdown", expected_snapshot_fingerprint="a" * 64)
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/v1/boards/board-1/entity-exports/sprint/legacy/{operation}", json=body
+        )
+    assert response.status_code == 404
+
+
+def test_passive_rendering_preserves_native_spec_report_content():
+    # A detached native report retains its captured content.
+    raw = _bundle(title="Historical Spec report").to_dict()
+    raw["subject"]["entity_type"] = "spec"
+    raw["sections"][0]["payload"]["record"] = {
+        "title": "Historical Spec report", "objective": "Preserved objective",
+    }
+    raw["sections"].append({"section_key": "qa", "schema_version": "entity-export-section/v1",
+        "payload": {"records": {"spec_qa_items": [
+            {"question": "Archived question", "answer": "Preserved answer"},
+        ]}}})
+    raw["manifest"]["entries"].append({**raw["manifest"]["entries"][0], "section_key": "qa"})
+    before = deepcopy(raw)
+    for rendered in (render_entity_export_markdown(raw), render_entity_export_html(raw)):
+        for text in ("Historical Spec report", "Preserved objective", "Archived question", "Preserved answer"):
+            assert text in rendered
+        assert "<script" not in rendered
+    assert raw == before
 
 
 def test_download_stale_and_secure_headers_and_render_after_materialization(

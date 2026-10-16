@@ -1,0 +1,422 @@
+{
+  "source_core": "9364dc58b33d4c0dc677daf4ebf167b378398b4f",
+  "source_community": "7b86fba02d8aecb8c20a1f910a4fe3dc081dbabd",
+  "subjects": [
+    {
+      "board_id": "board-f3-policy-history",
+      "entity_type": "card",
+      "subject_id": "card-f3-history",
+      "subject_version": 1,
+      "subject_edition": null
+    },
+    {
+      "board_id": "board-f3-policy-history",
+      "entity_type": "spec",
+      "subject_id": "spec-f3-history",
+      "subject_version": 1,
+      "subject_edition": 1
+    },
+    {
+      "board_id": "board-f3-policy-history",
+      "entity_type": "sprint",
+      "subject_id": "sprint-f3-history",
+      "subject_version": 1,
+      "subject_edition": null
+    }
+  ],
+  "receipt": {
+    "impact_receipt_id": "preview-f3-history",
+    "board_id": "board-f3-policy-history",
+    "guideline_id": "guideline-f3-history",
+    "binding_id": "33da8b02-db45-56f1-943c-741aca2c9f35",
+    "to_revision_id": "revision-f3-history",
+    "to_revision_number": 1,
+    "to_semantic_version": "1.0.0",
+    "to_revision_digest": "b7534529ca28db0349ba0c0feffb0e58b8ac21fa087fcb82e3952fcc081c6661",
+    "expected_head_revision": 1,
+    "expected_binding_revision": null,
+    "expected_binding_state": null,
+    "binding_digest": "813168804577a7b716f3881dd1736fefbe3bc97d41aa0007a7a3a4567406c184",
+    "binding_head_digest_before": "5a4872d2e10df9d0a5b4b491cbe6d0b815861ba6d93c33ee5c4068c41b0954b6",
+    "binding_head_digest_after": "7688c2879ba2271bb3a0ba4b31ca269900a9fb2b91afdde2a9418f1624890723",
+    "policy_set_digest_before": "dd802063bed5a08bfab76849a21c2a018f40886fb0e764b8369b3298d29f5dd3",
+    "policy_set_digest_after": "a63de0dff004a81a4b58173c50cecd9c013ddba271fa6892b240384c7aba952a",
+    "artifact_snapshot_digest": "a6837098d4841def392e4bacb0178c1ee5de93da8cab9442a84c4c8f3349e8de",
+    "waiver_snapshot_digest": "59407eb9baa2c90b3f318eb8a913561bdc313a2ac76ccaa25377c92f046229e2",
+    "proposed_priority": 5,
+    "proposed_enforcement": "advisory",
+    "proposed_minimum_confidence": 0,
+    "proposed_metric_threshold_overrides": {},
+    "affected_entity_types": [
+      "card",
+      "spec",
+      "sprint"
+    ],
+    "items": [
+      {
+        "impact_item_id": "gii_c34317921c58cfecb18f823cf9c90b50",
+        "item_kind": "binding",
+        "entity_type": "board",
+        "entity_id": "board-f3-policy-history",
+        "details_digest": "0367986e5992b3475cb57050e360ba5cfbe7d1f2563492233de68ecc7f8101f8",
+        "related_id": "33da8b02-db45-56f1-943c-741aca2c9f35",
+        "entity_version": 0
+      },
+      {
+        "impact_item_id": "gii_e766690b3478d2be11729cb6535770b3",
+        "item_kind": "target",
+        "entity_type": "card",
+        "entity_id": "card",
+        "details_digest": "fb5f5812d958a0d9c86f4c89b09bceea6e59801b08611a22d6ed9b83645d632c",
+        "related_id": null,
+        "entity_version": null
+      },
+      {
+        "impact_item_id": "gii_67dd9be761f05c2dedb33608393c931f",
+        "item_kind": "artifact",
+        "entity_type": "card",
+        "entity_id": "card-f3-history",
+        "details_digest": "288f731bbb81dce77177dfe69d589e1ff0597d0d2e55a262161b798354545a42",
+        "related_id": null,
+        "entity_version": 1
+      },
+      {
+        "impact_item_id": "gii_366dc1d0026f3fb58963da44562e9d8a",
+        "item_kind": "target",
+        "entity_type": "spec",
+        "entity_id": "spec",
+        "details_digest": "14d345113d98a089d794861747b1d469a26335dff0ffe8d3f05a5f3f26714150",
+        "related_id": null,
+        "entity_version": null
+      },
+      {
+        "impact_item_id": "gii_f37b6e64813e4610189af480e8ab41f2",
+        "item_kind": "artifact",
+        "entity_type": "spec",
+        "entity_id": "spec-f3-history",
+        "details_digest": "bf92610a6ddb44a9aa8643e504c29f350f9c5ae306301ac966ec6e86f3be9490",
+        "related_id": null,
+        "entity_version": 1
+      },
+      {
+        "impact_item_id": "gii_aa21fbe33e1bd6b4741f9aa666f059d7",
+        "item_kind": "target",
+        "entity_type": "sprint",
+        "entity_id": "sprint",
+        "details_digest": "22a64e567f7a6ad1e2edd2146afb0f924c386c7d928fdbca879c15d859001f46",
+        "related_id": null,
+        "entity_version": null
+      },
+      {
+        "impact_item_id": "gii_53460463c2fdf0ef726fcbabc6191d95",
+        "item_kind": "artifact",
+        "entity_type": "sprint",
+        "entity_id": "sprint-f3-history",
+        "details_digest": "1d624666e8f07fe67742d268b4033e66695d8d3f4c9ffaafe6374ab70b38ca5f",
+        "related_id": null,
+        "entity_version": 1
+      }
+    ],
+    "added_metric_ids": [
+      "metric-f3-history"
+    ],
+    "changed_metric_ids": [],
+    "removed_metric_ids": [],
+    "requested_by": "owner",
+    "created_at": "2026-09-21T00:00:00+00:00",
+    "impact_digest": "640e8bf80f16a3da11520ad7949eca7c3a0b152309dfe71d958f8f90fb5f375e",
+    "from_revision_id": null,
+    "from_semantic_version": null,
+    "from_revision_digest": null,
+    "requires_explicit_adoption": true
+  },
+  "preview_request_digest": "172a918ca787932d482fe095f470b53a47f7e41fea8ba3c343dac433f92d5be8",
+  "adoption": {
+    "receipt": {
+      "impact_receipt_id": "preview-f3-history",
+      "board_id": "board-f3-policy-history",
+      "guideline_id": "guideline-f3-history",
+      "binding_id": "33da8b02-db45-56f1-943c-741aca2c9f35",
+      "to_revision_id": "revision-f3-history",
+      "to_revision_number": 1,
+      "to_semantic_version": "1.0.0",
+      "to_revision_digest": "b7534529ca28db0349ba0c0feffb0e58b8ac21fa087fcb82e3952fcc081c6661",
+      "expected_head_revision": 1,
+      "expected_binding_revision": null,
+      "expected_binding_state": null,
+      "binding_digest": "813168804577a7b716f3881dd1736fefbe3bc97d41aa0007a7a3a4567406c184",
+      "binding_head_digest_before": "5a4872d2e10df9d0a5b4b491cbe6d0b815861ba6d93c33ee5c4068c41b0954b6",
+      "binding_head_digest_after": "7688c2879ba2271bb3a0ba4b31ca269900a9fb2b91afdde2a9418f1624890723",
+      "policy_set_digest_before": "dd802063bed5a08bfab76849a21c2a018f40886fb0e764b8369b3298d29f5dd3",
+      "policy_set_digest_after": "a63de0dff004a81a4b58173c50cecd9c013ddba271fa6892b240384c7aba952a",
+      "artifact_snapshot_digest": "a6837098d4841def392e4bacb0178c1ee5de93da8cab9442a84c4c8f3349e8de",
+      "waiver_snapshot_digest": "59407eb9baa2c90b3f318eb8a913561bdc313a2ac76ccaa25377c92f046229e2",
+      "proposed_priority": 5,
+      "proposed_enforcement": "advisory",
+      "proposed_minimum_confidence": 0,
+      "proposed_metric_threshold_overrides": {},
+      "affected_entity_types": [
+        "card",
+        "spec",
+        "sprint"
+      ],
+      "items": [
+        {
+          "impact_item_id": "gii_c34317921c58cfecb18f823cf9c90b50",
+          "item_kind": "binding",
+          "entity_type": "board",
+          "entity_id": "board-f3-policy-history",
+          "details_digest": "0367986e5992b3475cb57050e360ba5cfbe7d1f2563492233de68ecc7f8101f8",
+          "related_id": "33da8b02-db45-56f1-943c-741aca2c9f35",
+          "entity_version": 0
+        },
+        {
+          "impact_item_id": "gii_e766690b3478d2be11729cb6535770b3",
+          "item_kind": "target",
+          "entity_type": "card",
+          "entity_id": "card",
+          "details_digest": "fb5f5812d958a0d9c86f4c89b09bceea6e59801b08611a22d6ed9b83645d632c",
+          "related_id": null,
+          "entity_version": null
+        },
+        {
+          "impact_item_id": "gii_67dd9be761f05c2dedb33608393c931f",
+          "item_kind": "artifact",
+          "entity_type": "card",
+          "entity_id": "card-f3-history",
+          "details_digest": "288f731bbb81dce77177dfe69d589e1ff0597d0d2e55a262161b798354545a42",
+          "related_id": null,
+          "entity_version": 1
+        },
+        {
+          "impact_item_id": "gii_366dc1d0026f3fb58963da44562e9d8a",
+          "item_kind": "target",
+          "entity_type": "spec",
+          "entity_id": "spec",
+          "details_digest": "14d345113d98a089d794861747b1d469a26335dff0ffe8d3f05a5f3f26714150",
+          "related_id": null,
+          "entity_version": null
+        },
+        {
+          "impact_item_id": "gii_f37b6e64813e4610189af480e8ab41f2",
+          "item_kind": "artifact",
+          "entity_type": "spec",
+          "entity_id": "spec-f3-history",
+          "details_digest": "bf92610a6ddb44a9aa8643e504c29f350f9c5ae306301ac966ec6e86f3be9490",
+          "related_id": null,
+          "entity_version": 1
+        },
+        {
+          "impact_item_id": "gii_aa21fbe33e1bd6b4741f9aa666f059d7",
+          "item_kind": "target",
+          "entity_type": "sprint",
+          "entity_id": "sprint",
+          "details_digest": "22a64e567f7a6ad1e2edd2146afb0f924c386c7d928fdbca879c15d859001f46",
+          "related_id": null,
+          "entity_version": null
+        },
+        {
+          "impact_item_id": "gii_53460463c2fdf0ef726fcbabc6191d95",
+          "item_kind": "artifact",
+          "entity_type": "sprint",
+          "entity_id": "sprint-f3-history",
+          "details_digest": "1d624666e8f07fe67742d268b4033e66695d8d3f4c9ffaafe6374ab70b38ca5f",
+          "related_id": null,
+          "entity_version": 1
+        }
+      ],
+      "added_metric_ids": [
+        "metric-f3-history"
+      ],
+      "changed_metric_ids": [],
+      "removed_metric_ids": [],
+      "requested_by": "owner",
+      "created_at": "2026-09-21T00:00:00+00:00",
+      "impact_digest": "640e8bf80f16a3da11520ad7949eca7c3a0b152309dfe71d958f8f90fb5f375e",
+      "from_revision_id": null,
+      "from_semantic_version": null,
+      "from_revision_digest": null,
+      "requires_explicit_adoption": true
+    },
+    "previous_binding": null,
+    "binding": {
+      "binding_id": "33da8b02-db45-56f1-943c-741aca2c9f35",
+      "board_id": "board-f3-policy-history",
+      "guideline_id": "guideline-f3-history",
+      "revision_id": "revision-f3-history",
+      "semantic_version": "1.0.0",
+      "revision_digest": "b7534529ca28db0349ba0c0feffb0e58b8ac21fa087fcb82e3952fcc081c6661",
+      "priority": 5,
+      "binding_revision": 1,
+      "adopted_by": "owner",
+      "adopted_at": "2026-09-21T00:00:00+00:00",
+      "enforcement": "advisory",
+      "minimum_confidence": 0,
+      "metric_threshold_overrides": {},
+      "configuration_digest": "249f2c49540303a60e71959d3b78a8c80b6ac90fa61a47af23f83612f159d8a1",
+      "state": "active",
+      "source_kind": "native"
+    },
+    "event": {
+      "event_id": "adopt-f3-history",
+      "event_type": "board.semantic_guideline_adoption_changed.v2",
+      "operation": "adopt",
+      "board_id": "board-f3-policy-history",
+      "guideline_id": "guideline-f3-history",
+      "binding_id": "33da8b02-db45-56f1-943c-741aca2c9f35",
+      "previous_binding_revision": null,
+      "binding_revision": 1,
+      "from_revision_id": null,
+      "from_semantic_version": null,
+      "from_revision_digest": null,
+      "to_revision_id": "revision-f3-history",
+      "to_semantic_version": "1.0.0",
+      "to_revision_digest": "b7534529ca28db0349ba0c0feffb0e58b8ac21fa087fcb82e3952fcc081c6661",
+      "impact_receipt_id": "preview-f3-history",
+      "impact_digest": "640e8bf80f16a3da11520ad7949eca7c3a0b152309dfe71d958f8f90fb5f375e",
+      "binding_digest_before": "813168804577a7b716f3881dd1736fefbe3bc97d41aa0007a7a3a4567406c184",
+      "binding_head_digest_before": "5a4872d2e10df9d0a5b4b491cbe6d0b815861ba6d93c33ee5c4068c41b0954b6",
+      "binding_head_digest_after": "7688c2879ba2271bb3a0ba4b31ca269900a9fb2b91afdde2a9418f1624890723",
+      "policy_set_digest_before": "dd802063bed5a08bfab76849a21c2a018f40886fb0e764b8369b3298d29f5dd3",
+      "policy_set_digest_after": "a63de0dff004a81a4b58173c50cecd9c013ddba271fa6892b240384c7aba952a",
+      "added_metric_ids": [
+        "metric-f3-history"
+      ],
+      "changed_metric_ids": [],
+      "removed_metric_ids": [],
+      "actor_id": "owner",
+      "actor_type": "user",
+      "occurred_at": "2026-09-21T00:00:00+00:00"
+    },
+    "activity_id": "b44481b4-5d12-517c-b58b-14a20c140e9d",
+    "activity_action": "guideline_revision_adopted",
+    "idempotency_key": "adopt:f3-history",
+    "request_digest": "a557de1bff20e19846dad25db6e15a30ba1fced1567a45f270ce9d4de8225d7c"
+  },
+  "adopted": [
+    {
+      "binding_id": "33da8b02-db45-56f1-943c-741aca2c9f35",
+      "board_id": "board-f3-policy-history",
+      "guideline_id": "guideline-f3-history",
+      "revision_id": "revision-f3-history",
+      "semantic_version": "1.0.0",
+      "revision_digest": "b7534529ca28db0349ba0c0feffb0e58b8ac21fa087fcb82e3952fcc081c6661",
+      "priority": 5,
+      "binding_revision": 1,
+      "adopted_by": "owner",
+      "adopted_at": "2026-09-21T00:00:00+00:00",
+      "enforcement": "advisory",
+      "minimum_confidence": 0,
+      "metric_threshold_overrides": {},
+      "configuration_digest": "249f2c49540303a60e71959d3b78a8c80b6ac90fa61a47af23f83612f159d8a1",
+      "state": "active",
+      "source_kind": "native"
+    },
+    {
+      "impact_receipt_id": "preview-f3-history",
+      "board_id": "board-f3-policy-history",
+      "guideline_id": "guideline-f3-history",
+      "binding_id": "33da8b02-db45-56f1-943c-741aca2c9f35",
+      "to_revision_id": "revision-f3-history",
+      "to_revision_number": 1,
+      "to_semantic_version": "1.0.0",
+      "to_revision_digest": "b7534529ca28db0349ba0c0feffb0e58b8ac21fa087fcb82e3952fcc081c6661",
+      "expected_head_revision": 1,
+      "expected_binding_revision": null,
+      "expected_binding_state": null,
+      "binding_digest": "813168804577a7b716f3881dd1736fefbe3bc97d41aa0007a7a3a4567406c184",
+      "binding_head_digest_before": "5a4872d2e10df9d0a5b4b491cbe6d0b815861ba6d93c33ee5c4068c41b0954b6",
+      "binding_head_digest_after": "7688c2879ba2271bb3a0ba4b31ca269900a9fb2b91afdde2a9418f1624890723",
+      "policy_set_digest_before": "dd802063bed5a08bfab76849a21c2a018f40886fb0e764b8369b3298d29f5dd3",
+      "policy_set_digest_after": "a63de0dff004a81a4b58173c50cecd9c013ddba271fa6892b240384c7aba952a",
+      "artifact_snapshot_digest": "a6837098d4841def392e4bacb0178c1ee5de93da8cab9442a84c4c8f3349e8de",
+      "waiver_snapshot_digest": "59407eb9baa2c90b3f318eb8a913561bdc313a2ac76ccaa25377c92f046229e2",
+      "proposed_priority": 5,
+      "proposed_enforcement": "advisory",
+      "proposed_minimum_confidence": 0,
+      "proposed_metric_threshold_overrides": {},
+      "affected_entity_types": [
+        "card",
+        "spec",
+        "sprint"
+      ],
+      "items": [
+        {
+          "impact_item_id": "gii_c34317921c58cfecb18f823cf9c90b50",
+          "item_kind": "binding",
+          "entity_type": "board",
+          "entity_id": "board-f3-policy-history",
+          "details_digest": "0367986e5992b3475cb57050e360ba5cfbe7d1f2563492233de68ecc7f8101f8",
+          "related_id": "33da8b02-db45-56f1-943c-741aca2c9f35",
+          "entity_version": 0
+        },
+        {
+          "impact_item_id": "gii_e766690b3478d2be11729cb6535770b3",
+          "item_kind": "target",
+          "entity_type": "card",
+          "entity_id": "card",
+          "details_digest": "fb5f5812d958a0d9c86f4c89b09bceea6e59801b08611a22d6ed9b83645d632c",
+          "related_id": null,
+          "entity_version": null
+        },
+        {
+          "impact_item_id": "gii_67dd9be761f05c2dedb33608393c931f",
+          "item_kind": "artifact",
+          "entity_type": "card",
+          "entity_id": "card-f3-history",
+          "details_digest": "288f731bbb81dce77177dfe69d589e1ff0597d0d2e55a262161b798354545a42",
+          "related_id": null,
+          "entity_version": 1
+        },
+        {
+          "impact_item_id": "gii_366dc1d0026f3fb58963da44562e9d8a",
+          "item_kind": "target",
+          "entity_type": "spec",
+          "entity_id": "spec",
+          "details_digest": "14d345113d98a089d794861747b1d469a26335dff0ffe8d3f05a5f3f26714150",
+          "related_id": null,
+          "entity_version": null
+        },
+        {
+          "impact_item_id": "gii_f37b6e64813e4610189af480e8ab41f2",
+          "item_kind": "artifact",
+          "entity_type": "spec",
+          "entity_id": "spec-f3-history",
+          "details_digest": "bf92610a6ddb44a9aa8643e504c29f350f9c5ae306301ac966ec6e86f3be9490",
+          "related_id": null,
+          "entity_version": 1
+        },
+        {
+          "impact_item_id": "gii_aa21fbe33e1bd6b4741f9aa666f059d7",
+          "item_kind": "target",
+          "entity_type": "sprint",
+          "entity_id": "sprint",
+          "details_digest": "22a64e567f7a6ad1e2edd2146afb0f924c386c7d928fdbca879c15d859001f46",
+          "related_id": null,
+          "entity_version": null
+        },
+        {
+          "impact_item_id": "gii_53460463c2fdf0ef726fcbabc6191d95",
+          "item_kind": "artifact",
+          "entity_type": "sprint",
+          "entity_id": "sprint-f3-history",
+          "details_digest": "1d624666e8f07fe67742d268b4033e66695d8d3f4c9ffaafe6374ab70b38ca5f",
+          "related_id": null,
+          "entity_version": 1
+        }
+      ],
+      "added_metric_ids": [
+        "metric-f3-history"
+      ],
+      "changed_metric_ids": [],
+      "removed_metric_ids": [],
+      "requested_by": "owner",
+      "created_at": "2026-09-21T00:00:00+00:00",
+      "impact_digest": "640e8bf80f16a3da11520ad7949eca7c3a0b152309dfe71d958f8f90fb5f375e",
+      "from_revision_id": null,
+      "from_semantic_version": null,
+      "from_revision_digest": null,
+      "requires_explicit_adoption": true
+    }
+  ]
+}

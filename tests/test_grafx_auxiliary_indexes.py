@@ -3,13 +3,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from okto_pulse.community.adapters import grafx_schema_evolution as evolution
+from okto_pulse.community.adapters.grafx_index_inventory import require_current_grafx_indexes
+from okto_pulse.community.adapters.grafx_schema_manifest import PULSE_GRAFX_SCHEMA_MANIFEST
 from okto_pulse.core.kg.interfaces.graph_errors import GraphCapabilityUnavailable
-from test_grafx_schema_evolution import _index_candidate
+from current_grafx_index_fixture import _index_candidate
 
 
 def _add_auxiliary(candidate, registered, family):
-    table = evolution.PULSE_GRAFX_SCHEMA_MANIFEST.nodes[0]
+    table = PULSE_GRAFX_SCHEMA_MANIFEST.nodes[0]
     table_id = next(t.table_id for t in candidate.catalog.catalog.tables() if t.name == table.name)
     columns, layout, derivation, automatic, name = {
         "source": (("source_artifact_ref",), "hash", "columns", False, f"pulse_source_{table.name.lower()}"),
@@ -35,7 +36,7 @@ def _add_auxiliary(candidate, registered, family):
 def test_known_auxiliary_coexists_with_exact_base(family):
     candidate, registered, _ = _index_candidate()
     _add_auxiliary(candidate, registered, family)
-    evolution._require_indexes(candidate, "test")
+    require_current_grafx_indexes(candidate, "test")
 
 
 @pytest.mark.parametrize("family", ["source", "page", "identity"])
@@ -56,7 +57,7 @@ def test_known_auxiliary_mutants_are_refused(family, mutation):
     elif mutation == "file":
         view.definition.file = "index/different.idx"
     with pytest.raises(GraphCapabilityUnavailable) as caught:
-        evolution._require_indexes(candidate, "test")
+        require_current_grafx_indexes(candidate, "test")
     assert "auxiliary_index" in caught.value.details["reason"]
 
 
@@ -64,9 +65,9 @@ def test_valid_extra_cannot_hide_missing_base_index_with_equal_total():
     candidate, registered, _ = _index_candidate()
     registered.pop(0)
     _add_auxiliary(candidate, registered, "source")
-    assert len(registered) == evolution.EXPECTED_INDEX_TOTAL
+    assert len(registered) == (len(PULSE_GRAFX_SCHEMA_MANIFEST.nodes) + 1 + 2 * len(PULSE_GRAFX_SCHEMA_MANIFEST.relationships) + len(PULSE_GRAFX_SCHEMA_MANIFEST.spaces))
     with pytest.raises(GraphCapabilityUnavailable) as caught:
-        evolution._require_indexes(candidate, "test")
+        require_current_grafx_indexes(candidate, "test")
     assert caught.value.details["reason"] == "candidate_index_count_test"
 
 
@@ -75,7 +76,7 @@ def test_unknown_extra_cannot_enter_by_prefix():
     view = _add_auxiliary(candidate, registered, "source")
     view.name += "_unknown"
     with pytest.raises(GraphCapabilityUnavailable) as caught:
-        evolution._require_indexes(candidate, "test")
+        require_current_grafx_indexes(candidate, "test")
     assert caught.value.details["reason"] == "candidate_index_count_test"
 
 
@@ -84,7 +85,7 @@ def test_duplicate_auxiliary_is_rejected_before_partition():
     view = _add_auxiliary(candidate, registered, "page")
     registered.append(view)
     with pytest.raises(GraphCapabilityUnavailable) as caught:
-        evolution._require_indexes(candidate, "test")
+        require_current_grafx_indexes(candidate, "test")
     assert caught.value.details["reason"] == "candidate_duplicate_index_name_test"
 
 
@@ -111,6 +112,6 @@ def test_base_generation_file_is_exact_and_vector_projection_agrees(vector, muta
         view.definition.file = view.file = "index/g_0000000000000001.idx"
     if mutation:
         with pytest.raises(GraphCapabilityUnavailable):
-            evolution._require_indexes(candidate, "test")
+            require_current_grafx_indexes(candidate, "test")
     else:
-        evolution._require_indexes(candidate, "test")
+        require_current_grafx_indexes(candidate, "test")

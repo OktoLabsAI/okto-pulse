@@ -163,6 +163,45 @@ function authority(
 }
 
 describe('TestScenarioPolicyCompliance', () => {
+  it('does not execute a cached transition while the parent read is stale', () => {
+    mocks.useAuthority.mockReturnValue(authority([transition('draft')]));
+    render(<TestScenarioPolicyCompliance boardId="board-1" specId="spec-1" specArchived={false}
+      scenario={scenario} canReadPolicyCompliance refreshKey={0} onReload={mocks.getSpec} readCurrent={false} />);
+    const button = screen.getByRole('button', { name: 'Move to Draft' });
+    expect(button).toBeDisabled(); fireEvent.click(button);
+    expect(mocks.updateStatus).not.toHaveBeenCalled();
+  });
+  it('retries only the read when a confirmed transition cannot be refreshed', async () => {
+    mocks.useAuthority.mockReturnValue(authority([transition('draft')]));
+    const onReload = vi.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValue(refreshedSpec);
+    render(<TestScenarioPolicyCompliance boardId="board-1" specId="spec-1" specArchived={false}
+      scenario={scenario} canReadPolicyCompliance refreshKey={0} onReload={onReload} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Move to Draft' }));
+    await screen.findByText(/transition was saved, but/);
+    expect(screen.getByRole('button', { name: 'Move to Draft' })).toBeDisabled();
+    expect(mocks.handleTransitionError).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Reload current scenario' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Reload current scenario' })).not.toBeInTheDocument());
+    expect(mocks.updateStatus).toHaveBeenCalledOnce();
+    expect(onReload).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not refresh another Spec after an old transition completes', async () => {
+    mocks.useAuthority.mockReturnValue(authority([transition('draft')]));
+    let resolve!: (value: unknown) => void;
+    mocks.updateStatus.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    const onReload = vi.fn().mockResolvedValue(refreshedSpec);
+    const view = render(<TestScenarioPolicyCompliance boardId="board-1" specId="spec-1" specArchived={false}
+      scenario={scenario} canReadPolicyCompliance refreshKey={0} onReload={onReload} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Move to Draft' }));
+    view.rerender(<TestScenarioPolicyCompliance boardId="board-1" specId="other" specArchived={false}
+      scenario={scenario} canReadPolicyCompliance refreshKey={0} onReload={onReload} />);
+    resolve({});
+    await Promise.resolve();
+    expect(onReload).not.toHaveBeenCalled();
+    expect(mocks.toastSuccess).not.toHaveBeenCalled();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.getSpec.mockResolvedValue(refreshedSpec);
@@ -204,7 +243,7 @@ describe('TestScenarioPolicyCompliance', () => {
         scenario={scenario}
         canReadPolicyCompliance
         refreshKey={3}
-        onSpecRefreshed={vi.fn()}
+        onReload={mocks.getSpec}
       />,
     );
 
@@ -242,7 +281,7 @@ describe('TestScenarioPolicyCompliance', () => {
         scenario={scenario}
         canReadPolicyCompliance={false}
         refreshKey={0}
-        onSpecRefreshed={vi.fn()}
+        onReload={mocks.getSpec}
       />,
     );
 
@@ -261,7 +300,7 @@ describe('TestScenarioPolicyCompliance', () => {
       policyCompliance: true,
     });
     mocks.useAuthority.mockReturnValue(authority([recovery, passed]));
-    const onSpecRefreshed = vi.fn();
+    const onReload = vi.fn().mockResolvedValue(refreshedSpec);
 
     render(
       <TestScenarioPolicyCompliance
@@ -271,7 +310,7 @@ describe('TestScenarioPolicyCompliance', () => {
         scenario={scenario}
         canReadPolicyCompliance
         refreshKey={0}
-        onSpecRefreshed={onSpecRefreshed}
+        onReload={onReload}
       />,
     );
 
@@ -291,8 +330,8 @@ describe('TestScenarioPolicyCompliance', () => {
         { status: 'draft' },
       );
     });
-    expect(mocks.getSpec).toHaveBeenCalledWith('spec-1');
-    expect(onSpecRefreshed).toHaveBeenCalledWith(refreshedSpec);
+    expect(onReload).toHaveBeenCalledOnce();
+    expect(mocks.getSpec).not.toHaveBeenCalled();
   });
 
   it('routes a structured rejection through the shared authority and refreshes the full spec', async () => {
@@ -301,7 +340,7 @@ describe('TestScenarioPolicyCompliance', () => {
     mocks.useAuthority.mockReturnValue(authority([recovery]));
     mocks.updateStatus.mockRejectedValue(error);
     mocks.handleTransitionError.mockResolvedValue(true);
-    const onSpecRefreshed = vi.fn();
+    const onReload = vi.fn().mockResolvedValue(refreshedSpec);
 
     render(
       <TestScenarioPolicyCompliance
@@ -311,7 +350,7 @@ describe('TestScenarioPolicyCompliance', () => {
         scenario={scenario}
         canReadPolicyCompliance
         refreshKey={0}
-        onSpecRefreshed={onSpecRefreshed}
+        onReload={onReload}
       />,
     );
 
@@ -320,8 +359,8 @@ describe('TestScenarioPolicyCompliance', () => {
     await waitFor(() => {
       expect(mocks.handleTransitionError).toHaveBeenCalledWith(error, 'draft');
     });
-    expect(mocks.getSpec).toHaveBeenCalledWith('spec-1');
-    expect(onSpecRefreshed).toHaveBeenCalledWith(refreshedSpec);
+    expect(onReload).toHaveBeenCalledOnce();
+    expect(mocks.getSpec).not.toHaveBeenCalled();
     expect(mocks.toastError).toHaveBeenCalledWith(
       expect.stringContaining('Policy Compliance rejected'),
     );

@@ -275,9 +275,9 @@ async def test_route_is_not_reselected_when_resolver_preference_changes(
     tmp_path: Path,
 ) -> None:
     events: list[Any] = []
-    ladybug = _snapshot(tmp_path, backend="grafx", generation="g-pinned")
+    legacy = _snapshot(tmp_path, backend="grafx", generation="g-pinned")
     grafx = _snapshot(tmp_path, backend="grafx", generation="g-new")
-    resolver = _Resolver(ladybug, events)
+    resolver = _Resolver(legacy, events)
 
     def pinned_open(snapshot: CommunityGraphRouteSnapshot) -> GraphHandle:
         resolver.snapshot = grafx
@@ -300,7 +300,7 @@ async def test_route_is_not_reselected_when_resolver_preference_changes(
     await lifecycle.open("board-1")
 
     assert resolver.acquire_count == 1
-    assert ("pinned.open", ladybug) in events
+    assert ("pinned.open", legacy) in events
 
 
 @pytest.mark.parametrize("outcome", ["success", "failure", "cancellation"])
@@ -381,10 +381,6 @@ async def test_close_all_propagates_failure_without_routing(
     events: list[Any] = []
     resolver = _Resolver(_snapshot(tmp_path, backend="grafx"), events)
 
-    def failed_ladybug() -> None:
-        events.append(("ladybug.all",))
-        raise RuntimeError("ladybug close failed")
-
     async def closed_grafx() -> None:
         events.append(("grafx.all",))
         await asyncio.sleep(0)
@@ -399,7 +395,7 @@ async def test_close_all_propagates_failure_without_routing(
     with pytest.raises(RuntimeError, match="grafx close failed"):
         await lifecycle.close(None)
 
-    assert events.count(("ladybug.all",)) == 0
+    assert events.count(("legacy.all",)) == 0
     assert events.count(("grafx.all",)) == 1
     assert resolver.acquire_count == 0
     assert not any(event[0].endswith(".enter") for event in events)

@@ -34,7 +34,7 @@ describe('quality assessment REST client', () => {
       offset: 25,
       limit: 25,
       assessmentKind: 'ambiguity',
-      state: 'stale',
+      state: 'previous',
       signal: controller.signal,
     });
     await result.current.listQualityFindings('refinement', 'ref-1', {
@@ -56,7 +56,7 @@ describe('quality assessment REST client', () => {
 
     expect(mockApiClient.fetchJson).toHaveBeenNthCalledWith(
       1,
-      '/ideations/idea%2F1/quality-assessments?offset=25&limit=25&assessment_kind=ambiguity&state=stale',
+      '/ideations/idea%2F1/quality-assessments?offset=25&limit=25&assessment_kind=ambiguity&state=previous',
       { signal: controller.signal },
     );
     expect(mockApiClient.fetchJson).toHaveBeenNthCalledWith(
@@ -156,10 +156,20 @@ describe('quality assessment REST client', () => {
   it('loads the bounded human validation-cycle summary without previous results', async () => {
     const controller = new AbortController();
     const { result } = renderHook(() => useDashboardApi());
+    const cycle = {
+      subject_type: 'spec', subject_id: 'spec/1', edition: 2,
+      planning_manifest: {
+        board_id: 'board', spec_id: 'spec/1', edition: 2, spec_version: 4,
+        subject_incarnation: 'a'.repeat(32), subject_revision: 7,
+        authority_incarnation: 'b'.repeat(32), authority_revision: 3,
+      },
+    };
+    mockApiClient.fetchJson.mockResolvedValueOnce(cycle);
 
-    await result.current.getValidationCycle('spec', 'spec/1', {
+    const response = await result.current.getValidationCycle('spec', 'spec/1', {
       signal: controller.signal,
     });
+    expect(response).toEqual(cycle);
 
     expect(mockApiClient.fetchJson).toHaveBeenCalledWith(
       '/specs/spec%2F1/validation-cycle?include_previous=false&offset=0&limit=25',
@@ -185,9 +195,47 @@ describe('quality assessment REST client', () => {
     );
   });
 
+  it('requests full planning admission only when explicitly selected', async () => {
+    const { result } = renderHook(() => useDashboardApi());
+    const readiness = {
+      state: 'unavailable', blocked_actions: ['promote_to_validated'],
+      components: [{ key: 'decomposition', state: 'unavailable', native_result: null,
+        result_ids: [], reason_codes: ['read_access_required'], mode: null,
+        applicable: null, message: null, next_action: null }],
+    };
+    mockApiClient.fetchJson.mockResolvedValueOnce({ subject_type: 'spec', planning_readiness: readiness });
+    const response = await result.current.getValidationCycle('spec', 'spec-1', { includePlanning: true });
+    expect(response).toEqual({ subject_type: 'spec', planning_readiness: readiness });
+    expect(mockApiClient.fetchJson).toHaveBeenCalledWith(
+      '/specs/spec-1/validation-cycle?include_previous=false&offset=0&limit=25&include_planning=true',
+      { signal: undefined },
+    );
+  });
+
+  it('reads bounded workspace tokens with cancellation, without loading gates', async () => {
+    const { result } = renderHook(() => useDashboardApi());
+    const controller = new AbortController();
+    const subjects = [{ subject_type: 'spec' as const, subject_id: 'spec-1' }];
+    const response = {
+      board_id: 'board-1', authority: { incarnation: 'a'.repeat(32), revision: 2 },
+      subjects: [{ ...subjects[0], token: { incarnation: 'b'.repeat(32), revision: 4 } }],
+    };
+    mockApiClient.fetchJson.mockResolvedValueOnce(response);
+    expect(await result.current.getWorkspaceRevisions('board-1', subjects, controller.signal)).toEqual(response);
+    expect(mockApiClient.fetchJson).toHaveBeenCalledWith('/workspace-revisions/query', {
+      method: 'POST', body: JSON.stringify({ board_id: 'board-1', subjects }), signal: controller.signal,
+    });
+  });
+
   it('submits only the canonical Spec validation and checklist lifecycle fields', async () => {
     const { result } = renderHook(() => useDashboardApi());
     const validation = {
+      idempotency_key: 'quality-review-1',
+      expected_planning_manifest: {
+        board_id: 'board-1', spec_id: 'spec-1', edition: 3, spec_version: 11,
+        subject_incarnation: 'a'.repeat(32), subject_revision: 1,
+        authority_incarnation: 'b'.repeat(32), authority_revision: 1,
+      },
       expected_validation_edition: 3,
       expected_spec_version: 11,
       expected_head_revision: 4,
@@ -203,6 +251,19 @@ describe('quality assessment REST client', () => {
       ambiguity_justification: 'Only one reasonable interpretation remains.',
       pinpoints: [],
       recommendation: 'approve' as const,
+      decomposition: {
+        breakdown_completeness: 90,
+        breakdown_justification: 'Each obligation has an explicit owner.',
+        granularity: 90,
+        granularity_justification: 'Tasks have bounded deliverables.',
+        dependency_coherence: 90,
+        dependency_justification: 'The dependency ordering is coherent.',
+        test_coverage_quality: 90,
+        test_coverage_justification: 'Tests exercise the acceptance outcomes.',
+        overall_score: 90,
+        overall_justification: 'The decomposition has been reviewed.',
+        recommendation: 'reject' as const,
+      },
     };
     const checklistStart = {
       spec_edition: 3,
@@ -221,7 +282,13 @@ describe('quality assessment REST client', () => {
       }],
     };
 
-    await result.current.submitSpecValidation('spec-1', validation);
+    const receipt = {
+      validation_id: 'validation-1', validation_edition: 3, is_current: true,
+      outcome: 'success', spec_status: 'approved', planning_result: 'blocked',
+      decomposition_ids: ['review-1'], planning_blockers: ['decomposition_rejected'],
+    };
+    mockApiClient.fetchJson.mockResolvedValueOnce(receipt);
+    expect(await result.current.submitSpecValidation('spec-1', validation)).toEqual(receipt);
     await result.current.startChecklistExecution(
       'board-1',
       'spec-1',

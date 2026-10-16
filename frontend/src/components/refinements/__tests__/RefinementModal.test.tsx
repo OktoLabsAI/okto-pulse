@@ -1,3 +1,4 @@
+import { workspaceItem, workspacePage } from '@/testFixtures/effectiveResources';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import toast from 'react-hot-toast';
@@ -471,7 +472,6 @@ describe('RefinementModal Knowledge tab markdown rendering', () => {
       title: 'API Notes',
       attachment_kind: 'direct',
       inherited: false,
-      grandfathered: false,
       stale: false,
       superseded: false,
       provenance: {
@@ -566,60 +566,14 @@ describe('RefinementModal selective Knowledge derivation', () => {
     ],
   } as Refinement;
 
-  const effectiveRefinementKnowledge = {
-    board_id: 'board-1',
-    entity_type: 'refinement',
-    entity_id: 'refinement-1',
-    resources: {
-      architecture_design: [],
-      screen_mockup: [],
-      knowledge_base: [
-        {
-          id: 'effective-direct-row',
-          resource_type: 'knowledge_base',
-          resource_id: 'effective-direct-resource',
-          attachment_kind: 'direct',
-          inherited: false,
-          read_only: false,
-          hydrated: true,
-          ref: {
-            root_resource_id: 'root-refinement-kb',
-            knowledge_assignment_stale: false,
-            origin_class: 'v2',
-          },
-          resource: {
-            id: 'effective-direct-resource',
-            title: 'Derived Knowledge',
-            description: 'Reference for the spec',
-          },
-        },
-        {
-          id: 'effective-inherited-row',
-          resource_type: 'knowledge_base',
-          resource_id: 'effective-inherited-resource',
-          attachment_kind: 'inherited_reference',
-          inherited: true,
-          read_only: true,
-          hydrated: true,
-          ref: {
-            root_resource_id: 'root-inherited-refinement-kb',
-            knowledge_assignment_stale: true,
-            origin_class: 'selected_legacy',
-          },
-          provenance: {
-            source_entity_type: 'ideation',
-            source_entity_id: 'ideation-1',
-            source_entity_title: 'Parent ideation',
-          },
-          resource: {
-            id: 'effective-inherited-resource',
-            title: 'Inherited refinement knowledge',
-            description: 'Inherited technical reference',
-          },
-        },
-      ],
-    },
-  };
+  const effectiveRefinementKnowledge = workspacePage('board-1', 'refinement', 'refinement-1', 'knowledge_base', [
+    workspaceItem('knowledge_base', 'root-refinement-kb', 'Derived Knowledge'),
+    workspaceItem('knowledge_base', 'root-inherited-refinement-kb', 'Inherited refinement knowledge', {
+      inherited: true, stale: true, attachment_kind: 'inherited_reference',
+      provenance: { source_entity_type: 'ideation', source_entity_id: 'ideation-1', source_entity_title: 'Parent ideation',
+        origin_class: 'v2', source_revision: '1', source_content_sha256: null },
+    }),
+  ]);
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -675,6 +629,7 @@ describe('RefinementModal selective Knowledge derivation', () => {
         'board-1',
         'refinement',
         'refinement-1',
+        { profile: 'summary', resource_type: 'knowledge_base', limit: 25 },
       ),
     );
     expect(selector).toHaveAttribute('data-knowledge-only', 'true');
@@ -686,7 +641,7 @@ describe('RefinementModal selective Knowledge derivation', () => {
     expect(selector).toHaveTextContent('root-inherited-refinement-kb');
     expect(selector).toHaveTextContent('Inherited refinement knowledge');
     expect(selector).toHaveTextContent('stale');
-    expect(selector).toHaveTextContent('selected_legacy');
+    expect(selector).toHaveTextContent('v2');
     const selectorProps = contextSelectorMock.mock.calls.at(-1)?.[0];
     expect(selectorProps).toEqual(
       expect.objectContaining({
@@ -699,7 +654,7 @@ describe('RefinementModal selective Knowledge derivation', () => {
         expect.objectContaining({
           id: 'root-inherited-refinement-kb',
           stale: true,
-          origin_class: 'selected_legacy',
+          origin_class: 'v2',
         }),
       ]),
     );

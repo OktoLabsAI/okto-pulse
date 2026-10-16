@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import toast from 'react-hot-toast';
 import type { SpecValidationList } from '@/types';
 import { SpecValidationHistoryPanel } from '../SpecValidationHistoryPanel';
 
@@ -23,22 +24,29 @@ const validationHistory: SpecValidationList = {
   validations: [
     {
       id: 'validation-1',
+      edition: 1,
+      validation_edition: 1,
       spec_id: 'spec-1',
       board_id: 'board-1',
       reviewer_id: 'reviewer-1',
       reviewer_name: 'Reviewer',
-      completeness: 92,
-      completeness_justification: 'All required sections are present.',
+      confidence: 92,
+      clarity: 90,
+      clarity_justification: "Clear requirements.",
+      decidability: 90,
+      decidability_justification: "Explicit implementation choices.",
+      confidence_justification: 'All required sections are present.',
       assertiveness: 76,
       assertiveness_justification: 'Some requirements remain tentative.',
       ambiguity: 18,
       ambiguity_justification: 'Residual ambiguity is sufficiently low.',
-      general_justification: 'The spec is ready for implementation.',
       recommendation: 'reject',
       outcome: 'failed',
       threshold_violations: ['Assertiveness must be at least 80.'],
       resolved_thresholds: {
-        min_spec_completeness: 80,
+        min_spec_confidence: 80,
+        min_spec_clarity: 80,
+        min_spec_decidability: 80,
         min_spec_assertiveness: 80,
         max_spec_ambiguity: 30,
       },
@@ -68,18 +76,18 @@ describe('SpecValidationHistoryPanel score presentation', () => {
   it('renders every validation dimension as a circular score out of 100', async () => {
     render(<SpecValidationHistoryPanel specId="spec-1" />);
 
-    const completeness = await screen.findByTestId(
-      'spec-validation-score-completeness',
+    const confidence = await screen.findByTestId(
+      'spec-validation-score-confidence',
     );
     const assertiveness = screen.getByTestId(
       'spec-validation-score-assertiveness',
     );
     const ambiguity = screen.getByTestId('spec-validation-score-ambiguity');
 
-    expect(completeness).toHaveAccessibleName(
-      'Completeness score 92 out of 100, Minimum 80',
+    expect(confidence).toHaveAccessibleName(
+      'Confidence score 92 out of 100, Minimum 80',
     );
-    expect(completeness).toHaveClass(
+    expect(confidence).toHaveClass(
       'h-20',
       'w-20',
       'rounded-full',
@@ -95,13 +103,13 @@ describe('SpecValidationHistoryPanel score presentation', () => {
     );
     expect(ambiguity).toHaveClass('border-emerald-400');
 
-    expect(screen.getAllByText('Minimum 80')).toHaveLength(2);
+    expect(screen.getAllByText('Minimum 80')).toHaveLength(4);
     expect(screen.getByText('Maximum 30')).toBeInTheDocument();
-    expect(within(completeness).getByText('/100')).toBeInTheDocument();
+    expect(within(confidence).getByText('/100')).toBeInTheDocument();
   });
 
-  it('preserves expandable per-dimension justifications for legacy history', async () => {
-    render(<SpecValidationHistoryPanel specId="spec-1" />);
+  it('preserves expandable per-dimension justifications for previous history', async () => {
+    render(<SpecValidationHistoryPanel specId="spec-1" currentEdition={2} view="previous" />);
 
     fireEvent.click(
       await screen.findByRole('button', {
@@ -141,10 +149,12 @@ describe('SpecValidationHistoryPanel score presentation', () => {
         ambiguity: 18,
         ambiguity_justification: 'Only a small interpretation gap remains.',
         pinpoints: [{
-          metric: 'decidability',
+          metrics: ['decidability', 'clarity'], kind: 'problem', severity: 'high',
+          excerpt: 'Run across three availability zones.', recommendation: 'Specify minimum capacity.',
           anchor_type: 'structured_child',
           anchor_ref: 'fr-availability',
           detail: 'The scaling requirement does not define minimum capacity.',
+          rationale: 'Without a capacity floor, implementers cannot size the deployment or verify availability.',
         }],
         resolved_thresholds: {
           min_spec_confidence: 70,
@@ -177,11 +187,22 @@ describe('SpecValidationHistoryPanel score presentation', () => {
     expect(screen.getByTestId('spec-validation-score-decidability'))
       .toHaveClass('border-red-400');
     expect(screen.getByText('decidability')).toBeInTheDocument();
+    expect(screen.getByText('problem')).toBeVisible();
+    expect(screen.getByText('high')).toBeVisible();
+    expect(screen.getByLabelText('Associated dimensions')).toBeVisible();
     expect(screen.getByTestId('spec-validation-pinpoint-target'))
       .toHaveTextContent(
-        'FR-4: Run across three availability zones. (fr-availability)',
+        'fr-availability',
       );
-    expect(screen.getByText(/minimum capacity/)).toBeInTheDocument();
+    const quote = screen.getByText('Run across three availability zones.');
+    expect(quote).not.toBeVisible();
+    fireEvent.click(screen.getByText('The scaling requirement does not define minimum capacity.', { selector: 'summary span' }));
+    expect(quote).toBeVisible();
+    expect(screen.getByText('Specify minimum capacity.')).toBeVisible();
+    expect(screen.getByText(/Without a capacity floor/)).toBeVisible();
+    expect(screen.getByText('Identified issue')).toHaveClass('text-orange-700');
+    expect(screen.getByText('Recommended action')).toHaveClass('text-emerald-700');
+    expect(screen.queryByText('FR-4: Run across three availability zones.')).not.toBeInTheDocument();
     expect(screen.getByText(/confident assessment/)).toBeInTheDocument();
     expect(screen.getByText(/capacity decision/)).toBeInTheDocument();
     expect(screen.queryByRole('button', {
@@ -262,94 +283,24 @@ describe('SpecValidationHistoryPanel score presentation', () => {
     expect(apiMock.listSpecValidations).not.toHaveBeenCalled();
   });
 
-  it('renders the canonical score and summary without legacy dimension noise', async () => {
-    apiMock.getCurrentSpecValidation.mockResolvedValue({
-      spec_id: 'spec-1',
-      edition: 2,
-      lifecycle_state: 'current',
-      current_validation: {
-        id: 'validation-formal-2',
-        validation_id: 'validation-formal-2',
-        validation_edition: 2,
-        is_current: true,
-        spec_id: 'spec-1',
-        board_id: 'board-1',
-        reviewer_id: 'reviewer-2',
-        reviewer_name: 'Independent reviewer',
-        score: 88,
-        summary: 'The current edition is clear and ready to proceed.',
-        outcome: 'success',
-        threshold_violations: [],
-        created_at: '2026-08-11T12:00:00Z',
-        edition: 2,
-        lifecycle_state: 'current',
-        active: true,
-      },
-      previous_count: 1,
-    });
-
-    render(
-      <SpecValidationHistoryPanel
-        specId="spec-1"
-        currentEdition={2}
-        view="current"
-      />,
-    );
-
-    const score = await screen.findByTestId('spec-validation-score-overall');
-    expect(score).toHaveAccessibleName(
-      'Validation score 88 out of 100, No board threshold',
-    );
-    expect(screen.getByText(
-      'The current edition is clear and ready to proceed.',
-    )).toBeInTheDocument();
-    expect(screen.queryByTestId('spec-validation-score-completeness'))
-      .not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'View metric justifications' }))
-      .not.toBeInTheDocument();
+  it('renders only five metrics and never an aggregate score', async () => {
+    render(<SpecValidationHistoryPanel specId="spec-1" currentEdition={1} view="current" />);
+    expect(await screen.findByText('Five-metric assessment')).toBeInTheDocument();
+    expect(screen.getAllByRole('img')).toHaveLength(5);
+    expect(screen.queryByTestId('spec-validation-score-overall')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('spec-validation-score-completeness')).not.toBeInTheDocument();
   });
 
-  it('keeps a null-edition legacy validation in Previous and never promotes it to Current', async () => {
-    const legacyValidation = {
-      ...validationHistory.validations[0],
-      id: 'legacy-validation',
-      edition: null,
-      lifecycle_state: 'current' as const,
-      active: true,
-    };
-    apiMock.listSpecValidations.mockResolvedValue({
-      ...validationHistory,
-      current_validation_id: 'legacy-validation',
-      validations: [legacyValidation],
-    });
-
-    const previousRender = render(
-      <SpecValidationHistoryPanel
-        specId="spec-1"
-        currentEdition={2}
-        view="previous"
-      />,
-    );
-
-    expect(await screen.findByText('Legacy')).toBeInTheDocument();
-    expect(screen.getByText(/Historical result · Attempt 1/))
-      .toBeInTheDocument();
-    expect(screen.queryByText('Edition 1')).not.toBeInTheDocument();
-    previousRender.unmount();
-
-    render(
-      <SpecValidationHistoryPanel
-        specId="spec-1"
-        currentEdition={2}
-        view="current"
-        currentValidation={legacyValidation}
-      />,
-    );
-
-    expect(await screen.findByText(
-      'No current validation result for Edition 2.',
-    )).toBeInTheDocument();
+  it('surfaces incompatible-history refusal without rendering a legacy result', async () => {
+    apiMock.listSpecValidations.mockRejectedValue(new Error('spec_validation_edition_required'));
+    render(<SpecValidationHistoryPanel specId="spec-1" currentEdition={2} view="previous" />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('spec_validation_edition_required');
+    expect(screen.queryByText('No previous validation results are available.')).not.toBeInTheDocument();
+    expect(toast.error).toHaveBeenCalledWith('spec_validation_edition_required');
     expect(screen.queryByText('Legacy')).not.toBeInTheDocument();
+    apiMock.listSpecValidations.mockResolvedValue({ spec_id: 'spec-1', validations: [], current_validation_id: null });
+    fireEvent.click(screen.getByRole('button', { name: 'Retry validation results' }));
+    expect(await screen.findByText('No previous validation results are available.')).toBeInTheDocument();
   });
 
   it('refetches the bounded Current result when the edition changes on the same Spec', async () => {

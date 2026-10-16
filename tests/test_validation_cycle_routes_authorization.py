@@ -9,6 +9,8 @@ import pytest
 from okto_pulse.community.api import validation_cycles
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.core.domain.quality_assessment import AssessmentSubjectType
+from okto_pulse.core.domain.spec_planning import SpecPlanningManifest
+from okto_pulse.core.ports.spec_planning_manifest import SpecPlanningManifestUnavailable
 from okto_pulse.core.domain.validation_cycle import (
     ValidationCycleCheckSummary,
     ValidationCycleResultSummary,
@@ -38,10 +40,21 @@ class _Reader:
         self.audit_error = audit_error
 
     async def get_validation_cycle(self, **_kwargs):
+        self.last_cycle_query = _kwargs
         if self.cycle_error is not None:
             raise self.cycle_error
         assert self.summary is not None
         return self.summary
+
+    async def get_workspace_revisions(self, query, **kwargs):
+        from okto_pulse.core.domain.workspace_revisions import WorkspaceRevisions
+        self.workspace_query = query
+        self.workspace_actor = kwargs
+        if self.cycle_error is not None:
+            raise self.cycle_error
+        return WorkspaceRevisions(board_id=query.board_id,
+            authority={"incarnation": "a" * 32, "revision": 1},
+            subjects=[{**item.model_dump(), "token": None} for item in query.subjects])
 
     async def get_result_technical_audit(
         self,
@@ -78,6 +91,30 @@ def _client(reader: _Reader) -> TestClient:
     app.dependency_overrides[require_user] = lambda: "partial-reader"
     app.dependency_overrides[validation_cycles._reader] = lambda: reader
     return TestClient(app, raise_server_exceptions=False)
+
+
+def test_workspace_metadata_route_keeps_actor_server_owned_and_payload_small():
+    reader = _Reader()
+    payload = {"board_id": "board", "subjects": [{"subject_type": "card", "subject_id": "card"}]}
+    response = _client(reader).post("/api/v1/workspace-revisions/query", json=payload)
+    assert response.status_code == 200, response.text
+    assert reader.workspace_actor["actor_id"] == "partial-reader"
+    assert response.json()["subjects"] == [{"subject_type": "card", "subject_id": "card", "token": None}]
+    rejected = _client(reader).post("/api/v1/workspace-revisions/query", json={**payload, "actor_id": "owner"})
+    assert rejected.status_code == 422
+
+
+@pytest.mark.parametrize("exception,status_code", [
+    (ValidationCycleReadAccessDenied(), 403),
+    (validation_cycles.WorkspaceRevisionsUnavailable(), 503),
+    (validation_cycles.ValidationCycleSubjectNotFound(), 404),
+])
+def test_workspace_metadata_route_never_treats_missing_authority_as_unchanged(exception, status_code):
+    response = _client(_Reader(cycle_error=exception)).post("/api/v1/workspace-revisions/query", json={
+        "board_id": "board", "subjects": [{"subject_type": "spec", "subject_id": "spec"}],
+    })
+    assert response.status_code == status_code
+    assert "subjects" not in response.json()
 
 
 def _partial_summary(
@@ -125,6 +162,7 @@ def test_rest_single_omits_hidden_validation_fields_per_check_leaf(
         "previous_result_count",
         "previous_results",
         "submission_fence",
+        "planning_manifest",
     }.isdisjoint(payload)
 
 
@@ -138,6 +176,28 @@ def test_rest_single_maps_zero_visible_leaf_to_403() -> None:
         "error_code": "permission_denied",
         "retryable": False,
     }
+
+
+def test_rest_explicit_planning_read_preserves_unavailable_components():
+    from dataclasses import replace
+    from okto_pulse.core.domain.spec_planning_readiness import (
+        PLANNING_COMPONENTS, SpecPlanningComponent, SpecPlanningReadiness,
+    )
+
+    planning = SpecPlanningReadiness(tuple(SpecPlanningComponent.unreadable(key) for key in PLANNING_COMPONENTS))
+    summary = replace(_partial_summary(ValidationCycleResultType.REQUIREMENT_LINT), planning_readiness=planning)
+    reader = _Reader(summary=summary)
+    response = _client(reader).get('/api/v1/specs/spec-1/validation-cycle?include_planning=true')
+    assert response.status_code == 200, response.text
+    assert reader.last_cycle_query['include_planning'] is True
+    assert response.json()['planning_readiness'] == planning.to_dict()
+    assert 'planning_manifest' not in response.json()
+
+
+def test_planning_projection_is_delimited_to_specs():
+    response = _client(_Reader()).get('/api/v1/ideations/idea/validation-cycle?include_planning=true')
+    assert response.status_code == 400, response.text
+    assert response.json()['detail']['error_code'] == 'validation_cycle_include_planning_invalid'
 
 
 def test_rest_single_preserves_the_authorized_validation_section() -> None:
@@ -156,6 +216,11 @@ def test_rest_single_preserves_the_authorized_validation_section() -> None:
         ),
         previous_result_count=0,
         submission_fence=ValidationSubmissionFence(2, 4, 1),
+        planning_manifest=SpecPlanningManifest(
+            board_id="board", spec_id="spec-1", edition=2, spec_version=4,
+            subject_incarnation="a" * 32, subject_revision=3,
+            authority_incarnation="b" * 32, authority_revision=1,
+        ),
         checks=(),
         visible_sections=(ValidationCycleResultType.SPEC_VALIDATION,),
     )
@@ -171,6 +236,17 @@ def test_rest_single_preserves_the_authorized_validation_section() -> None:
         "general_justification": "Authorized result."
     }
     assert payload["checks"] == []
+    assert payload["planning_manifest"] == summary.planning_manifest.model_dump(mode="json")
+
+
+def test_rest_reports_missing_revision_authority_as_unavailable():
+    response = _client(_Reader(cycle_error=SpecPlanningManifestUnavailable())).get(
+        "/api/v1/specs/spec-1/validation-cycle"
+    )
+    assert response.status_code == 503
+    assert response.json()["detail"] == {
+        "error_code": "spec_planning_manifest_unavailable", "retryable": False,
+    }
 
 
 def test_rest_audit_maps_hidden_and_missing_results_to_the_same_404() -> None:

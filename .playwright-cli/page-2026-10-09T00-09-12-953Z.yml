@@ -1,0 +1,556 @@
+- generic [ref=f10e3]:
+  - banner [ref=f10e4]:
+    - generic [ref=f10e5]:
+      - generic [ref=f10e6]:
+        - button "Hide sidebar" [ref=f10e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f10e12]
+        - generic [ref=f10e31]: / My Board
+      - generic [ref=f10e32]:
+        - button "Refresh board" [ref=f10e33] [cursor=pointer]
+        - button [ref=f10e40] [cursor=pointer]
+  - generic [ref=f10e13]:
+    - complementary [ref=f10e14]:
+      - generic [ref=f10e15]:
+        - generic [ref=f10e17]:
+          - heading "Boards" [level=2] [ref=f10e18]
+          - button "New board" [ref=f10e19] [cursor=pointer]
+        - navigation [ref=f10e21]:
+          - generic [ref=f10e22]:
+            - heading "My Boards" [level=3] [ref=f10e23]
+            - list [ref=f10e44]:
+              - listitem [ref=f10e45]:
+                - button "My Board" [ref=f10e46] [cursor=pointer]
+    - main [ref=f10e26]:
+      - group "Board views" [ref=f10e53]:
+        - button "Stories" [ref=f10e54] [cursor=pointer]
+        - button "Ideations" [ref=f10e58] [cursor=pointer]
+        - button "Refinements" [ref=f10e61] [cursor=pointer]
+        - button "Specs" [pressed] [ref=f10e66] [cursor=pointer]
+        - button "Tasks" [ref=f10e71] [cursor=pointer]
+      - generic [ref=f10e213]:
+        - generic [ref=f10e214]:
+          - generic [ref=f10e215]:
+            - heading "Specifications" [level=2] [ref=f10e216]
+            - generic [ref=f10e217]: (1 of 1)
+          - generic [ref=f10e218]:
+            - textbox "Search specs…" [ref=f10e220]
+            - group "View mode" [ref=f10e221]:
+              - button "List view" [pressed] [ref=f10e222] [cursor=pointer]
+              - button "Grid view" [ref=f10e224] [cursor=pointer]
+            - generic [ref=f10e230]: Group specs
+            - combobox "Group specs" [ref=f10e236]:
+              - option "None"
+              - option "Ideation"
+              - option "Refinement"
+              - option "Parents" [selected]
+            - button "New Spec" [ref=f10e237] [cursor=pointer]
+        - generic [ref=f10e239]:
+          - button "All" [ref=f10e240] [cursor=pointer]
+          - button "Draft" [ref=f10e241] [cursor=pointer]
+          - button "Review" [ref=f10e242] [cursor=pointer]
+          - button "Approved" [ref=f10e243] [cursor=pointer]
+          - button "Validated" [ref=f10e244] [cursor=pointer]
+          - button "In Progress" [ref=f10e245] [cursor=pointer]
+          - button "Done" [ref=f10e246] [cursor=pointer]
+          - button "Show archived" [ref=f10e247] [cursor=pointer]
+        - generic [ref=f10e250]:
+          - generic [ref=f10e251] [cursor=pointer]:
+            - 'heading "Refinement: Reserva de salas — consistência das reservas e contratos hexagonais" [level=3] [ref=f10e258]'
+            - generic [ref=f10e259]: (1)
+          - generic [ref=f10e263] [cursor=pointer]:
+            - generic [ref=f10e264]:
+              - generic [ref=f10e265]:
+                - generic [ref=f10e266]: Draft
+                - generic "Edition 1" [ref=f10e270]
+              - heading "Reserva de salas — consistência das reservas e contratos hexagonais" [level=3] [ref=f10e271]
+              - paragraph [ref=f10e272]: "Especificação conceitual H01–H04: consultar, criar, alterar e cancelar reservas próprias com consistência, idempotência, histórico e arquitetura hexagonal. Exercício de testes do Pulse; nenhuma implementação real solicitada."
+              - 'generic "Requirement lint: no current result · Edition 1; 0 previous results" [ref=f10e274]':
+                - generic [ref=f10e275]: Requirement lint
+                - strong [ref=f10e276]: Not assessed
+              - generic [ref=f10e277]:
+                - generic [ref=f10e278]: mock
+                - generic [ref=f10e279]: reserva-de-salas
+                - generic [ref=f10e280]: teste-sdlc
+            - generic [ref=f10e281]:
+              - button "Open lineage graph" [ref=f10e282]
+              - button "Archive tree" [ref=f10e287]
+        - generic [ref=f10e293]:
+          - status [ref=f10e294]: Showing 1–1 of 1 matching. 1 overall. Page 1 of 1.
+          - generic [ref=f10e295]:
+            - generic [ref=f10e296]:
+              - generic [ref=f10e297]: Items per page
+              - combobox "Items per page" [ref=f10e298]:
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+            - navigation "Specifications pagination" [ref=f10e299]:
+              - generic [ref=f10e300]:
+                - button "Previous page" [disabled] [ref=f10e301]: Previous
+                - button "Page 1" [disabled] [ref=f10e302]: "1"
+                - button "Next page" [disabled] [ref=f10e303]: Next
+        - dialog [ref=f10e305]:
+          - generic [ref=f10e306]:
+            - generic [ref=f10e307]:
+              - generic [ref=f10e308]: Draft
+              - heading "Reserva de salas — consistência das reservas e contratos hexagonais" [level=2] [ref=f10e312]
+              - generic "Edition 1" [ref=f10e313]
+            - generic [ref=f10e314]:
+              - button "Open lineage graph" [ref=f10e315] [cursor=pointer]
+              - button "Export report" [ref=f10e320] [cursor=pointer]
+              - button "Refresh" [ref=f10e324] [cursor=pointer]
+              - button "Expand" [ref=f10e330] [cursor=pointer]
+              - button "Close spec" [ref=f10e336] [cursor=pointer]
+          - generic [ref=f10e340]:
+            - generic [ref=f10e341]: "Move to:"
+            - button "Review" [ref=f10e342] [cursor=pointer]
+            - button "Cancelled" [ref=f10e345] [cursor=pointer]
+          - generic [ref=f10e348]:
+            - generic [ref=f10e349]: "From:"
+            - button "Reserva de salas — teste do SDLC v24" [ref=f10e350] [cursor=pointer]:
+              - text: Reserva de salas — teste do SDLC
+              - generic [ref=f10e353]: v24
+            - button "Reserva de salas — consistência das reservas e contratos hexagonais v39" [ref=f10e356] [cursor=pointer]:
+              - text: Reserva de salas — consistência das reservas e contratos hexagonais
+              - generic [ref=f10e361]: v39
+          - generic [ref=f10e363]:
+            - tablist "Spec sections" [ref=f10e364]:
+              - tab "Details" [ref=f10e365] [cursor=pointer]
+              - tab "Requirements & Decisions" [ref=f10e370] [cursor=pointer]
+              - tab "Tests & Verifications" [active] [selected] [ref=f10e375] [cursor=pointer]
+              - tab "Coverage" [ref=f10e379] [cursor=pointer]
+              - tab "Code Evidence Matrix" [ref=f10e385] [cursor=pointer]
+              - tab "Project structure" [ref=f10e389] [cursor=pointer]
+              - tab "Dependencies" [ref=f10e396] [cursor=pointer]
+              - tab "Resources" [ref=f10e402] [cursor=pointer]
+              - tab "Q&A 9" [ref=f10e406] [cursor=pointer]:
+                - generic [ref=f10e410]: Q&A
+                - generic [ref=f10e411]: "9"
+              - tab "References" [ref=f10e412] [cursor=pointer]
+              - tab "KG Graph" [ref=f10e417] [cursor=pointer]
+              - tab "Validation" [ref=f10e424] [cursor=pointer]
+              - tab "Activity" [ref=f10e429] [cursor=pointer]
+            - button "Scroll Spec sections right" [ref=f10e435] [cursor=pointer]
+          - tabpanel "Tests & Verifications" [ref=f10e1031]:
+            - tablist "Tests and verifications sections" [ref=f10e1032]:
+              - tab "Tests 51" [selected] [ref=f10e1033] [cursor=pointer]:
+                - generic [ref=f10e1036]: Tests
+                - generic [ref=f10e1037]: "51"
+              - tab "AC 31" [ref=f10e1038] [cursor=pointer]:
+                - generic [ref=f10e1043]: AC
+                - generic [ref=f10e1044]: "31"
+              - tab "Criterion verification" [ref=f10e1045] [cursor=pointer]
+            - tabpanel "Tests 51" [ref=f10e1051]:
+              - generic [ref=f10e1052]:
+                - generic [ref=f10e1053]:
+                  - generic [ref=f10e1054]:
+                    - heading "AC Coverage (31/31)" [level=4] [ref=f10e1055]
+                    - generic [ref=f10e1056]: 100% covered
+                  - generic [ref=f10e1059]:
+                    - generic [ref=f10e1060]:
+                      - generic [ref=f10e1062]: Busca retorna somente salas com capacidade>=participantes e sem confirmed sobreposta; intervalos adjacentes permitidos; falha de leitura é erro, nunca lista vazia.
+                      - generic [ref=f10e1063]: 5 tests
+                    - generic [ref=f10e1064]:
+                      - generic [ref=f10e1066]: Aceitar apenas seg–sex08h–18h, mesmo dia local, início futuro em:00/:30 e até data local+30; duração30min–4h em múltiplos30, sem segundos/micros; recusar cada limite violado sem mutação.
+                      - generic [ref=f10e1067]: 5 tests
+                    - generic [ref=f10e1068]:
+                      - generic [ref=f10e1070]: Participantes deve ser inteiro>=1 e<=capacidade da sala existente; zero,negativo,fracionário e excesso são recusados sem escrita.
+                      - generic [ref=f10e1071]: 1 test
+                    - generic [ref=f10e1072]:
+                      - generic [ref=f10e1074]: Primeira criação válida produz exatamente1 reserva confirmed versão1,1 evento e1 recibo; resposta somente após commit.
+                      - generic [ref=f10e1075]: 3 tests
+                    - generic [ref=f10e1076]:
+                      - generic [ref=f10e1078]: Lista/histórico só incluem o ator; default20,max100; cursor inválido e limite101 são recusados; páginas não duplicam itens em dataset estável.
+                      - generic [ref=f10e1079]: 2 tests
+                    - generic [ref=f10e1080]:
+                      - generic [ref=f10e1082]: Alteração válida incrementa versão exatamente1 e gera evento; conflito/versão incorreta preservam before e não criam recibo de sucesso.
+                      - generic [ref=f10e1083]: 5 tests
+                    - generic [ref=f10e1084]:
+                      - generic [ref=f10e1086]: Cancelamento válido mantém reserva cancelled e histórico e libera intervalo; no início/depois ou nova intenção em cancelled é recusado; replay não cria evento.
+                      - generic [ref=f10e1087]: 5 tests
+                    - generic [ref=f10e1088]:
+                      - generic [ref=f10e1090]: Histórico retorna eventos ordenados versão asc, before=null somente na criação, after explícito, sem mutação por leitura ou replay.
+                      - generic [ref=f10e1091]: 3 tests
+                    - generic [ref=f10e1092]:
+                      - generic [ref=f10e1094]: Mesmo ator/operação/chave/carga retorna resultado original com replayed=true; chave/carga diferente recusa; outro ator não reutiliza nem observa recibo alheio.
+                      - generic [ref=f10e1095]: 7 tests
+                    - generic [ref=f10e1096]:
+                      - generic [ref=f10e1098]: Duas conexões concorrentes não confirmam sobreposição nem duas alterações com mesmo expected_version; falha entre reserva e commit reverte reserva,histórico e recibo.
+                      - generic [ref=f10e1099]: 7 tests
+                    - generic [ref=f10e1100]:
+                      - generic [ref=f10e1102]: Teste estático detecta imports de mecanismo/reach-in privado; domínio/aplicação testáveis com fakes sem infraestrutura; nenhuma porta interna contém http_status.
+                      - generic [ref=f10e1103]: 1 test
+                    - generic [ref=f10e1104]:
+                      - generic [ref=f10e1106]: Sessão ausente/expirada, ID alheio, owner_id forjado e CSRF inválido são recusados sem escrita e sem vazamento; logs excluem segredos.
+                      - generic [ref=f10e1107]: 4 tests
+                    - generic [ref=f10e1108]:
+                      - generic [ref=f10e1110]: Com Clock controlado, comando bloqueado pela transação usa now obtido após aquisição; UTC e fuso local produzem os mesmos limites, sem relógio global no domínio.
+                      - generic [ref=f10e1111]: 3 tests
+                    - generic [ref=f10e1112]:
+                      - generic [ref=f10e1114]: Busy esgota orçamento2s e retorna503 sem escrita parcial; após commit e perda da resposta, reinício+replay recupera mesma reserva/evento únicos.
+                      - generic [ref=f10e1115]: 2 tests
+                    - generic [ref=f10e1116]:
+                      - generic [ref=f10e1118]: H01–H04 apresentam loading/vazio/erro/sucesso/conflicto/incerto distintos, preservam entrada/chave correta e exibem fuso; dupla submissão não cria nova intenção.
+                      - generic [ref=f10e1119]: 5 tests
+                    - generic [ref=f10e1120]:
+                      - generic [ref=f10e1122]: Em320px e zoom200% fluxo principal sem overflow horizontal; modal inicia em Manter, contém foco, Escape não cancela, devolve foco; resultados e erros possuem nome/anúncio acessível.
+                      - generic [ref=f10e1123]: 2 tests
+                    - generic [ref=f10e1124]:
+                      - generic [ref=f10e1126]: No contrato ir_res_storage, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                      - generic [ref=f10e1127]: 1 test
+                    - generic [ref=f10e1128]:
+                      - generic [ref=f10e1130]: No contrato ir_res_change, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                      - generic [ref=f10e1131]: 1 test
+                    - generic [ref=f10e1132]:
+                      - generic [ref=f10e1134]: No contrato ir_res_rules, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                      - generic [ref=f10e1135]: 1 test
+                    - generic [ref=f10e1136]:
+                      - generic [ref=f10e1138]: No contrato ir_res_history, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                      - generic [ref=f10e1139]: 1 test
+                    - generic [ref=f10e1140]:
+                      - generic [ref=f10e1142]: No contrato ir_res_identity_port, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                      - generic [ref=f10e1143]: 1 test
+                    - generic [ref=f10e1144]:
+                      - generic [ref=f10e1146]: No contrato ir_res_create, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                      - generic [ref=f10e1147]: 1 test
+                    - generic [ref=f10e1148]:
+                      - generic [ref=f10e1150]: No contrato ir_res_usecases, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                      - generic [ref=f10e1151]: 1 test
+                    - generic [ref=f10e1152]:
+                      - generic [ref=f10e1154]: No contrato ir_res_search, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                      - generic [ref=f10e1155]: 1 test
+                    - generic [ref=f10e1156]:
+                      - generic [ref=f10e1158]: No contrato ir_res_list, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                      - generic [ref=f10e1159]: 1 test
+                    - generic [ref=f10e1160]:
+                      - generic [ref=f10e1162]: No contrato ir_res_cancel, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                      - generic [ref=f10e1163]: 1 test
+                    - generic [ref=f10e1164]:
+                      - generic [ref=f10e1166]: No contrato ir_res_wiring, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                      - generic [ref=f10e1167]: 1 test
+                    - generic [ref=f10e1168]:
+                      - generic [ref=f10e1170]: No contrato ir_res_clock_port, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                      - generic [ref=f10e1171]: 1 test
+                    - generic [ref=f10e1172]:
+                      - generic [ref=f10e1174]: No contrato ir_res_uow, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                      - generic [ref=f10e1175]: 1 test
+                    - generic [ref=f10e1176]:
+                      - generic [ref=f10e1178]: Cada tentativa tem registro com request_id,operação,resultado,replayed,duração_ms; inspeção dos logs encontra zero cookie,senha,SQL ou payload de reserva.
+                      - generic [ref=f10e1179]: 1 test
+                    - generic [ref=f10e1180]:
+                      - generic [ref=f10e1182]: Contador reservation_commands_total aumenta exatamente1 por tentativa no rótulo operação/resultado correto; replay/conflitos/unavailable distinguíveis, sem criar SLO.
+                      - generic [ref=f10e1183]: 1 test
+                - generic [ref=f10e1184]:
+                  - generic [ref=f10e1185]:
+                    - text: Skip test coverage requirement
+                    - paragraph [ref=f10e1186]: Allow moving spec to Done without full test coverage
+                  - button [ref=f10e1187] [cursor=pointer]
+                - generic [ref=f10e1190] [cursor=pointer]:
+                  - generic [ref=f10e1193]: T01 — Busca por intervalo
+                  - generic [ref=f10e1194]: integration
+                  - generic [ref=f10e1195]: draft
+                  - generic [ref=f10e1196]: no tasks
+                  - button "Delete test scenario T01 — Busca por intervalo" [ref=f10e1197]
+                - generic [ref=f10e1202] [cursor=pointer]:
+                  - generic [ref=f10e1205]: T02 — Limites de capacidade
+                  - generic [ref=f10e1206]: negative
+                  - generic [ref=f10e1207]: draft
+                  - generic [ref=f10e1208]: no tasks
+                  - button "Delete test scenario T02 — Limites de capacidade" [ref=f10e1209]
+                - generic [ref=f10e1214] [cursor=pointer]:
+                  - generic [ref=f10e1217]: T03 — Intervalos sobrepostos
+                  - generic [ref=f10e1218]: integration
+                  - generic [ref=f10e1219]: draft
+                  - generic [ref=f10e1220]: no tasks
+                  - button "Delete test scenario T03 — Intervalos sobrepostos" [ref=f10e1221]
+                - generic [ref=f10e1226] [cursor=pointer]:
+                  - generic [ref=f10e1229]: T04 — Salas independentes
+                  - generic [ref=f10e1230]: integration
+                  - generic [ref=f10e1231]: draft
+                  - generic [ref=f10e1232]: no tasks
+                  - button "Delete test scenario T04 — Salas independentes" [ref=f10e1233]
+                - generic [ref=f10e1238] [cursor=pointer]:
+                  - generic [ref=f10e1241]: T05 — Duração
+                  - generic [ref=f10e1242]: negative
+                  - generic [ref=f10e1243]: draft
+                  - generic [ref=f10e1244]: no tasks
+                  - button "Delete test scenario T05 — Duração" [ref=f10e1245]
+                - generic [ref=f10e1250] [cursor=pointer]:
+                  - generic [ref=f10e1253]: T06 — Precisão e offset
+                  - generic [ref=f10e1254]: negative
+                  - generic [ref=f10e1255]: draft
+                  - generic [ref=f10e1256]: no tasks
+                  - button "Delete test scenario T06 — Precisão e offset" [ref=f10e1257]
+                - generic [ref=f10e1262] [cursor=pointer]:
+                  - generic [ref=f10e1265]: T07 — Expediente
+                  - generic [ref=f10e1266]: negative
+                  - generic [ref=f10e1267]: draft
+                  - generic [ref=f10e1268]: no tasks
+                  - button "Delete test scenario T07 — Expediente" [ref=f10e1269]
+                - generic [ref=f10e1274] [cursor=pointer]:
+                  - generic [ref=f10e1277]: T08 — Início futuro
+                  - generic [ref=f10e1278]: negative
+                  - generic [ref=f10e1279]: draft
+                  - generic [ref=f10e1280]: no tasks
+                  - button "Delete test scenario T08 — Início futuro" [ref=f10e1281]
+                - generic [ref=f10e1286] [cursor=pointer]:
+                  - generic [ref=f10e1289]: T09 — Horizonte
+                  - generic [ref=f10e1290]: negative
+                  - generic [ref=f10e1291]: draft
+                  - generic [ref=f10e1292]: no tasks
+                  - button "Delete test scenario T09 — Horizonte" [ref=f10e1293]
+                - generic [ref=f10e1298] [cursor=pointer]:
+                  - generic [ref=f10e1301]: T10 — Vazio versus falha
+                  - generic [ref=f10e1302]: integration
+                  - generic [ref=f10e1303]: draft
+                  - generic [ref=f10e1304]: no tasks
+                  - button "Delete test scenario T10 — Vazio versus falha" [ref=f10e1305]
+                - generic [ref=f10e1310] [cursor=pointer]:
+                  - generic [ref=f10e1313]: T11 — Criação atômica
+                  - generic [ref=f10e1314]: integration
+                  - generic [ref=f10e1315]: draft
+                  - generic [ref=f10e1316]: no tasks
+                  - button "Delete test scenario T11 — Criação atômica" [ref=f10e1317]
+                - generic [ref=f10e1322] [cursor=pointer]:
+                  - generic [ref=f10e1325]: T12 — Criações concorrentes
+                  - generic [ref=f10e1326]: integration
+                  - generic [ref=f10e1327]: draft
+                  - generic [ref=f10e1328]: no tasks
+                  - button "Delete test scenario T12 — Criações concorrentes" [ref=f10e1329]
+                - generic [ref=f10e1334] [cursor=pointer]:
+                  - generic [ref=f10e1337]: T13 — Replay sequencial e concorrente
+                  - generic [ref=f10e1338]: integration
+                  - generic [ref=f10e1339]: draft
+                  - generic [ref=f10e1340]: no tasks
+                  - button "Delete test scenario T13 — Replay sequencial e concorrente" [ref=f10e1341]
+                - generic [ref=f10e1346] [cursor=pointer]:
+                  - generic [ref=f10e1349]: T14 — Chave com carga diferente
+                  - generic [ref=f10e1350]: negative
+                  - generic [ref=f10e1351]: draft
+                  - generic [ref=f10e1352]: no tasks
+                  - button "Delete test scenario T14 — Chave com carga diferente" [ref=f10e1353]
+                - generic [ref=f10e1358] [cursor=pointer]:
+                  - generic [ref=f10e1361]: T15 — Isolamento de recibo
+                  - generic [ref=f10e1362]: negative
+                  - generic [ref=f10e1363]: draft
+                  - generic [ref=f10e1364]: no tasks
+                  - button "Delete test scenario T15 — Isolamento de recibo" [ref=f10e1365]
+                - generic [ref=f10e1370] [cursor=pointer]:
+                  - generic [ref=f10e1373]: T16 — Alteração válida
+                  - generic [ref=f10e1374]: integration
+                  - generic [ref=f10e1375]: draft
+                  - generic [ref=f10e1376]: no tasks
+                  - button "Delete test scenario T16 — Alteração válida" [ref=f10e1377]
+                - generic [ref=f10e1382] [cursor=pointer]:
+                  - generic [ref=f10e1385]: T17 — Alteração conflitante
+                  - generic [ref=f10e1386]: negative
+                  - generic [ref=f10e1387]: draft
+                  - generic [ref=f10e1388]: no tasks
+                  - button "Delete test scenario T17 — Alteração conflitante" [ref=f10e1389]
+                - generic [ref=f10e1394] [cursor=pointer]:
+                  - generic [ref=f10e1397]: T18 — CAS concorrente
+                  - generic [ref=f10e1398]: integration
+                  - generic [ref=f10e1399]: draft
+                  - generic [ref=f10e1400]: no tasks
+                  - button "Delete test scenario T18 — CAS concorrente" [ref=f10e1401]
+                - generic [ref=f10e1406] [cursor=pointer]:
+                  - generic [ref=f10e1409]: T19 — Alterar versus cancelar
+                  - generic [ref=f10e1410]: integration
+                  - generic [ref=f10e1411]: draft
+                  - generic [ref=f10e1412]: no tasks
+                  - button "Delete test scenario T19 — Alterar versus cancelar" [ref=f10e1413]
+                - generic [ref=f10e1418] [cursor=pointer]:
+                  - generic [ref=f10e1421]: T20 — Cancelamento válido
+                  - generic [ref=f10e1422]: integration
+                  - generic [ref=f10e1423]: draft
+                  - generic [ref=f10e1424]: no tasks
+                  - button "Delete test scenario T20 — Cancelamento válido" [ref=f10e1425]
+                - generic [ref=f10e1430] [cursor=pointer]:
+                  - generic [ref=f10e1433]: T21 — Bloqueio temporal
+                  - generic [ref=f10e1434]: negative
+                  - generic [ref=f10e1435]: draft
+                  - generic [ref=f10e1436]: no tasks
+                  - button "Delete test scenario T21 — Bloqueio temporal" [ref=f10e1437]
+                - generic [ref=f10e1442] [cursor=pointer]:
+                  - generic [ref=f10e1445]: T22 — Replay de cancelamento
+                  - generic [ref=f10e1446]: integration
+                  - generic [ref=f10e1447]: draft
+                  - generic [ref=f10e1448]: no tasks
+                  - button "Delete test scenario T22 — Replay de cancelamento" [ref=f10e1449]
+                - generic [ref=f10e1454] [cursor=pointer]:
+                  - generic [ref=f10e1457]: T23 — Rollback injetado
+                  - generic [ref=f10e1458]: integration
+                  - generic [ref=f10e1459]: draft
+                  - generic [ref=f10e1460]: no tasks
+                  - button "Delete test scenario T23 — Rollback injetado" [ref=f10e1461]
+                - generic [ref=f10e1466] [cursor=pointer]:
+                  - generic [ref=f10e1469]: T24 — Resposta perdida e reinício
+                  - generic [ref=f10e1470]: integration
+                  - generic [ref=f10e1471]: draft
+                  - generic [ref=f10e1472]: no tasks
+                  - button "Delete test scenario T24 — Resposta perdida e reinício" [ref=f10e1473]
+                - generic [ref=f10e1478] [cursor=pointer]:
+                  - generic [ref=f10e1481]: T25 — Busy limitado
+                  - generic [ref=f10e1482]: integration
+                  - generic [ref=f10e1483]: draft
+                  - generic [ref=f10e1484]: no tasks
+                  - button "Delete test scenario T25 — Busy limitado" [ref=f10e1485]
+                - generic [ref=f10e1490] [cursor=pointer]:
+                  - generic [ref=f10e1493]: T26 — ID alheio e owner forjado
+                  - generic [ref=f10e1494]: negative
+                  - generic [ref=f10e1495]: draft
+                  - generic [ref=f10e1496]: no tasks
+                  - button "Delete test scenario T26 — ID alheio e owner forjado" [ref=f10e1497]
+                - generic [ref=f10e1502] [cursor=pointer]:
+                  - generic [ref=f10e1505]: T27 — Sessão e CSRF
+                  - generic [ref=f10e1506]: negative
+                  - generic [ref=f10e1507]: draft
+                  - generic [ref=f10e1508]: no tasks
+                  - button "Delete test scenario T27 — Sessão e CSRF" [ref=f10e1509]
+                - generic [ref=f10e1514] [cursor=pointer]:
+                  - generic [ref=f10e1517]: T28 — Paginação
+                  - generic [ref=f10e1518]: integration
+                  - generic [ref=f10e1519]: draft
+                  - generic [ref=f10e1520]: no tasks
+                  - button "Delete test scenario T28 — Paginação" [ref=f10e1521]
+                - generic [ref=f10e1526] [cursor=pointer]:
+                  - generic [ref=f10e1529]: T29 — Frontend H01
+                  - generic [ref=f10e1530]: e2e
+                  - generic [ref=f10e1531]: draft
+                  - generic [ref=f10e1532]: no tasks
+                  - button "Delete test scenario T29 — Frontend H01" [ref=f10e1533]
+                - generic [ref=f10e1538] [cursor=pointer]:
+                  - generic [ref=f10e1541]: T30 — Frontend H02
+                  - generic [ref=f10e1542]: e2e
+                  - generic [ref=f10e1543]: draft
+                  - generic [ref=f10e1544]: no tasks
+                  - button "Delete test scenario T30 — Frontend H02" [ref=f10e1545]
+                - generic [ref=f10e1550] [cursor=pointer]:
+                  - generic [ref=f10e1553]: T31 — Frontend H03
+                  - generic [ref=f10e1554]: e2e
+                  - generic [ref=f10e1555]: draft
+                  - generic [ref=f10e1556]: no tasks
+                  - button "Delete test scenario T31 — Frontend H03" [ref=f10e1557]
+                - generic [ref=f10e1562] [cursor=pointer]:
+                  - generic [ref=f10e1565]: T32 — Frontend H04
+                  - generic [ref=f10e1566]: e2e
+                  - generic [ref=f10e1567]: draft
+                  - generic [ref=f10e1568]: no tasks
+                  - button "Delete test scenario T32 — Frontend H04" [ref=f10e1569]
+                - generic [ref=f10e1574] [cursor=pointer]:
+                  - generic [ref=f10e1577]: T33 — Responsividade e leitura assistiva
+                  - generic [ref=f10e1578]: manual
+                  - generic [ref=f10e1579]: draft
+                  - generic [ref=f10e1580]: no tasks
+                  - button "Delete test scenario T33 — Responsividade e leitura assistiva" [ref=f10e1581]
+                - generic [ref=f10e1586] [cursor=pointer]:
+                  - generic [ref=f10e1589]: T34 — Fronteira hexagonal
+                  - generic [ref=f10e1590]: unit
+                  - generic [ref=f10e1591]: draft
+                  - generic [ref=f10e1592]: no tasks
+                  - button "Delete test scenario T34 — Fronteira hexagonal" [ref=f10e1593]
+                - generic [ref=f10e1598] [cursor=pointer]:
+                  - generic [ref=f10e1601]: T35 — Paridade de adaptadores
+                  - generic [ref=f10e1602]: integration
+                  - generic [ref=f10e1603]: draft
+                  - generic [ref=f10e1604]: no tasks
+                  - button "Delete test scenario T35 — Paridade de adaptadores" [ref=f10e1605]
+                - generic [ref=f10e1610] [cursor=pointer]:
+                  - generic [ref=f10e1613]: T36 — Histórico imutável
+                  - generic [ref=f10e1614]: integration
+                  - generic [ref=f10e1615]: draft
+                  - generic [ref=f10e1616]: no tasks
+                  - button "Delete test scenario T36 — Histórico imutável" [ref=f10e1617]
+                - generic [ref=f10e1622] [cursor=pointer]:
+                  - generic [ref=f10e1625]: Contrato — Persistência de transação
+                  - generic [ref=f10e1626]: integration
+                  - generic [ref=f10e1627]: draft
+                  - generic [ref=f10e1628]: no tasks
+                  - button "Delete test scenario Contrato — Persistência de transação" [ref=f10e1629]
+                - generic [ref=f10e1634] [cursor=pointer]:
+                  - generic [ref=f10e1637]: Contrato — Alterar reserva
+                  - generic [ref=f10e1638]: integration
+                  - generic [ref=f10e1639]: draft
+                  - generic [ref=f10e1640]: no tasks
+                  - button "Delete test scenario Contrato — Alterar reserva" [ref=f10e1641]
+                - generic [ref=f10e1646] [cursor=pointer]:
+                  - generic [ref=f10e1649]: Contrato — Contrato de invariantes
+                  - generic [ref=f10e1650]: integration
+                  - generic [ref=f10e1651]: draft
+                  - generic [ref=f10e1652]: no tasks
+                  - button "Delete test scenario Contrato — Contrato de invariantes" [ref=f10e1653]
+                - generic [ref=f10e1658] [cursor=pointer]:
+                  - generic [ref=f10e1661]: Contrato — Ler histórico da própria reserva
+                  - generic [ref=f10e1662]: integration
+                  - generic [ref=f10e1663]: draft
+                  - generic [ref=f10e1664]: no tasks
+                  - button "Delete test scenario Contrato — Ler histórico da própria reserva" [ref=f10e1665]
+                - generic [ref=f10e1670] [cursor=pointer]:
+                  - generic [ref=f10e1673]: Contrato — IdentityProvider
+                  - generic [ref=f10e1674]: integration
+                  - generic [ref=f10e1675]: draft
+                  - generic [ref=f10e1676]: no tasks
+                  - button "Delete test scenario Contrato — IdentityProvider" [ref=f10e1677]
+                - generic [ref=f10e1682] [cursor=pointer]:
+                  - generic [ref=f10e1685]: Contrato — Criar reserva
+                  - generic [ref=f10e1686]: integration
+                  - generic [ref=f10e1687]: draft
+                  - generic [ref=f10e1688]: no tasks
+                  - button "Delete test scenario Contrato — Criar reserva" [ref=f10e1689]
+                - generic [ref=f10e1694] [cursor=pointer]:
+                  - generic [ref=f10e1697]: Contrato — Porta pública de casos de uso
+                  - generic [ref=f10e1698]: integration
+                  - generic [ref=f10e1699]: draft
+                  - generic [ref=f10e1700]: no tasks
+                  - button "Delete test scenario Contrato — Porta pública de casos de uso" [ref=f10e1701]
+                - generic [ref=f10e1706] [cursor=pointer]:
+                  - generic [ref=f10e1709]: Contrato — Consultar disponibilidade
+                  - generic [ref=f10e1710]: integration
+                  - generic [ref=f10e1711]: draft
+                  - generic [ref=f10e1712]: no tasks
+                  - button "Delete test scenario Contrato — Consultar disponibilidade" [ref=f10e1713]
+                - generic [ref=f10e1718] [cursor=pointer]:
+                  - generic [ref=f10e1721]: Contrato — Listar próprias reservas
+                  - generic [ref=f10e1722]: integration
+                  - generic [ref=f10e1723]: draft
+                  - generic [ref=f10e1724]: no tasks
+                  - button "Delete test scenario Contrato — Listar próprias reservas" [ref=f10e1725]
+                - generic [ref=f10e1730] [cursor=pointer]:
+                  - generic [ref=f10e1733]: Contrato — Cancelar reserva
+                  - generic [ref=f10e1734]: integration
+                  - generic [ref=f10e1735]: draft
+                  - generic [ref=f10e1736]: no tasks
+                  - button "Delete test scenario Contrato — Cancelar reserva" [ref=f10e1737]
+                - generic [ref=f10e1742] [cursor=pointer]:
+                  - generic [ref=f10e1745]: Contrato — Injeção de adaptadores
+                  - generic [ref=f10e1746]: integration
+                  - generic [ref=f10e1747]: draft
+                  - generic [ref=f10e1748]: no tasks
+                  - button "Delete test scenario Contrato — Injeção de adaptadores" [ref=f10e1749]
+                - generic [ref=f10e1754] [cursor=pointer]:
+                  - generic [ref=f10e1757]: Contrato — Clock
+                  - generic [ref=f10e1758]: integration
+                  - generic [ref=f10e1759]: draft
+                  - generic [ref=f10e1760]: no tasks
+                  - button "Delete test scenario Contrato — Clock" [ref=f10e1761]
+                - generic [ref=f10e1766] [cursor=pointer]:
+                  - generic [ref=f10e1769]: Contrato — ReservationUnitOfWork
+                  - generic [ref=f10e1770]: integration
+                  - generic [ref=f10e1771]: draft
+                  - generic [ref=f10e1772]: no tasks
+                  - button "Delete test scenario Contrato — ReservationUnitOfWork" [ref=f10e1773]
+                - generic [ref=f10e1778] [cursor=pointer]:
+                  - generic [ref=f10e1781]: Observabilidade — logs sem segredos
+                  - generic [ref=f10e1782]: integration
+                  - generic [ref=f10e1783]: draft
+                  - generic [ref=f10e1784]: no tasks
+                  - button "Delete test scenario Observabilidade — logs sem segredos" [ref=f10e1785]
+                - generic [ref=f10e1790] [cursor=pointer]:
+                  - generic [ref=f10e1793]: Observabilidade — contadores por resultado
+                  - generic [ref=f10e1794]: integration
+                  - generic [ref=f10e1795]: draft
+                  - generic [ref=f10e1796]: no tasks
+                  - button "Delete test scenario Observabilidade — contadores por resultado" [ref=f10e1797]
+                - button "Add Test Scenario" [ref=f10e1801] [cursor=pointer]
+          - generic [ref=f10e671]:
+            - button "Delete spec" [ref=f10e672] [cursor=pointer]
+            - button "Close" [ref=f10e674] [cursor=pointer]

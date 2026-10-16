@@ -25,7 +25,6 @@ import {
 import { useDashboardApi } from '@/services/api';
 import { PulseLoader } from '@/components/shared/PulseLoader';
 import { CanonicalCoveragePanel } from './CanonicalCoveragePanel';
-import { DeliveryForecastPanel } from './DeliveryForecastPanel';
 import { FlowHealthSummary } from './FlowHealthSummary';
 import { KgEffectivenessPanel } from './KgEffectivenessPanel';
 import { mergeBoardKgAnalyticsPages } from './kgEffectivenessPagination';
@@ -35,11 +34,6 @@ import type {
   CanonicalCoverageResponse,
   FlowHealthResponse,
 } from './analyticsCanonicalTypes';
-import type {
-  DeliveryForecastResponse,
-  SprintAnalyticsResponse,
-} from './analyticsDeliveryTypes';
-
 // ---------------------------------------------------------------------------
 // Types matching backend responses
 // ---------------------------------------------------------------------------
@@ -56,7 +50,6 @@ interface FunnelData {
   refinements: number;
   specs: number;
   specs_done: number;
-  sprints: number;
   cards: number;
   cards_impl: number;
   cards_test: number;
@@ -67,7 +60,6 @@ interface FunnelData {
   specs_with_rules: number;
   specs_with_contracts: number;
   spec_status_breakdown: Record<string, number>;
-  sprint_status_breakdown: Record<string, number>;
   card_status_breakdown: Record<string, number>;
   bugs_total: number;
   bugs_open: number;
@@ -97,8 +89,8 @@ interface ValidationsResponse {
     total_failed: number;
     success_rate: number | null;
     avg_attempts_per_spec: number | null;
-    avg_scores: { completeness: number | null; assertiveness: number | null; ambiguity: number | null };
-    rejection_reasons: { completeness_below: number; assertiveness_below: number; ambiguity_above: number; reject_recommendation: number };
+    avg_scores: { confidence: number | null; clarity: number | null; decidability: number | null; assertiveness: number | null; ambiguity: number | null };
+    rejection_reasons: { confidence_below: number; clarity_below: number; decidability_below: number; assertiveness_below: number; ambiguity_above: number; reject_recommendation: number };
     specs_with_validation: number;
     per_spec: Array<{
       spec_id: string;
@@ -106,7 +98,9 @@ interface ValidationsResponse {
       status: string;
       attempts: number;
       last_outcome: string | null;
-      last_completeness: number | null;
+      last_confidence: number | null;
+      last_clarity: number | null;
+      last_decidability: number | null;
       last_assertiveness: number | null;
       last_ambiguity: number | null;
       success_count: number;
@@ -130,7 +124,6 @@ interface ValidationsResponse {
       title: string;
       card_type: string;
       spec_id: string | null;
-      sprint_id: string | null;
       status: string;
       attempts: number;
       last_outcome: string | null;
@@ -147,12 +140,6 @@ interface ValidationsResponse {
     approve_rate: number | null;
     avg_overall_score: number | null;
     specs_with_evaluation: number;
-  };
-  sprint_evaluation: {
-    total_submitted: number;
-    approve_rate: number | null;
-    avg_overall_score: number | null;
-    sprints_with_evaluation: number;
   };
 }
 
@@ -249,7 +236,7 @@ interface BoardDashboardProps {
   boardId: string;
   from: string;
   to: string;
-  onSelectEntity: (type: 'ideation' | 'spec' | 'refinement' | 'sprint' | 'card', id: string, name: string) => void;
+  onSelectEntity: (type: 'ideation' | 'spec' | 'refinement' | 'card', id: string, name: string) => void;
   onOpenFlowHealth?: () => void;
   onOpenCanonicalCoverage?: (query: CanonicalCoverageQueryState) => void;
   onOpenKgEffectiveness?: () => void;
@@ -393,13 +380,6 @@ export function BoardDashboard({
   const [quality, setQuality] = useState<QualityPoint[]>([]);
   const [agents, setAgents] = useState<AgentRow[]>([]);
   const [validations, setValidations] = useState<ValidationsResponse | null>(null);
-  const [sprints, setSprints] = useState<SprintAnalyticsResponse | null>(null);
-  const [deliveryForecast, setDeliveryForecast] = useState<DeliveryForecastResponse | null>(null);
-  const [deliveryForecastLoading, setDeliveryForecastLoading] = useState(true);
-  const [deliveryForecastError, setDeliveryForecastError] = useState<string | null>(null);
-  const [deliveryForecastExportError, setDeliveryForecastExportError] = useState<string | null>(null);
-  const [deliveryForecastRetry, setDeliveryForecastRetry] = useState(0);
-  const [deliveryForecastExporting, setDeliveryForecastExporting] = useState(false);
   const [kgAnalytics, setKgAnalytics] = useState<BoardKgAnalyticsResponse | null>(null);
   const [kgLoading, setKgLoading] = useState(true);
   const [kgError, setKgError] = useState<string | null>(null);
@@ -448,9 +428,8 @@ export function BoardDashboard({
       api.getBoardAnalyticsQuality(boardId, from, to),
       api.getBoardAnalyticsAgents(boardId, from, to),
       api.getBoardAnalyticsValidations(boardId, from, to),
-      api.getBoardAnalyticsSprints(boardId, from, to),
     ])
-      .then(([funnelRes, qualityRes, agentsRes, validationsRes, sprintsRes]) => {
+      .then(([funnelRes, qualityRes, agentsRes, validationsRes]) => {
         if (cancelled) return;
         setFunnel(funnelRes as FunnelData);
         // Quality endpoint now returns {conclusion_reported, validation_reported}.
@@ -459,7 +438,6 @@ export function BoardDashboard({
         setQuality(q.validation_reported.length > 0 ? q.validation_reported : q.conclusion_reported);
         setAgents(agentsRes as AgentRow[]);
         setValidations(validationsRes as ValidationsResponse);
-        setSprints(sprintsRes);
       })
       .catch((err: unknown) => {
         if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load board analytics');
@@ -473,7 +451,7 @@ export function BoardDashboard({
   }, [boardId, from, to]);
 
   // KG Analytics has an independent lifecycle: failure here must not hide the
-  // usable funnel, coverage, validation or Sprint panels.
+  // usable funnel, coverage and validation panels.
   useEffect(() => {
     let cancelled = false;
     setKgLoading(true);
@@ -514,26 +492,6 @@ export function BoardDashboard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boardId, from, to, kgRetry]);
 
-  useEffect(() => {
-    let cancelled = false;
-    setDeliveryForecastLoading(true);
-    setDeliveryForecastError(null);
-    api.getBoardDeliveryForecast(boardId, from, to)
-      .then((payload) => {
-        if (!cancelled) setDeliveryForecast(payload);
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) {
-          setDeliveryForecast(null);
-          setDeliveryForecastError(err instanceof Error ? err.message : 'Delivery forecast is unavailable.');
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setDeliveryForecastLoading(false);
-      });
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [boardId, from, to, deliveryForecastRetry]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1361,7 +1319,9 @@ export function BoardDashboard({
               </div>
               <div className="grid grid-cols-4 gap-2 mb-3">
                 <MiniStat label="success rate" value={validations.spec_validation_gate.success_rate} unit="%" />
-                <MiniStat label="avg complete" value={validations.spec_validation_gate.avg_scores.completeness} unit="%" />
+                <MiniStat label="avg confidence" value={validations.spec_validation_gate.avg_scores.confidence} unit="%" />
+                <MiniStat label="avg clarity" value={validations.spec_validation_gate.avg_scores.clarity} unit="%" />
+                <MiniStat label="avg decidability" value={validations.spec_validation_gate.avg_scores.decidability} unit="%" />
                 <MiniStat label="avg assert" value={validations.spec_validation_gate.avg_scores.assertiveness} unit="%" />
                 <MiniStat label="avg ambig" value={validations.spec_validation_gate.avg_scores.ambiguity} unit="%" invert />
               </div>
@@ -1456,31 +1416,11 @@ export function BoardDashboard({
 
       {governedAnalyticsSections}
 
-      <DeliveryForecastPanel
-        sprints={sprints}
-        forecast={deliveryForecast}
-        forecastLoading={deliveryForecastLoading}
-        forecastError={deliveryForecastError}
-        forecastExportError={deliveryForecastExportError}
-        forecastExporting={deliveryForecastExporting}
-        from={from}
-        to={to}
-        compact
-        onOpenFullView={onOpenDeliveryIntelligence}
-        onRetryForecast={() => setDeliveryForecastRetry((value) => value + 1)}
-        onExportForecast={async () => {
-          if (deliveryForecastExporting) return;
-          setDeliveryForecastExporting(true);
-          setDeliveryForecastExportError(null);
-          try {
-            await api.exportBoardDeliveryForecastCsv(boardId, from, to);
-          } catch (err) {
-            setDeliveryForecastExportError(err instanceof Error ? err.message : 'Delivery forecast export failed');
-          } finally {
-            setDeliveryForecastExporting(false);
-          }
-        }}
-      />
+      <section aria-labelledby="delivery-intelligence-heading" className="rounded-xl border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-800" data-testid="delivery-summary">
+        <h3 id="delivery-intelligence-heading" className="text-sm font-semibold">Delivery Intelligence</h3>
+        <p className="mt-1 text-xs text-gray-500">Delivery metrics and contribution by role.</p>
+        <button type="button" onClick={onOpenDeliveryIntelligence} disabled={!onOpenDeliveryIntelligence} className="mt-3 rounded-md border border-blue-200 px-3 py-2 text-xs font-semibold text-blue-700 disabled:opacity-50 dark:border-blue-800 dark:text-blue-300">Open full view</button>
+      </section>
     </div>
   );
 }

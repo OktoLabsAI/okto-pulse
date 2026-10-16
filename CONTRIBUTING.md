@@ -17,6 +17,25 @@ pip install -e ../okto-pulse-core -e ".[dev]"
 The Community CI prefers an `okto-pulse-core` branch with the same name as the
 Community branch and falls back to Core `main` when none exists. Create matching
 branches in both repositories when a change spans the package boundary.
+The fallback does not validate a coordinated Core/Community change. Record and
+test the exact pair of commits; release builds check out both repositories at
+the same tag.
+
+Before behavioral tests against installed wheels, compare all Python files under
+`site-packages/okto_pulse/` byte for byte with both local `src/` trees. Use fresh
+disposable test processes after reinstalling. Direct source runs must include
+both repositories in `PYTHONPATH` (`core/src;community/src` on Windows, using the
+actual checkout paths).
+
+## Architecture
+
+`src/okto_pulse/community/adapters/` owns SQLAlchemy, Okto Grafx, filesystem,
+scheduler, telemetry, and HTTP client mechanics. REST routers live in `api/`;
+the compiled SPA lives in `frontend_dist/`. Core owns domain rules and public
+Protocols. Adapters consume those ports instead of private Core modules; add a
+missing port in Core instead of duplicating its rules or granting an exception.
+Validate both repositories and wheels with `okto-pulse-saas-closure`; every
+transitional budget must remain zero.
 
 ## Tests
 

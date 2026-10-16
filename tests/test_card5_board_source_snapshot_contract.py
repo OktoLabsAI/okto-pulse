@@ -114,7 +114,7 @@ def test_missing_required_table_returns_incomplete_instead_of_partial_rows(
         pytest.param("boards", "id", id="board-identity"),
         pytest.param("stories", "status", id="artifact-status"),
         pytest.param("specs", "integration_requirements", id="artifact-content"),
-        pytest.param("sprints", "created_at", id="artifact-common"),
+        pytest.param("refinements", "created_at", id="artifact-common"),
         pytest.param("cards", "board_id", id="card-ownership"),
         pytest.param("cards", "card_type", id="card-content"),
         pytest.param(
@@ -141,6 +141,17 @@ def test_empty_table_missing_a_required_column_makes_snapshot_incomplete(
         complete=False,
         cause="realm_incomplete",
     )
+
+
+def test_retired_sprint_table_is_not_part_of_live_snapshot_completeness(tmp_path: Path) -> None:
+    database = _source_database(tmp_path / "retired-sprint.sqlite3")
+    with sqlite3.connect(database) as connection:
+        connection.execute("DROP TABLE IF EXISTS sprints")
+        connection.execute("CREATE TABLE sprints (old_identity TEXT)")
+        connection.execute("INSERT INTO sprints VALUES ('historical')")
+    snapshot = CommunityBoardSourceReader(database).fetch("board-card5")
+    assert snapshot.complete
+    assert not any(row["artifact_type"] == "sprint" for row in snapshot.rows)
 
 
 def test_missing_board_makes_the_requested_realm_incomplete(tmp_path: Path) -> None:

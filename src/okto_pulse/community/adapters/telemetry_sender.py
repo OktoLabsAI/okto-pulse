@@ -343,22 +343,6 @@ class CommunityTelemetryBeaconSender:
             return {"sent": False, "reason": "not_enabled"}
         state = dict(cfg.state)
         product_failure = self._product_snapshot_failure_state(state)
-        if (
-            product_failure.status == fs.STATUS_FATAL
-            and product_failure.reason_code == "PRODUCT_SNAPSHOT_HTTP_404"
-        ):
-            # v0.3.0 initially classified an additive route rollout gap as
-            # permanent.  Migrate that exact legacy state once so an already
-            # affected installation can retry immediately after the backend is
-            # deployed; all genuinely fatal contract failures remain closed.
-            product_failure = fs.merge(
-                product_failure,
-                status=fs.STATUS_DEGRADED,
-                next_retry_at=None,
-            )
-            state[PRODUCT_SNAPSHOT_FAILURE_STATE_KEY] = product_failure.to_public_dict()
-            state.pop(PRODUCT_SNAPSHOT_CIRCUIT_KEY, None)
-            save_state(cfg.metrics_dir, state)
         if product_failure.status in {fs.STATUS_FATAL, fs.STATUS_BLOCKED}:
             return {
                 "sent": False,
@@ -1265,8 +1249,9 @@ class CommunityTelemetryBeaconSender:
         now_iso: str,
     ) -> None:
         # R1-B: record a successful publish in the failure-state schema, marking
-        # recovery when the previous state was failing, and clear the legacy
+        # recovery when the previous state was failing, and clear the
         # circuit gate.
+        state.update(wm.read_watermark(state).to_state_fields())
         current = fs.read_failure_state(state)
         was_failing = (
             current.status in (fs.STATUS_DEGRADED, fs.STATUS_FATAL)
@@ -1689,6 +1674,7 @@ class CommunityTelemetryBeaconSender:
         included: list[dict[str, Any]],
         now_iso: str,
     ) -> None:
+        state.update(wm.read_watermark(state).to_state_fields())
         current = fs.read_failure_state(state)
         was_failing = (
             current.status in (fs.STATUS_DEGRADED, fs.STATUS_FATAL)

@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import ast
 import json
+
+import pytest
 from pathlib import Path
 
 import okto_pulse.community.adapters.telemetry_sender as sender_mod
@@ -44,18 +46,20 @@ def test_save_state_matches_core_json_format_and_roundtrips(tmp_path: Path) -> N
     assert not (metrics_dir / "state.tmp").exists()
 
 
-def test_load_state_of_missing_or_corrupt_file_is_empty_dict(tmp_path: Path) -> None:
+def test_missing_state_is_empty_but_corrupt_state_is_refused(tmp_path: Path) -> None:
     metrics_dir = tmp_path / "metrics"
     assert tstate.load_state(metrics_dir) == {}  # missing
     metrics_dir.mkdir(parents=True)
     tstate.state_path(metrics_dir).write_text("not json", encoding="utf-8")
-    assert tstate.load_state(metrics_dir) == {}  # corrupt
+    with pytest.raises(json.JSONDecodeError):
+        tstate.load_state(metrics_dir)
+    assert tstate.state_path(metrics_dir).read_text(encoding="utf-8") == "not json"
 
 
 # --- the 4 persistence helpers round-trip + preserve other keys (point 3) ----
 def test_watermark_persistence_roundtrip_preserves_other_keys(tmp_path: Path) -> None:
     metrics_dir = tmp_path / "metrics"
-    tstate.save_state(metrics_dir, {"install_token": "secret", "mode": "anonymous_beacon"})
+    tstate.save_state(metrics_dir, {"install_token": "secret", "mode": "anonymous_beacon", "failure_state": {"status": "ok"}})
     watermark = wm.Watermark(
         watermark="2026-06-10T00:00:00Z",
         watermark_event_id="evt-x",
@@ -74,7 +78,7 @@ def test_watermark_persistence_roundtrip_preserves_other_keys(tmp_path: Path) ->
 
 def test_failure_state_persistence_roundtrip_preserves_other_keys(tmp_path: Path) -> None:
     metrics_dir = tmp_path / "metrics"
-    tstate.save_state(metrics_dir, {"install_token": "secret", "next_batch_seq": 7})
+    tstate.save_state(metrics_dir, {"install_token": "secret", "next_batch_seq": 7, "failure_state": {"status": "ok"}, "watermark": None, "watermark_event_id": None})
     failure = fs.merge(
         fs.read_failure_state({}),
         status=fs.STATUS_DEGRADED,

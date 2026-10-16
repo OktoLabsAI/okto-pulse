@@ -164,7 +164,6 @@ export function KGHealthCognitivePendingPanel({
       className="min-w-0 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900"
     >
       <PanelHeader
-        legacyMode={data?.legacy_mode ?? false}
         selectedKgGenerationId={data?.selected_kg_generation_id ?? null}
         explicitGeneration={Boolean(selectedKgGenerationId)}
         onRefresh={handleRefresh}
@@ -207,7 +206,6 @@ export function KGHealthCognitivePendingPanel({
 }
 
 interface PanelHeaderProps {
-  legacyMode: boolean;
   selectedKgGenerationId: string | null;
   explicitGeneration: boolean;
   onRefresh: () => void;
@@ -215,7 +213,6 @@ interface PanelHeaderProps {
 }
 
 function PanelHeader({
-  legacyMode,
   selectedKgGenerationId,
   explicitGeneration,
   onRefresh,
@@ -248,15 +245,7 @@ function PanelHeader({
               no generation yet
             </span>
           )}
-          {legacyMode && (
-            <span
-              data-testid="kg-cognitive-pending-legacy-badge"
-              title="On-disk record predates KG-03; items are synthesized from the KG-02 aggregate"
-              className="rounded bg-amber-100 px-2 py-0.5 font-semibold text-amber-800 dark:bg-amber-900 dark:text-amber-200"
-            >
-              legacy mode
-            </span>
-          )}
+
         </div>
       </div>
       <button

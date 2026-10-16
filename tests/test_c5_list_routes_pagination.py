@@ -1,7 +1,7 @@
-"""C5 — the six existing REST lists over the real Core/Community stack.
+"""C5 — the four surviving REST lists over the real Core/Community stack.
 
 The suite uses an isolated SQLite file and a real ``CommunityUnitOfWork``.
-It covers the opt-in envelope, DR9 legacy branch, two totals, stable windows,
+It covers the single native envelope, default windows, two totals, stable windows,
 typed query errors, parent/access parity, bounded SQL and lean SQL projection.
 No running Pulse process or installed data directory is touched.
 """
@@ -28,8 +28,8 @@ from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.community.api.ideations import router as ideations_router
 from okto_pulse.community.api.refinements import router as refinements_router
 from okto_pulse.community.api.specs import router as specs_router
-from okto_pulse.community.api.sprints import router as sprints_router
 from okto_pulse.community.api.stories import router as stories_router
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
 from okto_pulse.core.domain.realm import RealmScope
 from okto_pulse.core.ports.application_persistence import (
     get_application_persistence_port,
@@ -45,8 +45,6 @@ LIST_CASES = (
     ("/api/v1/boards/b1/ideations", 25),
     ("/api/v1/ideations/i00/refinements", 25),
     ("/api/v1/boards/b1/specs", 25),
-    ("/api/v1/boards/b1/sprints", 25),
-    ("/api/v1/boards/b1/specs/p00/sprints", 12),
 )
 
 
@@ -104,7 +102,6 @@ async def _build_engine(path: Path) -> AsyncEngine:
                             "ideation",
                             "refinement",
                             "spec",
-                            "sprint",
                         )
                     }
                 )
@@ -193,15 +190,20 @@ async def _build_engine(path: Path) -> AsyncEngine:
             text(
                 "INSERT INTO specs "
                 "(id, board_id, title, status, edition, version, created_by, archived, "
-                "updated_at) VALUES "
+                "architecture_adoption, updated_at) VALUES "
                 "(:id, :board_id, :title, :status, :edition, :version, "
-                ":created_by, :archived, "
+                ":created_by, :archived, :architecture_adoption, "
                 "'2026-07-20 00:00:00')"
             ),
             [
                 {
                     "id": f"p{i:02d}",
                     "board_id": "b1",
+                    "architecture_adoption": ArchitectureAdoptionScope(
+                        board_id="b1", spec_id=f"p{i:02d}",
+                        adopted_in_edition=3 if i == 0 else 1,
+                        actor_id="u", inherited_resource_ids=(),
+                    ).model_dump_json(),
                     "title": f"Spec {i}",
                     "status": "draft" if i % 2 == 0 else "review",
                     # p00 exercises the public edition/revision projection.
@@ -218,6 +220,10 @@ async def _build_engine(path: Path) -> AsyncEngine:
                 {
                     "id": "px",
                     "board_id": "b2",
+                    "architecture_adoption": ArchitectureAdoptionScope(
+                        board_id="b2", spec_id="px", adopted_in_edition=1,
+                        actor_id="other", inherited_resource_ids=(),
+                    ).model_dump_json(),
                     "title": "Secret spec",
                     "status": "draft",
                     "edition": 1,
@@ -233,52 +239,10 @@ async def _build_engine(path: Path) -> AsyncEngine:
         await conn.execute(
             text("UPDATE refinements SET edition = 5, version = 43 WHERE id = 'r00'")
         )
-        await conn.execute(
-            text(
-                "INSERT INTO sprints "
-                "(id, spec_id, board_id, title, spec_version, status, lane_type, "
-                "version, created_by, archived, updated_at) VALUES "
-                "(:id, :spec_id, :board_id, :title, 1, :status, 'normal', 1, "
-                ":created_by, :archived, '2026-07-20 00:00:00')"
-            ),
-            [
-                {
-                    "id": f"q{i:02d}",
-                    "spec_id": "p00" if i < 15 else "p01",
-                    "board_id": "b1",
-                    "title": f"Sprint {i}",
-                    "status": "draft" if i % 2 == 0 else "active",
-                    "created_by": "u",
-                    "archived": i in {12, 13, 14, 28, 29},
-                }
-                for i in range(30)
-            ]
-            + [
-                {
-                    "id": "qx",
-                    "spec_id": "px",
-                    "board_id": "b2",
-                    "title": "Secret sprint",
-                    "status": "draft",
-                    "created_by": "other",
-                    "archived": False,
-                },
-                {
-                    "id": "q-corrupt",
-                    "spec_id": "p00",
-                    "board_id": "b2",
-                    "title": "Cross-board inconsistent sprint",
-                    "status": "draft",
-                    "created_by": "other",
-                    "archived": False,
-                },
-            ],
-        )
         for table, parent_field, parent_id in (
             ("ideation_qa_items", "ideation_id", "i00"),
             ("refinement_qa_items", "refinement_id", "r00"),
             ("spec_qa_items", "spec_id", "p00"),
-            ("sprint_qa_items", "sprint_id", "q00"),
         ):
             await conn.execute(
                 text(
@@ -362,7 +326,6 @@ def client(tmp_path: Path):
         ideations_router,
         refinements_router,
         specs_router,
-        sprints_router,
     ):
         app.include_router(route, prefix="/api/v1")
     app.state.sql_statements = statements
@@ -390,7 +353,7 @@ def client(tmp_path: Path):
 
 
 @pytest.mark.parametrize(("path", "active_total"), LIST_CASES)
-def test_six_routes_opt_in_to_exact_envelope(
+def test_four_routes_return_exact_envelope(
     client: TestClient, path: str, active_total: int
 ) -> None:
     response = client.get(f"{path}?offset=0&limit=25")
@@ -404,12 +367,18 @@ def test_six_routes_opt_in_to_exact_envelope(
 
 
 @pytest.mark.parametrize(("path", "_active_total"), LIST_CASES)
-def test_six_routes_preserve_successful_legacy_list_shape(
+def test_four_routes_default_to_the_same_envelope(
     client: TestClient, path: str, _active_total: int
 ) -> None:
+    route = path.replace("/b1/", "/{board_id}/").replace("/i00/", "/{ideation_id}/")
+    schema = client.app.openapi()["paths"][route]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+    assert "anyOf" not in schema
+    assert "PageEnvelope" in schema["$ref"]
     response = client.get(path)
     assert response.status_code == 200, response.text
-    assert isinstance(response.json(), list)
+    assert set(response.json()) == ENVELOPE_KEYS
+    assert response.json()["offset"] == 0
+    assert response.json()["limit"] == 25
 
 
 def test_offset_or_limit_alone_activates_defaults(client: TestClient) -> None:
@@ -430,7 +399,6 @@ def test_offset_or_limit_alone_activates_defaults(client: TestClient) -> None:
         ("/api/v1/boards/b1/ideations?status=draft", 13),
         ("/api/v1/ideations/i00/refinements?status=draft", 13),
         ("/api/v1/boards/b1/specs?status=draft", 13),
-        ("/api/v1/boards/b1/sprints?status=draft", 12),
     ),
 )
 def test_filters_change_only_total_filtered(
@@ -474,13 +442,12 @@ def test_story_relational_and_converted_filters_are_server_side(
     (
         ("/api/v1/boards/b1/ideations", "i07"),
         ("/api/v1/boards/b1/specs", "p07"),
-        ("/api/v1/boards/b1/sprints", "q07"),
     ),
 )
 def test_consumer_search_is_applied_before_the_window(
     client: TestClient, path: str, expected_id: str
 ) -> None:
-    entity_name = {"i": "ideation", "p": "spec", "q": "sprint"}[expected_id[0]]
+    entity_name = {"i": "ideation", "p": "spec"}[expected_id[0]]
     statements = client.app.state.sql_statements
     statements.clear()
 
@@ -550,12 +517,6 @@ def test_ideation_and_refinement_pages_project_lifecycle_edition(
         ("/api/v1/ideations/i00/refinements?offset=0&limit=25", "r00", "r01"),
         ("/api/v1/boards/b1/refinements?offset=0&limit=25", "r00", "r01"),
         ("/api/v1/boards/b1/specs?offset=0&limit=25", "p00", "p01"),
-        ("/api/v1/boards/b1/sprints?offset=0&limit=25", "q00", "q01"),
-        (
-            "/api/v1/boards/b1/specs/p00/sprints?offset=0&limit=25",
-            "q00",
-            "q01",
-        ),
     ),
 )
 def test_paginated_qa_parent_routes_project_positive_and_zero_open_counts(
@@ -579,8 +540,6 @@ def test_paginated_qa_parent_routes_project_positive_and_zero_open_counts(
         "/api/v1/ideations/i00/refinements?offset=0&limit=25",
         "/api/v1/boards/b1/refinements?offset=0&limit=25",
         "/api/v1/boards/b1/specs?offset=0&limit=25",
-        "/api/v1/boards/b1/sprints?offset=0&limit=25",
-        "/api/v1/boards/b1/specs/p00/sprints?offset=0&limit=25",
     ),
 )
 def test_paginated_qa_parent_routes_omit_counts_without_qa_read(
@@ -605,11 +564,9 @@ def test_paginated_qa_parent_routes_omit_counts_without_qa_read(
         "/api/v1/boards/b1/ideations",
         "/api/v1/ideations/i00/refinements",
         "/api/v1/boards/b1/specs",
-        "/api/v1/boards/b1/sprints",
-        "/api/v1/boards/b1/specs/p00/sprints",
     ),
 )
-def test_legacy_qa_parent_routes_omit_counts_without_qa_read(
+def test_default_qa_parent_routes_omit_counts_without_qa_read(
     client: TestClient,
     path: str,
 ) -> None:
@@ -621,8 +578,8 @@ def test_legacy_qa_parent_routes_omit_counts_without_qa_read(
         client.app.dependency_overrides[require_user] = original
 
     assert response.status_code == 200, response.text
-    assert response.json()
-    assert all("open_qa_count" not in item for item in response.json())
+    assert response.json()["items"]
+    assert all("open_qa_count" not in item for item in response.json()["items"])
 
 
 def test_ideation_derivation_pending_is_server_side_and_null_safe(
@@ -648,30 +605,18 @@ def test_ideation_derivation_pending_is_server_side_and_null_safe(
     (
         "/api/v1/boards/b1/ideations?search=definitely-missing&derivation_pending=true",
         "/api/v1/boards/b1/specs?search=definitely-missing",
-        "/api/v1/boards/b1/sprints?search=definitely-missing",
     ),
 )
-def test_new_consumer_filters_preserve_legacy_list_semantics(
+def test_filters_apply_with_the_default_window(
     client: TestClient, path: str
 ) -> None:
     response = client.get(path)
     assert response.status_code == 200, response.text
-    assert len(response.json()) == 25
+    assert response.json()["items"] == []
+    assert response.json()["total_filtered"] == 0
+    assert response.json()["total_overall"] == 25
 
 
-def test_board_and_nested_sprint_scope_have_distinct_totals(client: TestClient) -> None:
-    board = client.get("/api/v1/boards/b1/sprints?offset=0&limit=25&spec_id=p00")
-    nested = client.get("/api/v1/boards/b1/specs/p00/sprints?offset=0&limit=25")
-    nested_all = client.get(
-        "/api/v1/boards/b1/specs/p00/sprints?offset=0&limit=25&include_archived=true"
-    )
-    assert board.status_code == nested.status_code == nested_all.status_code == 200
-    assert board.json()["total_filtered"] == 12
-    assert board.json()["total_overall"] == 25
-    assert nested.json()["total_filtered"] == nested.json()["total_overall"] == 12
-    assert (
-        nested_all.json()["total_filtered"] == nested_all.json()["total_overall"] == 15
-    )
 
 
 @pytest.mark.parametrize(
@@ -681,7 +626,6 @@ def test_board_and_nested_sprint_scope_have_distinct_totals(client: TestClient) 
         ("/api/v1/boards/b1/ideations", 25, 30),
         ("/api/v1/ideations/i00/refinements", 25, 30),
         ("/api/v1/boards/b1/specs", 25, 30),
-        ("/api/v1/boards/b1/sprints", 25, 30),
     ),
 )
 def test_archived_policy_moves_both_totals(
@@ -768,12 +712,14 @@ def test_ideation_derivation_pending_raw_type_is_typed_400(
     assert response.json()["detail"]["error"] == "derivation_pending_invalid"
 
 
-def test_unknown_query_params_remain_ignored_on_other_legacy_routes(
+def test_unrelated_query_params_remain_ignored(
     client: TestClient,
 ) -> None:
     response = client.get("/api/v1/boards/b1/ideations?linked=wat")
     assert response.status_code == 200, response.text
-    assert isinstance(response.json(), list)
+    assert set(response.json()) == ENVELOPE_KEYS
+    assert response.json()["offset"] == 0
+    assert response.json()["limit"] == 25
 
 
 @pytest.mark.parametrize(
@@ -785,15 +731,16 @@ def test_unknown_query_params_remain_ignored_on_other_legacy_routes(
         "/api/v1/boards/b1/stories?converted=wat",
     ),
 )
-def test_legacy_malformed_booleans_keep_fastapi_422(
+def test_malformed_booleans_use_typed_400_with_default_window(
     client: TestClient, path: str
 ) -> None:
     response = client.get(path)
-    assert response.status_code == 422, response.text
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"]["error"].endswith("_invalid")
 
 
 @pytest.mark.parametrize(("path", "_active_total"), LIST_CASES)
-def test_raw_offset_guard_applies_to_all_six_routes(
+def test_raw_offset_guard_applies_to_all_four_routes(
     client: TestClient, path: str, _active_total: int
 ) -> None:
     response = client.get(f"{path}?offset=not-an-int&limit=25")
@@ -808,15 +755,10 @@ def test_raw_offset_guard_applies_to_all_six_routes(
         "/api/v1/boards/missing/ideations?offset=0&limit=25",
         "/api/v1/ideations/missing/refinements?offset=0&limit=25",
         "/api/v1/boards/missing/specs?offset=0&limit=25",
-        "/api/v1/boards/missing/sprints?offset=0&limit=25",
-        "/api/v1/boards/b1/specs/missing/sprints?offset=0&limit=25",
         "/api/v1/boards/b2/stories?offset=0&limit=25",
         "/api/v1/boards/b2/ideations?offset=0&limit=25",
         "/api/v1/ideations/ix/refinements?offset=0&limit=25",
         "/api/v1/boards/b2/specs?offset=0&limit=25",
-        "/api/v1/boards/b2/sprints?offset=0&limit=25",
-        "/api/v1/boards/b1/specs/px/sprints?offset=0&limit=25",
-        "/api/v1/boards/b1/sprints?offset=0&limit=25&spec_id=px",
     ),
 )
 def test_missing_foreign_and_mismatched_scopes_preserve_404(
@@ -826,27 +768,17 @@ def test_missing_foreign_and_mismatched_scopes_preserve_404(
     assert response.status_code == 404, response.text
 
 
-def test_refinement_page_preserves_legacy_cross_board_consistency_filter(
+def test_refinement_windows_preserve_cross_board_consistency_filter(
     client: TestClient,
 ) -> None:
-    legacy = client.get("/api/v1/ideations/i00/refinements")
+    default = client.get("/api/v1/ideations/i00/refinements")
     paged = client.get("/api/v1/ideations/i00/refinements?offset=0&limit=50")
-    assert legacy.status_code == paged.status_code == 200
-    assert "r-corrupt" not in {item["id"] for item in legacy.json()}
+    assert default.status_code == paged.status_code == 200
+    assert "r-corrupt" not in {item["id"] for item in default.json()["items"]}
     assert "r-corrupt" not in {item["id"] for item in paged.json()["items"]}
     assert paged.json()["total_filtered"] == paged.json()["total_overall"] == 25
 
 
-def test_nested_sprint_page_preserves_legacy_cross_board_consistency_filter(
-    client: TestClient,
-) -> None:
-    path = "/api/v1/boards/b1/specs/p00/sprints"
-    legacy = client.get(path)
-    paged = client.get(f"{path}?offset=0&limit=25")
-    assert legacy.status_code == paged.status_code == 200
-    assert "q-corrupt" not in {item["id"] for item in legacy.json()}
-    assert "q-corrupt" not in {item["id"] for item in paged.json()["items"]}
-    assert paged.json()["total_filtered"] == paged.json()["total_overall"] == 12
 
 
 def test_story_projection_is_lean_and_count_is_computed_in_sql(
@@ -871,9 +803,9 @@ def test_story_projection_is_lean_and_count_is_computed_in_sql(
     assert "stories.screen_mockups AS screen_mockups" not in page_sql
     assert "stories.pre_archive_status" not in page_sql
 
-    legacy = client.get("/api/v1/boards/b1/stories")
-    assert legacy.status_code == 200, legacy.text
-    assert len(response.content) < len(legacy.content)
+    default = client.get("/api/v1/boards/b1/stories")
+    assert default.status_code == 200, default.text
+    assert default.json() == response.json()
 
 
 @pytest.mark.parametrize(("path", "_active_total"), LIST_CASES)
@@ -900,8 +832,6 @@ def test_each_paginated_route_stays_within_bounded_statements(
         "/api/v1/boards/b1/ideations?offset=0&limit=25",
         "/api/v1/ideations/i00/refinements?offset=0&limit=25",
         "/api/v1/boards/b1/specs?offset=0&limit=25",
-        "/api/v1/boards/b1/sprints?offset=0&limit=25&spec_id=p00",
-        "/api/v1/boards/b1/specs/p00/sprints?offset=0&limit=25",
     ),
 )
 def test_shared_reader_is_authorized_within_the_bounded_statement_cap(
@@ -919,12 +849,10 @@ def test_shared_reader_is_authorized_within_the_bounded_statement_cap(
         "/api/v1/boards/b1/ideations?offset=0&limit=25": 6,
         "/api/v1/ideations/i00/refinements?offset=0&limit=25": 7,
         "/api/v1/boards/b1/specs?offset=0&limit=25": 6,
-        "/api/v1/boards/b1/sprints?offset=0&limit=25&spec_id=p00": 7,
     }
     if path in quality_projection_counts:
         # The shared-reader fixture resolves its custom preset lineage before
-        # the single lifecycle-summary batch read. Nested refinements and the
-        # sprint Q&A projection keep one additional leaf-resolution statement
+        # the single lifecycle-summary batch read. Nested refinements keep one additional leaf-resolution statement
         # outside the productive list budget; every path remains fixed-size.
         assert len(statements) == quality_projection_counts[path], statements
     else:

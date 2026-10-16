@@ -28,15 +28,6 @@ function evidence() {
   };
 }
 
-function pinpoint() {
-  return {
-    anchor_type: 'field',
-    anchor_ref: 'architecture',
-    excerpt_hash: digest,
-    input_digest: digest,
-  };
-}
-
 function assessment(overrides: Record<string, unknown> = {}) {
   return {
     projection: 'detail',
@@ -46,24 +37,19 @@ function assessment(overrides: Record<string, unknown> = {}) {
     subject_id: 'spec-1',
     subject_version: 7,
     validation_edition: null,
-    lifecycle_state: 'history_only',
+    lifecycle_state: 'current',
     binding_id: 'binding-1',
     guideline_id: 'guideline-1',
     guideline_revision_id: 'revision-1',
-    enforcement: 'blocking',
     state: 'passed',
     currentness: 'current',
     currentness_reasons: [],
     confidence: 90,
-    minimum_confidence: 80,
     metric_count: 1,
     failed_metric_count: 0,
     recorded_at: '2026-07-30T12:00:00Z',
     binding_revision: 2,
     assessor_agent_id: 'agent-1',
-    assessor_model_id: 'model-1',
-    assessor_independent: true,
-    confidence_admissible: true,
     metric_results: [{
       metric_result_id: 'result-1',
       metric_id: 'metric-1',
@@ -76,7 +62,13 @@ function assessment(overrides: Record<string, unknown> = {}) {
       outcome: 'pass',
       rationale: 'The architecture boundary is explicit.',
       evidence_refs: [evidence()],
-      pinpoints: [pinpoint()],
+      pinpoints: [{
+        contract_version: 'v2', pinpoint_key: 'boundary', kind: 'evidence',
+        title: 'Explicit boundary', detail: 'The boundary is independently described.',
+        severity: null, remediation: null, blocking: false,
+        anchor: { anchor_type: 'field', anchor_ref: 'architecture', excerpt_hash: digest },
+        anchor_snapshot: { label: 'Architecture', excerpt: null, source_version: '7', availability_at_seal: 'available' },
+      }],
     }],
     ...overrides,
   };
@@ -92,7 +84,7 @@ function finding(overrides: Record<string, unknown> = {}) {
     subject_id: 'spec-1',
     subject_version: 7,
     validation_edition: null,
-    lifecycle_state: 'history_only',
+    lifecycle_state: 'current',
     guideline_id: 'guideline-1',
     guideline_revision_id: 'revision-1',
     binding_id: 'binding-1',
@@ -105,10 +97,42 @@ function finding(overrides: Record<string, unknown> = {}) {
     binding_revision: 2,
     rationale: 'Boundary evidence is incomplete.',
     evidence_refs: [evidence()],
-    pinpoints: [pinpoint()],
+    pinpoints: [{
+      ...assessment().metric_results[0].pinpoints[0],
+      kind: 'issue', severity: 'high', remediation: 'Separate the concerns.', blocking: true,
+    }],
     ...overrides,
   };
 }
+
+describe('native finding contract', () => {
+  it.each(['policy_set_changed', 'binding_head_changed', 'input_digest_changed'])(
+    'rejects predecessor currentness reason %s in native history', (reason) => {
+      const stale = { currentness: 'stale', lifecycle_state: 'previous', currentness_reasons: ['subject_version_changed'] };
+      expect(parseSemanticAssessmentDetail(assessment(stale), expected).currentness).toBe('stale');
+      expect(parseSemanticFindingDetail(finding(stale), expected).currentness).toBe('stale');
+      expect(() => parseSemanticAssessmentDetail(assessment({ ...stale, currentness_reasons: [reason] }), expected)).toThrow();
+      expect(() => parseSemanticFindingDetail(finding({ ...stale, currentness_reasons: [reason] }), expected)).toThrow();
+    },
+  );
+  it('preserves actionable evidence and rejects predecessor pinpoints', () => {
+    const parsed = parseSemanticFindingDetail(finding(), expected);
+    expect(parsed.pinpoints[0]).toMatchObject({
+      contract_version: 'v2', kind: 'issue', remediation: 'Separate the concerns.', blocking: true,
+    });
+    expect(() => parseSemanticFindingDetail(finding({ pinpoints: [{
+      anchor_type: 'field', anchor_ref: 'architecture', excerpt_hash: digest, input_digest: digest,
+    }] }), expected)).toThrow();
+    expect(() => parseSemanticFindingDetail(finding({ lifecycle_state: 'history_only' }), expected)).toThrow();
+  });
+
+  it('keeps previous native editions readable and rejects a different active edition', () => {
+    const previous = finding({ validation_edition: 2, lifecycle_state: 'previous',
+      currentness: 'stale', currentness_reasons: ['subject_edition_changed'] });
+    expect(parseSemanticFindingDetail(previous, expected).lifecycle_state).toBe('previous');
+    expect(() => parseSemanticFindingDetail(previous, { ...expected, validationEdition: 3 })).toThrow();
+  });
+});
 
 function waiver(overrides: Record<string, unknown> = {}) {
   return {
@@ -119,7 +143,7 @@ function waiver(overrides: Record<string, unknown> = {}) {
     subject_id: 'spec-1',
     subject_version: 7,
     validation_edition: null,
-    lifecycle_state: 'history_only',
+    lifecycle_state: 'current',
     finding_id: 'finding-1',
     receipt_id: 'receipt-1',
     guideline_id: 'guideline-1',
@@ -207,7 +231,7 @@ describe('semanticPolicyModel', () => {
 
   it('requires lifecycle placement to agree with edition and currentness', () => {
     expect(parseSemanticAssessmentDetail(assessment(), expected)
-      .lifecycle_state).toBe('history_only');
+      .lifecycle_state).toBe('current');
     expect(parseSemanticAssessmentDetail(assessment({
       validation_edition: 2,
       lifecycle_state: 'current',
@@ -221,14 +245,14 @@ describe('semanticPolicyModel', () => {
     expect(() => parseSemanticAssessmentDetail(assessment({
       validation_edition: 2,
       lifecycle_state: 'history_only',
-    }), expected)).toThrow(/lifecycle state is inconsistent/u);
+    }), expected)).toThrow(/lifecycle state is invalid/u);
   });
 
   it.each([
     ['unknown field', { unexpected: true }],
     ['mismatched subject', { subject_id: 'spec-2' }],
     ['invalid timestamp', { recorded_at: 'not-a-time' }],
-    ['contradictory confidence', { confidence_admissible: false }],
+    ['predecessor admission field', { confidence_admissible: false }],
     ['contradictory counts', { failed_metric_count: 1 }],
   ])('rejects assessment %s', (_label, override) => {
     expect(() =>

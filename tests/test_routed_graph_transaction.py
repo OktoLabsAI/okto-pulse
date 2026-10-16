@@ -142,7 +142,7 @@ class _ResolverProbe:
         return self._record_revalidation(snapshot, require_physical=True)
 
 
-class _LadybugScope:
+class _LegacyScope:
     def __init__(self, events: list[str]) -> None:
         self.events = events
         self.active = True
@@ -154,21 +154,21 @@ class _LadybugScope:
         params: dict[str, Any] | None = None,
     ) -> GraphStatementResult:
         assert self.active
-        self.events.append(f"ladybug_execute:{statement}")
+        self.events.append(f"legacy_execute:{statement}")
         return GraphStatementResult.from_rows((((params or {}).get("value", 1),),))
 
     async def commit(self) -> None:
-        self.events.append("ladybug_commit")
+        self.events.append("legacy_commit")
         self.active = False
 
     async def rollback(self) -> None:
-        self.events.append("ladybug_rollback")
+        self.events.append("legacy_rollback")
         if self.rollback_failure is not None:
             raise self.rollback_failure
         self.active = False
 
     async def __aenter__(self) -> Self:
-        self.events.append("ladybug_aenter")
+        self.events.append("legacy_aenter")
         return self
 
     async def __aexit__(self, *exc: object) -> None:
@@ -178,17 +178,17 @@ class _LadybugScope:
             await self.commit()
 
 
-class _LadybugProvider:
-    def __init__(self, events: list[str], scope: _LadybugScope) -> None:
+class _LegacyProvider:
+    def __init__(self, events: list[str], scope: _LegacyScope) -> None:
         self.events = events
         self.scope = scope
         self.begin_failure: BaseException | None = None
         self.begin_calls = 0
 
-    async def begin(self, board_id: str) -> _LadybugScope:
+    async def begin(self, board_id: str) -> _LegacyScope:
         assert board_id == BOARD_ID
         self.begin_calls += 1
-        self.events.append("ladybug_begin")
+        self.events.append("legacy_begin")
         if self.begin_failure is not None:
             raise self.begin_failure
         return self.scope
@@ -276,38 +276,16 @@ class _PoolProbe:
         return self.lease
 
 
-class _MutationRecorderProbe:
-    def __init__(self, events: list[str]) -> None:
-        self.events = events
-        self.prepared: list[dict[str, object]] = []
-
-    def prepare_mutation(self, **record: object) -> object:
-        token = f"mutation-{len(self.prepared) + 1}"
-        self.prepared.append(dict(record))
-        self.events.append(f"capture_prepare:{record['backend']}")
-        return token
-
-    def mark_source_committed(self, token: object) -> None:
-        self.events.append(f"capture_committed:{token}")
-
-    def mark_source_abandoned(self, token: object) -> None:
-        self.events.append(f"capture_abandoned:{token}")
-
-    def mark_source_ambiguous(self, token: object, *, error_type: str) -> None:
-        self.events.append(f"capture_ambiguous:{token}:{error_type}")
-
-
 def _assembly(
     tmp_path: Path,
     *,
     backend: str,
-    mutation_recorder: _MutationRecorderProbe | None = None,
 ) -> tuple[
     routed.CommunityRoutedGraphTransaction,
     list[str],
     _WindowProbe,
     _ResolverProbe,
-    _LadybugProvider,
+    _LegacyProvider,
     _EngineTransaction,
     _DatabaseProbe,
     _LeaseProbe,
@@ -323,8 +301,8 @@ def _assembly(
         ),
         events,
     )
-    ladybug_scope = _LadybugScope(events)
-    ladybug = _LadybugProvider(events, ladybug_scope)
+    legacy_scope = _LegacyScope(events)
+    legacy = _LegacyProvider(events, legacy_scope)
     transaction = _EngineTransaction(events)
     database = _DatabaseProbe(events, transaction)
     lease = _LeaseProbe(events, database)
@@ -333,14 +311,13 @@ def _assembly(
         resolver,  # type: ignore[arg-type]
         grafx_pool=pool,  # type: ignore[arg-type]
         operation_window=window,
-        mutation_recorder=mutation_recorder,
     )
     return (
         facade,
         events,
         window,
         resolver,
-        ladybug,
+        legacy,
         transaction,
         database,
         lease,
@@ -349,85 +326,15 @@ def _assembly(
 
 
 @pytest.mark.asyncio
-async def test_capture_ignores_read_only_statement(tmp_path: Path) -> None:
-    events: list[str] = []
-    recorder = _MutationRecorderProbe(events)
-    facade, routed_events, *_rest = _assembly(
-        tmp_path,
-        backend="grafx",
-        mutation_recorder=recorder,
-    )
-    recorder.events = routed_events
-
-    scope = await facade.begin(BOARD_ID)
-    result = scope.execute("RETURN $value", {"value": 17})
-    await scope.commit()
-
-    assert result.rows == ((17,),)
-    assert recorder.prepared == []
-    assert all(not event.startswith("capture_") for event in routed_events)
-
-
-@pytest.mark.asyncio
-async def test_grafx_capture_confirms_only_after_durable_engine_commit(
+async def test_grafx_context_commit_failure_cleans_up_once(
     tmp_path: Path,
 ) -> None:
-    events: list[str] = []
-    recorder = _MutationRecorderProbe(events)
-    (
-        facade,
-        routed_events,
-        _window,
-        resolver,
-        _ladybug,
-        transaction,
-        _database,
-        _lease,
-        _pool,
-    ) = _assembly(
-        tmp_path,
-        backend="grafx",
-        mutation_recorder=recorder,
-    )
-    recorder.events = routed_events
-
-    scope = await facade.begin(BOARD_ID)
-    scope.execute("CREATE (n {id: $id})", {"id": "node-1"})
-
-    assert routed_events[-3:] == [
-        "capture_prepare:grafx",
-        "route_revalidate:2",
-        "engine_execute",
-    ]
-    assert recorder.prepared[0]["binding_sha256"] == resolver.snapshot.binding_sha256
-    assert recorder.prepared[0]["backend"] == "grafx"
-
-    await scope.commit()
-
-    assert transaction.report is not None
-    assert routed_events[-5:] == [
-        "route_revalidate:3",
-        "engine_commit",
-        "pool_release",
-        "window_exit",
-        "capture_committed:mutation-1",
-    ]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("capture_enabled", [False, True])
-async def test_grafx_context_commit_failure_cleans_up_with_or_without_capture(
-    tmp_path: Path,
-    capture_enabled: bool,
-) -> None:
-    events: list[str] = []
-    recorder = _MutationRecorderProbe(events) if capture_enabled else None
     (
         facade,
         routed_events,
         window,
         _resolver,
-        _ladybug,
+        _legacy,
         transaction,
         _database,
         lease,
@@ -435,10 +342,7 @@ async def test_grafx_context_commit_failure_cleans_up_with_or_without_capture(
     ) = _assembly(
         tmp_path,
         backend="grafx",
-        mutation_recorder=recorder,
     )
-    if recorder is not None:
-        recorder.events = routed_events
     primary = OSError("injected pre-terminal commit failure")
     transaction.commit_failure = primary
 
@@ -459,23 +363,17 @@ async def test_grafx_context_commit_failure_cleans_up_with_or_without_capture(
     assert lease.release_calls == 1
     assert window.exits == 1
 
-    if recorder is None:
-        assert all(not event.startswith("capture_") for event in routed_events)
-    else:
-        assert routed_events[-1] == "capture_ambiguous:mutation-1:GraphError"
-        # Cleanup is idempotent and must not rewrite an ambiguous commit as an
-        # abandoned mutation after the delegate has already rolled back.
-        await scope.rollback()
-        assert lease.release_calls == 1
-        assert window.exits == 1
-        assert "capture_abandoned:mutation-1" not in routed_events
+    # Repeating cleanup must not release either resource twice.
+    await scope.rollback()
+    assert lease.release_calls == 1
+    assert window.exits == 1
 
 
 @pytest.mark.asyncio
 async def test_begin_cancellation_is_preserved_and_releases_unowned_window(
     tmp_path: Path,
 ) -> None:
-    facade, events, window, _resolver, _ladybug, transaction, database, *_rest = (
+    facade, events, window, _resolver, _legacy, transaction, database, *_rest = (
         _assembly(
             tmp_path,
             backend="grafx",
@@ -497,7 +395,7 @@ async def test_begin_cancellation_is_preserved_and_releases_unowned_window(
 async def test_invalid_board_snapshot_fails_closed_without_provider_fallback(
     tmp_path: Path,
 ) -> None:
-    facade, events, window, resolver, ladybug, *_rest = _assembly(
+    facade, events, window, resolver, legacy, *_rest = _assembly(
         tmp_path,
         backend="ladybug",
     )
@@ -511,7 +409,7 @@ async def test_invalid_board_snapshot_fails_closed_without_provider_fallback(
         await facade.begin(BOARD_ID)
 
     assert raised.value.details["reason"] == "graph_route_snapshot_scope_invalid"
-    assert ladybug.begin_calls == 0
+    assert legacy.begin_calls == 0
     assert events == ["window_enter", "route_acquire", "window_exit"]
     assert not window.active
 
@@ -521,7 +419,7 @@ async def test_grafx_order_is_window_route_pin_admit_begin_engine_pin_window(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    facade, events, window, resolver, ladybug, transaction, database, lease, pool = (
+    facade, events, window, resolver, legacy, transaction, database, lease, pool = (
         _assembly(tmp_path, backend="grafx")
     )
 
@@ -542,7 +440,7 @@ async def test_grafx_order_is_window_route_pin_admit_begin_engine_pin_window(
     assert resolver.revalidate_require_physical == [True]
     assert resolver.pinned_revalidation_databases == [database]
     assert pool.acquire_calls == 1
-    assert ladybug.begin_calls == 0
+    assert legacy.begin_calls == 0
     assert events == [
         "window_enter",
         "route_acquire",
@@ -587,7 +485,7 @@ async def test_grafx_order_is_window_route_pin_admit_begin_engine_pin_window(
 async def test_grafx_admission_failure_releases_pin_then_window_without_begin(
     tmp_path: Path,
 ) -> None:
-    facade, events, window, resolver, _ladybug, transaction, _database, lease, _pool = (
+    facade, events, window, resolver, _legacy, transaction, _database, lease, _pool = (
         _assembly(tmp_path, backend="grafx")
     )
     failure = GraphCorruption("admission refused", details={"reason": "mismatch"})
@@ -617,7 +515,7 @@ async def test_grafx_begin_failure_releases_transferred_resources_in_order(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    facade, events, window, _resolver, _ladybug, transaction, database, lease, _pool = (
+    facade, events, window, _resolver, _legacy, transaction, database, lease, _pool = (
         _assembly(tmp_path, backend="grafx")
     )
     database.begin_failure = OSError("begin refused")
@@ -641,7 +539,7 @@ async def test_route_cutover_at_commit_retains_resources_until_engine_rollback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    facade, events, window, resolver, _ladybug, transaction, _database, lease, _pool = (
+    facade, events, window, resolver, _legacy, transaction, _database, lease, _pool = (
         _assembly(tmp_path, backend="grafx")
     )
     monkeypatch.setattr(
@@ -675,7 +573,7 @@ async def test_active_grafx_rollback_failure_retains_pin_and_window(
         events,
         window,
         _resolver,
-        _ladybug,
+        _legacy,
         transaction,
         _database,
         lease,
@@ -713,7 +611,7 @@ async def test_inactive_grafx_rollback_failure_still_releases_terminal_resources
         events,
         window,
         _resolver,
-        _ladybug,
+        _legacy,
         transaction,
         _database,
         lease,

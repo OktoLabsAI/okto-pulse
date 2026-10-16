@@ -36,13 +36,6 @@ vi.mock("@/services/api", () => ({ useDashboardApi: () => entityApi }));
 vi.mock("@/contexts/ModalStackContext", () => ({
   useModalStack: () => ({ push: navigation }),
 }));
-vi.mock("./DeadLetterInspectorModal", () => ({
-  DeadLetterInspectorModal: ({ onClose }: { onClose: () => void }) => (
-    <div role="dialog" aria-label="Failed processing">
-      <button onClick={onClose}>Close inspector</button>
-    </div>
-  ),
-}));
 vi.mock("@/hooks/usePermissions", () => ({
   usePermissions: () => ({
     preset: "Full Control",
@@ -159,6 +152,46 @@ function mockList(items: CognitiveReadinessItem[], enforcement = false) {
   vi.spyOn(api, "getReadinessMetrics").mockResolvedValue(METRICS);
 }
 
+test("pending projection points to observation and external support without a repair action", async () => {
+  mockList([item({
+    signal: "open_canonical_debt",
+    signal_source: "canonical_debt",
+    error_cause: "canonical_debt_open",
+    readiness_effect: "blocking_technical",
+  })]);
+  render(<CognitiveActionCenterView boardId="b" onClose={vi.fn()} />);
+  expect(await screen.findByText(/Health shows status and observation limits/)).toBeInTheDocument();
+  expect(screen.getByText(/Recovery requires authorized external support/)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /repair|rebuild|reprocess/i })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /record waiver/i })).not.toBeInTheDocument();
+});
+
+test.each([false, true])('projection diagnostics preserve the backend completion assessment: %s', async (wouldBlock) => {
+  mockList([item({
+    signal: 'dlq', signal_source: 'dlq', error_cause: 'technical_dlq',
+    readiness_effect: 'blocking_technical', blocking: true,
+    precedence_explanation: { tier: 'technical_dlq' },
+    would_block_done: wouldBlock,
+  })], true);
+  render(<CognitiveActionCenterView boardId="b" onClose={vi.fn()} />);
+  await screen.findByText('card:aaaa');
+  if (wouldBlock) {
+    expect(screen.getByTestId('cac-would-block-done')).toBeInTheDocument();
+  } else {
+    expect(screen.queryByTestId('cac-would-block-done')).not.toBeInTheDocument();
+    expect(screen.getByText('This record does not currently block Done.')).toBeInTheDocument();
+  }
+});
+
+test('retains a legacy Sprint reference without a live entity lookup or navigation', async () => {
+  mockList([item({ artifact_id: 'sprint:retired', source_ref_original: 'sprint:retired', aliases: ['sprint:retired'] })]);
+  render(<CognitiveActionCenterView boardId="b" onClose={vi.fn()} />);
+  await screen.findByText('sprint:retired');
+  expect(entityApi.getSprint).not.toHaveBeenCalled();
+  expect(screen.queryByRole('button', { name: 'Open source' })).not.toBeInTheDocument();
+  expect(navigation).not.toHaveBeenCalled();
+});
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -220,16 +253,35 @@ describe("CognitiveActionCenterView", () => {
     expect(screen.queryByTestId("cac-clear")).toBeNull();
   });
 
-  test("opens the real failed-processing entry point without performing a write", async () => {
+  test("replaced Learning association is history, not a waiver or proof of a new projection", async () => {
+    mockList([item({
+      artifact_id: "bug:covered",
+      source_ref_original: "bug:covered:learning:capture-v1:old-learning:0",
+      aliases: ["bug:covered"],
+      signal: "terminal_history",
+      status: "consolidated",
+      outcome_type: "no_action_required",
+      reason_code: null,
+      readiness_effect: "ready_committed",
+      blocking: false,
+      precedence_explanation: { tier: "terminal_history" },
+    })]);
+    const write = vi.spyOn(api, "recordCognitiveSkip");
+    render(<CognitiveActionCenterView boardId="b" onClose={vi.fn()} />);
+    expect(await screen.findByText(/History — no action needed/)).toBeInTheDocument();
+    expect(screen.queryByTestId("cac-skip-toggle")).toBeNull();
+    expect(screen.queryByTestId("cac-clear")).toBeNull();
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  test("reports failed processing without a repair entry point or write", async () => {
     mockList([DLQ]);
     const write = vi.spyOn(api, "recordCognitiveSkip");
     render(<CognitiveActionCenterView boardId="b" onClose={vi.fn()} />);
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Inspect failed processing" }),
-    );
-    expect(
-      screen.getByRole("dialog", { name: "Failed processing" }),
-    ).toBeInTheDocument();
+    await screen.findByTestId("cac-table");
+    expect(screen.queryByRole("button", { name: "Inspect failed processing" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Failed processing" })).toBeNull();
+    expect(screen.getByText(/Processing is unavailable for this artifact/)).toBeInTheDocument();
     expect(write).not.toHaveBeenCalled();
   });
 
@@ -448,6 +500,10 @@ describe("CognitiveActionCenterView", () => {
     ).toBeInTheDocument();
     expect(within(row).queryByTestId("cac-skip-toggle")).toBeNull();
     expect(within(row).getByTestId("cac-would-block-done")).toBeInTheDocument();
+    expect(within(row).queryByRole('button', { name: /inspect failed processing/i })).toBeNull();
+    expect(row).toHaveTextContent('Processing is unavailable for this artifact');
+    expect(row).not.toHaveTextContent('queue access');
+
     // error_cause técnico exibido, reason_code cognitivo ausente
     expect(within(row).getByTestId("cac-error-cause")).toHaveTextContent(
       "technical_dlq",

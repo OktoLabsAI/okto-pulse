@@ -1,19 +1,19 @@
-"""Runtime readers-first capability probe for semantic assessment v2."""
+"""Runtime capability probe for the native semantic assessment writer."""
 
 from __future__ import annotations
 
 from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from okto_pulse.core import get_settings
 from okto_pulse.core.ports.semantic_subject_projection import (
     SemanticAssessmentV2CapabilitySnapshot,
+    SemanticAssessmentV2ReadPort,
 )
 
-from .relational_schema_steps import (
-    semantic_pinpoint_v2_postgresql_ddl,
+from .current_schema_guards import (
     semantic_pinpoint_v2_sqlite_trigger_manifest,
 )
+from .sqlalchemy_semantic_guideline_v2 import CommunitySqlAlchemySemanticGuidelineAssessmentV2
 
 
 _V2_TABLES = frozenset(
@@ -42,7 +42,6 @@ class CommunitySemanticAssessmentV2Capabilities:
     async def semantic_assessment_v2_capabilities(
         self,
     ) -> SemanticAssessmentV2CapabilitySnapshot:
-        settings = get_settings()
         connection = await self._session.connection()
         tables = set(
             await connection.run_sync(
@@ -60,27 +59,17 @@ class CommunitySemanticAssessmentV2Capabilities:
             actual = {str(row[0]) for row in rows}
             expected = set(semantic_pinpoint_v2_sqlite_trigger_manifest())
             triggers_ready = expected <= actual
-        elif dialect == "postgresql":
-            rows = (
-                await connection.execute(
-                    text(
-                        "SELECT tg.tgname FROM pg_trigger AS tg "
-                        "WHERE NOT tg.tgisinternal"
-                    )
-                )
-            ).all()
-            actual = {str(row[0]) for row in rows}
-            _function_sql, specifications = semantic_pinpoint_v2_postgresql_ddl()
-            triggers_ready = set(specifications) <= actual
         else:
             triggers_ready = False
         return SemanticAssessmentV2CapabilitySnapshot(
-            readers_ready=bool(settings.semantic_assessment_v2_readers_ready),
+            readers_ready=isinstance(
+                CommunitySqlAlchemySemanticGuidelineAssessmentV2(self._session),
+                SemanticAssessmentV2ReadPort,
+            ),
             storage_ready=storage_ready,
             triggers_ready=triggers_ready,
             rest_transport_ready=self._rest_transport_ready,
             mcp_transport_ready=self._mcp_transport_ready,
-            writer_requested=bool(settings.semantic_assessment_v2_writer_enabled),
         )
 
 

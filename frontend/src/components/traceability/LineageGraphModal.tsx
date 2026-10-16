@@ -28,12 +28,12 @@ import {
   Maximize2,
   Minimize2,
   RefreshCw,
-  Route,
   X,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { lineageStatusColor } from './lineageStatusStyle';
 import { useMeasuredLineageNodes } from './useMeasuredLineageNodes';
+import { LineagePathsPanel } from './LineagePathsPanel';
 import { useModalStack } from '@/contexts/ModalStackContext';
 import { useDashboardApi } from '@/services/api';
 import { useDashboardStore } from '@/store/dashboard';
@@ -82,9 +82,8 @@ const stageLabels = [
   { stage: 0, label: 'Ideation' },
   { stage: 1, label: 'Refinement' },
   { stage: 2, label: 'Spec' },
-  { stage: 3, label: 'Sprint' },
-  { stage: 4, label: 'Tasks / Tests' },
-  { stage: 5, label: 'Bugs' },
+  { stage: 3, label: 'Tasks / Tests' },
+  { stage: 4, label: 'Bugs' },
 ] as const;
 
 const relationshipLabels: Record<string, string> = {
@@ -92,8 +91,6 @@ const relationshipLabels: Record<string, string> = {
   has_refinement: 'refines',
   direct_spec: 'spec',
   derived_spec: 'spec',
-  has_sprint: 'sprint',
-  contains_card: 'card',
   has_card: 'card',
   originates_bug: 'bug',
   regression_test: 'test',
@@ -110,8 +107,6 @@ function nodeIcon(type: string) {
       return <GitBranch size={14} />;
     case 'spec':
       return <FileText size={14} />;
-    case 'sprint':
-      return <Route size={14} />;
     case 'test':
       return <FlaskConical size={14} />;
     case 'bug':
@@ -153,12 +148,6 @@ const typeStyles: Record<string, {
     border: 'border-violet-400/45',
     badge: 'bg-violet-500/10 text-violet-200',
     miniMap: '#8b5cf6',
-  },
-  sprint: {
-    header: 'bg-blue-500/15 text-blue-300 border-blue-400/30',
-    border: 'border-blue-400/45',
-    badge: 'bg-blue-500/10 text-blue-200',
-    miniMap: '#3b82f6',
   },
   task: {
     header: 'bg-emerald-500/15 text-emerald-300 border-emerald-400/30',
@@ -907,7 +896,7 @@ export function miniMapNodeColor(node: Node) {
 
 function canOpenDetails(node: LineageGraphNode | null) {
   if (!node) return false;
-  return ['story', 'task', 'test', 'bug', 'card', 'ideation', 'refinement', 'spec', 'sprint'].includes(node.entity_type);
+  return ['story', 'task', 'test', 'bug', 'card', 'ideation', 'refinement', 'spec'].includes(node.entity_type);
 }
 
 export function LineageGraphModal({ boardId }: Props) {
@@ -922,6 +911,7 @@ export function LineageGraphModal({ boardId }: Props) {
   const [lineageRevision, setLineageRevision] = useState(0);
   const [dependencyRevision, setDependencyRevision] = useState(0);
   const [viewMode, setViewMode] = useState<LineageViewMode>('lineage');
+  const [pathsSubject, setPathsSubject] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [dependencyLoading, setDependencyLoading] = useState(false);
@@ -953,6 +943,7 @@ export function LineageGraphModal({ boardId }: Props) {
       setLineageRevision(0);
       setDependencyRevision(0);
       setViewMode('lineage');
+      setPathsSubject(null);
       setSelectedNodeId(null);
       setError(null);
       setDependencyError(null);
@@ -1068,9 +1059,9 @@ export function LineageGraphModal({ boardId }: Props) {
       push({ type: 'story', id: source.entity_id });
       return;
     }
-    if (!['ideation', 'refinement', 'spec', 'sprint'].includes(source.entity_type)) return;
+    if (!['ideation', 'refinement', 'spec'].includes(source.entity_type)) return;
     push({
-      type: source.entity_type as 'ideation' | 'refinement' | 'spec' | 'sprint',
+      type: source.entity_type as 'ideation' | 'refinement' | 'spec',
       id: source.entity_id,
     });
   }, [openCardModal, push]);
@@ -1094,7 +1085,7 @@ export function LineageGraphModal({ boardId }: Props) {
   const requestedNodeTitle = request
     ? graph?.nodes.find((node) => isRequestedEntity(node, request))?.title
     : undefined;
-  const activeGraphTitle = graph?.root_ideation.title
+  const activeGraphTitle = graph?.root_entity.title
     || requestedNodeTitle
     || request?.entityType
     || 'lineage';
@@ -1218,6 +1209,11 @@ export function LineageGraphModal({ boardId }: Props) {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <button type="button" className="rounded border px-2 py-1 text-xs dark:border-gray-700"
+              aria-pressed={pathsSubject !== null}
+              onClick={() => setPathsSubject(pathsSubject ? null : `${semanticEntityType(request.entityType)}:${request.entityId}`)}>
+              {pathsSubject ? 'Back to graph' : 'Source paths'}
+            </button>
             {dependencyViewSupported && (
               <div
                 role="group"
@@ -1235,7 +1231,7 @@ export function LineageGraphModal({ boardId }: Props) {
                       type="button"
                       aria-pressed={active}
                       aria-controls="lineage-graph-region"
-                      onClick={() => setViewMode(mode)}
+                      onClick={() => { setPathsSubject(null); setViewMode(mode); }}
                       className={[
                         'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-semibold transition-colors',
                         active
@@ -1288,12 +1284,16 @@ export function LineageGraphModal({ boardId }: Props) {
           </div>
         </div>
 
+        {pathsSubject && <div className="flex-1 overflow-auto p-5">
+          <LineagePathsPanel key={`${boardId}:${pathsSubject}`} boardId={boardId} subjectRef={pathsSubject}
+            revision={lineageRevision} onContinue={setPathsSubject} />
+        </div>}
         <div
           id="lineage-graph-region"
           role="region"
           aria-label={`${viewMode === 'dependencies' ? 'Dependencies' : 'Origin and derivation'} graph for ${activeGraphTitle}`}
           aria-busy={loading || (viewMode === 'dependencies' && dependencyLoading)}
-          className="relative flex-1 bg-gray-50 dark:bg-gray-950"
+          className={pathsSubject ? 'hidden' : 'relative flex-1 bg-gray-50 dark:bg-gray-950'}
         >
           {(loading || (viewMode === 'dependencies' && dependencyLoading)) && (
             <div

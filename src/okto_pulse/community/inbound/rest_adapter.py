@@ -26,13 +26,14 @@ from okto_pulse.core.application.use_cases.base import actor_context_from_princi
 from okto_pulse.core.domain.realm import LOCAL_REALM_ID
 from okto_pulse.core.ports.authentication import Principal
 from okto_pulse.core.application.errors import AmbiguityGateError
-from okto_pulse.core.domain.guideline_policy_transition import (
+from okto_pulse.core.domain.guideline_semantic_transition import (
     PolicyTransitionRejected,
 )
 from okto_pulse.core.inbound.policy_transition_error import (
     project_policy_transition_rejection,
 )
 from okto_pulse.core.services.resource_gate import ResourceGateError
+from okto_pulse.core.application.delivery_errors import DeliveryGateBlocked
 from okto_pulse.core.domain.human_validation_cycle import (
     LifecycleTransitionConflictError,
     SubjectEditRequiresDraftError,
@@ -91,6 +92,8 @@ class RESTAdapterContract:
         Order matters: the typed gate errors are ValueError subclasses and must
         be matched before the plain ValueError fallback.
         """
+        if isinstance(exc, DeliveryGateBlocked):
+            return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.to_error_dict())
         if isinstance(exc, CommandValidationError):
             return HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)

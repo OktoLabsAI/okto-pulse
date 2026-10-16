@@ -9,7 +9,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
 import { KGHealthView } from '../KGHealthView';
 import * as kgHealthApi from '@/services/kg-health-api';
@@ -26,7 +26,7 @@ vi.mock('@/services/kg-health-api');
 vi.mock('@/store/dashboard');
 
 const baseHealth: KGHealth = {
-  health_schema_version: '1.1',
+  health_schema_version: '1.3',
   materialization_state: 'materialized',
   materialization_generation: 'generation-1',
   probe_reason_codes: {
@@ -46,7 +46,6 @@ const baseHealth: KGHealth = {
     { id: 'entity_aaa', type: 'Entity', degree: 0 },
     { id: 'decision_bbb', type: 'Decision', degree: 1 },
   ],
-  schema_version: '1.0',
   contradict_warn_count: 2,
   last_decay_tick_at: new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString(),
   nodes_recomputed_in_last_tick: 142,
@@ -67,18 +66,18 @@ const baseHealth: KGHealth = {
     source: 'kg_tick_runs',
   },
   storage_footprint_proxy: {
-    source: 'file_size_proxy',
+    source: 'runtime_capability',
     status: 'available',
     percentage: 12.5,
     high_water_mark_pct: 12.5,
-    graph_lbug_bytes: 1024,
+    graph_primary_bytes: 1024,
     sidecar_bytes: 1024,
     total_bytes: 2048,
     configured_max_db_size_bytes: 4096,
     configured_max_db_size_gb: 1,
     is_direct_memory_telemetry: false,
-    description: 'On-disk storage footprint proxy derived from graph.lbug file sizes.',
-    tooltip: 'This is not live Ladybug memory telemetry. It is a file-size proxy used as an early warning signal.',
+    description: 'On-disk storage footprint reported by the active graph runtime.',
+    tooltip: 'This is not live runtime memory telemetry. It is a storage footprint proxy.',
     unavailable_reason: null,
   },
   kg_layer_counts: {
@@ -105,7 +104,6 @@ const baseHealth: KGHealth = {
       scope: 'board',
       backend: 'grafx',
       binding_status: 'bound',
-      physical_path: 'boards/b1/grafx/generation-1',
       generation: 'generation-1',
       page_size: 8192,
     },
@@ -113,7 +111,6 @@ const baseHealth: KGHealth = {
       scope: 'global',
       backend: 'grafx',
       binding_status: 'bound',
-      physical_path: 'global/grafx/generation-1',
       generation: 'generation-1',
       page_size: 8192,
     },
@@ -151,7 +148,6 @@ function mockCognitivePending(counts: KGCognitivePendingCounts) {
     board_id: 'b1',
     selected_kg_generation_id: 'gen1',
     readonly: true,
-    legacy_mode: false,
     counts,
     items: [],
   });
@@ -162,64 +158,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   permissionHas.mockImplementation(() => true);
   mockCognitivePending(cognitiveCounts());
-  vi.mocked(kgHealthApi.getHistoricalProgress).mockResolvedValue({
-    enabled: false,
-    status: 'inactive',
-    total: 0,
-    progress: 0,
-    pending: 0,
-    claimed: 0,
-    paused: 0,
-    failed: 0,
-  });
-  vi.mocked(kgHealthApi.startHistorical).mockResolvedValue({
-    status: 'queueing',
-    board_id: 'b1',
-    total_artifacts: 3,
-  });
-  vi.mocked(kgHealthApi.cancelHistorical).mockResolvedValue({
-    status: 'cancelled',
-    board_id: 'b1',
-    removed: 3,
-  });
-  vi.mocked(kgHealthApi.runRebuildConfirm).mockResolvedValue({
-    confirmation_id: 'confirmation-1',
-    manifest_ref: 'manifest1',
-    source_set_hash: 'sourcehash1',
-    expires_at: new Date(Date.now() + 60_000).toISOString(),
-  });
-  vi.mocked(kgHealthApi.runRebuildRun).mockResolvedValue({
-    run_id: 'run-1',
-    outcome: 'completed',
-    reason: 'completed',
-    audit_ref: 'audit/run-1.json',
-    previous_kg_generation_id: 'gen1',
-    current_kg_generation_id: 'gen2',
-    started_at: new Date().toISOString(),
-    finished_at: new Date().toISOString(),
-    affected_files: [],
-  });
-  vi.mocked(kgHealthApi.runRebuildPreflight).mockResolvedValue({
-    board_id: 'b1',
-    outcome: 'ready',
-    action_required: 'none',
-    reason: null,
-    base_state: 'fresh',
-    metric_status: 'available',
-    current_kg_generation_id: 'gen1',
-    eligible_source_count: 1,
-    skipped_cancelled_count: 0,
-    has_non_deterministic_inputs: false,
-    canonical_source_count: 1,
-    working_source_count: 0,
-    skipped_by_maturity_count: 0,
-    skipped_expired_working_count: 0,
-    legacy_unknown_count: 0,
-    preflight_hash: 'hash1',
-    generated_at: new Date().toISOString(),
-    manifest_ref: 'manifest1',
-    source_set_hash: 'sourcehash1',
-  });
+
 });
 
 afterEach(() => {
@@ -227,21 +166,110 @@ afterEach(() => {
 });
 
 describe('TS1 — mount inicial dispara 1 fetch e renderiza cards principais', () => {
-  it('orders overview, processing and diagnostics before exceptional recovery, without adding writes', async () => {
+  it.each([null, 0])('does not render incomplete graph measurements as numbers (%s)', async (value) => {
+    mockBoard('b1');
+    mockApi(() => Promise.resolve({
+      ...baseHealth, metric_status: 'unavailable', total_nodes: value,
+      default_score_count: value, default_score_ratio: value, avg_relevance: value,
+    }));
+    render(<KGHealthView onClose={() => {}} />);
+    const title = await screen.findByText('KG Health', { selector: 'h3' });
+    const card = title.closest('[data-testid="kg-health-card"]')! as HTMLElement;
+    for (const label of ['Total nodes', 'Default score ratio', 'Avg relevance']) {
+      const row = within(card).getByText(label).parentElement!;
+      expect(within(row).getByText('Unavailable')).toBeInTheDocument();
+    }
+    expect(screen.getByText('Not measured')).toBeInTheDocument();
+  });
+
+  it.each(['missing', 'unavailable', 'null'] as const)(
+    'keeps unknown canonical debt visibly unavailable (%s)', async (state) => {
+      mockBoard('b1');
+      const summary = state === 'missing' ? undefined : {
+        ...baseHealth.canonical_debt!,
+        status: state === 'unavailable' ? 'unavailable' : 'available',
+        open_count: state === 'null' ? null : 0,
+      };
+      mockApi(() => Promise.resolve({
+        ...baseHealth, canonical_debt: summary,
+        kg_layer_counts: { status: 'unavailable', by_layer: {}, by_maturity_status: {} },
+      }));
+      render(<KGHealthView onClose={() => {}} />);
+      const title = await screen.findByText('Canonical Debt');
+      const card = title.closest('[data-testid="kg-health-card"]')! as HTMLElement;
+      const openRow = within(card).getByText('Open debt').parentElement!;
+      const value = within(openRow).getByText('Unavailable');
+      expect(value).not.toHaveClass('text-emerald-700');
+      expect(within(openRow).queryByText('0')).not.toBeInTheDocument();
+      expect(within(card).getByText('canonical unavailable · working unavailable')).toBeInTheDocument();
+      expect(within(card).queryByText('Rebuild Complete')).not.toBeInTheDocument();
+    },
+  );
+
+  it('distinguishes an observed zero from unavailable debt', async () => {
+    mockBoard('b1');
+    mockApi(() => Promise.resolve(baseHealth));
+    render(<KGHealthView onClose={() => {}} />);
+    const title = await screen.findByText('Canonical Debt');
+    const card = title.closest('[data-testid="kg-health-card"]')! as HTMLElement;
+    const row = within(card).getByText('Open debt').parentElement!;
+    expect(within(row).getByText('0')).toHaveClass('text-emerald-700');
+  });
+
+  it.each(['partial', 'unavailable'] as const)(
+    'keeps incomplete layer maps visibly unknown (%s)', async (status) => {
+      mockBoard('b1');
+      mockApi(() => Promise.resolve({
+        ...baseHealth,
+        kg_layer_counts: { status, by_layer: {}, by_maturity_status: {} },
+      }));
+      render(<KGHealthView onClose={() => {}} />);
+      const title = await screen.findByText('Canonical Debt');
+      const card = title.closest('[data-testid="kg-health-card"]')! as HTMLElement;
+      expect(within(card).getByText('canonical unavailable · working unavailable')).toBeInTheDocument();
+      const row = within(card).getByText('Layer status').parentElement!;
+      expect(within(row).getByText(status)).toBeInTheDocument();
+      expect(within(card).queryByText('canonical 0 · working 0')).not.toBeInTheDocument();
+    },
+  );
+  it.each([undefined, 'okto_pulse_kg_canonical_partition_integrity_list'])(
+    'keeps partition counts without reopening the retired inspector (%s)', async (legacyTool) => {
+      mockBoard('b1');
+      mockApi(() => Promise.resolve({
+        ...baseHealth,
+        health_issues: [{
+          code: 'canonical_partition_integrity', component: 'canonical_graph',
+          severity: 'warning', reason: 'canonical_partition_integrity_open_gt_zero',
+          description: 'Canonical publication has three pending integrity signals.',
+          operator_action: 'inspect_kg_health',
+          counts: { cognitive_pending: 1, canonical_debt: 2 },
+          drill_down_tool: legacyTool,
+        }],
+      }));
+      render(<KGHealthView onClose={() => {}} />);
+      expect(await screen.findByText('3 signals')).toBeInTheDocument();
+      expect(screen.getByText('Canonical partition integrity')).toBeInTheDocument();
+      expect(screen.queryByTestId('kg-cpi-inspect')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /inspect/i })).not.toBeInTheDocument();
+      expect('getCanonicalPartitionIntegrity' in kgHealthApi).toBe(false);
+      expect('getCanonicalDebt' in kgHealthApi).toBe(false);
+    },
+  );
+
+  it('orders observation sections without a recovery workflow', async () => {
     mockBoard('b1');
     mockApi(() => Promise.resolve({ ...baseHealth, overall_state: 'healthy' }));
     render(<KGHealthView onClose={() => {}} />);
     await screen.findByRole('heading', { name: 'Operational' });
-    const sections = ['overview', 'processing', 'diagnostics', 'recovery'].map((id) => document.getElementById(`kg-health-${id}`)!);
+    const sections = ['overview', 'processing', 'diagnostics'].map((id) => document.getElementById(`kg-health-${id}`)!);
     for (let i = 1; i < sections.length; i++) {
       expect(sections[i - 1].compareDocumentPosition(sections[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     }
     expect(screen.getByRole('navigation', { name: 'KG Health sections' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: /^Recovery$/ })).toHaveAttribute('href', '#kg-health-recovery');
+    expect(screen.getByText('Observe graph availability, pending work and the limits of each measurement.')).toBeInTheDocument();
+    expect(screen.queryByText(/recover with confidence/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /^Recovery$/ })).not.toBeInTheDocument();
     expect(screen.getByText('Powered by Okto Grafx')).toBeInTheDocument();
-    expect(kgHealthApi.runRebuildConfirm).not.toHaveBeenCalled();
-    expect(kgHealthApi.runRebuildRun).not.toHaveBeenCalled();
-    expect(kgHealthApi.cancelHistorical).not.toHaveBeenCalled();
   });
 
   it('does not claim a Grafx binding when storage routing is unavailable', async () => {
@@ -252,16 +280,15 @@ describe('TS1 — mount inicial dispara 1 fetch e renderiza cards principais', (
     expect(screen.queryByText('Powered by Okto Grafx')).not.toBeInTheDocument();
   });
 
-  it('fixa o contrato frontend em health schema 1.1', () => {
-    expect(EXPECTED_KG_HEALTH_SCHEMA_VERSION).toBe('1.1');
+  it('fixa o contrato frontend em health schema 1.3', () => {
+    expect(EXPECTED_KG_HEALTH_SCHEMA_VERSION).toBe('1.3');
   });
 
-  it('aceita health schema 1.1 sem comparar o alias legado schema_version', async () => {
+  it('aceita health schema 1.3 sem comparar o alias legado schema_version', async () => {
     mockBoard('b1');
     mockApi(() => Promise.resolve({
       ...baseHealth,
-      schema_version: '1.0',
-      health_schema_version: '1.1',
+      health_schema_version: '1.3',
     }));
 
     render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
@@ -288,14 +315,14 @@ describe('TS1 — mount inicial dispara 1 fetch e renderiza cards principais', (
     });
   });
 
-  it('mantém consolidation DLQ e global outbox terminal em linhas separadas', async () => {
+  it.each([0, 2])('mostra %s falhas operacionais de consolidação sem somar o histórico de outras filas', async (activeFailures) => {
     mockBoard('b1');
     mockApi(() => Promise.resolve({
       ...baseHealth,
-      dead_letter_count: 2,
+      dead_letter_count: activeFailures,
       global_outbox_dead_letter_count: 99,
       operational_domains: {
-        dead_letter: { count: 2 },
+        dead_letter: { count: activeFailures },
         global_outbox_dead_letter: { count: 7 },
       },
     }));
@@ -306,7 +333,8 @@ describe('TS1 — mount inicial dispara 1 fetch e renderiza cards principais', (
       'Consolidation dead letter',
     );
     const globalOutboxLabel = screen.getByText('Global outbox terminal');
-    expect(consolidationLabel.parentElement).toHaveTextContent('2');
+    expect(consolidationLabel.parentElement).toHaveTextContent(String(activeFailures));
+    expect(consolidationLabel.parentElement).not.toHaveTextContent('99');
     expect(globalOutboxLabel.parentElement).toHaveTextContent('7');
     expect(globalOutboxLabel.parentElement).not.toHaveTextContent('99');
   });
@@ -392,47 +420,21 @@ describe('TS4 — unmount cancela polling e aborta requests pendentes', () => {
   });
 });
 
-describe('TS5 — scheduler diagnostics and legacy tick fallback', () => {
-  it('null → "Tick has never run"', async () => {
+describe('TS5 — current scheduler diagnostics', () => {
+  it.each([null, 6, 30])('does not infer status from a previous tick (%s hours)', async (hours) => {
     mockBoard('b1');
-    mockApi(() => Promise.resolve({
+    const incompatible = {
       ...baseHealth,
       decay_scheduler_diagnostics: undefined,
-      last_decay_tick_at: null,
-    }));
+      last_decay_tick_at: hours === null
+        ? null
+        : new Date(Date.now() - hours * 60 * 60 * 1000).toISOString(),
+    } as unknown as KGHealth;
+    mockApi(() => Promise.resolve(incompatible));
 
     render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
-    await waitFor(() => expect(screen.getByText('Tick has never run')).toBeInTheDocument());
-  });
-
-  it('age > 24h → "Stale tick: Xh ago" amber', async () => {
-    mockBoard('b1');
-    const thirtyHoursAgo = new Date(Date.now() - 30 * 60 * 60 * 1000).toISOString();
-    mockApi(() => Promise.resolve({
-      ...baseHealth,
-      decay_scheduler_diagnostics: undefined,
-      last_decay_tick_at: thirtyHoursAgo,
-    }));
-
-    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
-    await waitFor(() => {
-      expect(screen.getByText(/Stale tick: 30h ago/)).toBeInTheDocument();
-    });
-  });
-
-  it('age ≤ 24h → "Last tick: Xh ago" neutral', async () => {
-    mockBoard('b1');
-    const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
-    mockApi(() => Promise.resolve({
-      ...baseHealth,
-      decay_scheduler_diagnostics: undefined,
-      last_decay_tick_at: sixHoursAgo,
-    }));
-
-    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
-    await waitFor(() => {
-      expect(screen.getByText(/Last tick: 6h ago/)).toBeInTheDocument();
-    });
+    await waitFor(() => expect(screen.getByText('Scheduler diagnostics unavailable')).toBeInTheDocument());
+    expect(screen.queryByText(/Tick has never run|Stale tick:|Last tick:/)).toBeNull();
   });
 
   it('uses backend diagnostics instead of the local 24h heuristic when present', async () => {
@@ -466,13 +468,23 @@ describe('TS6 — schema banner', () => {
     mockBoard('b1');
     mockApi(() => Promise.resolve({
       ...baseHealth,
-      schema_version: '1.0',
-      health_schema_version: '1.1',
+      health_schema_version: '1.3',
     }));
 
     render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
     await waitFor(() => expect(screen.getByText('Decay Scheduler')).toBeInTheDocument());
     expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('refuses a missing current version even when an old alias is present', async () => {
+    mockBoard('b1');
+    mockApi(() => Promise.resolve({
+      ...baseHealth,
+      health_schema_version: undefined,
+      schema_version: '1.3',
+    } as unknown as KGHealth));
+    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Schema outdated/);
   });
 
   it('mismatch (2.0) → red full-width banner with exact text', async () => {
@@ -487,7 +499,7 @@ describe('TS6 — schema banner', () => {
       const alert = screen.getByRole('alert');
       expect(alert).toBeInTheDocument();
       expect(alert).toHaveTextContent(/Schema outdated/);
-      expect(alert).toHaveTextContent(/1\.1/);
+      expect(alert).toHaveTextContent(/1\.3/);
       expect(alert).toHaveTextContent(/2\.0/);
     });
   });
@@ -566,6 +578,23 @@ describe('KG-HS.3 — scheduler debt and storage-footprint clarity', () => {
     expect(rendered).not.toContain('raw buffer pressure');
   });
 
+  it.each(['observation_entry_limit', 'observation_depth_limit', 'observation_timeout'])(
+    'shows an unknown file size when the observation stops at %s', async (reason) => {
+      mockBoard('b1');
+      mockApi(() => Promise.resolve({ ...baseHealth, storage_footprint_proxy: {
+        ...baseHealth.storage_footprint_proxy!, status: 'unavailable',
+        total_bytes: null, primary_bytes: null, sidecar_bytes: null,
+        percentage: null, high_water_mark_pct: null, unavailable_reason: reason,
+      } }));
+      render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
+      const unknownSize = await screen.findByText('file size unavailable');
+      const card = unknownSize.closest('[data-testid="kg-health-card"]') as HTMLElement;
+      expect(unknownSize).toBeInTheDocument();
+      expect(within(card).queryByText('0 B')).not.toBeInTheDocument();
+      expect(within(card).queryByText('0.0%')).not.toBeInTheDocument();
+    },
+  );
+
   it('separates telemetry, DLQ backlog and scheduler debt from recovery-needed messaging', async () => {
     mockBoard('b1');
     mockApi(() =>
@@ -624,52 +653,14 @@ describe('KG-HS.3 — scheduler debt and storage-footprint clarity', () => {
 
     render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
 
-    await waitFor(() => expect(screen.getByText('At risk')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Needs attention' })).toBeInTheDocument());
     expect(screen.queryByText('Recovery needed')).toBeNull();
     expect(screen.getAllByText('unavailable').length).toBeGreaterThan(0);
     expect(screen.getByText('189')).toBeInTheDocument();
     expect(screen.getByText(/3 signals/)).toBeInTheDocument();
-    expect(screen.getByText(/Run Tick Now/)).toBeInTheDocument();
-    expect(await screen.findByText('3 pending')).toBeInTheDocument();
-    const cognitiveRow = screen.getByText('Cognitive state').parentElement;
-    expect(cognitiveRow).not.toBeNull();
-    expect(cognitiveRow!).toHaveTextContent('pending');
-  });
-});
-
-describe('KG-HS.4 — Runtime Settings cadence handoff', () => {
-  it('opens Runtime Settings Decay Tick tab without rendering scheduler edit fields locally', async () => {
-    mockBoard('b1');
-    mockApi(() => Promise.resolve({
-      ...baseHealth,
-      decay_scheduler_diagnostics: {
-        ...baseHealth.decay_scheduler_diagnostics!,
-        stale_tolerance_seconds: 7 * 24 * 60 * 60,
-        next_scheduled_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-      },
-    }));
-    const handler = vi.fn();
-    const onClose = vi.fn();
-    window.addEventListener('okto:open-runtime-settings', handler as EventListener);
-
-    render(<KGHealthView pollIntervalMs={30000} onClose={onClose} />);
-
-    await waitFor(() =>
-      expect(screen.getByText('Cadence is edited in Settings.')).toBeInTheDocument(),
-    );
-    expect(screen.getByText(/Runtime Settings > Decay Tick/i)).toBeInTheDocument();
-    expect(screen.queryByTestId('input-tick-interval-minutes')).toBeNull();
-    expect(screen.queryByTestId('input-tick-staleness-days')).toBeNull();
-
-    fireEvent.click(screen.getByTestId('kg-open-decay-settings'));
-
-    expect(handler).toHaveBeenCalledTimes(1);
-    expect((handler.mock.calls[0][0] as CustomEvent).detail).toEqual({
-      initialTab: 'decaytick',
-    });
-    expect(onClose).toHaveBeenCalledTimes(1);
-
-    window.removeEventListener('okto:open-runtime-settings', handler as EventListener);
+    expect(screen.queryByText(/Run Tick Now/)).not.toBeInTheDocument();
+    expect(await screen.findByTestId('kg-cognitive-pending-count-pending')).toHaveTextContent('2');
+    expect(screen.getByTestId('kg-cognitive-pending-count-in_progress')).toHaveTextContent('1');
   });
 });
 
@@ -772,316 +763,43 @@ describe('TS12 — empty state sem currentBoard suprime polling', () => {
   });
 });
 
-describe('KG recovery panel — health and cognitive rebuild state', () => {
-  it('stops a live legacy backfill, including its claimed work', async () => {
+
+// Full legacy permissions must not resurrect retired maintenance controls.
+describe('F4 — health has no maintenance actions', () => {
+  it.each(['healthy', 'at_risk', 'recovery_needed', 'quarantined'])('keeps %s observable without a recovery, tick or settings path', async (state) => {
     mockBoard('b1');
-    mockApi(() => Promise.resolve(baseHealth));
-    vi.mocked(kgHealthApi.getHistoricalProgress)
-      .mockResolvedValueOnce({
-        enabled: true,
-        status: 'in_progress',
-        total: 263,
-        progress: 0,
-        pending: 262,
-        claimed: 1,
-        paused: 0,
-        failed: 0,
-      })
-      .mockResolvedValue({
-        enabled: false,
-        status: 'cancelled',
-        total: 0,
-        progress: 0,
-        pending: 0,
-        claimed: 0,
-        paused: 0,
-        failed: 0,
-      });
-
-    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
-
-    expect(await screen.findByTestId('historical-recovery-status'))
-      .toHaveTextContent('Running');
-    expect(screen.getByText('262').parentElement).toHaveTextContent('Pending');
-    expect(screen.getByText('1').parentElement).toHaveTextContent('Claimed');
-
-    fireEvent.click(screen.getByRole('button', { name: 'Stop recovery' }));
-    expect(screen.getByText(/Stop all live historical queue work/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm stop' }));
-
-    await waitFor(() => {
-      expect(kgHealthApi.cancelHistorical).toHaveBeenCalledWith('b1');
-      expect(screen.getByTestId('historical-recovery-status')).toHaveTextContent('Stopped');
-    });
-    expect(screen.getByTestId('historical-recovery-action-status'))
-      .toHaveTextContent('Recovery cancelled. 3 live queue entries were fenced and removed.');
-    expect(screen.queryByRole('button', { name: /Start recovery/ })).toBeNull();
-    expect(screen.getByText(/Prepare a new rebuild only from the audited/))
-      .toBeInTheDocument();
-  });
-
-  it('does not expose a second rebuild start action after cancellation', async () => {
-    mockBoard('b1');
-    mockApi(() => Promise.resolve(baseHealth));
-    vi.mocked(kgHealthApi.getHistoricalProgress).mockResolvedValue({
-      enabled: false,
-      status: 'cancelled',
-      total: 0,
-      progress: 0,
-      pending: 0,
-      claimed: 0,
-      paused: 0,
-      failed: 0,
-    });
-
-    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
-
-    await waitFor(() => {
-      expect(screen.getByTestId('historical-recovery-status')).toHaveTextContent('Stopped');
-    });
-    expect(screen.queryByRole('button', { name: /Start recovery/ })).toBeNull();
-    expect(screen.getByRole('button', { name: 'Confirm rebuild' })).toBeDisabled();
-    expect(kgHealthApi.startHistorical).not.toHaveBeenCalled();
-  });
-
-  it('shows governed offline recovery instead of submitting an impossible online rebuild', async () => {
-    mockBoard('b1');
-    mockApi(() => Promise.resolve(baseHealth));
-    vi.mocked(kgHealthApi.runRebuildPreflight).mockResolvedValue({
-      board_id: 'b1',
-      outcome: 'diagnostic_complete',
-      action_required: 'run_local_offline_kg_recovery_executor',
-      reason: null,
-      base_state: 'fresh',
-      metric_status: 'available',
-      current_kg_generation_id: 'gen1',
-      eligible_source_count: 1,
-      skipped_cancelled_count: 0,
-      has_non_deterministic_inputs: false,
-      preflight_hash: 'a'.repeat(64),
-      generated_at: new Date().toISOString(),
-      manifest_ref: null,
-      source_set_hash: null,
-      execution_mode: 'recovery_only_offline',
+    mockApi(() => Promise.resolve({
+      ...baseHealth,
+      overall_state: state,
+      graph_state: state,
+      tick_in_progress: true,
       operator_action: 'run_local_offline_kg_recovery_executor',
-      remediation: 'Stop Pulse and run the governed three-stage recovery executor.',
-    });
-
-    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
-
-    const button = await screen.findByRole('button', { name: 'Prepare offline rebuild' });
-    const reason = screen.getByRole('textbox', { name: 'Reason (audit) *' });
-    fireEvent.change(reason, { target: { value: 'operator requested rebuild' } });
-    fireEvent.click(button);
-
-    expect(await screen.findByTestId('rebuild-live-status'))
-      .toHaveTextContent('rebuild must run with Pulse offline');
-    expect(screen.getByText(/governed three-stage recovery executor/)).toBeInTheDocument();
-    expect(kgHealthApi.runRebuildConfirm).not.toHaveBeenCalled();
-    expect(kgHealthApi.runRebuildRun).not.toHaveBeenCalled();
-  });
-
-  it('announces rebuild preparation and start without waiting for completion', async () => {
-    mockBoard('b1');
-    mockApi(() => Promise.resolve(baseHealth));
-    let acceptConfirmation!: (value: Awaited<ReturnType<typeof kgHealthApi.runRebuildConfirm>>) => void;
-    let finishRun!: (value: Awaited<ReturnType<typeof kgHealthApi.runRebuildRun>>) => void;
-    vi.mocked(kgHealthApi.runRebuildConfirm).mockImplementation(
-      () => new Promise((resolve) => { acceptConfirmation = resolve; }),
-    );
-    vi.mocked(kgHealthApi.runRebuildRun).mockImplementation(
-      () => new Promise((resolve) => { finishRun = resolve; }),
-    );
-
-    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
-    const reason = await screen.findByRole('textbox', { name: 'Reason (audit) *' });
-    fireEvent.change(reason, { target: { value: 'operator requested rebuild' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm rebuild' }));
-
-    expect(await screen.findByTestId('rebuild-live-status'))
-      .toHaveTextContent('Starting rebuild');
-    acceptConfirmation({
-      confirmation_id: 'confirmation-2',
-      manifest_ref: 'manifest1',
-      source_set_hash: 'sourcehash1',
-      expires_at: new Date(Date.now() + 60_000).toISOString(),
-    });
-    await waitFor(() => {
-      expect(screen.getByTestId('rebuild-live-status')).toHaveTextContent('Rebuild started');
-    });
-    finishRun({
-      run_id: 'run-2',
-      outcome: 'completed',
-      reason: 'completed',
-      audit_ref: 'audit/run-2.json',
-      previous_kg_generation_id: 'gen1',
-      current_kg_generation_id: 'gen2',
-      started_at: new Date().toISOString(),
-      finished_at: new Date().toISOString(),
-      affected_files: [],
-    });
-    await waitFor(() => {
-      expect(screen.getByTestId('rebuild-live-status')).toHaveTextContent('Rebuild completed');
-    });
-  });
-
-  it('labels at_risk health as At risk, not Recovery needed', async () => {
-    mockBoard('b1');
-    mockApi(() =>
-      Promise.resolve({
-        ...baseHealth,
-        overall_state: 'at_risk',
-        graph_state: 'at_risk',
-        discovery_state: 'at_risk',
-        classification_reason: 'metric.unavailable',
-        current_kg_generation_id: 'gen1',
-      }),
-    );
-    mockCognitivePending(cognitiveCounts({
-      consolidated: 59,
-      total: 59,
     }));
-
-    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
-
-    await waitFor(() => expect(screen.getByText('At risk')).toBeInTheDocument());
-    expect(screen.queryByText('Recovery needed')).toBeNull();
+    const onClose = vi.fn();
+    const settings = vi.fn();
+    window.addEventListener('okto:open-runtime-settings', settings);
+    try {
+      render(<KGHealthView onClose={onClose} />);
+      await screen.findByTestId('kg-health-overview');
+      expect(screen.queryByRole('button', { name: /rebuild|recovery|tick now|decay tick settings/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole('textbox', { name: /reason/i })).not.toBeInTheDocument();
+      expect(document.getElementById('kg-health-recovery')).toBeNull();
+      expect(screen.queryByText(/three.stage|offline executor|Cadence is edited/)).not.toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'View diagnostics' })).toHaveAttribute('href', '#kg-health-diagnostics');
+      fireEvent.click(screen.getByRole('button', { name: /refresh kg data now/i }));
+      await waitFor(() => expect(kgHealthApi.getKGHealth).toHaveBeenCalledTimes(2));
+      expect(settings).not.toHaveBeenCalled();
+      expect(onClose).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener('okto:open-runtime-settings', settings);
+    }
   });
 
-  it('adds explanatory tooltips to each KG Recovery metric', async () => {
+  it('still refuses health reads when the board permission is absent', async () => {
     mockBoard('b1');
-    mockApi(() =>
-      Promise.resolve({
-        ...baseHealth,
-        overall_state: 'at_risk',
-        graph_state: 'at_risk',
-        discovery_state: 'at_risk',
-        classification_reason: 'metric.unavailable',
-        current_kg_generation_id: 'gen1',
-      }),
-    );
-    mockCognitivePending(cognitiveCounts({
-      consolidated: 59,
-      total: 59,
-    }));
-
-    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
-
-    const graphMetric = await screen.findByTestId('kg-recovery-metric-board-graph');
-    expect(graphMetric).toHaveTextContent('Okto Grafx');
-    expect(graphMetric.getAttribute('title')).toContain('boards/b1/grafx/generation-1');
-    expect(graphMetric.getAttribute('title')).toContain('8192 bytes');
-    expect(graphMetric.getAttribute('title')).toContain('metric.unavailable');
-
-    const discoveryMetric = screen.getByTestId('kg-recovery-metric-global-discovery');
-    expect(discoveryMetric).toHaveTextContent('Okto Grafx');
-    expect(discoveryMetric.getAttribute('title')).toContain('global/grafx/generation-1');
-
-    const cognitiveMetric = screen.getByTestId('kg-recovery-metric-cognitive');
-    expect(cognitiveMetric.getAttribute('title')).toContain('consolidated');
-  });
-
-  it('renders Ladybug only when the authenticated route actually selects it', async () => {
-    mockBoard('b1');
-    mockApi(() =>
-      Promise.resolve({
-        ...baseHealth,
-        graph_storage: {
-          board: {
-            scope: 'board',
-            backend: 'ladybug',
-            binding_status: 'bound',
-            physical_path: 'boards/b1/graph.lbug',
-            generation: 'legacy',
-            page_size: null,
-          },
-          global_graph: {
-            scope: 'global',
-            backend: 'ladybug',
-            binding_status: 'bound',
-            physical_path: 'global/discovery.lbug',
-            generation: 'legacy',
-            page_size: null,
-          },
-        },
-      }),
-    );
-
-    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
-
-    expect(await screen.findByTestId('kg-recovery-metric-board-graph'))
-      .toHaveTextContent('Retired graph backend');
-    expect(screen.getByTestId('kg-recovery-metric-global-discovery'))
-      .toHaveTextContent('Retired graph backend');
-  });
-
-  it('surfaces an empty board graph explicitly when health total_nodes is zero', async () => {
-    mockBoard('b1');
-    mockApi(() =>
-      Promise.resolve({
-        ...baseHealth,
-        total_nodes: 0,
-        overall_state: 'at_risk',
-        graph_state: 'at_risk',
-        discovery_state: 'at_risk',
-        classification_reason: 'graph:metric.unavailable',
-        current_kg_generation_id: 'gen1',
-      }),
-    );
-
-    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
-
-    const graphMetric = await screen.findByTestId('kg-recovery-metric-board-graph');
-    expect(graphMetric).toHaveTextContent('empty');
-    expect(graphMetric).toHaveTextContent('0 nodes indexed');
-    expect(graphMetric.getAttribute('title')).toContain('total_nodes=0');
-  });
-
-  it('shows consolidated cognitive state from the generation counts', async () => {
-    mockBoard('b1');
-    mockApi(() =>
-      Promise.resolve({
-        ...baseHealth,
-        overall_state: 'at_risk',
-        current_kg_generation_id: 'gen1',
-      }),
-    );
-    mockCognitivePending(cognitiveCounts({
-      consolidated: 59,
-      total: 59,
-    }));
-
-    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
-
-    await waitFor(() =>
-      expect(screen.getByText('consolidated after rebuild')).toBeInTheDocument(),
-    );
-    const cognitiveRow = screen.getByText('Cognitive state').parentElement;
-    expect(cognitiveRow).not.toBeNull();
-    expect(cognitiveRow!).toHaveTextContent('consolidated');
-  });
-
-  it('shows pending cognitive state when the generation has active items', async () => {
-    mockBoard('b1');
-    mockApi(() =>
-      Promise.resolve({
-        ...baseHealth,
-        overall_state: 'at_risk',
-        current_kg_generation_id: 'gen1',
-      }),
-    );
-    mockCognitivePending(cognitiveCounts({
-      pending: 2,
-      in_progress: 1,
-      consolidated: 56,
-      total: 59,
-    }));
-
-    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
-
-    await waitFor(() => expect(screen.getByText('3 pending')).toBeInTheDocument());
-    const cognitiveRow = screen.getByText('Cognitive state').parentElement;
-    expect(cognitiveRow).not.toBeNull();
-    expect(cognitiveRow!).toHaveTextContent('pending');
+    permissionHas.mockImplementation((flag) => flag !== 'kg.operations.health.read');
+    render(<KGHealthView onClose={() => {}} />);
+    expect(await screen.findByTestId('kg-health-permission-denied')).toBeInTheDocument();
+    expect(kgHealthApi.getKGHealth).not.toHaveBeenCalled();
   });
 });

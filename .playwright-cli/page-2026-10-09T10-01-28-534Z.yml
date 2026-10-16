@@ -1,0 +1,408 @@
+- generic [ref=f16e3]:
+  - banner [ref=f16e4]:
+    - generic [ref=f16e5]:
+      - generic [ref=f16e6]:
+        - button "Hide sidebar" [ref=f16e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f16e12]
+        - generic [ref=f16e31]: / My Board
+      - generic [ref=f16e32]:
+        - button "Refresh board" [ref=f16e33] [cursor=pointer]
+        - button [ref=f16e40] [cursor=pointer]
+  - generic [ref=f16e13]:
+    - complementary [ref=f16e14]:
+      - generic [ref=f16e15]:
+        - generic [ref=f16e17]:
+          - heading "Boards" [level=2] [ref=f16e18]
+          - button "New board" [ref=f16e19] [cursor=pointer]
+        - navigation [ref=f16e21]:
+          - generic [ref=f16e22]:
+            - heading "My Boards" [level=3] [ref=f16e23]
+            - list [ref=f16e44]:
+              - listitem [ref=f16e45]:
+                - button "My Board" [ref=f16e46] [cursor=pointer]
+    - main [ref=f16e26]:
+      - group "Board views" [ref=f16e53]:
+        - button "Stories" [ref=f16e54] [cursor=pointer]
+        - button "Ideations" [ref=f16e58] [cursor=pointer]
+        - button "Refinements" [ref=f16e61] [cursor=pointer]
+        - button "Specs" [pressed] [ref=f16e66] [cursor=pointer]
+        - button "Tasks" [ref=f16e71] [cursor=pointer]
+      - generic [ref=f16e213]:
+        - generic [ref=f16e214]:
+          - generic [ref=f16e215]:
+            - heading "Specifications" [level=2] [ref=f16e216]
+            - generic [ref=f16e217]: (1 of 1)
+          - generic [ref=f16e218]:
+            - textbox "Search specs…" [ref=f16e220]
+            - group "View mode" [ref=f16e221]:
+              - button "List view" [pressed] [ref=f16e222] [cursor=pointer]
+              - button "Grid view" [ref=f16e224] [cursor=pointer]
+            - generic [ref=f16e230]: Group specs
+            - combobox "Group specs" [ref=f16e236]:
+              - option "None"
+              - option "Ideation"
+              - option "Refinement"
+              - option "Parents" [selected]
+            - button "New Spec" [ref=f16e237] [cursor=pointer]
+        - generic [ref=f16e239]:
+          - button "All" [ref=f16e240] [cursor=pointer]
+          - button "Draft" [ref=f16e241] [cursor=pointer]
+          - button "Review" [ref=f16e242] [cursor=pointer]
+          - button "Approved" [ref=f16e243] [cursor=pointer]
+          - button "Validated" [ref=f16e244] [cursor=pointer]
+          - button "In Progress" [ref=f16e245] [cursor=pointer]
+          - button "Done" [ref=f16e246] [cursor=pointer]
+          - button "Show archived" [ref=f16e247] [cursor=pointer]
+        - generic [ref=f16e250]:
+          - generic [ref=f16e251] [cursor=pointer]:
+            - 'heading "Refinement: Reserva de salas — consistência das reservas e contratos hexagonais" [level=3] [ref=f16e258]'
+            - generic [ref=f16e259]: (1)
+          - generic [ref=f16e263] [cursor=pointer]:
+            - generic [ref=f16e264]:
+              - generic [ref=f16e265]:
+                - generic [ref=f16e266]: Draft
+                - generic "Edition 1" [ref=f16e270]
+              - heading "Reserva de salas — consistência das reservas e contratos hexagonais" [level=3] [ref=f16e271]
+              - paragraph [ref=f16e272]: "Especificação conceitual H01–H04: consultar, criar, alterar e cancelar reservas próprias com consistência, idempotência, histórico e arquitetura hexagonal. Exercício de testes do Pulse; nenhuma implementação real solicitada."
+              - 'generic "Requirement lint: no current result · Edition 1; 0 previous results" [ref=f16e274]':
+                - generic [ref=f16e275]: Requirement lint
+                - strong [ref=f16e276]: Not assessed
+              - generic [ref=f16e277]:
+                - generic [ref=f16e278]: mock
+                - generic [ref=f16e279]: reserva-de-salas
+                - generic [ref=f16e280]: teste-sdlc
+            - generic [ref=f16e281]:
+              - button "Open lineage graph" [ref=f16e282]
+              - button "Archive tree" [ref=f16e287]
+        - generic [ref=f16e293]:
+          - status [ref=f16e294]: Showing 1–1 of 1 matching. 1 overall. Page 1 of 1.
+          - generic [ref=f16e295]:
+            - generic [ref=f16e296]:
+              - generic [ref=f16e297]: Items per page
+              - combobox "Items per page" [ref=f16e298]:
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+            - navigation "Specifications pagination" [ref=f16e299]:
+              - generic [ref=f16e300]:
+                - button "Previous page" [disabled] [ref=f16e301]: Previous
+                - button "Page 1" [disabled] [ref=f16e302]: "1"
+                - button "Next page" [disabled] [ref=f16e303]: Next
+        - dialog [ref=f16e305]:
+          - generic [ref=f16e306]:
+            - generic [ref=f16e307]:
+              - generic [ref=f16e308]: Draft
+              - heading "Reserva de salas — consistência das reservas e contratos hexagonais" [level=2] [ref=f16e312]
+              - generic "Edition 1" [ref=f16e313]
+            - generic [ref=f16e314]:
+              - button "Open lineage graph" [ref=f16e315] [cursor=pointer]
+              - button "Export report" [ref=f16e320] [cursor=pointer]
+              - button "Refresh" [ref=f16e324] [cursor=pointer]
+              - button "Expand" [ref=f16e330] [cursor=pointer]
+              - button "Close spec" [ref=f16e336] [cursor=pointer]
+          - generic [ref=f16e340]:
+            - generic [ref=f16e341]: "Move to:"
+            - button "Review" [ref=f16e342] [cursor=pointer]
+            - button "Cancelled" [ref=f16e345] [cursor=pointer]
+          - generic [ref=f16e348]:
+            - generic [ref=f16e349]: "From:"
+            - button "Reserva de salas — teste do SDLC v24" [ref=f16e350] [cursor=pointer]:
+              - text: Reserva de salas — teste do SDLC
+              - generic [ref=f16e353]: v24
+            - button "Reserva de salas — consistência das reservas e contratos hexagonais v39" [ref=f16e356] [cursor=pointer]:
+              - text: Reserva de salas — consistência das reservas e contratos hexagonais
+              - generic [ref=f16e361]: v39
+          - generic [ref=f16e363]:
+            - tablist "Spec sections" [ref=f16e364]:
+              - tab "Details" [ref=f16e365] [cursor=pointer]
+              - tab "Coverage" [ref=f16e370] [cursor=pointer]
+              - tab "Project Structure" [ref=f16e376] [cursor=pointer]
+              - tab "Code Evidence Matrix" [ref=f16e383] [cursor=pointer]
+              - tab "Resources" [ref=f16e387] [cursor=pointer]
+              - tab "Requirements & Decisions" [ref=f16e391] [cursor=pointer]
+              - tab "Tests & Verifications" [selected] [ref=f16e396] [cursor=pointer]
+              - tab "Q&A 9" [ref=f16e400] [cursor=pointer]:
+                - generic [ref=f16e404]: Q&A
+                - generic [ref=f16e405]: "9"
+              - tab "Dependencies" [ref=f16e406] [cursor=pointer]
+              - tab "References" [ref=f16e412] [cursor=pointer]
+              - tab "KG Graph" [ref=f16e417] [cursor=pointer]
+              - tab "Validation" [ref=f16e424] [cursor=pointer]
+              - tab "Activity" [ref=f16e429] [cursor=pointer]
+            - button "Scroll Spec sections left" [ref=f16e659] [cursor=pointer]
+            - button "Scroll Spec sections right" [ref=f16e435] [cursor=pointer]
+          - tabpanel "Tests & Verifications" [ref=f16e662]:
+            - tablist "Tests and verifications sections" [ref=f16e664]:
+              - tab "Tests 51" [ref=f16e665] [cursor=pointer]:
+                - generic [ref=f16e668]: Tests
+                - generic [ref=f16e669]: "51"
+              - tab "AC 31" [selected] [ref=f16e670] [cursor=pointer]:
+                - generic [ref=f16e675]: AC
+                - generic [ref=f16e676]: "31"
+            - tabpanel "AC 31" [ref=f16e1429]:
+              - region "Acceptance criteria" [ref=f16e1430]:
+                - heading "Acceptance criteria" [level=3] [ref=f16e1431]
+                - article "Busca retorna somente salas com capacidade>=participantes e sem confirmed sobreposta; intervalos adjacentes permitidos; falha de leitura é erro, nunca lista vazia." [ref=f16e1432]:
+                  - generic [ref=f16e1433]:
+                    - button "ac_res_search Busca retorna somente salas com capacidade>=participantes e sem confirmed sobreposta; intervalos adjacentes permitidos; falha de leitura é erro, nunca lista vazia." [expanded] [active] [ref=f16e1434] [cursor=pointer]:
+                      - generic "ac_res_search" [ref=f16e1435]
+                      - generic "Busca retorna somente salas com capacidade>=participantes e sem confirmed sobreposta; intervalos adjacentes permitidos; falha de leitura é erro, nunca lista vazia." [ref=f16e1436]
+                    - button "Edit ac_res_search" [ref=f16e1439] [cursor=pointer]
+                    - button "Revoke ac_res_search" [ref=f16e1443] [cursor=pointer]
+                  - generic [ref=f16e1904]:
+                    - paragraph [ref=f16e1905]: Busca retorna somente salas com capacidade>=participantes e sem confirmed sobreposta; intervalos adjacentes permitidos; falha de leitura é erro, nunca lista vazia.
+                    - region "AC verification" [ref=f16e1906]:
+                      - generic [ref=f16e1907]:
+                        - heading "Verification" [level=4] [ref=f16e1908]
+                        - button "Edit verification ac_res_search" [ref=f16e1909] [cursor=pointer]
+                      - paragraph [ref=f16e1913]: "Profile: functional"
+                      - generic [ref=f16e1914]:
+                        - generic [ref=f16e1915]:
+                          - text: Functional
+                          - paragraph [ref=f16e1916]: Consultar salas disponíveis · fr_res_search
+                        - generic [ref=f16e1917]:
+                          - text: Business
+                          - paragraph [ref=f16e1918]: Exclusão de sobreposição · br_5278b8d5
+                    - region "Verification scenarios" [ref=f16e1919]:
+                      - generic [ref=f16e1920]:
+                        - heading "How to verify" [level=4] [ref=f16e1921]
+                        - button "Manage scenarios" [ref=f16e1922] [cursor=pointer]
+                      - generic [ref=f16e1923]:
+                        - paragraph [ref=f16e1924]: T01 — Busca por intervalo
+                        - paragraph [ref=f16e1925]: "Method: automated_test"
+                        - paragraph [ref=f16e1926]: "Expected observation: Somente Aurora retornada, sem dados de terceiros."
+                      - generic [ref=f16e1927]:
+                        - paragraph [ref=f16e1928]: T03 — Intervalos sobrepostos
+                        - paragraph [ref=f16e1929]: "Method: automated_test"
+                        - paragraph [ref=f16e1930]: "Expected observation: Quatro sobrepostos recusados; adjacente10h–11h aceito."
+                      - generic [ref=f16e1931]:
+                        - paragraph [ref=f16e1932]: T04 — Salas independentes
+                        - paragraph [ref=f16e1933]: "Method: automated_test"
+                        - paragraph [ref=f16e1934]: "Expected observation: Confirmar Aurora sem alterarIpê."
+                      - generic [ref=f16e1935]:
+                        - paragraph [ref=f16e1936]: T10 — Vazio versus falha
+                        - paragraph [ref=f16e1937]: "Method: automated_test"
+                        - paragraph [ref=f16e1938]: "Expected observation: Primeiro lista vazia;segundo unavailable, nunca vazio."
+                      - generic [ref=f16e1939]:
+                        - paragraph [ref=f16e1940]: T29 — Frontend H01
+                        - paragraph [ref=f16e1941]: "Method: automated_test"
+                        - paragraph [ref=f16e1942]: "Expected observation: Labels/foco/fuso visíveis;filtros preservados;vazio não mascara erro."
+                      - paragraph [ref=f16e1943]: Execution evidence and current verification results are available in Coverage → Implementation.
+                    - group [ref=f16e1944]:
+                      - generic "Reference" [ref=f16e1945] [cursor=pointer]
+                - article "Aceitar apenas seg–sex08h–18h, mesmo dia local, início futuro em:00/:30 e até data local+30; duração30min–4h em múltiplos30, sem segundos/micros; recusar cada limite violado sem mutação." [ref=f16e1447]:
+                  - generic [ref=f16e1448]:
+                    - button "ac_res_calendar Aceitar apenas seg–sex08h–18h, mesmo dia local, início futuro em:00/:30 e até data local+30; duração30min–4h em múltiplos30, sem segundos/micros; recusar cada limite violado sem mutação." [ref=f16e1449] [cursor=pointer]:
+                      - generic "ac_res_calendar" [ref=f16e1450]
+                      - generic "Aceitar apenas seg–sex08h–18h, mesmo dia local, início futuro em:00/:30 e até data local+30; duração30min–4h em múltiplos30, sem segundos/micros; recusar cada limite violado sem mutação." [ref=f16e1451]
+                    - button "Edit ac_res_calendar" [ref=f16e1454] [cursor=pointer]
+                    - button "Revoke ac_res_calendar" [ref=f16e1458] [cursor=pointer]
+                - article "Participantes deve ser inteiro>=1 e<=capacidade da sala existente; zero,negativo,fracionário e excesso são recusados sem escrita." [ref=f16e1462]:
+                  - generic [ref=f16e1463]:
+                    - button "ac_res_capacity Participantes deve ser inteiro>=1 e<=capacidade da sala existente; zero,negativo,fracionário e excesso são recusados sem escrita." [ref=f16e1464] [cursor=pointer]:
+                      - generic "ac_res_capacity" [ref=f16e1465]
+                      - generic "Participantes deve ser inteiro>=1 e<=capacidade da sala existente; zero,negativo,fracionário e excesso são recusados sem escrita." [ref=f16e1466]
+                    - button "Edit ac_res_capacity" [ref=f16e1469] [cursor=pointer]
+                    - button "Revoke ac_res_capacity" [ref=f16e1473] [cursor=pointer]
+                - article "Primeira criação válida produz exatamente1 reserva confirmed versão1,1 evento e1 recibo; resposta somente após commit." [ref=f16e1477]:
+                  - generic [ref=f16e1478]:
+                    - button "ac_res_create Primeira criação válida produz exatamente1 reserva confirmed versão1,1 evento e1 recibo; resposta somente após commit." [ref=f16e1479] [cursor=pointer]:
+                      - generic "ac_res_create" [ref=f16e1480]
+                      - generic "Primeira criação válida produz exatamente1 reserva confirmed versão1,1 evento e1 recibo; resposta somente após commit." [ref=f16e1481]
+                    - button "Edit ac_res_create" [ref=f16e1484] [cursor=pointer]
+                    - button "Revoke ac_res_create" [ref=f16e1488] [cursor=pointer]
+                - article "Lista/histórico só incluem o ator; default20,max100; cursor inválido e limite101 são recusados; páginas não duplicam itens em dataset estável." [ref=f16e1492]:
+                  - generic [ref=f16e1493]:
+                    - button "ac_res_list Lista/histórico só incluem o ator; default20,max100; cursor inválido e limite101 são recusados; páginas não duplicam itens em dataset estável." [ref=f16e1494] [cursor=pointer]:
+                      - generic "ac_res_list" [ref=f16e1495]
+                      - generic "Lista/histórico só incluem o ator; default20,max100; cursor inválido e limite101 são recusados; páginas não duplicam itens em dataset estável." [ref=f16e1496]
+                    - button "Edit ac_res_list" [ref=f16e1499] [cursor=pointer]
+                    - button "Revoke ac_res_list" [ref=f16e1503] [cursor=pointer]
+                - article "Alteração válida incrementa versão exatamente1 e gera evento; conflito/versão incorreta preservam before e não criam recibo de sucesso." [ref=f16e1507]:
+                  - generic [ref=f16e1508]:
+                    - button "ac_res_change Alteração válida incrementa versão exatamente1 e gera evento; conflito/versão incorreta preservam before e não criam recibo de sucesso." [ref=f16e1509] [cursor=pointer]:
+                      - generic "ac_res_change" [ref=f16e1510]
+                      - generic "Alteração válida incrementa versão exatamente1 e gera evento; conflito/versão incorreta preservam before e não criam recibo de sucesso." [ref=f16e1511]
+                    - button "Edit ac_res_change" [ref=f16e1514] [cursor=pointer]
+                    - button "Revoke ac_res_change" [ref=f16e1518] [cursor=pointer]
+                - article "Cancelamento válido mantém reserva cancelled e histórico e libera intervalo; no início/depois ou nova intenção em cancelled é recusado; replay não cria evento." [ref=f16e1522]:
+                  - generic [ref=f16e1523]:
+                    - button "ac_res_cancel Cancelamento válido mantém reserva cancelled e histórico e libera intervalo; no início/depois ou nova intenção em cancelled é recusado; replay não cria evento." [ref=f16e1524] [cursor=pointer]:
+                      - generic "ac_res_cancel" [ref=f16e1525]
+                      - generic "Cancelamento válido mantém reserva cancelled e histórico e libera intervalo; no início/depois ou nova intenção em cancelled é recusado; replay não cria evento." [ref=f16e1526]
+                    - button "Edit ac_res_cancel" [ref=f16e1529] [cursor=pointer]
+                    - button "Revoke ac_res_cancel" [ref=f16e1533] [cursor=pointer]
+                - article "Histórico retorna eventos ordenados versão asc, before=null somente na criação, after explícito, sem mutação por leitura ou replay." [ref=f16e1537]:
+                  - generic [ref=f16e1538]:
+                    - button "ac_res_history Histórico retorna eventos ordenados versão asc, before=null somente na criação, after explícito, sem mutação por leitura ou replay." [ref=f16e1539] [cursor=pointer]:
+                      - generic "ac_res_history" [ref=f16e1540]
+                      - generic "Histórico retorna eventos ordenados versão asc, before=null somente na criação, after explícito, sem mutação por leitura ou replay." [ref=f16e1541]
+                    - button "Edit ac_res_history" [ref=f16e1544] [cursor=pointer]
+                    - button "Revoke ac_res_history" [ref=f16e1548] [cursor=pointer]
+                - article "Mesmo ator/operação/chave/carga retorna resultado original com replayed=true; chave/carga diferente recusa; outro ator não reutiliza nem observa recibo alheio." [ref=f16e1552]:
+                  - generic [ref=f16e1553]:
+                    - button "ac_res_replay Mesmo ator/operação/chave/carga retorna resultado original com replayed=true; chave/carga diferente recusa; outro ator não reutiliza nem observa recibo alheio." [ref=f16e1554] [cursor=pointer]:
+                      - generic "ac_res_replay" [ref=f16e1555]
+                      - generic "Mesmo ator/operação/chave/carga retorna resultado original com replayed=true; chave/carga diferente recusa; outro ator não reutiliza nem observa recibo alheio." [ref=f16e1556]
+                    - button "Edit ac_res_replay" [ref=f16e1559] [cursor=pointer]
+                    - button "Revoke ac_res_replay" [ref=f16e1563] [cursor=pointer]
+                - article "Duas conexões concorrentes não confirmam sobreposição nem duas alterações com mesmo expected_version; falha entre reserva e commit reverte reserva,histórico e recibo." [ref=f16e1567]:
+                  - generic [ref=f16e1568]:
+                    - button "ac_res_atomic Duas conexões concorrentes não confirmam sobreposição nem duas alterações com mesmo expected_version; falha entre reserva e commit reverte reserva,histórico e recibo." [ref=f16e1569] [cursor=pointer]:
+                      - generic "ac_res_atomic" [ref=f16e1570]
+                      - generic "Duas conexões concorrentes não confirmam sobreposição nem duas alterações com mesmo expected_version; falha entre reserva e commit reverte reserva,histórico e recibo." [ref=f16e1571]
+                    - button "Edit ac_res_atomic" [ref=f16e1574] [cursor=pointer]
+                    - button "Revoke ac_res_atomic" [ref=f16e1578] [cursor=pointer]
+                - article "Teste estático detecta imports de mecanismo/reach-in privado; domínio/aplicação testáveis com fakes sem infraestrutura; nenhuma porta interna contém http_status." [ref=f16e1582]:
+                  - generic [ref=f16e1583]:
+                    - button "ac_res_hex Teste estático detecta imports de mecanismo/reach-in privado; domínio/aplicação testáveis com fakes sem infraestrutura; nenhuma porta interna contém http_status." [ref=f16e1584] [cursor=pointer]:
+                      - generic "ac_res_hex" [ref=f16e1585]
+                      - generic "Teste estático detecta imports de mecanismo/reach-in privado; domínio/aplicação testáveis com fakes sem infraestrutura; nenhuma porta interna contém http_status." [ref=f16e1586]
+                    - button "Edit ac_res_hex" [ref=f16e1589] [cursor=pointer]
+                    - button "Revoke ac_res_hex" [ref=f16e1593] [cursor=pointer]
+                - article "Sessão ausente/expirada, ID alheio, owner_id forjado e CSRF inválido são recusados sem escrita e sem vazamento; logs excluem segredos." [ref=f16e1597]:
+                  - generic [ref=f16e1598]:
+                    - button "ac_res_security Sessão ausente/expirada, ID alheio, owner_id forjado e CSRF inválido são recusados sem escrita e sem vazamento; logs excluem segredos." [ref=f16e1599] [cursor=pointer]:
+                      - generic "ac_res_security" [ref=f16e1600]
+                      - generic "Sessão ausente/expirada, ID alheio, owner_id forjado e CSRF inválido são recusados sem escrita e sem vazamento; logs excluem segredos." [ref=f16e1601]
+                    - button "Edit ac_res_security" [ref=f16e1604] [cursor=pointer]
+                    - button "Revoke ac_res_security" [ref=f16e1608] [cursor=pointer]
+                - article "Com Clock controlado, comando bloqueado pela transação usa now obtido após aquisição; UTC e fuso local produzem os mesmos limites, sem relógio global no domínio." [ref=f16e1612]:
+                  - generic [ref=f16e1613]:
+                    - button "ac_res_clock Com Clock controlado, comando bloqueado pela transação usa now obtido após aquisição; UTC e fuso local produzem os mesmos limites, sem relógio global no domínio." [ref=f16e1614] [cursor=pointer]:
+                      - generic "ac_res_clock" [ref=f16e1615]
+                      - generic "Com Clock controlado, comando bloqueado pela transação usa now obtido após aquisição; UTC e fuso local produzem os mesmos limites, sem relógio global no domínio." [ref=f16e1616]
+                    - button "Edit ac_res_clock" [ref=f16e1619] [cursor=pointer]
+                    - button "Revoke ac_res_clock" [ref=f16e1623] [cursor=pointer]
+                - article "Busy esgota orçamento2s e retorna503 sem escrita parcial; após commit e perda da resposta, reinício+replay recupera mesma reserva/evento únicos." [ref=f16e1627]:
+                  - generic [ref=f16e1628]:
+                    - button "ac_res_recovery Busy esgota orçamento2s e retorna503 sem escrita parcial; após commit e perda da resposta, reinício+replay recupera mesma reserva/evento únicos." [ref=f16e1629] [cursor=pointer]:
+                      - generic "ac_res_recovery" [ref=f16e1630]
+                      - generic "Busy esgota orçamento2s e retorna503 sem escrita parcial; após commit e perda da resposta, reinício+replay recupera mesma reserva/evento únicos." [ref=f16e1631]
+                    - button "Edit ac_res_recovery" [ref=f16e1634] [cursor=pointer]
+                    - button "Revoke ac_res_recovery" [ref=f16e1638] [cursor=pointer]
+                - article "H01–H04 apresentam loading/vazio/erro/sucesso/conflicto/incerto distintos, preservam entrada/chave correta e exibem fuso; dupla submissão não cria nova intenção." [ref=f16e1642]:
+                  - generic [ref=f16e1643]:
+                    - button "ac_res_ux H01–H04 apresentam loading/vazio/erro/sucesso/conflicto/incerto distintos, preservam entrada/chave correta e exibem fuso; dupla submissão não cria nova intenção." [ref=f16e1644] [cursor=pointer]:
+                      - generic "ac_res_ux" [ref=f16e1645]
+                      - generic "H01–H04 apresentam loading/vazio/erro/sucesso/conflicto/incerto distintos, preservam entrada/chave correta e exibem fuso; dupla submissão não cria nova intenção." [ref=f16e1646]
+                    - button "Edit ac_res_ux" [ref=f16e1649] [cursor=pointer]
+                    - button "Revoke ac_res_ux" [ref=f16e1653] [cursor=pointer]
+                - article "Em320px e zoom200% fluxo principal sem overflow horizontal; modal inicia em Manter, contém foco, Escape não cancela, devolve foco; resultados e erros possuem nome/anúncio acessível." [ref=f16e1657]:
+                  - generic [ref=f16e1658]:
+                    - button "ac_res_a11y Em320px e zoom200% fluxo principal sem overflow horizontal; modal inicia em Manter, contém foco, Escape não cancela, devolve foco; resultados e erros possuem nome/anúncio acessível." [ref=f16e1659] [cursor=pointer]:
+                      - generic "ac_res_a11y" [ref=f16e1660]
+                      - generic "Em320px e zoom200% fluxo principal sem overflow horizontal; modal inicia em Manter, contém foco, Escape não cancela, devolve foco; resultados e erros possuem nome/anúncio acessível." [ref=f16e1661]
+                    - button "Edit ac_res_a11y" [ref=f16e1664] [cursor=pointer]
+                    - button "Revoke ac_res_a11y" [ref=f16e1668] [cursor=pointer]
+                - article "No contrato ir_res_storage, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1672]:
+                  - generic [ref=f16e1673]:
+                    - button "ac_ir_res_storage No contrato ir_res_storage, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1674] [cursor=pointer]:
+                      - generic "ac_ir_res_storage" [ref=f16e1675]
+                      - generic "No contrato ir_res_storage, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1676]
+                    - button "Edit ac_ir_res_storage" [ref=f16e1679] [cursor=pointer]
+                    - button "Revoke ac_ir_res_storage" [ref=f16e1683] [cursor=pointer]
+                - article "No contrato ir_res_change, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1687]:
+                  - generic [ref=f16e1688]:
+                    - button "ac_ir_res_change No contrato ir_res_change, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1689] [cursor=pointer]:
+                      - generic "ac_ir_res_change" [ref=f16e1690]
+                      - generic "No contrato ir_res_change, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1691]
+                    - button "Edit ac_ir_res_change" [ref=f16e1694] [cursor=pointer]
+                    - button "Revoke ac_ir_res_change" [ref=f16e1698] [cursor=pointer]
+                - article "No contrato ir_res_rules, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1702]:
+                  - generic [ref=f16e1703]:
+                    - button "ac_ir_res_rules No contrato ir_res_rules, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1704] [cursor=pointer]:
+                      - generic "ac_ir_res_rules" [ref=f16e1705]
+                      - generic "No contrato ir_res_rules, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1706]
+                    - button "Edit ac_ir_res_rules" [ref=f16e1709] [cursor=pointer]
+                    - button "Revoke ac_ir_res_rules" [ref=f16e1713] [cursor=pointer]
+                - article "No contrato ir_res_history, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1717]:
+                  - generic [ref=f16e1718]:
+                    - button "ac_ir_res_history No contrato ir_res_history, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1719] [cursor=pointer]:
+                      - generic "ac_ir_res_history" [ref=f16e1720]
+                      - generic "No contrato ir_res_history, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1721]
+                    - button "Edit ac_ir_res_history" [ref=f16e1724] [cursor=pointer]
+                    - button "Revoke ac_ir_res_history" [ref=f16e1728] [cursor=pointer]
+                - article "No contrato ir_res_identity_port, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1732]:
+                  - generic [ref=f16e1733]:
+                    - button "ac_ir_res_identity_port No contrato ir_res_identity_port, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1734] [cursor=pointer]:
+                      - generic "ac_ir_res_identity_port" [ref=f16e1735]
+                      - generic "No contrato ir_res_identity_port, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1736]
+                    - button "Edit ac_ir_res_identity_port" [ref=f16e1739] [cursor=pointer]
+                    - button "Revoke ac_ir_res_identity_port" [ref=f16e1743] [cursor=pointer]
+                - article "No contrato ir_res_create, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1747]:
+                  - generic [ref=f16e1748]:
+                    - button "ac_ir_res_create No contrato ir_res_create, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1749] [cursor=pointer]:
+                      - generic "ac_ir_res_create" [ref=f16e1750]
+                      - generic "No contrato ir_res_create, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1751]
+                    - button "Edit ac_ir_res_create" [ref=f16e1754] [cursor=pointer]
+                    - button "Revoke ac_ir_res_create" [ref=f16e1758] [cursor=pointer]
+                - article "No contrato ir_res_usecases, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1762]:
+                  - generic [ref=f16e1763]:
+                    - button "ac_ir_res_usecases No contrato ir_res_usecases, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1764] [cursor=pointer]:
+                      - generic "ac_ir_res_usecases" [ref=f16e1765]
+                      - generic "No contrato ir_res_usecases, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1766]
+                    - button "Edit ac_ir_res_usecases" [ref=f16e1769] [cursor=pointer]
+                    - button "Revoke ac_ir_res_usecases" [ref=f16e1773] [cursor=pointer]
+                - article "No contrato ir_res_search, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1777]:
+                  - generic [ref=f16e1778]:
+                    - button "ac_ir_res_search No contrato ir_res_search, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1779] [cursor=pointer]:
+                      - generic "ac_ir_res_search" [ref=f16e1780]
+                      - generic "No contrato ir_res_search, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1781]
+                    - button "Edit ac_ir_res_search" [ref=f16e1784] [cursor=pointer]
+                    - button "Revoke ac_ir_res_search" [ref=f16e1788] [cursor=pointer]
+                - article "No contrato ir_res_list, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1792]:
+                  - generic [ref=f16e1793]:
+                    - button "ac_ir_res_list No contrato ir_res_list, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1794] [cursor=pointer]:
+                      - generic "ac_ir_res_list" [ref=f16e1795]
+                      - generic "No contrato ir_res_list, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1796]
+                    - button "Edit ac_ir_res_list" [ref=f16e1799] [cursor=pointer]
+                    - button "Revoke ac_ir_res_list" [ref=f16e1803] [cursor=pointer]
+                - article "No contrato ir_res_cancel, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1807]:
+                  - generic [ref=f16e1808]:
+                    - button "ac_ir_res_cancel No contrato ir_res_cancel, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1809] [cursor=pointer]:
+                      - generic "ac_ir_res_cancel" [ref=f16e1810]
+                      - generic "No contrato ir_res_cancel, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1811]
+                    - button "Edit ac_ir_res_cancel" [ref=f16e1814] [cursor=pointer]
+                    - button "Revoke ac_ir_res_cancel" [ref=f16e1818] [cursor=pointer]
+                - article "No contrato ir_res_wiring, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1822]:
+                  - generic [ref=f16e1823]:
+                    - button "ac_ir_res_wiring No contrato ir_res_wiring, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1824] [cursor=pointer]:
+                      - generic "ac_ir_res_wiring" [ref=f16e1825]
+                      - generic "No contrato ir_res_wiring, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1826]
+                    - button "Edit ac_ir_res_wiring" [ref=f16e1829] [cursor=pointer]
+                    - button "Revoke ac_ir_res_wiring" [ref=f16e1833] [cursor=pointer]
+                - article "No contrato ir_res_clock_port, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1837]:
+                  - generic [ref=f16e1838]:
+                    - button "ac_ir_res_clock_port No contrato ir_res_clock_port, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1839] [cursor=pointer]:
+                      - generic "ac_ir_res_clock_port" [ref=f16e1840]
+                      - generic "No contrato ir_res_clock_port, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1841]
+                    - button "Edit ac_ir_res_clock_port" [ref=f16e1844] [cursor=pointer]
+                    - button "Revoke ac_ir_res_clock_port" [ref=f16e1848] [cursor=pointer]
+                - article "No contrato ir_res_uow, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1852]:
+                  - generic [ref=f16e1853]:
+                    - button "ac_ir_res_uow No contrato ir_res_uow, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1854] [cursor=pointer]:
+                      - generic "ac_ir_res_uow" [ref=f16e1855]
+                      - generic "No contrato ir_res_uow, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f16e1856]
+                    - button "Edit ac_ir_res_uow" [ref=f16e1859] [cursor=pointer]
+                    - button "Revoke ac_ir_res_uow" [ref=f16e1863] [cursor=pointer]
+                - article "Cada tentativa tem registro com request_id,operação,resultado,replayed,duração_ms; inspeção dos logs encontra zero cookie,senha,SQL ou payload de reserva." [ref=f16e1867]:
+                  - generic [ref=f16e1868]:
+                    - button "ac_res_observe_0 Cada tentativa tem registro com request_id,operação,resultado,replayed,duração_ms; inspeção dos logs encontra zero cookie,senha,SQL ou payload de reserva." [ref=f16e1869] [cursor=pointer]:
+                      - generic "ac_res_observe_0" [ref=f16e1870]
+                      - generic "Cada tentativa tem registro com request_id,operação,resultado,replayed,duração_ms; inspeção dos logs encontra zero cookie,senha,SQL ou payload de reserva." [ref=f16e1871]
+                    - button "Edit ac_res_observe_0" [ref=f16e1874] [cursor=pointer]
+                    - button "Revoke ac_res_observe_0" [ref=f16e1878] [cursor=pointer]
+                - article "Contador reservation_commands_total aumenta exatamente1 por tentativa no rótulo operação/resultado correto; replay/conflitos/unavailable distinguíveis, sem criar SLO." [ref=f16e1882]:
+                  - generic [ref=f16e1883]:
+                    - button "ac_res_observe_1 Contador reservation_commands_total aumenta exatamente1 por tentativa no rótulo operação/resultado correto; replay/conflitos/unavailable distinguíveis, sem criar SLO." [ref=f16e1884] [cursor=pointer]:
+                      - generic "ac_res_observe_1" [ref=f16e1885]
+                      - generic "Contador reservation_commands_total aumenta exatamente1 por tentativa no rótulo operação/resultado correto; replay/conflitos/unavailable distinguíveis, sem criar SLO." [ref=f16e1886]
+                    - button "Edit ac_res_observe_1" [ref=f16e1889] [cursor=pointer]
+                    - button "Revoke ac_res_observe_1" [ref=f16e1893] [cursor=pointer]
+                - button "Add AC" [ref=f16e1897] [cursor=pointer]
+              - region "Requirement qualification" [ref=f16e1900]:
+                - button "Review requirement qualification" [ref=f16e1901] [cursor=pointer]
+          - generic [ref=f16e655]:
+            - button "Delete spec" [ref=f16e656] [cursor=pointer]
+            - button "Close" [ref=f16e658] [cursor=pointer]

@@ -1,0 +1,515 @@
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { CardDeliveryDoDPanel } from '../CardDeliveryDoDPanel';
+import type { DeliveryEvidenceProjection } from '@/types/delivery-evidence';
+import { readiness } from './readinessFixture';
+
+const api = vi.hoisted(() => ({
+  getDeliveryEvidence: vi.fn(),
+  recordDeliveryEvidence: vi.fn(),
+  recordCardDeliveryEvidence: vi.fn(),
+  getBoard: vi.fn(),
+  getDeliveryReadiness: vi.fn(),
+}));
+vi.mock('@/services/api', () => ({ useDashboardApi: () => api }));
+
+const CARD = { id: 'task-1', card_type: 'normal', spec_id: 's' };
+
+function projection(): DeliveryEvidenceProjection {
+  return {
+    board_id: 'b', spec_id: 's', edition: 2, version: 7, status: 'in_progress', allowed: false, complete: true,
+    blockers: ['delivery_implementation_missing'], rejected_record_ids: [],
+    rows: [],
+    implementations: [
+      { id: 'card_delivery_abc111', card_id: 'task-1', explanation: 'Observed implementation',
+        bindings: [{ obligation_ref: 'fr:fr_3a9f', semantic_sha256: 'a'.repeat(64) }],
+        contributions: [{ binding: { obligation_ref: 'fr:fr_3a9f', semantic_sha256: 'a'.repeat(64) }, contribution: 'complete', execution_ids: ['execution-1'] }],
+        admitted_obligation_refs: ['fr:fr_3a9f'], ready_obligation_refs: ['fr:fr_3a9f'],
+        executions: [{ execution_id: 'execution-1', target_id: 'target-1', source_ref: 'repo', relative_path: 'src/api.py', symbol: 'record', result_revision: 'r'.repeat(40), current_accepted_execution: true }] },
+    ],
+    tests: [],
+    candidates: [
+      { kind: 'implementation', id: 'execution-1', card_id: 'task-1', card_version: 4, label: 'src/api.py @ rev' },
+      { kind: 'implementation', id: 'execution-2', card_id: 'OTHER', card_version: 2, label: 'other card receipt' },
+    ],
+    records: [],
+    per_card: [
+      { card_id: 'task-1', title: 'TASK-142 — Re-anchor delivery bindings', card_type: 'normal', status: 'in_progress', satisfied: false,
+        obligations: [
+          { ref: 'fr:fr_3a9f', title: 'Bindings live on the card ledger', implementation_satisfied: true },
+          { ref: 'ac:ac_77ce', title: 'Done is rejected without proof', implementation_satisfied: false },
+        ] },
+    ],
+  };
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  api.getDeliveryEvidence.mockResolvedValue(projection());
+  api.getBoard.mockResolvedValue({ id: 'b', settings: { delivery_evidence_gate: 'blocking' } });
+  api.getDeliveryReadiness.mockResolvedValue(readiness('task-1'));
+  api.recordCardDeliveryEvidence.mockResolvedValue({ id: 'new', replayed: false });
+  api.recordDeliveryEvidence.mockResolvedValue({ id: 'waiver', replayed: false });
+});
+afterEach(cleanup);
+
+it('keeps failed outcomes visible alongside the current run without adding delivery credit', async () => {
+  const value = projection();
+  value.tests = [
+    { id: 'failed', card_id: 'test-card', scenario_id: 'scenario', result: 'failed', current_verified_run: false },
+    { id: 'passed', card_id: 'test-card', scenario_id: 'scenario', result: 'passed', current_verified_run: true },
+    { id: 'foreign', card_id: 'another', scenario_id: 'other-card-scenario', result: 'failed', current_verified_run: true },
+  ];
+  api.getDeliveryEvidence.mockResolvedValue(value);
+  render(<CardDeliveryDoDPanel boardId="b" card={{ id: 'test-card', card_type: 'test', spec_id: 's' }} />);
+  expect(await screen.findByRole('region', { name: 'Recorded test outcomes' })).toBeInTheDocument();
+  expect(screen.getByText('failed', { selector: 'summary span' })).toBeInTheDocument();
+  expect(screen.getByText('passed', { selector: 'summary span' })).toBeInTheDocument();
+  const rows = screen.getAllByText('scenario').filter(element => element.closest('summary'));
+  expect(rows).toHaveLength(2);
+  for (const row of rows) {
+    expect(row.closest('details')).not.toHaveAttribute('open');
+    fireEvent.click(row.closest('summary')!);
+    expect(row.closest('details')).toHaveAttribute('open');
+  }
+  expect(screen.getByText('Outside the current authenticated run')).toBeInTheDocument();
+  expect(screen.getByText('Current authenticated run')).toBeInTheDocument();
+  expect(screen.queryByText(/other-card-scenario/)).not.toBeInTheDocument();
+  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
+});
+
+it('explains an empty Test delivery and keeps checkpoints secondary', async () => {
+  const value = projection();
+  value.implementations = [];
+  value.per_card![0].card_type = 'test';
+  value.per_card![0].status = 'not_started';
+  api.getDeliveryEvidence.mockResolvedValue(value);
+  const onOpenTests = vi.fn();
+  render(<CardDeliveryDoDPanel boardId="b" card={{ ...CARD, card_type: 'test' }} canTest onOpenTests={onOpenTests} />);
+  expect(await screen.findByRole('heading', { name: 'Evidence of test execution' })).toBeInTheDocument();
+  expect(screen.getByText('No test evidence recorded yet')).toBeInTheDocument();
+  expect(screen.getByText(/Start by executing a scenario/)).toBeInTheDocument();
+  expect(screen.getByText('Progress & recovery').closest('details')).not.toHaveAttribute('open');
+  fireEvent.click(screen.getByRole('button', { name: 'Record test evidence' }));
+  expect(screen.getByText(/No authenticated runs available/)).toBeInTheDocument();
+  expect(screen.getByRole('combobox', { name: /Authenticated run/ })).toBeDisabled();
+  expect(screen.getByText(/This card is not started/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Open Tests' }));
+  expect(onOpenTests).toHaveBeenCalledOnce();
+  expect(screen.getByText(/No implementation evidence is ready/)).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Record delivery evidence' })).toBeDisabled();
+  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
+});
+
+it('loads a newly eligible run after refresh, without listing foreign cards runs', async () => {
+  const value = projection();
+  api.getDeliveryEvidence.mockResolvedValueOnce(value);
+  render(<CardDeliveryDoDPanel boardId="b" card={{ ...CARD, card_type: 'test' }} canTest />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Record test evidence' }));
+  expect(screen.getByRole('combobox', { name: /Authenticated run/ })).toBeDisabled();
+  api.getDeliveryEvidence.mockResolvedValue({ ...value, candidates: [
+    { kind: 'test', id: 'scenario', card_id: 'task-1', label: 'Verified capacity run · passed' },
+    { kind: 'test', id: 'foreign', card_id: 'another-card', label: 'Foreign run' },
+  ] });
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh evidence' }));
+  const review = await screen.findByRole('button', { name: 'Review latest evidence for this draft' });
+  await waitFor(() => expect(review).toBeEnabled());
+  fireEvent.click(review);
+  expect(await screen.findByRole('option', { name: 'Verified capacity run · passed' })).toBeInTheDocument();
+  expect(screen.getByRole('combobox', { name: /Authenticated run/ })).toBeEnabled();
+  expect(screen.queryByRole('option', { name: 'Foreign run' })).not.toBeInTheDocument();
+});
+
+it('uses the pulse loader and preserves a failed read instead of presenting empty results', async () => {
+  api.getDeliveryEvidence.mockRejectedValue(new Error('Evidence unavailable'));
+  render(<CardDeliveryDoDPanel boardId="b" card={{ ...CARD, card_type: 'test' }} />);
+  expect(screen.getByRole('status', { name: 'Loading delivery evidence…' })).toBeInTheDocument();
+  expect(await screen.findByRole('alert')).toHaveTextContent('Evidence unavailable');
+  expect(screen.queryByText('No test evidence recorded yet')).not.toBeInTheDocument();
+});
+
+it('shows recorded explanations without substituting another cards evidence', async () => {
+  const value = projection();
+  value.tests = [{ id: 'proof', card_id: 'task-1', scenario_id: 'scenario-1', result: 'failed', current_verified_run: true }];
+  value.candidates = [{ kind: 'test', id: 'scenario-1', card_id: 'task-1', label: 'Capacity boundary', card_version: 4 }];
+  value.records = [{ id: 'proof', kind: 'test', actor_id: 'reviewer', created_at: '2026-10-09', revoked: false, payload: { justification: 'Capacity exceeded the configured limit.' } }];
+  api.getDeliveryEvidence.mockResolvedValue(value);
+  render(<CardDeliveryDoDPanel boardId="b" card={{ ...CARD, card_type: 'test' }} />);
+  const label = await screen.findByText('Capacity boundary');
+  fireEvent.click(label.closest('summary')!);
+  expect(screen.getByText('Capacity exceeded the configured limit.')).toBeVisible();
+  expect(screen.getByText('reviewer')).toBeVisible();
+  expect(screen.getByText('1 recorded · 1 current')).toBeInTheDocument();
+  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
+});
+
+it.each([true, false])('shows submitted impact currentness=%s independently of delivery credit', async current => {
+  const result = projection();
+  result.per_card![0].report_impact = { source: 'accumulated', current, reason: current ? null : 'known_source_changed' };
+  api.getDeliveryEvidence.mockResolvedValue(result);
+  render(<CardDeliveryDoDPanel boardId="b" card={CARD} />);
+  expect(await screen.findByText(current ? 'Submitted impact matches the known source bases.' : 'Submitted impact needs a new current basis before required impact validation can pass.')).toBeInTheDocument();
+  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
+});
+
+it('loads accumulated impact for this card without changing its delivery verdict', async () => {
+  const result = projection();
+  result.per_card![0].accumulated_impact = {
+    contract_version: 'delivery-net-impact/v1', status: 'needs_reconciliation', claim_only: true,
+    history_count: 1, sources: [], issues: [{ source_ref: null, code: 'source_unknown', record_ids: ['progress'] }],
+    issue_count: 1, issues_truncated: false,
+  };
+  api.getDeliveryEvidence.mockResolvedValue(result);
+  render(<CardDeliveryDoDPanel boardId="b" card={CARD} />);
+  expect(await screen.findByRole('region', { name: 'Accumulated impact claims' })).toBeInTheDocument();
+  expect(screen.getByText('Identify the source of this declaration.')).toBeInTheDocument();
+  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
+});
+
+it('renders the DoD obligations name-first with per-obligation proof state', async () => {
+  render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord />);
+  expect(await screen.findByText('Bindings live on the card ledger')).toBeTruthy();
+  expect(screen.getByText('(fr_3a9f)')).toBeTruthy();
+  expect(screen.getByText('✓ Implementation')).toBeTruthy();
+  expect(screen.getAllByText('Done is rejected without proof').length).toBeGreaterThan(0);
+  expect(screen.getByText('◌ No accepted proof')).toBeTruthy();
+});
+
+it('shows the gate pill with the unproven count', async () => {
+  render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord />);
+  const pill = await screen.findByTestId('dod-gate-pill');
+  expect(pill.textContent).toContain('Blocking');
+  expect(pill.textContent).toContain('1 of 2 unproven');
+});
+
+it('shows the blocked banner naming the unproven obligation', async () => {
+  render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord />);
+  const banner = await screen.findByTestId('dod-blocked-banner');
+  expect(banner.textContent).toContain('delivery_evidence_incomplete');
+  expect(banner.textContent).toContain('Done is rejected without proof');
+});
+
+it('stages a complete contribution without persisting proof or a waiver', async () => {
+  const value = projection(); Object.assign(value.per_card![0], { card_version: 4, delivery_revision: 3 });
+  api.getDeliveryEvidence.mockResolvedValue(value);
+  const onStage = vi.fn();
+  render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord canWaiver onStage={onStage} />);
+  expect(screen.queryByText('Request Waiver (human)')).not.toBeInTheDocument();
+  fireEvent.click(await screen.findByTestId('dod-record-button'));
+  fireEvent.click(screen.getByLabelText('Select ac:ac_77ce'));
+  fireEvent.click(screen.getByLabelText('Complete contribution for ac:ac_77ce'));
+  fireEvent.change(screen.getByRole('combobox'), { target: { value: 'task-1:execution-1' } });
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Gate implementation completed.' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Add evidence to report draft' }));
+  await waitFor(() => expect(onStage).toHaveBeenCalledOnce());
+  expect(onStage.mock.calls[0][0]).toMatchObject({ expected_card_version: 4, expected_spec_edition: 2, expected_delivery_revision: 3,
+    entries: [{ kind: 'implementation', execution_id: 'execution-1', bindings: [{ obligation_ref: 'ac:ac_77ce', contribution: 'complete' }] }] });
+  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled(); expect(api.recordDeliveryEvidence).not.toHaveBeenCalled();
+});
+
+it('records implementation proof through the card-scoped surface with the card CAS', async () => {
+  render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord />);
+  fireEvent.click(await screen.findByTestId('dod-record-button'));
+  fireEvent.click(screen.getByLabelText('Select ac:ac_77ce'));
+  fireEvent.change(screen.getByRole('combobox'), { target: { value: 'task-1:execution-1' } });
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Execution receipt covers the gate behavior.' } });
+  fireEvent.click(screen.getByRole('button', { name: /Record delivery evidence/ }));
+  await waitFor(() => expect(api.recordCardDeliveryEvidence).toHaveBeenCalledTimes(1));
+  expect(api.recordCardDeliveryEvidence.mock.calls[0]).toEqual([
+    'b', 'task-1', 's',
+    expect.objectContaining({
+      kind: 'implementation', execution_id: 'execution-1',
+      expected_card_version: 4, expected_spec_edition: 2,
+      obligation_refs: [],
+      bindings: [{ obligation_ref: 'ac:ac_77ce', contribution: 'partial' }],
+    }),
+  ]);
+  expect(api.recordDeliveryEvidence).not.toHaveBeenCalled();
+});
+
+it('declares complete separately from partial for two obligations', async () => {
+  render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord />);
+  fireEvent.click(await screen.findByTestId('dod-record-button'));
+  fireEvent.click(screen.getByLabelText('Select fr:fr_3a9f'));
+  fireEvent.click(screen.getByLabelText('Select ac:ac_77ce'));
+  fireEvent.click(screen.getByLabelText('Complete contribution for ac:ac_77ce'));
+  fireEvent.change(screen.getByRole('combobox'), { target: { value: 'task-1:execution-1' } });
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Gate complete, other work remains.' } });
+  fireEvent.click(screen.getByRole('button', { name: /Record delivery evidence/ }));
+  await waitFor(() => expect(api.recordCardDeliveryEvidence).toHaveBeenCalledTimes(1));
+  expect(api.recordCardDeliveryEvidence.mock.calls[0][3].bindings).toEqual([
+    { obligation_ref: 'fr:fr_3a9f', contribution: 'partial' },
+    { obligation_ref: 'ac:ac_77ce', contribution: 'complete' },
+  ]);
+});
+
+it('shows a partial receipt after reload without marking implementation complete', async () => {
+  const value = projection();
+  value.per_card![0].obligations[0].implementation_satisfied = false;
+  value.implementations[0].ready_obligation_refs = [];
+  value.implementations[0].contributions = [{ binding: { obligation_ref: 'fr:fr_3a9f', semantic_sha256: 'a'.repeat(64) }, contribution: 'partial', execution_ids: ['execution-1'] }];
+  api.getDeliveryEvidence.mockResolvedValue(value);
+  render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord />);
+  expect(await screen.findByText('◌ Partial contribution')).toBeTruthy();
+  expect(screen.queryByText('✓ Implementation')).toBeNull();
+  expect(screen.getByTestId('dod-gate-pill').textContent).toContain('2 of 2 unproven');
+});
+
+it('names exact receipt sets per obligation without a Cartesian assignment', async () => {
+  const value = projection();
+  value.candidates.push({ kind: 'implementation', id: 'execution-3', card_id: 'task-1', card_version: 4, label: 'src/other.py @ rev' });
+  api.getDeliveryEvidence.mockResolvedValue(value);
+  render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord />);
+  fireEvent.click(await screen.findByTestId('dod-record-button'));
+  fireEvent.click(screen.getByLabelText('Select receipts separately for each obligation'));
+  fireEvent.click(screen.getByLabelText('Select fr:fr_3a9f'));
+  fireEvent.click(screen.getByLabelText('Select ac:ac_77ce'));
+  fireEvent.click(screen.getByLabelText('Complete contribution for fr:fr_3a9f'));
+  fireEvent.click(screen.getByLabelText('Receipt execution-1 for fr:fr_3a9f'));
+  fireEvent.click(screen.getByLabelText('Receipt execution-3 for fr:fr_3a9f'));
+  expect(screen.queryByLabelText('Receipt execution-2 for fr:fr_3a9f')).toBeNull();
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Complete parser, partial gate.' } });
+  expect((screen.getByRole('button', { name: /Record delivery evidence/ }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByLabelText('Receipt execution-3 for ac:ac_77ce'));
+  fireEvent.click(screen.getByRole('button', { name: /Record delivery evidence/ }));
+  await waitFor(() => expect(api.recordCardDeliveryEvidence).toHaveBeenCalledTimes(1));
+  const sent = api.recordCardDeliveryEvidence.mock.calls[0][3];
+  expect(sent.execution_id).toBeUndefined();
+  expect(sent.expected_card_version).toBe(4);
+  expect(sent.bindings).toEqual([
+    { obligation_ref: 'fr:fr_3a9f', contribution: 'complete', execution_refs: [{ execution_id: 'execution-1' }, { execution_id: 'execution-3' }] },
+    { obligation_ref: 'ac:ac_77ce', contribution: 'partial', execution_refs: [{ execution_id: 'execution-3' }] },
+  ]);
+});
+
+it('uses server readiness per binding when another receipt in the record is stale', async () => {
+  const value = projection();
+  value.per_card![0].obligations.forEach(obligation => { obligation.implementation_satisfied = false; });
+  value.implementations[0] = { ...value.implementations[0],
+    executions: [{ ...value.implementations[0].executions[0], current_accepted_execution: false }],
+    admitted_obligation_refs: ['ac:ac_77ce'], ready_obligation_refs: ['ac:ac_77ce'],
+    bindings: [{ obligation_ref: 'fr:fr_3a9f', semantic_sha256: 'a'.repeat(64) }, { obligation_ref: 'ac:ac_77ce', semantic_sha256: 'b'.repeat(64) }],
+    contributions: [
+      { binding: { obligation_ref: 'fr:fr_3a9f', semantic_sha256: 'a'.repeat(64) }, contribution: 'complete', execution_ids: ['execution-1'] },
+      { binding: { obligation_ref: 'ac:ac_77ce', semantic_sha256: 'b'.repeat(64) }, contribution: 'complete', execution_ids: ['execution-2'] },
+    ],
+  };
+  api.getDeliveryEvidence.mockResolvedValue(value);
+  render(<CardDeliveryDoDPanel boardId="b" card={CARD} />);
+  const obligations = await screen.findByTestId('dod-obligations');
+  expect(within(obligations).getByText('Bindings live on the card ledger')).toBeTruthy();
+  const items = obligations.querySelectorAll('li');
+  expect(items[0].textContent).toContain('No accepted proof');
+  expect(items[1].textContent).toContain('✓ Implementation');
+});
+
+it('offers only this card receipts as accepted proof', async () => {
+  render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord />);
+  fireEvent.click(await screen.findByTestId('dod-record-button'));
+  const options = screen.getAllByRole('option') as HTMLOptionElement[];
+  expect(options.some(o => o.value === 'task-1:execution-1')).toBeTruthy();
+  expect(options.some(o => o.value.includes('execution-2'))).toBeFalsy();
+});
+
+it('routes a human waiver to the native Spec exception surface, never the card ledger', async () => {
+  render(<CardDeliveryDoDPanel boardId="b" card={CARD} canWaiver />);
+  fireEvent.click(await screen.findByText('Request Waiver (human)'));
+  fireEvent.click(screen.getByLabelText('Select ac:ac_77ce'));
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Not testable in this lane.' } });
+  fireEvent.click(screen.getByRole('button', { name: /Record waiver/ }));
+  await waitFor(() => expect(api.recordDeliveryEvidence).toHaveBeenCalledTimes(1));
+  expect(api.recordDeliveryEvidence.mock.calls[0]).toEqual([
+    'b', 's', expect.objectContaining({ kind: 'waiver', phase: 'implementation', obligation_refs: ['ac:ac_77ce'] }),
+  ]);
+  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
+});
+
+it('hides recording controls when the actor lacks the permissions', async () => {
+  render(<CardDeliveryDoDPanel boardId="b" card={CARD} />);
+  await screen.findByText('Bindings live on the card ledger');
+  expect(screen.queryByTestId('dod-record-button')).toBeNull();
+  expect(screen.queryByText('Request Waiver (human)')).toBeNull();
+});
+
+it.each([['passed', false], ['failed', false], ['passed', true], ['failed', true]] as const)('test cards record authenticated %s runs during execution, staged=%s', async (result, staged) => {
+  const p = projection();
+  p.per_card = [{ card_id: 'task-1', title: 'TEST-21', card_type: 'test', status: 'in_progress', card_version: 2, delivery_revision: 5, satisfied: false, obligations: [] }];
+  p.rows = [{ obligation: { title: 'Done is rejected without proof', binding: { obligation_ref: 'ac:ac_77ce', semantic_sha256: 'c'.repeat(64) } }, implementation_ids: [], test_ids: [], implementation_waiver_ids: [], test_waiver_ids: [], implementation_satisfied: true, test_satisfied: false }];
+  p.candidates = [{ kind: 'test', id: 'scenario-9', card_id: 'task-1', card_version: 2, label: `DoD rejection scenario · ${result}` }];
+  api.getDeliveryEvidence.mockResolvedValue(p);
+  const onStage = vi.fn();
+  render(<CardDeliveryDoDPanel boardId="b" card={{ id: 'task-1', card_type: 'test', spec_id: 's' }} canTest onStage={staged ? onStage : undefined} />);
+  fireEvent.click(await screen.findByTestId('dod-record-button'));
+  fireEvent.click(screen.getByLabelText('Select ac:ac_77ce'));
+  fireEvent.change(screen.getByRole('combobox'), { target: { value: 'task-1:scenario-9' } });
+  fireEvent.click(screen.getByRole('checkbox', { name: /card_delivery_abc111/ }));
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: `Authenticated ${result} run.` } });
+  fireEvent.click(screen.getByRole('button', { name: staged ? 'Add evidence to report draft' : 'Record delivery evidence' }));
+  await waitFor(() => expect(staged ? onStage : api.recordCardDeliveryEvidence).toHaveBeenCalledTimes(1));
+  const sent = staged ? onStage.mock.calls[0][0].entries[0] : api.recordCardDeliveryEvidence.mock.calls[0][3];
+  expect(sent).toMatchObject({
+    kind: 'test', scenario_id: 'scenario-9', implementation_ids: ['card_delivery_abc111'],
+  });
+  expect(sent).not.toHaveProperty('test_result');
+  if (staged) expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
+});
+
+it.each([null, 'off'])('does not invent a gate mode for incompatible policy %j', async (mode) => {
+  api.getBoard.mockResolvedValue({ settings: { delivery_evidence_gate: mode } });
+  render(<CardDeliveryDoDPanel boardId="b" card={CARD} />);
+  expect(await screen.findByText(/Unknown/)).toBeInTheDocument();
+  await waitFor(() => expect(api.getDeliveryEvidence).toHaveBeenCalled());
+  expect(screen.queryByText(/Gate: Blocking/)).not.toBeInTheDocument();
+});
+
+it('clears the previous gate mode when a different Board cannot be read', async () => {
+  api.getBoard.mockResolvedValueOnce({ settings: { delivery_evidence_gate: 'advisory' } });
+  const view = render(<CardDeliveryDoDPanel boardId="b" card={CARD} />);
+  expect(await screen.findByText(/Advisory/)).toBeInTheDocument();
+  api.getBoard.mockRejectedValueOnce(new Error('Board unavailable'));
+  view.rerender(<CardDeliveryDoDPanel boardId="other" card={CARD} />);
+  await waitFor(() => expect(api.getBoard).toHaveBeenLastCalledWith('other'));
+  expect(await screen.findByText(/Unknown/)).toBeInTheDocument();
+  expect(screen.queryByText(/Advisory/)).not.toBeInTheDocument();
+});
+
+
+it('does not apply the implementation DoD presentation to a Test Card with inherited obligations', async () => {
+  const value = projection();
+  value.per_card![0].card_type = 'test';
+  api.getDeliveryEvidence.mockResolvedValue(value);
+  render(<CardDeliveryDoDPanel boardId="b" card={{ ...CARD, card_type: 'test' }} canTest />);
+  expect(await screen.findByText(/Test Cards are excluded from the implementation DoD gate/)).toBeInTheDocument();
+  expect(screen.queryByTestId('dod-gate-pill')).not.toBeInTheDocument();
+  expect(screen.queryByTestId('dod-obligations')).not.toBeInTheDocument();
+  expect(screen.queryByTestId('dod-blocked-banner')).not.toBeInTheDocument();
+  expect(screen.getByTestId('dod-record-button')).toBeInTheDocument();
+  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
+});
+
+async function fillRecordingDraft() {
+  fireEvent.click(await screen.findByTestId('dod-record-button'));
+  fireEvent.click(screen.getByLabelText('Select ac:ac_77ce'));
+  fireEvent.change(screen.getByRole('combobox'), { target: { value: 'task-1:execution-1' } });
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Preserved explanation' } });
+}
+
+it('preserves a delivery draft and adopts new CAS values only after explicit review', async () => {
+  const initial = projection();
+  Object.assign(initial.per_card![0], { card_version: 4, delivery_revision: 3 });
+  api.getDeliveryEvidence.mockResolvedValue(initial);
+  const onStage = vi.fn();
+  const view = render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord revision={0} onStage={onStage} />);
+  await fillRecordingDraft();
+  const current = projection();
+  current.edition = 3;
+  Object.assign(current.per_card![0], { card_version: 7, delivery_revision: 5 });
+  current.candidates[0].card_version = 7;
+  api.getDeliveryEvidence.mockResolvedValue(current);
+  view.rerender(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord revision={1} onStage={onStage} />);
+  const review = await screen.findByRole('button', { name: 'Review latest evidence for this draft' });
+  await waitFor(() => expect(review).toBeEnabled());
+  expect(screen.getByRole('textbox')).toHaveValue('Preserved explanation');
+  expect(screen.getByLabelText('Select ac:ac_77ce')).toBeChecked();
+  const submit = screen.getByRole('button', { name: 'Add evidence to report draft' });
+  expect(submit).toBeDisabled();
+  fireEvent.submit(screen.getByTestId('dod-record-form'));
+  expect(onStage).not.toHaveBeenCalled();
+  fireEvent.click(review);
+  expect(onStage).not.toHaveBeenCalled();
+  fireEvent.click(submit);
+  await waitFor(() => expect(onStage).toHaveBeenCalledOnce());
+  expect(onStage.mock.calls[0][0]).toMatchObject({ expected_card_version: 7, expected_spec_edition: 3, expected_delivery_revision: 5,
+    entries: [{ justification: 'Preserved explanation', execution_id: 'execution-1' }] });
+});
+
+it('blocks recording after a failed refresh and retains selections through retry', async () => {
+  const view = render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord revision={0} />);
+  await fillRecordingDraft();
+  api.getDeliveryEvidence.mockRejectedValueOnce(new Error('Refresh failed'));
+  view.rerender(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord revision={1} />);
+  expect(await screen.findByText('Refresh failed')).toBeInTheDocument();
+  const submit = screen.getByRole('button', { name: 'Record delivery evidence' });
+  expect(submit).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Review latest evidence for this draft' })).toBeDisabled();
+  expect(screen.getByRole('textbox')).toHaveValue('Preserved explanation');
+  fireEvent.submit(screen.getByTestId('dod-record-form'));
+  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Retry evidence' }));
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Review latest evidence for this draft' })).toBeEnabled());
+  fireEvent.click(screen.getByRole('button', { name: 'Review latest evidence for this draft' }));
+  expect(screen.getByRole('textbox')).toHaveValue('Preserved explanation');
+  fireEvent.click(submit);
+  await waitFor(() => expect(api.recordCardDeliveryEvidence).toHaveBeenCalledOnce());
+});
+
+it('does not retain a selected receipt as admissible after it disappears on review', async () => {
+  const view = render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord revision={0} />);
+  await fillRecordingDraft();
+  api.getDeliveryEvidence.mockResolvedValue({ ...projection(), candidates: [] });
+  view.rerender(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord revision={1} />);
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Review latest evidence for this draft' })).toBeEnabled());
+  fireEvent.click(screen.getByRole('button', { name: 'Review latest evidence for this draft' }));
+  expect(screen.getByText(/Some selected obligations or receipts are no longer available/)).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Record delivery evidence' })).toBeDisabled();
+  fireEvent.submit(screen.getByTestId('dod-record-form'));
+  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
+});
+
+it('ignores an older pending projection after the current revision has loaded', async () => {
+  let resolveOld!: (value: DeliveryEvidenceProjection) => void;
+  api.getDeliveryEvidence.mockReturnValueOnce(new Promise<DeliveryEvidenceProjection>(resolve => { resolveOld = resolve; }));
+  const view = render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord revision={0} />);
+  const current = projection(); current.per_card![0].obligations[0].title = 'Current obligation';
+  api.getDeliveryEvidence.mockResolvedValue(current);
+  view.rerender(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord revision={1} />);
+  expect(await screen.findByText('Current obligation')).toBeVisible();
+  await act(async () => resolveOld(projection()));
+  expect(screen.getByText('Current obligation')).toBeVisible();
+  expect(screen.queryByText('Bindings live on the card ledger')).not.toBeInTheDocument();
+});
+
+it('retries a failed submission with its original receipt key and without requiring a new read', async () => {
+  api.recordCardDeliveryEvidence.mockRejectedValueOnce(new Error('Write interrupted'));
+  render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord />);
+  await fillRecordingDraft();
+  fireEvent.click(screen.getByRole('button', { name: 'Record delivery evidence' }));
+  expect(await screen.findByText('Write interrupted')).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Retry evidence' })).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Record delivery evidence' })).toBeEnabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Record delivery evidence' }));
+  await waitFor(() => expect(api.recordCardDeliveryEvidence).toHaveBeenCalledTimes(2));
+  expect(api.recordCardDeliveryEvidence.mock.calls[1][3]).toEqual(api.recordCardDeliveryEvidence.mock.calls[0][3]);
+});
+
+it('defers both delivery and readiness reads while hidden, then refreshes without losing the draft', async () => {
+  const view = render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord active={false} revision={0} />);
+  expect(api.getDeliveryEvidence).not.toHaveBeenCalled();
+  expect(api.getDeliveryReadiness).not.toHaveBeenCalled();
+  view.rerender(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord revision={0} />);
+  await fillRecordingDraft();
+  const reads = api.getDeliveryEvidence.mock.calls.length;
+  const readinessReads = api.getDeliveryReadiness.mock.calls.length;
+  view.rerender(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord active={false} revision={1} />);
+  fireEvent(window, new Event('pulse:delivery-evidence-changed'));
+  expect(api.getDeliveryEvidence).toHaveBeenCalledTimes(reads);
+  expect(api.getDeliveryReadiness).toHaveBeenCalledTimes(readinessReads);
+  view.rerender(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord revision={1} />);
+  await waitFor(() => expect(api.getDeliveryEvidence).toHaveBeenCalledTimes(reads + 1));
+  await waitFor(() => expect(api.getDeliveryReadiness).toHaveBeenCalledTimes(readinessReads + 1));
+  expect(screen.getByRole('textbox')).toHaveValue('Preserved explanation');
+  expect(screen.getByRole('button', { name: 'Record delivery evidence' })).toBeDisabled();
+  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
+});
+
+it('does not require another review just for returning to unchanged delivery evidence', async () => {
+  const view = render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord revision={0} />);
+  await fillRecordingDraft();
+  view.rerender(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord revision={0} active={false} />);
+  api.getDeliveryEvidence.mockResolvedValue(projection());
+  view.rerender(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord revision={0} />);
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Record delivery evidence' })).toBeEnabled());
+  expect(screen.getByRole('textbox')).toHaveValue('Preserved explanation');
+  expect(screen.queryByRole('button', { name: 'Review latest evidence for this draft' })).not.toBeInTheDocument();
+  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
+});

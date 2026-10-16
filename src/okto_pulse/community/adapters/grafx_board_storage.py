@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import secrets
 import stat
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -30,6 +32,7 @@ from okto_pulse.community.adapters.filesystem_erasure import (
 from okto_pulse.community.adapters.graph_backend_binding import (
     CommunityGraphBackendBindingStore,
 )
+from okto_pulse.community.adapters.filesystem_observation import FilesystemObservationBudget
 from okto_pulse.community.adapters.local_storage_ref import (
     local_storage_ref,
     resolve_local_storage_ref,
@@ -110,7 +113,7 @@ def _revalidate_privacy_scope(scope: GrafxBoardPrivacyScope) -> None:
         raise ValueError("Grafx board privacy scope changed")
 
 
-def _binding_artifacts(scope: GrafxBoardPrivacyScope) -> tuple[Path, ...]:
+def _binding_artifacts(scope: GrafxBoardPrivacyScope, *, observation: FilesystemObservationBudget | None = None) -> tuple[Path, ...]:
     """Return only Foundation-owned binding state, with the binding last."""
 
     _revalidate_privacy_scope(scope)
@@ -125,7 +128,7 @@ def _binding_artifacts(scope: GrafxBoardPrivacyScope) -> tuple[Path, ...]:
         sorted(
             (
                 child
-                for child in scope.board_root.iterdir()
+                for child in (observation.children(scope.board_root) if observation else scope.board_root.iterdir())
                 if child.name == f"{_BINDING_FILENAME}.lock"
                 or (
                     child.name.startswith(temporary_prefix)
@@ -142,7 +145,7 @@ def _binding_artifacts(scope: GrafxBoardPrivacyScope) -> tuple[Path, ...]:
     return (*residues, scope.binding_path)
 
 
-def grafx_board_privacy_storage_present(scope: GrafxBoardPrivacyScope) -> bool:
+def grafx_board_privacy_storage_present(scope: GrafxBoardPrivacyScope, *, observation: FilesystemObservationBudget | None = None) -> bool:
     """Observe all canonical Grafx generations and binding artifacts."""
 
     _revalidate_privacy_scope(scope)
@@ -153,18 +156,14 @@ def grafx_board_privacy_storage_present(scope: GrafxBoardPrivacyScope) -> bool:
     else:
         return True
     return bool(
-        _binding_artifacts(scope)
-        or _privacy_directory_quarantine_artifacts(scope)
-        or _retired_board_artifacts(scope)
+        _binding_artifacts(scope, observation=observation)
+        or _privacy_directory_quarantine_artifacts(scope, observation=observation)
+        or _retired_board_artifacts(scope, observation=observation)
     )
 
 
-def _retired_board_artifacts(scope: GrafxBoardPrivacyScope) -> tuple[Path, ...]:
-    """Opaque historical files, touched only by explicit privacy erasure.
-
-    No retired driver is opened. Preserve the original board-owned namespace
-    and preflight every alias before the first deletion, including sidecars.
-    """
+def _retired_board_artifacts(scope: GrafxBoardPrivacyScope, *, observation: FilesystemObservationBudget | None = None) -> tuple[Path, ...]:
+    """Observe incompatible storage opaquely so it cannot be treated as absent."""
     reject_filesystem_alias_ancestry(scope.board_root)
     if not scope.board_root.exists():
         return ()
@@ -172,8 +171,8 @@ def _retired_board_artifacts(scope: GrafxBoardPrivacyScope) -> tuple[Path, ...]:
         sorted(
             (
                 path
-                for path in scope.board_root.iterdir()
-                if path.name == "graph.lbug" or path.name.startswith("graph.lbug.")
+                for path in (observation.children(scope.board_root) if observation else scope.board_root.iterdir())
+                if path.name in {"graph.lbug", "rollout"} or path.name.startswith("graph.lbug.")
             ),
             key=lambda path: path.name,
         )
@@ -186,6 +185,7 @@ def _retired_board_artifacts(scope: GrafxBoardPrivacyScope) -> tuple[Path, ...]:
 
 def _privacy_directory_quarantine_artifacts(
     scope: GrafxBoardPrivacyScope,
+    *, observation: FilesystemObservationBudget | None = None,
 ) -> tuple[Path, ...]:
     """Find authenticated complete-generation snapshots owned by one board."""
 
@@ -198,7 +198,8 @@ def _privacy_directory_quarantine_artifacts(
     if is_filesystem_alias(quarantine_root) or not stat.S_ISDIR(metadata.st_mode):
         raise ValueError("Grafx quarantine root alias refused during privacy erase")
     matches: list[Path] = []
-    for entry in sorted(quarantine_root.iterdir(), key=lambda item: item.name):
+    children = observation.children(quarantine_root) if observation else quarantine_root.iterdir()
+    for entry in sorted(children, key=lambda item: item.name):
         name = entry.name
         if not (
             name.startswith("grafx-board-")
@@ -211,7 +212,7 @@ def _privacy_directory_quarantine_artifacts(
         details = entry.lstat()
         if is_filesystem_alias(entry) or not stat.S_ISDIR(details.st_mode):
             raise ValueError("Grafx directory quarantine alias refused")
-        manifest = _read_directory_manifest(entry / _DIRECTORY_MANIFEST_FILENAME)
+        manifest = _read_directory_manifest(entry / _DIRECTORY_MANIFEST_FILENAME, observation=observation)
         if (
             manifest.get("format") != GRAFX_DIRECTORY_QUARANTINE_FORMAT
             or manifest.get("kind") != GRAFX_DIRECTORY_QUARANTINE_KIND
@@ -240,7 +241,8 @@ def erase_grafx_board_privacy_storage(
 
     _revalidate_privacy_scope(scope)
     quarantine_artifacts = _privacy_directory_quarantine_artifacts(scope)
-    retired_artifacts = _retired_board_artifacts(scope)
+    if _retired_board_artifacts(scope):
+        raise ValueError("graph_storage_format_incompatible")
     removed = 0
     files, directories = remove_contained_tree(
         scope.grafx_root,
@@ -248,14 +250,6 @@ def erase_grafx_board_privacy_storage(
         before_mutation=before_mutation,
     )
     removed += files + directories
-
-    for artifact in retired_artifacts:
-        files, directories = remove_contained_tree(
-            artifact,
-            base_dir=scope.board_root,
-            before_mutation=before_mutation,
-        )
-        removed += files + directories
 
     for artifact in quarantine_artifacts:
         files, directories = remove_contained_tree(
@@ -299,7 +293,7 @@ def grafx_board_storage_ref(board_id: str) -> StorageRef:
     return StorageRef(f"board:{board_id}", "community_local_graph")
 
 
-def storage_residues(path: Path) -> tuple[Path, ...]:
+def storage_residues(path: Path, *, observation: FilesystemObservationBudget | None = None) -> tuple[Path, ...]:
     """Return exact sibling artifacts owned by one absent primary path."""
 
     try:
@@ -307,7 +301,7 @@ def storage_residues(path: Path) -> tuple[Path, ...]:
             sorted(
                 (
                     child
-                    for child in path.parent.iterdir()
+                    for child in (observation.children(path.parent) if observation else path.parent.iterdir())
                     if child.name.startswith(f"{path.name}.")
                 ),
                 key=lambda child: child.name,
@@ -476,7 +470,7 @@ def _write_directory_json_atomic(path: Path, payload: dict[str, object]) -> None
             pass
 
 
-def _read_directory_manifest(path: Path) -> dict[str, object]:
+def _read_directory_manifest(path: Path, *, observation: FilesystemObservationBudget | None = None) -> dict[str, object]:
     reject_filesystem_alias_ancestry(path.parent)
     details = path.lstat()
     if (
@@ -498,7 +492,8 @@ def _read_directory_manifest(path: Path) -> dict[str, object]:
         return result
 
     payload = json.loads(
-        path.read_text(encoding="utf-8"),
+        (observation.read_text(path, max_file_bytes=_MAX_DIRECTORY_MANIFEST_BYTES)
+         if observation else path.read_text(encoding="utf-8")),
         object_pairs_hook=duplicate_free_object,
     )
     if type(payload) is not dict:
@@ -994,20 +989,58 @@ def quarantine_grafx_board_storage(
     )
 
 
-def grafx_directory_size(path: Path) -> int:
-    """Measure a directory tree without following links or opening Grafx."""
+class GrafxDirectoryObservationLimit(OSError):
+    """A complete diagnostic measurement cannot fit its observation budget."""
 
-    def measure(candidate: Path) -> int:
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def grafx_directory_size(
+    path: Path, *, max_entries: int = 2000, max_depth: int = 32,
+    timeout_seconds: float = 0.35,
+) -> int:
+    """Measure Health footprint completely or refuse, without following links.
+
+    Bounds apply to visited directory entries, path depth and cooperative time
+    checks around metadata I/O. A blocked OS syscall cannot be preempted here.
+    This helper has no privacy/recovery caller and performs no maintenance.
+    """
+    if type(max_entries) is not int or not 1 <= max_entries <= 10000:
+        raise ValueError("invalid_footprint_entry_budget")
+    if type(max_depth) is not int or not 0 <= max_depth <= 64:
+        raise ValueError("invalid_footprint_depth_budget")
+    if (type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds)
+            or not 0 < timeout_seconds <= 5):
+        raise ValueError("invalid_footprint_timeout")
+    deadline = time.monotonic() + timeout_seconds
+    visited = 0
+
+    def check(depth: int) -> None:
+        if depth > max_depth:
+            raise GrafxDirectoryObservationLimit("observation_depth_limit")
+        if time.monotonic() >= deadline:
+            raise GrafxDirectoryObservationLimit("observation_timeout")
+
+    def measure(candidate: Path, depth: int) -> int:
+        nonlocal visited
+        check(depth)
         metadata = candidate.lstat()
         if is_filesystem_alias(candidate) or not stat.S_ISDIR(metadata.st_mode):
+            check(depth)
             return int(metadata.st_size)
         total = 0
         with os.scandir(candidate) as entries:
             for entry in entries:
-                total += measure(Path(entry.path))
+                visited += 1
+                if visited > max_entries:
+                    raise GrafxDirectoryObservationLimit("observation_entry_limit")
+                total += measure(Path(entry.path), depth + 1)
+        check(depth)
         return total
 
-    return measure(path)
+    return measure(path, 0)
 
 
 __all__ = [

@@ -15,7 +15,6 @@ from okto_pulse.community.adapters.sqlalchemy_database import (
 )
 from okto_pulse.community.adapters.sqlalchemy_models import (
     AmendmentHotfixRevision,
-    Base,
     Board,
     Card,
     Comment,
@@ -37,14 +36,258 @@ class _CanonicalBugReader:
         return self.result
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('finish', ['commit', 'rollback'])
+async def test_semantic_write_snapshot_serializes_related_evidence_until_caller_commit(tmp_path, finish):
+    from sqlalchemy import text, update
+    from sqlalchemy.exc import OperationalError
+    engine, factory = await _runtime(tmp_path / 'semantic-serialized.db')
+    graph = _CanonicalBugReader(fail=True)
+    assembler = CommunityBugCognitiveContextAssembler(graph)
+    from okto_pulse.core.ports.bug_cognitive_context import BugSemanticWriteSnapshotReader
+    assert isinstance(assembler, BugSemanticWriteSnapshotReader)
+    try:
+        await _seed_full_context(factory)
+        async with factory() as capture:
+            # A prior read must not make the writer boundary issue nested BEGIN.
+            held = await capture.get(Card, 'bug-context')
+            source = await assembler.assemble_semantic_for_write(
+                capture, board_id='board-bug-context', bug_id='bug-context')
+            assert source.verified and held.id == 'bug-context'
+            async with factory() as writer:
+                await writer.execute(text('PRAGMA busy_timeout=50'))
+                with pytest.raises(OperationalError, match='locked'):
+                    await writer.execute(update(Card).where(Card.id == 'regression-test').values(
+                        conclusions=[{'text': 'Concurrent evidence correction.'}]))
+                await writer.rollback()
+            same = await assembler.assemble_semantic(
+                capture, board_id='board-bug-context', bug_id='bug-context')
+            assert same.source_digest == source.source_digest
+            await getattr(capture, finish)()
+        async with factory() as writer:
+            await writer.execute(update(Card).where(Card.id == 'regression-test').values(
+                conclusions=[{'text': 'Concurrent evidence correction.'}]))
+            await writer.commit()
+        async with factory() as reader:
+            changed = await assembler.assemble_semantic(
+                reader, board_id='board-bug-context', bug_id='bug-context')
+            assert changed.source_digest != source.source_digest
+            assert changed.source_policy_version == source.source_policy_version
+        assert graph.calls == []
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('dialect,error', [
+    ('postgresql', 'bug_semantic_source_serialization_unsupported'),
+    ('sqlite', 'bug_semantic_source_serialization_failed'),
+])
+async def test_semantic_write_snapshot_has_no_unserialized_fallback(monkeypatch, dialect, error):
+    from types import SimpleNamespace
+    from sqlalchemy.exc import OperationalError
+    assembler = CommunityBugCognitiveContextAssembler(_CanonicalBugReader(fail=True))
+    async def forbidden(*args, **kwargs):
+        pytest.fail('source read must not run without serialization')
+    async def failed(*args, **kwargs):
+        raise OperationalError('writer fence', {}, RuntimeError('database is locked'))
+    context = SimpleNamespace(get_bind=lambda: SimpleNamespace(dialect=SimpleNamespace(name=dialect)), execute=failed)
+    monkeypatch.setattr(assembler, 'assemble_semantic', forbidden)
+    with pytest.raises(RuntimeError, match=error):
+        await assembler.assemble_semantic_for_write(context, board_id='board', bug_id='bug')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('model,identity,field,new_value', [
+    (Card, 'bug-context', 'policy_version', 12),
+    (Card, 'regression-test', 'conclusions', [{'text': 'Corrected test outcome.'}]),
+    (Spec, 'spec-bug-context', 'acceptance_criteria', [{'id': 'ac-about', 'text': 'Changed condition.'}]),
+    (Comment, 'comment-context', 'content', 'The earlier observation was retracted.'),
+    (AmendmentHotfixRevision, 'lineage-context', 'validation_metadata', {'verified': False}),
+])
+async def test_semantic_source_refreshes_preloaded_entities_after_external_commit(
+    tmp_path, model, identity, field, new_value,
+):
+    engine, factory = await _runtime(tmp_path / 'semantic-cached.db')
+    graph = _CanonicalBugReader(fail=True)
+    assembler = CommunityBugCognitiveContextAssembler(graph)
+    try:
+        await _seed_full_context(factory)
+        async with factory() as reader:
+            held = await reader.get(model, identity)
+            first = await assembler.assemble_semantic(reader, board_id='board-bug-context', bug_id='bug-context')
+            await reader.commit()  # End the SQL snapshot, retain ORM identity map.
+            async with factory() as writer:
+                changed = await writer.get(model, identity)
+                setattr(changed, field, new_value)
+                await writer.commit()
+            fresh = await assembler.assemble_semantic(reader, board_id='board-bug-context', bug_id='bug-context')
+            assert getattr(held, field) == new_value
+            assert fresh.source_digest != first.source_digest
+            assert fresh.verified and graph.calls == []
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_semantic_refresh_preserves_staged_content_without_committing_it(tmp_path):
+    engine, factory = await _runtime(tmp_path / 'semantic-pending.db')
+    assembler = CommunityBugCognitiveContextAssembler(_CanonicalBugReader(fail=True))
+    try:
+        await _seed_full_context(factory)
+        async with factory() as session:
+            bug = await session.get(Card, 'bug-context')
+            original = list(bug.conclusions)
+            bug.conclusions = [{'text': 'New conclusion submitted with the capture.'}]
+            source = await assembler.assemble_semantic(session, board_id='board-bug-context', bug_id='bug-context')
+            assert source.conclusions == ({'text': 'New conclusion submitted with the capture.'},)
+            assert source.verified
+            await session.rollback()
+        async with factory() as session:
+            stored = await session.get(Card, 'bug-context')
+            assert stored.conclusions == original
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_semantic_refresh_does_not_retain_a_deleted_cached_bug(tmp_path):
+    engine, factory = await _runtime(tmp_path / 'semantic-deleted.db')
+    assembler = CommunityBugCognitiveContextAssembler(_CanonicalBugReader(fail=True))
+    try:
+        await _seed_full_context(factory)
+        async with factory() as reader:
+            held = await reader.get(Card, 'bug-context')
+            await reader.commit()
+            async with factory() as writer:
+                await writer.delete(await writer.get(Card, 'bug-context'))
+                await writer.commit()
+            source = await assembler.assemble_semantic(reader, board_id='board-bug-context', bug_id='bug-context')
+            assert held.id == 'bug-context'  # Keep a strong reference to the stale object.
+            assert not source.card_exists and not source.verified
+            assert source.source_digest is None
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_semantic_source_snapshot_is_versioned_before_done_without_graph_io(tmp_path):
+    engine, session_factory = await _runtime(tmp_path / 'semantic-source.db')
+    graph = _CanonicalBugReader(fail=True)
+    try:
+        await _seed_full_context(session_factory)
+        async with session_factory() as session:
+            card = await session.get(Card, 'bug-context')
+            card.status = 'in_progress'
+            card.policy_version = 7
+            await session.commit()
+        async with session_factory() as session:
+            source = await CommunityBugCognitiveContextAssembler(graph).assemble_semantic(
+                session, board_id='board-bug-context', bug_id='bug-context')
+        assert source.card_exists and source.verified
+        assert source.status == 'in_progress'
+        assert source.source_policy_version == 7
+        assert len(source.source_digest) == 64
+        assert source.contract_version == 'bug-semantic-context/v1'
+        assert source.canonical_bug_present is None
+        assert source.eligible_for_closeout is False
+        assert source.action_plan and source.conclusions and source.test_scenarios
+        assert source.linked_test_tasks[0].card_id == 'regression-test'
+        assert source.load_errors == ()
+        assert not any(ref.startswith('kg:') for ref in source.provenance_refs)
+        assert graph.calls == []
+        # A fresh source read observes a concurrent/reopen fence change; it is
+        # not reconstructed from the submitted or previously captured context.
+        async with session_factory() as session:
+            card = await session.get(Card, 'bug-context')
+            card.policy_version = 8
+            await session.commit()
+        async with session_factory() as session:
+            fresh = await CommunityBugCognitiveContextAssembler(graph).assemble_semantic(
+                session, board_id='board-bug-context', bug_id='bug-context')
+        assert fresh.source_policy_version == 8
+        assert source.source_policy_version == 7
+        assert fresh.source_digest != source.source_digest
+        async with session_factory() as session:
+            related = await session.get(Card, 'regression-test')
+            related.conclusions = [{'text': 'The previous test evidence was corrected.'}]
+            await session.commit()
+        async with session_factory() as session:
+            evidence_changed = await CommunityBugCognitiveContextAssembler(graph).assemble_semantic(
+                session, board_id='board-bug-context', bug_id='bug-context')
+        assert evidence_changed.source_policy_version == fresh.source_policy_version
+        assert evidence_changed.source_digest != fresh.source_digest
+        assert graph.calls == []
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('damage,error', [
+    ('spec', 'bug_spec_source_unavailable'),
+    ('test', 'bug_linked_test_source_unavailable'),
+    ('type', 'bug_source_type_invalid'),
+    ('version', 'bug_source_version_unavailable'),
+])
+async def test_semantic_snapshot_does_not_certify_incomplete_relational_source(tmp_path, damage, error):
+    engine, session_factory = await _runtime(tmp_path / 'semantic-incomplete.db')
+    graph = _CanonicalBugReader(fail=True)
+    try:
+        await _seed_full_context(session_factory)
+        async with session_factory() as session:
+            card = await session.get(Card, 'bug-context')
+            if damage == 'spec':
+                parent = await session.get(Spec, card.spec_id)
+                session.add(Board(id='foreign-board', name='Foreign', owner_id='other', realm_id='local'))
+                await session.flush()
+                parent.board_id = 'foreign-board'
+            elif damage == 'test':
+                card.linked_test_task_ids = ['missing-test']
+            elif damage == 'type':
+                card.card_type = 'normal'
+            else:
+                card.policy_version = 0
+            await session.commit()
+        async with session_factory() as session:
+            source = await CommunityBugCognitiveContextAssembler(graph).assemble_semantic(
+                session, board_id='board-bug-context', bug_id='bug-context')
+        assert source.card_exists and not source.verified
+        assert error in source.load_errors
+        assert graph.calls == []
+        if damage == 'spec':
+            assert source.test_scenarios == source.acceptance_criteria == ()
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('board_id,bug_id', [('foreign-board', 'bug-context'), ('board-bug-context', 'absent')])
+async def test_semantic_snapshot_never_loads_foreign_or_missing_bug(tmp_path, board_id, bug_id):
+    engine, session_factory = await _runtime(tmp_path / 'semantic-scope.db')
+    graph = _CanonicalBugReader(fail=True)
+    try:
+        await _seed_full_context(session_factory)
+        async with session_factory() as session:
+            source = await CommunityBugCognitiveContextAssembler(graph).assemble_semantic(
+                session, board_id=board_id, bug_id=bug_id)
+        assert not source.card_exists and not source.verified
+        assert source.source_policy_version is None
+        assert source.title is None and source.conclusions == ()
+        assert graph.calls == []
+    finally:
+        await engine.dispose()
+
+
 async def _runtime(path: Path):  # noqa: ANN202
+    from okto_pulse.community.adapters.current_relational_schema import current_schema_contract, initialize_current_schema
     engine = build_community_engine(f"sqlite+aiosqlite:///{path}")
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    await initialize_current_schema(engine, current_schema_contract())
     return engine, build_community_session_factory(engine)
 
 
 async def _seed_full_context(session_factory) -> None:  # noqa: ANN001
+    from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+    from okto_pulse.core.domain.execution_contract import new_execution_contract
     from okto_pulse.core.services.test_scenario_lifecycle import (
         compute_execution_attestation_sha256,
         compute_test_scenario_semantic_sha256,
@@ -106,11 +349,16 @@ async def _seed_full_context(session_factory) -> None:  # noqa: ANN001
         },
     }
     async with session_factory() as session:
-        session.add(Board(id="board-bug-context", name="Context", owner_id="owner"))
+        session.add(Board(id="board-bug-context", realm_id="local", name="Context", owner_id="owner"))
         session.add(
             Spec(
                 id="spec-bug-context",
                 board_id="board-bug-context",
+                architecture_adoption=ArchitectureAdoptionScope(board_id="board-bug-context",
+                    spec_id="spec-bug-context", adopted_in_edition=1, actor_id="agent",
+                    inherited_resource_ids=()).model_dump(mode="json"),
+                execution_contract=new_execution_contract(board_id="board-bug-context",
+                    spec_id="spec-bug-context", edition=1, actor_id="agent", origin="new_spec"),
                 title="Correct About version",
                 acceptance_criteria=acceptance_criteria,
                 test_scenarios=[scenario],

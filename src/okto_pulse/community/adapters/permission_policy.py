@@ -9,7 +9,7 @@ from okto_pulse.core.ports.permission_policy import (
     PermissionFlags,
     PermissionPolicyPort,
     PermissionSet,
-    normalize_agent_permission_layer,
+    direct_permission_review,
 )
 
 
@@ -42,32 +42,6 @@ class CommunityPermissionPolicyAdapter:
 
     def evaluate(self, context: PermissionContext) -> PermissionDecision:
         return self._policy.evaluate(context)
-
-
-def direct_permission_review(
-    agent_flags: object,
-    *,
-    preset_id: str | None,
-) -> tuple[bool, str | None]:
-    """Classify a preset-less persisted granular document for safe upgrade.
-
-    ``None`` is the trusted Full Control sentinel.  A recognized historical or
-    current Full Control snapshot normalizes back to that sentinel.  Any other
-    preset-less document lacks durable lineage/fingerprint provenance and must
-    remain denied until the owner reviews it.
-    """
-
-    if preset_id is not None or agent_flags is None:
-        return False, None
-    if not isinstance(agent_flags, dict):
-        return True, "invalid_agent_flags"
-    try:
-        normalized = normalize_agent_permission_layer(agent_flags)
-    except (TypeError, ValueError):
-        return True, "invalid_agent_flags"
-    if normalized is None:
-        return False, None
-    return True, "unrecognized_direct_permissions"
 
 
 __all__ = [

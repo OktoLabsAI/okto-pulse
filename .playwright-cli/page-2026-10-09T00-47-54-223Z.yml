@@ -1,0 +1,216 @@
+- generic [ref=f11e3]:
+  - banner [ref=f11e4]:
+    - generic [ref=f11e5]:
+      - generic [ref=f11e6]:
+        - button "Hide sidebar" [ref=f11e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f11e12]
+        - generic [ref=f11e31]: / My Board
+      - generic [ref=f11e32]:
+        - button "Refresh board" [ref=f11e33] [cursor=pointer]
+        - button [ref=f11e40] [cursor=pointer]
+  - generic [ref=f11e13]:
+    - complementary [ref=f11e14]:
+      - generic [ref=f11e15]:
+        - generic [ref=f11e17]:
+          - heading "Boards" [level=2] [ref=f11e18]
+          - button "New board" [ref=f11e19] [cursor=pointer]
+        - navigation [ref=f11e21]:
+          - generic [ref=f11e22]:
+            - heading "My Boards" [level=3] [ref=f11e23]
+            - list [ref=f11e44]:
+              - listitem [ref=f11e45]:
+                - button "My Board" [ref=f11e46] [cursor=pointer]
+    - main [ref=f11e26]:
+      - group "Board views" [ref=f11e53]:
+        - button "Stories" [ref=f11e54] [cursor=pointer]
+        - button "Ideations" [ref=f11e58] [cursor=pointer]
+        - button "Refinements" [ref=f11e61] [cursor=pointer]
+        - button "Specs" [pressed] [ref=f11e66] [cursor=pointer]
+        - button "Tasks" [ref=f11e71] [cursor=pointer]
+      - generic [ref=f11e213]:
+        - generic [ref=f11e214]:
+          - generic [ref=f11e215]:
+            - heading "Specifications" [level=2] [ref=f11e216]
+            - generic [ref=f11e217]: (1 of 1)
+          - generic [ref=f11e218]:
+            - textbox "Search specs…" [ref=f11e220]
+            - group "View mode" [ref=f11e221]:
+              - button "List view" [pressed] [ref=f11e222] [cursor=pointer]
+              - button "Grid view" [ref=f11e224] [cursor=pointer]
+            - generic [ref=f11e230]: Group specs
+            - combobox "Group specs" [ref=f11e236]:
+              - option "None"
+              - option "Ideation"
+              - option "Refinement"
+              - option "Parents" [selected]
+            - button "New Spec" [ref=f11e237] [cursor=pointer]
+        - generic [ref=f11e239]:
+          - button "All" [ref=f11e240] [cursor=pointer]
+          - button "Draft" [ref=f11e241] [cursor=pointer]
+          - button "Review" [ref=f11e242] [cursor=pointer]
+          - button "Approved" [ref=f11e243] [cursor=pointer]
+          - button "Validated" [ref=f11e244] [cursor=pointer]
+          - button "In Progress" [ref=f11e245] [cursor=pointer]
+          - button "Done" [ref=f11e246] [cursor=pointer]
+          - button "Show archived" [ref=f11e247] [cursor=pointer]
+        - generic [ref=f11e250]:
+          - generic [ref=f11e251] [cursor=pointer]:
+            - 'heading "Refinement: Reserva de salas — consistência das reservas e contratos hexagonais" [level=3] [ref=f11e258]'
+            - generic [ref=f11e259]: (1)
+          - generic [ref=f11e263] [cursor=pointer]:
+            - generic [ref=f11e264]:
+              - generic [ref=f11e265]:
+                - generic [ref=f11e266]: Draft
+                - generic "Edition 1" [ref=f11e270]
+              - heading "Reserva de salas — consistência das reservas e contratos hexagonais" [level=3] [ref=f11e271]
+              - paragraph [ref=f11e272]: "Especificação conceitual H01–H04: consultar, criar, alterar e cancelar reservas próprias com consistência, idempotência, histórico e arquitetura hexagonal. Exercício de testes do Pulse; nenhuma implementação real solicitada."
+              - 'generic "Requirement lint: no current result · Edition 1; 0 previous results" [ref=f11e274]':
+                - generic [ref=f11e275]: Requirement lint
+                - strong [ref=f11e276]: Not assessed
+              - generic [ref=f11e277]:
+                - generic [ref=f11e278]: mock
+                - generic [ref=f11e279]: reserva-de-salas
+                - generic [ref=f11e280]: teste-sdlc
+            - generic [ref=f11e281]:
+              - button "Open lineage graph" [ref=f11e282]
+              - button "Archive tree" [ref=f11e287]
+        - generic [ref=f11e293]:
+          - status [ref=f11e294]: Showing 1–1 of 1 matching. 1 overall. Page 1 of 1.
+          - generic [ref=f11e295]:
+            - generic [ref=f11e296]:
+              - generic [ref=f11e297]: Items per page
+              - combobox "Items per page" [ref=f11e298]:
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+            - navigation "Specifications pagination" [ref=f11e299]:
+              - generic [ref=f11e300]:
+                - button "Previous page" [disabled] [ref=f11e301]: Previous
+                - button "Page 1" [disabled] [ref=f11e302]: "1"
+                - button "Next page" [disabled] [ref=f11e303]: Next
+        - dialog [ref=f11e305]:
+          - generic [ref=f11e306]:
+            - generic [ref=f11e307]:
+              - generic [ref=f11e308]: Draft
+              - heading "Reserva de salas — consistência das reservas e contratos hexagonais" [level=2] [ref=f11e312]
+              - generic "Edition 1" [ref=f11e313]
+            - generic [ref=f11e314]:
+              - button "Open lineage graph" [ref=f11e315] [cursor=pointer]
+              - button "Export report" [ref=f11e320] [cursor=pointer]
+              - button "Refresh" [ref=f11e324] [cursor=pointer]
+              - button "Expand" [ref=f11e330] [cursor=pointer]
+              - button "Close spec" [ref=f11e336] [cursor=pointer]
+          - generic [ref=f11e340]:
+            - generic [ref=f11e341]: "Move to:"
+            - button "Review" [ref=f11e342] [cursor=pointer]
+            - button "Cancelled" [ref=f11e345] [cursor=pointer]
+          - generic [ref=f11e348]:
+            - generic [ref=f11e349]: "From:"
+            - button "Reserva de salas — teste do SDLC v24" [ref=f11e350] [cursor=pointer]:
+              - text: Reserva de salas — teste do SDLC
+              - generic [ref=f11e353]: v24
+            - button "Reserva de salas — consistência das reservas e contratos hexagonais v39" [ref=f11e356] [cursor=pointer]:
+              - text: Reserva de salas — consistência das reservas e contratos hexagonais
+              - generic [ref=f11e361]: v39
+          - generic [ref=f11e363]:
+            - tablist "Spec sections" [ref=f11e364]:
+              - tab "Details" [ref=f11e365] [cursor=pointer]
+              - tab "Requirements & Decisions" [selected] [ref=f11e370] [cursor=pointer]
+              - tab "Tests & Verifications" [ref=f11e375] [cursor=pointer]
+              - tab "Coverage" [ref=f11e379] [cursor=pointer]
+              - tab "Code Evidence Matrix" [ref=f11e385] [cursor=pointer]
+              - tab "Project structure" [ref=f11e389] [cursor=pointer]
+              - tab "Dependencies" [ref=f11e396] [cursor=pointer]
+              - tab "Resources" [ref=f11e402] [cursor=pointer]
+              - tab "Q&A 9" [ref=f11e406] [cursor=pointer]:
+                - generic [ref=f11e410]: Q&A
+                - generic [ref=f11e411]: "9"
+              - tab "References" [ref=f11e412] [cursor=pointer]
+              - tab "KG Graph" [ref=f11e417] [cursor=pointer]
+              - tab "Validation" [ref=f11e424] [cursor=pointer]
+              - tab "Activity" [ref=f11e429] [cursor=pointer]
+            - button "Scroll Spec sections right" [ref=f11e435] [cursor=pointer]
+          - tabpanel "Requirements & Decisions" [ref=f11e675]:
+            - generic [ref=f11e676]:
+              - tablist "Requirements and decisions sections" [ref=f11e677]:
+                - tab "Functional 8" [ref=f11e678] [cursor=pointer]:
+                  - generic [ref=f11e681]: Functional
+                  - generic [ref=f11e682]: "8"
+                - tab "Business 8" [ref=f11e683] [cursor=pointer]:
+                  - generic [ref=f11e688]: Business
+                  - generic [ref=f11e689]: "8"
+                - tab "Integration 13" [ref=f11e690] [cursor=pointer]:
+                  - generic [ref=f11e696]: Integration
+                  - generic [ref=f11e697]: "13"
+                - tab "Observability 2" [ref=f11e698] [cursor=pointer]:
+                  - generic [ref=f11e702]: Observability
+                  - generic [ref=f11e703]: "2"
+                - tab "Technical 6" [ref=f11e704] [cursor=pointer]:
+                  - generic [ref=f11e708]: Technical
+                  - generic [ref=f11e709]: "6"
+                - tab "Contracts 6" [active] [selected] [ref=f11e710] [cursor=pointer]:
+                  - generic [ref=f11e716]: Contracts
+                  - generic [ref=f11e717]: "6"
+                - tab "Decisions 5" [ref=f11e718] [cursor=pointer]:
+                  - generic [ref=f11e723]: Decisions
+                  - generic [ref=f11e724]: "5"
+              - button "Scroll Requirements and decisions sections left" [ref=f11e898] [cursor=pointer]
+              - button "Scroll Requirements and decisions sections right" [ref=f11e725] [cursor=pointer]
+            - tabpanel "Contracts 6" [ref=f11e901]:
+              - generic [ref=f11e902]:
+                - generic [ref=f11e903]:
+                  - generic [ref=f11e904]:
+                    - heading "Contract Task Coverage (0/6)" [level=4] [ref=f11e905]
+                    - generic [ref=f11e906]: 0% linked
+                  - progressbar "Contract Task Coverage" [ref=f11e907]
+                - generic [ref=f11e908]:
+                  - generic [ref=f11e909]:
+                    - text: Skip contract coverage requirement
+                    - paragraph [ref=f11e910]: Allow validation without full API contract→Task coverage
+                  - button [ref=f11e911] [cursor=pointer]
+                - generic [ref=f11e914] [cursor=pointer]:
+                  - generic [ref=f11e915]: GET
+                  - generic [ref=f11e916]: /rooms/availability
+                  - generic [ref=f11e917]: Sessão requerida. Sem owner_id ou reservas de terceiros. Resultado indicativo; capacidade e regras de calendário aplicadas.
+                  - generic [ref=f11e918]: 0 tasks
+                  - button "Edit" [ref=f11e919]
+                  - button "Remove" [ref=f11e923]
+                - generic [ref=f11e930] [cursor=pointer]:
+                  - generic [ref=f11e931]: POST
+                  - generic [ref=f11e932]: /reservations
+                  - generic [ref=f11e933]: Principal vem da sessão; 201 na primeira confirmação, 200 no replay; mesmo ator/operação/chave/carga. Sem owner_id aceito.
+                  - generic [ref=f11e934]: 0 tasks
+                  - button "Edit" [ref=f11e935]
+                  - button "Remove" [ref=f11e939]
+                - generic [ref=f11e946] [cursor=pointer]:
+                  - generic [ref=f11e947]: GET
+                  - generic [ref=f11e948]: /reservations/mine
+                  - generic [ref=f11e949]: Default limit=20; ordenar start_at desc e ID como desempate; cursor opaco. Não aceitar filtro owner_id.
+                  - generic [ref=f11e950]: 0 tasks
+                  - button "Edit" [ref=f11e951]
+                  - button "Remove" [ref=f11e955]
+                - generic [ref=f11e962] [cursor=pointer]:
+                  - generic [ref=f11e963]: PUT
+                  - generic [ref=f11e964]: "/reservations/{reservation_id}"
+                  - generic [ref=f11e965]: Atualização completa; ID do caminho deve corresponder. Revalida ownership, estado/tempo, versão, capacidade e conflito excluindo a própria reserva. 200; falha preserva original.
+                  - generic [ref=f11e966]: 0 tasks
+                  - button "Edit" [ref=f11e967]
+                  - button "Remove" [ref=f11e971]
+                - generic [ref=f11e978] [cursor=pointer]:
+                  - generic [ref=f11e979]: POST
+                  - generic [ref=f11e980]: "/reservations/{reservation_id}/cancel"
+                  - generic [ref=f11e981]: 200; cancelamento lógico e histórico na mesma transação. Replay exato não produz novo evento. Nova intenção para já cancelada retorna reservation_locked.
+                  - generic [ref=f11e982]: 0 tasks
+                  - button "Edit" [ref=f11e983]
+                  - button "Remove" [ref=f11e987]
+                - generic [ref=f11e994] [cursor=pointer]:
+                  - generic [ref=f11e995]: GET
+                  - generic [ref=f11e996]: "/reservations/{reservation_id}/history"
+                  - generic [ref=f11e997]: Somente responsável; 404 para alheia/inexistente. Ordenar versão ascendente, default20, máximo100; cursor opaco. Sem segredos ou dados de terceiros; replay não adiciona evento.
+                  - generic [ref=f11e998]: 0 tasks
+                  - button "Edit" [ref=f11e999]
+                  - button "Remove" [ref=f11e1003]
+                - button "Add API Contract" [ref=f11e1009] [cursor=pointer]
+          - generic [ref=f11e671]:
+            - button "Delete spec" [ref=f11e672] [cursor=pointer]
+            - button "Close" [ref=f11e674] [cursor=pointer]

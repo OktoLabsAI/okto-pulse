@@ -4,20 +4,22 @@ import csv
 import io
 import json
 from datetime import datetime, timedelta, timezone
-from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import Request, APIRouter, Depends, HTTPException, Query, status
 from starlette.responses import StreamingResponse
 
 from okto_pulse.community.api.analytics_transport import (
     CanonicalBoardKgAnalyticsResponseDTO,
     CanonicalCoverageResponseDTO,
-    CanonicalDeliveryForecastResponseDTO,
     CanonicalFlowHealthResponseDTO,
     DeliveryIntelligenceResponseDTO,
     FlowHealthSettingsResponseDTO,
 )
 from okto_pulse.community.api.deps import get_unit_of_work
+from okto_pulse.community.api.bug_clusters import router as bug_clusters_router
+from okto_pulse.community.api.spec_coverage_query import router as spec_coverage_router
+from okto_pulse.community.api.decision_impact import router as decision_impact_router
+from okto_pulse.community.api.lineage_query import router as lineage_query_router
 from okto_pulse.community.api.permission_errors import permission_denied_http_error
 from okto_pulse.community.adapters.sqlalchemy_analytics_evidence import (
     validated_board_kg_cursor_observed_at,
@@ -46,10 +48,6 @@ from okto_pulse.core.application.use_cases import (
     BoardEntitiesUseCase,
     BoardEntityDetailCommand,
     BoardEntityDetailUseCase,
-    BoardSprintAnalyticsCommand,
-    BoardSprintAnalyticsUseCase,
-    BoardSprintsAnalyticsCommand,
-    BoardSprintsAnalyticsUseCase,
     BoardVelocityCommand,
     BoardVelocityUseCase,
     CoverageTraceabilityAnalyticsCommand,
@@ -69,10 +67,6 @@ from okto_pulse.core.application.use_cases import (
     SaveFlowHealthSettingsUseCase,
     SpecReadinessAnalyticsUseCase,
 )
-from okto_pulse.core.application.use_cases.delivery_forecast import (
-    DeliveryForecastCommand,
-    DeliveryForecastUseCase,
-)
 from okto_pulse.core.application.use_cases.delivery_intelligence import (
     DeliveryIntelligenceCommand,
     DeliveryIntelligenceUseCase,
@@ -83,12 +77,6 @@ from okto_pulse.core.ports.application_persistence import PAGE_OFFSET_MAX
 from okto_pulse.core.ports.analytics_foundation import (
     AnalyticsFilterClause,
     AnalyticsUtcWindow,
-)
-from okto_pulse.core.ports.delivery_forecast import (
-    DEFAULT_FORECAST_CONFIDENCE_LEVEL,
-    DEFAULT_FORECAST_HORIZON,
-    DEFAULT_FORECAST_METHOD_VERSION,
-    DeliveryForecastError,
 )
 from okto_pulse.core.ports.board_kg_analytics import (
     BoardKgAnalyticsError,
@@ -102,6 +90,11 @@ from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.core.services.analytics_contract import parse_analytics_datetime
 
 router = APIRouter()
+
+router.include_router(bug_clusters_router)
+router.include_router(spec_coverage_router)
+router.include_router(decision_impact_router)
+router.include_router(lineage_query_router)
 
 
 # ---------------------------------------------------------------------------
@@ -234,15 +227,15 @@ from okto_pulse.core.services.analytics_service import (  # noqa: E402
 # ---------------------------------------------------------------------------
 #
 # Spec Validation Gate records (spec.validations) shape:
-#   {id, completeness, assertiveness, ambiguity, recommendation (approve|reject),
+#   {id, confidence, clarity, assertiveness, decidability, ambiguity, recommendation,
 #    outcome (success|failed), threshold_violations: [str], resolved_thresholds, ...}
 #
 # Task Validation Gate records (card.validations) shape:
-#   {id, confidence, estimated_completeness | completeness, estimated_drift | drift,
+#   {id, confidence, estimated_completeness, estimated_drift,
 #    recommendation, outcome, threshold_violations: [str], ...}
 #
 # D3 (multi-count): a single failed record can contribute to multiple rejection
-# reason buckets (e.g. completeness_below + ambiguity_above). Total rejection
+# reason buckets (e.g. confidence_below + ambiguity_above). Total rejection
 # reasons per gate may exceed total failed count.
 #
 # D4 (all history): aggregations walk the full array regardless of active flag.
@@ -279,7 +272,7 @@ async def analytics_overview(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Cross-board KPIs: totals, lifecycle status breakdowns, validation gates,
-    sprint summary, funnel, velocity, board list.
+    funnel, velocity, board list.
 
     Semântica de campos opcionais:
     - ``avg_triage_hours``: null quando não há bugs triados no período
@@ -287,9 +280,6 @@ async def analytics_overview(
       indica ausência do sinal.
     - ``bug_rate_per_spec``: retorna apenas specs com ``rate > 0``.
       Specs sem bugs são omitidas da lista para reduzir o payload.
-    - ``sprint_evaluation``: mesmo shape que ``spec_evaluation``
-      (inclui ``avg_dimension_scores`` — dict vazio quando nenhum
-      sprint_evaluation carrega dimensions).
     """
     result = await AnalyticsOverviewUseCase().execute(
         AnalyticsOverviewCommand(
@@ -446,7 +436,7 @@ async def board_velocity(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Velocity stacked by impl/test/bug with validation_bounce +
-    spec_done/sprint_done overlays. Supports week or day granularity.
+    spec_done overlays. Supports week or day granularity.
     """
     if granularity not in ("week", "day"):
         raise HTTPException(
@@ -525,7 +515,6 @@ async def board_validations(
     - spec_validation_gate: aggregate across all specs + per-spec breakdown
     - task_validation_gate: aggregate across all cards + per-card breakdown
     - spec_evaluation: aggregate (different gate — qualitative breakdown quality)
-    - sprint_evaluation: aggregate
     """
     try:
         result = await BoardValidationsUseCase().execute(
@@ -545,38 +534,9 @@ async def board_validations(
 
 
 # ---------------------------------------------------------------------------
-# NEW: /boards/{board_id}/analytics/sprints — Sprint panel
 # ---------------------------------------------------------------------------
 
 
-@router.get("/boards/{board_id}/analytics/sprints")
-async def board_sprints_analytics(
-    board_id: str,
-    date_from: str | None = Query(None, alias="from"),
-    date_to: str | None = Query(None, alias="to"),
-    user_id: str = Depends(require_user),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-):
-    """Sprint panel for a board.
-
-    Returns:
-    - summary: counts by status + evaluation aggregate
-    - sprints: per-sprint breakdown with cards, completion, last eval"""
-    try:
-        result = await BoardSprintsAnalyticsUseCase().execute(
-            BoardSprintsAnalyticsCommand(
-                board_id,
-                dt_from=_parse_date(date_from),
-                dt_to=_parse_date(date_to, end_of_day=True),
-            ),
-            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
-            uow=uow,
-        )
-    except EntityNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
-        )
-    return result.data
 
 
 # ---------------------------------------------------------------------------
@@ -605,39 +565,28 @@ async def board_spec_analytics(
 
 
 # ---------------------------------------------------------------------------
-# NEW: /boards/{board_id}/analytics/sprint/{sprint_id} — Per-sprint detail
 # ---------------------------------------------------------------------------
 
 
-@router.get("/boards/{board_id}/analytics/sprint/{sprint_id}")
-async def board_sprint_analytics(
-    board_id: str,
-    sprint_id: str,
-    user_id: str = Depends(require_user),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-):
-    """Per-sprint analytics: kanban distribution, task gate, evaluation timeline."""
-    try:
-        result = await BoardSprintAnalyticsUseCase().execute(
-            BoardSprintAnalyticsCommand(board_id, sprint_id),
-            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
-            uow=uow,
-        )
-    except EntityNotFoundError as exc:
-        detail = "Board not found" if exc.entity_type == "board" else "Sprint not found"
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
-    return result.data
 
 
 # ---------------------------------------------------------------------------
-# Delivery Intelligence — immutable commitment, lanes, contribution and CSV
+# Delivery Intelligence — Card contributions and CSV
 # ---------------------------------------------------------------------------
 
 
-_DELIVERY_LANES = frozenset({"normal", "hotfix"})
 _CONTRIBUTION_VIEWS = frozenset(
     {"self", "aggregates", "self_and_aggregates", "operator"}
 )
+
+
+def _reject_retired_delivery_filters(request: Request) -> None:
+    if any(key in request.query_params for key in ("sprint_id", "lane")):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "analytics_query_invalid",
+                    "message": "delivery_intelligence_sprint_filters_retired"},
+        )
 
 
 def _delivery_intelligence_command(
@@ -646,8 +595,6 @@ def _delivery_intelligence_command(
     date_from: str | None,
     date_to: str | None,
     as_of: str | None,
-    sprint_ids: tuple[str, ...],
-    lanes: tuple[str, ...],
     roles: tuple[str, ...],
     contribution_view: str,
     cursor: str | None,
@@ -659,11 +606,6 @@ def _delivery_intelligence_command(
     window_to = _parse_date(date_to, end_of_day=True) or observed_at + timedelta(
         microseconds=1
     )
-    normalized_lanes = tuple(
-        sorted({value.strip().lower() for value in lanes if value.strip()})
-    )
-    if any(value not in _DELIVERY_LANES for value in normalized_lanes):
-        raise ValueError("delivery_intelligence_lane_invalid")
     normalized_roles = tuple(
         sorted({value.strip().lower() for value in roles if value.strip()})
     )
@@ -671,10 +613,6 @@ def _delivery_intelligence_command(
     if normalized_view not in _CONTRIBUTION_VIEWS:
         raise ValueError("delivery_intelligence_contribution_view_invalid")
     filters: list[AnalyticsFilterClause] = []
-    if sprint_ids:
-        filters.append(AnalyticsFilterClause("sprint_id", "in", sprint_ids))
-    if normalized_lanes:
-        filters.append(AnalyticsFilterClause("lane", "in", normalized_lanes))
     if normalized_roles:
         filters.append(AnalyticsFilterClause("role", "in", normalized_roles))
     filters.append(AnalyticsFilterClause("contribution_view", "eq", normalized_view))
@@ -696,8 +634,6 @@ async def _delivery_intelligence_payload(
     date_to: str | None,
     as_of: str | None,
     range_value: str | None,
-    sprint_ids: tuple[str, ...],
-    lanes: tuple[str, ...],
     roles: tuple[str, ...],
     contribution_view: str,
     cursor: str | None,
@@ -730,8 +666,6 @@ async def _delivery_intelligence_payload(
                 date_from=date_from,
                 date_to=date_to,
                 as_of=as_of,
-                sprint_ids=sprint_ids,
-                lanes=lanes,
                 roles=roles,
                 contribution_view=contribution_view,
                 cursor=cursor,
@@ -760,12 +694,11 @@ async def _delivery_intelligence_payload(
 )
 async def delivery_intelligence(
     board_id: str,
+    request: Request,
     date_from: str | None = Query(None, alias="from"),
     date_to: str | None = Query(None, alias="to"),
     as_of: str | None = Query(None),
     range_value: str | None = Query(None, alias="range", deprecated=True),
-    sprint_ids: list[UUID] | None = Query(None, alias="sprint_id"),
-    lanes: list[str] | None = Query(None, alias="lane"),
     roles: list[str] | None = Query(None, alias="role"),
     contribution_view: str = Query("self_and_aggregates"),
     cursor: str | None = Query(None),
@@ -775,14 +708,13 @@ async def delivery_intelligence(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Return the versioned, authorized Delivery Intelligence projection."""
+    _reject_retired_delivery_filters(request)
     return await _delivery_intelligence_payload(
         board_id,
         date_from=date_from,
         date_to=date_to,
         as_of=as_of,
         range_value=range_value,
-        sprint_ids=tuple(str(value) for value in (sprint_ids or ())),
-        lanes=tuple(lanes or ()),
         roles=tuple(roles or ()),
         contribution_view=contribution_view,
         cursor=cursor,
@@ -796,12 +728,11 @@ async def delivery_intelligence(
 @router.get("/boards/{board_id}/analytics/delivery-intelligence/export")
 async def delivery_intelligence_export(
     board_id: str,
+    request: Request,
     date_from: str | None = Query(None, alias="from"),
     date_to: str | None = Query(None, alias="to"),
     as_of: str | None = Query(None),
     range_value: str | None = Query(None, alias="range", deprecated=True),
-    sprint_ids: list[UUID] | None = Query(None, alias="sprint_id"),
-    lanes: list[str] | None = Query(None, alias="lane"),
     roles: list[str] | None = Query(None, alias="role"),
     contribution_view: str = Query("self_and_aggregates"),
     cursor: str | None = Query(None),
@@ -811,6 +742,7 @@ async def delivery_intelligence_export(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Export the complete authorized projection for the selected filters."""
+    _reject_retired_delivery_filters(request)
     del cursor, limit  # Pagination controls never truncate a complete export.
     if as_of is not None:
         raise HTTPException(
@@ -833,8 +765,6 @@ async def delivery_intelligence_export(
             date_to=date_to,
             as_of=export_as_of,
             range_value=range_value,
-            sprint_ids=tuple(str(value) for value in (sprint_ids or ())),
-            lanes=tuple(lanes or ()),
             roles=tuple(roles or ()),
             contribution_view=contribution_view,
             cursor=next_cursor,
@@ -861,188 +791,17 @@ async def delivery_intelligence_export(
 
     payload = {
         **pages[0],
-        "sprints": [
-            sprint
+        "contributions": [
+            contribution
             for page in pages
-            for sprint in page.get("sprints", [])
-            if isinstance(sprint, dict)
+            for contribution in page.get("contributions", [])
+            if isinstance(contribution, dict)
         ],
         "next_cursor": None,
     }
     return _canonical_csv_response(
         payload,
         filename=f"board-{board_id}-delivery-intelligence.csv",
-    )
-
-
-# ---------------------------------------------------------------------------
-# Delivery Forecast — governed readiness/result union and complete CSV
-# ---------------------------------------------------------------------------
-
-
-def _delivery_forecast_command(
-    board_id: str,
-    *,
-    date_from: str | None,
-    date_to: str | None,
-    historical_as_of: str | None,
-    sprint_ids: tuple[str, ...],
-    horizon: str,
-    confidence_level: float,
-    method_version: str,
-) -> DeliveryForecastCommand:
-    observed_at = datetime.now(timezone.utc)
-    window_from = _parse_date(date_from) or datetime(1970, 1, 1, tzinfo=timezone.utc)
-    window_to = _parse_date(date_to, end_of_day=True) or observed_at + timedelta(
-        microseconds=1
-    )
-    filters = (
-        (
-            AnalyticsFilterClause(
-                field="sprint_id",
-                operator="in",
-                value=sprint_ids,
-            ),
-        )
-        if sprint_ids
-        else ()
-    )
-    return DeliveryForecastCommand(
-        board_id=board_id,
-        window=AnalyticsUtcWindow(window_from, window_to),
-        as_of=observed_at,
-        horizon=horizon,
-        confidence_level=confidence_level,
-        method_version=method_version,
-        filters=filters,
-        historical_as_of=_parse_date(historical_as_of),
-    )
-
-
-async def _delivery_forecast_payload(
-    board_id: str,
-    *,
-    date_from: str | None,
-    date_to: str | None,
-    range_value: str | None,
-    historical_as_of: str | None,
-    sprint_ids: tuple[str, ...],
-    horizon: str,
-    confidence_level: float,
-    method_version: str,
-    user_id: str,
-    uow: PulseUnitOfWork,
-) -> dict[str, object]:
-    if range_value is not None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "code": "analytics_query_invalid",
-                "message": "analytics_range_encoding_unsupported_use_from_and_to",
-            },
-        )
-    try:
-        result = await DeliveryForecastUseCase().execute(
-            _delivery_forecast_command(
-                board_id,
-                date_from=date_from,
-                date_to=date_to,
-                historical_as_of=historical_as_of,
-                sprint_ids=sprint_ids,
-                horizon=horizon,
-                confidence_level=confidence_level,
-                method_version=method_version,
-            ),
-            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
-            uow=uow,
-        )
-    except EntityNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": "board_not_found", "message": "Board not found"},
-        ) from exc
-    except DeliveryForecastError as exc:
-        raise HTTPException(
-            status_code=exc.http_status,
-            detail=exc.canonical_dict(),
-        ) from exc
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"code": "analytics_query_invalid", "message": str(exc)},
-        ) from exc
-    return result.data
-
-
-@router.get(
-    "/boards/{board_id}/analytics/delivery-forecast",
-    response_model=CanonicalDeliveryForecastResponseDTO,
-)
-async def delivery_forecast(
-    board_id: str,
-    date_from: str | None = Query(None, alias="from"),
-    date_to: str | None = Query(None, alias="to"),
-    range_value: str | None = Query(
-        None,
-        alias="range",
-        deprecated=True,
-        description="Unsupported until the Spec defines a concrete range encoding; use from/to.",
-    ),
-    sprint_ids: list[UUID] | None = Query(None),
-    horizon: str = Query(DEFAULT_FORECAST_HORIZON),
-    confidence_level: float = Query(DEFAULT_FORECAST_CONFIDENCE_LEVEL),
-    method_version: str = Query(DEFAULT_FORECAST_METHOD_VERSION),
-    historical_as_of: str | None = Query(None, alias="as_of"),
-    user_id: str = Depends(require_user),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-):
-    """Read the deterministic forecast readiness/result projection."""
-    return await _delivery_forecast_payload(
-        board_id,
-        date_from=date_from,
-        date_to=date_to,
-        range_value=range_value,
-        historical_as_of=historical_as_of,
-        sprint_ids=tuple(str(item) for item in (sprint_ids or ())),
-        horizon=horizon,
-        confidence_level=confidence_level,
-        method_version=method_version,
-        user_id=user_id,
-        uow=uow,
-    )
-
-
-@router.get("/boards/{board_id}/analytics/delivery-forecast/export")
-async def delivery_forecast_export(
-    board_id: str,
-    date_from: str | None = Query(None, alias="from"),
-    date_to: str | None = Query(None, alias="to"),
-    range_value: str | None = Query(None, alias="range", deprecated=True),
-    sprint_ids: list[UUID] | None = Query(None),
-    horizon: str = Query(DEFAULT_FORECAST_HORIZON),
-    confidence_level: float = Query(DEFAULT_FORECAST_CONFIDENCE_LEVEL),
-    method_version: str = Query(DEFAULT_FORECAST_METHOD_VERSION),
-    historical_as_of: str | None = Query(None, alias="as_of"),
-    user_id: str = Depends(require_user),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-):
-    """Export exactly one authorized canonical forecast projection."""
-    payload = await _delivery_forecast_payload(
-        board_id,
-        date_from=date_from,
-        date_to=date_to,
-        range_value=range_value,
-        historical_as_of=historical_as_of,
-        sprint_ids=tuple(str(item) for item in (sprint_ids or ())),
-        horizon=horizon,
-        confidence_level=confidence_level,
-        method_version=method_version,
-        user_id=user_id,
-        uow=uow,
-    )
-    return _canonical_csv_response(
-        payload,
-        filename=f"board-{board_id}-delivery-forecast.csv",
     )
 
 

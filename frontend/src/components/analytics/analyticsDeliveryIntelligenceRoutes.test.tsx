@@ -32,27 +32,22 @@ vi.mock('./DeliveryIntelligenceFullView', () => ({
     initialFilters,
     onFiltersChange,
     onPeriodChange,
-    onSelectEntity,
   }: {
     from: string;
     to: string;
     initialFilters: DeliveryIntelligenceFilters;
     onFiltersChange: (filters: DeliveryIntelligenceFilters) => void;
     onPeriodChange: (days: 30 | 90) => void;
-    onSelectEntity: (type: 'sprint', id: string, name: string) => void;
   }) => (
     <div data-testid="delivery-route">
       <span>{from} through {to}</span>
       <span data-testid="delivery-route-filters">{JSON.stringify(initialFilters)}</span>
       <button type="button" onClick={() => onFiltersChange({
-        sprintId: 'sprint-1',
-        lane: 'hotfix',
         role: 'developer',
         contributionView: 'self',
         limit: 25,
       })}>Set Delivery filters</button>
       <button type="button" onClick={() => onPeriodChange(30)}>Use 30 days</button>
-      <button type="button" onClick={() => onSelectEntity('sprint', 'sprint-1', 'Sprint Alpha')}>Open Sprint Alpha</button>
     </div>
   ),
 }));
@@ -66,7 +61,7 @@ describe('Delivery Intelligence Analytics route', () => {
     window.history.replaceState({}, '', '/analytics/boards/board-1?from=2026-07-01&to=2026-07-31');
   });
 
-  it('opens the dedicated route, persists filters and period, then opens the Sprint entity', async () => {
+  it('opens the dedicated route, persists filters and period, drops retired Sprint filters', async () => {
     render(<AnalyticsPage />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Open Delivery Intelligence' }));
@@ -78,8 +73,8 @@ describe('Delivery Intelligence Analytics route', () => {
     expect(screen.queryByTestId('global-date-filter')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Set Delivery filters' }));
-    expect(window.location.search).toContain('sprint_id=sprint-1');
-    expect(window.location.search).toContain('lane=hotfix');
+    expect(window.location.search).not.toContain('sprint_id=');
+    expect(window.location.search).not.toContain('lane=');
     expect(window.location.search).toContain('role=developer');
     expect(window.location.search).toContain('contribution_view=self');
     expect(window.location.search).not.toContain('limit=');
@@ -87,11 +82,9 @@ describe('Delivery Intelligence Analytics route', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Use 30 days' }));
     expect(await screen.findByTestId('delivery-route')).toHaveTextContent('2026-07-02 through 2026-07-31');
     expect(window.location.search).toContain('from=2026-07-02');
-    expect(window.location.search).toContain('sprint_id=sprint-1');
+    expect(window.location.search).not.toContain('sprint_id=');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Open Sprint Alpha' }));
-    expect(await screen.findByTestId('entity-detail')).toBeInTheDocument();
-    expect(window.location.pathname).toBe('/analytics/boards/board-1/entities/sprint/sprint-1');
+
   });
 
   it('restores a copied full-view URL and its filters through popstate', async () => {
@@ -107,8 +100,8 @@ describe('Delivery Intelligence Analytics route', () => {
 
     const route = await screen.findByTestId('delivery-route');
     await waitFor(() => expect(route).toHaveTextContent('2026-06-01 through 2026-06-30'));
-    expect(screen.getByTestId('delivery-route-filters')).toHaveTextContent('"sprintId":"sprint/two"');
-    expect(screen.getByTestId('delivery-route-filters')).toHaveTextContent('"lane":"normal"');
+    expect(screen.getByTestId('delivery-route-filters')).not.toHaveTextContent('sprintId');
+    expect(screen.getByTestId('delivery-route-filters')).not.toHaveTextContent('lane');
     expect(screen.getByTestId('delivery-route-filters')).toHaveTextContent('"role":"qa"');
     expect(screen.getByTestId('delivery-route-filters')).toHaveTextContent('"contributionView":"aggregates"');
     expect(screen.getByTestId('delivery-route-filters')).toHaveTextContent('"limit":25');

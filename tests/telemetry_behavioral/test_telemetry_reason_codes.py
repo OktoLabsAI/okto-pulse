@@ -127,6 +127,9 @@ def _prepare(tmp_path: Path, monkeypatch, *, with_consent: bool = True) -> CoreS
         (FIXED_NOW + timedelta(hours=72)).isoformat().replace("+00:00", "Z")
     )
     state["next_batch_seq"] = 5
+    state["failure_state"] = {"status": "ok"}
+    state["watermark"] = None
+    state["watermark_event_id"] = None
     if not with_consent:
         # anonymous_beacon mode but NO recorded policy acknowledgement -> consent
         # is not valid for a re-handshake (ts_3a1f7d14).

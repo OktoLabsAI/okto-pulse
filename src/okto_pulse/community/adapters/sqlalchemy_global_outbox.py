@@ -31,7 +31,7 @@ def _record(row: Any) -> GlobalOutboxEventRecord:
         board_id=str(row.board_id),
         session_id=str(row.session_id) if row.session_id else None,
         payload=copy.deepcopy(row.payload or {}),
-        retry_count=int(row.retry_count),
+        retry_count=row.retry_count,
         last_error=row.last_error,
         processed_at=row.processed_at,
         created_at=row.created_at,
@@ -190,6 +190,7 @@ class CommunitySqlAlchemyGlobalOutboxStore:
 
         try:
             for event in events:
+                event.validate_retry_count()
                 result = await context.execute(
                     update(GlobalUpdateOutbox)
                     .where(
@@ -254,14 +255,24 @@ class CommunitySqlAlchemyGlobalOutboxStore:
     async def save_events(
         self, context: Any, events: Sequence[GlobalOutboxEventRecord]
     ) -> None:
-        for event in events:
-            row = await context.get(GlobalUpdateOutbox, event.id)
-            if row is None:
-                continue
-            row.retry_count = event.retry_count
-            row.last_error = event.last_error
-            row.processed_at = event.processed_at
-        await context.flush()
+        try:
+            for event in events:
+                event.validate_retry_count()
+                # Refuse externally corrupted state even after a prior read.
+                result = await context.execute(update(GlobalUpdateOutbox).where(
+                    GlobalUpdateOutbox.id == event.id,
+                    GlobalUpdateOutbox.retry_count >= GLOBAL_OUTBOX_DEAD_LETTER_SENTINEL,
+                ).values(retry_count=event.retry_count, last_error=event.last_error,
+                    processed_at=event.processed_at).execution_options(synchronize_session="fetch"))
+                if result.rowcount != 1 and await context.scalar(select(GlobalUpdateOutbox.id).where(
+                    GlobalUpdateOutbox.id == event.id,
+                    GlobalUpdateOutbox.retry_count < GLOBAL_OUTBOX_DEAD_LETTER_SENTINEL,
+                )) is not None:
+                    raise GlobalOutboxMutationConflict("global_outbox_save_selection_changed")
+            await context.flush()
+        except Exception:
+            await context.rollback()
+            raise
 
     async def commit(self, context: Any) -> None:
         await context.commit()

@@ -22,6 +22,12 @@ const apiMock = vi.hoisted(() => ({
 const pushMock = vi.hoisted(() => vi.fn());
 const openCardModalMock = vi.hoisted(() => vi.fn());
 
+vi.mock('../LineagePathsPanel', () => ({ LineagePathsPanel: ({ boardId, subjectRef, onContinue }: {
+  boardId: string; subjectRef: string; onContinue: (subjectRef: string) => void;
+}) => <div data-testid="source-paths" data-board={boardId} data-subject={subjectRef}>
+  <button onClick={() => onContinue('spec:frontier')}>Continue source frontier</button>
+</div> }));
+
 vi.mock('@/services/api', () => ({
   useDashboardApi: () => apiMock,
 }));
@@ -114,9 +120,10 @@ vi.mock('@xyflow/react', () => ({
 }));
 
 const graph: LineageGraphResponse = {
+  view: 'lineage',
   board_id: 'board-1',
   selected: { entity_type: 'ideation', entity_id: 'ideation-1' },
-  root_ideation: { id: 'ideation-1', title: 'Root Ideation', status: 'done' },
+  root_entity: { type: 'ideation', id: 'ideation-1', title: 'Root Ideation', status: 'done' },
   resolution_path: [{ type: 'ideation', id: 'ideation-1' }],
   nodes: [
     {
@@ -147,9 +154,10 @@ const graph: LineageGraphResponse = {
 };
 
 const storyGraph: LineageGraphResponse = {
+  view: 'lineage',
   board_id: 'board-1',
   selected: { entity_type: 'story', entity_id: 'story-1' },
-  root_ideation: { id: 'ideation-1', title: 'Root Ideation', status: 'done' },
+  root_entity: { type: 'ideation', id: 'ideation-1', title: 'Root Ideation', status: 'done' },
   resolution_path: [
     { type: 'story', id: 'story-1' },
     { type: 'ideation', id: 'ideation-1' },
@@ -187,9 +195,10 @@ const storyGraph: LineageGraphResponse = {
 };
 
 const bugGraph: LineageGraphResponse = {
+  view: 'lineage',
   board_id: 'board-1',
   selected: { entity_type: 'bug', entity_id: 'bug-1' },
-  root_ideation: { id: 'ideation-1', title: 'Root Ideation', status: 'done' },
+  root_entity: { type: 'ideation', id: 'ideation-1', title: 'Root Ideation', status: 'done' },
   resolution_path: [
     { type: 'bug', id: 'bug-1' },
     { type: 'ideation', id: 'ideation-1' },
@@ -202,7 +211,7 @@ const bugGraph: LineageGraphResponse = {
       title: 'Implement feature',
       label: 'Implement feature',
       status: 'done',
-      stage: 4,
+      stage: 3,
     },
     {
       id: 'test:test-1',
@@ -211,7 +220,7 @@ const bugGraph: LineageGraphResponse = {
       title: 'Regression test',
       label: 'Regression test',
       status: 'done',
-      stage: 4,
+      stage: 3,
     },
     {
       id: 'bug:bug-1',
@@ -220,7 +229,7 @@ const bugGraph: LineageGraphResponse = {
       title: 'Fix bug',
       label: 'Fix bug',
       status: 'validation',
-      stage: 5,
+      stage: 4,
     },
   ],
   edges: [
@@ -245,7 +254,7 @@ const specLineageGraph: LineageGraphResponse = {
   board_id: 'board-1',
   view: 'lineage',
   selected: { entity_type: 'spec', entity_id: 'spec-a' },
-  root_ideation: { id: 'ideation-1', title: 'Spec A lineage', status: 'done' },
+  root_entity: { type: 'ideation', id: 'ideation-1', title: 'Spec A lineage', status: 'done' },
   resolution_path: [{ type: 'spec', id: 'spec-a' }],
   nodes: [
     {
@@ -273,7 +282,7 @@ const specLineageGraph: LineageGraphResponse = {
       title: 'Task A',
       label: 'Task A',
       status: 'started',
-      stage: 4,
+      stage: 3,
     },
   ],
   edges: [
@@ -287,7 +296,7 @@ const specLineageGraph: LineageGraphResponse = {
       id: 'lineage:spec-task',
       source: 'origin:spec-a',
       target: 'origin:task-a',
-      relationship: 'contains_card',
+      relationship: 'has_card',
     },
   ],
   summary: { ideations: 1, specs: 1, tasks: 1, nodes: 3, edges: 2 },
@@ -304,7 +313,7 @@ const specDependencyGraph: DependencyOverlay = {
     { entity_type: 'spec', entity_id: 'spec-a' },
   ],
   selected: { entity_type: 'spec', entity_id: 'spec-a' },
-  root_ideation: { id: 'spec-a', title: 'Spec A', status: 'in_progress' },
+  root_entity: { type: 'spec', id: 'spec-a', title: 'Spec A', status: 'in_progress' },
   resolution_path: [{ type: 'spec', id: 'spec-a' }],
   nodes: [
     {
@@ -434,7 +443,7 @@ const taskDependencyGraph: DependencyOverlay = {
   dependency_scope: 'lineage',
   lineage_node_ids: ['task:task-a'],
   lineage_entities: [{ entity_type: 'card', entity_id: 'task-a' }],
-  root_ideation: { id: 'task-a', title: 'Task A', status: 'started' },
+  root_entity: { type: 'card', id: 'task-a', title: 'Task A', status: 'started' },
   nodes: [
     {
       id: 'test:test-prerequisite',
@@ -499,6 +508,36 @@ describe('LineageGraphModal', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     apiMock.getLineageGraph.mockResolvedValue(graph);
+  });
+
+  it('loads source paths on demand and continues from a canonical frontier without opening work', async () => {
+    render(<LineageGraphModal boardId="board-1" />);
+    act(() => openLineageGraph('spec', 'spec-a'));
+    await waitFor(() => expect(apiMock.getLineageGraph).toHaveBeenCalledTimes(1));
+    expect(screen.queryByTestId('source-paths')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Source paths' }));
+    expect(screen.getByTestId('source-paths')).toHaveAttribute('data-subject', 'spec:spec-a');
+    fireEvent.click(screen.getByRole('button', { name: 'Continue source frontier' }));
+    expect(screen.getByTestId('source-paths')).toHaveAttribute('data-subject', 'spec:frontier');
+    expect(pushMock).not.toHaveBeenCalled();
+    expect(openCardModalMock).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Back to graph' }));
+    expect(screen.queryByTestId('source-paths')).not.toBeInTheDocument();
+  });
+
+  it('shows tasks directly after Specs without a Sprint stage or navigation target', async () => {
+    apiMock.getLineageGraph.mockResolvedValue(specLineageGraph);
+    render(<LineageGraphModal boardId="board-1" />);
+    act(() => openLineageGraph('spec', 'spec-a'));
+    const edge = await screen.findByTestId('flow-edge-lineage:spec-task');
+    expect(edge).toHaveAttribute('data-source', 'origin:spec-a');
+    expect(edge).toHaveAttribute('data-target', 'origin:task-a');
+    expect(screen.queryByText('Sprint')).not.toBeInTheDocument();
+    expect(screen.getByText('Tasks / Tests')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('flow-node-origin:task-a'));
+    fireEvent.click(screen.getByText('Show details'));
+    expect(openCardModalMock).toHaveBeenCalledWith('task-a');
+    expect(pushMock).toHaveBeenCalledWith({ type: 'card', id: 'task-a' });
   });
 
   it('keeps the lineage graph open when Show details opens an entity modal', async () => {
@@ -580,14 +619,13 @@ describe('LineageGraphModal', () => {
     expect(stageBar).not.toHaveClass('overflow-x-auto');
     expect(
       within(stageBar).getAllByText(
-        /^(Stories|Ideation|Refinement|Spec|Sprint|Tasks \/ Tests|Bugs)$/,
+        /^(Stories|Ideation|Refinement|Spec|Tasks \/ Tests|Bugs)$/,
       ).map((item) => item.textContent),
     ).toEqual([
       'Stories',
       'Ideation',
       'Refinement',
       'Spec',
-      'Sprint',
       'Tasks / Tests',
       'Bugs',
     ]);
@@ -813,7 +851,7 @@ describe('LineageGraphModal', () => {
       board_id: 'board-1',
       view: 'lineage',
       selected: { entity_type: 'spec', entity_id: 'spec-a' },
-      root_ideation: { id: 'ideation-1', title: 'Integer column lineage' },
+      root_entity: { type: 'ideation', id: 'ideation-1', title: 'Integer column lineage' },
       resolution_path: [{ type: 'spec', id: 'spec-a' }],
       nodes: [
         {
@@ -882,7 +920,7 @@ describe('LineageGraphModal', () => {
         { entity_type: 'spec', entity_id: 'spec-b' },
       ],
       selected: { entity_type: 'spec', entity_id: 'spec-a' },
-      root_ideation: { id: 'ideation-1', title: 'Integer column lineage' },
+      root_entity: { type: 'ideation', id: 'ideation-1', title: 'Integer column lineage' },
       resolution_path: [{ type: 'spec', id: 'spec-a' }],
       nodes: [
         {
@@ -966,7 +1004,7 @@ describe('LineageGraphModal', () => {
       board_id: 'board-1',
       view: 'lineage',
       selected: { entity_type: 'spec', entity_id: 'phase-1-spec' },
-      root_ideation: { id: 'ideation-1', title: 'Analytics delivery' },
+      root_entity: { type: 'ideation', id: 'ideation-1', title: 'Analytics delivery' },
       resolution_path: [{ type: 'spec', id: 'phase-1-spec' }],
       nodes: [
         {
@@ -1018,20 +1056,12 @@ describe('LineageGraphModal', () => {
           stage: 2,
         },
         {
-          id: 'origin:phase-2-sprint',
-          entity_type: 'sprint',
-          entity_id: 'phase-2-sprint',
-          title: 'Analytics Phase 2 Sprint',
-          label: 'Analytics Phase 2 Sprint',
-          stage: 3,
-        },
-        {
           id: 'origin:phase-2-task',
           entity_type: 'task',
           entity_id: 'phase-2-task',
           title: 'Build forecast panel',
           label: 'Build forecast panel',
-          stage: 4,
+          stage: 3,
         },
         {
           id: 'origin:phase-2-test',
@@ -1039,7 +1069,7 @@ describe('LineageGraphModal', () => {
           entity_id: 'phase-2-test',
           title: 'Verify forecast scenarios',
           label: 'Verify forecast scenarios',
-          stage: 4,
+          stage: 3,
         },
         {
           id: 'origin:phase-2-bug',
@@ -1047,7 +1077,7 @@ describe('LineageGraphModal', () => {
           entity_id: 'phase-2-bug',
           title: 'Forecast regression',
           label: 'Forecast regression',
-          stage: 5,
+          stage: 4,
         },
       ],
       edges: [
@@ -1082,22 +1112,16 @@ describe('LineageGraphModal', () => {
           relationship: 'direct_spec',
         },
         {
-          id: 'lineage:spec-sprint-2',
+          id: 'lineage:spec-task-2',
           source: 'origin:phase-2-spec',
-          target: 'origin:phase-2-sprint',
-          relationship: 'has_sprint',
-        },
-        {
-          id: 'lineage:sprint-task-2',
-          source: 'origin:phase-2-sprint',
           target: 'origin:phase-2-task',
-          relationship: 'contains_card',
+          relationship: 'has_card',
         },
         {
-          id: 'lineage:sprint-test-2',
-          source: 'origin:phase-2-sprint',
+          id: 'lineage:spec-test-2',
+          source: 'origin:phase-2-spec',
           target: 'origin:phase-2-test',
-          relationship: 'contains_card',
+          relationship: 'has_card',
         },
         {
           id: 'lineage:task-bug-2',
@@ -1110,12 +1134,11 @@ describe('LineageGraphModal', () => {
         ideations: 1,
         refinements: 2,
         specs: 3,
-        sprints: 1,
         tasks: 1,
         tests: 1,
         bugs: 1,
-        nodes: 10,
-        edges: 9,
+        nodes: 9,
+        edges: 8,
       },
       warnings: [],
     };
@@ -1140,7 +1163,7 @@ describe('LineageGraphModal', () => {
         { entity_type: 'spec', entity_id: 'phase-2-spec' },
       ],
       selected: { entity_type: 'spec', entity_id: 'phase-1-spec' },
-      root_ideation: { id: 'ideation-1', title: 'Analytics delivery' },
+      root_entity: { type: 'ideation', id: 'ideation-1', title: 'Analytics delivery' },
       resolution_path: [{ type: 'spec', id: 'phase-1-spec' }],
       nodes: [
         {
@@ -1282,7 +1305,7 @@ describe('LineageGraphModal', () => {
       board_id: 'board-1',
       view: 'lineage',
       selected: { entity_type: 'spec', entity_id: 'a-1' },
-      root_ideation: { id: 'idea', title: 'Multi-Spec initiative' },
+      root_entity: { type: 'ideation', id: 'idea', title: 'Multi-Spec initiative' },
       resolution_path: [{ type: 'spec', id: 'a-1' }],
       nodes: [
         {
@@ -1339,7 +1362,7 @@ describe('LineageGraphModal', () => {
         { entity_type: 'spec', entity_id: 'b-2' },
       ],
       selected: { entity_type: 'spec', entity_id: 'a-1' },
-      root_ideation: { id: 'idea', title: 'Multi-Spec initiative' },
+      root_entity: { type: 'ideation', id: 'idea', title: 'Multi-Spec initiative' },
       resolution_path: [{ type: 'spec', id: 'a-1' }],
       nodes: ['a-1', 'a-2', 'b-1', 'b-2'].map((specId) => ({
         id: `spec:${specId}`,
@@ -1404,7 +1427,7 @@ describe('LineageGraphModal', () => {
       board_id: 'board-1',
       view: 'lineage',
       selected: { entity_type: 'task', entity_id: 'task-a' },
-      root_ideation: { id: 'task-a', title: 'Task A' },
+      root_entity: { type: 'card', id: 'task-a', title: 'Task A' },
       resolution_path: [{ type: 'task', id: 'task-a' }],
       nodes: [
         {
@@ -1443,7 +1466,7 @@ describe('LineageGraphModal', () => {
         { entity_type: 'card', entity_id: 'task-a' },
       ],
       selected: { entity_type: 'task', entity_id: 'task-a' },
-      root_ideation: { id: 'task-a', title: 'Task A' },
+      root_entity: { type: 'card', id: 'task-a', title: 'Task A' },
       resolution_path: [{ type: 'task', id: 'task-a' }],
       nodes: [
         {
@@ -1663,8 +1686,8 @@ describe('LineageGraphModal', () => {
   it('never composes a dependency snapshot requested during a lineage refresh', async () => {
     const refreshedLineage: LineageGraphResponse = {
       ...specLineageGraph,
-      root_ideation: {
-        ...specLineageGraph.root_ideation,
+      root_entity: {
+        ...specLineageGraph.root_entity,
         title: 'Refreshed Spec A lineage',
       },
       nodes: [

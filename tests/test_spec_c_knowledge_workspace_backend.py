@@ -46,9 +46,40 @@ def test_effective_resources_openapi_exposes_bounded_page_parameters() -> None:
 
     assert {"board_id", "profile", "cursor", "limit"} <= set(parameters)
     assert parameters["profile"]["required"] is False
-    assert "default" not in parameters["profile"]["schema"]
+    assert parameters["profile"]["schema"]["default"] == "summary"
+    assert parameters["profile"]["schema"]["enum"] == ["summary", "detail", "full"]
+    assert parameters["resource_type"]["schema"]["default"] == "knowledge_base"
     assert parameters["cursor"]["required"] is False
     assert parameters["limit"]["required"] is False
+
+
+def test_http_default_is_current_and_removed_profile_never_calls_use_case(monkeypatch) -> None:
+    from fastapi.testclient import TestClient
+
+    captured = []
+
+    class _UseCase:
+        async def execute(self, command, *, actor, uow):
+            captured.append(command)
+            return SimpleNamespace(data={"contract_version": 2, "items": []})
+
+    monkeypatch.setattr(resource_gate_api, "GetEffectiveResourcesUseCase", _UseCase)
+    app = FastAPI()
+    app.include_router(resource_gate_api.router)
+    app.dependency_overrides[resource_gate_api.require_user] = lambda: "user-1"
+    app.dependency_overrides[resource_gate_api.get_realm_id] = lambda: None
+    app.dependency_overrides[resource_gate_api.get_unit_of_work] = lambda: object()
+    with TestClient(app) as client:
+        path = "/resource-gate/spec/spec-1/effective-resources"
+        result = client.get(path, params={"board_id": "board-1"})
+        assert result.status_code == 200
+        assert captured[0].profile == "summary"
+        assert captured[0].resource_type == "knowledge_base"
+        captured.clear()
+        for parameters in ({"profile": "legacy"}, {"resource_type": "unknown"}):
+            result = client.get(path, params={"board_id": "board-1", **parameters})
+            assert result.status_code == 422
+        assert captured == []
 
 
 def test_resource_lineage_dict_keeps_structured_relevance_and_lazy_detail_body() -> None:
@@ -202,6 +233,7 @@ async def test_effective_resources_route_forwards_workspace_page_and_logs_no_con
         "spec-1",
         board_id="board-1",
         profile="detail",
+        resource_type="knowledge_base",
         cursor="opaque-in",
         limit=1,
         user_id="user-1",
@@ -229,25 +261,20 @@ async def test_effective_resources_route_forwards_workspace_page_and_logs_no_con
 
 
 @pytest.mark.asyncio
-async def test_omitted_profile_preserves_legacy_rolling_compatibility(
+async def test_summary_profile_uses_current_items_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, object] = {}
-    legacy = {
-        "board_id": "board-1",
-        "entity_type": "card",
-        "entity_id": "card-1",
-        "resources": {"architecture": [], "mockup": [], "knowledge_base": []},
-        "lineage_counts": {
-            "unique_effective_count": 0,
-            "raw_attachment_count": 0,
-        },
+    current = {
+        "contract_version": 2, "board_id": "board-1", "entity_type": "card",
+        "entity_id": "card-1", "resource_type": "knowledge_base", "profile": "summary",
+        "items": [], "count": 0, "next_cursor": None,
     }
 
     class _UseCase:
         async def execute(self, command, *, actor, uow):
             captured["command"] = command
-            return SimpleNamespace(data=legacy)
+            return SimpleNamespace(data=current)
 
     monkeypatch.setattr(
         resource_gate_api,
@@ -259,7 +286,8 @@ async def test_omitted_profile_preserves_legacy_rolling_compatibility(
         "card",
         "card-1",
         board_id="board-1",
-        profile=None,
+        profile="summary",
+        resource_type="knowledge_base",
         cursor=None,
         limit=None,
         user_id="user-1",
@@ -267,9 +295,10 @@ async def test_omitted_profile_preserves_legacy_rolling_compatibility(
         db=object(),
     )
 
-    assert captured["command"].profile == "legacy"
-    assert result["resources"]["knowledge_base"] == []
-    assert "items" not in result
+    assert captured["command"].profile == "summary"
+    assert captured["command"].resource_type == "knowledge_base"
+    assert result["items"] == []
+    assert "resources" not in result
 
 
 @pytest.mark.asyncio

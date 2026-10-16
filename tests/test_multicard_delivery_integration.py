@@ -1,0 +1,610 @@
+"""AC-INT-01/02 and ADV-11/12: actual Card ledgers and signed HTTP results."""
+
+from copy import deepcopy
+from dataclasses import replace
+from datetime import datetime, timezone
+import json
+
+from fastapi import FastAPI
+import httpx
+import pytest
+import pytest_asyncio
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import async_sessionmaker
+
+from okto_pulse.community.adapters.sqlalchemy_models import Card, Spec, CardDeliveryEvidenceRecordRow
+from okto_pulse.community.adapters.sqlalchemy_delivery_evidence import CommunityDeliveryEvidenceStore
+from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import CommunitySemanticSession
+from okto_pulse.community.adapters.test_evidence import (
+    CommunityEvidenceLedger, CommunityHttpManifestExecutor, CommunityTestEvidenceWriteVerifier,
+    _persist_inline_manifest, _execute_validated_manifest_and_build_evidence_v2, validate_replay_manifest,
+)
+from okto_pulse.core.domain.delivery_inventory import COLLECTIONS
+from okto_pulse.core.domain.realm import RealmScope
+from okto_pulse.core.domain.execution_contract import new_execution_contract
+from okto_pulse.core.domain.requirement_verification import requirement_verification_digest
+from okto_pulse.core.ports.test_evidence import register_test_evidence_write_verifier
+from okto_pulse.core.services.test_scenario_lifecycle import compute_test_scenario_semantic_sha256
+
+import test_delivery_evidence_integration as delivery
+from test_code_traceability_persistence import _attestation_bundle
+from test_evidence_v2_adapter import _manifest
+
+base_ledger = delivery.ledger
+BOARD, SPEC = delivery.BOARD_ID, delivery.SPEC_ID
+UI_REFS = ["fr:fr", "ac:ac-ui"]
+AUTH_REFS = ["fr:fr", "ac:ac-auth", "br:br"]
+
+
+@pytest_asyncio.fixture
+async def ledger(base_ledger):
+    seed, _, evidence = base_ledger
+    factory = async_sessionmaker(seed.bind, sync_session_class=CommunitySemanticSession,
+        expire_on_commit=False, info={"realm_scope": RealmScope.local()})
+    async with factory() as session:
+        yield session, CommunityDeliveryEvidenceStore(session), evidence
+
+
+async def seed_authorization(session):
+    now = datetime.now(timezone.utc)
+    opened, request, receipt, head, workspace = _attestation_bundle(now, subject_id="authorization")
+    workspace = replace(workspace, declared_revision="a" * 40)
+    request = replace(request, id="request-auth", board_id=BOARD, idempotency_key="request-auth",
+        challenge_token_hash="e" * 64)
+    receipt = replace(receipt, id="receipt-auth", request_id=request.id, board_id=BOARD,
+        declared_revision=workspace.declared_revision, workspace_state=workspace,
+        idempotency_key="receipt-auth", observation_sha256=delivery.code_investigation_observation_sha256_v2(
+            source_ref=receipt.source_ref, selector_scope_digest=receipt.selector_scope_digest,
+            delivery_context=receipt.delivery_context, outcome=receipt.contextual_outcome, capabilities=receipt.capabilities,
+            source_identity_digest=receipt.source_identity_digest, declared_revision=workspace.declared_revision,
+            workspace_state=workspace, omission_manifest=()))
+    session.add(Card(id="authorization", board_id=BOARD, spec_id=SPEC, title="Authorization",
+        status="done", card_type="normal", created_by="owner"))
+    await session.flush()
+    from okto_pulse.community.adapters.sqlalchemy_code_traceability import CommunitySqlAlchemyCodeInvestigationStore
+    origin = CommunitySqlAlchemyCodeInvestigationStore(session)
+    current = await origin.get_current_head(board_id=BOARD, source_ref=receipt.source_ref)
+    if current:
+        request = replace(request, expected_head_generation=current.generation,
+            expected_predecessor_receipt_id=current.latest_receipt_id)
+        opened = replace(opened, expected_head_generation=current.generation,
+            expected_predecessor_receipt_id=current.latest_receipt_id)
+        receipt = replace(receipt, generation=current.generation + 1,
+            predecessor_receipt_id=current.latest_receipt_id)
+        head = replace(head, generation=current.generation + 1, revision=current.revision + 1)
+    await origin.create_request(replace(opened, id=request.id, board_id=BOARD,
+        idempotency_key=request.idempotency_key, challenge_token_hash=request.challenge_token_hash))
+    await origin.consume_request_append_receipt_and_advance_head(request=request, receipt=receipt,
+        head=replace(head, board_id=BOARD, current_receipt_id=receipt.id, latest_receipt_id=receipt.id),
+        expected_head_revision=current.revision if current else None)
+    session.add(delivery.ImplementationTargetRow(id="target-auth", board_id=BOARD, card_id="authorization",
+        source_ref=receipt.source_ref, selector_kind="file", relative_path_hint="src/auth.py", role="modify",
+        intent="Enforce authorization", required=True, source_spec_version=1, lifecycle_status="active",
+        revision=1, created_by="agent-1", created_at=now, updated_at=now))
+    await session.flush()
+    session.add(delivery.ImplementationTargetExecutionRecordRow(id="execution-auth", board_id=BOARD,
+        card_id="authorization", target_id="target-auth", target_revision=1,
+        result_investigation_receipt_id=receipt.id, source_ref=receipt.source_ref, disposition="touched",
+        result_declared_revision="a" * 40, result_workspace_state_id=workspace.workspace_state_id,
+        actual_relative_path="src/auth.py", justification="Authorization enforced", submitted_by="agent-1",
+        received_at=now, payload_sha256="c" * 64, idempotency_key="execution-auth"))
+
+
+async def setup(ledger):
+    session, store, _ = ledger
+    await seed_authorization(session)
+    criteria = [dict(id="ac-" + name, text=text, verification_profile=profile,
+        linked_task_ids=[card], requirement_links=[dict(requirement_type="functional_requirement", requirement_id="fr")])
+        for name, card, profile, text in [
+            ("ui", "task", "functional", "Payment form displays the amount"),
+            ("auth", "authorization", "technical", "Unauthorized payment is refused"),
+        ]]
+    requirement = dict(id="fr", text="Display payments and enforce authorization",
+        linked_task_ids=["task", "authorization"], verification=dict(mode="explicit", required_profiles=["functional", "technical"]),
+        implementation_plan=dict(contributions=[dict(card_id=card, scope="selected_criteria",
+            criterion_ids=["ac-" + name], summary=name) for name, card in [("ui", "task"), ("auth", "authorization")]]))
+    rule = dict(id="br", title="Authorization", rule="Unauthorized payment is refused", linked_requirements=["fr"],
+        verification=dict(mode="inherited", required_profiles=["technical"], inheritance=[dict(
+            source=dict(requirement_type="functional_requirement", requirement_id="fr"),
+            source_digest=requirement_verification_digest(SPEC, "functional_requirement", requirement),
+            criterion_ids=["ac-auth"], covered_aspect="Payment authorization is enforced")]))
+    scenarios = [dict(id="ts-" + name, scenario_type="integration", given="Payment service",
+        when="The " + name + " endpoint is queried", then="Expected condition holds",
+        linked_criteria=["ac-" + name], verification_method="automated_test", status="draft") for name in ("ui", "auth")]
+    fields = {field: [] for _, field in COLLECTIONS}
+    fields.update(functional_requirements=[requirement], business_rules=[rule], acceptance_criteria=criteria,
+        test_scenarios=scenarios, execution_contract=new_execution_contract(board_id=BOARD, spec_id=SPEC,
+            edition=1, actor_id="author", origin="explicit_revision"))
+    await session.execute(update(Spec).where(Spec.id == SPEC).values(**fields))
+    await session.execute(update(Card).where(Card.id == "test").values(test_scenario_ids=[s["id"] for s in scenarios]))
+    await session.commit()
+    return session, store
+
+
+def implementation(card="task", *, contribution="complete", key=None):
+    refs = UI_REFS if card == "task" else AUTH_REFS
+    return delivery.command(card_id=card, execution_id="execution" if card == "task" else "execution-auth",
+        idempotency_key=key or "implementation-" + card, obligation_refs=[],
+        bindings=[dict(obligation_ref=ref, contribution=contribution) for ref in refs])
+
+
+async def run_result(session, tmp_path, name, *, passed=True, response_body=None, assertions=None):
+    """Run a controlled HTTP subject, then authenticate via the real issuer."""
+    spec = await session.get(Spec, SPEC)
+    scenarios = deepcopy(spec.test_scenarios)
+    scenario = next(row for row in scenarios if row["id"] == "ts-" + name)
+    digest = compute_test_scenario_semantic_sha256(board_id=BOARD, spec_id=SPEC,
+        scenario=scenario, acceptance_criteria=spec.acceptance_criteria)
+    manifest = _manifest(board_id=BOARD, spec_id=SPEC, scenario_id=scenario["id"], scenario_sha256=digest)
+    manifest["steps"] = [dict(name=name, path="/" + name, expected_status=200,
+        assertions=assertions if assertions is not None else
+        [dict(name="condition", kind="json_equals", path="satisfied", expected=True)])]
+    evidence_ledger = CommunityEvidenceLedger(evidence_root=tmp_path / "multi-evidence")
+    evidence_ledger.manifest_root.mkdir(parents=True, exist_ok=True)
+    manifest_ref = name + ("-passed.json" if passed else "-failed.json")
+    (evidence_ledger.manifest_root / manifest_ref).write_text(json.dumps(manifest), encoding="utf-8")
+    app = FastAPI()
+    calls = []
+
+    @app.get("/" + name)
+    async def condition():
+        calls.append(name)
+        return response_body if response_body is not None else {"satisfied": passed}
+
+    status = "passed" if passed else "failed"
+    from okto_pulse.community.adapters.external_test_runner import SCHEMA, validate_external_manifest
+    scope = dict(board_id=BOARD, spec_id=SPEC, scenario_id=scenario['id'], scenario_sha256=digest)
+    http_plan = validate_replay_manifest(manifest, **scope)
+    execution = await session.get(delivery.ImplementationTargetExecutionRecordRow, 'execution')
+    basis = dict(source_ref=execution.source_ref, revision=execution.result_declared_revision,
+                 runner_ref='pytest-http-subject', test_ids=[name])
+    normalized = dict(schema_version=SCHEMA, purpose='test_scenario_evidence', **scope, execution_basis=basis)
+    validate_external_manifest(normalized, **scope)
+    manifest_bytes, canonical_ref = _persist_inline_manifest(normalized, ledger=evidence_ledger)
+    http_executor = CommunityHttpManifestExecutor(base_url='http://127.0.0.1:8100', transport=httpx.ASGITransport(app=app))
+
+    async def execute(_manifest, _ref):
+        # This controlled HTTP subject represents the fixture's declared
+        # immutable source. Keep actual HTTP execution and native signing.
+        return await http_executor(http_plan, manifest_ref)
+
+    evidence = await _execute_validated_manifest_and_build_evidence_v2(
+        manifest=manifest_bytes, canonical_ref=canonical_ref, normalized_manifest=normalized,
+        **scope, status=status, actor_id='tester', executor=execute, ledger=evidence_ledger,
+        environment='pytest-asgi', execution_basis=basis)
+    assert calls == [name] and evidence["execution_receipt"].startswith("ev2r.")
+    scenario.update(status=status, evidence=evidence)
+    await session.execute(update(Spec).where(Spec.id == SPEC).values(test_scenarios=scenarios))
+    await session.commit()
+    register_test_evidence_write_verifier(CommunityTestEvidenceWriteVerifier(ledger=evidence_ledger))
+
+
+async def bind_test(session, store, tmp_path, name, implementations, *, passed=True, refs=None):
+    await run_result(session, tmp_path, name, passed=passed)
+    return await delivery.record(store, delivery.command("test", scenario_id="ts-" + name,
+        idempotency_key=name + ("-passed" if passed else "-failed"), implementation_ids=implementations,
+        obligation_refs=refs if refs is not None else UI_REFS if name == "ui" else AUTH_REFS))
+
+
+def rows(projection):
+    return {row["obligation"]["binding"]["obligation_ref"]: row for row in projection["rows"]}
+
+
+@pytest.mark.asyncio
+async def test_passing_response_shape_does_not_observe_required_timeout(ledger, tmp_path):
+    """ADV-16: real shape observation is not proof of the timeout dimension."""
+    from okto_pulse.core.services.delivery_evidence import require_spec_delivery
+    from test_delivery_reused_impact import register_report_adapters
+
+    session, store, _ = ledger
+    register_report_adapters()
+    conditions = {'shape': 'Response contains a steps array', 'timeout': 'Request aborts after the configured timeout'}
+    criteria = [dict(id='ac-' + name, text=condition, verification_profile='integration',
+        linked_task_ids=['task'], requirement_links=[dict(requirement_type='integration_requirement', requirement_id='ir')])
+        for name, condition in conditions.items()]
+    scenarios = [dict(id='ts-' + name, scenario_type='integration', given='A controlled procedure service',
+        when='Exercise the ' + name + ' condition', then=condition, linked_criteria=['ac-' + name],
+        verification_method='automated_test', status='ready') for name, condition in conditions.items()]
+    fields = {field: [] for _, field in COLLECTIONS}
+    fields.update(integration_requirements=[dict(id='ir', title='Procedure response and timeout contract',
+        integration_type='api', status='active', linked_task_ids=['task'],
+        verification=dict(mode='explicit', required_profiles=['integration']),
+        implementation_plan=dict(contributions=[dict(card_id='task', scope='whole_requirement')]))],
+        acceptance_criteria=criteria, test_scenarios=scenarios,
+        execution_contract=new_execution_contract(board_id=BOARD, spec_id=SPEC, edition=1,
+            actor_id='author', origin='explicit_revision'))
+    await session.execute(update(Spec).where(Spec.id == SPEC).values(**fields))
+    await session.execute(update(Card).where(Card.id == 'test').values(test_scenario_ids=['ts-shape', 'ts-timeout']))
+    await session.commit()
+    implementation = await delivery.record(store, delivery.command(obligation_refs=[], bindings=[
+        dict(obligation_ref=ref, contribution='complete') for ref in ['ir:ir', 'ac:ac-shape', 'ac:ac-timeout']]))
+    await run_result(session, tmp_path, 'shape', response_body={'steps': ['one']},
+        assertions=[dict(name='steps-array', kind='json_equals', path='steps', expected=['one'])])
+    proof = await delivery.record(store, delivery.command('test', scenario_id='ts-shape',
+        idempotency_key='shape-only', implementation_ids=[implementation['id']],
+        obligation_refs=['ir:ir', 'ac:ac-shape']))
+    await session.commit()
+    history = {item.id: deepcopy(item.payload) for item in
+               await session.scalars(select(CardDeliveryEvidenceRecordRow))}
+    factory = async_sessionmaker(session.bind, sync_session_class=CommunitySemanticSession,
+        expire_on_commit=False, info={'realm_scope': RealmScope.local()})
+    async with factory() as reader:
+        projection = await CommunityDeliveryEvidenceStore(reader).projection(BOARD, SPEC)
+        scope = rows(projection)
+        assert all(item['implementation_satisfied'] for item in scope.values())
+        assert scope['ac:ac-shape']['test_satisfied']
+        assert not scope['ac:ac-timeout']['test_satisfied'] and not scope['ir:ir']['test_satisfied']
+        assert scope['ir:ir']['missing_criteria'] == ((implementation['id'], 'ac-timeout'),)
+        assert not projection['allowed']
+        with pytest.raises(ValueError, match='delivery_evidence_incomplete'):
+            await require_spec_delivery(reader, await reader.get(Spec, SPEC))
+        assert (await reader.get(CardDeliveryEvidenceRecordRow, proof['id'])).payload['test_result'] == 'passed'
+    with pytest.raises(ValueError, match='delivery_current_verified_test_and_implementation_required'):
+        await delivery.record(store, delivery.command('test', scenario_id='ts-shape',
+            idempotency_key='borrow-shape-for-timeout', implementation_ids=[implementation['id']],
+            obligation_refs=['ac:ac-timeout']))
+    await session.commit()
+    assert {item.id: item.payload for item in
+            await session.scalars(select(CardDeliveryEvidenceRecordRow))} == history
+    spec = await session.get(Spec, SPEC, populate_existing=True)
+    assert spec.test_scenarios[1]['status'] == 'ready' and 'evidence' not in spec.test_scenarios[1]
+
+
+@pytest.mark.asyncio
+async def test_diamond_reuses_one_proof_and_persisted_cycle_never_receives_credit(ledger, tmp_path):
+    """ADV-10: two origin paths do not require two runs for one condition."""
+    from okto_pulse.core.domain.requirement_verification_resolution import resolve_requirement_verification
+    from okto_pulse.core.services.delivery_evidence import require_spec_delivery
+    from test_delivery_reused_impact import register_report_adapters
+
+    session, store = await setup(ledger)
+    register_report_adapters()
+    spec = await session.get(Spec, SPEC)
+    left = {**deepcopy(spec.business_rules[0]), 'id': 'br-left'}
+    right = {**deepcopy(left), 'id': 'br-right'}
+
+    def inherited(source):
+        return dict(source=dict(requirement_type='business_rule', requirement_id=source['id']),
+            source_digest=requirement_verification_digest(SPEC, 'business_rule', source),
+            criterion_ids=['ac-auth'], covered_aspect='Unauthorized payment is refused')
+
+    top = dict(id='br-top', title='Authorization through both paths', rule='Unauthorized payment is refused',
+        linked_requirements=['fr'],
+        verification=dict(mode='inherited', required_profiles=['technical'],
+                          inheritance=[inherited(left), inherited(right)]))
+    await session.execute(update(Spec).where(Spec.id == SPEC).values(business_rules=[left, right, top]))
+    await session.commit()
+    refs = ['fr:fr', 'ac:ac-auth', 'br:br-left', 'br:br-right', 'br:br-top']
+    ui = await delivery.record(store, implementation())
+    authorization = await delivery.record(store, delivery.command(card_id='authorization',
+        execution_id='execution-auth', idempotency_key='diamond-implementation', obligation_refs=[],
+        bindings=[dict(obligation_ref=ref, contribution='complete') for ref in refs]))
+    await bind_test(session, store, tmp_path, 'ui', [ui['id']])
+    proof = await bind_test(session, store, tmp_path, 'auth', [authorization['id']], refs=refs)
+    await session.commit()
+    history = {item.id: deepcopy(item.payload) for item in
+               await session.scalars(select(CardDeliveryEvidenceRecordRow))}
+    factory = async_sessionmaker(session.bind, sync_session_class=CommunitySemanticSession,
+        expire_on_commit=False, info={'realm_scope': RealmScope.local()})
+    async with factory() as reader:
+        persisted = await reader.get(Spec, SPEC)
+        qualification = resolve_requirement_verification(spec_id=SPEC,
+            collections={field: getattr(persisted, field) for _, field in COLLECTIONS})
+        top_result = next(item for item in qualification['requirements'] if item['requirement_id'] == 'br-top')
+        assert qualification['criteria_resolution_complete']
+        assert len(top_result['criteria_paths']) == 2
+        assert {path['criterion_id'] for path in top_result['criteria_paths']} == {'ac-auth'}
+        assert {path['path'][1]['requirement_id'] for path in top_result['criteria_paths']} == {'br-left', 'br-right'}
+        projection = await CommunityDeliveryEvidenceStore(reader).projection(BOARD, SPEC)
+        assert projection['allowed']
+        assert len(projection['rows']) == len(rows(projection)) == 6
+        assert rows(projection)['br:br-top']['required_card_ids'] == ('authorization',)
+        await require_spec_delivery(reader, persisted)
+        proofs = list(await reader.scalars(select(CardDeliveryEvidenceRecordRow).where(
+            CardDeliveryEvidenceRecordRow.kind == 'test')))
+        assert len(proofs) == 2 and sum(item.id == proof['id'] for item in proofs) == 1
+    # Corrupt persisted lineage to characterize recovery reads, not an authorized writer bypass.
+    left['verification']['inheritance'] = [inherited(top)]
+    await session.execute(update(Spec).where(Spec.id == SPEC).values(business_rules=[left, right, top]))
+    await session.commit()
+    async with factory() as reader:
+        persisted = await reader.get(Spec, SPEC)
+        qualification = resolve_requirement_verification(spec_id=SPEC,
+            collections={field: getattr(persisted, field) for _, field in COLLECTIONS})
+        assert not qualification['criteria_resolution_complete']
+        assert 'verification_inheritance_cycle' in str(qualification)
+        assert not (await CommunityDeliveryEvidenceStore(reader).projection(BOARD, SPEC))['allowed']
+        with pytest.raises(ValueError, match='delivery_evidence_incomplete'):
+            await require_spec_delivery(reader, persisted)
+        assert {item.id: item.payload for item in
+                await reader.scalars(select(CardDeliveryEvidenceRecordRow))} == history
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('third_result', ['absent', 'failed'])
+async def test_two_of_three_passing_criteria_never_satisfy_requirement(ledger, tmp_path, third_result):
+    """ADV-11: persisted proof is conjunctive, including after a fresh read."""
+    from okto_pulse.core.services.delivery_evidence import require_spec_delivery
+    from test_delivery_reused_impact import register_report_adapters
+
+    session, store = await setup(ledger)
+    register_report_adapters()
+    spec = await session.get(Spec, SPEC)
+    requirements = deepcopy(spec.functional_requirements)
+    requirements[0]['implementation_plan']['contributions'][1]['criterion_ids'].append('ac-timeout')
+    rules = deepcopy(spec.business_rules)
+    rules[0]['verification']['inheritance'][0]['source_digest'] = requirement_verification_digest(
+        SPEC, 'functional_requirement', requirements[0])
+    criteria = deepcopy(spec.acceptance_criteria)
+    criteria.append({**criteria[1], 'id': 'ac-timeout', 'text': 'Payment timeout is handled'})
+    scenarios = deepcopy(spec.test_scenarios)
+    scenarios.append({**scenarios[1], 'id': 'ts-timeout', 'when': 'The timeout endpoint is queried',
+                      'linked_criteria': ['ac-timeout']})
+    await session.execute(update(Spec).where(Spec.id == SPEC).values(
+        functional_requirements=requirements, business_rules=rules,
+        acceptance_criteria=criteria, test_scenarios=scenarios))
+    await session.execute(update(Card).where(Card.id == 'test').values(
+        test_scenario_ids=[item['id'] for item in scenarios]))
+    await session.commit()
+    ui = await delivery.record(store, implementation())
+    authorization_command = delivery.command(card_id='authorization', execution_id='execution-auth',
+        idempotency_key='implementation-authorization', obligation_refs=[],
+        bindings=[dict(obligation_ref=ref, contribution='complete')
+                  for ref in AUTH_REFS + ['ac:ac-timeout']])
+    authorization = await delivery.record(store, authorization_command)
+    await bind_test(session, store, tmp_path, 'ui', [ui['id']])
+    await bind_test(session, store, tmp_path, 'auth', [authorization['id']])
+    timeout_refs = ['fr:fr', 'ac:ac-timeout']
+    if third_result == 'failed':
+        await bind_test(session, store, tmp_path, 'timeout', [authorization['id']],
+                        passed=False, refs=timeout_refs)
+    await session.commit()
+    history = {item.id: deepcopy(item.payload) for item in
+               await session.scalars(select(CardDeliveryEvidenceRecordRow))}
+    factory = async_sessionmaker(session.bind, sync_session_class=CommunitySemanticSession,
+        expire_on_commit=False, info={'realm_scope': RealmScope.local()})
+    async with factory() as reader:
+        projection = await CommunityDeliveryEvidenceStore(reader).projection(BOARD, SPEC)
+        scope = rows(projection)
+        assert all(item['implementation_satisfied'] for item in scope.values())
+        assert scope['ac:ac-ui']['test_satisfied'] and scope['ac:ac-auth']['test_satisfied']
+        assert not scope['ac:ac-timeout']['test_satisfied']
+        assert scope['fr:fr']['missing_criteria'] == ((authorization['id'], 'ac-timeout'),)
+        assert not projection['allowed']
+        with pytest.raises(ValueError, match='delivery_evidence_incomplete'):
+            await require_spec_delivery(reader, await reader.get(Spec, SPEC))
+    await bind_test(session, store, tmp_path, 'timeout', [authorization['id']], refs=timeout_refs)
+    await session.commit()
+    async with factory() as reader:
+        assert (await CommunityDeliveryEvidenceStore(reader).projection(BOARD, SPEC))['allowed']
+        await require_spec_delivery(reader, await reader.get(Spec, SPEC))
+        for record_id, payload in history.items():
+            assert (await reader.get(CardDeliveryEvidenceRecordRow, record_id)).payload == payload
+
+
+@pytest.mark.asyncio
+async def test_ui_completion_cannot_deliver_authorization_or_its_inherited_rule(ledger, tmp_path):
+    session, store = await setup(ledger)
+    ui = await delivery.record(store, implementation())
+    await bind_test(session, store, tmp_path, "ui", [ui["id"]])
+    await session.commit()
+    projection = await store.projection(BOARD, SPEC)
+    assert not projection["allowed"]
+    scope = rows(projection)
+    assert scope["fr:fr"]["missing_card_ids"] == ("authorization",)
+    assert scope["br:br"]["required_card_ids"] == ("authorization",)
+    assert not scope["br:br"]["implementation_satisfied"]
+    per_card = {card["card_id"]: {row["ref"] for row in card["obligations"]} for card in projection["per_card"]}
+    assert "br:br" in per_card["authorization"] and "br:br" not in per_card["task"]
+    authorization = await delivery.record(store, implementation("authorization"))
+    await session.commit()
+    projection = await store.projection(BOARD, SPEC)
+    assert all(row["implementation_satisfied"] for row in projection["rows"])
+    assert not projection["allowed"]
+    await bind_test(session, store, tmp_path, "auth", [authorization["id"]])
+    await session.commit()
+    assert (await store.projection(BOARD, SPEC))["allowed"]
+
+
+@pytest.mark.asyncio
+async def test_failed_authorization_remains_visible_beside_passing_ui(ledger, tmp_path):
+    session, store = await setup(ledger)
+    ui = await delivery.record(store, implementation())
+    authorization = await delivery.record(store, implementation("authorization"))
+    await bind_test(session, store, tmp_path, "ui", [ui["id"]])
+    failed = await bind_test(session, store, tmp_path, "auth", [authorization["id"]], passed=False)
+    await session.commit()
+    before = deepcopy((await session.get(CardDeliveryEvidenceRecordRow, failed["id"])).payload)
+    projection = await store.projection(BOARD, SPEC)
+    scope = rows(projection)
+    assert scope["ac:ac-ui"]["test_satisfied"] and not scope["br:br"]["test_satisfied"]
+    assert not projection["allowed"] and all(row["implementation_satisfied"] for row in scope.values())
+    await bind_test(session, store, tmp_path, "auth", [authorization["id"]])
+    await session.commit()
+    assert (await store.projection(BOARD, SPEC))["allowed"]
+    assert (await session.get(CardDeliveryEvidenceRecordRow, failed["id"])).payload == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('obligation_ref', ['fr:fr', 'ac:ac-auth'], ids=['requirement', 'criterion'])
+async def test_ui_result_cannot_name_authorization_proof_to_gain_its_criterion(ledger, tmp_path, obligation_ref):
+    session, store = await setup(ledger)
+    ui = await delivery.record(store, implementation())
+    authorization = await delivery.record(store, implementation("authorization"))
+    with pytest.raises(ValueError, match="delivery_current_verified_test_and_implementation_required"):
+        await bind_test(session, store, tmp_path, "ui", [ui["id"], authorization["id"]], refs=[obligation_ref])
+    await session.commit()
+    projection = await store.projection(BOARD, SPEC)
+    assert not projection["allowed"]
+    assert (authorization["id"], "ac-auth") in rows(projection)["fr:fr"]["missing_criteria"]
+    assert not list(await session.scalars(select(CardDeliveryEvidenceRecordRow).where(CardDeliveryEvidenceRecordRow.kind == "test")))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["target_revision", "contribution_scope", "later_failed_run"])
+async def test_changed_authorization_never_rewrites_or_invalidates_independent_ui(ledger, tmp_path, change):
+    session, store = await setup(ledger)
+    ui = await delivery.record(store, implementation())
+    authorization = await delivery.record(store, implementation("authorization"))
+    await bind_test(session, store, tmp_path, "ui", [ui["id"]])
+    await bind_test(session, store, tmp_path, "auth", [authorization["id"]])
+    await session.commit()
+    assert (await store.projection(BOARD, SPEC))["allowed"]
+    history = {row.id: deepcopy(row.payload) for row in await session.scalars(select(CardDeliveryEvidenceRecordRow))}
+    if change == "target_revision":
+        await session.execute(update(delivery.ImplementationTargetRow).where(
+            delivery.ImplementationTargetRow.id == "target-auth").values(revision=2))
+    elif change == "contribution_scope":
+        spec = await session.get(Spec, SPEC)
+        requirements = deepcopy(spec.functional_requirements)
+        requirements[0]["implementation_plan"]["contributions"][1]["summary"] = "Changed authorization scope"
+        await session.execute(update(Spec).where(Spec.id == SPEC).values(functional_requirements=requirements))
+    else:
+        await run_result(session, tmp_path, "auth", passed=False)
+    await session.commit()
+    projection = await store.projection(BOARD, SPEC)
+    scope = rows(projection)
+    assert not projection["allowed"]
+    assert scope["ac:ac-ui"]["test_satisfied"]
+    assert not scope["br:br"]["test_satisfied"]
+    if change != "later_failed_run":
+        assert not scope["br:br"]["implementation_satisfied"]
+    for record in await session.scalars(select(CardDeliveryEvidenceRecordRow)):
+        assert record.payload == history[record.id]
+
+
+@pytest.mark.asyncio
+async def test_two_partial_authorization_records_never_sum_to_the_inherited_obligation(ledger, tmp_path):
+    session, store = await setup(ledger)
+    ui = await delivery.record(store, implementation())
+    partials = [await delivery.record(store, implementation("authorization", contribution="partial", key=str(index)))
+        for index in range(2)]
+    await bind_test(session, store, tmp_path, "ui", [ui["id"]])
+    await bind_test(session, store, tmp_path, "auth", [row["id"] for row in partials])
+    await session.commit()
+    projection = await store.projection(BOARD, SPEC)
+    scope = rows(projection)
+    assert not projection["allowed"] and scope["ac:ac-ui"]["test_satisfied"]
+    assert scope["br:br"]["missing_card_ids"] == ("authorization",)
+    assert not scope["fr:fr"]["implementation_satisfied"]
+
+
+@pytest.mark.asyncio
+async def test_one_signed_report_preserves_distinct_criterion_verdicts(ledger, tmp_path):
+    from okto_pulse.community.adapters.test_evidence import CommunityTestVerificationReportIssuer
+    from okto_pulse.core.ports.test_evidence import TestVerificationReportRequest as ReportRequest
+    from verification_report_fixtures import report, bind_report_sources
+
+    session, store = await setup(ledger)
+    spec = await session.get(Spec, SPEC)
+    scenario = {**spec.test_scenarios[0], 'verification_method': 'inspection',
+                'linked_criteria': ['ac-ui', 'ac-auth']}
+    await session.execute(update(Spec).where(Spec.id == SPEC).values(test_scenarios=[scenario]))
+    await session.execute(update(Card).where(Card.id == 'test').values(test_scenario_ids=[scenario['id']]))
+    await session.commit()
+    ui = await delivery.record(store, implementation())
+    authorization = await delivery.record(store, implementation('authorization'))
+    value = report()
+    await bind_report_sources(session, value, ('execution', 'execution-auth'))
+    value['observed_at'] = datetime.now(timezone.utc).isoformat()
+    value['result'] = 'failed'
+    value['observations'] = [
+        {**value['observations'][0], 'criterion_id': 'ac-ui', 'outcome': 'passed'},
+        {**value['observations'][0], 'observation_id': 'o2', 'criterion_id': 'ac-auth', 'outcome': 'failed'},
+    ]
+    evidence_ledger = CommunityEvidenceLedger(evidence_root=tmp_path / 'mixed-report')
+    issuer = CommunityTestVerificationReportIssuer(ledger=evidence_ledger)
+    register_test_evidence_write_verifier(CommunityTestEvidenceWriteVerifier(ledger=evidence_ledger))
+    digest = compute_test_scenario_semantic_sha256(board_id=BOARD, spec_id=SPEC,
+        scenario=scenario, acceptance_criteria=spec.acceptance_criteria)
+    issued = await issuer.admit(ReportRequest(board_id=BOARD, spec_id=SPEC,
+        scenario_id=scenario['id'], scenario_sha256=digest, actor_id='tester', report=value))
+    await session.execute(update(Spec).where(Spec.id == SPEC).values(
+        test_scenarios=[{**scenario, 'status': 'failed', 'evidence': dict(issued.evidence)}]))
+    await session.commit()
+    result = await delivery.record(store, delivery.command('test', scenario_id=scenario['id'],
+        idempotency_key='mixed-report', implementation_ids=[ui['id'], authorization['id']],
+        obligation_refs=list(dict.fromkeys(UI_REFS + AUTH_REFS))))
+    await session.commit()
+    projection = await store.projection(BOARD, SPEC)
+    scope = rows(projection)
+    assert scope['ac:ac-ui']['test_satisfied']
+    assert not scope['ac:ac-auth']['test_satisfied'] and not scope['br:br']['test_satisfied']
+    assert scope['fr:fr']['missing_criteria'] == ((authorization['id'], 'ac-auth'),)
+    assert not projection['allowed']
+    records = list(await session.scalars(select(CardDeliveryEvidenceRecordRow).where(CardDeliveryEvidenceRecordRow.kind == 'test')))
+    assert len(records) == 1 and records[0].id == result['id']
+    assert records[0].payload['test_result'] == 'failed'
+    assert len(list(evidence_ledger.receipt_root.glob('*.json'))) == 1
+    historical_payload = deepcopy(records[0].payload)
+    tampered = deepcopy(dict(issued.evidence))
+    tampered['verification_report']['observations'][1]['outcome'] = 'passed'
+    tampered['verification_report']['result'] = 'passed'
+    await session.execute(update(Spec).where(Spec.id == SPEC).values(
+        test_scenarios=[{**scenario, 'status': 'passed', 'evidence': tampered}]))
+    await session.commit()
+    assert not any(row['test_satisfied'] for row in (await store.projection(BOARD, SPEC))['rows'])
+    # A later applicable failure cannot be hidden by selecting the old binding.
+    value['observations'][0]['outcome'] = 'failed'
+    value['observed_at'] = datetime.now(timezone.utc).isoformat()
+    later = await issuer.admit(ReportRequest(board_id=BOARD, spec_id=SPEC,
+        scenario_id=scenario['id'], scenario_sha256=digest, actor_id='tester', report=value))
+    await session.execute(update(Spec).where(Spec.id == SPEC).values(
+        test_scenarios=[{**scenario, 'status': 'failed', 'evidence': dict(later.evidence)}]))
+    await session.commit()
+    assert not any(row['test_satisfied'] for row in (await store.projection(BOARD, SPEC))['rows'])
+    assert (await session.get(CardDeliveryEvidenceRecordRow, result['id'])).payload == historical_payload
+
+@pytest.mark.asyncio
+async def test_distinct_test_cards_jointly_cover_current_implementations_without_gaps(ledger, tmp_path):
+    session, store = await setup(ledger)
+    await session.execute(update(Card).where(Card.id == "test").values(test_scenario_ids=["ts-ui"]))
+    session.add(Card(id="test-authorization", board_id=BOARD, spec_id=SPEC,
+        title="Verify authorization", status="done", card_type="test", created_by="tester",
+        test_scenario_ids=["ts-auth"]))
+    await session.commit()
+    ui = await delivery.record(store, implementation())
+    authorization = await delivery.record(store, implementation("authorization"))
+    first = await bind_test(session, store, tmp_path, "ui", [ui["id"]])
+    await session.commit()
+    before = deepcopy((await session.get(CardDeliveryEvidenceRecordRow, first["id"])).payload)
+    partial = await store.projection(BOARD, SPEC)
+    assert not partial["allowed"]
+    assert rows(partial)["fr:fr"]["missing_criteria"] == ((authorization["id"], "ac-auth"),)
+    await run_result(session, tmp_path, "auth")
+    second = await delivery.record(store, delivery.command("test", card_id="test-authorization",
+        scenario_id="ts-auth", idempotency_key="separate-test-card",
+        implementation_ids=[authorization["id"]], obligation_refs=AUTH_REFS))
+    await session.commit()
+    # Read the committed joint result through a new identity map.
+    session.expire_all()
+    projection = await store.projection(BOARD, SPEC)
+    assert projection["allowed"]
+    records = list(await session.scalars(select(CardDeliveryEvidenceRecordRow).where(
+        CardDeliveryEvidenceRecordRow.kind == "test")))
+    assert {row.id for row in records} == {first["id"], second["id"]}
+    assert {row.card_id for row in records} == {"test", "test-authorization"}
+    assert (await session.get(CardDeliveryEvidenceRecordRow, first["id"])).payload == before
+    assert len(list(await session.scalars(select(CardDeliveryEvidenceRecordRow).where(
+        CardDeliveryEvidenceRecordRow.kind == "implementation")))) == 2
+
+
+@pytest.mark.asyncio
+async def test_normal_card_claim_cannot_replace_test_card_even_with_signed_result(ledger, tmp_path):
+    session, store = await setup(ledger)
+    ui = await delivery.record(store, implementation())
+    await run_result(session, tmp_path, "ui")
+    # Give the normal Card the scenario link too: the type boundary must still hold.
+    await session.execute(update(Card).where(Card.id == "task").values(
+        test_scenario_ids=["ts-ui"], conclusions=[{"text": "I tested payment UI successfully"}]))
+    await session.commit()
+    with pytest.raises(ValueError, match="delivery_current_verified_test_and_implementation_required"):
+        await delivery.record(store, delivery.command("test", card_id="task",
+            scenario_id="ts-ui", idempotency_key="normal-claim",
+            implementation_ids=[ui["id"]], obligation_refs=UI_REFS))
+    await session.commit()
+    projection = await store.projection(BOARD, SPEC)
+    assert not projection["allowed"]
+    assert not rows(projection)["ac:ac-ui"]["test_satisfied"]
+    assert not list(await session.scalars(select(CardDeliveryEvidenceRecordRow).where(
+        CardDeliveryEvidenceRecordRow.kind == "test")))

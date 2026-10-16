@@ -183,7 +183,7 @@ def _edge_attrs(session_id: str, rule_id: str) -> dict[str, Any]:
     }
 
 
-def test_grafx_timestamps_match_the_current_ladybug_boundary_shape() -> None:
+def test_grafx_timestamps_match_the_current_legacy_boundary_shape() -> None:
     expected = datetime(2026, 8, 28, 12, 34, 56, 123456)
     epoch = datetime(1970, 1, 1, tzinfo=UTC)
     delta = expected.replace(tzinfo=UTC) - epoch
@@ -481,7 +481,8 @@ def test_every_port_method_roundtrips_over_one_real_grafx_board(real_store) -> N
     main, origins, violations = store.get_constraint_detail(BOARD_ID, "constraint-1")
     assert main[0][:2] == ["constraint-1", "Constraint one"]
     assert origins == []
-    assert violations == [["bug-1", "Storage incident"]]
+    assert [row[:2] for row in violations] == [["bug-1", "Storage incident"]]
+    assert all(len(row) == 7 for row in violations)
 
     alternatives = store.get_alternatives(BOARD_ID, "decision-old", 10)
     assert alternatives[0][:2] == ["alternative-1", "Alternative one"]

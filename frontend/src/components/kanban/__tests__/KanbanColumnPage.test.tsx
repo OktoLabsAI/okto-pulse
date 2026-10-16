@@ -178,4 +178,18 @@ describe('KanbanColumnPage', () => {
     ));
     expect(onItemsChange).toHaveBeenLastCalledWith('not_started', secondPage);
   });
+
+  it('recovers the nearest valid page when live deletion removes the remembered window', async () => {
+    window.localStorage.setItem('okto.pagination.kanban-column-not_started.scope.board-1',
+      JSON.stringify({ page: 2, pageSize: 25 }));
+    mocks.getBoardColumnPage
+      .mockResolvedValueOnce(response([], 25, 1))
+      .mockResolvedValueOnce(response([card('remaining', 'Remaining Card')], 0, 1));
+    const { onItemsChange } = renderPage();
+    await screen.findByText('Remaining Card');
+    expect(mocks.getBoardColumnPage.mock.calls.map(call => call[2])).toEqual([25, 0]);
+    expect(onItemsChange).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('kanban-column-not_started-paginator-status')).toHaveTextContent('Page 1 of 1');
+    expect(screen.getByRole('button', { name: 'Show fewer cards from Not Started' })).toBeInTheDocument();
+  });
 });

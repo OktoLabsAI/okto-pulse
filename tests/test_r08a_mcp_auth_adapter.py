@@ -53,11 +53,22 @@ def _isolate_engine():
 
 
 async def _seed_agent(api_key: str, *, is_active: bool = True) -> str:
-    from okto_pulse.community.adapters.sqlalchemy_base import Base
-    from okto_pulse.community.adapters.sqlalchemy_models import Agent
+    from okto_pulse.community.adapters.current_relational_schema import (
+        current_schema_contract, initialize_current_schema,
+    )
+    from okto_pulse.community.adapters.sqlalchemy_models import Agent, PermissionPreset
+    from okto_pulse.core.ports.permission_policy import registered_permission_flags, set_permission_flag
 
-    async with _db_mod.get_engine().begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    await initialize_current_schema(_db_mod.get_engine(), current_schema_contract())
+    flags = registered_permission_flags()
+    def deny(tree):
+        for key, value in tree.items():
+            if isinstance(value, dict):
+                deny(value)
+            else:
+                tree[key] = False
+    deny(flags)
+    set_permission_flag(flags, "board.read", True)
     async with _db_mod.get_session_factory()() as session:
         agent = Agent(
             name="Test Agent",
@@ -65,10 +76,12 @@ async def _seed_agent(api_key: str, *, is_active: bool = True) -> str:
             objective="Profile objective",
             api_key=api_key,
             api_key_hash=hashlib.sha256(api_key.encode()).hexdigest(),
-            permissions=["board.read"],
+            permission_flags={},
+            preset_id="native-reader",
             is_active=is_active,
             created_by="user-1",
         )
+        session.add(PermissionPreset(id="native-reader", name="Reader", owner_id="user-1", flags=flags))
         session.add(agent)
         await session.commit()
         return agent.id
@@ -155,7 +168,9 @@ def test_ts_75846b3a_valid_key_authenticates_without_touching_last_used(
     assert session.is_active is True
     assert session.description == "Profile description"
     assert session.objective == "Profile objective"
-    assert session.permissions == ["board.read"]
+    assert session.permissions.has("board.read")
+    assert not session.permissions.has("profile.update")
+    assert not session.permissions.owner_review_required
     assert session.created_at is not None
     assert session.last_used_at is None
     assert (

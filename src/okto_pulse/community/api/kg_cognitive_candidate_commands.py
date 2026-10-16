@@ -105,6 +105,9 @@ CommandActionLiteral = Literal[
 ]
 
 
+from okto_pulse.core.domain.decision_verification import DecisionVerification
+
+
 class CandidateDecisionCommandRequest(BaseModel):
     board_id: str = Field(..., min_length=1)
     action: CommandActionLiteral
@@ -118,6 +121,7 @@ class CandidateDecisionCommandRequest(BaseModel):
     supersedes_decision_id: str | None = None
     linked_requirements: list[int] | None = None
     notes: str | None = None
+    verification: DecisionVerification | None = None
 
     # link_existing_decision
     formal_decision_id: str | None = None
@@ -467,6 +471,7 @@ async def _create_formal_decision(
         "linked_task_ids": None,
         "status": "active",
         "notes": body.notes,
+        "verification": body.verification.model_dump(mode="json") if body.verification else None,
     }
     decisions.append(decision)
 
