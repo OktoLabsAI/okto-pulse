@@ -64,7 +64,7 @@ RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTr
  && python -c "import os,sys; sys.exit(0 if any('all-MiniLM' in p for p,_,_ in os.walk(os.environ['HF_HOME'])) else 1)"
 EXPOSE 8100 8101
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD curl -fsS http://127.0.0.1:8100/api/v1/kg/settings || exit 1
+    CMD curl -fsS http://127.0.0.1:8100/health || exit 1
 VOLUME ["/data"]
 CMD ["okto-pulse", "serve"]
 
@@ -77,6 +77,6 @@ RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTr
  && python -c "import os,sys; sys.exit(0 if any('all-MiniLM' in p for p,_,_ in os.walk(os.environ['HF_HOME'])) else 1)"
 EXPOSE 8100 8101
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD curl -fsS http://127.0.0.1:8100/api/v1/kg/settings || exit 1
+    CMD curl -fsS http://127.0.0.1:8100/health || exit 1
 VOLUME ["/data"]
 CMD ["okto-pulse", "serve"]

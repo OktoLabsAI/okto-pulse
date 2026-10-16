@@ -32,6 +32,17 @@ ensure_python_build_tool() {
     python -m pip install --disable-pip-version-check "build>=1.2,<2"
 }
 
+project_version() {
+    python -c 'import pathlib,sys,tomllib; print(tomllib.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["project"]["version"])' "$1/pyproject.toml"
+}
+
+CORE_VERSION="$(project_version "${CORE_DIR}")"
+COMMUNITY_VERSION="$(project_version "${COMMUNITY_DIR}")"
+if [ "${CORE_VERSION}" != "${COMMUNITY_VERSION}" ]; then
+    echo -e "${RED}Core ${CORE_VERSION} and Community ${COMMUNITY_VERSION} must match${NC}" >&2
+    exit 1
+fi
+
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}  Okto Pulse CLI Build Script${NC}"
 echo -e "${GREEN}========================================${NC}"
@@ -55,9 +66,9 @@ echo -e "${YELLOW}[2/4] Building okto-pulse-core...${NC}"
 cd "${CORE_DIR}"
 ensure_python_build_tool
 python -m build --wheel
-CORE_WHEEL="$(find "${CORE_DIR}/dist" -maxdepth 1 -type f -name 'okto_pulse_core-0.3.3-*.whl' -print -quit)"
+CORE_WHEEL="$(find "${CORE_DIR}/dist" -maxdepth 1 -type f -name "okto_pulse_core-${CORE_VERSION}-*.whl" -print -quit)"
 if [ -z "${CORE_WHEEL}" ]; then
-    echo -e "${RED}Core 0.3.3 wheel was not produced${NC}" >&2
+    echo -e "${RED}Core ${CORE_VERSION} wheel was not produced${NC}" >&2
     exit 1
 fi
 echo -e "${GREEN}✓ okto-pulse-core built${NC}"
@@ -67,9 +78,9 @@ echo ""
 echo -e "${YELLOW}[3/4] Building okto-pulse (community)...${NC}"
 cd "${COMMUNITY_DIR}"
 python -m build --wheel
-COMMUNITY_WHEEL="$(find "${COMMUNITY_DIR}/dist" -maxdepth 1 -type f -name 'okto_pulse-0.3.3-*.whl' -print -quit)"
+COMMUNITY_WHEEL="$(find "${COMMUNITY_DIR}/dist" -maxdepth 1 -type f -name "okto_pulse-${COMMUNITY_VERSION}-*.whl" -print -quit)"
 if [ -z "${COMMUNITY_WHEEL}" ]; then
-    echo -e "${RED}Community 0.3.3 wheel was not produced${NC}" >&2
+    echo -e "${RED}Community ${COMMUNITY_VERSION} wheel was not produced${NC}" >&2
     exit 1
 fi
 echo -e "${GREEN}✓ okto-pulse (community) built${NC}"
@@ -85,8 +96,7 @@ echo "  • ${CORE_WHEEL}"
 echo "  • ${COMMUNITY_WHEEL}"
 echo ""
 echo -e "${YELLOW}To install:${NC}"
-echo "  pip install ${CORE_DIR}/dist/okto_pulse_core-*.whl"
-echo "  pip install ${COMMUNITY_DIR}/dist/okto_pulse-*.whl"
+echo "  pip install \"${CORE_WHEEL}\" \"${COMMUNITY_WHEEL}\""
 echo ""
 echo -e "${YELLOW}Or install in editable mode:${NC}"
 echo "  pip install -e ${CORE_DIR}"
