@@ -1,4 +1,4 @@
-from verification_report_fixtures import report
+from verification_report_fixtures import bind_report_sources, report
 """Real signed external reports share the scoped scenario and delivery trust path."""
 from copy import deepcopy
 import json
@@ -210,6 +210,7 @@ async def test_report_reuses_test_card_delivery_chain_and_revokes_stale_credit(l
         scenario=scenario, acceptance_criteria=spec.acceptance_criteria)
     value = report(method)
     value['observations'][0]['criterion_id'] = 'ac-about'
+    await bind_report_sources(session, value)
     mixed_ledger = CommunityEvidenceLedger(evidence_root=tmp_path / 'evidence')
     issuer = CommunityTestVerificationReportIssuer(ledger=mixed_ledger)
     # Validates retained automated-test receipts before adding another schema.

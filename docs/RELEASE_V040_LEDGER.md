@@ -46,6 +46,13 @@ semantic-composition cases pass (159.30s), retaining competing-writer stale
 version refusal, rollback, timestamp preservation and uncomposed-session
 rejection. No production behavior or authority guard changed.
 
+The remaining diagnostic tail completed with 386 passes and three stale report
+fixtures: their generic source reference/revision did not match the implementation
+being verified. Bind those positive reports to the actual mock execution bases
+before signing. All 14 report-admission cases pass (51.46s), retaining old-observation,
+inconclusive/aborted/unavailable and failed-result credit revocation. No receipt
+verifier or admission predicate changed.
+
 The subsequent R05-B/C diagnostic reproduced three stale assertions requiring
 the retired demo seed to compose/bootstrap a graph. Native startup now composes
 in main/CLI; the empty My Board seed owns only relational defaults. Tests assert
