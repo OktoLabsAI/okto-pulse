@@ -43,6 +43,15 @@ repositories v0.4.0. No branch-protection bypass or failing-gate exemption.
 
 ## Resume
 
+Inventory review: the native runtime really exposes 285 tools (including
+`get_spec_validation_cycle`); the older artifact oracle still expected 284.
+Reproduction failed explicitly with `284 == 285`. Updated the independent
+artifact counts and exact assertions to 285, preserving zero aliases and all
+live-inventory/hash checks. Seven focused inventory/harness tests pass; the
+fresh-wheel build/install case was not repeated in this focused invocation and
+remains included in the complete CI selection. Do not lower the actual smoke
+expectation to the stale 284 oracle.
+
 Review follow-up: removed the obsolete Sprint-based `scripts/pgb.py` profiler
 and its one historical-baseline-only test, plus `smoke_embedding.py`, which
 always called the retired unauthenticated KG settings route. Removed the README
