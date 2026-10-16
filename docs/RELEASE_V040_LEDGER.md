@@ -43,6 +43,14 @@ repositories v0.4.0. No branch-protection bypass or failing-gate exemption.
 
 ## Resume
 
+Community run 38846767938: 1375 passed, 4 skipped, then a stale cognitive-closeout
+test passed the removed `graph_state` argument. Updated the test to the native
+item record and source-observation contract, with an explicit signature guard
+against graph-health admission. Seven cases pass (empty/pending/corrupt source,
+provider/missing-generation/missing-capability failures and the signature guard).
+The four graph-health parameter values were duplicate tests of a removed input;
+they are replaced by the guard, without changing production semantics.
+
 Check latest PR #117 head/checks and unresolved review threads. Continue only
 with concrete failures; do not relax gates. After merge, fetch and verify both
 main versions and trees, create/push annotated Core tag before Community tag,
