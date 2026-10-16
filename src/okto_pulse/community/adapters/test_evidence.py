@@ -19,7 +19,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import hmac
-from importlib import metadata
 import inspect
 import ipaddress
 import json
@@ -31,6 +30,7 @@ import stat
 from typing import Any, Awaitable, Callable, Mapping
 from urllib.parse import urlsplit
 
+from okto_pulse.community import __version__ as community_code_version
 from okto_pulse.core.ports.test_evidence import (
     TestEvidenceExecutionRequest,
     TestEvidenceExecutionResult,
@@ -320,13 +320,6 @@ def _ensure_secure_directory(path: Path) -> None:
         ) from exc
     if _is_reparse_stat(current) or not stat.S_ISDIR(current.st_mode):
         raise CommunityTestEvidenceError("evidence_v2.secure_directory_invalid")
-
-
-def _community_version() -> str:
-    try:
-        return metadata.version("okto-pulse")
-    except metadata.PackageNotFoundError:
-        return "0.3.3"
 
 
 def _resolve_manifest_path(
@@ -1372,7 +1365,7 @@ def _build_evidence_v2(
         "assertions": [dict(assertion) for assertion in observation.assertions],
         "provenance": {
             "producer": COMMUNITY_EVIDENCE_PRODUCER,
-            "producer_version": _community_version(),
+            "producer_version": community_code_version,
             "adapter": COMMUNITY_EVIDENCE_ADAPTER,
             "environment": environment,
         },
